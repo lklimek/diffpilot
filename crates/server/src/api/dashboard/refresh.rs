@@ -37,7 +37,7 @@ use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::{Session, SessionCsrf};
 use crate::dashboard::refresh::rank::ItemJudgement;
 use crate::dashboard::refresh::{self, ControlError, Scope, StartError, status_of};
-use crate::dashboard::schedule::Schedule;
+use crate::dashboard::schedule::{Schedule, counted_run_date};
 use crate::dashboard::snapshot::{self, CursorError, Snapshot, View};
 use crate::state::AppState;
 
@@ -244,7 +244,7 @@ fn schedule_status(
         })
     });
     let next_run_at = Schedule::of(&settings)
-        .map(|schedule| schedule.next_run_at(now, last_scheduled.map(|run| run.on), last_success));
+        .map(|schedule| schedule.next_run_at(now, counted_run_date(last_scheduled), last_success));
     ScheduleStatus {
         enabled: settings.schedule_enabled,
         time: settings.schedule_time,

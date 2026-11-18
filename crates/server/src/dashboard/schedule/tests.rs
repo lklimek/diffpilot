@@ -331,6 +331,16 @@ async fn world_at(now: DateTime<Utc>, scan_limit: Duration) -> World {
         Arc::new(NoopRanker),
         Duration::ZERO,
     );
+    // Searches answer with nothing, so a scan with a usable token ends with an empty snapshot.
+    Mock::given(method("GET"))
+        .and(path("/api/search/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "total_count": 0,
+            "incomplete_results": false,
+            "items": []
+        })))
+        .mount(&github)
+        .await;
     World { state, github }
 }
 
@@ -888,4 +898,175 @@ async fn review_one_failing_user_does_not_block_the_others() {
         latest_refresh(&world, &late).await.is_some() || last_run(&world, &late).await.is_some(),
         "the later user never ran: one user's persistent error starves every other user"
     );
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Review fixes: per-user isolation, stop, restart recovery, lapsed pair
+
+#[tokio::test]
+async fn unreadable_settings_row_does_not_block_the_others() {
+    let world = world().await;
+    add_user(&world, "u1", 101, Some(28_800)).await;
+    add_user(&world, "u2", 102, Some(28_800)).await;
+    db::repo::tenants::testing::corrupt_dashboard_settings(&world.state.db, "u1")
+        .await
+        .expect("corrupt");
+    let capture = LogCapture::start();
+    assert_eq!(tick_once(&world).await, Tick::Ran);
+    assert!(latest_refresh(&world, "u2").await.is_some());
+    assert!(
+        capture.text().contains("could not be read"),
+        "{}",
+        capture.text()
+    );
+}
+
+#[tokio::test]
+async fn a_failing_user_is_given_up_for_the_day() {
+    let (early, late) = staggered_users();
+    let world = world().await;
+    add_user(&world, &early, 101, Some(28_800)).await;
+    add_user(&world, &late, 102, Some(28_800)).await;
+    db::repo::tenants::testing::fail_scheduled_run_records(&world.state.db, &early)
+        .await
+        .expect("inject");
+    assert_eq!(
+        tick_once(&world).await,
+        Tick::Ran,
+        "the later user runs in the same evaluation"
+    );
+    assert!(latest_refresh(&world, &late).await.is_some());
+    assert_eq!(latest_refresh(&world, &early).await, None);
+    settle(&world, &late).await;
+    assert!(
+        matches!(tick_once(&world).await, Tick::Idle { .. }),
+        "the failing user is not tried again today"
+    );
+}
+
+#[tokio::test]
+async fn stop_requested_starts_no_further_run() {
+    let world = world().await;
+    add_user(&world, "u1", 101, Some(28_800)).await;
+    world.state.stopping.send_replace(true);
+    assert!(matches!(tick_once(&world).await, Tick::Idle { .. }));
+    assert_eq!(latest_refresh(&world, "u1").await, None);
+    assert_eq!(last_run(&world, "u1").await, None);
+}
+
+async fn record_started_today(world: &World, user_id: &str) {
+    world
+        .state
+        .db
+        .dashboard()
+        .record_scheduled_run(
+            DEFAULT_TENANT,
+            user_id,
+            &ScheduledRunRecord {
+                on: date(2026, 11, 18),
+                outcome: ScheduledOutcome::Started,
+                reason: None,
+            },
+        )
+        .await
+        .expect("claimed");
+}
+
+/// A run a restart interrupted (scan stopped, or claimed and never started) becomes `failed`; the day's catch-up
+/// then decides again. A run whose scan ended stays `started`.
+#[tokio::test]
+async fn interrupted_run_is_failed_at_start_up_and_caught_up() {
+    let world = world().await;
+    add_user(&world, "u1", 101, Some(28_800)).await;
+    add_user(&world, "u2", 102, Some(28_800)).await;
+    add_user(&world, "u3", 103, Some(28_800)).await;
+    let dashboard = world.state.db.dashboard();
+    for user in ["u1", "u2", "u3"] {
+        record_started_today(&world, user).await;
+    }
+    let StartOutcome::Started { refresh, .. } = dashboard
+        .start_refresh(
+            DEFAULT_TENANT,
+            "u1",
+            RefreshTrigger::Scheduled,
+            utc(2026, 11, 18, 5, 9),
+        )
+        .await
+        .expect("scheduled")
+    else {
+        panic!("not started");
+    };
+    let StartOutcome::Started { refresh: done, .. } = dashboard
+        .start_refresh(
+            DEFAULT_TENANT,
+            "u3",
+            RefreshTrigger::Scheduled,
+            utc(2026, 11, 18, 5, 9),
+        )
+        .await
+        .expect("scheduled")
+    else {
+        panic!("not started");
+    };
+    dashboard
+        .store_snapshot(
+            DEFAULT_TENANT,
+            "u3",
+            done.id,
+            &json!({}),
+            utc(2026, 11, 18, 5, 10),
+        )
+        .await
+        .expect("scanned");
+    // The restart: the refresh recovery runs first.
+    crate::dashboard::refresh::recover(&world.state)
+        .await
+        .expect("refresh recovery");
+    recover(world.state.clone())
+        .await
+        .expect("schedule recovery");
+    for user in ["u1", "u2"] {
+        let run = last_run(&world, user).await.expect("recorded");
+        assert_eq!(
+            (run.outcome, run.reason.as_deref()),
+            (ScheduledOutcome::Failed, Some(INTERRUPTED)),
+            "{user}"
+        );
+    }
+    assert_eq!(
+        last_run(&world, "u3").await.map(|run| run.outcome),
+        Some(ScheduledOutcome::Started),
+        "its scan ended before the restart"
+    );
+    let mut caught_up = Vec::new();
+    while tick_once(&world).await == Tick::Ran {
+        for user in ["u1", "u2"] {
+            if latest_refresh(&world, user)
+                .await
+                .is_some_and(|r| r.id != refresh.id)
+                && !caught_up.contains(&user)
+            {
+                caught_up.push(user);
+                settle(&world, user).await;
+            }
+        }
+    }
+    caught_up.sort_unstable();
+    assert_eq!(caught_up, ["u1", "u2"], "today's run is caught up again");
+}
+
+#[tokio::test]
+async fn missing_pair_asks_to_sign_in_to_keep_the_refresh_running() {
+    let world = world().await;
+    add_user(&world, "u1", 101, None).await;
+    assert_eq!(tick_once(&world).await, Tick::Ran);
+    let run = last_run(&world, "u1").await.expect("recorded");
+    assert_eq!(
+        (run.outcome, run.reason.as_deref()),
+        (
+            ScheduledOutcome::NeedsSignIn,
+            Some("Sign in again to keep the daily refresh running.")
+        )
+    );
+    assert_eq!(latest_refresh(&world, "u1").await, None);
 }

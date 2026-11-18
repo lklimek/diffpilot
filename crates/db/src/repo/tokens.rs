@@ -9,7 +9,7 @@ use sqlx::{Row, SqlitePool};
 use super::Db;
 use super::sessions::{
     Liveness, NewSession, insert_session, live_session, pair_kept_by_schedule, parse_timestamp,
-    timestamp,
+    schedule_keep_bound, timestamp,
 };
 use crate::error::DbError;
 
@@ -247,11 +247,12 @@ impl UserTokens<'_> {
              AND NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.user_id = ?3 AND ",
             live_session!(),
             ") AND NOT ",
-            pair_kept_by_schedule!()
+            pair_kept_by_schedule!("?4")
         ))
         .bind(timestamp(live.now))
         .bind(timestamp(live.seen_after))
         .bind(user_id)
+        .bind(schedule_keep_bound(live.now))
         .execute(&mut *tx)
         .await?
         .rows_affected();

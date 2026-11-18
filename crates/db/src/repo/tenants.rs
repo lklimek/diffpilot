@@ -111,6 +111,15 @@ pub mod testing {
         Ok(())
     }
 
+    /// Makes the dashboard settings row of `user_id` undecodable (a repository rule that is not an object).
+    pub async fn corrupt_dashboard_settings(db: &Db, user_id: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE dashboard_settings SET repositories = '[1]' WHERE user_id = ?")
+            .bind(user_id)
+            .execute(&db.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Removes `login` from the tenant's allowlist, as the owner would by hand.
     pub async fn remove_login(db: &Db, tenant_id: &str, login: &str) -> Result<(), DbError> {
         sqlx::query("DELETE FROM tenant_allowed_logins WHERE tenant_id = ? AND login = ?")

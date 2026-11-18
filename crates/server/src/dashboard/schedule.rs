@@ -2,9 +2,11 @@
 //! users are due from their stored settings and run records only (no stored timers; request input never reaches
 //! it). A due user's refresh starts through the manual pipeline ([`refresh::start`], trigger `scheduled`), one at
 //! a time server-wide (the next starts once the previous scan ended), not before the scheduled instant plus a
-//! per-user offset of 0–9 minutes and in that order. Each run is
-//! recorded per local date before it starts, so a failing user is tried at most once a day. A user off the
-//! sign-in allow-list never runs and loses the GitHub token pair kept for the schedule.
+//! per-user offset of 0–9 minutes and in that order. Each run is recorded per local date before it starts, and a
+//! user whose run fails on the server (error or panic) is given up for that date, so a failing user is tried at most
+//! once a day and never holds up the others. A user off the sign-in allow-list never runs and loses the GitHub
+//! token pair kept for the schedule. A run a restart interrupted is recorded `failed` at start-up and does not count
+//! for its date, so the day's catch-up decides again.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -44,6 +46,10 @@ const SIGN_IN_AGAIN: &str =
     "Your GitHub sign-in has ended. Sign in again to resume the automatic refresh.";
 const NOT_STARTED: &str = "The refresh could not be started on the server.";
 const FAILED_WITHOUT_REASON: &str = "The refresh failed.";
+const NO_PAIR: &str = "Sign in again to keep the daily refresh running.";
+const FAILED_ON_SERVER: &str = "The automatic refresh failed on the server.";
+/// Reason of a run a restart interrupted; such a record does not count for its date (see [`counted_run_date`]).
+pub(crate) const INTERRUPTED: &str = "The automatic refresh was interrupted by a server restart.";
 
 /// Set once the process's scheduler runs.
 static SPAWNED: AtomicBool = AtomicBool::new(false);
@@ -143,6 +149,14 @@ impl Schedule {
     }
 }
 
+/// The local date of the last recorded run that counts for the due rule: a run a restart interrupted does not.
+pub fn counted_run_date(last: Option<&ScheduledRunRecord>) -> Option<NaiveDate> {
+    last.filter(|run| {
+        !(run.outcome == ScheduledOutcome::Failed && run.reason.as_deref() == Some(INTERRUPTED))
+    })
+    .map(|run| run.on)
+}
+
 /// The user's fixed stagger after the scheduled instant: 0–9 whole minutes from a hash of the user id.
 pub fn offset(user_id: &str) -> TimeDelta {
     let [first, ..] = sha256(user_id.as_bytes());
@@ -173,11 +187,14 @@ pub(crate) enum Tick {
     },
 }
 
-/// The scheduler loop: evaluates, sleeps until the next start (at most [`TICK`]), and stops with the server. A
-/// failed or panicking evaluation is logged and retried after [`TICK`].
+/// The scheduler loop: recovers interrupted runs, then evaluates, sleeps until the next start (at most [`TICK`]),
+/// and stops with the server. A failed or panicking evaluation is logged and retried after [`TICK`].
 async fn run(state: AppState) {
     let mut stopping = state.stopping.subscribe();
     tracing::info!("dashboard scheduler started");
+    if let Some(Err(error)) = guarded(recover(state.clone())).await {
+        tracing::warn!(%error, "scheduled runs interrupted by the restart could not be marked failed");
+    }
     loop {
         let sleep = match guarded(tick(state.clone())).await {
             Some(Ok(Tick::Ran)) => Duration::ZERO,
@@ -189,16 +206,17 @@ async fn run(state: AppState) {
             None => TICK,
         };
         tokio::select! {
-            () = tokio::time::sleep(sleep) => {}
+            biased;
             _ = stopping.wait_for(|stop| *stop) => {
                 tracing::info!("dashboard scheduler stopped");
                 return;
             }
+            () = tokio::time::sleep(sleep) => {}
         }
     }
 }
 
-/// Runs `evaluation` as its own task, so a panic in one user's run is logged and the scheduler survives it.
+/// Runs `evaluation` as its own task, so a panic is logged and the scheduler survives it.
 async fn guarded<T: Send + 'static>(
     evaluation: impl Future<Output = T> + Send + 'static,
 ) -> Option<T> {
@@ -221,6 +239,7 @@ fn sleep_until(now: DateTime<Utc>, next: Option<DateTime<Utc>>) -> Duration {
 }
 
 /// A user due now.
+#[derive(Clone)]
 struct DueRun {
     start_at: DateTime<Utc>,
     on: NaiveDate,
@@ -248,12 +267,20 @@ pub(crate) async fn tick(state: AppState) -> Result<Tick, DbError> {
             tenant_id,
             user_id,
             settings,
-        } = candidate;
+        } = match candidate {
+            Ok(candidate) => candidate,
+            Err(unreadable) => {
+                tracing::warn!(user_id = %unreadable.user_id, error = %unreadable.error,
+                    "a user's dashboard settings could not be read; their scheduled refresh is skipped");
+                continue;
+            }
+        };
         let Some(schedule) = Schedule::of(&settings.settings) else {
             continue;
         };
         let offset = offset(&user_id);
-        match schedule.due(now, settings.last_scheduled.as_ref().map(|run| run.on)) {
+        match schedule.due(now, counted_run_date(settings.last_scheduled.as_ref())) {
+            Due::Now { on, .. } if state.dashboard.scheduled_run_given_up(&user_id, on) => {}
             Due::Now { on, instant } if now >= instant + offset => due.push(DueRun {
                 start_at: instant + offset,
                 on,
@@ -269,12 +296,99 @@ pub(crate) async fn tick(state: AppState) -> Result<Tick, DbError> {
     }
     due.sort_by(|a, b| (a.start_at, &a.scope.user_id).cmp(&(b.start_at, &b.scope.user_id)));
     for run in due {
-        if allowed(&state, &run.scope).await? {
-            run_due(&state, &run).await?;
-            return Ok(Tick::Ran);
+        if *state.stopping.borrow() {
+            return Ok(Tick::Idle { next: None });
+        }
+        match guarded(handle(state.clone(), run.clone())).await {
+            Some(Ok(true)) => return Ok(Tick::Ran),
+            Some(Ok(false)) => {}
+            Some(Err(error)) => {
+                tracing::warn!(%error, user_id = %run.scope.user_id,
+                    "a user's scheduled dashboard run failed on the server; it is not tried again today");
+                give_up(&state, &run).await;
+            }
+            None => give_up(&state, &run).await,
         }
     }
     Ok(Tick::Idle { next })
+}
+
+/// Handles one due user; `false` when they are no longer on the allow-list.
+async fn handle(state: AppState, run: DueRun) -> Result<bool, DbError> {
+    if !allowed(&state, &run.scope).await? {
+        return Ok(false);
+    }
+    run_due(&state, &run).await?;
+    Ok(true)
+}
+
+/// Gives the user's run of the date up after a server-side failure, and records it `failed` if the record can be
+/// written.
+async fn give_up(state: &AppState, run: &DueRun) {
+    state
+        .dashboard
+        .give_up_scheduled_run(&run.scope.user_id, run.on);
+    if let Err(error) = record(state, run, ScheduledOutcome::Failed, Some(FAILED_ON_SERVER)).await {
+        tracing::debug!(%error, user_id = %run.scope.user_id,
+            "a given-up scheduled run could not be recorded; it stays given up until the server restarts");
+    }
+}
+
+/// Start-up: a run recorded `started` whose refresh never started, or whose scan a restart interrupted, is recorded
+/// `failed` ([`INTERRUPTED`]), which does not count for its date; a user whose record cannot be read or written is
+/// logged and left as is. Runs after [`refresh::recover`].
+pub(crate) async fn recover(state: AppState) -> Result<(), DbError> {
+    let dashboard = state.db.dashboard();
+    for candidate in dashboard.schedule_candidates().await?.into_iter().flatten() {
+        let Some(last) = candidate.settings.last_scheduled else {
+            continue;
+        };
+        let Some(schedule) = Schedule::of(&candidate.settings.settings) else {
+            continue;
+        };
+        if last.outcome != ScheduledOutcome::Started {
+            continue;
+        }
+        let instant = schedule.instant(last.on);
+        let latest = match dashboard
+            .latest_refresh(&candidate.tenant_id, &candidate.user_id)
+            .await
+        {
+            Ok(latest) => latest,
+            Err(error) => {
+                tracing::warn!(%error, user_id = %candidate.user_id,
+                    "a user's last scheduled run could not be checked after the restart");
+                continue;
+            }
+        };
+        let interrupted = match latest {
+            None => true,
+            Some(refresh) if refresh.started_at < instant => true,
+            Some(refresh) => {
+                refresh.trigger == RefreshTrigger::Scheduled
+                    && refresh
+                        .failure
+                        .is_some_and(|f| f.code == RefreshFailureCode::Interrupted)
+            }
+        };
+        if interrupted {
+            let failed = ScheduledRunRecord {
+                on: last.on,
+                outcome: ScheduledOutcome::Failed,
+                reason: Some(INTERRUPTED.to_owned()),
+            };
+            match dashboard
+                .record_scheduled_run(&candidate.tenant_id, &candidate.user_id, &failed)
+                .await
+            {
+                Ok(()) => tracing::info!(user_id = %candidate.user_id, on = %last.on,
+                    "a scheduled dashboard run interrupted by the restart is recorded failed and may be caught up today"),
+                Err(error) => tracing::warn!(%error, user_id = %candidate.user_id,
+                    "a scheduled dashboard run interrupted by the restart could not be recorded failed"),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether the user is still on the tenant's sign-in allow-list; if not, the pair kept for the schedule is deleted.
@@ -323,13 +437,7 @@ async fn run_due(state: &AppState, run: &DueRun) -> Result<(), DbError> {
     }
     // Without a pair nothing can start; an expired or rejected one fails the refresh and ends as in v1.
     if state.db.user_tokens().get(&scope.user_id).await?.is_none() {
-        return record(
-            state,
-            run,
-            ScheduledOutcome::NeedsSignIn,
-            Some(SIGN_IN_AGAIN),
-        )
-        .await;
+        return record(state, run, ScheduledOutcome::NeedsSignIn, Some(NO_PAIR)).await;
     }
     record(state, run, ScheduledOutcome::Started, None).await?;
     // Before the start, so the scan's end is never missed.

@@ -38,3 +38,18 @@ sessions. A 06:00 run after a quiet weekend would find no pair.
   long-lived credential without a live session; mitigations: encryption at rest, allow-list check before each run,
   sign-out everywhere deletes it).
 - `delete_expired` and sign-out change in `crates/db/src/repo/sessions.rs` and `crates/server/src/auth/` (CCR).
+
+## Addendum (2026-11-18, WP11-SCHED review; coordinator decision for the owner)
+- **Inactivity limit.** Each scheduled run rotates the refresh token, so its ~181-day expiry slides and the kept pair
+  would otherwise never lapse. The schedule keeps the pair only while the user signed in within the last
+  `SCHEDULE_PAIR_KEEP_DAYS` = 30 days (`users.updated_at`, set at sign-in and by a language change; a session lasts
+  at most 7 days from it, so the pair ends at most 30 days after the user was last seen). Past that the per-minute
+  sweep deletes the pair, the next scheduled run records `needs_sign_in` ("Sign in again to keep the daily refresh
+  running") and nothing runs until a sign-in. No migration: the bound is derived from the existing column.
+- **Failure isolation.** A user whose run fails on the server (database error, panic, unreadable settings row) is
+  skipped for that local date (recorded `failed`, or remembered in-process when even that write fails); other users
+  are not held up.
+- **Restarts.** The scheduler stops before starting another run once shutdown is signalled. At start-up a run still
+  recorded `started` whose refresh never started or whose scan the restart interrupted is recorded `failed`
+  ("interrupted by a server restart"); that record does not count for its date, so the day's catch-up rule decides
+  again.
