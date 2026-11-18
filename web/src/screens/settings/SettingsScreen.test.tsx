@@ -145,6 +145,24 @@ it("Sign out ends the session, clears this login's drafts and shows the signed-o
   window.sessionStorage.clear();
 });
 
+it("Sign out everywhere, once confirmed, ends every session and shows the signed-out Home", async () => {
+  window.sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
+  const bodies: unknown[] = [];
+  server.events.on("request:start", async ({ request }) => {
+    if (new URL(request.url).pathname === "/auth/logout") bodies.push(await request.clone().json());
+  });
+  const router = renderRoute("/settings");
+  const account = await region("Account");
+  await userEvent.click(within(account).getByRole("button", { name: "Sign out everywhere" }));
+  expect(bodies).toEqual([]);
+  await userEvent.click(within(account).getByRole("button", { name: "Yes, sign out everywhere" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+  expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+  expect(bodies).toEqual([{ everywhere: true }]);
+  expect(window.sessionStorage.getItem("smart-review.comment-drafts.alice.a1")).toBeNull();
+  window.sessionStorage.clear();
+});
+
 it("Sign out of a session that already ended (401) still clears the drafts and shows the signed-out Home", async () => {
   window.sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
   server.use(

@@ -497,8 +497,9 @@ export function useAccessTokenActions() {
   };
 }
 
-/** Signs out of this session. */
-export const useSignOut = () => useMutation({ mutationFn: () => api.logout({ everywhere: false }) });
+/** `POST /auth/logout`; `everywhere` also ends the other sessions and revokes the personal access tokens. */
+export const useSignOut = () =>
+  useMutation({ mutationFn: (everywhere: boolean) => api.logout({ everywhere }) });
 
 /** Pause future jobs; the current one finishes. */
 export const usePauseAnalysis = () => useMutation({ mutationFn: api.pauseAnalysis });

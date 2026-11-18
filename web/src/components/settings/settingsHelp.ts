@@ -65,11 +65,11 @@ const HELP = {
   sign_out_everywhere: {
     section: "Account",
     title: "Sign out everywhere",
-    what: "Ends every session of yours, revokes all your personal access tokens and deletes the GitHub sign-in the server keeps for the automatic refresh.",
-    when: "Only through the API (POST /auth/logout with everywhere set); the Settings page has no button for it.",
-    empty: "Until you sign in again, the automatic refresh records that it needs you to sign in.",
+    what: "Ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the automatic refresh. Nothing changes on GitHub.",
+    when: "When you press Sign out everywhere and confirm. The API does the same for POST /auth/logout with everywhere set.",
+    empty:
+      "Until you sign in again, the automatic refresh records that it needs you to sign in. Your unsent comment drafts in this browser are removed.",
     example: "Use it when a token or a browser session may have leaked.",
-    onPage: false,
   },
   llm_model: {
     section: "LLM",

@@ -125,7 +125,7 @@ test("Sign out still clears this login's drafts with the dashboard section on th
   await page.evaluate(() =>
     sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "mine" })),
   );
-  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   expect(
     await page.evaluate(() => sessionStorage.getItem("smart-review.comment-drafts.alice.a1")),

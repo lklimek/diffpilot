@@ -78,6 +78,14 @@ describe("settings help (owner request B3)", () => {
     );
   });
 
+  it("Sign out everywhere is on the page and says what it ends", () => {
+    const help = SETTINGS_HELP.sign_out_everywhere;
+    expect(help.onPage).toBeUndefined();
+    expect(help.when).toContain("Sign out everywhere");
+    expect(help.what).toContain("revokes all your personal access tokens");
+    expect(help.what).toContain("GitHub sign-in");
+  });
+
   it("release branches explain X.Y, * and that a list replaces the built-ins", () => {
     const help = SETTINGS_HELP.branch_patterns;
     expect(help.empty).toContain("main, master, release/*, hotfix/*, vX.Y, vX.Y-dev");

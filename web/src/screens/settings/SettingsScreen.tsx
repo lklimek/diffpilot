@@ -262,8 +262,8 @@ export function SettingsScreen() {
     client.clear();
     void navigate("/", { replace: true });
   };
-  const leave = (login: string) =>
-    signOut.mutate(undefined, {
+  const leave = (login: string, everywhere: boolean) =>
+    signOut.mutate(everywhere, {
       onSuccess: () => signedOut(login),
       // 401: the session had already ended, so the user is signed out all the same.
       onError: (error) => {
@@ -298,7 +298,8 @@ export function SettingsScreen() {
             login={user.login}
             busy={signOut.isPending}
             error={signOut.isError ? errorText(signOut.error) : undefined}
-            onSignOut={() => leave(user.login)}
+            onSignOut={() => leave(user.login, false)}
+            onSignOutEverywhere={() => leave(user.login, true)}
           />
         </div>
       )}

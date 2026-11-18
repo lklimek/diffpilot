@@ -20,9 +20,9 @@ Personal access tokens keep working after Sign out.
 
 ### Sign out everywhere
 
-- **What:** Ends every session of yours, revokes all your personal access tokens and deletes the GitHub sign-in the server keeps for the automatic refresh.
-- **When used:** Only through the API (POST /auth/logout with everywhere set); the Settings page has no button for it.
-- **Empty or default:** Until you sign in again, the automatic refresh records that it needs you to sign in.
+- **What:** Ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the automatic refresh. Nothing changes on GitHub.
+- **When used:** When you press Sign out everywhere and confirm. The API does the same for POST /auth/logout with everywhere set.
+- **Empty or default:** Until you sign in again, the automatic refresh records that it needs you to sign in. Your unsent comment drafts in this browser are removed.
 - **Example:** Use it when a token or a browser session may have leaked.
 
 ## LLM
