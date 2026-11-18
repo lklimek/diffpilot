@@ -53,6 +53,22 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     expect(screen.getByLabelText("Time zone")).toHaveValue("Europe/Warsaw");
   });
 
+  it("explains the ownership policy: column help, placeholders and a visible hint under the fields", () => {
+    const { card } = renderCard();
+    const table = within(card).getByRole("table", { name: "Repositories" });
+    const header = within(table).getByText("Ownership policy");
+    expect(header).toHaveAccessibleDescription(
+      "Optional. A JSON file listing the paths you own in this repository (the format of dashpay/stale_prs_are_bad). Pull requests by others that only touch other paths are left out of Needs you. Leave both fields empty when the repository has no such file. Example: repository dashpay/stale_prs_are_bad, path policies/platform.json.",
+    );
+    const repo = screen.getByLabelText("Policy repository of acme/consensus");
+    const path = screen.getByLabelText("Policy path of acme/consensus");
+    expect(repo).toHaveAttribute("placeholder", "owner/name");
+    expect(path).toHaveAttribute("placeholder", "policies/<repo>.json");
+    expect(repo).toHaveAccessibleDescription("Optional — leave empty if there is no policy file");
+    expect(path).toHaveAccessibleDescription("Optional — leave empty if there is no policy file");
+    expect(within(table).getAllByText("Optional — leave empty if there is no policy file")[0]).toBeVisible();
+  });
+
   it("refuses a list entry that breaks its rule and adds a valid one", async () => {
     renderCard();
     const field = screen.getByLabelText("Add a linked login");
@@ -126,7 +142,7 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
     expect(onSave).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Policy repository of acme/web")).toHaveAccessibleDescription(
-      /both the policy repository and its path, or neither/,
+      /the policy repository is missing\. Give the repository and the path of the policy file, or leave both empty\./,
     );
     expect(screen.getByRole("list", { name: "MemCan projects" })).toHaveTextContent("web");
     await userEvent.click(screen.getByRole("button", { name: "Remove acme/web" }));
