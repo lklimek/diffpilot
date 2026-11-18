@@ -10,6 +10,7 @@ import type {
   LlmSelection,
   RefreshStatus,
 } from "../../api/generated/types";
+import rankingJson from "../../../../fixtures/dashboard/api/refresh-ranking.json";
 import { handlers } from "./index";
 import { resetDashboard } from "./dashboard";
 import { resetDashboardSettings } from "./dashboard-settings";
@@ -67,7 +68,9 @@ describe("msw handlers of the dashboard routes (fixtures/dashboard)", () => {
     const stale = await call<{ code: string }>("/api/v1/dashboard/items?cursor=old:5");
     expect(stale).toMatchObject({ status: 409, body: { code: "cursor_expired" } });
     const prs = (await call<ItemPage>("/api/v1/dashboard/items?kind=pr")).body;
-    expect(prs.items.every((item) => item.kind === "pr")).toBe(true);
+    expect(new Set(prs.items.map((item) => item.kind))).toEqual(new Set(["pr", "todo"]));
+    const both = (await call<ItemPage>("/api/v1/dashboard/items")).body;
+    expect(new Set(both.items.map((item) => item.kind))).toEqual(new Set(["pr", "issue", "todo"]));
   });
 
   it("start one refresh at a time, read and cancel it", async () => {
@@ -89,6 +92,24 @@ describe("msw handlers of the dashboard routes (fixtures/dashboard)", () => {
     });
     expect(cancelled.body.state).toBe("cancelled");
     expect((await call<DashboardSummary>("/api/v1/dashboard")).body.latest_refresh?.state).toBe("cancelled");
+    const ended = await call<{ code: string }>(`/api/v1/dashboard/refreshes/${id}/cancel`, {
+      method: "POST",
+      headers: CSRF,
+    });
+    expect(ended).toMatchObject({ status: 409, body: { code: "conflict" } });
+  });
+
+  it("cancel a ranking: the refresh finishes with ranking cancelled; Retry ranking runs it again once", async () => {
+    const ranking = rankingJson as unknown as RefreshStatus;
+    const post = (path: string) =>
+      call<RefreshStatus & { code?: string }>(path, { method: "POST", headers: CSRF });
+    const base = `/api/v1/dashboard/refreshes/${ranking.id}`;
+    expect(await post(`${base}/rank`)).toMatchObject({ status: 409, body: { code: "conflict" } });
+    const cancelled = await post(`${base}/cancel`);
+    expect(cancelled.body).toMatchObject({ state: "finished", ranking: { state: "cancelled" } });
+    const retried = await post(`${base}/rank`);
+    expect(retried).toMatchObject({ status: 202, body: { state: "ranking", ranking: { state: "running" } } });
+    expect(await post(`${base}/rank`)).toMatchObject({ status: 409, body: { code: "conflict" } });
   });
 
   it("save settings, reject an invalid look-back and set the ranking effort", async () => {
