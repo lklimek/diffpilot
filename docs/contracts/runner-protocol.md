@@ -88,7 +88,8 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
   directory may be tmpfs.
 - Copy-back happens after the agent process has exited, with compare-and-swap on the master `auth.json`
   (written back only if the master is unchanged since the copy) and only for a copy of the master's identity:
-  stored account id plus the account and user claims of its id and access tokens (threat model T13).
+  the stored account id, which its id token must name, and every user and access-token claim the master has
+  (threat model T13). A master whose id token does not name its stored account is reported unusable at once.
 - Stop signal (SIGTERM, SIGINT): the runner cancels the running job and waits for its stop, sweep and
   copy-back, at most 45 s (below the container's 60 s stop grace), then exits without posting a result; the
   server re-queues the job when its lease expires. A copy not brought back by then keeps its compare-and-swap
@@ -128,8 +129,10 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 - Cancel wins: if cancel was requested, any result (also `succeeded`) ends the job `cancelled` and the output is
   discarded.
 - `llm_call` (last provider call outcome) updates the LLM status in Settings; `usage` is the job's own delta.
-- `usage_limited.resets_at` comes from a rollout the agent can write. The server accepts at most 7 days after
-  receipt; a later time is limited to that (stored result, `resumes_at` and the credential's pause) and logged.
+- `usage_limited.resets_at` comes from a rollout the agent can write. The server accepts a time between the
+  first retry pause (1 s, `output_retry_secs[0]`) and 7 days after receipt; a time outside is limited to that
+  range (stored result, `resumes_at` and the credential's pause) and logged, so a passed reset time never
+  re-queues the job at once.
 
 ## Agent session (ADR-004)
 - One analytic session per PR. `JobSpec.pull_request_id` is the stable PR database key.
