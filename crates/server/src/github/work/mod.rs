@@ -34,8 +34,8 @@ pub use details::{
     HistoryPr, LinkedIssue, Login, Name, Nodes, PullDetail, PullRepository, Reach, ReviewNode,
     ReviewRequest, ReviewThread, Reviewer, StatusRollup, TimelineRequest,
 };
-pub use enumerate::Enumeration;
-pub use reads::{PullFile, Release, RestMilestone, UserEvent};
+pub use enumerate::{AUTHORED_PAGES, AuthoredPulls, Enumeration};
+pub use reads::{PullFile, Release, RestMilestone, UserEvent, UserFeed};
 pub use refs::{Blockers, OpenPrRef, RefListing};
 pub use search::{
     Candidates, HistorySearch, IssueCandidate, IssueRelation, IssueSearch, PrCandidate, PrRelation,

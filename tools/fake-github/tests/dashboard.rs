@@ -1164,7 +1164,7 @@ async fn user_events_page_up_to_300_for_q14() {
         .json()
         .await
         .unwrap();
-    assert_eq!(events.as_array().unwrap().len(), 5);
+    assert_eq!(events.as_array().unwrap().len(), 8);
     assert_eq!(events[0]["type"], "PullRequestEvent");
     let beyond = fake
         .get(
@@ -1328,11 +1328,22 @@ async fn invalid_documents_are_refused_as_a_whole() {
         refused(&missing),
         vec!["Field 'pullRequest' is missing required arguments: number"]
     );
-    let ordered = fake
-        .graphql(&pull("pullRequests(first: 5, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number } }"))
+    let labelled = fake
+        .graphql(&pull(
+            "pullRequests(first: 5, labels: [\"bug\"]) { nodes { number } }",
+        ))
         .await;
     assert!(
-        refused(&ordered)[0].starts_with("Field 'pullRequests' doesn't accept argument 'orderBy'")
+        refused(&labelled)[0].starts_with("Field 'pullRequests' doesn't accept argument 'labels'")
+    );
+    let bad_order = fake
+        .graphql(&pull(
+            "pullRequests(first: 5, orderBy: {field: UPDATED_AT}) { nodes { number } }",
+        ))
+        .await;
+    assert!(
+        !refused(&bad_order).is_empty(),
+        "an order needs a direction"
     );
     let page_info = fake
         .graphql(&pull("pullRequests(first: 5) { pageInfo { endcursor } }"))
@@ -1552,4 +1563,26 @@ async fn empty_fragment_fan_out_is_refused_and_tokens_are_checked_first() {
         .await
         .unwrap();
     assert!(refused(&body)[0].contains("more than"));
+}
+
+#[tokio::test]
+async fn pull_requests_are_ordered_by_update_time_newest_first() {
+    let fake = spawn().await;
+    let body = fake
+        .graphql(
+            "{ a0: repository(owner: \"acme\", name: \"consensus\") { nameWithOwner pullRequests(first: 2, \
+             orderBy: {field: UPDATED_AT, direction: DESC}) { pageInfo { hasNextPage endCursor } nodes { number \
+             updatedAt author { login } } } } }",
+        )
+        .await;
+    let connection = &body["data"]["a0"]["pullRequests"];
+    let numbers: Vec<u64> = connection["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(numbers, [1536, 1541], "{body}");
+    assert_eq!(connection["pageInfo"]["hasNextPage"], true);
+    assert_eq!(body["data"]["a0"]["nameWithOwner"], "acme/consensus");
 }

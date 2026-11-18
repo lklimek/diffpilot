@@ -373,5 +373,6 @@ pub(super) fn issue(
         },
         private,
         comments: candidate.comments,
+        opened_at: Some(candidate.created_at),
     }
 }

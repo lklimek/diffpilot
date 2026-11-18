@@ -10,6 +10,8 @@ use contracts::api::dashboard::{
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use db::repo::dashboard::RefreshRecord;
+use jiff::SignedDuration;
+use jiff::tz::TimeZone;
 
 use super::{Snapshot, StoredIssue, StoredPr, StoredTodo};
 use crate::dashboard::refresh::rank::ItemJudgement;
@@ -75,6 +77,14 @@ pub fn build(
 ) -> View {
     let rules = ScoreRules::new(&snapshot.own_login, &snapshot.settings);
     let at = snapshot.scanned_at;
+    let look_back = LookBack {
+        days: snapshot.settings.lookback_days,
+        since: at
+            .checked_add(-SignedDuration::from_hours(
+                24 * i64::from(snapshot.settings.lookback_days),
+            ))
+            .unwrap_or(Timestamp::UNIX_EPOCH),
+    };
     let todo_ids = todo_display_ids(
         &snapshot
             .todos
@@ -136,7 +146,7 @@ pub fn build(
         let text = judgements
             .get(&item.key)
             .and_then(|judged| judged.text.clone());
-        items.push(work_item(&rules, item, source, text, memcan_ui));
+        items.push(work_item(&rules, &look_back, item, source, text, memcan_ui));
     }
     let awaiting = awaiting(&rules, snapshot, &items);
     for left_out in &ranking.excluded {
@@ -237,8 +247,15 @@ fn milestone_fact(milestone: &Milestone) -> Option<Fact> {
     }
 }
 
+/// The look-back setting (G9) at the scan: an issue opened since `since` is new.
+struct LookBack {
+    days: u32,
+    since: Timestamp,
+}
+
 fn work_item(
     rules: &ScoreRules,
+    look_back: &LookBack,
     scored: Scored,
     source: &Source<'_>,
     llm: Option<ItemText>,
@@ -271,7 +288,7 @@ fn work_item(
                     f.author.clone(),
                     issue.private,
                     f.updated_at,
-                    issue_tags(&f.relations),
+                    issue_tags(&f.relations, issue.opened_at, look_back),
                     issue_facts(issue),
                     None,
                 )
@@ -400,8 +417,22 @@ fn pr_facts(pr: &StoredPr) -> Vec<Fact> {
     facts
 }
 
-fn issue_tags(relations: &[Relation]) -> Vec<FactTag> {
+fn issue_tags(
+    relations: &[Relation],
+    opened_at: Option<Timestamp>,
+    look_back: &LookBack,
+) -> Vec<FactTag> {
     let mut tags = Vec::new();
+    if let Some(opened) = opened_at.filter(|at| *at >= look_back.since) {
+        tags.push(tag(
+            "new",
+            format!(
+                "Opened {} (UTC), within your look-back of {} days",
+                opened.to_zoned(TimeZone::UTC).date(),
+                look_back.days
+            ),
+        ));
+    }
     if relations.contains(&Relation::Assigned) {
         tags.push(tag("assigned to you", "You are an assignee of this issue"));
     }

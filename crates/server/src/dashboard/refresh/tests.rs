@@ -752,19 +752,28 @@ async fn full_refresh_stores_the_expected_snapshot() {
         [
             (ReviewGiven, "acme/consensus#1510"),
             (PrOpened, "acme/legacy-wallet#9"),
+            (PrOpened, "acme/consensus#1501"),
             (PrOpened, "acme/platform#1190"),
             (PrOpened, "acme/wallet-ui#300"),
             (PrMerged, "acme/consensus#1501"),
             (PrMerged, "acme/platform#1190"),
             (PrOpened, "acme/platform#1176"),
             (PrOpened, "acme/node-client#490"),
+            (PrOpened, "acme/platform#1231"),
             (PrClosedUnmerged, "acme/wallet-ui#300"),
             (PrOpened, "acme/wallet-ui#311"),
+            (PrOpened, "acme/platform#1233"),
+            (PrOpened, "acme/consensus#1536"),
             (ReviewGiven, "acme/platform#1195"),
             (PrOpened, "acme/node-client#476"),
             (PrOpened, "acme/wallet-ui#298"),
+            (PrMerged, "acme/platform#1233"),
             (ReviewGiven, "acme/consensus#1534"),
             (PrOpened, "acme/consensus#1541"),
+            (PrMerged, "acme/platform#1231"),
+            (PrOpened, "acme/review-policies#7"),
+            (PrMerged, "acme/consensus#1536"),
+            (PrMerged, "acme/review-policies#7"),
         ],
         "12 weeks back from local midnight; acme/platform#1100 is older"
     );
@@ -1609,3 +1618,69 @@ async fn scan_over_the_time_limit_fails_as_timed_out() {
 }
 
 mod judged;
+
+/// Pull requests the refused linked login `alice-helper` authored count in the charts whoever merged them: by the
+/// user (`acme/platform#1231`), by a third person (`acme/consensus#1536`, absent from its event feed), outside the
+/// user's owned paths (`acme/platform#1233`), older (`acme/consensus#1501`), and opened the day before and merged
+/// by the user in a repository only enumerated, with only the `opened` event in the feed
+/// (`acme/review-policies#7`). GitHub's feed reports a merge as action `merged` with a slim payload (no `merged`
+/// flag, no author), and not always.
+#[tokio::test]
+async fn history_counts_merges_of_a_refused_login_whoever_merged_them() {
+    let w = world().await;
+    let done = w.refreshed().await;
+    assert_eq!(done.state, RefreshState::Finished, "{:?}", done.failure);
+    let meta = w.summary(ALICE).await.snapshot.expect("snapshot");
+    let history: Vec<(HistoryKind, &str)> = meta
+        .history
+        .iter()
+        .map(|e| (e.kind, e.item_id.as_str()))
+        .collect();
+    for item in [
+        "acme/consensus#1501",
+        "acme/platform#1231",
+        "acme/consensus#1536",
+        "acme/platform#1233",
+        "acme/review-policies#7",
+    ] {
+        assert!(
+            history.contains(&(HistoryKind::PrMerged, item)),
+            "{item} merged missing: {history:?}"
+        );
+        assert!(
+            history.contains(&(HistoryKind::PrOpened, item)),
+            "{item} opened missing: {history:?}"
+        );
+    }
+}
+
+/// Look-back days (G9, K5) mark an issue opened within them, counted back from the scan, as new (the reference
+/// skill's `isNew`: age ≤ look-back days).
+#[tokio::test]
+async fn issues_opened_within_the_look_back_days_are_marked_new() {
+    let w = world().await;
+    let done = w.refreshed().await;
+    assert_eq!(done.state, RefreshState::Finished, "{:?}", done.failure);
+    let issues = w.items("?kind=issue").await;
+    let new: Vec<&str> = issues
+        .items
+        .iter()
+        .filter(|item| item.tags.iter().any(|tag| tag.text == "new"))
+        .map(|item| item.id.as_str())
+        // Opened exactly 7 days before the test clock: on the edge, the scan runs a moment later.
+        .filter(|id| *id != "CON-1520")
+        .collect();
+    // Scanned at 2026-11-18T09:00Z with the default 7 days: 1187 (1 day), 1525 (3), 1215 (4); not 1210 (9),
+    // 305 (12), 1150 (39).
+    assert_eq!(new, ["PLAT-1187", "CON-1525", "PLAT-1215"]);
+    let tip = &issues.items[0]
+        .tags
+        .iter()
+        .find(|t| t.text == "new")
+        .expect("tag")
+        .tip;
+    assert!(
+        tip.contains("2026-11-17") && tip.contains("7 days"),
+        "{tip}"
+    );
+}

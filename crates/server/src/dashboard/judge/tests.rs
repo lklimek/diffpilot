@@ -116,6 +116,7 @@ fn issue(number: u32, title: &str) -> StoredIssue {
         },
         private: true,
         comments: 2,
+        opened_at: None,
     }
 }
 

@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use contracts::api::dashboard::{HistoryEvent, HistoryKind, ScanNote};
+use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use jiff::civil::{Date, Time};
 use jiff::tz::TimeZone;
@@ -13,7 +14,7 @@ use jiff::{SignedDuration, Span};
 use crate::dashboard::score::ScoreRules;
 use crate::dashboard::zone;
 use crate::github::work::{
-    Fetched, HistoryPr, ItemRef, TokenSource, UserEvent, WorkClient, WorkError,
+    AUTHORED_PAGES, Fetched, HistoryPr, ItemRef, TokenSource, WorkClient, WorkError, repo_name,
 };
 
 /// The chart window.
@@ -101,25 +102,6 @@ fn from_details(
     }
 }
 
-/// Events of a login's public event feed (Q14, the fallback for a login search refuses). The actor of an
-/// `opened` event is the author; a closing event counts only for a pull request a scanned login authored.
-fn from_user_events(rules: &ScoreRules, feed: &[UserEvent], start: Timestamp, events: &mut Events) {
-    for event in feed {
-        let own = event
-            .author
-            .as_deref()
-            .is_some_and(|author| rules.is_scanned(author));
-        let kind = match (event.kind.as_str(), event.action.as_deref(), event.merged) {
-            ("PullRequestEvent", Some("opened"), _) => HistoryKind::PrOpened,
-            ("PullRequestEvent", Some("closed"), Some(true)) if own => HistoryKind::PrMerged,
-            ("PullRequestEvent", Some("closed"), _) if own => HistoryKind::PrClosedUnmerged,
-            ("PullRequestReviewEvent", ..) => HistoryKind::ReviewGiven,
-            _ => continue,
-        };
-        events.add(kind, &event.item, event.created_at, start);
-    }
-}
-
 fn skipped(what: String, error: &WorkError) -> ScanNote {
     ScanNote {
         text: format!("{what} could not be read ({error}); the charts miss it"),
@@ -127,52 +109,138 @@ fn skipped(what: String, error: &WorkError) -> ScanNote {
     }
 }
 
-/// Reads the history of `logins` since `first` (local date) / `start`. Errors that end the refresh are returned;
-/// others become notes.
+/// Where the history of the logins search refuses is read.
+pub(super) struct Refused<'a> {
+    /// The settings' repository rows.
+    pub repos: &'a [RepoRef],
+    /// The owners to enumerate.
+    pub owners: &'a [String],
+}
+
+/// Reads the history of `logins` since `first` (local date) / `start`. A login search refuses is read from the
+/// pull requests of the configured and enumerated repositories (whoever merged them; Q16) plus the pull requests
+/// its public events name (its reviews elsewhere; Q14). Errors that end the refresh are returned; others become
+/// notes.
 pub(super) async fn collect<T: TokenSource>(
     client: &WorkClient<T>,
     rules: &ScoreRules,
     logins: &[String],
+    refused_from: &Refused<'_>,
     first: Date,
     start: Timestamp,
 ) -> Result<(Vec<HistoryEvent>, Vec<ScanNote>), WorkError> {
     let mut events = Events::default();
     let mut notes = Vec::new();
-    let mut pulls: BTreeSet<ItemRef> = BTreeSet::new();
+    let mut searched: BTreeSet<ItemRef> = BTreeSet::new();
+    let mut from_feeds: BTreeSet<ItemRef> = BTreeSet::new();
+    let mut refused: Vec<(String, Option<Timestamp>)> = Vec::new();
     for login in logins {
         match client.search_history(login, first).await {
             Ok(found) => {
                 notes.extend(found.notes);
-                pulls.extend(found.opened);
-                pulls.extend(found.closed);
-                pulls.extend(found.reviewed);
+                searched.extend(found.opened);
+                searched.extend(found.closed);
+                searched.extend(found.reviewed);
             }
             Err(WorkError::Unsearchable) => match client.user_events(login).await {
                 Ok(feed) => {
-                    from_user_events(rules, &feed, start, &mut events);
-                    notes.push(ScanNote {
-                        text: format!(
-                            "GitHub search refuses {login}: its chart history comes from its last 300 public \
-                             events and may be incomplete"
-                        ),
-                        item: None,
-                    });
+                    for event in feed.events.into_iter().filter(|e| e.created_at >= start) {
+                        // The login's own review event is its review; other events only name a pull request.
+                        if event.kind == "PullRequestReviewEvent" {
+                            events.add(
+                                HistoryKind::ReviewGiven,
+                                &event.item,
+                                event.created_at,
+                                start,
+                            );
+                        }
+                        from_feeds.insert(event.item);
+                    }
+                    refused.push((login.clone(), feed.reaches_back_to.filter(|at| *at > start)));
                 }
                 Err(error) if error.ends_refresh() => return Err(error),
-                Err(error) => notes.push(skipped(format!("The history of {login}"), &error)),
+                Err(error) => {
+                    notes.push(skipped(format!("The public events of {login}"), &error));
+                    refused.push((login.clone(), Some(start)));
+                }
             },
             Err(error) if error.ends_refresh() => return Err(error),
             Err(error) => notes.push(skipped(format!("The history of {login}"), &error)),
         }
     }
-    let pulls: Vec<ItemRef> = pulls.into_iter().collect();
+    let mut listed = BTreeMap::new();
+    if !refused.is_empty() {
+        let authors: Vec<String> = refused.iter().map(|(login, _)| login.clone()).collect();
+        let found = client
+            .authored_pull_requests(refused_from.repos, refused_from.owners, &authors, start)
+            .await?;
+        notes.extend(found.notes);
+        for (login, feed_since) in &refused {
+            notes.push(refused_note(login, found.repositories.len(), *feed_since));
+        }
+        for (repo, since) in &found.cut_short {
+            notes.push(ScanNote {
+                text: format!(
+                    "Pull requests of {} updated before {} were not read (more than {} in the window): the charts \
+                     may miss some of {}",
+                    repo_name(repo),
+                    utc_date(*since),
+                    AUTHORED_PAGES * 100,
+                    authors.join(", ")
+                ),
+                item: None,
+            });
+        }
+        listed = found.found;
+    }
+    // A pull request the repository listing already holds needs no detail read, unless search found it (the
+    // reviews of searchable logins come with the details).
+    let pulls: Vec<ItemRef> = searched
+        .iter()
+        .cloned()
+        .chain(
+            from_feeds
+                .into_iter()
+                .filter(|item| !listed.contains_key(item)),
+        )
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let Fetched {
-        found,
+        mut found,
         notes: detail_notes,
     } = client.history_details(&pulls, logins).await?;
     notes.extend(detail_notes);
+    for (item, pr) in listed {
+        found.entry(item).or_insert(pr);
+    }
     from_details(rules, &found, start, &mut events);
     Ok((events.into_events(), notes))
+}
+
+/// The UTC date of `at` (scan notes name days, not instants).
+fn utc_date(at: Timestamp) -> Date {
+    at.to_zoned(TimeZone::UTC).date()
+}
+
+/// What the charts know of a login search refuses.
+fn refused_note(login: &str, repositories: usize, feed_since: Option<Timestamp>) -> ScanNote {
+    let elsewhere = match feed_since {
+        Some(at) => format!(
+            "its reviews and its pull requests elsewhere come from its public events, which reach back to {} only",
+            utc_date(at)
+        ),
+        None => {
+            "its reviews and its pull requests elsewhere come from its public events".to_owned()
+        }
+    };
+    ScanNote {
+        text: format!(
+            "GitHub search refuses {login}: its pull requests are read from {repositories} configured or enumerated \
+             repositories; {elsewhere}"
+        ),
+        item: None,
+    }
 }
 
 #[cfg(test)]
@@ -269,27 +337,6 @@ mod tests {
         ]);
         let mut events = Events::default();
         from_details(&rules, &details, start, &mut events);
-        let event = |number, action: &str, merged, author: Option<&str>, when| UserEvent {
-            kind: "PullRequestEvent".to_owned(),
-            item: item(number),
-            action: Some(action.to_owned()),
-            merged,
-            author: author.map(str::to_owned),
-            created_at: at(when),
-        };
-        let feed = [
-            event(1190, "opened", None, None, "2026-11-02T11:00:00Z"),
-            // A scanned login closed someone else's PR, and a closing event without its author: neither counts.
-            event(
-                1300,
-                "closed",
-                Some(true),
-                Some("renata-s"),
-                "2026-11-05T09:00:00Z",
-            ),
-            event(1301, "closed", Some(false), None, "2026-11-05T10:00:00Z"),
-        ];
-        from_user_events(&rules, &feed, start, &mut events);
         let events: Vec<(HistoryKind, String, Timestamp)> = events
             .into_events()
             .into_iter()

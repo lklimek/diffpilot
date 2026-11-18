@@ -414,7 +414,7 @@ async fn pr_details_are_batched_by_ten() {
             .unwrap()
         })
         .collect();
-    assert_eq!(pulls.len(), 21);
+    assert_eq!(pulls.len(), 26);
     pulls.extend([item("acme/platform#9999"), item("acme/secret#1")]);
 
     let fetched = fake.client().pull_requests(&pulls).await.unwrap();
@@ -425,11 +425,11 @@ async fn pr_details_are_batched_by_ten() {
         .map(|r| r["pull_requests"].as_u64().unwrap())
         .collect();
     sizes.sort_unstable();
-    assert_eq!(sizes, [3, 10, 10]);
+    assert_eq!(sizes, [8, 10, 10]);
     assert!(graphql.iter().all(|r| r["rate_limit_selected"] == true));
     assert!(sizes.iter().all(|size| *size <= MAX_PR_BATCH as u64));
 
-    assert_eq!(fetched.found.len(), 21);
+    assert_eq!(fetched.found.len(), 26);
     let noted: Vec<_> = fetched.notes.iter().map(|n| n.item.clone()).collect();
     assert_eq!(
         noted,
@@ -687,12 +687,14 @@ async fn rest_reads_answer_q3_q4_q7_q8_q14() {
             .collect::<Vec<_>>(),
         [("v2.3", "closed"), ("v2.4", "open"), ("v3.0", "open")]
     );
+    assert_eq!(events.reaches_back_to, None, "a short feed is read whole");
+    let events = events.events;
     assert!(!events.is_empty());
     assert!(events.iter().all(|e| e.kind.starts_with("PullRequest")));
+    assert!(events.iter().any(|e| e.item == item("acme/consensus#1541")));
     assert!(
-        events
-            .iter()
-            .any(|e| e.item == item("acme/consensus#1541") && e.action.as_deref() == Some("opened"))
+        events.iter().any(|e| e.item == item("acme/consensus#1501")),
+        "a `merged` event with a slim payload"
     );
     for (path, answer) in &refused {
         assert!(
@@ -1039,4 +1041,78 @@ fn mentions_respect_login_boundaries() {
     assert!(!mentions("ping @alice-helper", "alice"));
     assert!(!mentions("mail bob@alice.dev", "alice"));
     assert!(!mentions("no mention", "alice"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn authored_pull_requests_are_read_per_repository_whoever_merged_them() {
+    let fake = Fake::start().await;
+    let since: contracts::time::Timestamp = "2026-08-25T22:00:00Z".parse().unwrap();
+
+    let found = fake
+        .client()
+        .authored_pull_requests(
+            &[repo("acme/consensus"), repo("ACME/Platform")],
+            &logins(&["acme"]),
+            &logins(&["Alice-Helper"]),
+            since,
+        )
+        .await
+        .unwrap();
+
+    let items: Vec<String> = found.found.keys().map(ToString::to_string).collect();
+    assert_eq!(
+        items,
+        [
+            "acme/consensus#1501",
+            "acme/consensus#1536",
+            "acme/consensus#1541",
+            "acme/platform#1231",
+            "acme/platform#1233",
+            "acme/review-policies#7",
+        ]
+    );
+    let merged = &found.found[&item("acme/consensus#1536")];
+    assert!(merged.merged_at.is_some() && merged.author.as_deref() == Some("alice-helper"));
+    let repos: Vec<String> = found.repositories.iter().map(repo_name).collect();
+    assert!(
+        !repos.iter().any(|r| r == "acme/legacy-wallet"),
+        "archived and not pushed in the window: {repos:?}"
+    );
+    assert_eq!(
+        repos
+            .iter()
+            .filter(|r| r.eq_ignore_ascii_case("acme/platform"))
+            .count(),
+        1,
+        "a configured repository is read once: {repos:?}"
+    );
+    assert!(found.cut_short.is_empty() && found.notes.is_empty());
+    let requests = fake.requests_on("graphql").await.len();
+    assert_eq!(
+        requests,
+        1 + repos.len(),
+        "one owner listing, one page per repository"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn authored_pull_requests_stop_after_five_pages_and_say_where() {
+    let fake = Fake::start().await;
+    let since: contracts::time::Timestamp = "2026-08-25T22:00:00Z".parse().unwrap();
+    let mut client = fake.client();
+    client.page_size = 1;
+
+    let found = client
+        .authored_pull_requests(
+            &[repo("acme/platform")],
+            &[],
+            &logins(&["alice-helper"]),
+            since,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(fake.requests_on("graphql").await.len(), AUTHORED_PAGES);
+    assert_eq!(found.cut_short.len(), 1, "{:?}", found.cut_short);
+    assert_eq!(found.cut_short[0].0, repo("acme/platform"));
 }
