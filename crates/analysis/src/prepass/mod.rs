@@ -15,9 +15,11 @@ use serde::{Deserialize, Serialize};
 use crate::counters::{self, CounterFacts};
 use crate::diff::FileDiff;
 use crate::lines::ranges;
-use crate::moves::{self, MovesReport};
+use crate::moves::{self, MovedBlock, MovesReport};
 use crate::related;
-use crate::tech::{self, Classified, FileSource, Generic, PROFILE_PATH, TechError, TechPlugin};
+use crate::tech::{
+    self, Classified, FileSource, Generic, OtherSide, PROFILE_PATH, TechError, TechPlugin,
+};
 
 pub mod batches;
 
@@ -32,6 +34,8 @@ pub struct Prepass {
     pub not_analysed: Vec<NotAnalysedSection>,
     /// Moved blocks and whitespace-only changes.
     pub moves: MovesReport,
+    /// Quiet moves (see [`Prepass::identical_moves`]).
+    pub quiet_moves: Vec<IdenticalMove>,
     /// Counters with their evidence.
     pub counters: CounterFacts,
     /// Same-organisation repositories referenced by the base Cargo files.
@@ -48,10 +52,8 @@ pub struct Prepass {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "category")]
 pub enum Disposition {
-    /// Given to the agent (also when some of its lines are quiet).
+    /// Given to the agent (also when some of its lines are context without coverage duty).
     Agent,
-    /// All its lines lie in quiet moves: identical text into another file or a pure rename.
-    IdenticalMove,
     /// Recognised by a path or line rule.
     NotAnalysed(NotAnalysedCategory),
 }
@@ -114,15 +116,62 @@ impl Prepass {
         }
     }
 
-    /// Quiet rows of moves with identical text, except reorders within one file of `files` (the diff).
-    pub fn identical_moves(&self, files: &[FileDiff]) -> Vec<IdenticalMove> {
-        let mut moves = self.moves.identical();
-        moves.retain(|block| !within_one_file(files, &block.from.file, &block.to.file));
-        moves
+    /// Quiet rows of moves with identical text: into a file other than a source that still exists, or a pure rename.
+    /// Their lines are context for the agent without coverage duty; a reorder within one file is not quiet.
+    pub fn identical_moves(&self) -> Vec<IdenticalMove> {
+        self.quiet_moves.clone()
     }
 
-    /// `files` with only the hunks given to the agent; a hunk the pre-pass does not know stays (only a
-    /// deterministic rule takes material out). Files left without hunks are dropped.
+    /// Whether `block` is a quiet move; the one decision for the pre-pass, the prompts and the Tour.
+    pub fn is_quiet_move(&self, block: &MovedBlock) -> bool {
+        self.quiet_moves
+            .iter()
+            .any(|quiet| quiet.from == block.from && quiet.to == block.to)
+    }
+
+    /// Lines that are context for the agent without coverage duty, per side and path, sorted: line-rule lines and the
+    /// ranges of quiet moves.
+    pub fn context(&self) -> BTreeMap<(LineSide, String), Vec<u32>> {
+        let mut out: BTreeMap<(LineSide, String), Vec<u32>> = BTreeMap::new();
+        for item in self.not_analysed.iter().flat_map(|s| &s.items) {
+            if let (true, Some(ranges)) = (is_line_rule_item(item), &item.ranges) {
+                out.entry((item.side, item.file.clone()))
+                    .or_default()
+                    .extend(ranges.iter().flat_map(|r| r.start_line..=r.end_line));
+            }
+        }
+        for quiet in &self.quiet_moves {
+            for end in [&quiet.from, &quiet.to] {
+                out.entry((end.side, end.file.clone()))
+                    .or_default()
+                    .extend(end.range.start_line..=end.range.end_line);
+            }
+        }
+        for lines in out.values_mut() {
+            lines.sort_unstable();
+            lines.dedup();
+        }
+        out
+    }
+
+    /// Changed lines of `path` on `side` a line rule covers: the main code view may hide them.
+    pub fn view_context(&self, side: LineSide, path: &str) -> Vec<u32> {
+        let mut lines: Vec<u32> = self
+            .not_analysed
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter(|item| item.side == side && item.file == path && is_line_rule_item(item))
+            .flat_map(|item| item.ranges.iter().flatten())
+            .flat_map(|r| r.start_line..=r.end_line)
+            .collect();
+        lines.sort_unstable();
+        lines.dedup();
+        lines
+    }
+
+    /// `files` with only the hunks given to the agent, without the lines that are context (see
+    /// [`Prepass::context`]); a hunk the pre-pass does not know stays (only a deterministic rule takes material out).
+    /// Files left without hunks are dropped.
     pub fn agent_files(&self, files: &[FileDiff]) -> Vec<FileDiff> {
         let quiet: BTreeSet<&HunkId> = self
             .hunks
@@ -130,6 +179,11 @@ impl Prepass {
             .filter(|hunk| hunk.disposition != Disposition::Agent)
             .map(|hunk| &hunk.id)
             .collect();
+        let context = self.context();
+        let covered = |side: LineSide, path: Option<&str>, line: u32| {
+            path.and_then(|path| context.get(&(side, path.to_owned())))
+                .is_some_and(|lines| lines.binary_search(&line).is_ok())
+        };
         files
             .iter()
             .filter_map(|file| {
@@ -139,22 +193,12 @@ impl Prepass {
                     .filter(|hunk| !quiet.contains(&hunk.id))
                     .map(|hunk| {
                         let mut hunk = hunk.clone();
-                        let covered = |side, line| {
-                            self.not_analysed
-                                .iter()
-                                .flat_map(|s| &s.items)
-                                .filter(|i| {
-                                    i.side == side && Some(i.file.as_str()) == file.path_on(side)
-                                })
-                                .any(|i| {
-                                    i.ranges.as_ref().is_none_or(|rs| {
-                                        rs.iter()
-                                            .any(|r| r.start_line <= line && line <= r.end_line)
-                                    })
-                                })
-                        };
-                        hunk.added.retain(|&line| !covered(LineSide::Head, line));
-                        hunk.removed.retain(|&line| !covered(LineSide::Base, line));
+                        let (head, base) =
+                            (file.path_on(LineSide::Head), file.path_on(LineSide::Base));
+                        hunk.added
+                            .retain(|&line| !covered(LineSide::Head, head, line));
+                        hunk.removed
+                            .retain(|&line| !covered(LineSide::Base, base, line));
                         hunk
                     })
                     .collect();
@@ -166,8 +210,8 @@ impl Prepass {
             .collect()
     }
 
-    /// Changed lines of the hunks the pre-pass took from the agent (Not analysed items, identical moves): one
-    /// entry per hunk side, the coverage check's quiet input.
+    /// Changed lines without coverage duty, the coverage check's quiet input: the hunks the pre-pass took from the
+    /// agent (Not analysed files) and the context lines.
     pub fn quiet_lines(&self, files: &[FileDiff]) -> Vec<FileRanges> {
         let quiet: BTreeSet<&HunkId> = self
             .hunks
@@ -175,41 +219,25 @@ impl Prepass {
             .filter(|hunk| hunk.disposition != Disposition::Agent)
             .map(|hunk| &hunk.id)
             .collect();
-        let mut out = Vec::new();
+        let mut merged = self.context();
         for file in files {
             for hunk in file.hunks.iter().filter(|hunk| quiet.contains(&hunk.id)) {
                 for (side, lines) in [
                     (LineSide::Head, &hunk.added),
                     (LineSide::Base, &hunk.removed),
                 ] {
-                    if let (Some(path), false) = (file.path_on(side), lines.is_empty()) {
-                        out.push(FileRanges {
-                            file: path.to_owned(),
-                            side,
-                            ranges: ranges(lines),
-                        });
+                    if let Some(path) = file.path_on(side) {
+                        merged
+                            .entry((side, path.to_owned()))
+                            .or_default()
+                            .extend(lines.iter().copied());
                     }
                 }
             }
         }
-        for item in self.not_analysed.iter().flat_map(|s| &s.items) {
-            if let Some(ranges) = &item.ranges {
-                out.push(FileRanges {
-                    file: item.file.clone(),
-                    side: item.side,
-                    ranges: ranges.clone(),
-                });
-            }
-        }
-        let mut merged: BTreeMap<(LineSide, String), Vec<u32>> = BTreeMap::new();
-        for item in out {
-            merged
-                .entry((item.side, item.file))
-                .or_default()
-                .extend(item.ranges.iter().flat_map(|r| r.start_line..=r.end_line));
-        }
         merged
             .into_iter()
+            .filter(|(_, lines)| !lines.is_empty())
             .map(|((side, file), mut lines)| {
                 lines.sort_unstable();
                 lines.dedup();
@@ -331,13 +359,20 @@ pub fn prepass<'t>(
                 LineSide::Base => LineSide::Head,
                 LineSide::Head => LineSide::Base,
             };
-            let readable = |side| (!file.binary).then(|| text(side, file.path_on(side)?))?;
+            let other = match (file.path_on(other_side), file.binary) {
+                (None, _) => OtherSide::Absent,
+                (Some(_), true) => OtherSide::Unknown,
+                (Some(other), false) => {
+                    text(other_side, other).map_or(OtherSide::Unknown, OtherSide::Text)
+                }
+            };
             let source = FileSource {
                 path,
                 side,
-                text: readable(side),
-                other_text: readable(other_side),
+                text: if file.binary { None } else { text(side, path) },
+                other,
                 changed_lines: &changed,
+                hunks: &file.hunks,
             };
             // The pull request's author controls a header it adds: it marks only files that were generated before.
             // A file the pull request adds is never generated by header (path rules still apply).
@@ -376,6 +411,11 @@ pub fn prepass<'t>(
         }
     };
     let moves = moves::analyse(files, &visible);
+    let quiet_moves: Vec<IdenticalMove> = moves
+        .identical()
+        .into_iter()
+        .filter(|block| quiet_move(files, &block.from.file, &block.to.file))
+        .collect();
     let lines = Lines::new(files, &classified, &moves, text);
     let not_analysed = sections(files, &lines.classified(&classified));
     let counters = counters::compute(files, &classified, text);
@@ -394,6 +434,7 @@ pub fn prepass<'t>(
         agent_lines: lines.agent,
         not_analysed,
         moves,
+        quiet_moves,
         counters,
         related_repos,
         profile_file,
@@ -476,9 +517,10 @@ impl Lines {
                 }
             }
         }
-        let quiet_moves = moves.moved.iter().filter(|block| {
-            block.identical && !within_one_file(files, &block.from.file, &block.to.file)
-        });
+        let quiet_moves = moves
+            .moved
+            .iter()
+            .filter(|block| block.identical && quiet_move(files, &block.from.file, &block.to.file));
         for block in quiet_moves {
             for range in [&block.from, &block.to] {
                 let mut lines = range.range.start_line..=range.range.end_line;
@@ -548,8 +590,7 @@ impl Lines {
                     id: hunk.id.clone(),
                     disposition: match disposition {
                         None => Disposition::Agent,
-                        Some(Quiet::Move) => Disposition::IdenticalMove,
-                        Some(Quiet::LineRule) => Disposition::Agent,
+                        Some(Quiet::Move | Quiet::LineRule) => Disposition::Agent,
                         Some(Quiet::WholeFile(category)) => Disposition::NotAnalysed(category),
                     },
                 });
@@ -655,14 +696,26 @@ fn sections(files: &[FileDiff], classified: &[Classified]) -> Vec<NotAnalysedSec
         .collect()
 }
 
-/// Whether a move from base `from` to head `to` stays inside one changed file (renamed or not): a reorder can change
-/// behaviour, so it is not quiet. A pure rename has no hunks and stays a quiet move.
-fn within_one_file(files: &[FileDiff], from: &str, to: &str) -> bool {
-    files.iter().any(|file| {
-        !file.hunks.is_empty()
-            && file.path_on(LineSide::Base) == Some(from)
-            && file.path_on(LineSide::Head) == Some(to)
-    })
+/// Whether an identical move from base `from` to head `to` is quiet: it leaves a source file that still exists at
+/// head for another file, or it is a pure rename. A reorder within one file (renamed or not) and a move out of a
+/// deleted file (possibly a rename git did not pair) stay with the agent.
+fn quiet_move(files: &[FileDiff], from: &str, to: &str) -> bool {
+    let Some(source) = files
+        .iter()
+        .find(|file| file.path_on(LineSide::Base) == Some(from))
+    else {
+        return false;
+    };
+    match source.path_on(LineSide::Head) {
+        Some(head) if head == to => source.hunks.is_empty(),
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// Whether a Not analysed item comes from a line rule (context, not a whole file).
+fn is_line_rule_item(item: &NotAnalysedItem) -> bool {
+    item.ranges.is_some() && tech::is_line_rule_name(&item.rule)
 }
 
 fn changed_lines(file: &FileDiff, side: LineSide) -> Vec<u32> {

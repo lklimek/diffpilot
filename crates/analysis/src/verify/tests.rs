@@ -1134,3 +1134,39 @@ fn plan_rejects_flow_with_only_test_locations() {
     output.unassigned.clear();
     assert!(plan(&output, &DiffIndex::new(&files).expect("diff")).is_err());
 }
+
+#[test]
+fn a_flow_may_claim_context_only_lines_without_owing_them() {
+    let mut fixture = Fixture::new();
+    // h17 changes one comment line per side: listed as context (its lines quiet, nothing left to cover).
+    let h17 = fixture
+        .files
+        .iter()
+        .flat_map(|file| file.hunks.iter().map(move |hunk| (file, hunk)))
+        .find(|(_, hunk)| hunk.id.0 == "h17")
+        .map(|(file, hunk)| (file.path.clone(), hunk.clone()))
+        .expect("h17");
+    let listed = fixture
+        .listed
+        .iter_mut()
+        .find(|file| file.path == h17.0)
+        .expect("listed file");
+    listed.hunks.push(Hunk {
+        added: Vec::new(),
+        removed: Vec::new(),
+        ..h17.1
+    });
+    listed.hunks.sort_by_key(|hunk| hunk.head.start);
+    fixture.plan.flows[0]
+        .hunks
+        .push(contracts::agent::plan::HunkSelection {
+            hunk_id: HunkId("h17".to_owned()),
+            head_start: None,
+            head_end: None,
+        });
+    let verdict = fixture.verdict(&fixture.facts());
+    assert_eq!(verdict.repairs, [], "claiming a context line is allowed");
+    let tour = verdict.tour.expect("tour");
+    assert!(tour.flows.iter().any(|flow| flow.flow_id == id("f1")));
+    assert_eq!(tour.coverage.double_covered, []);
+}

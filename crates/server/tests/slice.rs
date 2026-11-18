@@ -1118,6 +1118,23 @@ async fn lines_match_the_seed_for_whole_files() {
                     .contains(&json!(89))
             );
         }
+        // The view hides exactly the lines the stored pre-pass covers by a line rule (one decision).
+        let prepass: analysis::prepass::Prepass = h
+            .state
+            .db
+            .documents()
+            .get(id, DocumentKind::Prepass, "")
+            .await
+            .expect("read pre-pass")
+            .expect("stored pre-pass");
+        let side: contracts::common::LineSide =
+            serde_json::from_value(seed["side"].clone()).expect("side");
+        let path = seed["path"].as_str().expect("path");
+        assert_eq!(
+            lines["context_only"],
+            json!(prepass.view_context(side, path)),
+            "{uri}: route and pre-pass agree"
+        );
         // The historical seed still checks every original field; new metadata is asserted above.
         lines.as_object_mut().expect("lines").remove("context_only");
         for block in lines["deleted"].as_array_mut().expect("blocks") {

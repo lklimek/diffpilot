@@ -107,7 +107,6 @@ fn prepass_reproduces_fixture_pr_482() {
         .map(|hunk| {
             let disposition = match hunk.disposition {
                 Disposition::Agent => "agent".to_owned(),
-                Disposition::IdenticalMove => "identical_move".to_owned(),
                 Disposition::NotAnalysed(category) => format!(
                     "not_analysed:{}",
                     serde_json::to_value(category)
@@ -131,7 +130,7 @@ fn prepass_reproduces_fixture_pr_482() {
         )
     );
     assert!(
-        result.identical_moves(&files).is_empty(),
+        result.identical_moves().is_empty(),
         "the fixture's only identical move stays within src/rpc/client.rs"
     );
     assert_eq!(
@@ -278,8 +277,8 @@ fn generated_file_never_in_agent_input() {
             "src/gen.rs",
             &[header, "", "pub const A: u32 = 2;"],
         ),
-        text(LineSide::Base, "src/lib.rs", &["mod a;"]),
-        text(LineSide::Head, "src/lib.rs", &["mod b;"]),
+        text(LineSide::Base, "src/lib.rs", &["use a::x;"]),
+        text(LineSide::Head, "src/lib.rs", &["use a::y;"]),
     ]
     .into_iter()
     .collect();
@@ -380,8 +379,8 @@ fn agent_files_quiet_lines_and_binaries_split_the_diff() {
             "api/service.pb.go",
             &["package api", "func A() {}"],
         ),
-        text(LineSide::Base, "src/lib.rs", &["mod a;"]),
-        text(LineSide::Head, "src/lib.rs", &["mod b;"]),
+        text(LineSide::Base, "src/lib.rs", &["use a::x;"]),
+        text(LineSide::Head, "src/lib.rs", &["use a::y;"]),
     ]
     .into_iter()
     .collect();
@@ -798,7 +797,7 @@ proptest! {
                 None => hit(item.side, &item.file, &mut all.into_iter()),
             }
         }
-        for moved in result.identical_moves(&files) {
+        for moved in result.identical_moves() {
             for end in [&moved.from, &moved.to] {
                 hit(end.side, &end.file, &mut (end.range.start_line..=end.range.end_line));
             }
@@ -908,36 +907,39 @@ fn reorder_within_a_file_stays_with_the_agent_cross_file_move_stays_quiet() {
         text(LineSide::Head, "src/bank.rs", &head),
     ]);
     let result = run(&files, &[], &texts);
+    let block = result.moves.moved.iter().find(|block| block.identical);
     assert!(
-        result.moves.moved.iter().any(|block| block.identical),
-        "the reorder is detected as an identical move"
-    );
-    assert!(
-        result
-            .hunks
-            .iter()
-            .all(|hunk| hunk.disposition == Disposition::Agent),
-        "{:?}",
-        result.hunks
+        block.is_some_and(|block| !result.is_quiet_move(block)),
+        "an identical move within one file is no quiet move"
     );
     assert!(result.quiet_lines(&files).is_empty());
-    assert!(result.identical_moves(&files).is_empty(), "no quiet row");
+    assert!(result.identical_moves().is_empty(), "no quiet row");
     assert_eq!(result.agent_files(&files), files);
 
-    let mut next_id = 0;
-    let base_a: Vec<&str> = [&open[..], &guard, &close].concat();
-    let head_a: Vec<&str> = [&open[..], &close].concat();
-    let head_b: Vec<&str> = ["fn checks() {"]
+    // A whole function moved into another file that the origin still calls: a quiet row, its lines context.
+    let helper = [
+        "fn audit_entry(ledger: &Ledger, amount: u64) {",
+        "    ledger.record(\"withdraw\", amount);",
+        "    ledger.flush_audit_trail();",
+        "}",
+    ];
+    let caller = [
+        "fn withdraw(ledger: &Ledger, amount: u64) {",
+        "    audit_entry(ledger, amount);",
+        "}",
+    ];
+    let base_a: Vec<&str> = [&caller[..], &helper].concat();
+    let head_b: Vec<&str> = ["const LIMIT: u64 = 10;"]
         .into_iter()
-        .chain(guard)
-        .chain(["}"])
+        .chain(helper)
         .collect();
+    let mut next_id = 0;
     let files = vec![
         file(
             "src/a.rs",
             None,
             FileStatus::Modified,
-            hunks_between(&base_a, &head_a, &mut next_id),
+            hunks_between(&base_a, &caller, &mut next_id),
         ),
         file(
             "src/b.rs",
@@ -948,14 +950,60 @@ fn reorder_within_a_file_stays_with_the_agent_cross_file_move_stays_quiet() {
     ];
     let texts = Texts::from([
         text(LineSide::Base, "src/a.rs", &base_a),
-        text(LineSide::Head, "src/a.rs", &head_a),
+        text(LineSide::Head, "src/a.rs", &caller),
         text(LineSide::Head, "src/b.rs", &head_b),
     ]);
     let result = run(&files, &[], &texts);
-    assert_eq!(
-        result.identical_moves(&files).len(),
-        1,
-        "cross-file: a quiet row"
+    assert_eq!(result.identical_moves().len(), 1, "cross-file: a quiet row");
+    assert!(
+        result
+            .hunks
+            .iter()
+            .all(|hunk| hunk.disposition == Disposition::Agent),
+        "listed to the agent as context"
     );
-    assert_eq!(result.hunks[0].disposition, Disposition::IdenticalMove);
+    let listed = result.agent_files(&files);
+    assert!(
+        listed[0].hunks[0].removed.is_empty(),
+        "no coverage duty at the origin"
+    );
+    assert_eq!(
+        listed[1].hunks[0].added,
+        [1],
+        "only the new use line is mandatory"
+    );
+    assert!(
+        result
+            .quiet_lines(&files)
+            .iter()
+            .any(|lines| lines.file == "src/a.rs" && lines.side == LineSide::Base)
+    );
+
+    // The source file is deleted (possibly a rename git did not pair): the move stays with the agent.
+    let mut next_id = 0;
+    let files = vec![
+        file(
+            "src/a.rs",
+            None,
+            FileStatus::Deleted,
+            hunks_between(&base_a, &[], &mut next_id),
+        ),
+        file(
+            "src/b.rs",
+            None,
+            FileStatus::Added,
+            hunks_between(&[], &head_b, &mut next_id),
+        ),
+    ];
+    let texts = Texts::from([
+        text(LineSide::Base, "src/a.rs", &base_a),
+        text(LineSide::Head, "src/b.rs", &head_b),
+    ]);
+    let result = run(&files, &[], &texts);
+    assert!(result.moves.moved.iter().any(|block| block.identical));
+    assert!(
+        result.identical_moves().is_empty(),
+        "the source file is gone"
+    );
+    assert!(result.quiet_lines(&files).is_empty());
 }

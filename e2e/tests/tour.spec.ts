@@ -35,7 +35,7 @@ test("PR context: facts are computed from GitHub and the diff, apart from the LL
   );
   await expect(banner).toContainText("flows reviewed 0 / 5");
   await expect(page.getByRole("main")).toContainText("LLM analysis unless marked otherwise.");
-  await expect(inspector(page)).toContainText("Unexplained: 85 changed lines in 3 files — read these yourself");
+  await expect(inspector(page)).toContainText("Unexplained: 85 changed lines in 2 files — read these yourself");
   await checkScreen(page);
 });
 

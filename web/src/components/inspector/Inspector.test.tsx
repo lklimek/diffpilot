@@ -247,6 +247,20 @@ describe("Inspector summaries", () => {
     expect(onSelectStep).toHaveBeenCalledWith("f1.5");
   });
 
+  it("counts Unexplained files by path, not by side", () => {
+    const range = { start_line: 1, end_line: 2 };
+    const unexplained = [
+      { file: "src/a.rs", side: "head", ranges: [range] },
+      { file: "src/a.rs", side: "base", ranges: [range] },
+    ] as Tour["quiet"]["unexplained"];
+    render(
+      <Inspector tour={{ ...tour, quiet: { ...tour.quiet, unexplained } }} block={{ block: "pr_context" }} />,
+    );
+    expect(region(/^Coverage/)).toHaveTextContent(
+      "Unexplained: 4 changed lines in 1 file — read these yourself",
+    );
+  });
+
   it("summarises the PR context: coverage facts apart from the LLM analysis, nothing the centre already lists", () => {
     render(<Inspector tour={tour} block={{ block: "pr_context" }} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("PR context");

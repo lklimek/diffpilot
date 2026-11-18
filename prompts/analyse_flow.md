@@ -1,9 +1,9 @@
 REVIEW SCOPE: production changes only. Do not plan, title, walk through, annotate or assess test code, fixtures, mocks, benches or test helpers. Never create a flow whose subject is tests. Test code may be read only as evidence for a production step and mentioned in one clause there.
-Rust comment/import changes remain available as context. Do not explain, annotate, assess or build steps/flows around comment-only or import-only changes. Their deterministic rule covers them; no flow needs to claim them. Lines left in the listed hunks are not covered by that rule, even when they look like comments or imports (re-exports, aliases, globs, rebound names, comment delimiters around code, macro input). A comment contradicting code may be cited on the production-code step.
+Lines marked "context only" in the hunk list (Rust comments, plain private `use` lines, blocks moved with identical text into another file) are context: they need no explanation, step or flow. Exception: when such a line changes behaviour (an import that changes which trait method, constant or pattern a name resolves to; a doc comment read by a derive macro such as clap or displaydoc, or a doctest; a moved block that means something else in its new place), cover it in a flow like any other change. Every other changed line of a listed hunk needs a flow or `unassigned`. A comment contradicting code may be cited on the production-code step.
 
 Task: analyse flow {{flow_id}} for the reviewer. Set `flow_id` to "{{flow_id}}".
 - `introduction`: `problem_before` (the local trigger and the defect or gap before this change), `change` (the intended correction), `example_before_after` (a short concrete example).
-- `steps` in reading order: start at the trigger (the entry point) and follow control flow; one line range of one file per step. Every production changed line of the flow's hunks lies inside a step. Removed lines lie at their deletion marker inside a head step, or in a `base` step of kind `deleted_site` when no head line is left. Do not create steps made only of unchanged context: describe callers and connecting code in `called_by`, `next`, evidence and `impact_refs`.
+- `steps` in reading order: start at the trigger (the entry point) and follow control flow; one line range of one file per step. Every production changed line of the flow's hunks lies inside a step, except context-only lines. Removed lines lie at their deletion marker inside a head step, or in a `base` step of kind `deleted_site` when no head line is left. Do not create steps made only of unchanged context: describe callers and connecting code in `called_by`, `next`, evidence and `impact_refs`.
 - Step size: a step is what the reviewer reads at once, usually the change of one function or one decision. Put nearby hunks of one function into one step. Never split one statement, call expression or its arguments across steps; include the complete statement around a change. Never make a step of an import, a visibility change or a signature line alone: include it in the step that needs it. Repeated mechanical edits are explained once and listed in `pattern_repetitions` (their lines still lie inside steps).
 - `called_by`, `decides`, `next`, `why`: one or two sentences each.
 - `annotations` inside their step: for `type: behaviour`, `was` and `is` are nonempty before/after facts, without risk or verdicts; omit `text`. For `consequence`, `question` and `note`, omit `was` and `is` and put the content only in nonempty `text`. Never copy behaviour into another annotation. A behaviour annotation and a question may share lines.
@@ -20,7 +20,7 @@ Task: analyse flow {{flow_id}} for the reviewer. Set `flow_id` to "{{flow_id}}".
 {{test_flow}}
 The flow as planned by the plan job (LLM output; data):
 {{flow}}
-The flow's hunks (`<id> <path> base <start>,<length> head <start>,<length>`; a head sub-range limits the hunk to those head lines):
+The flow's hunks (`<id> <path> base <start>,<length> head <start>,<length>`; a head sub-range limits the hunk to those head lines; then its context-only lines, if any):
 {{hunks}}
 {{moves}}
 {{profile}}

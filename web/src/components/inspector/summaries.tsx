@@ -1,5 +1,5 @@
 import { Tooltip } from "../tooltip/Tooltip";
-import { testLines } from "../quiet/labels";
+import { fileCount, testLines } from "../quiet/labels";
 import type {
   Flow,
   Evidence,
@@ -143,7 +143,8 @@ export function PrContextSummary({
       >
         <ul className="m-0 list-disc pl-5">
           <li>
-            Unexplained: {plural(unexplained, "changed line")} in {plural(quiet.unexplained.length, "file")}
+            Unexplained: {plural(unexplained, "changed line")} in{" "}
+            {plural(fileCount(quiet.unexplained), "file")}
             {unexplained > 0 && " — read these yourself"}
           </li>
           <li>

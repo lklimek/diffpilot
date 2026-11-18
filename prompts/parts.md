@@ -15,7 +15,7 @@ Generated file versions changed by this pull request (Not analysed by the server
 @@ pr_text
 The pull request's title and description as written by its author (claims to check, not facts):
 @@ moves
-Moved blocks found by the server (deterministic: `git diff --color-moved` and token-normalised comparison). A step over such a block is `kind: moved` with `moved_from` = its base location; a moved block with differing lines still needs its differences explained:
+Moved blocks found by the server (deterministic: `git diff --color-moved` and token-normalised comparison). A step over such a block is `kind: moved` with `moved_from` = its base location; a moved block with differing lines still needs its differences explained, and a block moved within one file still needs a flow:
 @@ moves_incomplete
 The server's move detection ran out of its work budget: some moved code is missing from this list. A move you find yourself is an inference.
 @@ profile

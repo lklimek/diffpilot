@@ -964,7 +964,31 @@ fn plan_ranks_flows_by_expected_risk_and_bounds_flow_size() {
     ));
     assert!(instructions.contains("The flow you expect to get the highest risk band comes first."));
     assert!(instructions.contains("Never create a flow whose subject is tests"));
-    assert!(instructions.contains("Do not explain, annotate, assess or build steps/flows around comment-only or import-only changes"));
+    assert!(instructions.contains("cover it in a flow like any other change"));
+}
+
+#[test]
+fn plan_lists_context_lines_per_hunk_and_every_moved_block() {
+    let f = &*FIXTURE;
+    let input = PlanInput {
+        job: job(f, LlmLanguage::En),
+        files: &f.files,
+        profile: profile(f),
+        batch: None,
+    };
+    let task = plan(&input).expect("plan");
+    // h17 changes one comment line on each side: listed, its lines marked as context.
+    assert!(
+        task.contains("h17 base 99,1 head 89,1; context only: base 99, head 89"),
+        "{task}"
+    );
+    // The function moved within src/rpc/client.rs is listed with its move fact.
+    assert!(
+        task.contains(
+            "base src/rpc/client.rs 173-213 -> head src/rpc/client.rs 112-152: text identical\n"
+        ),
+        "{task}"
+    );
 }
 
 #[test]
