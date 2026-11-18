@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stack test (threat model T4/T7b/T9, ADR-013): brings up deploy/compose.yaml with deploy/compose.local.yaml (the
-# override only moves the per-job CODEX_HOME root to a capped tmpfs and publishes on loopback) from the images
+# override only publishes on loopback) from the images
 # built before, with placeholder secrets and the subnets 172.29.81-83.0/24, then checks the running containers.
 # Prints `CHECK <name> PASS|FAIL <detail>`; exit 0 only when every check passes; tears everything down.
 # Host test doubles: a MemCan stand-in (SR_MEMCAN_URL = http://<host LAN address>:<port>/mcp) and a control
@@ -74,6 +74,17 @@ health="$(docker inspect -f '{{.Name}}={{.State.Health.Status}}' "$server" "$run
 check stack_healthy "$([[ "$(grep -o '=healthy' <<< "$health" | wc -l)" == 3 ]] && echo 1)" "$health"
 limits="$(docker inspect -f 'NanoCpus={{.HostConfig.NanoCpus}} Memory={{.HostConfig.Memory}} PidsLimit={{.HostConfig.PidsLimit}} CapAdd={{.HostConfig.CapAdd}} CapDrop={{.HostConfig.CapDrop}} SecurityOpt={{.HostConfig.SecurityOpt}} ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}} IpcMode={{.HostConfig.IpcMode}} Restart={{.HostConfig.RestartPolicy.Name}}' "$runner")"
 check runner_limits_and_hardening "$([[ "$limits" == "NanoCpus=2000000000 Memory=6442450944 PidsLimit=1024 CapAdd=[CAP_CHOWN CAP_KILL CAP_SETGID CAP_SETUID] CapDrop=[ALL] SecurityOpt=[no-new-privileges:true] ReadonlyRootfs=true IpcMode=none Restart=unless-stopped" ]] && echo 1)" "$limits"
+# Nothing in RAM (owner decision): scratch on the disposable tmp-* volumes, owned and moded as ADR-013 needs.
+tmpfs="$(docker inspect -f '{{.Name}}={{json .HostConfig.Tmpfs}}' "$server" "$runner" | tr '\n' ' ')"
+temporary="$(docker volume ls -q --filter label=smart-review.volume=temporary \
+  --filter "label=com.docker.compose.project=$project" | sort | tr '\n' ' ')"
+modes="$(docker exec "$runner" stat -c '%n=%a:%u' /tmp /work /var/lib/smart-review-runner/codex-homes | tr '\n' ' ')"
+agent_tmp="$(docker exec -u 10002 "$runner" ls /tmp 2>&1 || true)"
+check scratch_on_temporary_volumes "$([[ "$tmpfs" != *'"/'* \
+  && "$temporary" == "${project}_tmp-runner ${project}_tmp-runner-codex-homes ${project}_tmp-runner-work ${project}_tmp-server " \
+  && "$modes" == "/tmp=700:10001 /work=711:10001 /var/lib/smart-review-runner/codex-homes=711:10001 " \
+  && "$agent_tmp" == *"Permission denied"* ]] && echo 1)" \
+  "tmpfs: $tmpfs; temporary volumes: $temporary; runner modes: $modes; agent lists /tmp: $agent_tmp"
 
 net="${project}_runner"
 bridge="br-$(docker network inspect -f '{{.Id}}' "$net" | cut -c 1-12)"

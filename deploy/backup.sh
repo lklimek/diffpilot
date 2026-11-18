@@ -2,7 +2,8 @@
 # Online backup of a smart-review deployment (docs/runbook.md, "Backup and restore"); the services keep running.
 # Parts: the SQLite database as a consistent snapshot (`VACUUM INTO`; the server keeps it in WAL mode, so readers
 # never block its writes), the runner's Codex credential and session archives (runner-state `credentials/`,
-# `sessions/`), the deployment's .env (SR_SECRET_KEY decrypts stored tokens) and secrets directory.
+# `sessions/`), the deployment's .env (SR_SECRET_KEY decrypts stored tokens) and secrets directory. Never the
+# disposable tmp-* volumes (job work area, per-job Codex homes, /tmp; docs/runbook.md, "Temporary volumes").
 # Output: SR_BACKUP_DIR/<UTC stamp>/ (mode 0700, files 0600) with SHA256SUMS, written as .partial-<stamp> and
 # renamed when complete; the newest SR_BACKUP_KEEP complete ones stay, unfinished ones are removed by the next run.
 # Prints names and sizes only, never contents. The backup holds credentials: encrypt it before it leaves the host.
@@ -149,7 +150,8 @@ self_test() {
   export SR_BACKUP_DATA_DIR="$tmp/data" SR_BACKUP_RUNNER_STATE="$tmp/state"
   backup_root="$tmp/backup" env_file="$tmp/.env" secrets_dir="$tmp/secrets" keep=2
   mkdir -p "$tmp/data" "$tmp/state/credentials/default" "$tmp/state/sessions/7/analytic" "$tmp/state/mirrors/x" \
-    "$tmp/secrets"
+    "$tmp/secrets" "$tmp/state/codex-homes/job-1"
+  echo '{"CANARY":"job copy"}' > "$tmp/state/codex-homes/job-1/auth.json"
   echo '{"CANARY":"credential"}' > "$tmp/state/credentials/default/auth.json"
   chmod 0600 "$tmp/state/credentials/default/auth.json"
   echo '{}' > "$tmp/state/sessions/7/analytic/rollout-1.jsonl"
@@ -178,6 +180,7 @@ open(sys.argv[2], "w").close(); time.sleep(30)' "$db" "$tmp/locked" &
   tar -tzf "$b/runner-state.tar.gz" | grep -qx 'credentials/default/auth.json' || fail "credential not archived"
   tar -tzf "$b/runner-state.tar.gz" | grep -q '^sessions/7/analytic/rollout-1.jsonl' || fail "sessions not archived"
   ! tar -tzf "$b/runner-state.tar.gz" | grep -q '^mirrors' || fail "mirrors archived (re-creatable, not wanted)"
+  ! tar -tzf "$b/runner-state.tar.gz" | grep -q '^codex-homes' || fail "a temporary volume (codex-homes) archived"
   tar -tvzf "$b/runner-state.tar.gz" credentials/default/auth.json | grep -q '^-rw-------' ||
     fail "credential mode not kept"
   [[ -f "$b/env" && -f "$b/secrets.tar.gz" ]] || fail "env file or secrets missing"
