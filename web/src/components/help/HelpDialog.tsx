@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { SpeechBubble } from "../comment/LineComments";
+import { CHANGE_LOOK, REMARK_LOOK } from "../code-view/changeLook";
 import { SHORTCUTS } from "./shortcuts";
 
 interface HelpDialogProps {
@@ -23,40 +24,68 @@ function Bubble({ look }: { look: string }) {
   );
 }
 
+const bar = (band: keyof typeof REMARK_LOOK) => `border-l-4 ${REMARK_LOOK[band].bar}`;
+
+// Exactly what the code view draws; change colours and bars come from the definitions it uses.
 const LEGEND: ReactNode[] = [
   <>
-    <Swatch look="border-l-4 border-mark" />
-    changed line: neutral bar in the gutter (deterministic, from the diff)
+    <Swatch look={CHANGE_LOOK.added.fill} />
+    <b className={CHANGE_LOOK.added.signLook}>+</b> added line: green, as in the classic diff (deterministic,
+    from the diff)
   </>,
   <>
-    <Swatch look="border-l-4 border-solid border-high-bd" />
-    HIGH: solid bar · <Swatch look="border-l-4 border-dashed border-med-bd" />
-    MEDIUM: dashed bar · <Swatch look="border-l-4 border-dotted border-low-bd" />
-    LOW or affected: dotted bar (colour = LLM rating, only on annotated ranges)
+    <Swatch look={CHANGE_LOOK.removed.fill} />
+    <b className={CHANGE_LOOK.removed.signLook}>−</b> removed line: red, as in the classic diff
+    (deterministic, from the diff), shown at the deletion marker
   </>,
   <>
-    <Swatch look="border-l-2 border-mark bg-llm-bg" />
+    Bar beside lines: an LLM remark on them, labelled once at its top; its colour and pattern are the
+    LLM&apos;s rating, not checked. <Swatch look={bar("high")} />
+    HIGH: solid bar · <Swatch look={bar("medium")} />
+    MEDIUM: dashed bar · <Swatch look={bar("low")} />
+    LOW or affected: dotted bar
+  </>,
+  <>
+    <Swatch look={`border-l-4 ${REMARK_LOOK.none.bar}`} />
     LLM remark without a risk rating: thin neutral line
   </>,
-  <>A changed line without colour has no LLM remark.</>,
+  <>A changed line without a bar has no LLM remark. An unchanged line inside a bar is unchanged.</>,
   <>
     <Swatch look="border-l-[6px] border-double border-mv-bd" />
-    moved, text identical: double bar · <b>≠</b> line differs from the moved original
+    moved, text identical: double bar · <b>≠</b> line differs from the moved original · moved lines keep the
+    change fill, as in the classic diff
   </>,
   <>
     <Swatch look="border-l-4 border-dotted border-mv-bd bg-[image:repeating-linear-gradient(135deg,transparent_0_3px,rgb(120_130_150/0.3)_3px_4px)]" />
-    outside the diff, unchanged · <Swatch look="bg-rm-bg" />
-    removed code shown at the deletion marker
+    outside the diff, unchanged
   </>,
   <>
-    <b className="text-llm">◆</b> LLM remark
+    <b className="text-llm">◆</b> LLM remark: opens its text
   </>,
   <>
     <Bubble look="text-accent" /> your pending comment (accent bubble) · <Bubble look="text-thread" /> GitHub
     review thread (slate bubble)
   </>,
   <>
-    <b className="text-high">−</b> removed line (from the diff)
+    <span className="mr-1.5 rounded border border-border px-1 text-[11px]">
+      N comment/import lines hidden · Show
+    </span>
+    comment and import lines folded in place; Show opens them there, the classic diff always has them
+  </>,
+  <>
+    <span className="mr-1.5 font-mono text-[11px] font-semibold">
+      <span className={REMARK_LOOK.high.text}>
+        ▲ HIGH · <span className="font-normal">5 remarks</span>
+      </span>
+    </span>
+    pills in the list and above the code: the LLM&apos;s rating of a step (not checked) and the number of its
+    LLM remarks, two separate facts; a flow shows its rating once (its label: the highest step rating) and a
+    pill with all its remarks; remarks on an unrated step: a neutral pill; no pill means neither, not that the
+    code is safe
+  </>,
+  <>
+    <Swatch look="outline-2 -outline-offset-2 outline-med-bd" />
+    fading frame: the line an evidence link jumped to
   </>,
 ];
 

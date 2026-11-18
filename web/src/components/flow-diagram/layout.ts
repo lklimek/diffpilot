@@ -78,6 +78,8 @@ export interface DiagramEdge {
   points: Point[];
   /** Where the branch label goes; null without a label. */
   labelBox: Box | null;
+  /** Thin line from the edge to a label placed beyond the lanes; null when the label sits at its line. */
+  leader: Point[] | null;
 }
 
 /** Drawing direction: top to bottom or left to right. */
@@ -109,6 +111,18 @@ const widest = (values: number[]) => values.reduce((a, b) => Math.max(a, b), 0);
 
 const RANK_SEP = 32;
 const MARGIN = 8;
+/** Distance of the first side lane from the node column, px. */
+export const LANE_FIRST = 32;
+/** Distance between parallel side lanes, px. */
+export const LANE_STEP = 14;
+/** Distance between edge ends on one side of a node, px. */
+export const ATTACH_STEP = 10;
+/** Distance between parallel edges between neighbouring steps, px. */
+export const PARALLEL_STEP = 24;
+/** Gap between a line and its label, and between the outermost lane and the labels beyond it, px. */
+const LABEL_GAP = 8;
+/** Length of a leader's last, slanted part into its label, px. */
+const LEADER_BEND = 16;
 
 /** Drawn lines and size of a step's node. */
 function sizeNode(node: GraphNode, branching: boolean, measure: Measure) {
@@ -208,21 +222,6 @@ export function wrapText(
   return [...lines.slice(0, maxLines - 1), `${last.join("").trimEnd()}${ELLIPSIS}`];
 }
 
-/** Where the line from `from` to the centre of `box` crosses the border of `box`. */
-function clipToBox(box: Box, from: Point): Point {
-  const cx = box.x + box.width / 2;
-  const cy = box.y + box.height / 2;
-  const dx = from.x - cx;
-  const dy = from.y - cy;
-  if (dx === 0 && dy === 0) return { x: cx, y: box.y };
-  if (Math.abs(dy) * box.width > Math.abs(dx) * box.height) {
-    const sy = dy < 0 ? -box.height / 2 : box.height / 2;
-    return { x: cx + (sy * dx) / dy, y: cy + sy };
-  }
-  const sx = dx < 0 ? -box.width / 2 : box.width / 2;
-  return { x: cx + sx, y: cy + (sx * dy) / dx };
-}
-
 /** Lays out `graph` in `direction`; edges whose ends are not nodes of the graph are left out. */
 export function layoutFlow(
   graph: FlowGraph,
@@ -287,18 +286,31 @@ export function layoutFlow(
     g.setNode(node.step_id, { number: node.number, width: 2 * half.w, height: 2 * half.h });
     return { node, lines, prefixWidth, branching, width, height, loops, reach, labelsHeight };
   });
-  // Layout-only constraints keep the persisted walk/deep-link order in either orientation.
+  // The steps stand in one column in walk order (the persisted walk/deep-link order). Only these walk links go
+  // to dagre: given the flow's own edges, it routed every edge spanning several steps through dummy nodes it
+  // placed in columns far beside the steps, drawing long diagonal "triangles" across the canvas. Edges are
+  // routed below instead: straight between neighbours, through small side lanes otherwise.
   const ordered = [...graph.nodes].sort((a, b) => a.number - b.number);
+  const rank = new Map(ordered.map((n, i) => [n.step_id, i]));
+  const neighbours = (edge: GraphEdge) =>
+    edge.from !== edge.to && Math.abs(rank.get(edge.from)! - rank.get(edge.to)!) === 1;
   for (let i = 1; i < ordered.length; i++) {
-    g.setEdge(
-      { v: ordered[i - 1]!.step_id, w: ordered[i]!.step_id, name: `walk-${i}` },
-      { weight: 10000, minlen: 1 },
+    const [v, w] = [ordered[i - 1]!.step_id, ordered[i]!.step_id];
+    // The labels of the edges between these neighbours get room in the gap, beside the line.
+    const labels = prepared.filter(
+      (p) =>
+        p.label !== null && neighbours(p.edge) && [v, w].includes(p.edge.from) && [v, w].includes(p.edge.to),
     );
-  }
-  for (const { edge, key, size, label } of prepared) {
-    if (edge.from !== edge.to) {
-      g.setEdge({ v: edge.from, w: edge.to, name: key }, label === null ? size : { ...size, labelpos: "c" });
-    }
+    const size = {
+      width: widest(labels.map((l) => l.size.width)),
+      height: labels.reduce((n, l) => n + l.size.height + 2, 0),
+    };
+    g.setEdge(
+      { v, w, name: `walk-${i}` },
+      labels.length === 0
+        ? { weight: 10000, minlen: 1 }
+        : { weight: 10000, minlen: 1, ...size, labelpos: direction === "TB" ? "r" : "c", labeloffset: 6 },
+    );
   }
 
   dagreLayout(g);
@@ -352,40 +364,261 @@ export function layoutFlow(
               : { x: (centre.x ?? 0) - size.width / 2, y: labelAt, ...size };
           labelAt += size.height + 2;
         }
-        routed.set(key, { key, from: edge.from, to: edge.to, label, labelLines, points, labelBox });
+        routed.set(key, {
+          key,
+          from: edge.from,
+          to: edge.to,
+          label,
+          labelLines,
+          points,
+          labelBox,
+          leader: null,
+        });
       });
       return box;
     },
   );
 
-  const byId = new Map(laidOut.map((n) => [n.stepId, n]));
+  return routeEdges(direction, laidOut, prepared, routed, rank, neighbours);
+}
+
+type Prepared = {
+  edge: GraphEdge;
+  key: string;
+  lines: string[];
+  size: { width: number; height: number };
+  label: string | null;
+};
+
+/**
+ * Routes the edges between the laid-out steps: neighbours in the column get one straight line (bottom centre to
+ * top centre; two opposite edges without labels share one line with an arrowhead at each end) with labels beside
+ * their own line; every other edge leaves its step sideways into a lane a small fixed step beside the column —
+ * forward edges on one side, backward edges on the other, overlapping spans in separate lanes — runs along it and
+ * enters the target from the same side. Lane labels stand beyond the outermost lane, joined to their edge by a
+ * leader at the source end, so no label covers a line. Then the drawing is moved so everything starts at the margin.
+ */
+function routeEdges(
+  direction: Direction,
+  nodes: DiagramNode[],
+  prepared: Prepared[],
+  routed: Map<string, DiagramEdge>,
+  rank: Map<StepId, number>,
+  neighbours: (edge: GraphEdge) => boolean,
+): DiagramLayout {
+  const tb = direction === "TB";
+  // Main axis = along the column (y for TB), cross axis = across it.
+  const at = (m: number, c: number): Point => (tb ? { x: c, y: m } : { x: m, y: c });
+  const mOf = (b: Box) => (tb ? { start: b.y, size: b.height } : { start: b.x, size: b.width });
+  const cOf = (b: Box) => (tb ? { start: b.x, size: b.width } : { start: b.y, size: b.height });
+  const boxAt = (m: number, c: number, size: { width: number; height: number }): Box =>
+    tb ? { x: c, y: m, ...size } : { x: m, y: c, ...size };
+  const along = (size: { width: number; height: number }) => (tb ? size.height : size.width);
+  const across = (size: { width: number; height: number }) => (tb ? size.width : size.height);
+  const byId = new Map(nodes.map((n) => [n.stepId, n]));
+  const mid = (n: DiagramNode) => mOf(n).start + mOf(n).size / 2;
+  const centreC = (n: DiagramNode) => cOf(n).start + cOf(n).size / 2;
+
+  const edges = new Map<string, DiagramEdge>();
+  const result = (
+    p: Prepared,
+    points: Point[],
+    labelBox: Box | null,
+    leader: Point[] | null = null,
+  ): DiagramEdge => ({
+    key: p.key,
+    from: p.edge.from,
+    to: p.edge.to,
+    label: p.label,
+    labelLines: p.lines,
+    points,
+    labelBox,
+    leader,
+  });
+
+  // Neighbours: one straight line; parallel ones side by side; labels in the gap, beside their own line (left of
+  // a line left of the centre, else right of it).
+  const pairs = new Map<string, Prepared[]>();
+  for (const p of prepared) {
+    if (routed.has(p.key) || !neighbours(p.edge)) continue;
+    const id = [p.edge.from, p.edge.to].sort().join(" ");
+    pairs.set(id, [...(pairs.get(id) ?? []), p]);
+  }
+  for (const list of pairs.values()) {
+    // Two opposite edges without labels are one line with an arrowhead at each end.
+    const shared =
+      list.length === 2 && list.every((p) => p.label === null) && list[0]!.edge.from === list[1]!.edge.to;
+    const [upper, lower] = [list[0]!.edge.from, list[0]!.edge.to]
+      .map((id) => byId.get(id)!)
+      .sort((a, b) => mid(a) - mid(b)) as [DiagramNode, DiagramNode];
+    const gap = (mOf(upper).start + mOf(upper).size + mOf(lower).start) / 2;
+    const placed = list.map((p, j) => ({
+      p,
+      shift: shared ? 0 : (j - (list.length - 1) / 2) * PARALLEL_STEP,
+    }));
+    // Labels beside the outermost line of their side; a label of an inner line gets a leader to it.
+    const outermost = (left: boolean) =>
+      centreC(upper) +
+      (left ? Math.min(...placed.map((x) => x.shift)) : Math.max(...placed.map((x) => x.shift)));
+    for (const left of [true, false]) {
+      const side = placed.filter(({ p, shift }) => p.label !== null && shift < 0 === left);
+      let m = gap - side.reduce((n, { p }) => n + along(p.size) + 2, 0) / 2;
+      for (const { p, shift } of side) {
+        const line = centreC(upper) + shift;
+        const near = outermost(left) + (left ? -LABEL_GAP : LABEL_GAP);
+        const labelBox = boxAt(m, left ? near - across(p.size) : near, p.size);
+        const labelMid = m + along(p.size) / 2;
+        const leader = line === outermost(left) ? null : [at(labelMid, line), at(labelMid, near)];
+        edges.set(p.key, result(p, [], labelBox, leader));
+        m += along(p.size) + 2;
+      }
+    }
+    for (const { p, shift } of placed) {
+      const from = byId.get(p.edge.from)!;
+      const to = byId.get(p.edge.to)!;
+      const down = mid(from) < mid(to);
+      const end = (n: DiagramNode, far: boolean) => mOf(n).start + (far ? mOf(n).size : 0);
+      const points = [at(end(from, down), centreC(from) + shift), at(end(to, !down), centreC(to) + shift)];
+      edges.set(
+        p.key,
+        result(p, points, edges.get(p.key)?.labelBox ?? null, edges.get(p.key)?.leader ?? null),
+      );
+    }
+  }
+
+  // Lanes run outside the nodes, self-loops and the labels between neighbours.
+  const reach = [
+    ...nodes.map((n) => [cOf(n).start, cOf(n).start + cOf(n).size] as const),
+    ...[...routed.values(), ...edges.values()].flatMap((e) => [
+      ...e.points.map((p) => [tb ? p.x : p.y, tb ? p.x : p.y] as const),
+      ...(e.labelBox ? [[cOf(e.labelBox).start, cOf(e.labelBox).start + cOf(e.labelBox).size] as const] : []),
+    ]),
+  ];
+  const cMax = Math.max(...reach.map(([, hi]) => hi));
+  const cMin = Math.min(...reach.map(([lo]) => lo));
+
+  // Every other edge: a lane beside the column, forward on the far side, backward on the near side.
+  const laned = prepared.filter((p) => !routed.has(p.key) && !edges.has(p.key) && p.edge.from !== p.edge.to);
+  const isForward = (p: Prepared) => rank.get(p.edge.from)! < rank.get(p.edge.to)!;
+  const span = (p: Prepared) => {
+    const [a, b] = [mid(byId.get(p.edge.from)!), mid(byId.get(p.edge.to)!)];
+    return [Math.min(a, b), Math.max(a, b)] as const;
+  };
+  const laneOf = new Map<string, number>();
+  const laneCount = { true: 0, false: 0 };
+  for (const forward of [true, false]) {
+    const side = laned
+      .filter((p) => isForward(p) === forward)
+      .sort((a, b) => span(a)[1] - span(a)[0] - (span(b)[1] - span(b)[0]));
+    const lanes: (readonly [number, number])[][] = [];
+    for (const p of side) {
+      const [lo, hi] = span(p);
+      let lane = lanes.findIndex((taken) => taken.every(([l, h]) => hi < l || lo > h));
+      if (lane < 0) lane = lanes.push([]) - 1;
+      lanes[lane]!.push([lo, hi]);
+      laneOf.set(p.key, lane);
+    }
+    laneCount[`${forward}`] = lanes.length;
+  }
+  // Ends on one side of a node are spread along it at least ATTACH_STEP apart, ordered by where the other end is;
+  // when they do not fit, the arriving edges share one entry point (one arrowhead) and the leaving ones spread.
+  const ends = new Map<string, { key: string; other: number; arrives: boolean }[]>();
+  const sideKey = (id: StepId, forward: boolean) => `${id} ${forward}`;
+  for (const p of laned) {
+    for (const [id, other, arrives] of [
+      [p.edge.from, p.edge.to, false],
+      [p.edge.to, p.edge.from, true],
+    ] as const) {
+      const k = sideKey(id, isForward(p));
+      ends.set(k, [
+        ...(ends.get(k) ?? []),
+        { key: `${p.key}:${arrives ? "e" : "s"}`, other: mid(byId.get(other)!), arrives },
+      ]);
+    }
+  }
+  const attach = (id: StepId, forward: boolean, key: string) => {
+    const all = [...ends.get(sideKey(id, forward))!].sort((a, b) => a.other - b.other);
+    const n = byId.get(id)!;
+    const room = Math.max(0, mOf(n).size / 2 - 4);
+    const spread = (list: typeof all, step: number) => {
+      const i = list.findIndex((e) => e.key === key);
+      return mid(n) + Math.max(-room, Math.min(room, (i - (list.length - 1) / 2) * step));
+    };
+    if ((all.length - 1) * ATTACH_STEP <= 2 * room) return spread(all, ATTACH_STEP);
+    if (key.endsWith(":e")) return mid(n);
+    const leaving = all.filter((e) => !e.arrives);
+    return spread(leaving, leaving.length > 1 ? Math.min(ATTACH_STEP, (2 * room) / (leaving.length - 1)) : 0);
+  };
+  // Labels beyond the outermost lane of their side, level with their source end when free.
+  const taken: Box[] = [
+    ...nodes,
+    ...[...edges.values(), ...routed.values()].flatMap((e) => (e.labelBox ? [e.labelBox] : [])),
+  ];
+  const free = (box: Box) =>
+    !taken.some(
+      (o) =>
+        box.x < o.x + o.width + 2 &&
+        o.x < box.x + box.width + 2 &&
+        box.y < o.y + o.height + 2 &&
+        o.y < box.y + box.height + 2,
+    );
+  const outer = (forward: boolean) => LANE_FIRST + LANE_STEP * Math.max(0, laneCount[`${forward}`] - 1);
+  const lanedRoutes = laned.map((p) => {
+    const forward = isForward(p);
+    const laneC = forward
+      ? cMax + LANE_FIRST + LANE_STEP * laneOf.get(p.key)!
+      : cMin - LANE_FIRST - LANE_STEP * laneOf.get(p.key)!;
+    const from = byId.get(p.edge.from)!;
+    const to = byId.get(p.edge.to)!;
+    const edgeC = (n: DiagramNode) => (forward ? cOf(n).start + cOf(n).size : cOf(n).start);
+    const m1 = attach(p.edge.from, forward, `${p.key}:s`);
+    const m2 = attach(p.edge.to, forward, `${p.key}:e`);
+    const points = [at(m1, edgeC(from)), at(m1, laneC), at(m2, laneC), at(m2, edgeC(to))];
+    edges.set(p.key, result(p, points, null));
+    return { p, forward, laneC, m1, points };
+  });
+  // Labels per side in the order of their source ends, each level with its source end or just below the one
+  // before: leaders never cross.
+  for (const forward of [true, false]) {
+    // The leader bends beyond the outermost lane.
+    const gap = LEADER_BEND + LABEL_GAP;
+    const near = forward ? cMax + outer(true) + gap : cMin - outer(false) - gap;
+    let next = -Infinity;
+    for (const { p, laneC, m1, points } of lanedRoutes
+      .filter((r) => r.forward === forward && r.p.label !== null)
+      .sort((a, b) => a.m1 - b.m1)) {
+      const c = forward ? near : near - across(p.size);
+      let m = Math.max(m1 - along(p.size) / 2, next);
+      while (!free(boxAt(m, c, p.size))) m += 2;
+      const labelBox = boxAt(m, c, p.size);
+      taken.push(labelBox);
+      next = m + along(p.size) + 2;
+      const labelMid = m + along(p.size) / 2;
+      const bend = forward ? near - LEADER_BEND : near + LEADER_BEND;
+      edges.set(p.key, result(p, points, labelBox, [at(m1, laneC), at(m1, bend), at(labelMid, near)]));
+    }
+  }
+
+  // Move everything so the drawing starts at the margin.
+  const all = prepared.map((p) => routed.get(p.key) ?? edges.get(p.key)!);
+  const boxes: Box[] = [...nodes, ...all.flatMap((e) => (e.labelBox ? [e.labelBox] : []))];
+  const points = all.flatMap((e) => [...e.points, ...(e.leader ?? [])]);
+  const xs = [...boxes.flatMap((b) => [b.x, b.x + b.width]), ...points.map((p) => p.x)];
+  const ys = [...boxes.flatMap((b) => [b.y, b.y + b.height]), ...points.map((p) => p.y)];
+  const dx = MARGIN - Math.min(MARGIN, ...xs);
+  const dy = MARGIN - Math.min(MARGIN, ...ys);
+  const move = <T extends Point>(p: T): T => ({ ...p, x: p.x + dx, y: p.y + dy });
   return {
     direction,
-    width: g.graph().width ?? 0,
-    height: Math.max(g.graph().height ?? 0, ...laidOut.map((n) => n.y + n.height + MARGIN)),
-    nodes: laidOut,
-    edges: prepared.map(({ edge, key, lines, label }) => {
-      const loop = routed.get(key);
-      if (loop) return loop;
-      const routedEdge = g.edge({ v: edge.from, w: edge.to, name: key });
-      const points = [...(routedEdge.points ?? [])];
-      // Ends at an enlarged layout box (a step with self-loops) are moved onto the drawn node.
-      if (points.length >= 2) {
-        if (loopsOf.has(edge.from)) points[0] = clipToBox(byId.get(edge.from)!, points[1]!);
-        if (loopsOf.has(edge.to))
-          points[points.length - 1] = clipToBox(byId.get(edge.to)!, points[points.length - 2]!);
-      }
-      const { width = 0, height = 0, x = 0, y = 0 } = routedEdge;
-      return {
-        key,
-        from: edge.from,
-        to: edge.to,
-        label,
-        labelLines: lines,
-        points,
-        labelBox: label === null ? null : { x: x - width / 2, y: y - height / 2, width, height },
-      };
-    }),
+    width: Math.max(0, ...xs) + dx + MARGIN,
+    height: Math.max(0, ...ys) + dy + MARGIN,
+    nodes: nodes.map(move),
+    edges: all.map((e) => ({
+      ...e,
+      points: e.points.map(move),
+      labelBox: e.labelBox && move(e.labelBox),
+      leader: e.leader && e.leader.map(move),
+    })),
   };
 }
 

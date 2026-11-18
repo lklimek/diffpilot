@@ -9,7 +9,7 @@ export type HomeOutcome =
   | { kind: "failed"; analysis: AnalysisSummary; message: string }
   | { kind: "head_moved"; analysis: AnalysisSummary };
 
-/** No analysis (or a cancelled one): analyze; head moved: offer Re-analyze; else resume the analysis. */
+/** No analysis (or a cancelled one): offer Start analysis; head moved: offer a fresh one; else resume the analysis. */
 export function homeOutcome(resolved: ResolvePrResponse): HomeOutcome {
   const { analysis } = resolved;
   if (!analysis || analysis.state.state === "cancelled") return { kind: "analyze" };
@@ -23,10 +23,6 @@ export function homeOutcome(resolved: ResolvePrResponse): HomeOutcome {
       return { kind: "in_progress", analysis };
   }
 }
-
-/** Analyze without asking: nothing to resume and nothing to warn about (the App is installed). */
-export const startsAtOnce = (resolved: ResolvePrResponse) =>
-  homeOutcome(resolved).kind === "analyze" && resolved.commenting_available && !resolved.size_warning;
 
 /** The review of a finished analysis, else its progress screen. */
 export const analysisHref = (analysis: AnalysisSummary) =>

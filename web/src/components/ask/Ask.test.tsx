@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -188,6 +188,60 @@ describe("AskForm", () => {
     block.scrollTop = 120;
     await user.type(screen.getByRole("textbox"), "Why?{Enter}");
     expect(block.scrollTop).toBe(0);
+  });
+});
+
+describe("AskForm: a collapsible Inspector section", () => {
+  const control = (open: boolean) => ({
+    isOpen: vi.fn(() => open),
+    toggle: vi.fn(),
+    reveal: vi.fn(),
+  });
+
+  it("opens and closes with the chevron like the other sections; the header keeps the step's question count", async () => {
+    const sections = control(false);
+    const { rerender } = render(<AskForm step={step5} onAsk={() => {}} sections={sections} count={2} />);
+    const header = screen.getByRole("button", { name: /^Ask about/ });
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    expect(header).toHaveTextContent("2 questions on this step");
+    expect(screen.queryByRole("textbox")).toBeNull();
+    await userEvent.click(header);
+    expect(sections.toggle).toHaveBeenCalledWith("ask");
+    rerender(<AskForm step={step5} onAsk={() => {}} sections={control(true)} count={2} />);
+    expect(screen.getByRole("button", { name: /^Ask about/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("textbox", { name: "Ask the LLM about Step 5" })).toBeVisible();
+  });
+
+  it("opens itself when sending fails while collapsed, and announces the error", async () => {
+    let fail: (e: Error) => void = () => {};
+    const onAsk = () => new Promise((_, reject) => (fail = reject));
+    const closed = control(false);
+    const { rerender } = render(<AskForm step={step5} onAsk={onAsk} sections={control(true)} count={0} />);
+    await userEvent.type(screen.getByRole("textbox"), "Why?{Enter}");
+    // The reader collapses Ask while the question is on its way.
+    rerender(<AskForm step={step5} onAsk={onAsk} sections={closed} count={0} />);
+    await act(async () => fail(new Error("server gone")));
+    expect(closed.reveal).toHaveBeenCalledWith("ask");
+    rerender(<AskForm step={step5} onAsk={onAsk} sections={control(true)} count={0} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("The question was not sent: server gone");
+  });
+
+  it("opens itself for a notice such as a lost answer stream, and announces it", async () => {
+    const closed = control(false);
+    const opened = control(true);
+    const { rerender } = render(<AskForm step={step5} onAsk={() => {}} sections={closed} count={0} />);
+    rerender(<AskForm step={step5} onAsk={() => {}} sections={closed} count={0} notice="Connection lost." />);
+    expect(closed.reveal).toHaveBeenCalledWith("ask");
+    rerender(<AskForm step={step5} onAsk={() => {}} sections={opened} count={0} notice="Connection lost." />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Connection lost.");
+  });
+
+  it("says where answers appear: below the field, newest first", () => {
+    render(<AskForm step={step5} onAsk={() => {}} sections={control(true)} count={0} />);
+    const ask = screen.getByRole("region", { name: /^Ask/ });
+    expect(ask).toHaveTextContent("answers appear below the field, newest first");
+    expect(ask).not.toHaveTextContent(/pinned/);
+    expect(screen.getByRole("button", { name: "Ask" })).not.toHaveAccessibleDescription(/pinned/);
   });
 });
 

@@ -239,3 +239,37 @@ describe("NavList: the user's questions", () => {
     expect(screen.getByRole("button", { name: "PR context" })).not.toHaveAttribute("aria-current");
   });
 });
+
+describe("NavList: LLM rating and remark pills", () => {
+  const props = {
+    flows: tour.flows,
+    quiet: tour.quiet,
+    ticked: [],
+    onSelect: () => {},
+    onRemark: () => {},
+    handledRemarks: new Set<string>(),
+  };
+
+  it("each flow row shows its rating once (its label) and all its remarks, also collapsed; steps show theirs", () => {
+    render(<NavList {...props} current={{ block: "step", step_id: "f1.5" }} />);
+    expect(screen.getByRole("button", { name: "5 LLM remarks in flow 2" })).toHaveTextContent(/^5 remarks$/);
+    expect(screen.getByRole("button", { name: /^LLM rated step 5 HIGH/ })).toHaveTextContent(
+      "▲ HIGH · 3 remarks",
+    );
+  });
+
+  it("a pill leads to the remarks of its steps", async () => {
+    const onRemark = vi.fn();
+    render(<NavList {...props} current={{ block: "pr_context" }} onRemark={onRemark} />);
+    await userEvent.click(screen.getByRole("button", { name: "19 LLM remarks in flow 1" }));
+    expect(onRemark).toHaveBeenCalledWith(tour.flows[0]!.steps);
+  });
+
+  it("a step with neither a rating nor remarks shows no pill", () => {
+    const flows = structuredClone(tour.flows);
+    flows[0]!.steps[2]!.llm.assessment = null;
+    flows[0]!.steps[2]!.llm.annotations = [];
+    render(<NavList {...props} flows={flows} current={{ block: "step", step_id: "f1.3" }} />);
+    expect(screen.queryByRole("button", { name: /step 3 / })).toBeNull();
+  });
+});

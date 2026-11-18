@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { FlowGraph, Tour } from "../../api/generated/types";
@@ -155,6 +155,29 @@ describe("FlowDiagram current step and selection", () => {
   it("marks nothing when no step is current", () => {
     renderDiagram(flow1, null);
     expect(nodes().filter((n) => n.hasAttribute("aria-current"))).toHaveLength(0);
+  });
+
+  it("hovering an edge or its label highlights that edge and its label, the others dim", async () => {
+    renderDiagram();
+    const label = diagram().querySelector<SVGGElement>("[data-edge-label]")!;
+    const key = label.getAttribute("data-edge-label")!;
+    const edges = [...diagram().querySelectorAll<SVGGElement>("[data-edge-group]")];
+    await userEvent.hover(label);
+    const hot = edges.find((g) => g.getAttribute("data-edge-group") === key)!;
+    expect(hot).toHaveAttribute("data-hot");
+    expect(edges.filter((g) => g !== hot).every((g) => g.hasAttribute("data-dim"))).toBe(true);
+    await userEvent.unhover(label);
+    expect(edges.some((g) => g.hasAttribute("data-dim") || g.hasAttribute("data-hot"))).toBe(false);
+  });
+
+  it("focusing a step highlights its edges, so a bundle can be traced by keyboard", async () => {
+    renderDiagram(flow1, "f1.3");
+    act(() => screen.getByRole("button", { name: /^Step 3,/ }).focus());
+    const hot = [...diagram().querySelectorAll("[data-edge-group][data-hot]")].map((g) =>
+      g.getAttribute("data-edge-group"),
+    );
+    const expected = flow1.edges.filter((e) => e.from === "f1.3" || e.to === "f1.3").length;
+    expect(hot).toHaveLength(expected);
   });
 
   it("calls onSelectStep with the clicked node's step", async () => {

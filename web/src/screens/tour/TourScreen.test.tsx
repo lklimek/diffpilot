@@ -147,7 +147,7 @@ describe("Tour screen (brief §4.3)", () => {
     }
   });
 
-  it("a finished analysis offers Retry for a stored flow that fails today's checks", async () => {
+  it("a finished analysis offers Analyse this flow again for a stored flow that fails today's checks", async () => {
     const tour = structuredClone(seedFor("default", "tour") as Tour);
     expect(tour.analysis.state.state).toBe("finished");
     const f2 = tour.flows.find((f) => f.id === "f2")!;
@@ -168,7 +168,7 @@ describe("Tour screen (brief §4.3)", () => {
     );
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 2:/ }));
-    await user().click(await within(main()).findByRole("button", { name: "Retry this flow" }));
+    await user().click(await within(main()).findByRole("button", { name: "Analyse this flow again" }));
     await waitFor(() => expect(requested).toEqual(["f2"]));
   });
 
@@ -438,6 +438,75 @@ describe("Tour screen (brief §4.3)", () => {
     };
     act(() => FakeEventSource.latest().emit({ event: "question", question: answered }));
     expect(await within(answers).findByText("It is not.")).toBeInTheDocument();
+  });
+
+  it("rating pills: the flow intro and step show them; a pill jumps to the first remark and flashes it", async () => {
+    await open();
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
+    const flowPill = await within(main()).findByRole("button", { name: "19 LLM remarks in this flow" });
+    expect(flowPill).toHaveTextContent(/^19 remarks$/);
+    await user().click(flowPill);
+    expect(await within(main()).findByRole("heading", { level: 2, name: /Retry allowed/ })).toBeVisible();
+    expect(within(main()).getByRole("button", { name: /^LLM rated this step HIGH/ })).toHaveTextContent(
+      "▲ HIGH · 3 remarks",
+    );
+    // The code line of the first remark and its Inspector entry flash.
+    await waitFor(() => expect(main().querySelector("[data-flash]")).not.toBeNull());
+    await waitFor(() => expect(inspector().querySelector("[data-flash]")).not.toBeNull());
+  });
+
+  it("r goes to the next step with LLM remarks after the current position", async () => {
+    await open();
+    await openStep("1", "4");
+    await user().keyboard("r");
+    expect(await within(main()).findByRole("heading", { level: 2, name: /Retry allowed/ })).toBeVisible();
+  });
+
+  it("r from a flow introduction starts at that flow; after the last step it wraps to the first", async () => {
+    await open();
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 2:/ }));
+    await user().keyboard("r");
+    expect(
+      await within(main()).findByRole("heading", { level: 2, name: /Default timeout 30 s/ }),
+    ).toBeVisible();
+    expect(within(main()).getByRole("button", { name: /^LLM rated this step MEDIUM/ })).toBeVisible();
+    await openStep("5", "2");
+    await user().keyboard("r");
+    expect(
+      await within(main()).findByRole("heading", { level: 2, name: /Trigger: callers of send/ }),
+    ).toBeVisible();
+  });
+
+  it("r says so when no step has LLM remarks", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/tour", () => {
+        const tour = structuredClone(seedFor("default", "tour") as Tour);
+        for (const s of tour.flows.flatMap((f) => f.steps)) s.llm.annotations = [];
+        return HttpResponse.json(tour);
+      }),
+    );
+    await open();
+    await user().keyboard("r");
+    expect(await screen.findByText("No more steps with remarks")).toBeInTheDocument();
+  });
+
+  it("a collapsed Ask stays collapsed across steps; a expands it and focuses the field", async () => {
+    await open();
+    await openStep("1", "5");
+    const header = within(inspector()).getByRole("button", { name: /^Ask about/ });
+    await user().click(header);
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    await openStep("1", "6");
+    expect(within(inspector()).getByRole("button", { name: /^Ask about/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    await user().keyboard("a");
+    expect(within(inspector()).getByRole("button", { name: /^Ask about/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(within(inspector()).getByRole("textbox", { name: /Ask the LLM about Step 6/ })).toHaveFocus();
   });
 
   it("a lost answer stream is announced at the pinned answers", async () => {

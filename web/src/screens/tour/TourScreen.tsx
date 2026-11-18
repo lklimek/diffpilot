@@ -1,5 +1,9 @@
 import { AnalysisStateBanner } from "../../components/progress/AnalysisStateBanner";
 import { FlowWork } from "../../components/progress/FlowWork";
+import { isIdle } from "../../components/progress/idle";
+import { RemarkPill } from "../../components/remark-pills/RemarkPills";
+import { remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
+import { useSectionState } from "../../components/inspector/sectionState";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
 import { ApiError } from "../../api/client";
@@ -22,6 +26,7 @@ import {
   useMe,
   usePendingReview,
   useTour,
+  useFeedback,
   useFlowWork,
   useQuestionEvents,
   useQuestions,
@@ -189,11 +194,17 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const questions = useQuestions(analysisId);
   const ask = useAskQuestion(analysisId);
   const now = useNow();
-  const requested = useRef<string | null>(null);
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
   // A finished analysis takes a request only for a flow shown failed (a stored flow today's checks reject).
   const finished = tour.analysis.state.state === "finished";
   const pending = usePendingReview(analysisId);
+  // Remarks the user gave feedback on dim their pills; nothing else is per-user state of a remark.
+  const feedback = useFeedback(analysisId);
+  const handledRemarks = new Set(
+    (feedback.data ?? []).flatMap((f) => (f.target.target === "annotation" ? [f.target.annotation_id] : [])),
+  );
+  // Said by `r` when no step has remarks.
+  const [remarkNotice, setRemarkNotice] = useState<{ text: string; nonce: number } | null>(null);
   const comments = useCommentActions(analysisId);
   const ticked = state.ticked_steps;
 
@@ -236,6 +247,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const [focusNext, setFocusNext] = useState<"ask" | "comment" | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
   const askRef = useRef<HTMLTextAreaElement>(null);
+  // Inspector sections (Ask included), remembered per user; scoped reveals close again on another block.
+  const sections = useSectionState(JSON.stringify(current));
   const commentRef = useRef<HTMLTextAreaElement>(null);
 
   const setLayout = (next: TourLayout) => {
@@ -284,19 +297,13 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     openFragment(blockFragment(block));
   };
 
-  useEffect(() => {
-    const id = flow?.id ?? null;
-    if (!workAllowed || requested.current === id) return;
-    requested.current = id;
-    if (id && (flow?.analysis_status?.state === "not_analysed" || flow?.analysis_status?.state === "queued"))
-      work.request.mutate(id);
-  }, [flow, work.request, workAllowed]);
-
-  const showEvidence = (item: Evidence) => {
+  // `owner`: the step the line belongs to, when known (a remark); else the first step covering the line.
+  const showEvidence = (item: Pick<Evidence, "file" | "side" | "line">, owner?: StepId) => {
     const found = tour.flows
       .flatMap((f) => f.steps)
       .find(
         (s) =>
+          (owner === undefined || s.id === owner) &&
           s.facts.file === item.file &&
           s.facts.side === item.side &&
           item.line >= s.facts.range.start_line &&
@@ -380,6 +387,20 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       comment({ path: step.facts.file, side: step.facts.side, start_line: null, line }, stepLines.data);
     }
   };
+  // LLM remark pills and `r`: the remark's code line and its Inspector entry flash.
+  const jumpToRemark = (steps: Step[]) => {
+    const remark = remarkTarget(steps, handledRemarks);
+    if (!remark) return;
+    const { step: owner, annotation } = remark;
+    if (!annotation) return go({ block: "step", step_id: owner.id });
+    showEvidence(
+      { file: owner.facts.file, side: owner.facts.side, line: annotation.range.start_line },
+      owner.id,
+    );
+    flashNonce.current += 1;
+    setInspectorFlash({ kind: "annotation", id: annotation.id, nonce: flashNonce.current });
+    openInspector();
+  };
   const showInInspector = (target: MarkerTarget) => {
     const owner = target.kind === "thread" ? tour.threads.find((t) => t.id === target.id)?.step_id : null;
     if (owner && owner !== step?.id) go({ block: "step", step_id: owner });
@@ -410,9 +431,27 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         case "comment":
           event.preventDefault();
           return commentOnCurrentLine();
+        case "next_remark": {
+          // After the current step; on a flow introduction from that flow's first step; then around.
+          const order = tour.flows.flatMap((f) => f.steps);
+          const from =
+            step && current.block === "step"
+              ? order.findIndex((s) => s.id === step.id) + 1
+              : current.block === "flow_intro" && flow
+                ? tour.flows.slice(0, tour.flows.indexOf(flow)).reduce((n, f) => n + f.steps.length, 0)
+                : 0;
+          const start = Math.max(0, from);
+          const next = [...order.slice(start), ...order.slice(0, start)].find(
+            (s) => s.llm.annotations.length > 0,
+          );
+          if (next) jumpToRemark([next]);
+          else setRemarkNotice((n) => ({ text: "No more steps with remarks", nonce: (n?.nonce ?? 0) + 1 }));
+          return;
+        }
         case "ask":
           event.preventDefault();
           openInspector();
+          sections.reveal("ask");
           return setFocusNext("ask");
         case "help":
           return setHelpOpen(true);
@@ -519,25 +558,40 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     );
   } else if (current.block === "flow_intro" && flow) {
     block = (
-      <FlowIntroBlock
-        flow={flow}
-        analysis={tour.analysis.state}
-        now={now}
-        onRequest={
-          workAllowed || (finished && flow.analysis_status?.state === "failed")
-            ? () => work.request.mutate(flow.id)
-            : undefined
-        }
-        busy={work.request.isPending}
-        dependencies={tour.flows.filter((f) => flow.llm.depends_on.includes(f.id))}
-        ticked={ticked}
-        onSetReviewed={(on) =>
-          setTicks(
-            flow.steps.map((s) => s.id),
-            on,
-          )
-        }
-      />
+      <>
+        <RemarkPill
+          summary={summariseRemarks(flow.steps, handledRemarks)}
+          scope="flow"
+          subject="this flow"
+          withRating={false}
+          label="LLM remarks:"
+          onSelect={() => jumpToRemark(flow.steps)}
+        />
+        <FlowIntroBlock
+          flow={flow}
+          analysis={tour.analysis.state}
+          now={now}
+          onRequest={
+            workAllowed || (finished && flow.analysis_status?.state === "failed")
+              ? () => work.request.mutate(flow.id)
+              : undefined
+          }
+          busy={work.request.isPending}
+          error={
+            work.request.error && work.request.variables === flow.id
+              ? errorText(work.request.error)
+              : undefined
+          }
+          dependencies={tour.flows.filter((f) => flow.llm.depends_on.includes(f.id))}
+          ticked={ticked}
+          onSetReviewed={(on) =>
+            setTicks(
+              flow.steps.map((s) => s.id),
+              on,
+            )
+          }
+        />
+      </>
     );
   } else if (step && found) {
     block = (
@@ -546,24 +600,36 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         step={step}
         threadsStatus={tour.pr_context.facts.threads_status}
         code={
-          oldCode ? (
-            <DiffCode analysisId={analysisId} query={stepQuery(step)} comments={ctx} />
-          ) : (
-            <LinesCode
-              key={location.key}
-              ctx={ctx}
-              revealLine={evidence?.line ?? firstShownChange}
-              lines={stepLines}
-              annotations={step.llm.annotations}
-              band={step.llm.assessment?.risk ?? null}
-              kind={step.llm.kind}
-              selectedAnnotation={annotationId}
-              onSelectAnnotation={(ids) => {
-                setAnnotationId(ids[0] ?? null);
-                openInspector();
-              }}
-            />
-          )
+          <>
+            {/* Apart from the remark label at the top of the code, so both keep a 24 px target. */}
+            <div className="mb-2">
+              <RemarkPill
+                summary={summariseRemarks([step], handledRemarks)}
+                scope="step"
+                subject="this step"
+                label="LLM rating and remarks:"
+                onSelect={() => jumpToRemark([step])}
+              />
+            </div>
+            {oldCode ? (
+              <DiffCode analysisId={analysisId} query={stepQuery(step)} comments={ctx} />
+            ) : (
+              <LinesCode
+                key={location.key}
+                ctx={ctx}
+                revealLine={evidence?.line ?? firstShownChange}
+                lines={stepLines}
+                annotations={step.llm.annotations}
+                band={step.llm.assessment?.risk ?? null}
+                kind={step.llm.kind}
+                selectedAnnotation={annotationId}
+                onSelectAnnotation={(ids) => {
+                  setAnnotationId(ids[0] ?? null);
+                  openInspector();
+                }}
+              />
+            )}
+          </>
         }
         patterns={found.flow.llm.pattern_repetitions}
         impactCode={(impact) => (
@@ -650,6 +716,30 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       : saveError !== null
         ? `Your ticks and last viewed block are not saved: ${errorText(saveError)}`
         : null;
+  // Flows run on request only; "Analyse all remaining flows" (background_analysis) is the opt-in for the rest.
+  const background = tour.analysis.background_analysis;
+  const pendingFlows = tour.flows.filter((f) => f.analysis_status && f.analysis_status.state !== "analysed");
+  const flowWork = tour.analysis.review_ready && workAllowed && (
+    <FlowWork
+      done={tour.flows.length - pendingFlows.length}
+      total={tour.flows.length}
+      remainingLines={pendingFlows.reduce(
+        (n, f) =>
+          n +
+          (f.planned?.ranges ?? []).reduce(
+            (m, r) => m + r.ranges.reduce((k, x) => k + x.end_line - x.start_line + 1, 0),
+            0,
+          ),
+        0,
+      )}
+      background={background}
+      parked={background === false && pendingFlows.length > 0 && isIdle(tour.analysis.state)}
+      busy={work.background.isPending}
+      onBackground={(enabled) => work.background.mutate(enabled)}
+      progressHref={`/analyses/${analysisId}/progress`}
+      error={work.background.error ? errorText(work.background.error) : undefined}
+    />
+  );
   const centre = (
     <>
       <AnalysisStateBanner
@@ -662,21 +752,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           work.resume.error || work.retry.error ? errorText(work.resume.error || work.retry.error) : undefined
         }
       />
-      {tour.analysis.review_ready && workAllowed && (
-        <FlowWork
-          done={tour.flows.filter((f) => f.analysis_status?.state === "analysed").length}
-          total={tour.flows.length}
-          background={tour.analysis.background_analysis ?? true}
-          busy={work.background.isPending}
-          onBackground={(enabled) => work.background.mutate(enabled)}
-          progressHref={`/analyses/${analysisId}/progress`}
-          error={
-            work.request.error || work.background.error
-              ? errorText(work.request.error || work.background.error)
-              : undefined
-          }
-        />
-      )}
       {resumed && sameBlock(resumed, current) && (
         <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1 text-[12.5px]">
           <p role="status" className="m-0 flex-1">
@@ -731,6 +806,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           onSelectStep={selectStep}
           open={layout.diagram}
           onToggle={() => setLayout({ ...layout, diagram: !layout.diagram })}
+          height={layout.diagramHeight}
+          onHeight={(diagramHeight) => setLayout({ ...layout, diagramHeight })}
         />
       )}
       {block ?? <StatusMessage kind="empty">This block is not part of the analysis.</StatusMessage>}
@@ -743,6 +820,11 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       <p className="sr-only" aria-live="polite">
         {questionsView ? "Your questions and answers" : blockTitle(tour, current)}
       </p>
+      {remarkNotice && (
+        <p key={remarkNotice.nonce} className="sr-only" role="status">
+          {remarkNotice.text}
+        </p>
+      )}
     </>
   );
 
@@ -762,6 +844,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       <TopBar
         pr={tour.analysis.pr}
         ci={tour.pr_context.facts.ci}
+        language={tour.analysis.language}
         login={login}
         hideContextChanges={hideContextChanges}
         onHideContextChanges={changeContextVisibility}
@@ -778,21 +861,26 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         onChange={setLayout}
         mainRef={mainRef}
         nav={
-          <NavList
-            flows={tour.flows}
-            analysis={tour.analysis.state}
-            quiet={tour.quiet}
-            ticked={ticked}
-            pendingCount={pendingCount}
-            current={current}
-            onSelect={go}
-            questionCounts={questionCounts}
-            questions={{
-              count: questions.isSuccess ? myQuestions.length : questions.isError ? "error" : "loading",
-              open: questionsView,
-              onOpen: () => openFragment("questions"),
-            }}
-          />
+          <>
+            {flowWork}
+            <NavList
+              handledRemarks={handledRemarks}
+              onRemark={jumpToRemark}
+              flows={tour.flows}
+              analysis={tour.analysis.state}
+              quiet={tour.quiet}
+              ticked={ticked}
+              pendingCount={pendingCount}
+              current={current}
+              onSelect={go}
+              questionCounts={questionCounts}
+              questions={{
+                count: questions.isSuccess ? myQuestions.length : questions.isError ? "error" : "loading",
+                open: questionsView,
+                onOpen: () => openFragment("questions"),
+              }}
+            />
+          </>
         }
         main={centre}
         inspector={
@@ -820,6 +908,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             drafts={drafts}
             reanalyseHref={`/?pr=${encodeURIComponent(tour.analysis.pr.html_url)}`}
             askRef={askRef}
+            sections={sections}
             commentRef={commentRef}
           />
         }

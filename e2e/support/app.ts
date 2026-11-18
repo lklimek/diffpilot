@@ -24,19 +24,50 @@ export async function signIn(page: Page): Promise<void> {
   await expect(page.getByRole("banner")).toContainText("alice");
 }
 
-/** Pastes the PR URL on Home, presses Analyze and returns the new analysis id (progress screen open). */
-export async function analyze(page: Page): Promise<string> {
+/** Pastes the PR URL on Home and presses Check: the result card opens; nothing starts. */
+export async function checkPr(page: Page): Promise<void> {
   await page.getByLabel("GitHub pull request URL").fill(PR_URL);
+  await page.getByRole("button", { name: "Check" }).click();
+  await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();
+}
+
+/**
+ * Presses the check card's Start analysis (or Start analysis anyway) and returns the new analysis id
+ * (progress screen open).
+ */
+export async function startAnalysis(page: Page): Promise<string> {
   const created = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v1/analyses",
   );
-  await page.getByRole("button", { name: "Analyze" }).click();
+  await page
+    .getByRole("region", { name: "Pull request check" })
+    .getByRole("button", { name: /^Start analysis( anyway)?$/ })
+    .click();
   const response = await created;
   expect(response.status(), await response.text()).toBe(201);
   const { id } = (await response.json()) as { id: string };
   await expect(page).toHaveURL(new RegExp(`/analyses/${id}/progress$`));
   return id;
+}
+
+/** Checks the PR on Home and starts its analysis: returns the new analysis id (progress screen open). */
+export async function analyze(page: Page): Promise<string> {
+  await checkPr(page);
+  return startAnalysis(page);
+}
+
+/**
+ * On the progress screen: once the plan is ready, opts in to analysing every remaining flow. Flows run on request
+ * only, so the switch must read off first; a server that starts it on fails here.
+ */
+export async function analyseAllRemainingFlows(page: Page): Promise<void> {
+  const off = page.getByRole("button", { name: "Analyse all remaining flows" });
+  const on = page.getByRole("button", { name: "Analysing all remaining flows — Stop" });
+  await expect(off.or(on).first()).toBeVisible({ timeout: 180_000 });
+  await expect(on, "a new analysis must not analyse all flows before it is asked to").toHaveCount(0);
+  await off.click();
+  await expect(on.or(page.getByText(/^(\d+) of \1 flows analysed/)).first()).toBeVisible();
 }
 
 /** The analysis state as the API reports it. */
@@ -68,28 +99,17 @@ export async function waitForState(page: Page, id: string, wanted: string, timeo
  */
 export async function finishedReview(page: Page): Promise<string> {
   await signIn(page);
-  await page.getByLabel("GitHub pull request URL").fill(PR_URL);
-  const created = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v1/analyses",
-  );
-  await page.getByRole("button", { name: "Analyze" }).click();
+  await checkPr(page);
+  const card = page.getByRole("region", { name: "Pull request check" });
   // An existing analysis may or may not have been opened by this user before.
-  const resume = page.getByRole("link", { name: /^(Resume|Open) review$/ });
-  // The loser of the race stays pending until the page closes; its rejection is expected.
-  const existing = await Promise.race([
-    created.then(() => false).catch(() => false),
-    resume
-      .waitFor()
-      .then(() => true)
-      .catch(() => false),
-  ]);
-  if (existing) {
+  const resume = card.getByRole("link", { name: /^(Resume|Open) review$/ });
+  const start = card.getByRole("button", { name: /^Start analysis( anyway)?$/ });
+  await expect(resume.or(start).first()).toBeVisible();
+  if (await resume.isVisible()) {
     await resume.click();
   } else {
-    const response = await created;
-    expect(response.status(), await response.text()).toBe(201);
-    const { id } = (await response.json()) as { id: string };
+    const id = await startAnalysis(page);
+    await analyseAllRemainingFlows(page);
     await waitForState(page, id, "finished");
     await page.getByRole("link", { name: "Open review" }).click();
   }
@@ -269,7 +289,7 @@ export const REQUIRED_TIPS: RequiredTip[] = [
     selector: `${PROGRESS} button, ${PROGRESS} a[href]`,
     min: 1,
   },
-  { screen: HOME, what: "Analyze", selector: `${HOME} button[type="submit"]`, name: "^Analyze$", min: 1 },
+  { screen: HOME, what: "Check", selector: `${HOME} button[type="submit"]`, name: "^Check$", min: 1 },
 ];
 
 /**

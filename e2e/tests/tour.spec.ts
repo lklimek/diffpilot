@@ -1,6 +1,7 @@
 // Journey (b): the Tour of a finished analysis — PR context facts, flows and steps, quiet rows, classic diff,
 // resume where the reviewer left off, columns.
 import {
+  checkPr,
   checkScreen,
   finishedReview,
   heading,
@@ -8,7 +9,6 @@ import {
   nav,
   navTo,
   openStep,
-  PR_URL,
 } from "../support/app";
 import { expect, test } from "../support/fixtures";
 
@@ -142,8 +142,7 @@ test("resume where left off: the tick and the last viewed block survive a reload
   await expect(ticked).toBeVisible();
 
   await page.goto("/");
-  await page.getByLabel("GitHub pull request URL").fill(PR_URL);
-  await page.getByRole("button", { name: "Analyze" }).click();
+  await checkPr(page);
   const found = page.getByRole("status").filter({ hasText: "Analysis found." });
   await expect(found).toContainText("Your ticks, answers and last viewed block are kept");
   await checkScreen(page);

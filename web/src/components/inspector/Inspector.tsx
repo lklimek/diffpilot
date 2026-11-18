@@ -64,6 +64,8 @@ export interface InspectorProps {
   flash?: { kind: "annotation" | "thread"; id: string; nonce: number } | null;
   /** The `flash` request was handled (its highlight ended); it is not to be shown again. */
   onFlashed?: () => void;
+  /** Section state shared with the dock (Ask); the panel keeps its own without it. */
+  sections?: SectionControl;
 }
 
 // The section listing each annotation type.
@@ -273,7 +275,8 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
 /** Right-hand inspector (brief §4.3): never empty; the current block, or the selected annotation of a step. */
 export function Inspector(props: InspectorProps) {
   const { dock, onBackToStep, flash, onFlashed } = props;
-  const sections = useSectionState(JSON.stringify(props.block));
+  const own = useSectionState(JSON.stringify(props.block));
+  const sections = props.sections ?? own;
   const panel = panelFor(props, sections);
   const heading = useRef<HTMLHeadingElement>(null);
   const focusHeading = useRef(false);

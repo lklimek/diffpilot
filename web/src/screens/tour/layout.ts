@@ -17,6 +17,8 @@ export interface TourLayout {
   widths: { nav: number | null; inspector: number | null };
   /** Whether the flow diagram pane is open. */
   diagram: boolean;
+  /** Dragged height in px of the flow diagram; null = default. */
+  diagramHeight: number | null;
 }
 
 /** localStorage key of the layout. */
@@ -28,7 +30,11 @@ export const DEFAULT_LAYOUT: TourLayout = {
   full: null,
   widths: { nav: null, inspector: null },
   diagram: false,
+  diagramHeight: null,
 };
+
+/** Smallest height in px of the flow diagram, so it never collapses to nothing. */
+export const DIAGRAM_MIN_PX = 120;
 
 /** Width of a hidden column's strip in px. */
 export const STRIP_PX = 34;
@@ -64,6 +70,12 @@ export function loadLayout(): TourLayout {
       full: isColumn(raw.full) ? raw.full : null,
       widths: { nav: width("nav", raw.widths?.nav), inspector: width("inspector", raw.widths?.inspector) },
       diagram: raw.diagram === true,
+      diagramHeight:
+        typeof raw.diagramHeight === "number" &&
+        raw.diagramHeight >= DIAGRAM_MIN_PX &&
+        raw.diagramHeight <= MAX_STORED_PX
+          ? Math.round(raw.diagramHeight)
+          : null,
     };
     return COLUMNS.some((c) => !layout.hidden[c]) ? layout : { ...layout, hidden: DEFAULT_LAYOUT.hidden };
   } catch {

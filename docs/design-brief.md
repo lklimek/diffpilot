@@ -641,3 +641,70 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   back. A post whose outcome is unknown is kept the same way with its idempotency key and comes back locked
   ("may already be in your pending review"): Retry sends it with the same key, so it cannot be added twice;
   Discard makes the text editable again. The composer's Close and Escape keep the draft. Supersedes "No local drafts" (§2 v1, Comments) and "Local comment drafts" (§2 Non-goals).
+
+### Owner-approved amendment — 2026-11-18: explicit start, flows on request, sign-out
+
+- **Start analysis.** On Home, Enter or "Check" only looks the PR up (busy state on the field). The result
+  appears as its own card under the field, announced and scrolled into view: PR title and number, the size
+  warning with its estimate when it applies, an existing analysis with "Open review" / "Resume review", or the
+  lookup error. Nothing starts without the card's primary button "Start analysis" (it takes the focus, so a
+  second, deliberate Enter starts it; a held key or one in the moment the card appears does not); with a size
+  warning or without commenting it reads "Start analysis anyway" below the warning, and the card's findings
+  describe it; "Cancel" clears the card, and so does any edit of the field. A moved head is started the same way.
+  After a cancel Home says "Analysis cancelled. Check the PR to start again.". Supersedes the start on "Analyze"
+  and "Re-analyze", and "Analysis cancelled — analyze again", in §4.1 and the separate "Analyze anyway" step.
+- **Language of an analysis.** Wherever an analysis is offered or shown (Home's check card, the progress screen
+  and Tour top bar) a small tag names the language of its LLM texts ("EN" / "PL"). An existing analysis in
+  another language than the user's setting is still offered first ("Open review"); a secondary
+  "Analyse again in <language>" starts one in the user's language.
+- **Flows on request.** Flows are analysed only when the user asks: "Analyse this flow" on a flow not analysed
+  yet (opening it requests nothing), or "Analyse all remaining flows", the one opt-in for everything (the
+  analysis's background switch; shown as "Analysing all remaining flows — Stop" while on), in the Tour's left
+  panel and on the progress screen (which shows the number of remaining flows only, no changed lines). The web
+  reads the switch from the analysis and assumes no default. With
+  nothing queued or running: "Nothing is being analysed. Choose a flow to analyse, or analyse all remaining
+  flows."; the progress screen says the plan is ready and offers "Open review". Supersedes "Opening a pending
+  flow requests it" and "the background switch defaults on" in the 2026-11-17 amendment of §4.2.
+- **Sign-out.** Settings has "Sign out": it ends the session in this browser (`POST /auth/logout`; a session
+  that had already ended counts as signed out), removes that login's comment drafts and unconfirmed posts from
+  the tab, clears cached data and shows the signed-out Home.
+
+### Owner-approved amendment — 2026-11-18: code-view colours, remark bars, folds, collapsible Ask
+
+- **Change colours.** The code view draws changes exactly like the classic diff, in both themes and from one
+  shared definition: an added line has the classic diff's green fill and `+`, a removed line its red fill and
+  `−` (deterministic, from the diff). A moved line is added code in the classic diff and has the same green
+  fill; its double bar says it moved. Supersedes "neutral mark on every changed line" (§3 and §4.3 Code view),
+  the legend row "Neutral gutter bar = changed line" and the muted fill of moved blocks.
+- **Remark bars.** An LLM remark never fills code lines and draws no box: its range is a thin bar in the
+  reserved gutter column (solid / dashed / dotted by the LLM's rating, not checked; a thin neutral line when
+  unrated) with one label at its top and one `◆` marker. Unchanged lines inside the range look exactly like
+  unchanged lines outside it; changed lines inside keep their green/red look. A range that crosses a replaced
+  or removed block is one range: the label sits above the block, so the removed and replacing lines stay
+  together. "A changed line without a bar has no LLM remark." Supersedes "LLM colouring is laid on top" (§3)
+  and "No colour on a changed line" in the §4.3 legend. The `?` legend describes exactly these drawings.
+- **Folds.** Hidden comment and import lines leave a fold row where they were ("3 comment/import lines hidden ·
+  Show"; removed ones "2 removed comment/import lines hidden"; the diff does not say which line is which); Show opens just that run in place with its signs and
+  offers Hide; the top-bar switch still shows or hides all; the total note stays. Only the first line of a
+  remark range is never hidden (it carries the marker); the rest may fold inside the bar.
+- **Ask** is a collapsible Inspector section like the others (remembered with them; the header keeps the
+  step's question count); `a` opens it and focuses the field. Its caption says answers appear below the field,
+  newest first.
+
+### Owner-approved amendment — 2026-11-18: LLM rating and remark pills in navigation
+
+- On the wire a remark has no severity of its own; only its step has the LLM's rating. A pill therefore shows two
+  separate facts: the step's LLM rating and the number of its LLM remarks ("▲ HIGH · 5 remarks"; name "LLM rated
+  this step HIGH (not checked) · 5 LLM remarks"). Remark counts are never split by rating.
+- The navigation shows one pill per step and per flow row (also collapsed); the flow introduction and the step
+  (above the code) show the same. A flow's rating on the wire is its highest step rating, already shown by the flow's
+  LLM label, so the flow pill shows only the flow's total remarks ("11 remarks"); its tooltip lists the steps per
+  rating.
+- Remarks on an unrated step get a neutral pill ("5 remarks"); a rated step without remarks shows its rating alone;
+  a step with neither shows nothing, never an all-clear. Remarks with the user's feedback dim the pill.
+- A pill leads to the first remark (on a step at the highest rating for a flow) and flashes its code line and
+  Inspector entry. `r` goes to the next step with remarks after the current position (from a flow introduction:
+  that flow's first step), wraps around, and says "No more steps with remarks" when there are none.
+- Amends §1 "badges only for deterministic facts": these pills are LLM judgements and are allowed in navigation
+  because they are styled as LLM content (the LLM tint, the remark bar's colour and pattern, a word label) and say
+  "LLM" and "not checked" in their accessible name.

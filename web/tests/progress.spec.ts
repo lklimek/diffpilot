@@ -107,13 +107,13 @@ test.describe("stage and liveness", () => {
     await expect(page.getByText(/No signal from the server/)).toHaveCount(0);
   });
 
-  test("waiting for the runner, and no flow job running", async ({ page }) => {
+  test("waiting for the runner, and between two jobs (not idle)", async ({ page }) => {
     await open(page, "waiting");
     await expect(page.getByText("Waiting for the runner; next: planning the review.")).toBeVisible();
     await expect(indicator(page)).toHaveCount(0);
     await expectTrustWording(page);
     await open(page, "between-jobs");
-    await expect(page.getByText("No flow job is running.")).toBeVisible();
+    await expect(page.getByText("Between two jobs: the server starts the next one.")).toBeVisible();
     await expect(indicator(page)).toHaveCount(0);
   });
 
@@ -182,6 +182,9 @@ test("plan parts retain the whole-run clock, counters and estimate", async ({ pa
   await expect(page.getByText(/this stage started 5 min ago/)).toBeVisible();
   await page.clock.runFor(46_000);
   await expect(page.getByText("Planning the review, part 7 of 23.")).toBeVisible();
+  // The heartbeats fired inside runFor arrive (and set the server clock offset) only after it returns; one more
+  // tick then reads the elapsed time with that offset, whatever the page's load time.
+  await page.clock.runFor(10_000);
   await expect(page.getByText("Analysis started 41 min ago")).toBeVisible();
   await expect(page.getByText(/this stage started less than a minute ago/)).toBeVisible();
   await expect(stages).toContainText("Planning: 6 / 23 · current");
@@ -207,4 +210,23 @@ test("paused run shows the resume time instead of an ETA", async ({ page }) => {
   await expect(page.getByText(/^Paused until/)).toBeVisible();
   await expect(page.getByText(/About .* left|No estimate yet/)).toHaveCount(0);
   await expect(page.getByRole("list", { name: "Analysis stages" })).toBeVisible();
+});
+
+test("plan ready, nothing analysed by itself: says so, Open review and Analyse all remaining flows", async ({
+  page,
+}) => {
+  await open(page, "lazy-flows");
+  await expect(
+    page.getByText(
+      "The plan is ready. Nothing is being analysed. Choose a flow to analyse, or analyse all remaining flows.",
+    ),
+  ).toBeVisible();
+  await expect(openReview(page)).toBeVisible();
+  await expectTooltips(page);
+  await expect(page.getByText("4 not analysed")).toBeVisible();
+  await page.getByRole("button", { name: "Analyse all remaining flows" }).click();
+  await expect(page.getByRole("button", { name: "Analysing all remaining flows — Stop" })).toBeVisible();
+  // The next flow by rank is queued: the stage line names it.
+  await expect(page.getByText(/flow 2 of 5: /)).toBeVisible();
+  await expectAccessible(page);
 });

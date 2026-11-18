@@ -4,6 +4,7 @@ import { ApiError } from "../../api/client";
 import {
   useAnalysisLive,
   useCancelAnalysis,
+  useFlowWork,
   useMe,
   useRetryAnalysis,
   usePauseAnalysis,
@@ -27,6 +28,7 @@ export function ProgressScreen() {
   const retry = useRetryAnalysis();
   const pause = usePauseAnalysis();
   const resume = useResumeAnalysis();
+  const work = useFlowWork(analysisId);
   const navigate = useNavigate();
   const summary = live.summary;
   const now = useNow();
@@ -38,10 +40,10 @@ export function ProgressScreen() {
     void navigate("/", { replace: true, state });
   }, [cancelledPrUrl, navigate]);
 
-  const failure = cancel.error ?? retry.error ?? pause.error ?? resume.error;
+  const failure = cancel.error ?? retry.error ?? pause.error ?? resume.error ?? work.background.error;
   return (
     <div className="flex min-h-screen flex-col">
-      <TopBar pr={summary?.pr} login={me.data?.user?.login ?? null} />
+      <TopBar pr={summary?.pr} language={summary?.language} login={me.data?.user?.login ?? null} />
       <main id="main" className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-6">
         <h1 className="sr-only">Analysis progress</h1>
         {!summary && live.error === undefined && <StatusMessage kind="loading">Connecting…</StatusMessage>}
@@ -59,7 +61,15 @@ export function ProgressScreen() {
             progress={summary.progress}
             usage={summary.usage}
             reviewHref={`/analyses/${summary.id}`}
-            busy={cancel.isPending || retry.isPending || pause.isPending || resume.isPending}
+            busy={
+              cancel.isPending ||
+              retry.isPending ||
+              pause.isPending ||
+              resume.isPending ||
+              work.background.isPending
+            }
+            backgroundAnalysis={summary.background_analysis}
+            onBackground={(enabled) => work.background.mutate(enabled)}
             onPause={() => pause.mutate(analysisId)}
             onResume={() => resume.mutate(analysisId)}
             onCancel={() =>

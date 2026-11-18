@@ -1,6 +1,14 @@
 import { join } from "node:path";
 import { type Page } from "@playwright/test";
-import { analyze, checkScreen, heading, signIn, waitForState } from "../support/app";
+import {
+  analyseAllRemainingFlows,
+  analysisState,
+  analyze,
+  checkScreen,
+  heading,
+  signIn,
+  waitForState,
+} from "../support/app";
 import { logLeaks, stackSecrets } from "../support/secrets";
 import { expect, test } from "../support/fixtures";
 
@@ -36,6 +44,17 @@ test("sign in, analyse the fixture PR, open flow 1 step 1", async ({ page, conte
   await checkScreen(page);
   await shoot(page, "progress");
 
+  // Flows run on request only: after the plan and the PR context nothing is analysed until asked.
+  await expect(
+    page.getByText(
+      "The plan is ready. Nothing is being analysed. Choose a flow to analyse, or analyse all remaining flows.",
+    ),
+  ).toBeVisible({ timeout: 180_000 });
+  await expect(page.getByText(/^0 of 5 flows analysed/)).toBeVisible();
+  await page.waitForTimeout(2_000);
+  expect(await analysisState(page, id)).toMatchObject({ state: "running", done: 0, idle: true });
+  expect((await analysisState(page, id)).stage).toBeUndefined();
+  await analyseAllRemainingFlows(page);
   await waitForState(page, id, "finished");
   await checkScreen(page);
   const openReview = page.getByRole("link", { name: "Open review" });

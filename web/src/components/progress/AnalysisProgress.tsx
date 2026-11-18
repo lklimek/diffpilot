@@ -11,6 +11,8 @@ import type {
 import { busyTip, buttonClass } from "../button/button";
 import { PAUSE_REASON, pausedText } from "./paused";
 import { Tooltip } from "../tooltip/Tooltip";
+import { AnalyseAllButton } from "./AnalyseAllButton";
+import { isIdle } from "./idle";
 
 /** What this page knows of the event stream; the screen ticks `now`. */
 export interface ProgressActivity {
@@ -48,6 +50,9 @@ interface AnalysisProgressProps {
   onRetry: () => void;
   /** Connection and timing as this page saw them; without it, no elapsed time and no activity indicator. */
   activity?: ProgressActivity;
+  /** `background_analysis` of the analysis; with `onBackground`, its switch is offered once the review is open. */
+  backgroundAnalysis?: boolean;
+  onBackground?: (enabled: boolean) => void;
 }
 
 /** The headline; `planned` says whether the plan was accepted (null: not known from the stage data). */
@@ -102,11 +107,9 @@ function stageWork(stage: AnalysisStage, done: number | null, total: number | nu
 function stageText(state: AnalysisState): string | null {
   if (state.state !== "planning" && state.state !== "running") return null;
   const { stage } = state;
-  // A running analysis without a stage may be parked (nothing admitted): no claim that work goes on.
-  if (!stage)
-    return state.state === "running"
-      ? "No flow job is running."
-      : "Between two jobs: the server starts the next one.";
+  // Parked (nothing admitted): no claim that work goes on.
+  if (isIdle(state)) return "No flow job is running.";
+  if (!stage) return "Between two jobs: the server starts the next one.";
   const [done, total] = state.state === "running" ? [state.done, state.total] : [null, null];
   const work = stageWork(stage, done, total);
   if (stage.started_at === null) return `Waiting for the runner; next: ${work}`;
@@ -219,6 +222,8 @@ export function AnalysisProgress({
   onResume,
   onRetry,
   activity,
+  backgroundAnalysis,
+  onBackground,
 }: AnalysisProgressProps) {
   const [confirmCancel, setConfirmCancel] = useState(false);
   const planned = reviewReady ? true : progress ? progress.planning.state === "done" : null;
@@ -227,10 +232,12 @@ export function AnalysisProgress({
     state.state === "running" || state.state === "paused" ? state.done : (progress?.flows.done ?? 0);
   const cancelText = `Cancel discards the plan and the ${done} analysed flows. The agent's session for this pull request is kept. Pause keeps everything.`;
   const live = state.state !== "finished" && state.state !== "cancelled";
-  const stage =
-    reviewReady && state.state === "running" && !state.stage
-      ? `No flow job is running. ${reviewStarted ? "Resume" : "Open"} the review to choose a flow or change background analysis.`
-      : stageText(state);
+  const parked = reviewReady && isIdle(state);
+  const stage = parked
+    ? backgroundAnalysis === false
+      ? "The plan is ready. Nothing is being analysed. Choose a flow to analyse, or analyse all remaining flows."
+      : `No flow job is running. ${reviewStarted ? "Resume" : "Open"} the review to choose a flow.`
+    : stageText(state);
   const started =
     (state.state === "planning" || state.state === "running") && state.stage ? state.stage.started_at : null;
   const silence = activity ? activity.now - activity.lastSignalAt : 0;
@@ -240,6 +247,8 @@ export function AnalysisProgress({
   const elapsed = stage !== null && activity !== undefined ? elapsedText(started, activity, working) : "";
   const running = state.state === "planning" || state.state === "running";
   const percentText = progress?.percent != null ? percentLabel(progress.percent) : "";
+  // With flows on request the server counts no whole-run percent or estimate: no bar and no number then.
+  const uncounted = reviewReady === true && running && progress !== undefined && progress.percent === null;
   const analysisElapsed =
     progress && activity && activity.clockOffset !== null && running
       ? durationText(Math.max(0, activity.now - activity.clockOffset - Date.parse(progress.started_at)))
@@ -263,7 +272,7 @@ export function AnalysisProgress({
       {progress && <StageList progress={progress} />}
       <div className="flex items-center gap-4">
         <div className="min-w-0 flex-1">
-          <Bar state={state} working={working} progress={progress} planned={planned} />
+          {!uncounted && <Bar state={state} working={working} progress={progress} planned={planned} />}
         </div>
         <span className="flex flex-none flex-wrap gap-2">
           {live && state.state !== "failed" && (userPaused ? onResume : onPause) && (
@@ -322,9 +331,20 @@ export function AnalysisProgress({
               </a>
             </Tooltip>
           )}
+          {reviewReady && state.state === "running" && onBackground && backgroundAnalysis !== undefined && (
+            <span className="flex items-center gap-2">
+              <AnalyseAllButton
+                enabled={backgroundAnalysis}
+                busy={busy}
+                hint={`${state.total - state.done} ${state.total - state.done === 1 ? "flow" : "flows"} not analysed yet.`}
+                onChange={onBackground}
+              />
+              <span className="text-xs text-muted">{state.total - state.done} not analysed</span>
+            </span>
+          )}
         </span>
       </div>
-      {progress && running && (
+      {progress && running && !uncounted && (
         <p className="mt-2 text-[12.5px] text-muted">
           {percentText && <span>{percentText}</span>}
           {progress.estimate ? estimateText(progress.estimate) : "No estimate yet"}

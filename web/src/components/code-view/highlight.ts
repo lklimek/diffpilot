@@ -105,8 +105,30 @@ export function languageOf(path: string): Language | null {
  * comment line (values of `index.css`), then a conservative stand-in for the context hatch stripe.
  */
 export const CODE_BACKGROUNDS = {
-  light: ["#fbfbfc", "#fdeceb", "#fff2d2", "#e5f1f9", "#f0e8fa", "#eef0f3", "#fdecec", "#e4eefb", "#e2e5ea"],
-  dark: ["#12161d", "#3a1b19", "#3a2d12", "#112f40", "#2a2039", "#1b2029", "#3a1b19", "#17283f", "#283039"],
+  light: [
+    "#fbfbfc",
+    "#fdeceb",
+    "#fff2d2",
+    "#e5f1f9",
+    "#f0e8fa",
+    "#eef0f3",
+    "#fdecec",
+    "#e4eefb",
+    "#e2e5ea",
+    "#e6f6ea",
+  ],
+  dark: [
+    "#12161d",
+    "#3a1b19",
+    "#3a2d12",
+    "#112f40",
+    "#2a2039",
+    "#1b2029",
+    "#3a1b19",
+    "#17283f",
+    "#283039",
+    "#13301f",
+  ],
 } as const;
 
 const MIN_CONTRAST = 4.5;

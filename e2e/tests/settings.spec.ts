@@ -1,6 +1,6 @@
 // Journey (f): Settings — LLM status from the most recent LLM call (failed, then working), language of the LLM
-// texts, GitHub App installations; signed-out screens.
-import { analyze, checkScreen, signIn, waitForState } from "../support/app";
+// texts, GitHub App installations; signed-out screens; Sign out.
+import { analyseAllRemainingFlows, analyze, checkScreen, signIn, waitForState } from "../support/app";
 import { expect, test } from "../support/fixtures";
 
 test.describe.configure({ mode: "serial" });
@@ -38,6 +38,7 @@ test("after a failed LLM call the status is a plain sentence with its time; Retr
 
   await page.goto(`/analyses/${id}/progress`);
   await page.getByRole("button", { name: "Retry" }).click();
+  await analyseAllRemainingFlows(page);
   await waitForState(page, id, "finished");
   await page.goto("/settings");
   await expect(llm.getByText("working", { exact: true })).toBeVisible();
@@ -56,6 +57,20 @@ test("the language of the LLM texts is saved", async ({ page }) => {
   await page.reload();
   await expect(page.getByLabel(/written in/)).toHaveValue("pl");
   await checkScreen(page);
+});
+
+test("Sign out ends the session and shows the signed-out Home", async ({ page }) => {
+  await signIn(page);
+  await page.goto("/settings");
+  const account = page.getByRole("region", { name: "Account" });
+  await expect(account).toContainText("Signed in as alice");
+  await checkScreen(page);
+  await account.getByRole("button", { name: "Sign out" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+  // The session is gone on the server too, not only in this page.
+  await page.reload();
+  await expect(page.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
 });
 
 // TODO(installations not checked): fake GitHub always answers the installations list; the "not checked" state

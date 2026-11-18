@@ -25,6 +25,13 @@ describe("TopBar", () => {
     expectTrustWording(banner.textContent ?? "");
   });
 
+  it("tags the analysis with the language of its LLM texts", () => {
+    render(<TopBar pr={tour.analysis.pr} language="pl" login="alice" />);
+    expect(within(screen.getByRole("banner")).getByText("PL")).toHaveAccessibleDescription(
+      "LLM texts of this analysis are in Polish.",
+    );
+  });
+
   it("marks an incomplete pending-review count and says why in the tooltip", () => {
     render(<TopBar login="alice" pendingCount="1+" onOpenPending={() => {}} />);
     const button = screen.getByRole("button", { name: /Pending review/ });

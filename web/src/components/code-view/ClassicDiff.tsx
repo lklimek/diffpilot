@@ -10,6 +10,7 @@ import type {
 import { CommentMarker, CommentPanel, commentsByLine, lineKey, lineName } from "../comment/LineComments";
 import type { Highlight, Token } from "./highlight";
 import { CodeText, useTokens } from "./tokens";
+import { CHANGE_LOOK } from "./changeLook";
 
 /** Props of the classic diff ("Show old code", inspector section 1). */
 export interface ClassicDiffProps {
@@ -48,10 +49,10 @@ function lineComments(line: DiffLine, comments: Comments): [string, PendingComme
   return null;
 }
 
-const KINDS: Record<DiffLineKind, { sign: string; text: string; look: string }> = {
-  context: { sign: " ", text: "unchanged", look: "" },
-  removed: { sign: "−", text: "removed", look: "bg-rm-bg" },
-  added: { sign: "+", text: "added", look: "bg-ad-bg" },
+const KINDS: Record<DiffLineKind, { sign: string; text: string; look: string; signLook: string }> = {
+  context: { sign: " ", text: "unchanged", look: "", signLook: "" },
+  removed: { ...CHANGE_LOOK.removed, look: CHANGE_LOOK.removed.fill },
+  added: { ...CHANGE_LOOK.added, look: CHANGE_LOOK.added.fill },
 };
 
 const ENDINGS: Record<LineEnding, string> = { crlf: "CRLF", no_newline: "no newline at end of file" };
@@ -88,7 +89,7 @@ function Hunk({
             >
               <span className="pr-1 text-right text-muted select-none">{l.old_line}</span>
               <span className="pr-1 text-right text-muted select-none">{l.new_line}</span>
-              <span className="text-center font-bold select-none">
+              <span className={`text-center font-bold select-none ${kind.signLook}`}>
                 <span aria-hidden>{kind.sign}</span>
                 <span className="sr-only">{kind.text}</span>
               </span>

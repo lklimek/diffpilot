@@ -25,6 +25,12 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
       "GitHub thread marker: hover and focus show its popover with the thread excerpt, which serves as its tooltip.",
   },
   {
+    file: "components/ask/AskForm.tsx",
+    match: "aria-expanded",
+    reason:
+      "Ask's section disclosure header, like the other Inspector sections: named by its caption, state announced.",
+  },
+  {
     file: "components/inspector/Collapsible.tsx",
     match: "aria-expanded",
     reason: "Section disclosure header: named by its section title, its expanded state is announced.",
@@ -43,11 +49,6 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
     file: "components/nav/NavList.tsx",
     match: 'current?.block === "step"',
     reason: "Step row named by its destination; a tip would cover the rows below.",
-  },
-  {
-    file: "screens/tour/DiagramPane.tsx",
-    match: "aria-expanded",
-    reason: "Disclosure header (Show/Hide flow diagram): its text says what it does, its state is announced.",
   },
   {
     file: "components/help/HelpDialog.tsx",

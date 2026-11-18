@@ -1,6 +1,6 @@
 // Journey (a), part 1: progress while planning, cancel, analyse again; failure before any flow → Retry runs a
 // new round to the end with progress k of n.
-import { analyze, checkScreen, PR_URL, signIn, waitForState } from "../support/app";
+import { analyseAllRemainingFlows, analyze, checkScreen, PR_URL, signIn, waitForState } from "../support/app";
 import { expect, test } from "../support/fixtures";
 
 test.describe.configure({ mode: "serial" });
@@ -28,7 +28,7 @@ test("cancel while planning: Home says the analysis was cancelled, with the URL 
   await page.getByRole("button", { name: "Confirm cancel", exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   await expect(
-    page.getByRole("status").filter({ hasText: "Analysis cancelled — analyze again." }),
+    page.getByRole("status").filter({ hasText: "Analysis cancelled. Check the PR to start again." }),
   ).toBeVisible();
   await expect(page.getByLabel("GitHub pull request URL")).toHaveValue(PR_URL);
   await waitForState(page, id, "cancelled", 20_000);
@@ -52,6 +52,8 @@ test("failure before any flow: plain description; Retry runs a new round to the 
   await checkScreen(page);
 
   await page.getByRole("button", { name: "Retry" }).click();
+  // Flows run on request only: opt in to all of them once the plan is ready.
+  await analyseAllRemainingFlows(page);
   await expect(page.getByText(/^[1-4] of 5 flows analysed/)).toBeVisible({ timeout: 60_000 });
   // The bar counts the whole run in percent (brief §4.2); the flow count k of n is in its text.
   await expect(progress(page)).toHaveAttribute("aria-valuemax", "100");

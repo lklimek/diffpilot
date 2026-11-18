@@ -1,16 +1,20 @@
 import { useId, type ReactNode } from "react";
 import type {
   AnalysisState,
+  AnnotationId,
   BlockRef,
   Flow,
   QuietRowRef,
   QuietRows,
+  Step,
   StepId,
 } from "../../api/generated/types";
 import { GroupLabel, RiskLabel } from "../badge/LlmLabel";
 import { isFlowReviewed } from "../flow-intro/progress";
 import { FlowWorkLabel } from "../flow-intro/status";
 import { NOT_ANALYSED_LABEL, fileCount, lineCount, plural } from "../quiet/labels";
+import { RemarkPill } from "../remark-pills/RemarkPills";
+import { summariseRemarks } from "../remark-pills/remarks";
 import { Tooltip } from "../tooltip/Tooltip";
 
 interface NavListProps {
@@ -32,6 +36,10 @@ interface NavListProps {
   questionCounts?: Readonly<Record<StepId, number>>;
   /** The entry of the user's questions page; no entry when omitted. */
   questions?: { count: number | "loading" | "error"; open: boolean; onOpen: () => void };
+  /** Remarks with the user's feedback (their pills dim). */
+  handledRemarks?: ReadonlySet<AnnotationId>;
+  /** A rating/remark pill: go to the first remark among `steps`; without it no pills are shown. */
+  onRemark?: (steps: Step[]) => void;
 }
 
 // Spoken count of the questions entry while it has no number.
@@ -105,6 +113,8 @@ export function NavList({
   onSelect,
   questionCounts = {},
   questions,
+  handledRemarks = new Set(),
+  onRemark,
 }: NavListProps) {
   const openFlow = currentFlowId(flows, shown);
   // The questions page replaces the block in the centre: no block row is current meanwhile.
@@ -154,6 +164,15 @@ export function NavList({
                     <RiskLabel risk={flow.llm.risk} />
                   )}
                   <GroupLabel group={flow.group} />
+                  {onRemark && (
+                    <RemarkPill
+                      summary={summariseRemarks(flow.steps, handledRemarks)}
+                      scope="flow"
+                      subject={`flow ${flow.position}`}
+                      withRating={false}
+                      onSelect={() => onRemark(flow.steps)}
+                    />
+                  )}
                 </span>
               </div>
               {flow.id === openFlow && (
@@ -162,10 +181,10 @@ export function NavList({
                     const done = ticked.includes(step.id);
                     const asked = questionCounts[step.id] ?? 0;
                     return (
-                      <li key={step.id}>
+                      <li key={step.id} className="flex items-start gap-1">
                         <button
                           type="button"
-                          className={`${ITEM} py-0.5 text-[12.5px]`}
+                          className={`${ITEM} flex-1 py-0.5 text-[12.5px]`}
                           aria-current={ariaCurrent(current?.block === "step" && current.step_id === step.id)}
                           onClick={() => onSelect({ block: "step", step_id: step.id })}
                           aria-label={`Step ${step.number}: ${step.llm.title}${asked > 0 ? `, ${plural(asked, "question")} asked` : ""}${done ? ", reviewed" : ""}`}
@@ -196,6 +215,16 @@ export function NavList({
                             </Tooltip>
                           )}
                         </button>
+                        <span className="pt-0.5">
+                          {onRemark && (
+                            <RemarkPill
+                              summary={summariseRemarks([step], handledRemarks)}
+                              scope="step"
+                              subject={`step ${step.number}`}
+                              onSelect={() => onRemark([step])}
+                            />
+                          )}
+                        </span>
                       </li>
                     );
                   })}

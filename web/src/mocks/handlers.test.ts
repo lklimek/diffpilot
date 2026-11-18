@@ -270,13 +270,14 @@ describe("msw handlers of the screens", () => {
           state: "running",
           done,
           total: 5,
+          idle: false,
           stage: {
             kind: "flow",
             flow: { index: done + 1, title: FLOW_TITLES[done] },
             started_at: expect.any(String),
           },
         })),
-        { state: "running", done: 5, total: 5 },
+        { state: "running", done: 5, total: 5, idle: false },
         { state: "finished", total: 5 },
       ]);
     },

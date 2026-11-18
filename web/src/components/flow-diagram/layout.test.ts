@@ -4,6 +4,10 @@ import { seedFor } from "../../mocks/fixtures";
 import {
   EDGE_MAX_LINES,
   EDGE_TEXT_WIDTH,
+  ATTACH_STEP,
+  LANE_FIRST,
+  LANE_STEP,
+  PARALLEL_STEP,
   LABEL_MAX_CHARS,
   MAX_DRAWN_EDGES,
   MAX_DRAWN_STEPS,
@@ -17,11 +21,13 @@ import {
   layoutForWidth,
   wrapText,
   type Box,
+  type DiagramEdge,
   type DiagramLayout,
   type Direction,
 } from "./layout";
 import { estimateWidth } from "./measure";
 import { syntheticGraph } from "./syntheticGraph";
+import largeGraphs from "../../mocks/diagrams/large-flow-graphs.json";
 
 const tour = seedFor("default", "tour") as Tour;
 const flow1 = tour.flows[0]!.graph;
@@ -437,4 +443,193 @@ it("keeps numbering in reading order for several entry points", () => {
       1, 2, 3, 4, 5, 6,
     ]);
   }
+});
+
+describe("edge routing (owner's rule: straight between neighbours, small side lanes otherwise)", () => {
+  const large = (largeGraphs as Record<string, FlowGraph>).large!;
+  const medium = (largeGraphs as Record<string, FlowGraph>).medium!;
+  const chain: FlowGraph = {
+    nodes: [1, 2, 3, 4].map((number) => ({
+      step_id: `c${number}`,
+      number,
+      kind: "changed",
+      label: `Step ${number} with a label`,
+    })),
+    edges: [
+      { from: "c1", to: "c2", label: "ok" },
+      { from: "c2", to: "c3", label: null },
+      { from: "c3", to: "c4", label: null },
+      { from: "c1", to: "c4", label: "skip" },
+      { from: "c4", to: "c2", label: "again" },
+    ],
+  };
+  const node = (layout: DiagramLayout, id: string) => layout.nodes.find((n) => n.stepId === id)!;
+
+  it("joins vertical neighbours with one straight line from bottom centre to top centre", () => {
+    const layout = layoutFlow(chain, "TB");
+    for (const [from, to] of [
+      ["c1", "c2"],
+      ["c2", "c3"],
+      ["c3", "c4"],
+    ] as const) {
+      const edge = layout.edges.find((e) => e.from === from && e.to === to)!;
+      const [a, b] = [node(layout, from), node(layout, to)];
+      expect(edge.points).toEqual([
+        { x: a.x + a.width / 2, y: a.y + a.height },
+        { x: b.x + b.width / 2, y: b.y },
+      ]);
+    }
+  });
+
+  it("routes a skip or back edge as an elbow a small fixed step beside the column", () => {
+    const layout = layoutFlow(chain, "TB");
+    const left = Math.min(...layout.nodes.map((n) => n.x));
+    const right = Math.max(...layout.nodes.map((n) => n.x + n.width));
+    const skip = layout.edges.find((e) => e.label === "skip")!;
+    expect(skip.points).toHaveLength(4);
+    expect(skip.points[1]!.x).toBe(right + LANE_FIRST);
+    expect(skip.points[1]!.x).toBe(skip.points[2]!.x);
+    const back = layout.edges.find((e) => e.label === "again")!;
+    expect(back.points).toHaveLength(4);
+    expect(back.points[1]!.x).toBe(left - LANE_FIRST);
+    for (const edge of [skip, back]) {
+      // Horizontal out, vertical along the lane, horizontal back: right angles only.
+      const [p0, p1, p2, p3] = edge.points as [Box, Box, Box, Box];
+      expect([p0.y === p1.y, p1.x === p2.x, p2.y === p3.y]).toEqual([true, true, true]);
+    }
+  });
+
+  it.each([
+    ["large", large],
+    ["medium", medium],
+  ])("keeps every bend of the %s flow within the column plus its lanes, whatever the width", (_, graph) => {
+    const layout = layoutFlow(graph, "TB");
+    const left = Math.min(...layout.nodes.map((n) => n.x));
+    const right = Math.max(...layout.nodes.map((n) => n.x + n.width));
+    // Lanes start beyond the labels between neighbours (at most a label's width outside the nodes).
+    const reach = EDGE_TEXT_WIDTH + LANE_FIRST + LANE_STEP * graph.edges.length;
+    for (const edge of layout.edges) {
+      for (const p of edge.points) {
+        expect(p.x, edge.key).toBeGreaterThanOrEqual(left - reach);
+        expect(p.x, edge.key).toBeLessThanOrEqual(right + reach);
+      }
+      const from = node(layout, edge.from);
+      const to = node(layout, edge.to);
+      expect(onBorder(edge.points[0]!, from), `${edge.key} starts on its node`).toBe(true);
+      expect(onBorder(edge.points.at(-1)!, to), `${edge.key} ends on its node`).toBe(true);
+      // Two points (neighbours) or a right-angled elbow of four.
+      expect([2, 4]).toContain(edge.points.length);
+    }
+    expectInside(layout);
+    const labels = layout.edges.flatMap((e) => (e.labelBox ? [e.labelBox] : []));
+    for (const label of labels) for (const n of layout.nodes) expect(overlaps(label, n)).toBe(false);
+    const get = (direction: Direction) => layoutFlow(graph, direction);
+    expect(layoutForWidth(741, 0, get)).toEqual(layoutForWidth(3440, 0, get));
+  });
+
+  // Segments of a polyline as boxes (zero width or height).
+  const segments = (points: { x: number; y: number }[]): Box[] =>
+    points.slice(1).map((b, i) => {
+      const a = points[i]!;
+      return {
+        x: Math.min(a.x, b.x),
+        y: Math.min(a.y, b.y),
+        width: Math.abs(a.x - b.x),
+        height: Math.abs(a.y - b.y),
+      };
+    });
+  const crosses = (box: Box, seg: Box) =>
+    seg.x < box.x + box.width &&
+    box.x < seg.x + seg.width + 0.01 &&
+    seg.y < box.y + box.height &&
+    box.y < seg.y + seg.height + 0.01;
+
+  it.each([
+    ["large", large],
+    ["medium", medium],
+  ])(
+    "puts no label of the %s flow over a line, a node or another label; each label is joined to its edge",
+    (_, graph) => {
+      const layout = layoutFlow(graph, "TB");
+      const labelled = layout.edges.filter((e) => e.labelBox);
+      for (const edge of labelled) {
+        const box = edge.labelBox!;
+        for (const other of layout.edges) {
+          for (const seg of segments(other.points))
+            expect(crosses(box, seg), `${edge.key} over ${other.key}`).toBe(false);
+          if (other !== edge && other.labelBox)
+            expect(overlaps(box, other.labelBox), `${edge.key} / ${other.key}`).toBe(false);
+        }
+        for (const n of layout.nodes) expect(overlaps(box, n)).toBe(false);
+        // A label away from its line has a leader from the edge to the label.
+        if (edge.leader) {
+          const start = edge.leader[0]!;
+          const onLine = segments(edge.points).some(
+            (seg) =>
+              start.x >= seg.x - 0.01 &&
+              start.x <= seg.x + seg.width + 0.01 &&
+              start.y >= seg.y - 0.01 &&
+              start.y <= seg.y + seg.height + 0.01,
+          );
+          expect(onLine, `${edge.key} leader starts on its edge`).toBe(true);
+          const end = edge.leader.at(-1)!;
+          expect(Math.min(Math.abs(end.x - box.x), Math.abs(end.x - box.x - box.width))).toBeLessThan(1);
+        }
+      }
+    },
+  );
+
+  it("keeps arrowheads on one side of a step apart, or shares one entry point", () => {
+    const layout = layoutFlow(large, "TB");
+    const arrivals = new Map<string, number[]>();
+    for (const e of layout.edges.filter((x) => x.points.length === 4)) {
+      const end = e.points.at(-1)!;
+      const key = `${e.to} ${end.x}`;
+      arrivals.set(key, [...(arrivals.get(key) ?? []), end.y]);
+    }
+    for (const ys of arrivals.values()) {
+      const distinct = [...new Set(ys)].sort((a, b) => a - b);
+      for (let i = 1; i < distinct.length; i++)
+        expect(distinct[i]! - distinct[i - 1]!).toBeGreaterThanOrEqual(ATTACH_STEP - 0.01);
+    }
+  });
+
+  it("draws two opposite edges between neighbours as one line without labels, else two lines apart", () => {
+    const pair = (a: string | null, b: string | null): FlowGraph => ({
+      nodes: chain.nodes.slice(0, 2),
+      edges: [
+        { from: "c1", to: "c2", label: a },
+        { from: "c2", to: "c1", label: b },
+      ],
+    });
+    const plain = layoutFlow(pair(null, null), "TB");
+    expect(plain.edges[1]!.points).toEqual([...plain.edges[0]!.points].reverse());
+    const labelled = layoutFlow(pair("go", "back"), "TB");
+    const [down, up] = labelled.edges as [DiagramEdge, DiagramEdge];
+    expect(Math.abs(down.points[0]!.x - up.points[0]!.x)).toBe(PARALLEL_STEP);
+    // Each label beside its own line, on its own side.
+    for (const [edge, other] of [
+      [down, up],
+      [up, down],
+    ] as const) {
+      const box = edge.labelBox!;
+      const x = edge.points[0]!.x;
+      const y = other.points[0]!.x;
+      expect(Math.min(Math.abs(box.x - x), Math.abs(box.x + box.width - x))).toBeLessThanOrEqual(10);
+      expect(y > box.x && y < box.x + box.width).toBe(false);
+    }
+  });
+
+  it("orders lane labels on each side like their leaders, so no two leaders cross, with a clear bend", () => {
+    const layout = layoutFlow(large, "TB");
+    const led = layout.edges.filter((e) => e.leader && e.leader.length === 3);
+    for (const left of [true, false]) {
+      const side = led
+        .filter((e) => e.leader![2]!.x < e.leader![0]!.x === left)
+        .sort((a, b) => a.leader![0]!.y - b.leader![0]!.y);
+      const labelYs = side.map((e) => e.labelBox!.y);
+      expect(labelYs).toEqual([...labelYs].sort((a, b) => a - b));
+      for (const e of side) expect(Math.abs(e.leader![2]!.x - e.leader![1]!.x)).toBeGreaterThanOrEqual(16);
+    }
+  });
 });

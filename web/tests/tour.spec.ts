@@ -7,7 +7,8 @@ const heading = (page: import("@playwright/test").Page) =>
 test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("GitHub pull request URL").fill("https://github.com/acme/node-client/pull/482");
-  await page.getByRole("button", { name: "Analyze" }).click();
+  await page.getByRole("button", { name: "Check" }).click();
+  await page.getByRole("button", { name: "Start analysis", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}/progress$`));
   await page.getByRole("link", { name: "Open review" }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#pr_context$`));
@@ -162,6 +163,16 @@ test("agent_output_xss_renders_as_text", async ({ page }) => {
   const diagram = main.getByRole("region", { name: "Flow diagram" });
   await expect(diagram.locator("svg").first()).toBeVisible();
   await expect(diagram.getByRole("button", { name: /^Step 1, .*<img src=x/ })).toBeVisible();
+  // The bottom edge drags the diagram taller.
+  const body = diagram.locator("[data-diagram-body]");
+  const before = (await body.boundingBox())!.height;
+  const edge = (await diagram.getByRole("separator", { name: "Resize the flow diagram" }).boundingBox())!;
+  expect(edge.height).toBeGreaterThanOrEqual(24);
+  await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2 + 120, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(async () => (await body.boundingBox())!.height).toBeGreaterThan(before + 80);
   await expectInert();
 
   // Step 1: title (heading and menu aria-label), why, inspector, the pinned LLM answer.
