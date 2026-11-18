@@ -1,15 +1,38 @@
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::time::Duration;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::json;
 use tempfile::TempDir;
 
 use super::*;
 
-fn auth(refresh: &str, account: &str) -> Vec<u8> {
-    json!({"auth_mode": "chatgpt", "tokens": {"access_token": format!("at-{refresh}"), "refresh_token": refresh, "account_id": account}})
+/// A fake unsigned JWT whose `https://api.openai.com/auth` claims are `claims`.
+fn jwt(claims: serde_json::Value) -> String {
+    let segment = |value: serde_json::Value| URL_SAFE_NO_PAD.encode(value.to_string());
+    format!(
+        "{}.{}.c2lnbmF0dXJl",
+        segment(json!({"alg": "none"})),
+        segment(json!({"https://api.openai.com/auth": claims}))
+    )
+}
+
+/// A fake token of `user` in `account`.
+fn token(account: &str, user: &str) -> String {
+    jwt(json!({"chatgpt_account_id": account, "chatgpt_user_id": user}))
+}
+
+/// A ChatGPT `auth.json` with the stored account field `account` and the given id and access tokens.
+fn auth_with(refresh: &str, account: &str, id_token: &str, access_token: &str) -> Vec<u8> {
+    json!({"auth_mode": "chatgpt", "tokens": {"id_token": id_token, "access_token": access_token, "refresh_token": refresh, "account_id": account}})
         .to_string()
         .into_bytes()
+}
+
+/// The credential of `user-1` in `account`.
+fn auth(refresh: &str, account: &str) -> Vec<u8> {
+    let token = token(account, "user-1");
+    auth_with(refresh, account, &token, &token)
 }
 
 struct Dirs {
@@ -99,6 +122,80 @@ fn auth_writeback_rejects_account_change() {
         !credential.usable(),
         "the original refresh token may be spent"
     );
+}
+
+/// The agent can write the `account_id` field, so the identity is read from the token claims.
+#[test]
+fn auth_writeback_rejects_another_identity_behind_the_master_account_field() {
+    let own = token("acct-1", "user-1");
+    let other_account = token("acct-OTHER", "user-1");
+    let other_user = token("acct-1", "user-OTHER");
+    let cases = [
+        (
+            "tokens of another account",
+            auth_with("rt-attacker", "acct-1", &other_account, &other_account),
+        ),
+        (
+            "tokens of another user",
+            auth_with("rt-attacker", "acct-1", &other_user, &other_user),
+        ),
+        (
+            "an access token of another account",
+            auth_with("rt-attacker", "acct-1", &own, &other_account),
+        ),
+        (
+            "an id token of another user",
+            auth_with("rt-attacker", "acct-1", &other_user, &own),
+        ),
+        (
+            "tokens without identity claims",
+            auth_with("rt-attacker", "acct-1", "opaque-id", "opaque-access"),
+        ),
+        (
+            "tokens with empty identity claims",
+            auth_with("rt-attacker", "acct-1", &token("", ""), &token("", "")),
+        ),
+    ];
+    for (case, copy) in cases {
+        let d = dirs();
+        let credential = CodexCredential::new(d.master.clone());
+        let mut job = install(&credential, &d);
+        std::fs::write(d.home.join(AUTH_FILE), copy).unwrap();
+        job.settle(false);
+        assert_eq!(master(&d), auth("rt-original", "acct-1"), "{case}");
+        assert!(!credential.usable(), "{case}: the master may be spent");
+    }
+}
+
+#[test]
+fn master_without_identity_claims_never_takes_a_refreshed_copy() {
+    let d = dirs();
+    let opaque = |refresh: &str| auth_with(refresh, "acct-1", "opaque-id", "opaque-access");
+    std::fs::write(&d.master, opaque("rt-original")).unwrap();
+    let credential = CodexCredential::new(d.master.clone());
+    let job = install(&credential, &d);
+    std::fs::write(d.home.join(AUTH_FILE), opaque("rt-rotated")).unwrap();
+    drop(job);
+    assert_eq!(
+        master(&d),
+        opaque("rt-original"),
+        "no identity is not the same identity"
+    );
+    assert!(!credential.usable());
+}
+
+#[test]
+fn identity_reads_the_user_id_claim_codex_falls_back_to() {
+    let d = dirs();
+    let legacy = jwt(json!({"chatgpt_account_id": "acct-1", "user_id": "user-1"}));
+    let file = |refresh: &str| auth_with(refresh, "acct-1", &legacy, &legacy);
+    std::fs::write(&d.master, file("rt-original")).unwrap();
+    let credential = CodexCredential::new(d.master.clone());
+    let job = install(&credential, &d);
+    std::fs::write(d.home.join(AUTH_FILE), file("rt-rotated")).unwrap();
+    drop(job);
+    assert_eq!(master(&d), file("rt-rotated"));
+    assert!(credential.usable());
 }
 
 #[test]
@@ -227,9 +324,10 @@ fn rotated_tokens_join_the_scrubber() {
     std::fs::remove_file(d.home.join(AUTH_FILE)).unwrap();
     std::fs::write(d.home.join(AUTH_FILE), auth("rt-new-SECRET", "acct-1")).unwrap();
     job.watch();
+    let access = token("acct-1", "user-1");
     assert_eq!(
         job.scrubber()
-            .text("rt-new-SECRET at-rt-new-SECRET rt-original"),
+            .text(&format!("rt-new-SECRET {access} rt-original")),
         "[redacted] [redacted] [redacted]"
     );
 }
