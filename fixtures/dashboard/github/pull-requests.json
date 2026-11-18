@@ -1,0 +1,1763 @@
+[
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1203,
+    "title": "fix(sync): retry header fetch after peer timeout",
+    "author": {
+      "__typename": "User",
+      "login": "mira-k"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-16T11:20:00Z",
+    "updatedAt": "2026-11-17T16:05:00Z",
+    "baseRefName": "main",
+    "headRefName": "fix/header-retry",
+    "headRefOid": "1f55323c96404ee93f9a72f2f0229dc24f30da72",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 412,
+    "deletions": 88,
+    "milestone": {
+      "title": "v2.4",
+      "number": 12,
+      "state": "OPEN"
+    },
+    "participants": {
+      "totalCount": 2
+    },
+    "body": "Retries the header fetch after a peer timeout.\n\nFixes #1187",
+    "labels": {
+      "nodes": [
+        {
+          "name": "bug"
+        },
+        {
+          "name": "sync"
+        }
+      ]
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        },
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "jun-park"
+          }
+        }
+      ]
+    },
+    "timelineItems": {
+      "nodes": [
+        {
+          "__typename": "ReviewRequestedEvent",
+          "createdAt": "2026-11-17T16:05:00Z",
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        },
+        {
+          "__typename": "ReviewRequestedEvent",
+          "createdAt": "2026-11-17T16:05:00Z",
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "jun-park"
+          }
+        }
+      ]
+    },
+    "closingIssuesReferences": {
+      "nodes": [
+        {
+          "number": 1187,
+          "title": "Block sync stalls after the 2.4 upgrade on three nodes",
+          "labels": {
+            "nodes": [
+              {
+                "name": "bug"
+              },
+              {
+                "name": "production report"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "lint",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "test (unit)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "test (integration)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "audit",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "docs",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/wallet-ui"
+    },
+    "number": 320,
+    "title": "fix(ui): restore the focus ring on tabs",
+    "author": {
+      "__typename": "User",
+      "login": "jun-park"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-18T09:40:00Z",
+    "updatedAt": "2026-11-18T09:50:00Z",
+    "baseRefName": "main",
+    "headRefName": "fix/focus-ring",
+    "headRefOid": "00a7e5ca122567ebd4211274029630e35ac6c778",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 31,
+    "deletions": 9,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "timelineItems": {
+      "nodes": [
+        {
+          "__typename": "ReviewRequestedEvent",
+          "createdAt": "2026-11-18T09:50:00Z",
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-18T09:45:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "lint",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-18T09:45:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "test",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-18T09:45:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "a11y",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-18T09:45:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/wallet-ui"
+    },
+    "number": 311,
+    "title": "feat(wallet): show pending withdrawals",
+    "author": {
+      "__typename": "User",
+      "login": "alice"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-10T10:00:00Z",
+    "updatedAt": "2026-11-17T18:30:00Z",
+    "baseRefName": "main",
+    "headRefName": "feat/pending-withdrawals",
+    "headRefOid": "fd455e08bda61c18cc1db1a025457aa7e96403e5",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "additions": 301,
+    "deletions": 79,
+    "milestone": {
+      "title": "v2.5",
+      "number": 7,
+      "state": "OPEN"
+    },
+    "participants": {
+      "totalCount": 2
+    },
+    "reviews": {
+      "nodes": [
+        {
+          "author": {
+            "__typename": "User",
+            "login": "tobias-w"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-17T18:30:00Z"
+        }
+      ]
+    },
+    "reviewThreads": {
+      "nodes": [
+        {
+          "isResolved": false,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "__typename": "User",
+                  "login": "tobias-w"
+                },
+                "body": "The pending list should not include cancelled withdrawals.",
+                "createdAt": "2026-11-17T18:25:00Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": false,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "__typename": "User",
+                  "login": "tobias-w"
+                },
+                "body": "Please add a test for the empty state.",
+                "createdAt": "2026-11-17T18:28:00Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "__typename": "User",
+                  "login": "jun-park"
+                },
+                "body": "Typo in the label.",
+                "createdAt": "2026-11-12T09:00:00Z"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "FAILURE",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T18:00:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "test (e2e)",
+                    "status": "COMPLETED",
+                    "conclusion": "FAILURE",
+                    "startedAt": "2026-11-17T18:00:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "StatusContext",
+                    "context": "preview/deploy",
+                    "state": "SUCCESS",
+                    "createdAt": "2026-11-17T18:05:00Z"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/wallet-ui"
+    },
+    "number": 298,
+    "title": "feat(wallet): export transactions as CSV",
+    "author": {
+      "__typename": "User",
+      "login": "alice"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-16T08:00:00Z",
+    "updatedAt": "2026-11-16T08:30:00Z",
+    "baseRefName": "feat/pending-withdrawals",
+    "headRefName": "feat/export-csv",
+    "headRefOid": "4266e9cf3a8ea787337edc9b691b52e7491c6d52",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 220,
+    "deletions": 14,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "Team",
+            "name": "ui"
+          }
+        }
+      ]
+    },
+    "timelineItems": {
+      "nodes": []
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-16T08:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/node-client"
+    },
+    "number": 482,
+    "title": "feat(rpc): retry with backoff on timeout",
+    "author": {
+      "__typename": "User",
+      "login": "dana"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-10T14:35:00Z",
+    "updatedAt": "2026-11-15T10:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "feat/retry-timeouts",
+    "headRefOid": "52d2da140191a9d47becf6a446310be803c007fc",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 151,
+    "deletions": 87,
+    "milestone": {
+      "title": "1.9",
+      "number": 3,
+      "state": "OPEN"
+    },
+    "participants": {
+      "totalCount": 2
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "timelineItems": {
+      "nodes": [
+        {
+          "__typename": "ReviewRequestedEvent",
+          "createdAt": "2026-11-15T10:00:00Z",
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "FAILURE",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-15T09:40:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "test (integration)",
+                    "status": "COMPLETED",
+                    "conclusion": "FAILURE",
+                    "startedAt": "2026-11-15T09:40:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/node-client"
+    },
+    "number": 490,
+    "title": "chore(deps): bump tokio to 1.48",
+    "author": {
+      "__typename": "User",
+      "login": "alice"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-10T07:00:00Z",
+    "updatedAt": "2026-11-10T07:30:00Z",
+    "baseRefName": "main",
+    "headRefName": "chore/tokio-1.48",
+    "headRefOid": "4610d015c10037ac229c4a577e1cc2492c2441be",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 64,
+    "deletions": 56,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "isDraft": true,
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "PENDING",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "IN_PROGRESS",
+                    "conclusion": null,
+                    "startedAt": "2026-11-10T07:05:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/node-client"
+    },
+    "number": 476,
+    "title": "fix(rpc): close idle connections",
+    "author": {
+      "__typename": "User",
+      "login": "alice"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-13T12:00:00Z",
+    "updatedAt": "2026-11-14T09:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "fix/idle-connections",
+    "headRefOid": "31ec423c802120440321b5aadb51db1c05171ec1",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 95,
+    "deletions": 20,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "tobias-w"
+          }
+        }
+      ]
+    },
+    "timelineItems": {
+      "nodes": [
+        {
+          "__typename": "ReviewRequestedEvent",
+          "createdAt": "2026-11-14T09:00:00Z",
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "tobias-w"
+          }
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-14T08:50:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/node-client"
+    },
+    "number": 495,
+    "title": "chore(deps): bump serde from 1.0.228 to 1.0.229",
+    "author": {
+      "__typename": "Bot",
+      "login": "dependabot[bot]"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-17T04:00:00Z",
+    "updatedAt": "2026-11-17T04:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "dependabot/cargo/serde-1.0.229",
+    "headRefOid": "6d2cdcdf03d8ba80fef070f6197fb0bbc5734693",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 6,
+    "deletions": 6,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "dependencies"
+        }
+      ]
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "timelineItems": {
+      "nodes": [
+        {
+          "__typename": "ReviewRequestedEvent",
+          "createdAt": "2026-11-17T04:00:00Z",
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T04:05:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/docs-site"
+    },
+    "number": 77,
+    "title": "docs: describe the node upgrade path",
+    "author": {
+      "__typename": "User",
+      "login": "renata-s"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-16T13:00:00Z",
+    "updatedAt": "2026-11-16T14:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "docs/upgrade-path",
+    "headRefOid": "0e9ddd40671b4329ec80f3bc0114cc9442ef30fd",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 198,
+    "deletions": 12,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "timelineItems": {
+      "nodes": [
+        {
+          "__typename": "ReviewRequestedEvent",
+          "createdAt": "2026-11-16T14:00:00Z",
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-16T13:30:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "links",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-16T13:30:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/consensus"
+    },
+    "number": 1534,
+    "title": "refactor(abci): move proposal checks into the validator",
+    "author": {
+      "__typename": "User",
+      "login": "jun-park"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-11T09:00:00Z",
+    "updatedAt": "2026-11-16T17:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "refactor/proposal-checks",
+    "headRefOid": "c857e1bc11e4d2bc23bb40eebc3060d2faf93e67",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 980,
+    "deletions": 470,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "timelineItems": {
+      "nodes": [
+        {
+          "__typename": "ReviewRequestedEvent",
+          "createdAt": "2026-11-12T10:00:00Z",
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "reviews": {
+      "nodes": [
+        {
+          "author": {
+            "__typename": "User",
+            "login": "olek-d"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-16T17:00:00Z"
+        }
+      ]
+    },
+    "reviewThreads": {
+      "nodes": [
+        {
+          "isResolved": false,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "__typename": "User",
+                  "login": "olek-d"
+                },
+                "body": "This moves a check out of the hot path; is that intended?",
+                "createdAt": "2026-11-16T16:50:00Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": false,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "__typename": "User",
+                  "login": "olek-d"
+                },
+                "body": "Missing error for an empty proposal.",
+                "createdAt": "2026-11-16T16:55:00Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": false,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "__typename": "User",
+                  "login": "olek-d"
+                },
+                "body": "Please keep the old function as a wrapper for one release.",
+                "createdAt": "2026-11-16T17:00:00Z"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-16T16:00:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1199,
+    "title": "feat(api): paginate identity lookups",
+    "author": {
+      "__typename": "User",
+      "login": "olek-d"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-08T10:00:00Z",
+    "updatedAt": "2026-11-09T11:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "feat/identity-pages",
+    "headRefOid": "8c8acb6a35253739c2cb54e178ffa230638e9dfc",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 1512,
+    "deletions": 328,
+    "milestone": {
+      "title": "v3.0",
+      "number": 14,
+      "state": "OPEN"
+    },
+    "participants": {
+      "totalCount": 2
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "timelineItems": {
+      "nodes": [
+        {
+          "__typename": "ReviewRequestedEvent",
+          "createdAt": "2026-11-09T11:00:00Z",
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "alice"
+          }
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "lint",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "test (unit)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "test (integration)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "audit",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "docs",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1176,
+    "title": "feat(sync): parallel header download",
+    "author": {
+      "__typename": "User",
+      "login": "alice"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-06T09:00:00Z",
+    "updatedAt": "2026-11-07T10:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "feat/parallel-headers",
+    "headRefOid": "9debfe2e7c5416f431aa1bf378899f56a1f45d73",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 640,
+    "deletions": 120,
+    "milestone": {
+      "title": "v2.4",
+      "number": 12,
+      "state": "OPEN"
+    },
+    "participants": {
+      "totalCount": 2
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "jun-park"
+          }
+        },
+        {
+          "requestedReviewer": {
+            "__typename": "Team",
+            "name": "core"
+          }
+        }
+      ]
+    },
+    "timelineItems": {
+      "nodes": [
+        {
+          "__typename": "ReviewRequestedEvent",
+          "createdAt": "2026-11-07T10:00:00Z",
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "jun-park"
+          }
+        }
+      ]
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "ready-for-human"
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "lint",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "test (unit)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "test (integration)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "audit",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "docs",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T15:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/ops-runbooks"
+    },
+    "number": 14,
+    "title": "chore(ops): rotate the staging certificates",
+    "author": {
+      "__typename": "User",
+      "login": "renata-s"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-17T08:00:00Z",
+    "updatedAt": "2026-11-17T08:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "chore/rotate-certs",
+    "headRefOid": "d3cb53c73135fb55c68cba3d5a68d6d7c49d0b4b",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 40,
+    "deletions": 38,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "assignees": {
+      "nodes": [
+        {
+          "login": "alice"
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "validate",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T08:05:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/legacy-wallet"
+    },
+    "number": 9,
+    "title": "fix: legacy build on the new toolchain",
+    "author": {
+      "__typename": "User",
+      "login": "alice"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-10-01T08:00:00Z",
+    "updatedAt": "2026-10-01T08:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "fix/legacy-build",
+    "headRefOid": "e42ed433b85348439eead916e786677244b35d72",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 10,
+    "deletions": 2,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/consensus"
+    },
+    "number": 1541,
+    "title": "test(abci): cover the empty proposal path",
+    "author": {
+      "__typename": "User",
+      "login": "alice-helper"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-17T12:00:00Z",
+    "updatedAt": "2026-11-17T12:30:00Z",
+    "baseRefName": "refactor/proposal-checks",
+    "headRefName": "test/empty-proposal",
+    "headRefOid": "9f1bb51255b173ab7b8b1e4e96e14dbfa9d4e69e",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 120,
+    "deletions": 0,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "jun-park"
+          }
+        }
+      ]
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "SUCCESS",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "build",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-17T12:10:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "ci"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1190,
+    "title": "fix(api): reject empty identity ids",
+    "author": {
+      "__typename": "User",
+      "login": "alice"
+    },
+    "state": "MERGED",
+    "createdAt": "2026-10-20T09:00:00Z",
+    "updatedAt": "2026-11-05T15:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "fix/empty-ids",
+    "headRefOid": "ae88f4bd585c4afb9b2cf5d3da4f62be3efbae61",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "additions": 10,
+    "deletions": 2,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "closedAt": "2026-11-05T15:00:00Z",
+    "mergedAt": "2026-11-05T15:00:00Z",
+    "reviews": {
+      "nodes": [
+        {
+          "author": {
+            "__typename": "User",
+            "login": "mira-k"
+          },
+          "state": "APPROVED",
+          "submittedAt": "2026-11-05T10:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/wallet-ui"
+    },
+    "number": 300,
+    "title": "feat(wallet): experimental fee slider",
+    "author": {
+      "__typename": "User",
+      "login": "alice"
+    },
+    "state": "CLOSED",
+    "createdAt": "2026-11-02T09:00:00Z",
+    "updatedAt": "2026-11-10T09:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "feat/fee-slider",
+    "headRefOid": "72f3cad1776b89d8c6f397819b932fa611467956",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 10,
+    "deletions": 2,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "closedAt": "2026-11-10T09:00:00Z"
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1195,
+    "title": "fix(sync): drop stale peers after a reorg",
+    "author": {
+      "__typename": "User",
+      "login": "mira-k"
+    },
+    "state": "MERGED",
+    "createdAt": "2026-11-11T09:00:00Z",
+    "updatedAt": "2026-11-13T12:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "fix/stale-peers",
+    "headRefOid": "5a6ddf84f958a7c73589922f75c3bc21d623bd62",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "additions": 10,
+    "deletions": 2,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "closedAt": "2026-11-13T12:00:00Z",
+    "mergedAt": "2026-11-13T12:00:00Z",
+    "reviews": {
+      "nodes": [
+        {
+          "author": {
+            "__typename": "User",
+            "login": "alice"
+          },
+          "state": "CHANGES_REQUESTED",
+          "submittedAt": "2026-11-11T15:00:00Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "alice"
+          },
+          "state": "APPROVED",
+          "submittedAt": "2026-11-12T16:30:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/consensus"
+    },
+    "number": 1510,
+    "title": "perf(mempool): batch signature checks",
+    "author": {
+      "__typename": "User",
+      "login": "olek-d"
+    },
+    "state": "MERGED",
+    "createdAt": "2026-09-20T09:00:00Z",
+    "updatedAt": "2026-10-01T10:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "perf/batch-sigs",
+    "headRefOid": "f7feb543cdcc1cdeea8acb5a5d428d0de7018903",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "additions": 10,
+    "deletions": 2,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "closedAt": "2026-10-01T10:00:00Z",
+    "mergedAt": "2026-10-01T10:00:00Z",
+    "reviews": {
+      "nodes": [
+        {
+          "author": {
+            "__typename": "User",
+            "login": "alice"
+          },
+          "state": "APPROVED",
+          "submittedAt": "2026-09-30T14:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1100,
+    "title": "feat(api): identity lookup by name",
+    "author": {
+      "__typename": "User",
+      "login": "alice"
+    },
+    "state": "MERGED",
+    "createdAt": "2026-06-15T09:00:00Z",
+    "updatedAt": "2026-07-01T10:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "feat/lookup-by-name",
+    "headRefOid": "93b18c6a8e3e09e61e6b3c57749c54da2adf1962",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "additions": 10,
+    "deletions": 2,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "closedAt": "2026-07-01T10:00:00Z",
+    "mergedAt": "2026-07-01T10:00:00Z"
+  }
+]

@@ -1,0 +1,371 @@
+{
+  "releases": {
+    "acme/platform": [
+      {
+        "tag_name": "v2.4.0-rc.1",
+        "name": "v2.4.0-rc.1",
+        "draft": false,
+        "prerelease": true,
+        "published_at": "2026-11-12T10:00:00Z",
+        "html_url": "https://github.com/acme/platform/releases/tag/v2.4.0-rc.1"
+      },
+      {
+        "tag_name": "v2.3.0",
+        "name": "v2.3.0",
+        "draft": false,
+        "prerelease": false,
+        "published_at": "2026-10-28T10:00:00Z",
+        "html_url": "https://github.com/acme/platform/releases/tag/v2.3.0"
+      },
+      {
+        "tag_name": "v2.2.1",
+        "name": "v2.2.1",
+        "draft": false,
+        "prerelease": false,
+        "published_at": "2026-09-30T10:00:00Z",
+        "html_url": "https://github.com/acme/platform/releases/tag/v2.2.1"
+      }
+    ],
+    "acme/wallet-ui": [
+      {
+        "tag_name": "v2.4.1",
+        "name": "v2.4.1",
+        "draft": false,
+        "prerelease": false,
+        "published_at": "2026-11-03T10:00:00Z",
+        "html_url": "https://github.com/acme/wallet-ui/releases/tag/v2.4.1"
+      }
+    ],
+    "acme/node-client": [
+      {
+        "tag_name": "v1.9.0-draft",
+        "name": "v1.9.0-draft",
+        "draft": true,
+        "prerelease": false,
+        "published_at": "2026-11-16T10:00:00Z",
+        "html_url": "https://github.com/acme/node-client/releases/tag/v1.9.0-draft"
+      },
+      {
+        "tag_name": "v1.8.2",
+        "name": "v1.8.2",
+        "draft": false,
+        "prerelease": false,
+        "published_at": "2026-11-01T10:00:00Z",
+        "html_url": "https://github.com/acme/node-client/releases/tag/v1.8.2"
+      }
+    ],
+    "acme/consensus": [
+      {
+        "tag_name": "v1.8.0",
+        "name": "v1.8.0",
+        "draft": false,
+        "prerelease": false,
+        "published_at": "2026-10-15T10:00:00Z",
+        "html_url": "https://github.com/acme/consensus/releases/tag/v1.8.0"
+      }
+    ]
+  },
+  "milestones": {
+    "acme/platform": [
+      {
+        "number": 10,
+        "title": "v2.3",
+        "state": "closed",
+        "due_on": null
+      },
+      {
+        "number": 12,
+        "title": "v2.4",
+        "state": "open",
+        "due_on": "2026-11-30T08:00:00Z"
+      },
+      {
+        "number": 14,
+        "title": "v3.0",
+        "state": "open",
+        "due_on": null
+      }
+    ],
+    "acme/wallet-ui": [
+      {
+        "number": 6,
+        "title": "v2.4",
+        "state": "closed",
+        "due_on": null
+      },
+      {
+        "number": 7,
+        "title": "v2.5",
+        "state": "open",
+        "due_on": null
+      }
+    ],
+    "acme/node-client": [
+      {
+        "number": 2,
+        "title": "1.8",
+        "state": "closed",
+        "due_on": null
+      },
+      {
+        "number": 3,
+        "title": "1.9",
+        "state": "open",
+        "due_on": null
+      }
+    ],
+    "acme/consensus": [
+      {
+        "number": 5,
+        "title": "1.9",
+        "state": "open",
+        "due_on": null
+      }
+    ]
+  },
+  "contents": {
+    "acme/review-policies": {
+      "policies/platform.json": {
+        "areas": [
+          {
+            "id": "sync",
+            "paths": [
+              "packages/sync/"
+            ],
+            "owners": [
+              "alice"
+            ],
+            "reviewers": [
+              "mira-k"
+            ]
+          },
+          {
+            "id": "api",
+            "paths": [
+              "packages/api/"
+            ],
+            "owners": [
+              "olek-d"
+            ],
+            "reviewers": [
+              "alice"
+            ]
+          },
+          {
+            "id": "wallet",
+            "paths": [
+              "packages/wallet/"
+            ],
+            "owners": [
+              "olek-d"
+            ],
+            "reviewers": []
+          }
+        ]
+      },
+      "README.md": "# Review policies\n\nOwnership areas per repository (synthetic test data).\n"
+    }
+  },
+  "files": {
+    "acme/platform#1203": [
+      {
+        "filename": "packages/sync/src/header_sync.rs",
+        "status": "modified",
+        "additions": 250,
+        "deletions": 60,
+        "changes": 310,
+        "patch": "@@ -40,12 +40,30 @@ impl HeaderSync {\n+    fn retry_after_timeout(&mut self) {}"
+      },
+      {
+        "filename": "packages/sync/tests/header_retry.rs",
+        "status": "modified",
+        "additions": 150,
+        "deletions": 20,
+        "changes": 170,
+        "patch": "@@ -1,5 +1,40 @@\n+#[test]\n+fn retries_after_timeout() {}"
+      },
+      {
+        "filename": "CHANGELOG.md",
+        "status": "modified",
+        "additions": 12,
+        "deletions": 8,
+        "changes": 20,
+        "patch": "@@ -1,3 +1,4 @@\n+- Retry header fetch after a peer timeout."
+      }
+    ],
+    "acme/platform#1199": [
+      {
+        "filename": "packages/api/src/identity.rs",
+        "status": "modified",
+        "additions": 900,
+        "deletions": 200,
+        "changes": 1100,
+        "patch": "@@ -10,4 +10,20 @@ pub fn lookup() {\n+    let cursor = Cursor::new();"
+      },
+      {
+        "filename": "packages/api/src/page.rs",
+        "status": "modified",
+        "additions": 612,
+        "deletions": 128,
+        "changes": 740,
+        "patch": "@@ -0,0 +1,30 @@\n+pub struct Cursor;"
+      }
+    ],
+    "acme/platform#1176": [
+      {
+        "filename": "packages/sync/src/download.rs",
+        "status": "modified",
+        "additions": 600,
+        "deletions": 110,
+        "changes": 710,
+        "patch": "@@ -5,3 +5,25 @@\n+async fn download_parallel() {}"
+      },
+      {
+        "filename": "docs/sync.md",
+        "status": "modified",
+        "additions": 40,
+        "deletions": 10,
+        "changes": 50,
+        "patch": "@@ -1,2 +1,3 @@\n+Parallel download."
+      }
+    ],
+    "acme/wallet-ui#311": [
+      {
+        "filename": "src/withdrawals/pending.tsx",
+        "status": "modified",
+        "additions": 250,
+        "deletions": 60,
+        "changes": 310,
+        "patch": "@@ -1,4 +1,40 @@\n+export function Pending() {}"
+      },
+      {
+        "filename": "tests/withdrawals.spec.ts",
+        "status": "modified",
+        "additions": 51,
+        "deletions": 19,
+        "changes": 70,
+        "patch": "@@ -1,2 +1,12 @@\n+test('pending', () => {});"
+      }
+    ]
+  },
+  "events": {
+    "alice-helper": [
+      {
+        "id": "9100001",
+        "type": "PullRequestEvent",
+        "actor": {
+          "login": "alice-helper"
+        },
+        "repo": {
+          "name": "acme/consensus"
+        },
+        "payload": {
+          "action": "opened",
+          "number": 1541,
+          "pull_request": {
+            "number": 1541,
+            "merged": false
+          }
+        },
+        "public": true,
+        "created_at": "2026-11-17T12:00:00Z"
+      },
+      {
+        "id": "9100002",
+        "type": "PullRequestReviewEvent",
+        "actor": {
+          "login": "alice-helper"
+        },
+        "repo": {
+          "name": "acme/consensus"
+        },
+        "payload": {
+          "action": "created",
+          "pull_request": {
+            "number": 1534
+          },
+          "review": {
+            "state": "commented"
+          }
+        },
+        "public": true,
+        "created_at": "2026-11-16T15:00:00Z"
+      },
+      {
+        "id": "9100003",
+        "type": "PushEvent",
+        "actor": {
+          "login": "alice-helper"
+        },
+        "repo": {
+          "name": "acme/consensus"
+        },
+        "payload": {
+          "ref": "refs/heads/test/empty-proposal"
+        },
+        "public": true,
+        "created_at": "2026-11-16T14:00:00Z"
+      },
+      {
+        "id": "9100004",
+        "type": "PullRequestEvent",
+        "actor": {
+          "login": "alice-helper"
+        },
+        "repo": {
+          "name": "acme/consensus"
+        },
+        "payload": {
+          "action": "closed",
+          "number": 1501,
+          "pull_request": {
+            "number": 1501,
+            "merged": true
+          }
+        },
+        "public": true,
+        "created_at": "2026-11-03T10:00:00Z"
+      },
+      {
+        "id": "9100005",
+        "type": "IssueCommentEvent",
+        "actor": {
+          "login": "alice-helper"
+        },
+        "repo": {
+          "name": "acme/consensus"
+        },
+        "payload": {
+          "action": "created",
+          "issue": {
+            "number": 1525
+          }
+        },
+        "public": true,
+        "created_at": "2026-11-02T10:00:00Z"
+      }
+    ],
+    "alice": [
+      {
+        "id": "9100010",
+        "type": "PullRequestEvent",
+        "actor": {
+          "login": "alice"
+        },
+        "repo": {
+          "name": "acme/wallet-ui"
+        },
+        "payload": {
+          "action": "opened",
+          "number": 298,
+          "pull_request": {
+            "number": 298,
+            "merged": false
+          }
+        },
+        "public": true,
+        "created_at": "2026-11-16T08:00:00Z"
+      }
+    ]
+  }
+}

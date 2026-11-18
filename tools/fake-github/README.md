@@ -1,7 +1,9 @@
 # fake-github
 
 Development and test only (never in images): a fake GitHub serving the recordings of
-`fixtures/pr-482/github` for the example PR `acme/node-client#482`. Deterministic; never contacts GitHub.
+`fixtures/pr-482/github` for the example PR `acme/node-client#482` and, optionally, the synthetic dashboard
+world of `fixtures/dashboard/github` (see [Dashboard world](#dashboard-world)). Deterministic; never contacts
+GitHub.
 
 ## Run
 
@@ -20,6 +22,7 @@ cargo run -p fake-github -- \
 | `--user-id` | `FAKE_GITHUB_USER_ID` | recorded | Numeric id of the fake user. |
 | `--app-id` | `FAKE_GITHUB_APP_ID` | — | GitHub App id the App JWTs must name (`SR_GITHUB_APP_ID`). |
 | `--app-public-key-file` | `FAKE_GITHUB_APP_PUBLIC_KEY_FILE` | — | PEM public key of the App key (`openssl rsa -pubout`); App JWTs must verify against it. |
+| `--dashboard-fixture-dir` | `FAKE_GITHUB_DASHBOARD_FIXTURE_DIR` | — | Dashboard world (`fixtures/dashboard/github`); without it the dashboard endpoints answer 404. |
 
 Log level: `RUST_LOG` (default `info`).
 
@@ -73,3 +76,30 @@ in `fixtures/pr-482/repo/commits.json`).
 CI recordings include successful, failed, skipped and neutral check runs plus a pending commit status at
 `GET /repos/acme/node-client/commits/{head}/status`. This lets callers distinguish both CI sources and avoid
 reporting skipped runs as passing. The existing fixture bearer-token checks apply to both endpoints.
+
+## Dashboard world
+
+With `--dashboard-fixture-dir fixtures/dashboard/github` the fake also answers the dashboard scan (plan
+`docs/v1.1-dashboard-plan.md` §A.2, §A.3) from a synthetic world: `accounts.json` (logins; `"searchable": false`
+makes search refuse one), `repositories.json`, `pull-requests.json` and `issues.json` (GraphQL nodes; loading
+fills `__typename`, `id`, `url`, `repository`, `baseRepository` and empty connections), `rest.json` (releases,
+milestones, contents, pull request files keyed `owner/name#n`, user events). Recorded endpoints win over the
+world (`/repos/acme/node-client/pulls/482/files` stays the recording); the world's `acme/node-client#482`
+follows `POST /_fake/head`. Private repositories need a valid token; a present invalid token gets 401,
+a missing `User-Agent` 403.
+
+| Endpoint | Behaviour |
+|---|---|
+| `GET /search/issues` | Qualifiers of Q1, Q10, Q12: `is:pr`/`is:pull-request`/`type:pr` or `is:issue` (required, else 422), `is:open`/`is:closed`/`state:`, `archived:`, `author:`, `assignee:`, `review-requested:`, `reviewed-by:`, `mentions:` (body and comments), `repo:` (OR-ed), `created:`/`updated:`/`closed:`/`merged:` with `>=D`, `>D`, `<=D`, `<D`, `D`, `A..B`, `*` (dates or RFC 3339, UTC). Other terms: 422 naming the term. An unknown, unsearchable or invisible login/repository: 422 "cannot be searched". Order `updated` desc (`sort=created`, `order=asc` honoured); `per_page` ≤ 100, `Link` header, 422 beyond the first 1000 results. |
+| `GET /repos/{o}/{r}/releases/latest`, `/releases` | Latest = newest non-draft, non-prerelease (404 without one); list paginated. |
+| `GET /repos/{o}/{r}/milestones` | `state=open` (default), `closed`, `all`; paginated. |
+| `GET /repos/{o}/{r}/contents/{path}` | `Accept: application/vnd.github.raw[+json]` → raw text; else GitHub's base64 JSON. |
+| `GET /repos/{o}/{r}/pulls/{n}/files` | Paginated (404 for an unknown pull request). |
+| `GET /users/{u}/events` | Paginated; 422 beyond 300 events, as GitHub. |
+| `POST /graphql` | A **dashboard document** — a query whose top-level fields are only `repository`, `repositoryOwner`, `rateLimit`, with an alias, `rateLimit`, `repositoryOwner`, or a repository `pullRequests`/`issues`/`issue` field — is executed against the world; every other document goes to the v1 endpoint above. Root: `repository(owner, name)` (null + `NOT_FOUND` when invisible), `repositoryOwner(login)` (null without error), `rateLimit { cost remaining resetAt limit used }`. Repository: `pullRequest(number)`, `issue(number)` (null + `NOT_FOUND`), `pullRequests`/`issues(states, baseRefName, headRefName, first, last, after)`. Owner: `repositories(first, after, isArchived)`. Pull request: `reviews(author, states, first, last)`. Other fields are read from the node, so only selected fields are answered; fragments, inline fragments (by `__typename`) and variables work. Connections: `first`/`last` 1–100 required when `nodes`/`edges` are selected (`MISSING_PAGINATION_BOUNDARIES`, `EXCESSIVE_PAGE_SIZE`), opaque cursors. Cost per request `max(1, n + n/5)` for `n` `pullRequest` lookups (S11-2: 10 → 12); 30–49 lookups answer an HTML 502 page, 50+ a 504 (S11-2). |
+| `POST /_fake/dashboard/faults` | Test control: `{"faults": [{"on": "search" \| "rest" \| "graphql", "matching": "<substring>", "times": 1, "answer": {...}}]}` queues injected answers (204). `matching` is checked against `path k=v&…` (decoded query) or the GraphQL document plus its variables. Answers: `{"kind": "secondary_rate_limit", "retry_after": 60, "status": 403}` (both optional; 403 or 429, secondary-limit message), `{"kind": "primary_rate_limit", "reset": <epoch>}` (REST 403, GraphQL 200 with `RATE_LIMITED`; `x-ratelimit-remaining: 0`, `x-ratelimit-reset`), `{"kind": "server_error", "status": 502, "html": true}`. |
+| `GET /_fake/dashboard/requests` | Test control: every dashboard request in order: `seq`, `at_ms` (tokio clock since start, so paused test time works in-process), `on`, `method`, `path`, `query`, `q` (decoded search), GraphQL `lookups` (top-level fields without `rateLimit`), `pull_requests`, `cost`, `status`, `fault` (`secondary_rate_limit`, `primary_rate_limit`, `server_error`, `oversized_batch`). |
+
+Every dashboard answer carries `x-ratelimit-{limit,remaining,used,reset,resource}`: `search` 30 per 60 s,
+`core` and `graphql` 5000 per hour, counted from the fake's start; a limit is never enforced by itself, only by
+an injected fault. Dates in the world are fixed (around 2026-11-18): tests pass a fixed "now".

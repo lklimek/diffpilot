@@ -39,6 +39,7 @@ fn config() -> Config {
         user_id: None,
         app_id: None,
         app_public_key_file: None,
+        dashboard_fixture_dir: None,
     }
 }
 
