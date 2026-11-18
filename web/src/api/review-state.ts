@@ -2,8 +2,8 @@
 // local changes not yet saved, and the single save queue. Local changes win over reads; nothing is written
 // before a GET has read the stored state of that analysis.
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import type { AnalysisId, ReviewState } from "./generated/types";
-import { api } from "./client";
+import type { AnalysisId, FlowId, ReviewState } from "./generated/types";
+import { api, ApiError } from "./client";
 
 /** What the screen sees of one analysis's review state. */
 export interface ReviewStateView {
@@ -37,6 +37,19 @@ interface Entry {
 }
 
 const EMPTY: ReviewState = { ticked_steps: [], last_viewed: null };
+
+/** `state` without the ticks of `flow` (exact `<flow>.` prefix); a last viewed step of it becomes its intro. */
+function withoutFlow(state: ReviewState, flow: FlowId): ReviewState {
+  const prefix = `${flow}.`;
+  const viewed = state.last_viewed;
+  return {
+    ticked_steps: state.ticked_steps.filter((step) => !step.startsWith(prefix)),
+    last_viewed:
+      viewed?.block === "step" && viewed.step_id.startsWith(prefix)
+        ? { block: "flow_intro", flow_id: flow }
+        : viewed,
+  };
+}
 
 /** The calls the store needs (the app's API client in production). */
 export type ReviewStateClient = Pick<typeof api, "getReviewState" | "putReviewState">;
@@ -76,10 +89,12 @@ export function createReviewStateStore(client: ReviewStateClient) {
     for (const listener of e.listeners) listener();
   };
 
-  // One queue per analysis: requests in order, only the newest waiting state is sent.
+  // One queue per analysis: requests in order, only the newest waiting state is sent. A state the server refuses
+  // as naming steps no longer in the Tour (a flow analysed again) is dropped and the stored state read again.
   const drain = async (id: AnalysisId, e: Entry) => {
     if (e.running) return;
     e.running = true;
+    let stale = false;
     while (e.next) {
       const sent = e.next;
       e.next = null;
@@ -92,10 +107,16 @@ export function createReviewStateStore(client: ReviewStateClient) {
         if (e.next === null && e.local === sent) e.local = null;
       } catch (error) {
         e.saveError = error;
+        if (error instanceof ApiError && error.code === "invalid_request") {
+          stale = true;
+          e.local = null;
+          e.next = null;
+        }
       }
       publish(e);
     }
     e.running = false;
+    if (stale) void read(id, true);
   };
 
   /**
@@ -167,6 +188,24 @@ export function createReviewStateStore(client: ReviewStateClient) {
         void drain(id, e);
       } else if (e.loadError !== null) {
         void read(id, true);
+      }
+      publish(e);
+    },
+
+    /**
+     * Forgets the ticks of `flow` after it is analysed again (the server removed them; its new steps reuse the
+     * ids). Unsaved changes are saved without them.
+     */
+    forgetFlow(id: AnalysisId, flow: FlowId): void {
+      const e = entry(id);
+      if (e.confirmed) e.confirmed = withoutFlow(e.confirmed, flow);
+      if (e.local) {
+        e.local = withoutFlow(e.local, flow);
+        e.version += 1;
+        if (e.readOnce) {
+          e.next = e.local;
+          void drain(id, e);
+        }
       }
       publish(e);
     },

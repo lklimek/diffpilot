@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { AnalysisSummary, CreateCommentRequest, MeResponse } from "../../api/generated/types";
+import type { AnalysisSummary, CreateCommentRequest, MeResponse, Tour } from "../../api/generated/types";
 import { seedFor, setFixtureState } from "../../mocks/fixtures";
 import { setScenario } from "../../mocks/scenarios";
 
@@ -229,6 +229,44 @@ describe("Tour: a background refresh that cannot succeed", () => {
     expect(await screen.findByText(message)).toBeVisible();
     expect(screen.queryByRole("navigation", { name: "Flows and steps" })).toBeNull();
     expect(screen.getByRole("link", { name: "Back to Home" })).toHaveAttribute("href", "/");
+  });
+});
+
+describe("Tour: a flow analysed again", () => {
+  it("forgets the old ticks of that flow when its new steps arrive, keeps other flows' ticks, reads feedback again", async () => {
+    await open(null, "#f1.2");
+    await user().keyboard("x");
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 2:/ }));
+    await user().click(within(nav()).getByRole("button", { name: /^Step 1:/ }));
+    await user().keyboard("x");
+    await waitFor(() =>
+      expect(within(nav()).getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeVisible(),
+    );
+    let feedbackReads = 0;
+    server.events.on("request:start", ({ request }) => {
+      if (request.method === "GET" && new URL(request.url).pathname.endsWith("/feedback")) feedbackReads += 1;
+    });
+    const seed = seedFor("default", "tour") as Tour;
+    const summary = seedFor("default", "analysis") as AnalysisSummary;
+    // Flow 1 is analysed again: its steps are gone while it runs, then new steps with the same ids arrive.
+    const running = structuredClone(seed);
+    running.flows[0]!.steps = [];
+    running.flows[0]!.analysis_status = { state: "analysing", started_at: null, message: null };
+    server.use(http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json(running)));
+    act(() =>
+      FakeEventSource.latest().emit({ event: "analysis", summary: { ...summary, review_ready: true } }),
+    );
+    await within(nav()).findByRole("button", { name: /^Flow 1:/ });
+    await waitFor(() => expect(feedbackReads).toBeGreaterThan(0));
+    server.use(http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json(seed)));
+    act(() =>
+      FakeEventSource.latest().emit({ event: "analysis", summary: { ...summary, review_ready: true } }),
+    );
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
+    const step2 = await within(nav()).findByRole("button", { name: /^Step 2: / });
+    expect(step2.getAttribute("aria-label")).not.toMatch(/reviewed/);
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 2:/ }));
+    expect(within(nav()).getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeVisible();
   });
 });
 

@@ -114,7 +114,7 @@ describe("CodeView", () => {
     expect(lineNumbers(document, "[data-line][data-changed]")).toEqual([89, 91, 92, 93, 94, 96]);
     const marks = document.querySelectorAll("[data-mark=changed]");
     expect([...marks].map(rowOf)).toEqual([89, 91, 92, 93, 94, 96]);
-    for (const mark of marks) expect(mark).toHaveTextContent("changed line");
+    for (const mark of marks) expect(mark).toHaveTextContent("added line");
   });
 
   it("draws the LLM bar only on annotated ranges; changed lines without a remark stay uncoloured", () => {
@@ -856,15 +856,14 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     expect(onShowInInspector).toHaveBeenCalledWith({ kind: "thread", id: thread.id });
   });
 
-  it("≠ and − keep no action but show project tooltips instead of a native title", async () => {
-    const user = userEvent.setup();
+  it("≠, − and + are read with their line and are no tooltip triggers (the ? legend explains them)", () => {
     const props = stepProps("f5.1");
     const { unmount } = render(<CodeView {...props} />);
     const differs = document.querySelector("[data-mark=differs]")!;
     expect(differs).not.toHaveAttribute("title");
     expect(differs.closest("button")).toBeNull();
-    await user.hover(differs);
-    expect(screen.getByRole("tooltip")).toHaveTextContent(/differs from the moved original/i);
+    expect(differs).toHaveTextContent(/differs from the moved original/i);
+    expect([differs, differs.parentElement!].some((e) => e.hasAttribute("aria-describedby"))).toBe(false);
     unmount();
     render(
       <CodeView
@@ -875,8 +874,8 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     );
     const removed = document.querySelector("[data-mark=removed]")!;
     expect(removed).not.toHaveAttribute("title");
-    await user.hover(removed);
-    expect(screen.getByRole("tooltip")).toHaveTextContent(/removed line/i);
+    expect(removed).toHaveTextContent(/removed line/i);
+    expect([removed, removed.parentElement!].some((e) => e.hasAttribute("aria-describedby"))).toBe(false);
   });
 
   it("makes room in the gutter for every marker of a line", () => {

@@ -93,15 +93,15 @@ describe("CodeView: one remark over a replaced line and hidden comment lines", (
     expect(row("base", 362)!.className).toMatch(/bg-rm-bg/);
   });
 
-  it("keeps the changed sign and the remark marker apart, each with its own tip", async () => {
+  it("keeps the changed sign and the remark marker apart; the sign is read with its line, not a tooltip", () => {
     render(<CodeView lines={LINES} annotations={[REMARK]} band="low" hideContextChanges={false} />);
     const line = row("head", 363)!;
     const sign = line.querySelector<HTMLElement>("[data-mark=changed]")!;
     const marker = line.querySelector<HTMLElement>("[data-mark=remark]")!;
     expect(sign.parentElement?.closest("span.flex")?.className).toMatch(/(^|\s)gap-1(\s|$)/);
     expect(marker).toHaveAccessibleName("LLM remark at line 363");
-    await userEvent.hover(sign);
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Added line (from the diff).");
+    expect(sign).toHaveTextContent("+added line");
+    expect([sign, sign.parentElement!].some((e) => e.hasAttribute("aria-describedby"))).toBe(false);
   });
 });
 

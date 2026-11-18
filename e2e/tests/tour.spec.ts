@@ -48,7 +48,10 @@ test("flows by importance, then quiet rows with Unexplained first; flow introduc
     .evaluateAll((buttons) =>
       buttons.map((b) => (b.getAttribute("aria-label") ?? b.textContent ?? "").trim()),
     );
-  const entries = items.filter((name) => !/column$/.test(name));
+  // The remark pills are their own buttons beside their flow or step (they lead to the first remark).
+  const pill = /^(\d+ LLM remarks? in flow \d+|LLM (rated|did not rate) step \d+)/;
+  expect(items.filter((name) => /^\d+ LLM remarks? in flow \d+$/.test(name)).length).toBeGreaterThan(0);
+  const entries = items.filter((name) => !/column$/.test(name) && !pill.test(name));
   expect(entries.slice(0, 6)).toEqual([
     "PR context",
     "Flow 1: Send an RPC request with retry",

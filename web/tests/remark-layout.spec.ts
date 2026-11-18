@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { expectAccessible } from "./screens-support";
+import { expectAccessible, expectKeyboardTooltips } from "./screens-support";
 import { ANALYSIS_ID } from "./support";
 
 // Owner screenshot: one LLM remark over a replaced line, unchanged lines and added comment lines that fold.
@@ -47,13 +47,17 @@ for (const colorScheme of ["light", "dark"] as const) {
     await main.getByRole("button", { name: "Hide 2 comment/import lines" }).click();
     await expect(line(page, "head", 93)).toHaveCount(0);
 
-    // The changed sign and the remark marker sit apart, each explained.
-    await line(page, "head", 90).locator("[data-mark=changed]").hover();
-    await expect(page.getByRole("tooltip").filter({ hasText: "Added line (from the diff)." })).toBeVisible();
+    // The changed sign is read with its line (no tooltip trigger); the remark marker explains itself.
+    await expect(line(page, "head", 90).locator("[data-mark=changed]")).toContainText("added line");
     await line(page, "head", 90).getByRole("button", { name: "LLM remark at line 90" }).hover();
     await expect(page.getByRole("dialog", { name: "LLM remarks at line 90" })).toContainText(
       "Was: checks the wallet",
     );
     await expectAccessible(page);
+    // Screen-wide: every tooltip trigger on the Tour with changed lines takes keyboard focus (pointer away, so no
+    // hover popover is open).
+    await page.mouse.move(0, 0);
+    await expect(page.getByRole("dialog", { name: "LLM remarks at line 90" })).toBeHidden();
+    await expectKeyboardTooltips(page);
   });
 }

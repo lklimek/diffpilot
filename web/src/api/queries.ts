@@ -1,6 +1,6 @@
 // TanStack Query hooks over the API client; used by screens only (components get props).
 import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   AnalysisEvent,
   AnalysisId,
@@ -10,6 +10,7 @@ import type {
   Feedback,
   FeedbackId,
   FeedbackRequest,
+  FlowId,
   LlmLanguage,
   PendingReview,
   QuestionId,
@@ -19,6 +20,7 @@ import type {
   Tour,
 } from "./generated/types";
 import { api } from "./client";
+import { reviewStates } from "./review-state";
 
 /** The signed-in user and CSRF token. */
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: api.getMe });
@@ -438,11 +440,44 @@ export const usePauseAnalysis = () => useMutation({ mutationFn: api.pauseAnalysi
 export const useResumeAnalysis = () => useMutation({ mutationFn: api.resumeAnalysis });
 
 /** Durable flow demand, background preference, resume and retry from the Tour, each refreshing the tour. */
+/**
+ * A flow analysed again loses its ticks (every user), questions and feedback on the server, and its new steps reuse
+ * the step ids: forget its ticks here and read feedback and questions again.
+ */
+function forgetFlow(client: QueryClient, id: AnalysisId, flow: FlowId): void {
+  reviewStates.forgetFlow(id, flow);
+  void client.invalidateQueries({ queryKey: ["feedback", id] });
+  void client.invalidateQueries({ queryKey: ["questions", id] });
+}
+
+/** Forgets the flows of `tour` that stop being analysed (analysed again, by anyone) while it is shown. */
+export function useForgetReanalysedFlows(id: AnalysisId, tour: Tour | undefined): void {
+  const client = useQueryClient();
+  const analysed = useRef<ReadonlySet<FlowId> | null>(null);
+  useEffect(() => {
+    if (!tour) return;
+    const now = new Set(
+      tour.flows.filter((f) => !f.analysis_status || f.analysis_status.state === "analysed").map((f) => f.id),
+    );
+    const before = analysed.current;
+    analysed.current = now;
+    for (const flow of before ?? []) {
+      if (!now.has(flow) && tour.flows.some((f) => f.id === flow)) forgetFlow(client, id, flow);
+    }
+  }, [client, id, tour]);
+}
+
 export function useFlowWork(id: AnalysisId) {
   const client = useQueryClient();
   const refresh = () => client.invalidateQueries({ queryKey: ["tour", id] });
   return {
-    request: useMutation({ mutationFn: (flow: string) => api.requestFlow(id, flow), onSuccess: refresh }),
+    request: useMutation({
+      mutationFn: (flow: string) => api.requestFlow(id, flow),
+      onSuccess: (_, flow) => {
+        forgetFlow(client, id, flow);
+        return refresh();
+      },
+    }),
     background: useMutation({
       mutationFn: (enabled: boolean) => api.setBackgroundAnalysis(id, enabled),
       onSuccess: refresh,
