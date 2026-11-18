@@ -59,6 +59,7 @@ services:
       SR_GITHUB_CLONE_URL: ${SR_GITHUB_CLONE_URL:-https://github.com}
       SR_MEMCAN_URL: ${SR_MEMCAN_URL:?set SR_MEMCAN_URL}
       SR_MEMCAN_TOKEN: ${SR_MEMCAN_TOKEN:-}
+      SR_MEMCAN_UI_URL: ${SR_MEMCAN_UI_URL:-}
       RUST_LOG: ${RUST_LOG:-info}
       NO_COLOR: "1"
     volumes:

@@ -12,6 +12,7 @@ use crate::state::AppState;
 pub mod analyses;
 pub mod auth;
 pub mod comments;
+pub mod dashboard;
 pub mod diff;
 pub mod error;
 pub mod events;
@@ -43,6 +44,7 @@ pub fn router(state: AppState) -> Router {
         .merge(flow_work::routes())
         .merge(auth::routes())
         .merge(comments::routes())
+        .merge(dashboard::routes())
         .merge(diff::routes())
         .merge(events::routes())
         .merge(feedback::routes())
