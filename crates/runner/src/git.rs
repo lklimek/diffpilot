@@ -54,7 +54,8 @@ pub fn mirror_path(mirrors: &Path, clone_url: &str) -> PathBuf {
 }
 
 /// Makes sure `mirror` holds `commits` (fetching them from `clone_url` when missing; an absent mirror is
-/// created), then checks the first commit out into the new repository `repo`, with every commit fetched.
+/// created), then checks the first commit out into the new repository `repo`, which holds a copy of the mirror's
+/// objects and a ref per commit.
 pub async fn checkout(
     mirror: &Path,
     clone_url: &str,
@@ -78,7 +79,10 @@ pub async fn checkout(
         .await?;
     }
     if !has_commits(mirror, commits).await? {
+        // Packed even when small, so the per-job copy stays a few large files.
         let mut args = vec![
+            os("-c"),
+            os("fetch.unpackLimit=1"),
             os("fetch"),
             os("--quiet"),
             os("--no-tags"),
@@ -93,19 +97,24 @@ pub async fn checkout(
         git("mirror fetch", Some(mirror), &args).await?;
     }
     git("init", None, &[os("init"), os("--quiet"), repo.into()]).await?;
-    let mut args = vec![
-        os("fetch"),
-        os("--quiet"),
-        os("--no-tags"),
-        os("--no-recurse-submodules"),
-    ];
-    args.extend([os("--"), mirror.into()]);
-    args.extend(
-        commits
-            .iter()
-            .map(|c| os(&format!("{REF_PREFIX}/{c}:{REF_PREFIX}/{c}"))),
-    );
-    git("checkout fetch", Some(repo), &args).await?;
+    // A plain copy of the mirror's object files instead of a fetch, which re-indexes every object. The copy
+    // belongs to the job (the agent never reads the private mirror); the refs below verify each pinned commit.
+    let (source, target) = (mirror.join("objects"), repo.join(".git").join("objects"));
+    tokio::task::spawn_blocking(move || copy_objects(&source, &target))
+        .await
+        .map_err(io::Error::other)??;
+    for commit in commits {
+        git(
+            "pin commit",
+            Some(repo),
+            &[
+                os("update-ref"),
+                os(&format!("{REF_PREFIX}/{commit}")),
+                os(&format!("{commit}^{{commit}}")),
+            ],
+        )
+        .await?;
+    }
     git(
         "checkout",
         Some(repo),
@@ -183,6 +192,30 @@ pub async fn sync_ref(checkout: &Path, url: &str, reference: &str) -> Result<Str
         return Err(GitError::InvalidCommit(reference.to_owned()));
     }
     Ok(commit)
+}
+
+/// Copies the packs and loose objects of the object directory `source` into `target`: regular files only,
+/// never a link, an alternates file or a temporary file of an interrupted fetch.
+fn copy_objects(source: &Path, target: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let is_loose_dir = name.len() == 2 && name.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if !(entry.file_type()?.is_dir() && (is_loose_dir || name == "pack")) {
+            continue;
+        }
+        let dir = target.join(&*name);
+        std::fs::create_dir_all(&dir)?;
+        for file in std::fs::read_dir(entry.path())? {
+            let file = file?;
+            let file_name = file.file_name();
+            if file.file_type()?.is_file() && !file_name.to_string_lossy().starts_with("tmp_") {
+                std::fs::copy(file.path(), dir.join(&file_name))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn has_commits(mirror: &Path, commits: &[&str]) -> Result<bool, GitError> {
@@ -308,6 +341,111 @@ mod tests {
             mirror_path(root, "file:///b")
         );
         assert_eq!(mirror_path(root, "x").parent(), Some(root));
+    }
+
+    fn git_out(repo: &Path, args: &[&str]) -> Option<String> {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.com")
+            .output()
+            .unwrap();
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    fn fixture_url() -> String {
+        format!("file://{}", crate::test_support::shared_repo().display())
+    }
+
+    #[tokio::test]
+    async fn checkout_is_self_contained_and_pins_the_commits() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (mirror, repo) = (dir.path().join("m.git"), dir.path().join("repo"));
+        let commits = crate::test_support::commits();
+        let pinned = [commits.head.as_str(), commits.base.as_str()];
+        checkout(&mirror, &fixture_url(), &pinned, &repo)
+            .await
+            .unwrap();
+        // An interrupted mirror fetch leaves temporary files; a later checkout never copies them.
+        std::fs::write(mirror.join("objects/pack/tmp_pack_x"), b"partial").unwrap();
+        let second = dir.path().join("second");
+        checkout(&mirror, &fixture_url(), &pinned, &second)
+            .await
+            .unwrap();
+        assert!(!second.join(".git/objects/pack/tmp_pack_x").exists());
+        // The agent never reads the private mirror: each checkout holds its own objects.
+        std::fs::remove_dir_all(&mirror).unwrap();
+        for repo in [&repo, &second] {
+            assert!(!repo.join(".git/objects/info/alternates").exists());
+            assert!(git_out(repo, &["log", "--oneline", &commits.base]).is_some());
+            assert!(git_out(repo, &["diff", &commits.base, &commits.head]).is_some());
+            for commit in pinned {
+                let pinned_ref = format!("{REF_PREFIX}/{commit}");
+                assert_eq!(
+                    git_out(repo, &["rev-parse", "--verify", &pinned_ref]).as_deref(),
+                    Some(commit)
+                );
+            }
+            assert_eq!(
+                git_out(repo, &["rev-parse", "HEAD"]).as_deref(),
+                Some(commits.head.as_str())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn checkout_copies_loose_mirror_objects() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (mirror, repo) = (dir.path().join("m.git"), dir.path().join("repo"));
+        let commits = crate::test_support::commits();
+        checkout(&mirror, &fixture_url(), &[&commits.head], &repo)
+            .await
+            .unwrap();
+        // A commit stored as a loose object in the mirror, as a small fetch leaves it.
+        let tree = format!("{}^{{tree}}", commits.head);
+        let loose = git_out(&mirror, &["commit-tree", &tree, "-m", "loose"]).unwrap();
+        let pinned_ref = format!("{REF_PREFIX}/{loose}");
+        assert!(git_out(&mirror, &["update-ref", &pinned_ref, &loose]).is_some());
+        let second = dir.path().join("second");
+        checkout(&mirror, &fixture_url(), &[&loose, &commits.head], &second)
+            .await
+            .unwrap();
+        std::fs::remove_dir_all(&mirror).unwrap();
+        assert_eq!(
+            git_out(&second, &["rev-parse", "HEAD"]).as_deref(),
+            Some(loose.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn checkout_refuses_a_pinned_id_that_is_not_a_commit() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (mirror, repo) = (dir.path().join("m.git"), dir.path().join("repo"));
+        let commits = crate::test_support::commits();
+        checkout(&mirror, &fixture_url(), &[&commits.head], &repo)
+            .await
+            .unwrap();
+        let tree = git_out(
+            &mirror,
+            &["rev-parse", &format!("{}^{{tree}}", commits.head)],
+        )
+        .unwrap();
+        // The mirror answers `has_commits` for the head only; the tree id is then fetched and must fail.
+        let result = checkout(
+            &mirror,
+            &fixture_url(),
+            &[&commits.head, &tree],
+            &dir.path().join("second"),
+        )
+        .await;
+        assert!(matches!(result, Err(GitError::Failed { .. })), "{result:?}");
     }
 
     #[tokio::test]
