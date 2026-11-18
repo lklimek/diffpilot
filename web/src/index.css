@@ -39,6 +39,9 @@
   --color-thread: #4a6380;
   --color-rm-bg: #fdecec;
   --color-ad-bg: #e6f6ea;
+  /* Dashboard charts (plan §F.3): closed more than opened / opened more than closed. */
+  --color-c-pos: #1d5fc0;
+  --color-c-neg: #c47700;
 
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
@@ -89,6 +92,8 @@
     --color-thread: #a3b8d0;
     --color-rm-bg: #3a1b19;
     --color-ad-bg: #13301f;
+    --color-c-pos: #4a8fe8;
+    --color-c-neg: #c98500;
     --shadow-tip: 0 4px 18px rgb(0 0 0 / 0.6);
   }
 }
