@@ -4,7 +4,8 @@
 //!
 //! A copy is agent-writable: it is read only as a small regular file without following symlinks, and written
 //! back only when it is a ChatGPT credential of the master's account and user, read from the token claims (the
-//! agent can write the `account_id` field), and the master is still the one the copy was taken from. Next to
+//! agent can write the `account_id` field), and the master is still the one the copy was taken from. A master
+//! whose id token does not name its stored account is refused before any job uses it. Next to
 //! each per-job `CODEX_HOME` the runner keeps `<home>.cas`, the SHA-256 of that master (runner-only directory),
 //! so recovery after a crash applies the same compare-and-swap.
 //! A master that can no longer be refreshed is recorded by digest in `auth.json.unusable`; signing in again
@@ -79,7 +80,8 @@ impl CodexCredential {
     }
 
     /// Whether jobs may use the credential (reported in claims): a readable ChatGPT master that is not marked
-    /// unusable.
+    /// unusable. A master without an [`identity`] is marked here, before a job can spend its refresh token: a
+    /// refreshed copy of it could not be told from a foreign credential.
     pub fn usable(&self) -> bool {
         let Ok(master) = read_regular(&self.master) else {
             return false;
@@ -93,7 +95,17 @@ impl CodexCredential {
         }
         let persisted = read_regular(&self.unusable_file())
             .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned());
-        !persisted.is_ok_and(|marked| marked == hex(&digest))
+        if persisted.is_ok_and(|marked| marked == hex(&digest)) {
+            return false;
+        }
+        if identity(&master).is_none() {
+            self.mark_unusable(
+                digest,
+                "its id token does not name the stored account, so a refreshed copy could not be verified",
+            );
+            return false;
+        }
+        true
     }
 
     /// Applies the compare-and-swap write-back to every per-job `CODEX_HOME` a previous run left in
@@ -182,6 +194,10 @@ impl CodexCredential {
                 return Ok(false);
             }
         };
+        if !read_regular(&self.master).is_ok_and(|master| sha256(&master) == base) {
+            tracing::warn!(dir = %home.display(), "the credential copy of an interrupted job was taken from an older master; it is discarded and the current master is kept");
+            return Ok(false);
+        }
         match self.write_back(&current, base) {
             WriteBack::Written => {
                 tracing::info!(dir = %home.display(), "recovered the refreshed Codex credential of a crashed job");
@@ -218,7 +234,7 @@ impl CodexCredential {
             return WriteBack::Rejected;
         }
         let same_identity = parse(copy).is_some()
-            && matches!((identity(&master), identity(copy)), (Some(old), Some(new)) if old == new);
+            && matches!((identity(&master), identity(copy)), (Some(old), Some(new)) if old.kept_by(&new));
         if !same_identity {
             self.mark_unusable(
                 current,
@@ -503,44 +519,84 @@ fn parse(auth: &[u8]) -> Option<Vec<String>> {
     Some(values)
 }
 
-/// Whom a ChatGPT `auth.json` acts as: the stored account id and the account and user named by its id and
-/// access tokens.
-#[derive(PartialEq, Eq)]
+/// Whom a ChatGPT `auth.json` acts as. Its id token binds it to the stored account; every other claim is
+/// optional in Codex, and the access token need not be a JWT.
 struct Identity {
+    /// The stored `account_id`, which the id token names as well.
     account: String,
-    id_token: (String, String),
-    access_token: (String, String),
+    /// The id token's user.
+    user: Option<String>,
+    /// What the access token names.
+    access: Claims,
 }
 
-/// The identity of `auth`; `None` when the stored account or a token's account or user is missing or empty.
+/// Account and user in the `https://api.openai.com/auth` claim of a token; nothing for a token without it.
+#[derive(Default)]
+struct Claims {
+    account: Option<String>,
+    user: Option<String>,
+}
+
+impl Identity {
+    /// Whether `copy`, a refreshed copy of this credential, acts as the same account and user: it keeps every
+    /// claim this one has (a refresh may add one) and its access token names no other account.
+    fn kept_by(&self, copy: &Self) -> bool {
+        let kept = |old: &Option<String>, new: &Option<String>| old.is_none() || old == new;
+        copy.account == self.account
+            && kept(&self.user, &copy.user)
+            && kept(&self.access.account, &copy.access.account)
+            && kept(&self.access.user, &copy.access.user)
+            && copy
+                .access
+                .account
+                .as_ref()
+                .is_none_or(|account| *account == copy.account)
+    }
+}
+
+/// The identity of `auth`; `None` unless it stores an account id and its id token names that account.
 fn identity(auth: &[u8]) -> Option<Identity> {
     let json = serde_json::from_slice::<Value>(auth).ok()?;
     let tokens = json.get("tokens")?;
-    let text = |key: &str| nonempty(tokens, key);
+    let account = nonempty(tokens, "account_id")?;
+    let id_token = claims(nonempty(tokens, "id_token")?);
+    if id_token.account.as_deref() != Some(account) {
+        return None;
+    }
     Some(Identity {
-        account: text("account_id")?.to_owned(),
-        id_token: claims(text("id_token")?)?,
-        access_token: claims(text("access_token")?)?,
+        account: account.to_owned(),
+        user: id_token.user,
+        access: nonempty(tokens, "access_token")
+            .map(claims)
+            .unwrap_or_default(),
     })
 }
 
-/// Account and user in the `https://api.openai.com/auth` claim of a JWT, read as Codex reads them.
+/// The claims of `token`, read as Codex reads them (`chatgpt_user_id`, else `user_id`).
 /// No signature check: identities are compared, not authenticated (a forged token fails at the backend).
-fn claims(jwt: &str) -> Option<(String, String)> {
-    let mut parts = jwt.split('.');
+fn claims(token: &str) -> Claims {
+    let mut parts = token.split('.');
     let (Some(_), Some(payload), Some(_), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
     else {
-        return None;
+        return Claims::default();
     };
-    let payload = URL_SAFE_NO_PAD.decode(payload).ok()?;
-    let payload = serde_json::from_slice::<Value>(&payload).ok()?;
-    let auth = payload.get("https://api.openai.com/auth")?;
-    let user = nonempty(auth, "chatgpt_user_id").or_else(|| nonempty(auth, "user_id"))?;
-    Some((
-        nonempty(auth, "chatgpt_account_id")?.to_owned(),
-        user.to_owned(),
-    ))
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()
+        .and_then(|payload| serde_json::from_slice::<Value>(&payload).ok());
+    let Some(auth) = payload
+        .as_ref()
+        .and_then(|payload| payload.get("https://api.openai.com/auth"))
+    else {
+        return Claims::default();
+    };
+    Claims {
+        account: nonempty(auth, "chatgpt_account_id").map(str::to_owned),
+        user: nonempty(auth, "chatgpt_user_id")
+            .or_else(|| nonempty(auth, "user_id"))
+            .map(str::to_owned),
+    }
 }
 
 fn nonempty<'a>(object: &'a Value, key: &str) -> Option<&'a str> {

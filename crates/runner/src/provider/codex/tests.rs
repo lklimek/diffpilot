@@ -86,6 +86,7 @@ if [ -f "$PWD/chmod-auth" ]; then chmod 000 "$CODEX_HOME/auth.json"; fi
 if [ -f "$PWD/lock-home" ]; then mkdir -p "$HOME/locked/deeper"; echo left > "$HOME/locked/deeper/x"; chmod 000 "$HOME/locked/deeper" "$HOME/locked"; fi
 if [ -f "$PWD/symlink-auth" ]; then rm -f "$CODEX_HOME/auth.json"; ln -s "$(cat "$PWD/symlink-auth")" "$CODEX_HOME/auth.json"; fi
 if [ -f "$PWD/background" ]; then sleep 300 </dev/null >/dev/null 2>&1 & echo $! > "$PWD/background.pid"; fi
+if [ -f "$PWD/wait-for-go" ]; then while [ ! -f "$PWD/go" ]; do sleep 0.05; done; fi
 cat "$PWD/scenario.jsonl"
 if [ -f "$PWD/hang" ]; then sleep 300; fi
 exit "$(cat "$PWD/scenario-exit")"
@@ -1459,6 +1460,71 @@ async fn isolated_dropped_call_keeps_a_refreshed_credential_for_the_next_start()
     assert!(usable(&h));
 }
 
+/// The call fails while Codex's events are read (here: the staged copy is rewritten more than a refresh does).
+/// The agent is swept by then, so the credential Codex refreshed still comes back before the error ends the
+/// call; nothing is left for a later start to trip over.
+#[tokio::test]
+async fn isolated_error_after_the_sweep_still_brings_the_refreshed_credential_back() {
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
+    fs::write(h.call.job_dir.join("wait-for-go"), "").unwrap();
+    let many: serde_json::Map<String, Value> = (0..20)
+        .map(|n| (format!("token_{n}"), json!(format!("value-{n}"))))
+        .chain([("refresh_token".to_owned(), json!("codex-refresh-0011"))])
+        .collect();
+    let crowded = json!({"auth_mode": "chatgpt", "tokens": many});
+    let (result, ()) = tokio::join!(run(&h), async {
+        while !h.call.job_dir.join("child-stdin.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        fs::write(h.call.codex_home.join("auth.json"), crowded.to_string()).unwrap();
+        fs::write(h.call.job_dir.join("go"), "").unwrap();
+    });
+    assert!(
+        matches!(result.0, Err(ProviderError::CredentialUnusable)),
+        "{:?}",
+        result.0
+    );
+    assert_eq!(fs::read_to_string(&h.master_auth).unwrap(), rotated_auth());
+    assert!(
+        !PathBuf::from(format!("{}.cas", h.call.codex_home.display())).exists(),
+        "the compare-and-swap base is settled"
+    );
+}
+
+#[tokio::test]
+async fn master_without_an_account_bound_id_token_is_refused_before_codex_starts() {
+    let log = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let sink = Arc::clone(&log);
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer(move || Captured(Arc::clone(&sink)))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let h = harness("plan.jsonl", 0);
+    let opaque = json!({"auth_mode": "chatgpt", "tokens": {"id_token": "opaque-id-token", "access_token": ACCESS_CANARY, "refresh_token": REFRESH_CANARY, "account_id": "acct-1"}});
+    fs::write(&h.master_auth, opaque.to_string()).unwrap();
+    assert!(!usable(&h), "claims report the credential unusable");
+    assert!(!usable(&h));
+    let (result, _) = run(&h).await;
+    assert!(
+        matches!(result, Err(ProviderError::CredentialUnusable)),
+        "{result:?}"
+    );
+    assert!(
+        !h.call.job_dir.join("invocations.txt").exists(),
+        "Codex never started, so the refresh token is unspent"
+    );
+    let logged = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+    let reason = "its id token does not name the stored account";
+    assert_eq!(logged.matches(reason).count(), 1, "said once: {logged}");
+    for secret in ["opaque-id-token", ACCESS_CANARY, REFRESH_CANARY] {
+        assert!(!logged.contains(secret), "{logged}");
+    }
+}
+
 #[tokio::test]
 async fn refreshed_copy_of_another_account_is_rejected_and_logged_without_token_material() {
     let log = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
@@ -1618,7 +1684,7 @@ async fn recovery_with_a_rejected_agent_auth_keeps_a_newer_login() {
     let agent_home = isolated(&mut h);
     let staging = crashed_job_with_rejected_auth(&h, agent_home.parent().unwrap());
     // The owner signed in again after the crash.
-    let newer = json!({"auth_mode": "chatgpt", "tokens": {"access_token": "new-access", "refresh_token": "new-refresh", "account_id": "acct-1"}});
+    let newer = json!({"auth_mode": "chatgpt", "tokens": {"id_token": ID_TOKEN, "access_token": "new-access", "refresh_token": "new-refresh", "account_id": "acct-1"}});
     fs::write(&h.master_auth, newer.to_string()).unwrap();
     let isolation = h.provider.settings.isolation.as_ref().unwrap();
     isolation

@@ -469,6 +469,11 @@ impl CodexProvider {
             Err(error) => {
                 // Collect the swept Codex's status so the supervisor forgets it.
                 let _ = timeout(REAP_DEADLINE, supervisor.wait(pid)).await;
+                // The agent is gone, so its credential copy comes back before the error ends the call. After
+                // a failed sweep it stays where it is, with its base, for the next start.
+                if sweep.is_ok() {
+                    let _ = copy_back(isolation, call, None, credential).await;
+                }
                 return Err(error);
             }
         };
@@ -483,11 +488,7 @@ impl CodexProvider {
             Invocation::Resume(thread) => Some(thread.to_owned()),
             Invocation::New => None,
         });
-        if let Err(error) = isolation.pull(call, thread.as_deref()).await {
-            credential.unknown("the agent's auth.json could not be copied back");
-            return Err(error);
-        }
-        credential.returned();
+        copy_back(isolation, call, thread.as_deref(), credential).await?;
         if timed_out {
             return Err(ProviderError::Timeout);
         }
@@ -511,6 +512,25 @@ impl CodexProvider {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&call.job_id)
             .and_then(|running| running.cancelled_at)
+    }
+}
+
+/// [`Isolation::pull`] with its outcome recorded on the credential: back in the staging home, or unknown.
+async fn copy_back(
+    isolation: &Isolation,
+    call: &ProviderCall,
+    thread: Option<&str>,
+    credential: &mut JobCredential<'_>,
+) -> Result<(), ProviderError> {
+    match isolation.pull(call, thread).await {
+        Ok(()) => {
+            credential.returned();
+            Ok(())
+        }
+        Err(error) => {
+            credential.unknown("the agent's auth.json could not be copied back");
+            Err(error)
+        }
     }
 }
 
