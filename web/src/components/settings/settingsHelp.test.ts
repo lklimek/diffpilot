@@ -78,6 +78,14 @@ describe("settings help (owner request B3)", () => {
     );
   });
 
+  it("sign-out help says drafts go from this tab, where they are kept", () => {
+    for (const help of [SETTINGS_HELP.sign_out, SETTINGS_HELP.sign_out_everywhere]) {
+      const text = [help.what, help.when, help.empty, ...(help.details ?? [])].join(" ");
+      expect(text).toContain("unsent comment drafts in this tab");
+      expect(text).not.toContain("drafts in this browser");
+    }
+  });
+
   it("Sign out everywhere is on the page and says what it ends", () => {
     const help = SETTINGS_HELP.sign_out_everywhere;
     expect(help.onPage).toBeUndefined();

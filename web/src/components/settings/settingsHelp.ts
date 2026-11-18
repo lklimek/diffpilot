@@ -54,8 +54,7 @@ const HELP = {
     title: "Sign out",
     what: "Ends your session in this browser. Other browsers stay signed in.",
     when: "When you press Sign out.",
-    empty:
-      "Your unsent comment drafts in this browser are removed. Your GitHub pending review stays on GitHub.",
+    empty: "Your unsent comment drafts in this tab are removed. Your GitHub pending review stays on GitHub.",
     example: "Sign out on a shared computer before you leave it.",
     details: [
       "With the automatic refresh on and a time zone stored, the server keeps your GitHub sign-in after your last session ends, so the daily refresh can still scan. It keeps it for up to 30 days after your last sign-in; after that the automatic refresh says it needs you to sign in again.",
@@ -68,7 +67,7 @@ const HELP = {
     what: "Ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the automatic refresh. Nothing changes on GitHub.",
     when: "When you press Sign out everywhere and confirm. The API does the same for POST /auth/logout with everywhere set.",
     empty:
-      "Until you sign in again, the automatic refresh records that it needs you to sign in. Your unsent comment drafts in this browser are removed.",
+      "Until you sign in again, the automatic refresh records that it needs you to sign in. Your unsent comment drafts in this tab are removed.",
     example: "Use it when a token or a browser session may have leaked.",
   },
   llm_model: {

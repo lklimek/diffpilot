@@ -11,7 +11,7 @@ Every option on the Settings page: what it is, when smart-review uses it, what h
 
 - **What:** Ends your session in this browser. Other browsers stay signed in.
 - **When used:** When you press Sign out.
-- **Empty or default:** Your unsent comment drafts in this browser are removed. Your GitHub pending review stays on GitHub.
+- **Empty or default:** Your unsent comment drafts in this tab are removed. Your GitHub pending review stays on GitHub.
 - **Example:** Sign out on a shared computer before you leave it.
 
 With the automatic refresh on and a time zone stored, the server keeps your GitHub sign-in after your last session ends, so the daily refresh can still scan. It keeps it for up to 30 days after your last sign-in; after that the automatic refresh says it needs you to sign in again.
@@ -22,7 +22,7 @@ Personal access tokens keep working after Sign out.
 
 - **What:** Ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the automatic refresh. Nothing changes on GitHub.
 - **When used:** When you press Sign out everywhere and confirm. The API does the same for POST /auth/logout with everywhere set.
-- **Empty or default:** Until you sign in again, the automatic refresh records that it needs you to sign in. Your unsent comment drafts in this browser are removed.
+- **Empty or default:** Until you sign in again, the automatic refresh records that it needs you to sign in. Your unsent comment drafts in this tab are removed.
 - **Example:** Use it when a token or a browser session may have leaked.
 
 ## LLM

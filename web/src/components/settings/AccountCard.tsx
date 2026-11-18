@@ -22,6 +22,7 @@ const EVERYWHERE_TEXT =
 /** The signed-in account, Sign out and Sign out everywhere (asked first). */
 export function AccountCard({ login, busy, error, onSignOut, onSignOutEverywhere }: Props) {
   const [asking, setAsking] = useState(false);
+  const everywhere = useRef<HTMLButtonElement>(null);
   return (
     <SettingsCard title="Account" help={<HelpTip topic="sign_out" />}>
       <p>Signed in as {login}</p>
@@ -48,6 +49,7 @@ export function AccountCard({ login, busy, error, onSignOut, onSignOutEverywhere
           )}
         >
           <button
+            ref={everywhere}
             type="button"
             aria-disabled={busy || undefined}
             aria-expanded={asking}
@@ -61,7 +63,10 @@ export function AccountCard({ login, busy, error, onSignOut, onSignOutEverywhere
       </div>
       {asking && (
         <EverywherePrompt
-          onCancel={() => setAsking(false)}
+          onCancel={() => {
+            setAsking(false);
+            everywhere.current?.focus();
+          }}
           onConfirm={() => {
             setAsking(false);
             onSignOutEverywhere();

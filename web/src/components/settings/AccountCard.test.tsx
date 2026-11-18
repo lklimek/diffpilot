@@ -56,9 +56,11 @@ it("Sign out everywhere asks first, says what it ends, and Cancel keeps everythi
   expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
   await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(button).toHaveFocus();
   await userEvent.click(button);
   await userEvent.keyboard("{Escape}");
   expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(button).toHaveFocus();
   await userEvent.click(button);
   await userEvent.click(
     within(screen.getByRole("alertdialog")).getByRole("button", { name: "Yes, sign out everywhere" }),

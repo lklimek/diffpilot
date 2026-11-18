@@ -193,6 +193,9 @@ it("Sign out everywhere on an ended session (401) does not pass for success: the
   await userEvent.click(within(account).getByRole("button", { name: "Yes, sign out everywhere" }));
   // Whatever screen follows, the user must learn that nothing was revoked and how to retry.
   expect(await screen.findByRole("alert")).toHaveTextContent(/sign in/i);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Not signed out: your session had already ended, so nothing was revoked. Other sessions and personal access tokens still work; sign in and choose Sign out everywhere again.",
+  );
   window.sessionStorage.clear();
 });
 
