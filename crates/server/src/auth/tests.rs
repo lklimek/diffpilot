@@ -1218,8 +1218,8 @@ async fn a_grant_lifetime_out_of_range_does_not_panic() {
     })
     .await;
     assert!(
-        outcome.is_ok(),
-        "an out-of-range grant lifetime panicked: {outcome:?}"
+        matches!(outcome, Ok(false)),
+        "an out-of-range grant lifetime must be refused, not panic: {outcome:?}"
     );
 }
 

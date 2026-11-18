@@ -553,7 +553,7 @@ fn failure_of(error: &RunError, state: &AppState, zone: Option<&TimeZone>) -> Re
             RefreshFailureCode::GithubRateLimited,
             retry_after
                 .and_then(|wait| SignedDuration::try_from(wait).ok())
-                .map(|wait| now + wait),
+                .and_then(|wait| now.checked_add(wait)),
         ),
         RunError::Github(_) | RunError::SearchUnavailable => {
             (RefreshFailureCode::GithubUnavailable, None)

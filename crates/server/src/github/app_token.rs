@@ -394,7 +394,7 @@ fn rate_limited(headers: &HeaderMap, now: Timestamp) -> AppTokenError {
             .and_then(|value| value.trim().parse::<i64>().ok())
     };
     let seconds = number(RETRY_AFTER.as_str())
-        .or_else(|| number("x-ratelimit-reset").map(|reset| reset - now.as_second()));
+        .or_else(|| number("x-ratelimit-reset").map(|reset| reset.saturating_sub(now.as_second())));
     AppTokenError::RateLimited {
         retry_after: seconds
             .and_then(|seconds| u64::try_from(seconds).ok())

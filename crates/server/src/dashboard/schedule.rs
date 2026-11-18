@@ -285,17 +285,19 @@ pub(crate) async fn tick(state: AppState) -> Result<Tick, DbError> {
             continue;
         };
         let offset = offset(&user_id);
+        // `instant` is `jiff::Timestamp::MAX` when no local time of the date resolves (only at year 9999).
+        let start = |instant: Timestamp| instant.checked_add(offset).unwrap_or(instant);
         match schedule.due(now, counted_run_date(settings.last_scheduled.as_ref())) {
             Due::Now { on, .. } if state.dashboard.scheduled_run_given_up(&user_id, on) => {}
-            Due::Now { on, instant } if now >= instant + offset => due.push(DueRun {
-                start_at: instant + offset,
+            Due::Now { on, instant } if now >= start(instant) => due.push(DueRun {
+                start_at: start(instant),
                 on,
                 instant,
                 schedule,
                 scope: Scope { tenant_id, user_id },
             }),
             Due::Now { instant, .. } | Due::Later { instant } => {
-                let start_at = instant + offset;
+                let start_at = start(instant);
                 next = Some(next.map_or(start_at, |n| n.min(start_at)));
             }
         }
