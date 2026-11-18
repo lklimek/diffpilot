@@ -1014,6 +1014,24 @@ async fn failed_scan_keeps_previous_snapshot_and_rate_limit_blocks_a_new_start()
     assert!(answer.headers.contains_key("retry-after"));
 }
 
+/// GitHub's `retry-after` is a number from the network: one past the representable time range leaves the retry
+/// time unknown instead of panicking the refresh.
+#[tokio::test]
+async fn an_out_of_range_retry_after_fails_without_a_retry_time() {
+    let w = world().await;
+    w.faults(json!([{"on": "search", "times": 100,
+        "answer": {"kind": "secondary_rate_limit", "retry_after": 400_000_000_000_u64}}]))
+        .await;
+    let failed = w.refreshed().await;
+    let failure = failed.failure.expect("failure");
+    assert_eq!(failure.code, RefreshFailureCode::GithubRateLimited);
+    assert_eq!(failure.retry_at, None);
+    assert_eq!(
+        failure.message,
+        "GitHub's rate limit is used up. Try again later."
+    );
+}
+
 #[tokio::test]
 async fn second_refresh_while_scanning_is_refused() {
     let w = world().await;

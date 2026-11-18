@@ -4,6 +4,13 @@ Source of truth: `crates/contracts/src/api/**` (types) and `crates/contracts/src
 `web/src/api/generated/{types,routes}.ts`. This page fixes what the types cannot: authentication, CSRF, status
 mapping, query rules and the endpoint × fixture-state inventory.
 
+**Timestamps** (`format: date-time`, `contracts::time::Timestamp`): responses send RFC 3339 UTC with `Z` and the
+fewest of 0, 3, 6 or 9 fraction digits. Requests (bodies and query parameters such as F6 `updated_since`) accept
+strict RFC 3339 only: `YYYY-MM-DD`, `T`/`t`/space, `hh:mm:ss`, an optional fraction of 1–9 digits, `Z`/`z` or
+`±hh:mm` (hours 00–23); a leap second `:60` reads as `:59`. Refused: RFC 9557 `[…]` annotations, the ISO 8601
+basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fractions, surrounding spaces and
+`… UTC` (400 `invalid_request`).
+
 ## Listeners and authentication
 - Public listener `SR_LISTEN_ADDR` (behind the reverse proxy): `/healthz`, `/auth/*`, `/api/v1/*`, the web UI.
 - Runner listener `SR_RUNNER_LISTEN_ADDR`: `/runner/v1/*` only (`runner-protocol.md`). Neither router serves the

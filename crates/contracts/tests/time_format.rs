@@ -75,9 +75,53 @@ fn a_missing_optional_timestamp_stays_null() {
     );
 }
 
+/// The other RFC 3339 spellings read as the same instant; a leap second reads as the second before it.
+#[test]
+fn rfc3339_variants_read_and_serialise_in_the_wire_form() {
+    for (input, wire) in [
+        ("2026-11-18 21:00:01Z", "2026-11-18T21:00:01Z"),
+        ("2026-11-18t21:00:01.5z", "2026-11-18T21:00:01.500Z"),
+        ("2026-12-31T23:59:60Z", "2026-12-31T23:59:59Z"),
+        ("2026-11-19T06:30:01+09:30", "2026-11-18T21:00:01Z"),
+    ] {
+        let read: AccessToken = serde_json::from_value(token(input, Value::Null)).expect("reads");
+        assert_eq!(
+            serde_json::to_value(&read).expect("serialises")["created_at"],
+            wire,
+            "{input}"
+        );
+    }
+}
+
+/// Input is strict RFC 3339: forms jiff alone would read (RFC 9557 annotations, ISO 8601 basic format, missing
+/// seconds, short or sub-minute offsets, comma fractions) and chrono's display form are refused.
 #[test]
 fn timestamps_without_an_offset_or_not_rfc3339_are_rejected() {
-    for input in ["2026-11-18T21:00:01", "2026-11-18", "yesterday", ""] {
+    for input in [
+        "2026-11-18T21:00:01",
+        "2026-11-18",
+        "yesterday",
+        "",
+        "2026-11-18T21:00:01Z[Europe/Warsaw]",
+        "2026-11-18T21:00:01Z[u-ca=iso8601]",
+        "20261118T210001Z",
+        "2026-11-18T21:00Z",
+        "2026-11-18T21:00:01+02",
+        "2026-11-18T21:00:01+0200",
+        "2026-11-18T21:00:01+00:00:30",
+        "2026-11-18T21:00:01+24:00",
+        "2026-11-18T21:00:01,5Z",
+        "2026-11-18T21:00:01.Z",
+        "2026-11-18T21:00:01.1234567891Z",
+        "2026-11-18 21:00:01 UTC",
+        "2026-11-18T21:00:01UTC",
+        " 2026-11-18T21:00:01Z",
+        "2026-11-18T21:00:01Z ",
+        "2026-1-8T01:02:03Z",
+        "+2026-11-18T21:00:01Z",
+        "2026-11-31T21:00:01Z",
+        "2026-11-18T25:00:01Z",
+    ] {
         assert!(
             serde_json::from_value::<AccessToken>(token(input, Value::Null)).is_err(),
             "{input:?} must not read"

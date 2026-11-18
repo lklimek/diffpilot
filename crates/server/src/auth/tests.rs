@@ -1202,6 +1202,27 @@ async fn store_pair(h: &Harness, user_id: &str, grant: TokenGrant) {
         .expect("store pair");
 }
 
+/// GitHub's grant lifetimes are numbers from the network: one past the representable range is handled, not a panic.
+#[tokio::test]
+async fn a_grant_lifetime_out_of_range_does_not_panic() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    let state = h.state.clone();
+    let outcome = tokio::spawn(async move {
+        let lock = lock_user(&signed_in.user_id).await;
+        // About 12,700 years: the chrono-based stack stored it; it lies past jiff's year 9999.
+        let far = grant("ghu_far", 400_000_000_000, "ghr_far");
+        store_sign_in_tokens(&state, &lock, DEFAULT_TENANT, &far, Timestamp::now())
+            .await
+            .is_ok()
+    })
+    .await;
+    assert!(
+        matches!(outcome, Ok(false)),
+        "an out-of-range grant lifetime must be refused, not panic: {outcome:?}"
+    );
+}
+
 fn grant(access: &str, expires_in: i64, refresh: &str) -> TokenGrant {
     TokenGrant {
         access_token: SecretString::from(access),

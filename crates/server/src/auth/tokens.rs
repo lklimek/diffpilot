@@ -176,11 +176,16 @@ fn encrypt(
     grant: &TokenGrant,
     now: Timestamp,
 ) -> Result<EncryptedTokens, UserTokenError> {
+    // Lifetimes come from GitHub: one past the representable range is an unusable grant, not a panic.
+    let expiry = |seconds: i64| {
+        now.checked_add(SignedDuration::from_secs(seconds))
+            .ok_or(OauthError::IncompleteGrant)
+    };
     Ok(EncryptedTokens {
         access_ct: cipher.encrypt(access_aad(user_id), grant.access_token.expose_secret())?,
-        access_expires_at: now + SignedDuration::from_secs(grant.expires_in),
+        access_expires_at: expiry(grant.expires_in)?,
         refresh_ct: cipher.encrypt(refresh_aad(user_id), grant.refresh_token.expose_secret())?,
-        refresh_expires_at: now + SignedDuration::from_secs(grant.refresh_token_expires_in),
+        refresh_expires_at: expiry(grant.refresh_token_expires_in)?,
     })
 }
 

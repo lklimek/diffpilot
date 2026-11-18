@@ -63,10 +63,10 @@ pub(crate) struct Search {
 fn instant(text: &str) -> Option<(Timestamp, Timestamp)> {
     if let Ok(date) = Date::strptime("%Y-%m-%d", text) {
         let start = Timestamp::from(date.to_zoned(TimeZone::UTC).ok()?.timestamp());
-        return Some((start, start + SignedDuration::from_hours(24)));
+        return Some((start, start.checked_add(SignedDuration::from_hours(24))?));
     }
     let time: Timestamp = text.parse().ok()?;
-    Some((time, time + SignedDuration::from_secs(1)))
+    Some((time, time.checked_add(SignedDuration::from_secs(1))?))
 }
 
 fn range(value: &str) -> Option<Range> {

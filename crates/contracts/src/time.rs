@@ -94,12 +94,82 @@ impl fmt::Display for Timestamp {
     }
 }
 
-/// RFC 3339 with any offset (converted to UTC) and 0 to 9 fraction digits.
+/// Why a text is not a [`Timestamp`].
+#[derive(Debug, thiserror::Error)]
+pub enum ParseTimestampError {
+    /// Not RFC 3339 `date-time` text.
+    #[error("not an RFC 3339 date-time (YYYY-MM-DDThh:mm:ss, optional fraction, Z or ±hh:mm)")]
+    NotRfc3339,
+    /// RFC 3339 text naming no valid instant (a field out of range).
+    #[error("not a valid RFC 3339 date-time")]
+    Invalid(#[source] jiff::Error),
+}
+
+/// Strict RFC 3339 `date-time` (§5.6): `T`, `t` or a space between date and time, seconds required, 1 to 9
+/// fraction digits, `Z`, `z` or `±hh:mm` (hours 00–23), converted to UTC. A leap second (`:60`) reads as `:59`.
+/// Rejected although jiff reads them: the basic format, missing seconds, `±hh` and sub-minute offsets, comma
+/// fractions and RFC 9557 `[…]` annotations.
 impl FromStr for Timestamp {
-    type Err = jiff::Error;
+    type Err = ParseTimestampError;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        text.parse().map(Self)
+        if !rfc3339_shape(text.as_bytes()) {
+            return Err(ParseTimestampError::NotRfc3339);
+        }
+        text.parse().map(Self).map_err(ParseTimestampError::Invalid)
+    }
+}
+
+/// Whether `text` has the shape of an RFC 3339 `date-time`; field ranges are left to jiff.
+fn rfc3339_shape(text: &[u8]) -> bool {
+    let [
+        y1,
+        y2,
+        y3,
+        y4,
+        b'-',
+        mo1,
+        mo2,
+        b'-',
+        d1,
+        d2,
+        b'T' | b't' | b' ',
+        h1,
+        h2,
+        b':',
+        mi1,
+        mi2,
+        b':',
+        s1,
+        s2,
+        rest @ ..,
+    ] = text
+    else {
+        return false;
+    };
+    let digits = |field: &[&u8]| field.iter().all(|digit| digit.is_ascii_digit());
+    if !digits(&[y1, y2, y3, y4, mo1, mo2, d1, d2, h1, h2, mi1, mi2, s1, s2]) {
+        return false;
+    }
+    let offset = match rest {
+        [b'.', fraction @ ..] => {
+            let count = fraction
+                .iter()
+                .take_while(|digit| digit.is_ascii_digit())
+                .count();
+            if !(1..=9).contains(&count) {
+                return false;
+            }
+            fraction.get(count..).unwrap_or_default()
+        }
+        _ => rest,
+    };
+    match offset {
+        [b'Z' | b'z'] => true,
+        [b'+' | b'-', oh1, oh2, b':', om1, om2] => {
+            digits(&[oh1, oh2, om1, om2]) && [*oh1, *oh2] <= *b"23" && *om1 <= b'5'
+        }
+        _ => false,
     }
 }
 
