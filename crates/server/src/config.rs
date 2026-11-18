@@ -44,6 +44,8 @@ pub const GITHUB_CLONE_URL: &str = "SR_GITHUB_CLONE_URL";
 pub const MEMCAN_URL: &str = "SR_MEMCAN_URL";
 /// MemCan bearer token.
 pub const MEMCAN_TOKEN: &str = "SR_MEMCAN_TOKEN";
+/// MemCan web UI base including `/ui`; dashboard TODO links are `<base>/tasks/<uuid>` (optional).
+pub const MEMCAN_UI_URL: &str = "SR_MEMCAN_UI_URL";
 /// Path of a file holding `SR_SECRET_KEY`; exactly one of the two may be set.
 pub const SECRET_KEY_FILE: &str = "SR_SECRET_KEY_FILE";
 /// Path of a file holding `SR_RUNNER_SECRET`; exactly one of the two may be set.
@@ -85,6 +87,8 @@ pub struct Config {
     pub github: GithubConfig,
     /// MemCan endpoint and token.
     pub memcan: MemcanConfig,
+    /// MemCan web UI base, no trailing slash; links are `<value>/tasks/<uuid>` (default: none, no links).
+    pub memcan_ui_url: Option<String>,
 }
 
 /// GitHub App credentials and GitHub base URLs (configurable for the fake GitHub).
@@ -329,6 +333,13 @@ impl Config {
                 url: parse_http_url(MEMCAN_URL, &require(MEMCAN_URL)?)?,
                 token: SecretString::from(secret(MEMCAN_TOKEN, MEMCAN_TOKEN_FILE)?),
             },
+            memcan_ui_url: get(MEMCAN_UI_URL)?
+                .map(|value| parse_http_url(MEMCAN_UI_URL, &value))
+                .transpose()?
+                .map(|url| {
+                    let url = String::from(url);
+                    url.strip_suffix('/').map(str::to_owned).unwrap_or(url)
+                }),
         })
     }
 }
@@ -634,6 +645,42 @@ pub(crate) mod tests {
                 other => panic!("{key}: expected UnsupportedUrlScheme, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn memcan_ui_url_is_optional_and_must_be_http() {
+        assert_eq!(parse(&required_env()).expect("valid").memcan_ui_url, None);
+        let mut env = required_env();
+        env.insert(
+            MEMCAN_UI_URL,
+            "http://memcan.example.test:8190/ui".to_owned(),
+        );
+        let url = parse(&env).expect("valid").memcan_ui_url;
+        assert_eq!(url.as_deref(), Some("http://memcan.example.test:8190/ui"));
+        for (value, stored) in [
+            (
+                "http://memcan.example.test:8190/ui/",
+                "http://memcan.example.test:8190/ui",
+            ),
+            ("https://memcan.example.test", "https://memcan.example.test"),
+        ] {
+            env.insert(MEMCAN_UI_URL, value.to_owned());
+            let url = parse(&env).expect("valid").memcan_ui_url;
+            assert_eq!(url.as_deref(), Some(stored), "{value}");
+        }
+        env.insert(MEMCAN_UI_URL, "memcan.example.test/ui".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidUrl {
+                key: MEMCAN_UI_URL,
+                ..
+            })
+        ));
+        env.insert(MEMCAN_UI_URL, "ftp://memcan.example.test/ui".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::UnsupportedUrlScheme { key: MEMCAN_UI_URL })
+        ));
     }
 
     #[test]

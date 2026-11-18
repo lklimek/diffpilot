@@ -6,6 +6,7 @@ use db::repo::Db;
 
 use crate::auth::PendingPairs;
 use crate::config::Config;
+use crate::dashboard::DashboardHub;
 use crate::jobs::executor::JobExecutor;
 use crate::jobs::progress::ProgressHub;
 use crate::jobs::queue::QueueExecutor;
@@ -27,6 +28,8 @@ pub struct AppState {
     pub pending_pairs: PendingPairs,
     /// `true` once the server stops: open event streams end so the listeners can finish.
     pub stopping: tokio::sync::watch::Sender<bool>,
+    /// Per-user dashboard refreshes (ADR-017).
+    pub dashboard: DashboardHub,
 }
 
 impl AppState {
@@ -50,6 +53,7 @@ impl AppState {
             progress: ProgressHub::default(),
             pending_pairs: PendingPairs::default(),
             stopping: tokio::sync::watch::Sender::new(false),
+            dashboard: DashboardHub::default(),
         }
     }
 }

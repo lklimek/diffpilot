@@ -14,6 +14,7 @@ pub mod feedback;
 mod memory;
 pub mod profile;
 pub mod status;
+pub mod todos;
 pub mod writer;
 
 #[cfg(test)]
