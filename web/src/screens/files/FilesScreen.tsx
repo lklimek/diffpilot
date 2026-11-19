@@ -73,6 +73,7 @@ import { useCommentDrafts, useUnresolvedPosts } from "../tour/drafts";
 import { InspectorPane, type CommentLineState, type FilesInspector } from "../tour/InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "../tour/layout";
 import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "../tour/review";
+import { FlowsMenu } from "../tour/FlowsMenu";
 import { Workspace } from "../tour/Workspace";
 import { FileCode } from "./FileCode";
 
@@ -944,6 +945,14 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
           reviewed: tour.flows.filter((f) => isFlowReviewed(f, [...ticked])).length,
           total: tour.flows.length,
         }}
+        progressMenu={
+          <FlowsMenu
+            tour={tour}
+            ticked={ticked}
+            work={work}
+            onOpenFlow={(flowId) => void navigate(`${flowsHref}#${encodeURIComponent(flowId)}`)}
+          />
+        }
         pendingCount={pendingCountOf(pending)}
         onOpenPending={() => void navigate(`${flowsHref}#pending_review`)}
         onHelp={() => setHelpOpen(true)}

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useId, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { GithubMark } from "../github/GithubMark";
 import { CHECKS_LINK_TIP, ciText, ciTip } from "../section/ci";
 import type { CiStatus, LlmLanguage, PrSummary } from "../../api/generated/types";
@@ -21,6 +21,8 @@ interface TopBarProps {
   login: string | null;
   /** Review progress: flows with every step ticked, out of all flows. */
   progress?: { reviewed: number; total: number };
+  /** The progress counter as the flows dropdown (both review views); replaces the plain `progress` text. */
+  progressMenu?: ReactNode;
   /** Comments in the pending review; `"unavailable"` without the GitHub App; no item when omitted. */
   pendingCount?: number | `${number}+` | "unavailable" | "loading";
   /** Opens the pending-review list. */
@@ -182,6 +184,7 @@ export function TopBar({
   onOpenPending,
   onHelp,
   view,
+  progressMenu,
 }: TopBarProps) {
   const repo = pr ? `${pr.repo.owner}/${pr.repo.name}` : "";
   return (
@@ -251,7 +254,8 @@ export function TopBar({
         </div>
       )}
       {!pr && <span className="flex-1" />}
-      {progress && (
+      {progressMenu}
+      {progress && !progressMenu && (
         <Tooltip tip="Flows you have ticked as reviewed (all their steps ticked, in the Flows view), out of all flows in this PR. No percentage and no weighting by risk.">
           <span tabIndex={0} className="cursor-help text-[12.5px]">
             Your progress <b>{progress.reviewed}</b> / {progress.total}

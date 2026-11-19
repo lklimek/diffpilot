@@ -51,6 +51,35 @@ async function openStep(flow: string, step: string) {
 }
 
 describe("Tour screen (brief §4.3)", () => {
+  it("each step shows a collapsible Why this flow strip; collapsed it keeps one line and is remembered", async () => {
+    await open();
+    await openStep("1", "5");
+    const strip = within(main()).getByRole("region", { name: "Why this flow" });
+    const toggle = within(strip).getByRole("button", { name: /^Why this flow/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(strip).toHaveTextContent("Problem:");
+    await user().click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(strip).not.toHaveTextContent("→ Change:");
+    await openStep("1", "6");
+    expect(
+      within(within(main()).getByRole("region", { name: "Why this flow" })).getByRole("button", {
+        name: /^Why this flow/,
+      }),
+    ).toHaveAttribute("aria-expanded", "false");
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
+    expect(within(main()).queryByRole("region", { name: "Why this flow" })).toBeNull();
+  });
+
+  it("Your progress opens the flows with their analysis and review state; a flow opens its introduction", async () => {
+    await open();
+    await user().click(within(topBar()).getByRole("button", { name: /^Your progress 0 \/ 5/ }));
+    const flows = screen.getByRole("region", { name: "Flows: analysis and review" });
+    expect(within(flows).getAllByRole("listitem")).toHaveLength(5);
+    await user().click(within(flows).getByRole("link", { name: /^2 / }));
+    expect(blockHeading()).toHaveTextContent("Default timeout 30 s → 5 s");
+  });
+
   it("the step header says when the file's Viewed mark was not read from GitHub", async () => {
     setScenario("viewed-not-read");
     await open();

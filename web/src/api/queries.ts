@@ -602,6 +602,7 @@ export function useFlowWork(id: AnalysisId) {
       onSuccess: refresh,
     }),
     resume: useMutation({ mutationFn: () => api.resumeAnalysis(id), onSuccess: refresh }),
+    pause: useMutation({ mutationFn: () => api.pauseAnalysis(id), onSuccess: refresh }),
     retry: useMutation({ mutationFn: () => api.retryAnalysis(id), onSuccess: refresh }),
   };
 }

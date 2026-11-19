@@ -2,6 +2,7 @@ import { useId, type ReactNode } from "react";
 import type { AnalysisState, Flow, FlowId, HunkPart, LineRange, StepId } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
 import { RiskLabel } from "../badge/LlmLabel";
+import { FlowWhyText, hasWhy } from "../flow-intro/FlowWhy";
 import { FlowWorkLabel } from "../flow-intro/status";
 import { NOT_ANALYSED_LABEL } from "../quiet/labels";
 import { CodeText } from "../section/CodeText";
@@ -107,15 +108,13 @@ function StepRow({
   );
 }
 
-/** "Why this flow: problem → change" of an analysed flow (LLM); nothing without an introduction. */
+/** "Why this flow: problem → change" of an analysed flow (LLM), as in the Flows strip; nothing without one. */
 function WhyLine({ flow }: { flow: Flow }) {
-  const intro = flow.llm.introduction;
-  if (!intro.problem_before.trim() && !intro.change.trim()) return null;
+  if (!hasWhy(flow)) return null;
   return (
     <span className="text-[12.5px]">
-      <span className="text-muted">Why this flow: </span>
-      <CodeText text={intro.problem_before} /> → <CodeText text={intro.change} />{" "}
-      <ProvenanceTag source="llm" />
+      <span className="font-semibold text-llm">Why this flow: </span>
+      <FlowWhyText flow={flow} />
     </span>
   );
 }

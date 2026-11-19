@@ -48,6 +48,7 @@ import { isFlowReviewed } from "../../components/flow-intro/progress";
 import { HelpDialog } from "../../components/help/HelpDialog";
 import { quietTitle } from "../../components/inspector/summaries";
 import { shortcutAction } from "../../components/help/shortcuts";
+import { FlowWhy } from "../../components/flow-intro/FlowWhy";
 import { NavList } from "../../components/nav/NavList";
 import { filesHash, stepFilesLink } from "../../components/files/model";
 import { rangeText } from "../../components/section/format";
@@ -87,6 +88,7 @@ import {
   evidenceFromHash,
 } from "./sequence";
 import { useNow } from "../../app/now";
+import { FlowsMenu } from "./FlowsMenu";
 import { Workspace } from "./Workspace";
 import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "./review";
 import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
@@ -852,6 +854,14 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           {progressAlert}
         </p>
       )}
+      {step && flow && (
+        <FlowWhy
+          flow={flow}
+          open={sections.isOpen("whyflow")}
+          onToggle={() => sections.toggle("whyflow")}
+          onOpenIntro={() => go({ block: "flow_intro", flow_id: flow.id })}
+        />
+      )}
       {flow && flow.steps.length > 0 && (
         <DiagramPane
           key={flow.id}
@@ -908,6 +918,14 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           reviewed: tour.flows.filter((f) => isFlowReviewed(f, ticked)).length,
           total: tour.flows.length,
         }}
+        progressMenu={
+          <FlowsMenu
+            tour={tour}
+            ticked={ticked}
+            work={work}
+            onOpenFlow={(flowId) => go({ block: "flow_intro", flow_id: flowId })}
+          />
+        }
         pendingCount={pendingCount}
         onOpenPending={() => go({ block: "pending_review" })}
         onHelp={() => setHelpOpen(true)}
