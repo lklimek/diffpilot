@@ -65,7 +65,7 @@ function useTick(fixed: number | undefined): number {
 }
 
 const WRITING =
-  "The LLM writes the answer; it appears whole when it is ready. A first question, or the first after the analysis changed, takes longer: the conversation is prepared first. The time shows the job is alive; it is no estimate.";
+  "The LLM writes the answer; it appears whole when it is ready. A first question, or the first after the analysis changed, takes longer: the conversation is prepared first. The time is since you asked; it is no estimate.";
 
 /**
  * A question still waiting: one line with a spinner, its state and the time since it was asked (AC10); when the
