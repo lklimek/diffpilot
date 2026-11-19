@@ -748,6 +748,18 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   because they are styled as LLM content (the LLM tint, the remark bar's colour and pattern, a word label) and say
   "LLM" and "not checked" in their accessible name.
 
+### Owner request — 2026-11-19: flag markers and whole-flow ticks
+
+- A step or flow with LLM flags shows a flag marker with its strongest level written in that level's colour
+  ("⚑ red", "⚑ yellow"; "⚑" for a flag without a level) next to its rating pill: in the navigation (step rows and
+  flow rows, also while a flow is collapsed), above the step's code and above the flow introduction. Its name and
+  tooltip count the flags by level ("LLM flags on step 2: 1 red flag"). It is not a rating and stays apart from the
+  pill; no marker without flags. The flag cards stay in the Inspector. Amends "their tooltips count flags by level"
+  in the 2026-11-18 flags addendum.
+- Each analysed flow row in the navigation starts with a tick toggle ("Mark flow 2 reviewed", pressed when all its
+  steps are ticked): it ticks every step of the flow, or unticks them all when all are ticked, like "Mark flow
+  reviewed" in the flow introduction. It replaces the flow row's tick glyph.
+
 ### Owner-approved amendment — 2026-11-18: Ask as a conversation
 
 - **Ask as a chat.** The Ask area shows the user's conversation of the analysis as one thread, oldest at the top

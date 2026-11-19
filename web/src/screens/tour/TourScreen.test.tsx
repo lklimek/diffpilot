@@ -331,6 +331,30 @@ describe("Tour screen (brief §4.3)", () => {
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f3.1", "f3.2"]));
   });
 
+  it("the menu's flow toggle ticks every step of the flow, and unticks them when all are ticked", async () => {
+    await open();
+    const toggle = () => within(nav()).getByRole("button", { name: "Mark flow 3 reviewed" });
+    await user().click(toggle());
+    expect(topBar()).toHaveTextContent("flows reviewed 1 / 5");
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f3.1", "f3.2"]));
+    expect(toggle()).toHaveAttribute("aria-pressed", "true");
+    await user().click(toggle());
+    expect(topBar()).toHaveTextContent("flows reviewed 0 / 5");
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual([]));
+  });
+
+  it("shows the step's and the flow's LLM flags next to their rating pills above the block", async () => {
+    await open();
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 4:/ }));
+    expect(
+      within(main()).getByRole("img", { name: "LLM flags in this flow: 1 red flag, 1 yellow flag" }),
+    ).toHaveTextContent("⚑ red");
+    await openStep("2", "1");
+    expect(within(main()).getByRole("img", { name: "LLM flags on this step: 1 red flag" })).toHaveTextContent(
+      "⚑ red",
+    );
+  });
+
   it("j / k walk the blocks, n / p the flow introductions", async () => {
     await open();
     await user().keyboard("j");
