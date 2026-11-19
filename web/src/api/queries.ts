@@ -37,14 +37,16 @@ export const useMyAnalyses = (enabled: boolean) =>
 export const useTour = (id: AnalysisId) =>
   useQuery({ queryKey: ["tour", id], queryFn: () => api.getTour(id) });
 
+/** The query of a range's lines, shared by `useLines` and one-off reads of the same cache entry. */
+export const linesQuery = (id: AnalysisId, query: RangeQuery) => ({
+  queryKey: ["lines", id, query],
+  queryFn: () => api.getLines(id, query),
+  staleTime: Infinity,
+});
+
 /** Lines of a range; disabled while `query` is undefined. */
 export const useLines = (id: AnalysisId, query: RangeQuery | undefined) =>
-  useQuery({
-    queryKey: ["lines", id, query],
-    queryFn: () => api.getLines(id, query!),
-    enabled: query !== undefined,
-    staleTime: Infinity,
-  });
+  useQuery({ ...linesQuery(id, query!), enabled: query !== undefined });
 
 /** Classic diff of a range; disabled while `query` is undefined. */
 export const useDiff = (id: AnalysisId, query: RangeQuery | undefined) =>

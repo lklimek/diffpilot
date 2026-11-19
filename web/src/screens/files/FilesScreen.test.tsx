@@ -294,6 +294,25 @@ describe("Files Inspector panels (proposal §3)", () => {
     expect((composer as HTMLTextAreaElement).value).toMatch(/^LLM-suggested — review before posting/);
   });
 
+  it("a flag whose last line is folded away still opens the composer on its lines", async () => {
+    const tour = seedFor("default", "tour") as Tour;
+    const flag = tour.flows[0]!.steps.find((s) => s.id === "f1.5")!.llm.annotations.find(
+      (a) => a.id === "f1.5.a3",
+    )!;
+    flag.range = { start_line: 99, end_line: 170 };
+    server.use(http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json(tour)));
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=96&end=109");
+    const card = await waitFor(() => {
+      const found = inspector().querySelector<HTMLElement>('[data-annotation-id="f1.5.a3"]');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    expect(document.querySelector('[data-line="170"][data-side="head"]')).toBeNull();
+    await userEvent.setup().click(within(card).getByRole("button", { name: "Use as review comment" }));
+    const composer = await within(inspector()).findByRole("textbox", { name: /^Comment on / });
+    expect(composer).toHaveAccessibleName("Comment on src/rpc/client.rs:99–170");
+  });
+
   it("the hunk list names the lines of each part in no flow, so a deletion never reads as whitespace", async () => {
     await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
     const hunks = within(inspector()).getByRole("region", { name: /^Hunks in this file/ });

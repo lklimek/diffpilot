@@ -21,6 +21,7 @@ import type {
 import {
   useCommentActions,
   useFiles,
+  linesQuery,
   useFlowWork,
   useMe,
   usePendingReview,
@@ -69,7 +70,7 @@ import { useSectionState } from "../../components/inspector/sectionState";
 import { rangeText } from "../../components/section/format";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { TopBar } from "../../components/top-bar/TopBar";
-import { DiffCode, errorText, useHideContextChanges, type CodeContext } from "../tour/code";
+import { DiffCode, errorText, MAX_RANGE_LINES, useHideContextChanges, type CodeContext } from "../tour/code";
 import { flagComment } from "../../components/comment/prefill";
 import { useCommentDrafts, useUnresolvedPosts } from "../tour/drafts";
 import { InspectorPane, type CommentLineState, type FilesInspector } from "../tour/InspectorPane";
@@ -765,25 +766,40 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     if (target) go({ file: target.path, side: e.side, line: e.line });
   };
   // "Use as review comment" on a flag: the composer opens on the flag's lines with it as a draft; nothing is sent.
+  // Lines folded away are read first.
   const onFlagAsComment =
     pending.data?.commenting_available === true
       ? (flag: Annotation) => {
           const owner = ownerOf.get(flag.id)?.step;
           if (!owner) return;
+          const side = owner.facts.side;
           const { start_line, end_line } = flag.range;
-          const data = cachedLines(owner.facts.side, end_line);
-          if (!data) return say("The flag's lines are not shown here; open them in Flows to comment.");
-          commentOn({
-            target: {
-              path: pathOn(file, owner.facts.side),
-              side: owner.facts.side,
-              start_line: start_line === end_line ? null : start_line,
-              line: end_line,
-            },
-            lines: data,
-          });
-          setCommentPrefill({ text: flagComment(flag) });
-          openInspector();
+          const draft = (data: LinesResponse) => {
+            commentOn({
+              target: {
+                path: pathOn(file, side),
+                side,
+                start_line: start_line === end_line ? null : start_line,
+                line: end_line,
+              },
+              lines: data,
+            });
+            setCommentPrefill({ text: flagComment(flag) });
+            openInspector();
+          };
+          const cached = cachedLines(side, end_line);
+          if (cached) return draft(cached);
+          const query = {
+            path: pathOn(file, side),
+            side,
+            from: Math.max(start_line, end_line - MAX_RANGE_LINES + 1),
+            to: end_line,
+          };
+          queryClient
+            .fetchQuery(linesQuery(analysisId, query))
+            .then(draft, (error: unknown) =>
+              setLinkNotice(`The flag's lines could not be read: ${errorText(error)}`),
+            );
         }
       : undefined;
   const panelContext: FilesPanelContext = {
