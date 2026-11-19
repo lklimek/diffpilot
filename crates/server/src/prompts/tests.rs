@@ -1842,3 +1842,55 @@ fn a_thread_keeps_its_first_question_and_latest_follow_ups() {
         "{block}"
     );
 }
+
+/// Long earlier answers: each entry is bounded (the first always fits), a clipped one says how much is missing and
+/// the block carries the usual clipped note; the 32 KiB budget keeps the newest follow-ups and counts the rest.
+#[test]
+fn a_long_thread_stays_within_its_budget_and_says_what_it_clipped() {
+    let texts: Vec<String> = (0..6).map(|n| format!("question {n}")).collect();
+    // Three bytes per character: 6000 characters are about 18 KB.
+    let long = "ж".repeat(MAX_THREAD_ANSWER_CHARS + 2_000);
+    let thread: Vec<ThreadQuestion<'_>> = texts
+        .iter()
+        .map(|text| ThreadQuestion {
+            question: text,
+            state: contracts::api::questions::AskState::Answered,
+            answer: Some(&long),
+        })
+        .collect();
+    let block = thread_block(&thread).expect("thread");
+    let (_, blocks) = split(&block);
+    let content = &blocks[0].content;
+    assert!(content.len() <= MAX_ASK_THREAD_BYTES, "{}", content.len());
+    let entries: Vec<serde_json::Value> = content
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("entry"))
+        .collect();
+    assert_eq!(
+        entries[0]["question"], "question 0",
+        "the first question stays"
+    );
+    assert_eq!(
+        entries.last().map(|entry| entry["question"].clone()),
+        Some(serde_json::json!("question 5")),
+        "the newest follow-up stays"
+    );
+    for entry in &entries {
+        let shown = entry["answer"].as_str().expect("answer").chars().count();
+        assert_eq!(
+            entry["clipped_chars"].as_u64(),
+            Some((long.chars().count() - shown) as u64),
+            "{entry}"
+        );
+    }
+    let omitted = texts.len() - entries.len();
+    assert!(omitted > 0, "the budget, not the count, stops here");
+    assert!(
+        block.contains(&omitted_note(omitted).expect("note")),
+        "{block}"
+    );
+    assert!(
+        block.contains("(The server clipped the block above:"),
+        "{block}"
+    );
+}
