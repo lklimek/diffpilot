@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { AnalysisSummary, AnchoredAskRequest, FilesResponse } from "../../api/generated/types";
+import type { AnalysisSummary, AnchoredAskRequest, FilesResponse, Tour } from "../../api/generated/types";
 import seed from "../../mocks/files-482.json";
 import { seedFor } from "../../mocks/fixtures";
 import { MOVED_HEAD, setScenario } from "../../mocks/scenarios";
@@ -395,6 +395,23 @@ describe("Files code view", () => {
       m.closest("[data-line]")!.getAttribute("data-line"),
     );
     // f4.1: a consequence and two flags on removed lines 52–53.
+    expect(rows).toEqual(["52", "52", "53"]);
+  });
+
+  it("a remark on removed code starting on a line not removed keeps its ◆ on its first removed line", async () => {
+    const tour = seedFor("default", "tour") as Tour;
+    const step = tour.flows.flatMap((f) => f.steps).find((s) => s.id === "f4.1")!;
+    const remark = step.llm.annotations.find((a) => a.range.start_line === 52)!;
+    // Base lines 50–51 are unchanged: the first line of the remark shown as removed is 52.
+    remark.range = { ...remark.range, start_line: 50 };
+    server.use(http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json(tour)));
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
+    await waitFor(() =>
+      expect(document.querySelectorAll('[data-side="base"] [data-mark=remark]').length).toBeGreaterThan(0),
+    );
+    const rows = [...document.querySelectorAll('[data-side="base"] [data-mark=remark]')].map((m) =>
+      m.closest("[data-line]")!.getAttribute("data-line"),
+    );
     expect(rows).toEqual(["52", "52", "53"]);
   });
 

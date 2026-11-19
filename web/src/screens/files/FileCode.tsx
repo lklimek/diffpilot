@@ -35,6 +35,22 @@ interface FileCodeProps extends View {
 const overlaps = (a: Annotation, r: LineRange) =>
   a.range.start_line <= r.end_line && a.range.end_line >= r.start_line;
 
+/**
+ * A remark on removed code as drawn: its range starts on its first removed line in the file, where its one ◆
+ * goes (the remark may start on a line kept unchanged, which no view shows).
+ */
+function fromFirstRemoved(file: PrFile, a: Annotation): Annotation {
+  const first = Math.min(
+    ...file.hunks
+      .flatMap((h) => h.parts)
+      .filter((p) => p.side === "base" && overlaps(a, p.range))
+      .map((p) => Math.max(p.range.start_line, a.range.start_line)),
+  );
+  return Number.isFinite(first) && first !== a.range.start_line
+    ? { ...a, range: { ...a.range, start_line: first } }
+    : a;
+}
+
 /** At most one request's worth of lines from `from`. */
 const capped = (from: number, to: number): LineRange => ({
   start_line: from,
@@ -101,6 +117,7 @@ export function FileCode({ file, show, ...props }: FileCodeProps) {
     end_line: a.range.start_line,
   }));
   const regions = fileRegions(file, [...opened, ...starts, ...(show ? [show] : [])]);
+  const removedAnnotations = props.removedAnnotations.map((a) => fromFirstRemoved(file, a));
   const onShow = (range: LineRange) => setOpened((all) => [...all, range]);
   const chunks = regions.flatMap((r) =>
     rangeChunks(pathOn(file, side), side, [r]).map((q) => ({ start_line: q.from, end_line: q.to })),
@@ -120,6 +137,7 @@ export function FileCode({ file, show, ...props }: FileCodeProps) {
             )}
             <RegionCode
               {...props}
+              removedAnnotations={removedAnnotations}
               file={file}
               side={side}
               range={range}
