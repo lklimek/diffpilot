@@ -1,0 +1,20 @@
+//! Client for the acme node RPC API: requests, retries, wallet and sync helpers.
+
+pub mod config;
+pub mod mempool;
+pub mod sync;
+pub mod wallet;
+
+pub mod rpc {
+    //! RPC transport and client.
+    pub mod client;
+    pub mod error;
+    pub mod metrics;
+    pub mod transport;
+}
+
+pub mod util {
+    //! Small shared helpers.
+    pub mod backoff;
+    pub mod fmt;
+}

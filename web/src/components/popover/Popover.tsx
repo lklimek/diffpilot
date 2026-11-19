@@ -1,0 +1,227 @@
+import {
+  cloneElement,
+  useEffect,
+  useEffectEvent,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+  type ReactNode,
+} from "react";
+import { ProvenanceTag, type ProvenanceSource } from "../section/ProvenanceTag";
+import { Tooltip, useTipPrecedence } from "../tooltip/Tooltip";
+
+interface PopoverProps {
+  /** Accessible name of the popover, e.g. "LLM remarks at line 91". */
+  label: string;
+  /** Source of the content, shown as a provenance tag in the popover's top row. */
+  tag?: ProvenanceSource;
+  /** The text; `pinned` adds what only a pinned popover offers (links). Also the trigger's description. */
+  content: (pinned: boolean) => ReactNode;
+  /** The trigger: one button without an `onClick`; it gets the ARIA state and the click. */
+  children: ReactElement<{
+    onClick?: () => void;
+    "aria-expanded"?: boolean;
+    "aria-haspopup"?: "dialog";
+    "aria-controls"?: string;
+    "aria-describedby"?: string;
+  }>;
+  /** Classes of the wrapper (layout of the trigger). */
+  className?: string;
+}
+
+// One pinned popover on the whole page: pinning one closes any other.
+let pinnedId: string | null = null;
+const listeners = new Set<() => void>();
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+};
+const setPinned = (id: string | null) => {
+  pinnedId = id;
+  for (const listener of listeners) listener();
+};
+
+const WIDTH = 360;
+// Distance kept from the viewport edges; the popover's gap and border.
+const MARGIN = 8;
+const FRAME = 8;
+
+// Whether `rect` lies outside a clipping (scrolling) ancestor of `element`.
+function clippedOut(element: HTMLElement, rect: DOMRect): boolean {
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    const { overflowX, overflowY } = getComputedStyle(parent);
+    if (overflowX === "visible" && overflowY === "visible") continue;
+    const box = parent.getBoundingClientRect();
+    if (rect.bottom < box.top || rect.top > box.bottom || rect.right < box.left || rect.left > box.right) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * A marker's popover: hover or keyboard focus shows it (WCAG 1.4.13: Escape dismisses, the pointer can move
+ * onto it); a click, Enter or Space pins it with selectable text until its close button, Escape, a click
+ * outside, or another pinned popover closes it. Closing by button or Escape returns the focus to the trigger.
+ */
+export function Popover({ label, tag, content, children, className = "" }: PopoverProps) {
+  const id = useId();
+  const wrapper = useRef<HTMLSpanElement>(null);
+  const pinned = useSyncExternalStore(subscribe, () => pinnedId === id);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  // Closed by Escape or the close button; shown again after the pointer or the focus left and came back.
+  const [dismissed, setDismissed] = useState(false);
+  const [position, setPosition] = useState<{
+    top?: number;
+    bottom?: number;
+    left: number;
+    maxHeight?: number;
+  }>({ left: 0 });
+  // The trigger is scrolled out of view: the popover is not drawn over other parts of the page.
+  const [outside, setOutside] = useState(false);
+  const dialog = useRef<HTMLSpanElement>(null);
+  const box = useRef<HTMLSpanElement>(null);
+  const open = pinned || ((hovered || focused) && !dismissed);
+  useTipPrecedence(hovered || focused);
+
+  const trigger = () => wrapper.current?.firstElementChild as HTMLElement | null | undefined;
+  const close = () => {
+    if (pinnedId === id) setPinned(null);
+    setDismissed(true);
+    const active = document.activeElement;
+    if (active === document.body || wrapper.current?.contains(active)) trigger()?.focus();
+  };
+
+  // Fixed position so scroll containers do not clip it; it follows its trigger while the page scrolls, below it
+  // when it fits, else above, else on the larger side with its own scroll.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const element = trigger();
+      if (!element) return;
+      const rect = element.getBoundingClientRect();
+      setOutside(clippedOut(element, rect));
+      const width = dialog.current?.offsetWidth || WIDTH;
+      const left = Math.max(4, Math.min(rect.left, window.innerWidth - width - MARGIN));
+      const needed = (box.current?.scrollHeight ?? 0) + FRAME;
+      const below = window.innerHeight - rect.bottom - MARGIN;
+      const above = rect.top - MARGIN;
+      setPosition(
+        needed <= below || below >= above
+          ? { top: rect.bottom, left, maxHeight: below }
+          : { bottom: window.innerHeight - rect.top, left, maxHeight: above },
+      );
+    };
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, pinned]);
+
+  const onEscape = useEffectEvent(close);
+  useEffect(() => {
+    if (!pinned) return;
+    const outside = (event: PointerEvent) => {
+      if (!wrapper.current?.contains(event.target as Node) && pinnedId === id) setPinned(null);
+    };
+    // Capture phase: Escape in the popover (or with no focus) closes only the popover; no other handler sees
+    // it. With the focus elsewhere (a comment being written) the key belongs to that element.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const active = document.activeElement;
+      if (active !== document.body && !wrapper.current?.contains(active)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onEscape();
+    };
+    document.addEventListener("pointerdown", outside, true);
+    document.addEventListener("keydown", escape, true);
+    return () => {
+      document.removeEventListener("pointerdown", outside, true);
+      document.removeEventListener("keydown", escape, true);
+      if (pinnedId === id) setPinned(null);
+    };
+  }, [pinned, id]);
+
+  return (
+    <span
+      ref={wrapper}
+      className={className}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => {
+        setHovered(false);
+        if (!focused) setDismissed(false);
+      }}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        if (wrapper.current?.contains(event.relatedTarget as Node | null)) return;
+        setFocused(false);
+        setDismissed(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !open || pinned) return;
+        event.preventDefault();
+        setDismissed(true);
+      }}
+      // Clicks here belong to the marker, not to an LLM highlight around it.
+      onClick={(event) => event.stopPropagation()}
+    >
+      {cloneElement(children, {
+        "aria-expanded": open && !outside,
+        "aria-haspopup": "dialog",
+        "aria-controls": id,
+        "aria-describedby": `${id}-body`,
+        onClick: () => {
+          setDismissed(false);
+          setPinned(pinned ? null : id);
+        },
+      })}
+      <span
+        ref={dialog}
+        id={id}
+        role="dialog"
+        aria-label={label}
+        tabIndex={-1}
+        hidden={!open || outside}
+        style={position}
+        className={`fixed z-50 flex w-max max-w-[min(360px,calc(100vw-16px))] cursor-auto flex-col pt-1 font-sans text-xs font-normal whitespace-normal normal-case outline-none select-text ${
+          position.bottom !== undefined ? "pt-0 pb-1" : ""
+        }`}
+      >
+        <span
+          ref={box}
+          data-popover-box
+          className={`block min-h-0 overflow-y-auto overscroll-contain rounded-md border bg-surface px-2.5 py-1.5 text-left text-text shadow-tip [overflow-wrap:anywhere] ${
+            pinned ? "border-accent" : "border-border"
+          }`}
+        >
+          <span className="mb-1 flex min-h-6 items-center gap-2">
+            {tag && <ProvenanceTag source={tag} focusable={pinned} />}
+            {pinned && (
+              <Tooltip tip="Closes this popover (Esc)." className="ml-auto">
+                <button
+                  type="button"
+                  aria-label="Close"
+                  onClick={close}
+                  className="inline-flex size-6 cursor-pointer items-center justify-center rounded border-0 bg-transparent text-[14px] text-muted hover:bg-surface-2 hover:text-text"
+                >
+                  <span aria-hidden>×</span>
+                </button>
+              </Tooltip>
+            )}
+          </span>
+          <span id={`${id}-body`} className="grid gap-1.5">
+            {content(pinned)}
+          </span>
+        </span>
+      </span>
+    </span>
+  );
+}

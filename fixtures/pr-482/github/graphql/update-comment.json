@@ -1,0 +1,29 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "mutation($in:UpdatePullRequestReviewCommentInput!){updatePullRequestReviewComment(input:$in){pullRequestReviewComment{id body state lastEditedAt includesCreatedEdit}}}",
+      "variables": {
+        "in": {
+          "pullRequestReviewCommentId": "PRRC_fixture482_c1",
+          "body": "Every attempt gets the full configured timeout (5 s), however little time the caller has left. wallet::send_payment wraps send in a 10 s deadline (src/wallet/pay.rs:57): attempt 2 starts after just over 5 s, the deadline cancels it before its own timeout, the third attempt never runs, and the wallet reports Offline although attempt 1 or 2 may have reached the node. Please derive each attempt's timeout from the time left."
+        }
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "updatePullRequestReviewComment": {
+        "pullRequestReviewComment": {
+          "id": "PRRC_fixture482_c1",
+          "body": "Every attempt gets the full configured timeout (5 s), however little time the caller has left. wallet::send_payment wraps send in a 10 s deadline (src/wallet/pay.rs:57): attempt 2 starts after just over 5 s, the deadline cancels it before its own timeout, the third attempt never runs, and the wallet reports Offline although attempt 1 or 2 may have reached the node. Please derive each attempt's timeout from the time left.",
+          "state": "PENDING",
+          "lastEditedAt": null,
+          "includesCreatedEdit": false
+        }
+      }
+    }
+  }
+}

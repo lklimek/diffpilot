@@ -1,0 +1,32 @@
+[package]
+name = "fake-github"
+description = "Development and test only: fake GitHub serving the recorded fixtures of fixtures/pr-482/github and the dashboard world of fixtures/dashboard/github."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+contracts.workspace = true
+jsonwebtoken.workspace = true
+axum.workspace = true
+base64.workspace = true
+jiff.workspace = true
+clap.workspace = true
+serde.workspace = true
+# raw_value: recorded responses are served byte for byte.
+serde_json = { workspace = true, features = ["raw_value"] }
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+aws-lc-rs.workspace = true
+reqwest = { workspace = true, features = ["form", "query"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

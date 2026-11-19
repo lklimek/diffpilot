@@ -1,0 +1,74 @@
+{
+  "id": "8b0d6c1e-1118-4d2a-9c3b-000000001026",
+  "trigger": "manual",
+  "state": "failed",
+  "judged": 0,
+  "reused": 0,
+  "left_provisional": 0,
+  "steps": [
+    {
+      "key": "search_prs",
+      "state": "done",
+      "done": 6,
+      "total": 6,
+      "detail": null
+    },
+    {
+      "key": "issues",
+      "state": "done",
+      "done": 6,
+      "total": 6,
+      "detail": null
+    },
+    {
+      "key": "pr_details",
+      "state": "failed",
+      "done": 23,
+      "total": 41,
+      "detail": "rate limit at 23 of 41"
+    },
+    {
+      "key": "context",
+      "state": "waiting",
+      "done": null,
+      "total": null,
+      "detail": null
+    },
+    {
+      "key": "history",
+      "state": "waiting",
+      "done": 0,
+      "total": 4,
+      "detail": null
+    },
+    {
+      "key": "todos",
+      "state": "waiting",
+      "done": 0,
+      "total": 2,
+      "detail": null
+    },
+    {
+      "key": "ranking",
+      "state": "waiting",
+      "done": null,
+      "total": null,
+      "detail": null
+    }
+  ],
+  "percent": 45,
+  "started_at": "2026-11-18T08:12:22Z",
+  "scanned_at": null,
+  "ranking": null,
+  "failure": {
+    "code": "github_rate_limited",
+    "message": "GitHub rate limit reached; the refresh stopped.",
+    "retry_at": "2026-11-18T10:41:00Z"
+  },
+  "log": [
+    "10:26:02 search PRs: 41 found (2 logins)",
+    "10:26:31 issues: 23 found",
+    "10:27:12 PR details 23 of 41: HTTP 403 secondary rate limit (retry 3 of 3)",
+    "10:27:12 refresh stopped; snapshot 08:12 kept"
+  ]
+}

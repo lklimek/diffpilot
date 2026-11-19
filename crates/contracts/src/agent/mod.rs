@@ -1,0 +1,78 @@
+//! Agent output per job kind. Field docs become schema descriptions the model reads.
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub mod analyse_flow;
+pub mod ask;
+pub mod judge_work;
+pub mod plan;
+pub mod pr_context;
+pub mod strict;
+
+pub use strict::StrictSchemaError;
+
+/// Kind of an agent job (brief §5 Job kinds).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum JobKind {
+    /// Partition the changed hunks into flows.
+    Plan,
+    /// Describe the pull request context.
+    PrContext,
+    /// Analyse one flow.
+    AnalyseFlow,
+    /// Answer a reviewer's question about a step.
+    Ask,
+    /// Judge dashboard items (no pull request, ADR-017).
+    JudgeWork,
+}
+
+impl JobKind {
+    /// Every job kind, in pipeline order, then the dashboard's.
+    pub const ALL: [JobKind; 5] = [
+        Self::Plan,
+        Self::PrContext,
+        Self::AnalyseFlow,
+        Self::Ask,
+        Self::JudgeWork,
+    ];
+
+    /// The snake_case name used on the wire and in file names.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::PrContext => "pr_context",
+            Self::AnalyseFlow => "analyse_flow",
+            Self::Ask => "ask",
+            Self::JudgeWork => "judge_work",
+        }
+    }
+}
+
+/// The output JSON Schema of a job kind, in the Codex strict subset.
+pub fn output_schema(kind: JobKind) -> Result<Value, StrictSchemaError> {
+    match kind {
+        JobKind::Plan => strict::output_schema_for::<plan::PlanOutput>(),
+        JobKind::PrContext => strict::output_schema_for::<pr_context::PrContextOutput>(),
+        JobKind::AnalyseFlow => {
+            let mut schema = strict::output_schema_for::<analyse_flow::FlowAnalysisOutput>()?;
+            // The strict subset requires every property of an object. A second closed shape lets low
+            // assessments omit the detailed fields rather than emitting six null placeholders.
+            if let Some(assessment) =
+                schema.pointer_mut("/properties/steps/items/properties/assessment")
+            {
+                let detailed = assessment.clone();
+                *assessment = serde_json::json!({"anyOf": [detailed, {
+                    "type":"object", "additionalProperties":false,
+                    "properties":{"risk":{"type":"string","enum":["low"]},"reason":{"type":"string"}},
+                    "required":["risk","reason"]
+                }]});
+            }
+            Ok(schema)
+        }
+        JobKind::Ask => strict::output_schema_for::<ask::AskOutput>(),
+        JobKind::JudgeWork => judge_work::output_schema(),
+    }
+}

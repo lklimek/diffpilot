@@ -1,0 +1,67 @@
+{
+  "problem": "The wallet UI hangs for 30 s when a peer is unreachable (#470), and one late reply fails a whole call with Timeout.",
+  "why_needed": "Issue #470: the wallet UI hung for 30 s on unreachable peers, and short outages reach wallet users as “offline”.",
+  "what_it_gives": "A call is tried up to 3 times and a dead peer is noticed after 5 s instead of 30 s, so one late reply no longer shows the wallet as offline.",
+  "related_work": [
+    {
+      "reference": "acme/node-client#479",
+      "kind": "competing_solution",
+      "overlap": "Adds retry in HttpTransport, one layer lower. If both merge, one call can make up to 9 attempts."
+    },
+    {
+      "reference": "acme/node-client#470",
+      "kind": "linked_issue",
+      "overlap": "“Wallet UI hangs 30 s”. Asks for a shorter wait; does not ask for retry."
+    },
+    {
+      "reference": "acme/node-sdk#118",
+      "kind": "companion_repository",
+      "overlap": "Adopts this retry API and still calls send_once(), which this PR removes."
+    }
+  ],
+  "fit_questions": [
+    {
+      "question": "Right layer? Retry sits in RpcClient while #479 adds it in HttpTransport; should there be only one?",
+      "topic": "layer_or_repository",
+      "evidence": [
+        {
+          "file": "src/rpc/transport.rs",
+          "side": "head",
+          "line": 40
+        },
+        {
+          "file": "src/rpc/client.rs",
+          "side": "head",
+          "line": 99
+        }
+      ]
+    },
+    {
+      "question": "Oversized for the problem? #470 is about the wait time; would the timeout change in src/config.rs:23 alone fix it?",
+      "topic": "size_for_problem",
+      "evidence": [
+        {
+          "file": "src/config.rs",
+          "side": "head",
+          "line": 23
+        }
+      ]
+    },
+    {
+      "question": "Duplicates an existing mechanism? sync::retry_headers already loops on failure; does header sync now retry inside a retry?",
+      "topic": "duplicate_mechanism",
+      "evidence": [
+        {
+          "file": "src/sync/mod.rs",
+          "side": "head",
+          "line": 88
+        },
+        {
+          "file": "src/sync/mod.rs",
+          "side": "head",
+          "line": 90
+        }
+      ]
+    }
+  ]
+}

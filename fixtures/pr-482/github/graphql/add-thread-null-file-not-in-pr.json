@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "mutation($in:AddPullRequestReviewThreadInput!){addPullRequestReviewThread(input:$in){thread{...T}}}fragment T on PullRequestReviewThread{id path line startLine diffSide startDiffSide subjectType isOutdated\n comments(first:10){nodes{id databaseId state body url line startLine originalLine subjectType outdated commit{oid} pullRequestReview{id databaseId state}}}}",
+      "variables": {
+        "in": {
+          "pullRequestId": "PR_fixture482",
+          "path": "src/sync/mod.rs",
+          "subjectType": "FILE",
+          "body": "A file that is not in the pull request."
+        }
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "addPullRequestReviewThread": {
+        "thread": null
+      }
+    }
+  }
+}

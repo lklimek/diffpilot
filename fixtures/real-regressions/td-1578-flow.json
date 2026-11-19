@@ -1,0 +1,285 @@
+{
+  "flow_id": "f1",
+  "introduction": {
+    "problem_before": "Repeated light-block responses could fill the pending call's buffered channel after its caller had consumed an answer. Respond then waited for channel space while holding the mutex needed by caller cleanup, stalling the shared state-sync message loop.",
+    "change": "Route nil, malformed and valid responses through a nonblocking delivery helper. Return errUnsolicitedResponse when the channel is full, and remove Respond's context parameter and the reactor's cancellation-specific branch.",
+    "example_before_after": "A caller consumes its answer, another response fills the slot, and a further response arrives before cleanup obtains the mutex. Previously that response could wait until reactor cancellation; now it returns errUnsolicitedResponse and releases the mutex."
+  },
+  "steps": [
+    {
+      "id": "s1",
+      "title": "Dispatch an incoming light-block response",
+      "file": "internal/statesync/reactor.go",
+      "side": "head",
+      "start_line": 1166,
+      "end_line": 1176,
+      "symbol": "Reactor.handleLightBlockMessage",
+      "kind": "modified",
+      "moved_from": null,
+      "called_by": "processChannels synchronously calls handleMessage, which routes LightBlockChannel envelopes to this handler.",
+      "decides": "Pass the response, peer and connection generation to Respond without a context. Log returned errors without propagating a cancellation error from Respond.",
+      "next": "Enter Dispatcher.Respond; after it returns, finish the handler and let the shared message loop continue.",
+      "why": "Response delivery no longer waits for channel capacity, so it no longer needs cancellation to interrupt that wait.",
+      "annotations": [
+        {
+          "type": "behaviour",
+          "basis": "fact",
+          "start_line": 1172,
+          "end_line": 1176,
+          "was": "Passed ctx to Respond and returned context.Canceled before logging other response errors.",
+          "is": "Calls Respond without ctx and logs any returned response error.",
+          "text": null,
+          "evidence": [
+            {
+              "file": "internal/statesync/reactor.go",
+              "side": "base",
+              "line": 1172
+            },
+            {
+              "file": "internal/statesync/reactor.go",
+              "side": "base",
+              "line": 1174
+            },
+            {
+              "file": "internal/statesync/reactor.go",
+              "side": "head",
+              "line": 1172
+            },
+            {
+              "file": "internal/statesync/reactor.go",
+              "side": "head",
+              "line": 1173
+            }
+          ]
+        }
+      ],
+      "assessment": null
+    },
+    {
+      "id": "s2",
+      "title": "Prepare the pending call's result",
+      "file": "internal/statesync/dispatcher.go",
+      "side": "head",
+      "start_line": 158,
+      "end_line": 188,
+      "symbol": "Dispatcher.Respond",
+      "kind": "modified",
+      "moved_from": null,
+      "called_by": "Reactor.handleLightBlockMessage supplies an incoming light-block response.",
+      "decides": "Under the dispatcher mutex, reject peers without a pending call. For a pending call, prepare a nil block, decoded block or malformed-response error and delegate delivery to the shared helper.",
+      "next": "Call deliverLightBlockResult. For malformed input, return the delivery error if refused; otherwise return the malformed-response error after delivering it to the waiting caller.",
+      "why": "Every response kind must avoid waiting on a full channel while retaining the existing malformed-response and connection-attribution data.",
+      "annotations": [
+        {
+          "type": "note",
+          "basis": "fact",
+          "start_line": 159,
+          "end_line": 160,
+          "was": "",
+          "is": "",
+          "text": "The nonblocking guarantee applies to channel delivery. Respond still acquires the dispatcher mutex, which dispatch also holds while sending a request.",
+          "evidence": [
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "head",
+              "line": 159
+            },
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "head",
+              "line": 119
+            },
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "head",
+              "line": 137
+            }
+          ]
+        },
+        {
+          "type": "note",
+          "basis": "fact",
+          "start_line": 179,
+          "end_line": 184,
+          "was": "",
+          "is": "",
+          "text": "A delivered malformed response still carries errMalformedLightBlock and connID to the waiting caller. If delivery is refused, Respond returns errUnsolicitedResponse instead.",
+          "evidence": [
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "head",
+              "line": 180
+            },
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "head",
+              "line": 181
+            },
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "head",
+              "line": 199
+            }
+          ]
+        }
+      ],
+      "assessment": null
+    },
+    {
+      "id": "s3",
+      "title": "Deliver immediately or refuse a full channel",
+      "file": "internal/statesync/dispatcher.go",
+      "side": "head",
+      "start_line": 190,
+      "end_line": 201,
+      "symbol": "deliverLightBlockResult",
+      "kind": "added",
+      "moved_from": null,
+      "called_by": "Dispatcher.Respond uses this helper for nil, malformed and valid responses while holding its mutex.",
+      "decides": "Send the result when channel capacity is available; otherwise immediately return errUnsolicitedResponse.",
+      "next": "Return through Respond, releasing its mutex. The waiting caller can receive its result or complete cleanup, and the reactor can process another message.",
+      "why": "The caller reads one answer and then needs the same mutex to remove and close its pending channel. Waiting for another receive could prevent that cleanup indefinitely.",
+      "annotations": [
+        {
+          "type": "behaviour",
+          "basis": "fact",
+          "start_line": 194,
+          "end_line": 200,
+          "was": "Each response branch waited for its send to complete or for ctx.Done while holding the dispatcher mutex.",
+          "is": "All response branches attempt delivery without waiting for channel capacity and return errUnsolicitedResponse when the channel is full.",
+          "text": null,
+          "evidence": [
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "base",
+              "line": 173
+            },
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "base",
+              "line": 187
+            },
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "base",
+              "line": 195
+            },
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "base",
+              "line": 197
+            },
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "head",
+              "line": 196
+            },
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "head",
+              "line": 198
+            },
+            {
+              "file": "internal/statesync/dispatcher.go",
+              "side": "head",
+              "line": 199
+            }
+          ]
+        },
+        {
+          "type": "note",
+          "basis": "fact",
+          "start_line": 198,
+          "end_line": 199,
+          "was": "",
+          "is": "",
+          "text": "TestDispatcherSurplusResponseDoesNotBlock fills the channel, checks refusal of nil, valid and malformed surplus responses, and checks that the queued answer survives. The test was read.",
+          "evidence": [
+            {
+              "file": "internal/statesync/dispatcher_test.go",
+              "side": "head",
+              "line": 206
+            },
+            {
+              "file": "internal/statesync/dispatcher_test.go",
+              "side": "head",
+              "line": 223
+            },
+            {
+              "file": "internal/statesync/dispatcher_test.go",
+              "side": "head",
+              "line": 230
+            },
+            {
+              "file": "internal/statesync/dispatcher_test.go",
+              "side": "head",
+              "line": 237
+            }
+          ]
+        }
+      ],
+      "assessment": null
+    }
+  ],
+  "edges": [
+    {
+      "from_step_id": "s1",
+      "to_step_id": "s2",
+      "label": null
+    },
+    {
+      "from_step_id": "s2",
+      "to_step_id": "s3",
+      "label": "Pending call found; nil, malformed or valid result"
+    }
+  ],
+  "impact_refs": [
+    {
+      "step_id": "s3",
+      "file": "internal/statesync/dispatcher.go",
+      "start_line": 79,
+      "end_line": 112,
+      "symbol": "Dispatcher.lightBlockWithConn",
+      "reason": "The caller consumes one result or observes its own context, then acquires the dispatcher mutex to remove and close the pending channel. Nonblocking delivery removes the channel-capacity wait that could obstruct this cleanup.",
+      "basis": "fact"
+    },
+    {
+      "step_id": "s2",
+      "file": "internal/statesync/dispatcher.go",
+      "start_line": 118,
+      "end_line": 147,
+      "symbol": "Dispatcher.dispatch",
+      "reason": "Creates the buffered answer channel and serializes pending calls with the same mutex used by Respond.",
+      "basis": "fact"
+    },
+    {
+      "step_id": "s1",
+      "file": "internal/statesync/reactor.go",
+      "start_line": 1237,
+      "end_line": 1245,
+      "symbol": "Reactor.handleMessage",
+      "reason": "Routes snapshot, chunk, light-block and parameter messages through the shared handler path.",
+      "basis": "fact"
+    },
+    {
+      "step_id": "s1",
+      "file": "internal/statesync/reactor.go",
+      "start_line": 1267,
+      "end_line": 1270,
+      "symbol": "Reactor.processChannels",
+      "reason": "Processes merged channel messages synchronously, so a wait inside Respond prevents this loop from handling subsequent messages.",
+      "basis": "fact"
+    },
+    {
+      "step_id": "s2",
+      "file": "internal/statesync/reactor.go",
+      "start_line": 722,
+      "end_line": 744,
+      "symbol": "Reactor.backfill",
+      "reason": "Backfill consumes the malformed-response error and delivering connection generation to withdraw the responding peer; the new delivery path preserves those fields.",
+      "basis": "fact"
+    }
+  ],
+  "pattern_repetitions": [],
+  "thread_statuses": []
+}

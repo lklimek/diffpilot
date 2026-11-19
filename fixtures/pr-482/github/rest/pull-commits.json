@@ -1,0 +1,72 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.github.com/repos/acme/node-client/pulls/482/commits?per_page=100",
+    "body": null
+  },
+  "status": 200,
+  "response": [
+    {
+      "sha": "52d2da140191a9d47becf6a446310be803c007fc",
+      "node_id": "NODE_fixture_commit_482",
+      "commit": {
+        "author": {
+          "name": "Dana Developer",
+          "email": "dana@example.com",
+          "date": "2026-11-10T14:30:00Z"
+        },
+        "committer": {
+          "name": "Dana Developer",
+          "email": "dana@example.com",
+          "date": "2026-11-10T14:30:00Z"
+        },
+        "message": "feat(rpc): retry with backoff on timeout",
+        "tree": {
+          "sha": "4519893b89f61582d5efaf76dad78f6003ddf21c",
+          "url": "https://api.github.com/repos/acme/node-client/git/trees/4519893b89f61582d5efaf76dad78f6003ddf21c"
+        },
+        "url": "https://api.github.com/repos/acme/node-client/git/commits/52d2da140191a9d47becf6a446310be803c007fc",
+        "comment_count": 0,
+        "verification": {
+          "verified": false,
+          "reason": "unsigned",
+          "signature": null,
+          "payload": null,
+          "verified_at": null
+        }
+      },
+      "url": "https://api.github.com/repos/acme/node-client/commits/52d2da140191a9d47becf6a446310be803c007fc",
+      "html_url": "https://github.com/acme/node-client/commit/52d2da140191a9d47becf6a446310be803c007fc",
+      "comments_url": "https://api.github.com/repos/acme/node-client/commits/52d2da140191a9d47becf6a446310be803c007fc/comments",
+      "author": {
+        "login": "dana",
+        "id": 4821700,
+        "node_id": "NODE_fixture_4820200",
+        "avatar_url": "https://avatars.githubusercontent.com/u/1000001?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/dana",
+        "html_url": "https://github.com/dana",
+        "type": "User",
+        "site_admin": false
+      },
+      "committer": {
+        "login": "dana",
+        "id": 4821700,
+        "node_id": "NODE_fixture_4820200",
+        "avatar_url": "https://avatars.githubusercontent.com/u/1000001?v=4",
+        "gravatar_id": "",
+        "url": "https://api.github.com/users/dana",
+        "html_url": "https://github.com/dana",
+        "type": "User",
+        "site_admin": false
+      },
+      "parents": [
+        {
+          "sha": "92f2274efbb93570cc8f820a49c058cf66b0dbe9",
+          "url": "https://api.github.com/repos/acme/node-client/commits/92f2274efbb93570cc8f820a49c058cf66b0dbe9",
+          "html_url": "https://github.com/acme/node-client/commit/92f2274efbb93570cc8f820a49c058cf66b0dbe9"
+        }
+      ]
+    }
+  ]
+}

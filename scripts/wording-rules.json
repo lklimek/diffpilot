@@ -1,0 +1,10 @@
+{
+  "description": "Banned wording of docs/design-brief.md §1 (plan §12.4): read by scripts/check-wording.mjs (sources) and e2e/support/app.ts (rendered pages). JavaScript regular expressions; `{}` stands for an interpolated value in sources. `claims`: statements the UI cannot back, checked only in UI code (not in .json data, which holds agent output) by scripts/check-wording.mjs. `exclude`: source directories (relative to the checked source root) outside these rules: My work (ADR-016, v1.1 plan §F.5); the rendered-text checks skip its route `/`.",
+  "words": "\\bno\\s+risk|\\bnothing\\s+to\\s+review\\b|\\bno\\s+review\\s+needed\\b|\\bnoise\\b|\\bverified\\b|\\bwas\\s+wrong\\b|\\bconfidence\\b",
+  "percent": "(?:\\d+|\\{\\})\\s?%",
+  "claims": "\\bnothing\\s+(?:was\\s+)?executed\\b",
+  "exclude": [
+    "components/dashboard/",
+    "screens/dashboard/"
+  ]
+}

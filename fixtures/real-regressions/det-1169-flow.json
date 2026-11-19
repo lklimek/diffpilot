@@ -1,0 +1,126 @@
+{
+  "flow_id": "f1",
+  "introduction": {
+    "problem_before": "Rendering a chooser in a narrow area could wrap navigation labels across lines. The component comment describes wrapped content keeping the panel narrow on later frames.",
+    "change": "Set TextWrapMode::Extend in nav_button so every shared subscreen chooser requests unwrapped labels.",
+    "example_before_after": "A label such as \"Token Creator\" could previously occupy multiple lines; it now requests a single line even when the available width is narrow."
+  },
+  "steps": [
+    {
+      "id": "s1",
+      "title": "Disable wrapping in navigation buttons",
+      "file": "src/ui/components/subscreen_chooser_panel.rs",
+      "side": "head",
+      "start_line": 28,
+      "end_line": 47,
+      "symbol": "nav_button",
+      "kind": "modified",
+      "moved_from": null,
+      "called_by": "When Tokens, Tools or DashPay renders its chooser, add_subscreen_chooser_panel calls nav_button for each navigation item.",
+      "decides": "The button explicitly uses TextWrapMode::Extend rather than leaving its wrapping mode unspecified.",
+      "next": "The shared panel adds the returned button to its UI, reads clicked(), and returns the selected item's AppAction.",
+      "why": "Applying the policy in the shared builder gives all chooser labels the same wrapping behavior.",
+      "annotations": [
+        {
+          "type": "behaviour",
+          "basis": "fact",
+          "start_line": 43,
+          "end_line": 43,
+          "was": "Constructed the button without an explicit wrap-mode override.",
+          "is": "Explicitly sets the button's wrap mode to TextWrapMode::Extend.",
+          "text": null,
+          "evidence": [
+            {
+              "file": "src/ui/components/subscreen_chooser_panel.rs",
+              "side": "base",
+              "line": 38
+            },
+            {
+              "file": "src/ui/components/subscreen_chooser_panel.rs",
+              "side": "base",
+              "line": 39
+            },
+            {
+              "file": "src/ui/components/subscreen_chooser_panel.rs",
+              "side": "head",
+              "line": 43
+            }
+          ]
+        },
+        {
+          "type": "note",
+          "basis": "fact",
+          "start_line": 43,
+          "end_line": 43,
+          "was": "",
+          "is": "",
+          "text": "The token regression test asserts single-line button height and consistent panel width across token screens after narrow-to-wide resizing. These assertions were read, not executed.",
+          "evidence": [
+            {
+              "file": "tests/kittest/tokens_screen.rs",
+              "side": "head",
+              "line": 1302
+            },
+            {
+              "file": "tests/kittest/tokens_screen.rs",
+              "side": "head",
+              "line": 1304
+            },
+            {
+              "file": "tests/kittest/tokens_screen.rs",
+              "side": "head",
+              "line": 1336
+            },
+            {
+              "file": "tests/kittest/tokens_screen.rs",
+              "side": "head",
+              "line": 1351
+            }
+          ]
+        }
+      ],
+      "assessment": null
+    }
+  ],
+  "edges": [],
+  "impact_refs": [
+    {
+      "step_id": "s1",
+      "file": "src/ui/components/subscreen_chooser_panel.rs",
+      "start_line": 81,
+      "end_line": 96,
+      "symbol": "add_subscreen_chooser_panel",
+      "reason": "Every navigation item is rendered through nav_button before its click dispatches the associated action.",
+      "basis": "fact"
+    },
+    {
+      "step_id": "s1",
+      "file": "src/ui/components/tokens_subscreen_chooser_panel.rs",
+      "start_line": 42,
+      "end_line": 42,
+      "symbol": "add_tokens_subscreen_chooser_panel",
+      "reason": "The non-resizable Tokens chooser receives the shared button wrapping policy.",
+      "basis": "fact"
+    },
+    {
+      "step_id": "s1",
+      "file": "src/ui/components/tools_subscreen_chooser_panel.rs",
+      "start_line": 35,
+      "end_line": 35,
+      "symbol": "add_tools_subscreen_chooser_panel",
+      "reason": "The vertically scrollable Tools chooser receives the shared button wrapping policy.",
+      "basis": "fact"
+    },
+    {
+      "step_id": "s1",
+      "file": "src/ui/components/dashpay_subscreen_chooser_panel.rs",
+      "start_line": 50,
+      "end_line": 50,
+      "symbol": "add_dashpay_subscreen_chooser_panel",
+      "reason": "The resizable DashPay chooser also receives the shared button wrapping policy.",
+      "basis": "fact"
+    }
+  ],
+  "pattern_repetitions": [],
+  "thread_statuses": []
+}

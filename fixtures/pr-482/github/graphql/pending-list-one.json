@@ -1,0 +1,158 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "query($o:String!,$n:String!,$pr:Int!){viewer{login} repository(owner:$o,name:$n){pullRequest(number:$pr){id number state headRefOid baseRefOid\n reviews(states:[PENDING],first:10){totalCount nodes{id databaseId state author{login} viewerDidAuthor createdAt body\n  comments(first:100){totalCount nodes{id databaseId path line startLine originalLine subjectType state outdated body url}}}}\n reviewThreads(last:100){totalCount nodes{id path line startLine diffSide startDiffSide subjectType isOutdated\n  comments(first:1){nodes{id state pullRequestReview{id state}}}}}}}}",
+      "variables": {
+        "o": "acme",
+        "n": "node-client",
+        "pr": 482
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "viewer": {
+        "login": "alice"
+      },
+      "repository": {
+        "pullRequest": {
+          "id": "PR_fixture482",
+          "number": 482,
+          "state": "OPEN",
+          "headRefOid": "52d2da140191a9d47becf6a446310be803c007fc",
+          "baseRefOid": "92f2274efbb93570cc8f820a49c058cf66b0dbe9",
+          "reviews": {
+            "totalCount": 1,
+            "nodes": [
+              {
+                "id": "PRR_fixture482_pending",
+                "databaseId": 2200000001,
+                "state": "PENDING",
+                "author": {
+                  "login": "alice"
+                },
+                "viewerDidAuthor": true,
+                "createdAt": "2026-11-16T10:12:00Z",
+                "body": "",
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "id": "PRRC_fixture482_c1",
+                      "databaseId": 2100000001,
+                      "path": "src/rpc/client.rs",
+                      "line": 96,
+                      "startLine": null,
+                      "originalLine": 96,
+                      "subjectType": "LINE",
+                      "state": "PENDING",
+                      "outdated": false,
+                      "body": "Every attempt gets the full configured timeout (5 s), however little time the caller has left. wallet::send_payment wraps send in a 10 s deadline (src/wallet/pay.rs:57): attempt 2 starts after just over 5 s, the deadline cancels it before its own timeout, the third attempt never runs, and the wallet reports Offline although attempt 1 or 2 may have reached the node.",
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r2100000001"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "reviewThreads": {
+            "totalCount": 4,
+            "nodes": [
+              {
+                "id": "PRRT_fixture482_t1",
+                "path": "src/rpc/client.rs",
+                "line": 99,
+                "startLine": 99,
+                "diffSide": "RIGHT",
+                "startDiffSide": null,
+                "subjectType": "LINE",
+                "isOutdated": false,
+                "comments": {
+                  "nodes": [
+                    {
+                      "id": "PRRC_fixture482_t1",
+                      "state": "SUBMITTED",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_bob",
+                        "state": "COMMENTED"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_t2",
+                "path": "src/rpc/retry.rs",
+                "line": 30,
+                "startLine": 30,
+                "diffSide": "RIGHT",
+                "startDiffSide": null,
+                "subjectType": "LINE",
+                "isOutdated": false,
+                "comments": {
+                  "nodes": [
+                    {
+                      "id": "PRRC_fixture482_t2",
+                      "state": "SUBMITTED",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_carol",
+                        "state": "COMMENTED"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_t3",
+                "path": "README.md",
+                "line": 17,
+                "startLine": 15,
+                "diffSide": "RIGHT",
+                "startDiffSide": "RIGHT",
+                "subjectType": "LINE",
+                "isOutdated": false,
+                "comments": {
+                  "nodes": [
+                    {
+                      "id": "PRRC_fixture482_t3",
+                      "state": "SUBMITTED",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_erin",
+                        "state": "COMMENTED"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_c1",
+                "path": "src/rpc/client.rs",
+                "line": 96,
+                "startLine": 96,
+                "diffSide": "RIGHT",
+                "startDiffSide": null,
+                "subjectType": "LINE",
+                "isOutdated": false,
+                "comments": {
+                  "nodes": [
+                    {
+                      "id": "PRRC_fixture482_c1",
+                      "state": "PENDING",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_pending",
+                        "state": "PENDING"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

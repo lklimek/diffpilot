@@ -1,0 +1,97 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){\n reviewThreads(first:100){totalCount nodes{id path line startLine diffSide subjectType isResolved isOutdated\n  comments(first:1){totalCount nodes{author{login} body url createdAt}}}}}}}",
+      "variables": {
+        "o": "acme",
+        "n": "node-client",
+        "pr": 482
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "reviewThreads": {
+            "totalCount": 3,
+            "nodes": [
+              {
+                "id": "PRRT_fixture482_t1",
+                "path": "src/rpc/client.rs",
+                "line": 99,
+                "startLine": null,
+                "diffSide": "RIGHT",
+                "subjectType": "LINE",
+                "isResolved": false,
+                "isOutdated": false,
+                "comments": {
+                  "totalCount": 2,
+                  "nodes": [
+                    {
+                      "author": {
+                        "login": "bob"
+                      },
+                      "body": "Should we retry non-idempotent calls at all?",
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r2000000001",
+                      "createdAt": "2026-11-11T09:00:00Z"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_t2",
+                "path": "src/rpc/retry.rs",
+                "line": 30,
+                "startLine": null,
+                "diffSide": "RIGHT",
+                "subjectType": "LINE",
+                "isResolved": false,
+                "isOutdated": false,
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "author": {
+                        "login": "carol"
+                      },
+                      "body": "Use a seeded RNG for the jitter so tests are stable.",
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r2000000002",
+                      "createdAt": "2026-11-11T09:00:00Z"
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_t3",
+                "path": "README.md",
+                "line": 17,
+                "startLine": 15,
+                "diffSide": "RIGHT",
+                "subjectType": "LINE",
+                "isResolved": false,
+                "isOutdated": false,
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "author": {
+                        "login": "erin"
+                      },
+                      "body": "Mention the new 5 s default here too.",
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r2000000003",
+                      "createdAt": "2026-11-11T09:00:00Z"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

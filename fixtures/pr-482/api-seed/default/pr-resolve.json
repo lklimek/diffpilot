@@ -1,0 +1,22 @@
+{
+  "pr": {
+    "repo": {
+      "owner": "acme",
+      "name": "node-client"
+    },
+    "number": 482,
+    "title": "feat(rpc): retry with backoff on timeout",
+    "author": "dana",
+    "html_url": "https://github.com/acme/node-client/pull/482",
+    "base_sha": "92f2274efbb93570cc8f820a49c058cf66b0dbe9",
+    "head_sha": "52d2da140191a9d47becf6a446310be803c007fc"
+  },
+  "commenting_available": true,
+  "analysis": null,
+  "head_moved": false,
+  "size_warning": null,
+  "size": {
+    "changed_lines": 238,
+    "changed_files": 13
+  }
+}

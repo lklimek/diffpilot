@@ -1,0 +1,48 @@
+{
+  "type": "object",
+  "properties": {
+    "answer": {
+      "type": "string",
+      "description": "The answer; a suspected defect is stated as a risk scenario saying what was not checked."
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "description": "A line the agent actually read and cites as evidence.",
+        "type": "object",
+        "properties": {
+          "file": {
+            "description": "Repository-relative path on that side.",
+            "type": "string"
+          },
+          "side": {
+            "description": "head for the checked-out code; base only for removed code read from the base commit. `head`: Lines of the head commit. `base`: Lines of the base commit (removed code).",
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ]
+          },
+          "line": {
+            "description": "1-based line number on that side.",
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "file",
+          "side",
+          "line"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Lines read that support the answer."
+    }
+  },
+  "required": [
+    "answer",
+    "evidence"
+  ],
+  "description": "An LLM answer to a question about a step.",
+  "additionalProperties": false
+}

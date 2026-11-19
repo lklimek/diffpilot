@@ -1,0 +1,13 @@
+# Local secrets (symlink to a directory outside the repository)
+/config
+
+# Cargo build output (when not redirected by a cargo config)
+/target
+
+# Python bytecode (scripts/tests)
+__pycache__/
+
+# Deployment configuration with secrets (docs/runbook.md keeps it outside the checkout; never commit it)
+.env
+.env.*
+!.env.example

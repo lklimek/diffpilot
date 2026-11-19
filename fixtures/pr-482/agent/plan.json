@@ -1,0 +1,127 @@
+{
+  "flows": [
+    {
+      "id": "f1",
+      "title": "Send an RPC request with retry",
+      "classification": "behavioural",
+      "importance_rank": 1,
+      "intent": "Retry RpcClient::send on timeout with exponential backoff and give up with Exhausted; entry points: mempool::broadcast_tx, wallet::send_payment and every other caller of send.",
+      "hunks": [
+        {
+          "hunk_id": "h14",
+          "head_start": null,
+          "head_end": null
+        },
+        {
+          "hunk_id": "h15",
+          "head_start": null,
+          "head_end": null
+        },
+        {
+          "hunk_id": "h18",
+          "head_start": null,
+          "head_end": null
+        },
+        {
+          "hunk_id": "h23",
+          "head_start": null,
+          "head_end": null
+        }
+      ],
+      "depends_on": [
+        "f3",
+        "f5"
+      ]
+    },
+    {
+      "id": "f2",
+      "title": "Default timeout 30 s → 5 s",
+      "classification": "behavioural",
+      "importance_rank": 2,
+      "intent": "Shorten the default per-request timeout in RpcConfig::default; reached through RpcClient::new.",
+      "hunks": [
+        {
+          "hunk_id": "h11",
+          "head_start": null,
+          "head_end": null
+        }
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "f3",
+      "title": "New error variant RpcError::Exhausted",
+      "classification": "api_contract",
+      "importance_rank": 3,
+      "intent": "Add RpcError::Exhausted, returned by send after the last attempt; reached by every match on RpcError.",
+      "hunks": [
+        {
+          "hunk_id": "h21",
+          "head_start": null,
+          "head_end": null
+        }
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "f4",
+      "title": "Removed the single-attempt API send_once()",
+      "classification": "api_contract",
+      "importance_rank": 4,
+      "intent": "Remove RpcClient::send_once; callers that must not retry have to use send.",
+      "hunks": [
+        {
+          "hunk_id": "h16",
+          "head_start": null,
+          "head_end": null
+        }
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "f5",
+      "title": "Move of backoff helpers util/backoff.rs → rpc/retry.rs",
+      "classification": "move",
+      "importance_rank": 5,
+      "intent": "Move the delay helpers next to RetryPolicy and change the jitter constant; reached through RetryPolicy::backoff.",
+      "hunks": [
+        {
+          "hunk_id": "h12",
+          "head_start": null,
+          "head_end": null
+        },
+        {
+          "hunk_id": "h13",
+          "head_start": null,
+          "head_end": null
+        },
+        {
+          "hunk_id": "h24",
+          "head_start": null,
+          "head_end": null
+        }
+      ],
+      "depends_on": []
+    }
+  ],
+  "unassigned": [
+    {
+      "hunk_id": "h19",
+      "head_start": null,
+      "head_end": null,
+      "reason": "Moves RpcClient::build_request within src/rpc/client.rs; the moved text is identical."
+    },
+    {
+      "hunk_id": "h20",
+      "head_start": null,
+      "head_end": null,
+      "reason": "Moves RpcClient::build_request within src/rpc/client.rs; the moved text is identical."
+    },
+    {
+      "hunk_id": "h22",
+      "head_start": null,
+      "head_end": null,
+      "reason": "Adds a metrics helper that nothing in this pull request calls."
+    }
+  ]
+}

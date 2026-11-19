@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SummaryQuery",
+  "description": "Query of `GET /api/v1/dashboard`.",
+  "type": "object",
+  "properties": {
+    "excluded": {
+      "description": "List the excluded items (`snapshot.exclusions.items`); without it only their counts are sent.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+# crates/db: transactions start only through repo::write_tx / repo::read_tx (a deferred read-then-write
+# transaction fails with SQLITE_BUSY under concurrent writers instead of waiting).
+disallowed-methods = [
+    { path = "sqlx::Pool::begin", reason = "use db::repo::write_tx or read_tx" },
+    { path = "sqlx::Pool::try_begin", reason = "use db::repo::write_tx or read_tx" },
+    { path = "sqlx::Pool::begin_with", reason = "use db::repo::write_tx or read_tx" },
+    { path = "sqlx::Pool::try_begin_with", reason = "use db::repo::write_tx or read_tx" },
+    { path = "sqlx::Connection::begin", reason = "use db::repo::write_tx or read_tx" },
+    { path = "sqlx::Connection::begin_with", reason = "use db::repo::write_tx or read_tx" },
+    { path = "sqlx::Acquire::begin", reason = "use db::repo::write_tx or read_tx" },
+]

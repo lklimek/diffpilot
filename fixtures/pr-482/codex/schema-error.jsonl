@@ -1,0 +1,4 @@
+{"type": "thread.started", "thread_id": "019a8f2c-4820-7000-8000-000000000483"}
+{"type": "turn.started"}
+{"type": "error", "message": "{\"type\":\"error\",\"error\":{\"message\":\"Invalid schema for response_format 'codex_output_schema': 'schema.properties.flows.oneOf' is not permitted when strict is true.\",\"type\":\"invalid_request_error\",\"param\":\"text.format.schema\",\"code\":\"invalid_json_schema\"},\"status\":400}"}
+{"type": "turn.failed", "error": {"message": "{\"type\":\"error\",\"error\":{\"message\":\"Invalid schema for response_format 'codex_output_schema': 'schema.properties.flows.oneOf' is not permitted when strict is true.\",\"type\":\"invalid_request_error\",\"param\":\"text.format.schema\",\"code\":\"invalid_json_schema\"},\"status\":400}"}}

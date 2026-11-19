@@ -1,0 +1,43 @@
+name: Advisories
+
+# Separate from CI so that the weekly run also catches advisories published without a code change.
+on:
+  push:
+    branches: [feat/v1]
+  pull_request:
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Known advisories of the locked dependencies. A new one fails the job; an ignored one needs a reviewed reason here.
+  advisories:
+    name: Advisories (cargo audit, npm audit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update && cargo --version
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-audit@0.23.0
+      # Warnings (unmaintained or yanked crates, such as chrono's notice; chrono comes only through rmcp) are
+      # printed but do not fail the job, by design: only vulnerabilities do.
+      - name: cargo audit
+        run: cargo audit
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      # Production dependencies of the embedded UI only; build, lint and test tools never reach the bundle.
+      - name: npm audit (web, production dependencies)
+        working-directory: web
+        run: npm audit --package-lock-only --omit=dev --audit-level=high

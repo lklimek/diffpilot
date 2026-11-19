@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>smart-review architecture</title>
+<style>
+:root{
+ --bg:#f4f5f7;--surface:#fff;--surface-2:#eceff3;--border:#c9d0da;--text:#1a1f27;--muted:#4b5565;
+ --accent:#1d5fc0;--accent-bg:#e4eefb;--on-accent:#fff;--focus:#0b57d0;
+ --det:#0a5c5c;--det-bg:#dff1ef;--det-bd:#2a8f8a;
+ --llm:#5d2f94;--llm-bg:#f0e8fa;--llm-bd:#8a5cc4;
+ --later:#7a4a00;--later-bg:#fff2d2;--later-bd:#c47700;
+ --trust:#a8200d;--trust-bg:#fdeceb;--trust-bd:#d92d20;
+ --ok:#0f6330;--ok-bg:#e3f5e8;--ok-bd:#2a9d57;
+ --edge:#3b4556;--ext:#555e6d;--ext-bg:#eef0f3;
+ --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+ --bg:#0f1218;--surface:#171b23;--surface-2:#1f2530;--border:#374151;--text:#e7eaf0;--muted:#a6b0bf;
+ --accent:#8ab8ff;--accent-bg:#17283f;--on-accent:#0b1220;--focus:#8ab8ff;
+ --det:#7fd8d0;--det-bg:#0f2e2c;--det-bd:#3aa59e;
+ --llm:#d0b3f5;--llm-bg:#2a2039;--llm-bd:#9a72d6;
+ --later:#f3c677;--later-bg:#3a2d12;--later-bd:#d0902a;
+ --trust:#ffa8a0;--trust-bg:#3a1b19;--trust-bd:#f0605a;
+ --ok:#86d9a2;--ok-bg:#13301f;--ok-bd:#34a463;
+ --edge:#b6c0d0;--ext:#a6b0bf;--ext-bg:#1b2029;
+}}
+:root[data-theme=dark]{
+ --bg:#0f1218;--surface:#171b23;--surface-2:#1f2530;--border:#374151;--text:#e7eaf0;--muted:#a6b0bf;
+ --accent:#8ab8ff;--accent-bg:#17283f;--on-accent:#0b1220;--focus:#8ab8ff;
+ --det:#7fd8d0;--det-bg:#0f2e2c;--det-bd:#3aa59e;
+ --llm:#d0b3f5;--llm-bg:#2a2039;--llm-bd:#9a72d6;
+ --later:#f3c677;--later-bg:#3a2d12;--later-bd:#d0902a;
+ --trust:#ffa8a0;--trust-bg:#3a1b19;--trust-bd:#f0605a;
+ --ok:#86d9a2;--ok-bg:#13301f;--ok-bd:#34a463;
+ --edge:#b6c0d0;--ext:#a6b0bf;--ext-bg:#1b2029;
+}
+*{box-sizing:border-box}
+html{font-size:clamp(14px,.42vw + 8px,22px)}
+body{margin:0;background:var(--bg);color:var(--text);font:1rem/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+code,.mono{font-family:var(--mono)}
+header.top{display:flex;flex-wrap:wrap;align-items:center;gap:.6rem 1.4rem;padding:.7rem 1.2rem;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:20}
+header.top h1{font-size:1.25rem;margin:0}
+header.top h1 span{color:var(--accent)}
+.legend{display:flex;flex-wrap:wrap;gap:.4rem .9rem;align-items:center;font-size:.8rem;color:var(--muted)}
+.legend .k{display:inline-flex;align-items:center;gap:.35rem}
+.sw{display:inline-block;width:1.7rem;height:.9rem;border-radius:3px;border:2px solid}
+.sw.det{background:var(--det-bg);border-color:var(--det-bd)}
+.sw.llm{background:var(--llm-bg);border:2px dashed var(--llm-bd)}
+.sw.seam{background:var(--accent-bg);border:3px double var(--accent)}
+.sw.later{background:var(--later-bg);border:2px dotted var(--later-bd)}
+.sw.ext{background:var(--ext-bg);border:2px solid var(--ext)}
+.sw.trust{background:transparent;border:2px dashed var(--trust-bd)}
+.sw.lock{background:var(--ok-bg);border-color:var(--ok-bd)}
+.ln{display:inline-block;width:1.7rem;border-top:2px solid var(--edge);position:relative}
+.ln.dash{border-top-style:dashed}
+.ln.both::before{content:"";}
+main{padding:1rem 1.2rem 2rem;display:grid;gap:1.2rem;grid-template-columns:minmax(0,1fr)}
+@media (min-width:1700px){main.two{}
+ .row2{display:grid;grid-template-columns:minmax(0,1.75fr) minmax(0,1fr);gap:1.2rem;align-items:start}}
+.row2{display:grid;gap:1.2rem;grid-template-columns:minmax(0,1fr)}
+@media (min-width:1700px){.row2{grid-template-columns:minmax(0,1.7fr) minmax(0,1fr)}}
+section.panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:.9rem 1rem 1.1rem;min-width:0}
+section.panel>h2{font-size:1.1rem;margin:0 0 .15rem;display:flex;gap:.6rem;align-items:baseline;flex-wrap:wrap}
+section.panel>h2 small{font-weight:400;color:var(--muted);font-size:.8rem}
+.num{display:inline-grid;place-items:center;width:1.5rem;height:1.5rem;border-radius:50%;background:var(--accent);color:var(--on-accent);font-size:.85rem;font-weight:700}
+.dg{position:relative;margin-top:.8rem}
+svg.ov{position:absolute;left:0;top:0;pointer-events:none;overflow:visible;z-index:5}
+svg.ov path{fill:none;stroke:var(--edge);stroke-width:1.8;stroke-linejoin:round}
+svg.ov path.dash{stroke-dasharray:6 4}
+svg.ov path.trustp{stroke:var(--trust)}
+svg.ov path.llmp{stroke:var(--llm)}
+svg.ov path.detp{stroke:var(--det)}
+svg.ov g.e{transition:opacity .15s}
+svg.ov text{font:.72rem/1 system-ui,sans-serif;fill:var(--text);text-anchor:middle}
+svg.ov rect.lb{fill:var(--surface);stroke:var(--border);stroke-width:1;rx:4}
+.dim svg.ov g.e:not(.hi){opacity:.12}
+.dim .box:not(.hl){opacity:.55}
+.box{border:1.5px solid var(--border);border-radius:7px;background:var(--surface);padding:.35rem .5rem;min-width:0}
+.box h3{margin:0;font-size:.85rem;font-weight:650;line-height:1.2}
+.box p{margin:.12rem 0 0;font-size:.74rem;color:var(--muted);line-height:1.25}
+.box .tag{font-size:.62rem;font-weight:700;letter-spacing:.04em;padding:0 .3rem;border-radius:3px;border:1px solid currentColor;margin-left:.3rem;vertical-align:.08rem;white-space:nowrap}
+.box.det{background:var(--det-bg);border-color:var(--det-bd)}.box.det .tag{color:var(--det)}
+.box.llm{background:var(--llm-bg);border:1.5px dashed var(--llm-bd)}.box.llm .tag{color:var(--llm)}
+.box.seam{background:var(--accent-bg);border:3px double var(--accent)}.box.seam .tag{color:var(--accent)}
+.box.later{background:var(--later-bg);border:1.5px dotted var(--later-bd)}.box.later .tag{color:var(--later)}
+.box.ext{background:var(--ext-bg);border:1.5px solid var(--ext)}.box.ext .tag{color:var(--ext)}
+.box.hl,.box:focus-visible{outline:3px solid var(--focus);outline-offset:1px}
+.box[tabindex]{cursor:default}
+.zone{border:2px dashed var(--trust-bd);border-radius:10px;padding:.4rem .5rem .55rem;display:flex;flex-direction:column;gap:.4rem;background:color-mix(in srgb,var(--trust-bg) 45%,transparent);min-width:0}
+.zone>.zh{font-size:.8rem;font-weight:700;color:var(--trust)}
+.zone>.zs{font-size:.72rem;color:var(--muted);line-height:1.25}
+.zone .zone{background:color-mix(in srgb,var(--trust-bg) 80%,transparent);border-style:solid}
+.key{display:inline-block;font-size:.66rem;font-weight:700;border:1px solid var(--ok-bd);background:var(--ok-bg);color:var(--ok);border-radius:3px;padding:0 .3rem;margin:.1rem .15rem 0 0}
+.key.none{border-color:var(--trust-bd);background:var(--trust-bg);color:var(--trust)}
+/* system grid */
+.sys{display:grid;grid-template-columns:1fr 11rem 1.5fr 17rem 1.4fr 9rem .9fr 8rem 1fr;grid-template-rows:auto auto auto;row-gap:4.6rem}
+.sys>*{align-self:stretch}
+#s-gh{grid-column:1/-1;grid-row:1;display:flex;gap:1.4rem;flex-wrap:wrap;align-items:center}
+#s-gh h3{font-size:.95rem}
+#s-gh p{margin:0}
+#s-br{grid-column:1;grid-row:2}
+#s-srv{grid-column:3;grid-row:2}
+#s-run{grid-column:5;grid-row:2}
+#s-px{grid-column:7;grid-row:2/4}
+#s-sec{grid-column:9;grid-row:2}
+#s-mc{grid-column:3;grid-row:3}
+#s-llm{grid-column:9;grid-row:3}
+#s-note{grid-column:1;grid-row:3}
+.stk{display:flex;flex-direction:column;gap:.4rem}
+.grow{flex:1}
+.stk.runner{justify-content:flex-start}
+/* workspace */
+.ws{display:grid;gap:3rem 1.8rem;grid-template-columns:repeat(4,minmax(0,1fr));grid-template-areas:"con con con gen" "ana db run fake" "srv srv srv srv"}
+#c-contracts{grid-area:con}#c-gen{grid-area:gen}#c-analysis{grid-area:ana}#c-db{grid-area:db}#c-runner{grid-area:run}#c-fake{grid-area:fake}#c-server{grid-area:srv}
+.crate{border:2px solid var(--accent);border-radius:9px;background:var(--surface);padding:.45rem .55rem .6rem;min-width:0}
+.crate>h3{margin:0 0 .1rem;font-size:.95rem;font-family:var(--mono)}
+.crate>.sub{font-size:.75rem;color:var(--muted);margin:0 0 .4rem}
+.crate.dev{border-style:dotted;border-color:var(--later-bd)}
+.mods{display:grid;gap:.35rem;grid-template-columns:repeat(auto-fill,minmax(10.5rem,1fr))}
+.mods.wide{grid-template-columns:repeat(auto-fill,minmax(12.5rem,1fr))}
+.mod{border:1px solid var(--border);border-radius:5px;padding:.2rem .4rem;background:var(--surface-2);min-width:0}
+.mod b{font:600 .78rem var(--mono);display:block}
+.mod span{font-size:.7rem;color:var(--muted);line-height:1.2;display:block}
+.mod.seam{border:3px double var(--accent);background:var(--accent-bg)}
+.mod.seam b::after{content:" SEAM";font:700 .58rem system-ui;color:var(--accent);border:1px solid currentColor;border-radius:3px;padding:0 .2rem;margin-left:.25rem;vertical-align:.1rem}
+.mod.later{border:1.5px dotted var(--later-bd);background:var(--later-bg)}
+.mod.later b::after{content:" LATER";font:700 .58rem system-ui;color:var(--later);border:1px solid currentColor;border-radius:3px;padding:0 .2rem;margin-left:.25rem;vertical-align:.1rem}
+.mod.det{border-color:var(--det-bd);background:var(--det-bg)}
+.mod.llm{border:1px dashed var(--llm-bd);background:var(--llm-bg)}
+.chips{display:flex;flex-wrap:wrap;gap:.25rem;margin-top:.3rem}
+.chip{font:.68rem var(--mono);border:1px solid var(--border);border-radius:10px;padding:0 .4rem;background:var(--surface-2);color:var(--muted)}
+.rule{font-size:.74rem;color:var(--muted);margin:.4rem 0 0}
+.rule b{color:var(--text)}
+/* frontend */
+.fe{display:grid;gap:3rem 1rem;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);grid-template-areas:"scr scr" "cmp api"}
+#f-scr{grid-area:scr}#f-cmp{grid-area:cmp}#f-api{grid-area:api;display:flex;flex-direction:column;gap:2rem;justify-content:space-between}
+.screens{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.4rem}
+.comps{display:grid;grid-template-columns:repeat(auto-fill,minmax(8.6rem,1fr));gap:.35rem}
+.comp{border:1.5px solid var(--accent);background:var(--accent-bg);border-radius:6px;padding:.2rem .4rem}
+.comp b{font:600 .78rem var(--mono);display:block}
+.comp span{font-size:.68rem;color:var(--muted);line-height:1.15;display:block}
+.fbox{border:2px solid var(--accent);border-radius:9px;padding:.4rem .5rem;background:var(--surface)}
+.fbox h3{margin:0;font:600 .85rem var(--mono)}
+/* wireframe */
+.wire{margin-top:1rem;border:1.5px solid var(--border);border-radius:8px;background:var(--surface-2);padding:.4rem}
+.wire .bar{font-size:.72rem;color:var(--muted);padding:.1rem .3rem .3rem;display:flex;gap:.6rem;flex-wrap:wrap}
+.wire .cols{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.6fr) minmax(0,1fr);gap:.4rem}
+.wire .col{display:flex;flex-direction:column;gap:.3rem}
+.wire .colh{font-size:.68rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.wire .comp{padding:.25rem .4rem}
+.wire .comp.dash{border-style:dashed}
+.wire .inner{display:flex;flex-direction:column;gap:.25rem;border:1px dashed var(--muted);border-radius:6px;padding:.25rem}
+/* pipeline */
+.pipe{display:grid;gap:1rem 4.5rem;grid-template-columns:repeat(8,minmax(0,1fr));align-items:stretch}
+.pipe .stk{justify-content:center}
+.sess{grid-row:3;grid-column:4/7;border:2px solid var(--llm-bd);border-radius:8px;padding:.3rem .5rem;background:var(--llm-bg);color:var(--text);font-size:.78rem}
+.sess b{color:var(--llm)}
+.notes{display:flex;flex-wrap:wrap;gap:.4rem 1.2rem;font-size:.78rem;color:var(--muted);margin-top:.7rem}
+.conn{display:none;margin:.3rem 0 0;padding:0;list-style:none;font-size:.7rem;color:var(--muted)}
+.conn li::before{content:"\2192  "}
+#info{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:2px solid var(--accent);padding:.35rem 1.2rem;font-size:.85rem;z-index:30;display:none}
+body.narrow svg.ov{display:none}
+body.narrow .conn{display:block}
+@media (max-width:1100px){
+ .sys,.ws,.fe,.pipe{display:flex;flex-direction:column;gap:.8rem}
+ .screens{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .wire .cols{grid-template-columns:1fr}
+ .sess{order:99}
+}
+@media print{header.top{position:static}#info{display:none!important}body{background:#fff}}
+</style>
+</head>
+<body>
+<header class="top">
+ <h1><span>smart-review</span> architecture <small style="font-weight:400;font-size:.8rem;color:var(--muted)">one page, v1 + marked seams</small></h1>
+ <div class="legend" aria-label="Legend">
+  <span class="k"><i class="sw det"></i>deterministic (DET)</span>
+  <span class="k"><i class="sw llm"></i>LLM step (LLM)</span>
+  <span class="k"><i class="sw seam"></i>seam / trait (SEAM)</span>
+  <span class="k"><i class="sw later"></i>later, not in v1 (LATER)</span>
+  <span class="k"><i class="sw ext"></i>external system</span>
+  <span class="k"><i class="sw trust"></i>trust boundary</span>
+  <span class="k"><span class="key">KEY</span>holds this secret</span>
+  <span class="k"><i class="ln"></i>call, arrow = request direction</span>
+  <span class="k"><i class="ln dash"></i>protocol or later</span>
+ </div>
+</header>
+<main>
+
+<!-- 1 SYSTEM -->
+<section class="panel" id="p-sys">
+ <h2><span class="num">1</span>System view <small>who talks to whom, and who holds which secret. Hover a box to light up its connections.</small></h2>
+ <div class="dg" id="dg-sys">
+  <svg class="ov"></svg>
+  <div class="sys">
+   <div class="box ext" id="s-gh" tabindex="0" data-detail="Public repositories only in v1. GitHub App installed on dashpay/dash-evo-tool and dashpay/platform. User tokens stay on the server; the agent gets only a 1 h read-only installation token.">
+    <h3>GitHub <span class="tag">EXTERNAL</span></h3>
+    <p><b>REST + GraphQL</b> (PR data, threads, checks, pending review)</p>
+    <p><b>OAuth</b> via GitHub App user tokens; installation tokens for the agent</p>
+    <p><b>git clone/fetch</b> (server bare mirror; runner mirror cache)</p>
+   </div>
+
+   <div class="box" id="s-br" tabindex="0" data-detail="Talks only to the server, over HTTPS terminated at the owner's reverse proxy (review.klimek.ws = SR_PUBLIC_URL). Never receives secrets: only a Secure cookie session + CSRF header.">
+    <h3>Browser <span class="tag">v1</span></h3>
+    <p><b>React SPA</b> (Vite, TanStack Query)</p>
+    <p>Home, Progress, Tour, Settings</p>
+    <p>Only <code>api/client.ts</code> fetches</p>
+    <span class="key none">NO TOKENS</span>
+    <ul class="conn"></ul>
+   </div>
+
+   <div class="zone" id="s-srv" data-detail="Trusted. HTTP behind the owner's TLS reverse proxy (trusted-proxy setting, Secure cookies). Executes the user's GitHub calls with the user's token; mints a read-only installation token per job from the App private key.">
+    <div class="zh">Server (axum) - trusted</div>
+    <div class="zs">One binary, SPA embedded (feature <code>embed-ui</code>). <span class="key">GitHub user tokens (AES-GCM)</span><span class="key">App private key</span><span class="key">sessions</span><span class="key">job tokens</span><span class="key">MemCan token</span></div>
+    <div class="stk grow">
+     <div class="box" id="sv-rapi" tabindex="0" data-detail="claim (runner secret) -> JobSpec (with installation token and MemCan credentials) + job token; events and result (job token, idempotent per attempt)."><h3>runner API</h3><p>claim, events, result</p></div>
+     <div class="box" id="sv-tok" tabindex="0" data-detail="App JWT from the private key -> installation access token per job: permissions pull requests, issues, contents, metadata (read); repositories = PR repo only (ADR-005; related repos are read as public data); fixed 1 h lifetime. Put into JobSpec."><h3>installation-token minting</h3><p>read-only, PR repo only, 1 h</p></div>
+     <div class="box" id="sv-api" tabindex="0" data-detail="/api/v1 JSON, /auth/github/*, SSE progress. Mutating routes need the CSRF header."><h3>API + SSE + auth</h3><p>cookie session, CSRF, JSON routes</p></div>
+     <div class="box seam" id="sv-pipe" tabindex="0" data-detail="Pipeline and Ask talk only to JobExecutor; QueueExecutor is the only v1 implementation. A ContainerExecutor (per-job containers) comes later."><h3>pipeline + <code>JobExecutor</code><span class="tag">SEAM</span></h3><p>QueueExecutor -> DB queue; ContainerExecutor later</p></div>
+     <div class="box" id="sv-db" tabindex="0" data-detail="All database code lives in crates/db behind the repository API. Every table carries tenant_id."><h3>SQLite via <code>db</code></h3><p>queue, analyses, review state, encrypted tokens</p></div>
+     <div class="box" id="sv-gh" tabindex="0" data-detail="Only server::github talks to GitHub. Pending review via GraphQL addPullRequestReview."><h3>github client + mirror</h3><p>REST/GraphQL, bare mirror, pending review</p></div>
+     <div class="box" id="sv-mem" tabindex="0" data-detail="Server writes feedback and overrated/underrated calibration examples to MemCan itself (project = analysed repo short name). SR_MEMCAN_URL / SR_MEMCAN_TOKEN are pure configuration."><h3>MemCan client</h3><p>feedback + calibration examples</p></div>
+    </div>
+    <ul class="conn"></ul>
+   </div>
+
+   <div class="zone" id="s-run" data-detail="Long-lived compose service. No DB access, no GitHub client code, no user tokens, no Docker socket. Non-root, cap_drop ALL, read-only root fs. Internal network; the egress proxy is its only way out.">
+    <div class="zh">Runner container</div>
+    <div class="zs">No DB, no user tokens, no Docker socket. <span class="key">LLM credential</span><span class="key">runner secret</span><span class="key">job token</span></div>
+    <div class="stk runner grow">
+     <div class="box" id="rn-loop" tabindex="0" data-detail="Thin wrapper around execute(). A one-shot entry point for per-job containers is later work."><h3>polling loop <span class="tag">runner uid</span></h3><p>claim job, post events + result</p></div>
+     <div class="box" id="rn-exec" tabindex="0" data-detail="Fetch via mirror cache, fresh work dir, provider run, events, cleanup. A job succeeds with an empty cache."><h3><code>execute(JobSpec, EventSink) -> JobResult</code></h3><p>mirror fetch, checkout, run agent, clean up</p></div>
+     <div class="box seam" id="rn-sess" tabindex="0" data-detail="One Codex session per PR analysis, resumed by each job (plan, pr_context, analyse_flow, ask) and compacted at the end of each job."><h3>session store <span class="tag">per analysis</span></h3><p>LlmProvider: run, resume, cancel</p></div>
+     <div class="zone" id="rn-agent" data-detail="Codex, github-mcp-server and every agent command run as uid agent with a per-job CODEX_HOME. Can read its per-job Codex credential (auth.json copy), the 1 h read-only installation token and the MemCan token (accepted risk AR-4). Codex sandbox off: 'no code execution' is a prompt rule only (AR-6). PR content is untrusted (prompt injection). Repo-provided agent config is never loaded.">
+      <div class="zh">uid <code>agent</code> - untrusted</div>
+      <div class="box llm" id="rn-codex"><h3>Codex CLI <span class="tag">LLM</span></h3><p>exec --json --output-schema; sandbox off</p><span class="key">MemCan token</span><span class="key">per-job LLM credential (AR-4)</span></div>
+      <div class="box" id="rn-ghmcp"><h3><code>github-mcp-server</code> <span class="tag">stdio MCP</span></h3><p>official, read-only mode; started from the per-job config</p><span class="key">installation token (1 h, read-only)</span></div>
+     </div>
+    </div>
+    <ul class="conn"></ul>
+   </div>
+
+   <div class="zone" id="s-px" style="justify-content:center" data-detail="Squid as explicit proxy (env variables). v1: allow-all, private LAN denied except MemCan, log of host names (CONNECT host:port, bytes); no TLS interception, no CA, no cache. Later, by configuration: TLS interception with full-URL logs (chatgpt.com / openai.com passed through), cache, host allowlist.">
+    <div class="zh">Egress proxy (Squid)</div>
+    <div class="zs">Only way out of the runner network. v1: allow all, log host names; no TLS interception.</div>
+    <ul class="conn"></ul>
+   </div>
+
+   <div class="box" id="s-sec" tabindex="0" style="grid-row:2" data-detail="Secrets map: nothing secret reaches the browser or logs; the agent uid can read its per-job credentials (AR-4).">
+    <h3>Who holds what</h3>
+    <p><span class="key">GitHub user tokens</span> server only</p>
+    <p><span class="key">LLM credential</span> master: runner uid only; per-job copy: agent uid (AR-4)</p>
+    <p><span class="key">App private key</span> server only</p>
+    <p><span class="key">installation token</span> agent uid: read-only, 1 h, PR repo only</p>
+    <p><span class="key">MemCan token</span> server and agent uid</p>
+    <p><span class="key">job token</span> runner uid, never the agent</p>
+    <p><span class="key none">agent</span> has no user token, no DB, no job token</p>
+    <p class="muted">Accepted risks: agent reads its per-job Codex credential, installation token and MemCan token (AR-4) and can run commands (sandbox off, AR-6); full MemCan MCP (read + write); open egress (allow-all) could exfiltrate MemCan content or these credentials.</p>
+   </div>
+
+   <div class="box ext" id="s-mc" tabindex="0" data-detail="Project profile and calibration examples. Traefik entrypoint (port 8190): IP allowlist (must include the egress proxy's source address; edited by the owner) + bearer token. The agent reads and writes via MCP (accepted risk: an injected PR may write misleading memories). Moves to another host before deployment; only configuration changes.">
+    <h3>MemCan <span class="tag">EXTERNAL</span></h3><p>memories: profile, feedback, calibration</p><p>Traefik: IP allowlist + bearer token</p>
+    <ul class="conn"></ul>
+   </div>
+   <div class="box ext" id="s-llm" tabindex="0" data-detail="ChatGPT subscription auth in v1 (owner's tenant); API-key credential types come with more providers.">
+    <h3>ChatGPT / Codex backend <span class="tag">EXTERNAL</span></h3><p>LLM; model from <code>select_model</code>, a plain function in the server (v1: Sol, high effort)</p>
+   </div>
+   <div class="box later" id="s-note" tabindex="0" data-detail="Private repositories, per-job containers and extra LLM providers arrive together; today one shared runner has one cache and one credential store.">
+    <h3>Later <span class="tag">LATER</span></h3>
+    <p>per-job containers (ContainerExecutor), private repos, more LLM providers (API key), proxy TLS interception + host allowlist</p>
+   </div>
+  </div>
+ </div>
+</section>
+
+<div class="row2">
+<!-- 2 WORKSPACE -->
+<section class="panel" id="p-ws">
+ <h2><span class="num">2</span>Rust workspace <small>crates, their modules, allowed dependency direction (arrow = depends on). Nothing depends on server or runner.</small></h2>
+ <div class="dg" id="dg-ws" style="padding-left:1.1rem">
+  <svg class="ov"></svg>
+  <div class="ws">
+   <div class="crate" id="c-contracts" tabindex="0" data-detail="Pure data, no IO. Single source of truth for wire types; schemas and TS types are generated from it and checked in.">
+    <h3>crates/contracts</h3><p class="sub">wire types, no IO - the source of truth</p>
+    <div class="mods wide">
+     <div class="mod"><b>agent/</b><span>agent output per job kind (serde + schemars)</span></div>
+     <div class="mod"><b>api/</b><span>HTTP DTOs, SSE events, ApiError (ts-rs)</span></div>
+     <div class="mod"><b>api/routes.rs</b><span>path constants + method, one list</span></div>
+     <div class="mod"><b>job/</b><span>JobSpec, JobEvent, JobResult, job states</span></div>
+    </div>
+   </div>
+   <div class="box" id="c-gen" tabindex="0" data-detail="Generated artefacts are checked in; test generated_artifacts_are_current fails on drift. UPDATE_GENERATED=1 rewrites.">
+    <h3>Generated from contracts (checked in)</h3>
+    <div class="chips"><span class="chip">schemas/agent/*.schema.json</span><span class="chip">web/src/api/generated/*.ts</span><span class="chip">routes.ts</span></div>
+    <p>Codex-strict JSON Schemas for agent output; TS types and routes for the SPA. Drift test in CI.</p>
+   </div>
+
+   <div class="crate" id="c-analysis" tabindex="0" data-detail="Deterministic and language-agnostic. Runs git read-only on a given path. No IO to GitHub or DB.">
+    <h3>crates/analysis</h3><p class="sub"><span class="tag" style="font-size:.62rem;font-weight:700;color:var(--det);border:1px solid;border-radius:3px;padding:0 .3rem">DET</span> deterministic facts</p>
+    <div class="mods">
+     <div class="mod det"><b>diff</b><span>hunks per file</span></div>
+     <div class="mod seam"><b>tech</b><span>TechPlugin: detect, classify, call_hierarchy</span></div>
+     <div class="mod det"><b>tech::generic</b><span>path globs, line regexes; hierarchy None</span></div>
+     <div class="mod later"><b>tech::rust/go</b><span>language plugins, call hierarchy</span></div>
+     <div class="mod det"><b>moves</b><span>moved blocks, identical text</span></div>
+     <div class="mod det"><b>counters</b><span>lines removed from tests, deps</span></div>
+     <div class="mod det"><b>related</b><span>related repos from Cargo files</span></div>
+     <div class="mod det"><b>verify</b><span>schema, ranges, evidence, wording</span></div>
+     <div class="mod det"><b>coverage</b><span>uncovered lines -> Unexplained</span></div>
+     <div class="mod det"><b>order</b><span>tour order, quiet rows last</span></div>
+    </div>
+   </div>
+   <div class="crate" id="c-db" tabindex="0" data-detail="The only crate with sqlx. Public API exposes no sqlx types. Runtime queries, no macros.">
+    <h3>crates/db</h3><p class="sub">sqlx + SQLite, the only database code</p>
+    <div class="mods">
+     <div class="mod seam"><b>repo/*</b><span>repository API, one file per aggregate</span></div>
+     <div class="mod"><b>migrations/</b><span>0001_init.sql, tenant_id everywhere</span></div>
+    </div>
+    <div class="chips"><span class="chip">users</span><span class="chip">sessions</span><span class="chip">tokens</span><span class="chip">repos</span><span class="chip">pull_requests</span><span class="chip">analyses</span><span class="chip">documents</span><span class="chip">jobs</span><span class="chip">questions</span><span class="chip">feedback</span><span class="chip">comments</span><span class="chip">threads</span><span class="chip">review_state</span><span class="chip">settings</span></div>
+   </div>
+   <div class="crate" id="c-runner" tabindex="0" data-detail="No db, analysis or GitHub crates. Talks to the server only over the runner HTTP protocol defined in contracts. Launches the external github-mcp-server binary for the agent.">
+    <h3>crates/runner</h3><p class="sub">no DB, no GitHub client; HTTP protocol only</p>
+    <div class="mods">
+     <div class="mod"><b>loop</b><span>poll, claim, thin wrapper</span></div>
+     <div class="mod"><b>execute</b><span>JobSpec in, JobResult out</span></div>
+     <div class="mod seam"><b>provider</b><span>LlmProvider: run, resume, cancel</span></div>
+     <div class="mod"><b>provider::codex</b><span>only module that knows Codex</span></div>
+     <div class="mod"><b>provider::fake</b><span>feature fake-provider; never in releases</span></div>
+     <div class="mod later"><b>provider::*</b><span>more LLM providers</span></div>
+     <div class="mod"><b>sessions</b><span>one Codex session per analysis</span></div>
+     <div class="mod"><b>mirror cache</b><span>git fetch, cache is optional</span></div>
+     <div class="mod"><b>claudius checkout</b><span>skills pulled at interval</span></div>
+     <div class="mod"><b>codex config</b><span>per job: github-mcp-server (read-only), MemCan</span></div>
+    </div>
+   </div>
+   <div class="crate dev" id="c-fake" tabindex="0" data-detail="Serves recorded fixtures for OAuth, /user, PR REST. Never in images.">
+    <h3>tools/fake-github</h3><p class="sub"><span class="tag" style="font-size:.62rem;font-weight:700;color:var(--later);border:1px solid;border-radius:3px;padding:0 .3rem">DEV ONLY</span> test double</p>
+    <div class="mods"><div class="mod"><b>fake GitHub</b><span>REST, GraphQL, OAuth from fixtures</span></div></div>
+   </div>
+
+   <div class="crate" id="c-server" tabindex="0" data-detail="axum app. Depends on contracts, analysis and db. Only crate with GitHub client code and the App private key; rmcp client only (MemCan).">
+    <h3>crates/server</h3><p class="sub">axum app: depends on contracts, analysis, db</p>
+    <div class="mods wide">
+     <div class="mod"><b>auth</b><span>GitHub App login, sessions, CSRF</span></div>
+     <div class="mod"><b>secrets</b><span>AES-GCM token storage</span></div>
+     <div class="mod"><b>github</b><span>REST/GraphQL, mirror, pending review, installation tokens</span></div>
+     <div class="mod"><b>pipeline</b><span>pre-pass, jobs, verify, repair</span></div>
+     <div class="mod seam"><b>jobs</b><span>JobExecutor + QueueExecutor, claim lease</span></div>
+     <div class="mod later"><b>ContainerExecutor</b><span>one container per job</span></div>
+     <div class="mod"><b>ask</b><span>on-demand question jobs, context pack</span></div>
+     <div class="mod"><b>memcan</b><span>feedback, calibration examples</span></div>
+     <div class="mod"><b>prompts</b><span>prompt per job kind</span></div>
+     <div class="mod"><b>model</b><span>select_model: plain function, Sol, high</span></div>
+     <div class="mod"><b>frontend</b><span>embedded SPA (embed-ui)</span></div>
+     <div class="mod"><b>api/</b><span>routes: pr, analyses, tour, lines, diff, comments, questions, feedback, settings, runner, events</span></div>
+     <div class="mod"><b>state, config</b><span>AppState, env settings</span></div>
+    </div>
+   </div>
+  </div>
+  <p class="rule"><b>Rules:</b> only <code>db</code> uses sqlx; only <code>runner::provider</code> knows Codex; only <code>analysis::tech</code> knows path/line rules; checked by <code>check-architecture.sh</code> in CI.</p>
+ </div>
+</section>
+
+<!-- 3 FRONTEND -->
+<section class="panel" id="p-fe">
+ <h2><span class="num">3</span>Frontend <small><code>web/src</code>: reusable components, props in, callbacks out</small></h2>
+ <div class="dg" id="dg-fe">
+  <svg class="ov"></svg>
+  <div class="fe">
+   <div id="f-scr" class="box" tabindex="0" data-detail="Screens only arrange components and own the data: they call API hooks and pass results down as props.">
+    <h3 class="mono">screens/ <span class="tag" style="color:var(--accent)">ARRANGE + FETCH VIA HOOKS</span></h3>
+    <div class="screens" style="margin-top:.4rem">
+     <div class="comp"><b>home</b><span>sign-in, PR URL, resume</span></div>
+     <div class="comp"><b>progress</b><span>SSE, planning, paused, failed</span></div>
+     <div class="comp"><b>tour</b><span>3 columns, keyboard, ticks</span></div>
+     <div class="comp"><b>settings</b><span>language, LLM status, repos</span></div>
+    </div>
+    <ul class="conn"></ul>
+   </div>
+   <div id="f-cmp" class="box" tabindex="0" data-detail="ESLint no-restricted-imports (rule A7): no fetch, router hooks or screen imports under components/**. Any block can move to another screen unchanged.">
+    <h3 class="mono">components/ <span class="tag" style="color:var(--accent)">NO FETCH, NO ROUTER</span></h3>
+    <div class="comps" style="margin-top:.4rem">
+     <div class="comp"><b>nav</b><span>left menu: flows, quiet rows</span></div>
+     <div class="comp"><b>pr-context</b><span>problem, related work</span></div>
+     <div class="comp"><b>flow-intro</b><span>problem, change, example</span></div>
+     <div class="comp"><b>step</b><span>four facts + code slot</span></div>
+     <div class="comp"><b>code-view</b><span>Shiki lines, gutter marks</span></div>
+     <div class="comp"><b>flow-diagram</b><span>graph, kind by colour + border</span></div>
+     <div class="comp"><b>inspector</b><span>8 collapsible sections</span></div>
+     <div class="comp"><b>ask</b><span>question box, streamed answer</span></div>
+     <div class="comp"><b>feedback</b><span>rating buttons</span></div>
+     <div class="comp"><b>comment</b><span>composer on any line</span></div>
+     <div class="comp"><b>quiet</b><span>moves, not analysed, unexplained</span></div>
+     <div class="comp"><b>badge</b><span>deterministic fact marks</span></div>
+     <div class="comp"><b>tooltip</b><span>hover explanation</span></div>
+     <div class="comp"><b>help</b><span>legend, shortcuts</span></div>
+    </div>
+    <ul class="conn"></ul>
+   </div>
+   <div id="f-api">
+    <div class="fbox" id="f-client" tabindex="0" data-detail="The only fetch layer. Typed with the generated routes and DTOs; TanStack Query caches. Talks to the server (JSON + SSE).">
+     <h3>api/client.ts</h3><p style="margin:.15rem 0 0;font-size:.74rem;color:var(--muted)">ONLY place that fetches: JSON + SSE to the server</p>
+     <ul class="conn"></ul>
+    </div>
+    <div class="fbox" id="f-gen" tabindex="0" data-detail="Produced from crates/contracts; never hand-edited.">
+     <h3>api/generated/</h3><p style="margin:.15rem 0 0;font-size:.74rem;color:var(--muted)">DTO types + routes, from contracts</p>
+     <ul class="conn"></ul>
+    </div>
+    <div class="fbox" id="f-mock" style="border-style:dashed" tabindex="0" data-detail="msw handlers, one file per endpoint, used by vitest, dev and Playwright against the fixture PR.">
+     <h3>mocks/ (msw)</h3><p style="margin:.15rem 0 0;font-size:.74rem;color:var(--muted)">same routes, fixture data: dev + tests</p>
+     <ul class="conn"></ul>
+    </div>
+   </div>
+  </div>
+  <div class="wire" aria-label="Tour screen wireframe">
+   <div class="bar"><b>Tour screen</b> <span>where each component sits; columns resizable, hideable, full-screen</span></div>
+   <div class="cols">
+    <div class="col"><div class="colh">left menu</div>
+     <div class="comp"><b>nav</b><span>PR context, flows + steps</span></div>
+     <div class="comp"><b>quiet</b><span>moves, not analysed, unexplained</span></div>
+     <div class="comp"><b>quiet</b><span>pending-review list</span></div>
+    </div>
+    <div class="col"><div class="colh">centre</div>
+     <div class="comp dash"><b>flow-diagram</b><span>hidden by default ("Show flow")</span></div>
+     <div class="inner"><span class="colh">ONE block at a time + Previous / Next</span>
+      <div class="comp"><b>pr-context</b> <span style="display:inline">or</span> <b style="display:inline">flow-intro</b> <span style="display:inline">or</span> <b style="display:inline">step</b></div>
+      <div class="comp dash"><b>code-view</b><span>inside step; <b style="display:inline">badge</b> + <b style="display:inline">tooltip</b> on marks</span></div>
+     </div>
+    </div>
+    <div class="col"><div class="colh">inspector + dock</div>
+     <div class="comp"><b>inspector</b><span>never empty; Back to step</span></div>
+     <div class="comp"><b>ask</b><span>dock</span></div>
+     <div class="comp"><b>feedback</b><span>dock</span></div>
+     <div class="comp"><b>comment</b><span>dock; any line</span></div>
+     <div class="comp dash"><b>help</b><span>dialog from top bar</span></div>
+    </div>
+   </div>
+  </div>
+ </div>
+</section>
+</div>
+
+<!-- 4 PIPELINE -->
+<section class="panel" id="p-pipe">
+ <h2><span class="num">4</span>Analysis pipeline <small>each step is a resumable job; partial results are stored but shown only when the analysis finishes</small></h2>
+ <div class="dg" id="dg-pipe">
+  <svg class="ov"></svg>
+  <div class="pipe">
+   <div class="box" id="pp-url" tabindex="0" style="grid-row:1;grid-column:1" data-detail="Home screen: paste a PR URL. Public repositories only in v1."><h3>PR URL</h3><p>Home screen; resumes an existing analysis</p></div>
+   <div class="box det" id="pp-ing" tabindex="0" style="grid-row:1;grid-column:2" data-detail="PR metadata, threads, checks; base and head fetched into the server's bare mirror."><h3>Ingest <span class="tag">DET</span></h3><p>PR data, threads, checks, bare mirror</p></div>
+   <div class="box det" id="pp-pre" tabindex="0" style="grid-row:1;grid-column:3" data-detail="analysis crate: hunks, TechPlugin classification, moved blocks, whitespace-only, counters, related repos."><h3>Pre-pass <span class="tag">DET</span></h3><p>hunks, classify, moves, counters, related repos</p></div>
+   <div class="stk" style="grid-row:1;grid-column:4">
+    <div class="box llm" id="pp-plan" tabindex="0" data-detail="Agent partitions hunks into flows. Huge PRs: per-directory summaries first, then grouping."><h3>plan <span class="tag">LLM</span></h3><p>group hunks into flows</p></div>
+    <div class="box llm" id="pp-ctx" tabindex="0" data-detail="Independent of plan, queued like any job: problem and why, related work via github-mcp-server, project profile."><h3>pr_context <span class="tag">LLM</span></h3><p>problem, related work, fit questions</p></div>
+   </div>
+   <div class="box llm" id="pp-flow" tabindex="0" style="grid-row:1;grid-column:5" data-detail="One agent run per flow: flow graph, introduction, steps (called by, decides, next, why), annotations, impact outside the diff. Progress bar counts flows."><h3>analyse_flow x N <span class="tag">LLM</span></h3><p>graph, steps, annotations, one run per flow</p></div>
+   <div class="box det" id="pp-ver" tabindex="0" style="grid-row:1;grid-column:6" data-detail="Schema, ranges, coverage, move claims, graph consistency, facts need evidence, banned wording. Failures go back to the agent as repair feedback, up to 2 runs."><h3>Verify <span class="tag">DET</span></h3><p>schema, ranges, evidence, wording</p></div>
+   <div class="box det" id="pp-left" tabindex="0" style="grid-row:1;grid-column:7" data-detail="Changed lines no flow covers are shown as 'Unexplained - read these yourself', never hidden."><h3>Leftovers <span class="tag">DET</span></h3><p>uncovered lines -> "Unexplained"; tour order</p></div>
+   <div class="box" id="pp-tour" tabindex="0" style="grid-row:1;grid-column:8" data-detail="Final code with flows walked step by step; LLM content visibly separated from deterministic facts."><h3>Tour</h3><p>PR context (from pr_context), flows, steps, quiet rows</p></div>
+
+   <div class="box llm" id="pp-ask" tabindex="0" style="grid-row:2;grid-column:4/7;margin-top:2.4rem;margin-bottom:1.6rem" data-detail="Question about a step becomes an ask job on the same JobExecutor; context pack = question, step data, flow analysis, earlier Q and A. Available after the analysis finished; claimed before the next batch job, never pre-empting a running one."><h3>ask (on demand, from the Tour) <span class="tag">LLM</span></h3><p>resumes the analysis session; answer streams via SSE</p></div>
+   <div class="sess" id="pp-sess">One Codex session per PR analysis. <b>plan, pr_context, analyse_flow, repairs and ask</b> all resume it; the session is compacted at the end of each job.</div>
+  </div>
+ </div>
+ <div class="notes">
+  <span><b>Model</b>: <code>select_model(job kind, context)</code>, a plain Rust function in the server (no table, no setting); v1 returns Sol at high effort.</span>
+  <span><b>No</b> PR-level summary or overall risk step exists.</span>
+  <span><b>Cancel</b> discards partial results; <b>pause</b> on usage limit resumes at <code>resumes_at</code>.</span>
+ </div>
+</section>
+</main>
+<div id="info" role="status"></div>
+
+<script>
+const EDGES = {
+ sys:[
+  {f:'s-br',t:'s-gh',l:'OAuth sign-in redirect',at:.5,hd:'both'},
+  {f:'s-srv',t:'s-gh',l:'REST + GraphQL, OAuth token exchange\ngit fetch (user token)\npending review (GraphQL)',at:.5,hd:'both',ldx:0},
+  {f:'s-px',t:'s-gh',l:'git fetch (public repos)\nGitHub API (installation token)',at:.5,c:'trustp'},
+  {f:'s-br',t:'sv-api',l:'HTTPS via reverse proxy\nJSON API (cookie + CSRF)',at:.28,hd:'both'},
+  {f:'sv-api',t:'s-br',l:'SSE progress',at:.78,c:'dash'},
+  {f:'rn-loop',t:'sv-rapi',l:'claim <- JobSpec (installation\ntoken), job token\nevents / result ->',ldy:0,mx:.3,hd:'both',c:'detp'},
+  {f:'s-srv',t:'s-mc',l:'feedback + calibration\n(rmcp client)',at:.5},
+  {f:'rn-exec',t:'s-px',l:'git fetch',mx:.5,c:'trustp'},
+  {f:'rn-codex',t:'s-px',l:'LLM, MemCan',mx:.5,c:'trustp llmp'},
+  {f:'rn-ghmcp',t:'s-px',l:'GitHub API',mx:.5,c:'trustp llmp'},
+  {f:'s-px',t:'s-llm',l:'LLM calls',at:.5,c:'trustp llmp'},
+  {f:'s-px',t:'s-mc',l:'MemCan MCP (read + write)',at:.5,c:'trustp llmp',ldy:0}
+ ],
+ ws:[
+  {f:'c-analysis',t:'c-contracts',l:'',at:.5},
+  {f:'c-db',t:'c-contracts',l:'',at:.5},
+  {f:'c-runner',t:'c-contracts',l:'',at:.5},
+  {f:'c-fake',t:'c-contracts',l:'',at:.5,dir:'v'},
+  {f:'c-server',t:'c-analysis',l:'',at:.3},
+  {f:'c-server',t:'c-db',l:'',at:.5},
+  {f:'c-server',t:'c-contracts',l:'',route:'rail',rail:16},
+  {f:'c-contracts',t:'c-gen',l:'',at:.5,dir:'h'}
+ ],
+ fe:[
+  {f:'f-scr',t:'f-cmp',l:'props in',at:.3},
+  {f:'f-cmp',t:'f-scr',l:'callbacks out',at:.7},
+  {f:'f-scr',t:'f-client',l:'API hooks (TanStack Query)',at:.5,hd:'both'},
+  {f:'f-gen',t:'f-client',l:'types + routes',at:.3,dir:'v'},
+  {f:'f-mock',t:'f-client',l:'',at:.93,dir:'v',c:'dash'}
+ ],
+ pipe:[
+  {f:'pp-url',t:'pp-ing',l:''},
+  {f:'pp-ing',t:'pp-pre',l:''},
+  {f:'pp-pre',t:'pp-plan',l:''},
+  {f:'pp-pre',t:'pp-ctx',l:''},
+  {f:'pp-plan',t:'pp-flow',l:'flows'},
+  {f:'pp-flow',t:'pp-ver',l:'output'},
+  {f:'pp-ver',t:'pp-left',l:''},
+  {f:'pp-left',t:'pp-tour',l:''},
+  {f:'pp-ask',t:'pp-sess',l:'',dir:'v',at:.5,hd:'none'},
+  {f:'pp-ver',t:'pp-flow',l:'repair, max 2 runs (LLM)',route:'arcdown',h:22,c:'llmp dash'}
+ ]
+};
+const NS='http://www.w3.org/2000/svg';
+const mk=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e};
+const $=id=>document.getElementById(id);
+function rectOf(el,R){const r=el.getBoundingClientRect();return{l:r.left-R.left,t:r.top-R.top,r:r.right-R.left,b:r.bottom-R.top}}
+function plan(a,b,e){
+ const at=e.at??.5, mx=e.mx??.5;
+ const ox0=Math.max(a.l,b.l),ox1=Math.min(a.r,b.r),oy0=Math.max(a.t,b.t),oy1=Math.min(a.b,b.b);
+ let pts,lab;
+ if(e.route==='rail'){
+  const x=Math.min(a.l,b.l)-(e.rail||14);const ya=(a.t+a.b)/2,yb=(b.t+b.b)/2;
+  pts=[[a.l,ya],[x,ya],[x,yb],[b.l,yb]];lab=[x,(ya+yb)/2];return{pts,lab,rot:true};}
+ if(e.route==='arcdown'){
+  const xa=a.l+(a.r-a.l)*.5,xb=b.l+(b.r-b.l)*.5,y=Math.max(a.b,b.b)+(e.h||20);
+  pts=[[xa,a.b],[xa,y],[xb,y],[xb,b.b]];lab=[(xa+xb)/2,y];return{pts,lab};}
+ const vert=e.dir==='v'||(e.dir!=='h'&&ox1-ox0>8&&!(oy1-oy0>8));
+ if(vert){
+  const down=a.b<=b.t+1;const y1=down?a.b:a.t,y2=down?b.t:b.b;
+  if(ox1-ox0>8){const x=ox0+(ox1-ox0)*at;pts=[[x,y1],[x,y2]];lab=[x,(y1+y2)/2];}
+  else{const xa=(a.l+a.r)/2,xb=(b.l+b.r)/2,ym=y1+(y2-y1)*mx;pts=[[xa,y1],[xa,ym],[xb,ym],[xb,y2]];lab=[(xa+xb)/2,ym];}
+ }else{
+  const right=a.r<=b.l+1;const x1=right?a.r:a.l,x2=right?b.l:b.r;
+  if(oy1-oy0>8){const y=oy0+(oy1-oy0)*at;pts=[[x1,y],[x2,y]];lab=[(x1+x2)/2,y];}
+  else{const ya=(a.t+a.b)/2,yb=(b.t+b.b)/2,xm=x1+(x2-x1)*mx;pts=[[x1,ya],[xm,ya],[xm,yb],[x2,yb]];lab=[xm,(ya+yb)/2];}
+ }
+ return{pts,lab};
+}
+function draw(){
+ const narrow=matchMedia('(max-width:1100px)').matches;
+ document.body.classList.toggle('narrow',narrow);
+ document.querySelectorAll('.dg').forEach(dg=>{
+  const key=dg.id.replace('dg-','');const svg=dg.querySelector('svg.ov');svg.innerHTML='';
+  const edges=EDGES[key]||[];
+  if(narrow){ // text connection lists instead of arrows
+   dg.querySelectorAll('.conn').forEach(u=>u.innerHTML='');
+   edges.forEach(e=>{const src=$(e.f);if(!src)return;const u=src.querySelector('.conn')||src.closest('.zone,.box')?.querySelector('.conn');
+    if(u&&e.l){const li=document.createElement('li');const tn=($(e.t).querySelector('h3,.zh')||$(e.t)).textContent.trim().split('\n')[0];li.textContent=tn+': '+e.l.replace(/\n/g,' ');u.appendChild(li);}});
+   return;}
+  const R=dg.getBoundingClientRect();
+  svg.setAttribute('width',R.width);svg.setAttribute('height',R.height);
+  svg.setAttribute('viewBox',`0 0 ${R.width} ${R.height}`);
+  const defs=mk('defs',{});
+  defs.innerHTML='<marker id="ah'+key+'" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="context-stroke" stroke="none"/></marker>';
+  svg.appendChild(defs);
+  const labels=[];
+  edges.forEach(e=>{
+   const A=$(e.f),B=$(e.t);if(!A||!B)return;
+   const p=plan(rectOf(A,R),rectOf(B,R),e);
+   const g=mk('g',{class:'e','data-f':e.f,'data-t':e.t});
+   const cls=(e.c||'').split(' ');
+   const path=mk('path',{d:'M'+p.pts.map(q=>q.map(v=>v.toFixed(1)).join(' ')).join(' L'),class:cls.join(' '),'marker-end':'url(#ah'+key+')'});
+   if(e.hd==='both')path.setAttribute('marker-start','url(#ah'+key+')');
+   if(e.hd==='none')path.removeAttribute('marker-end');
+   g.appendChild(path);svg.appendChild(g);
+   if(e.l)labels.push({g,x:p.lab[0]+(e.ldx||0),y:p.lab[1]+(e.ldy||0),t:e.l});
+  });
+  labels.forEach(L=>{
+   const lines=L.t.split('\n');const t=mk('text',{x:L.x,y:L.y});
+   lines.forEach((s,i)=>{const sp=mk('tspan',{x:L.x,dy:i?'1.05em':'0'});sp.textContent=s;t.appendChild(sp)});
+   const g=mk('g',{});L.g.appendChild(g);g.appendChild(t);
+   const bb=t.getBBox();t.setAttribute('y',L.y+(L.y-bb.y-bb.height/2));
+   t.querySelectorAll('tspan').forEach(s=>s.setAttribute('x',L.x));
+   const bb2=t.getBBox();
+   const r=mk('rect',{class:'lb',x:bb2.x-4,y:bb2.y-2,width:bb2.width+8,height:bb2.height+4});
+   g.insertBefore(r,t);
+  });
+ });
+}
+// hover highlight + detail line
+const info=$('info');
+function connected(id){const s=new Set([id]);document.querySelectorAll('g.e').forEach(g=>{const f=g.dataset.f,t=g.dataset.t;
+  const inF=id===f||$(id).contains($(f)),inT=id===t||$(id).contains($(t));if(inF||inT){g.classList.add('hi');}});}
+function clear(){document.querySelectorAll('.hi').forEach(x=>x.classList.remove('hi'));document.querySelectorAll('.hl').forEach(x=>x.classList.remove('hl'));
+ document.querySelectorAll('.dg.dim').forEach(x=>x.classList.remove('dim'));info.style.display='none';}
+function enter(el){clear();const dg=el.closest('.dg');if(dg){dg.classList.add('dim');}el.classList.add('hl');
+ if(el.id){connected(el.id);document.querySelectorAll('g.e.hi').forEach(g=>{[g.dataset.f,g.dataset.t].forEach(i=>{const n=$(i);if(n)n.classList.add('hl')})})}
+ const d=el.dataset.detail;if(d){info.textContent=d;info.style.display='block';}}
+document.querySelectorAll('[data-detail]').forEach(el=>{
+ el.addEventListener('mouseenter',e=>{e.stopPropagation();enter(el)});
+ el.addEventListener('mouseleave',clear);el.addEventListener('focus',()=>enter(el));el.addEventListener('blur',clear);
+});
+let tm;addEventListener('resize',()=>{clearTimeout(tm);tm=setTimeout(draw,80)});
+addEventListener('load',()=>{draw();setTimeout(draw,300)});
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(draw);
+matchMedia('(prefers-color-scheme:dark)').addEventListener?.('change',draw);
+</script>
+</body>
+</html>

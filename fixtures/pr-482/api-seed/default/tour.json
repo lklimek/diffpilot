@@ -1,0 +1,2437 @@
+{
+  "analysis": {
+    "id": "6d3a2f1e-0482-4c5e-9a7b-000000000482",
+    "pr": {
+      "repo": {
+        "owner": "acme",
+        "name": "node-client"
+      },
+      "number": 482,
+      "title": "feat(rpc): retry with backoff on timeout",
+      "author": "dana",
+      "html_url": "https://github.com/acme/node-client/pull/482",
+      "base_sha": "92f2274efbb93570cc8f820a49c058cf66b0dbe9",
+      "head_sha": "52d2da140191a9d47becf6a446310be803c007fc"
+    },
+    "language": "en",
+    "state": {
+      "state": "finished",
+      "total": 5
+    },
+    "created_at": "2026-11-16T09:12:00Z",
+    "finished_at": "2026-11-16T09:31:00Z",
+    "usage": null
+  },
+  "pr_context": {
+    "facts": {
+      "ci": {
+        "state": "failing",
+        "total": 7,
+        "failing": [
+          {
+            "name": "test (integration)",
+            "url": "https://github.com/acme/node-client/runs/3000000004",
+            "failing_tests": [
+              "sync_headers::slow_peer_2000_headers"
+            ]
+          }
+        ],
+        "check_runs": {
+          "passed": 3,
+          "failed": 1,
+          "pending": 0,
+          "skipped": 1,
+          "neutral": 1
+        },
+        "statuses": {
+          "passed": 0,
+          "failed": 0,
+          "pending": 1,
+          "skipped": 0,
+          "neutral": 0
+        }
+      },
+      "threads_status": "checked",
+      "counters": {
+        "lines_removed_from_tests": 12,
+        "dependencies_changed": [
+          "tokio",
+          "tracing",
+          "url"
+        ],
+        "dependency_files_not_checked": [],
+        "lines_added_to_tests": 30
+      },
+      "project_profile": {
+        "sources": [
+          "repository_file"
+        ],
+        "memcan": "not_checked"
+      },
+      "agent_instruction_files": [],
+      "related_work_checked": true,
+      "flow_count": 5,
+      "step_count": 17,
+      "related_work_links": [
+        {
+          "reference": "acme/node-client#479",
+          "repo": "acme/node-client",
+          "number": 479,
+          "kind": "pull_request",
+          "verified": false
+        },
+        {
+          "reference": "acme/node-client#470",
+          "repo": "acme/node-client",
+          "number": 470,
+          "kind": "issue",
+          "verified": false
+        },
+        {
+          "reference": "acme/node-sdk#118",
+          "repo": "acme/node-sdk",
+          "number": 118,
+          "kind": "pull_request",
+          "verified": false
+        }
+      ]
+    },
+    "llm": {
+      "problem": "The wallet UI hangs for 30 s when a peer is unreachable (#470), and one late reply fails a whole call with Timeout.",
+      "why_needed": "Issue #470: the wallet UI hung for 30 s on unreachable peers, and short outages reach wallet users as “offline”.",
+      "what_it_gives": "A call is tried up to 3 times and a dead peer is noticed after 5 s instead of 30 s, so one late reply no longer shows the wallet as offline.",
+      "related_work": [
+        {
+          "reference": "acme/node-client#479",
+          "kind": "competing_solution",
+          "overlap": "Adds retry in HttpTransport, one layer lower. If both merge, one call can make up to 9 attempts."
+        },
+        {
+          "reference": "acme/node-client#470",
+          "kind": "linked_issue",
+          "overlap": "“Wallet UI hangs 30 s”. Asks for a shorter wait; does not ask for retry."
+        },
+        {
+          "reference": "acme/node-sdk#118",
+          "kind": "companion_repository",
+          "overlap": "Adopts this retry API and still calls send_once(), which this PR removes."
+        }
+      ],
+      "fit_questions": [
+        {
+          "question": "Right layer? Retry sits in RpcClient while #479 adds it in HttpTransport; should there be only one?",
+          "topic": "layer_or_repository",
+          "evidence": [
+            {
+              "file": "src/rpc/transport.rs",
+              "side": "head",
+              "line": 40
+            },
+            {
+              "file": "src/rpc/client.rs",
+              "side": "head",
+              "line": 99
+            }
+          ]
+        },
+        {
+          "question": "Oversized for the problem? #470 is about the wait time; would the timeout change in src/config.rs:23 alone fix it?",
+          "topic": "size_for_problem",
+          "evidence": [
+            {
+              "file": "src/config.rs",
+              "side": "head",
+              "line": 23
+            }
+          ]
+        },
+        {
+          "question": "Duplicates an existing mechanism? sync::retry_headers already loops on failure; does header sync now retry inside a retry?",
+          "topic": "duplicate_mechanism",
+          "evidence": [
+            {
+              "file": "src/sync/mod.rs",
+              "side": "head",
+              "line": 88
+            },
+            {
+              "file": "src/sync/mod.rs",
+              "side": "head",
+              "line": 90
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "flows": [
+    {
+      "id": "f1",
+      "position": 1,
+      "group": "behaviour",
+      "facts": {
+        "files": [
+          "src/mempool/mod.rs",
+          "src/rpc/client.rs",
+          "src/rpc/retry.rs"
+        ],
+        "step_count": 10
+      },
+      "llm": {
+        "title": "Send an RPC request with retry",
+        "classification": "behavioural",
+        "risk": "high",
+        "introduction": {
+          "problem_before": "A wallet payment or a mempool broadcast calls RpcClient::send. If the node answers late or not at all, one lost reply fails the whole call with Timeout and the wallet UI shows “offline”.",
+          "change": "send tries up to 3 times with exponential backoff (200 ms, doubling, capped at 4 s, plus jitter), then gives up with the new Exhausted error.",
+          "example_before_after": "Before: send() → Err(Timeout) after one attempt. After: send() → attempt 1 times out → wait about 200 ms → attempt 2 → Ok."
+        },
+        "depends_on": [
+          "f3",
+          "f5"
+        ],
+        "pattern_repetitions": []
+      },
+      "graph": {
+        "nodes": [
+          {
+            "step_id": "f1.1",
+            "number": 1,
+            "kind": "unchanged",
+            "label": "Trigger: callers of send"
+          },
+          {
+            "step_id": "f1.2",
+            "number": 2,
+            "kind": "changed",
+            "label": "Attempt: build the request and send once"
+          },
+          {
+            "step_id": "f1.3",
+            "number": 3,
+            "kind": "changed",
+            "label": "Outcome of the attempt?"
+          },
+          {
+            "step_id": "f1.4",
+            "number": 4,
+            "kind": "changed",
+            "label": "Return the response"
+          },
+          {
+            "step_id": "f1.5",
+            "number": 5,
+            "kind": "added",
+            "label": "Retry allowed?"
+          },
+          {
+            "step_id": "f1.6",
+            "number": 6,
+            "kind": "added",
+            "label": "Wait, then try again"
+          },
+          {
+            "step_id": "f1.7",
+            "number": 7,
+            "kind": "added",
+            "label": "Give up: Exhausted"
+          },
+          {
+            "step_id": "f1.8",
+            "number": 8,
+            "kind": "changed",
+            "label": "Other errors returned as before"
+          },
+          {
+            "step_id": "f1.9",
+            "number": 9,
+            "kind": "changed",
+            "label": "Client holds a retry policy"
+          },
+          {
+            "step_id": "f1.10",
+            "number": 10,
+            "kind": "added",
+            "label": "Retry policy: attempt limit and delays"
+          }
+        ],
+        "edges": [
+          {
+            "from": "f1.1",
+            "to": "f1.2",
+            "label": null
+          },
+          {
+            "from": "f1.2",
+            "to": "f1.3",
+            "label": null
+          },
+          {
+            "from": "f1.3",
+            "to": "f1.4",
+            "label": "Ok"
+          },
+          {
+            "from": "f1.3",
+            "to": "f1.5",
+            "label": "Timeout"
+          },
+          {
+            "from": "f1.3",
+            "to": "f1.8",
+            "label": "other error"
+          },
+          {
+            "from": "f1.5",
+            "to": "f1.6",
+            "label": "yes"
+          },
+          {
+            "from": "f1.5",
+            "to": "f1.7",
+            "label": "no"
+          },
+          {
+            "from": "f1.6",
+            "to": "f1.2",
+            "label": "loop"
+          },
+          {
+            "from": "f1.9",
+            "to": "f1.2",
+            "label": "policy"
+          },
+          {
+            "from": "f1.5",
+            "to": "f1.10",
+            "label": "should_retry"
+          },
+          {
+            "from": "f1.6",
+            "to": "f1.10",
+            "label": "backoff"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "id": "f1.1",
+          "number": 1,
+          "facts": {
+            "file": "src/mempool/mod.rs",
+            "side": "head",
+            "range": {
+              "start_line": 126,
+              "end_line": 132
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/mempool/mod.rs#L126-L132",
+            "changed_lines": [],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Trigger: callers of send",
+            "kind": "context",
+            "symbol": "mempool::broadcast_tx",
+            "called_by": "a user action in the wallet or the relay (outside the diff)",
+            "decides": "Nothing here; it builds the request and calls client.send.",
+            "next": "Step 2",
+            "why": "Shows who reaches the retry loop, in particular a call that is not safe to repeat.",
+            "annotations": [
+              {
+                "id": "f1.1.a1",
+                "type": "consequence",
+                "basis": "fact",
+                "range": {
+                  "start_line": 130,
+                  "end_line": 130
+                },
+                "was": "",
+                "is": "",
+                "text": "broadcast_tx now reaches a retrying send.",
+                "evidence": [
+                  {
+                    "file": "src/mempool/mod.rs",
+                    "side": "head",
+                    "line": 129
+                  },
+                  {
+                    "file": "src/mempool/mod.rs",
+                    "side": "head",
+                    "line": 130
+                  },
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 99
+                  }
+                ]
+              },
+              {
+                "id": "f1.1.a2",
+                "type": "flag",
+                "basis": "inference",
+                "range": {
+                  "start_line": 129,
+                  "end_line": 130
+                },
+                "was": "",
+                "is": "",
+                "text": "Potential duplicate transaction in the node:",
+                "evidence": [
+                  {
+                    "file": "src/mempool/mod.rs",
+                    "side": "head",
+                    "line": 129
+                  }
+                ],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "The client sends broadcast_tx for a transaction and the node accepts it, but the reply is lost.",
+                    "The retry of step 5 sends the same transaction again.",
+                    "If the node does not reject a repeated transaction, it is relayed twice; the extra cost is relay load."
+                  ],
+                  "not_checked": "How the node treats a repeated transaction is outside this repository; not checked."
+                }
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "This context step submits one request; repetition is introduced by the downstream retry decision.",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.2",
+          "number": 2,
+          "facts": {
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "range": {
+              "start_line": 88,
+              "end_line": 96
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L88-L96",
+            "changed_lines": [
+              {
+                "start_line": 89,
+                "end_line": 89
+              },
+              {
+                "start_line": 91,
+                "end_line": 94
+              },
+              {
+                "start_line": 96,
+                "end_line": 96
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Attempt: build the request and send once",
+            "kind": "modified",
+            "symbol": "RpcClient::send",
+            "called_by": "Step 1; Step 6 (loop); Step 9 (policy)",
+            "decides": "Counts the attempt; rebuilds the request on every turn.",
+            "next": "Step 3",
+            "why": "The counter feeds the retry decision; the request is rebuilt because execute consumes it.",
+            "annotations": [
+              {
+                "id": "f1.2.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 91,
+                  "end_line": 95
+                },
+                "was": "Built the request and sent it once.",
+                "is": "Builds and sends once per loop turn; the turn count is kept in attempt.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 91
+                  },
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 94
+                  },
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 95
+                  }
+                ]
+              },
+              {
+                "id": "f1.2.a2",
+                "type": "consequence",
+                "basis": "inference",
+                "range": {
+                  "start_line": 93,
+                  "end_line": 94
+                },
+                "was": "",
+                "is": "",
+                "text": "Every attempt gets the full per-attempt timeout, so the worst case is 3 × timeout plus delays.",
+                "evidence": []
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "The attempt counter and request construction are local; the retry decision controls whether another request is sent.",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.3",
+          "number": 3,
+          "facts": {
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "range": {
+              "start_line": 97,
+              "end_line": 97
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L97-L97",
+            "changed_lines": [
+              {
+                "start_line": 97,
+                "end_line": 97
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Outcome of the attempt?",
+            "kind": "modified",
+            "symbol": "RpcClient::send",
+            "called_by": "Step 2",
+            "decides": "Branches on the result: Ok, Timeout, other error.",
+            "next": "Step 4 (Ok); Step 5 (Timeout); Step 8 (other error)",
+            "why": "Only timeouts are retried; every other error keeps the old behaviour.",
+            "annotations": [
+              {
+                "id": "f1.3.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 97,
+                  "end_line": 97
+                },
+                "was": "execute(...).await? returned every error to the caller.",
+                "is": "match on the result with three outcomes.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 97
+                  }
+                ]
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "Only timeouts take the new path; success and other errors return directly.",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.4",
+          "number": 4,
+          "facts": {
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "range": {
+              "start_line": 98,
+              "end_line": 98
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L98-L98",
+            "changed_lines": [
+              {
+                "start_line": 98,
+                "end_line": 98
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Return the response",
+            "kind": "modified",
+            "symbol": "RpcClient::send",
+            "called_by": "Step 3 (Ok)",
+            "decides": "Nothing; ends the call.",
+            "next": "back to the caller",
+            "why": "A successful attempt ends the loop at once.",
+            "annotations": [
+              {
+                "id": "f1.4.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 98,
+                  "end_line": 98
+                },
+                "was": "Returned the response.",
+                "is": "Returns the response from any attempt.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 98
+                  }
+                ]
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "This unchanged return exits the loop immediately without another send.",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.5",
+          "number": 5,
+          "facts": {
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "range": {
+              "start_line": 99,
+              "end_line": 99
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L99-L99",
+            "changed_lines": [
+              {
+                "start_line": 99,
+                "end_line": 99
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": [
+              "PRRT_fixture482_t1"
+            ]
+          },
+          "llm": {
+            "title": "Retry allowed?",
+            "kind": "added",
+            "symbol": "RpcClient::send",
+            "called_by": "Step 3 (Timeout)",
+            "decides": "Asks RetryPolicy::should_retry(attempt); yes goes to step 6, no goes to step 7.",
+            "next": "Step 6 (yes); Step 7 (no); Step 10 (should_retry)",
+            "why": "The loop needs a rule for when to stop; the rule is a plain attempt limit.",
+            "annotations": [
+              {
+                "id": "f1.5.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 99,
+                  "end_line": 99
+                },
+                "was": "No retry decision; the timeout went straight to the caller.",
+                "is": "Retries while attempt < max_attempts (3). The method of the request is not an input.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 99
+                  },
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 23
+                  },
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 24
+                  }
+                ]
+              },
+              {
+                "id": "f1.5.a2",
+                "type": "consequence",
+                "basis": "inference",
+                "range": {
+                  "start_line": 99,
+                  "end_line": 99
+                },
+                "was": "",
+                "is": "",
+                "text": "mempool::broadcast_tx may submit the same transaction twice if attempt 1 reached the node and only the reply was late.",
+                "evidence": [
+                  {
+                    "file": "src/mempool/mod.rs",
+                    "side": "head",
+                    "line": 129
+                  }
+                ]
+              },
+              {
+                "id": "f1.5.a3",
+                "type": "flag",
+                "basis": "inference",
+                "range": {
+                  "start_line": 99,
+                  "end_line": 99
+                },
+                "was": "",
+                "is": "",
+                "text": "Potential double broadcast on a late reply:",
+                "evidence": [
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 23
+                  }
+                ],
+                "flag": {
+                  "level": "red",
+                  "scenario": [
+                    "A wallet calls send with broadcast_tx; the node accepts the transaction, but its reply arrives after the timeout.",
+                    "should_retry sees only the attempt number, so it allows another attempt.",
+                    "The client sends broadcast_tx again.",
+                    "If the node accepts the second request, the user's payment is broadcast twice."
+                  ],
+                  "not_checked": "Not reproduced against a node; no test was run."
+                }
+              }
+            ],
+            "assessment": {
+              "headline": "A wallet user could see one payment broadcast twice after a slow node reply; an operator would see duplicate-transaction rejections in the node log.",
+              "risk": "high",
+              "reason": "A repeated value-moving request at system scale (wallet and relay both call send). It needs a reply delayed past 5 s, which flow 2 makes more likely.",
+              "basis_note": "Read: 4 files (client.rs, retry.rs, mempool/mod.rs, wallet/pay.rs)",
+              "not_checked": "node-side deduplication (not in this repository)",
+              "origin": "introduced",
+              "blocking": "blocks_this_pr",
+              "smallest_correction": "Pass an idempotency input into should_retry (or skip retry for broadcast_tx); add a test with a transport that delivers the request and then times out."
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.6",
+          "number": 6,
+          "facts": {
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "range": {
+              "start_line": 100,
+              "end_line": 103
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L100-L103",
+            "changed_lines": [
+              {
+                "start_line": 100,
+                "end_line": 103
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Wait, then try again",
+            "kind": "added",
+            "symbol": "RpcClient::send",
+            "called_by": "Step 5 (yes)",
+            "decides": "Computes the delay and sleeps.",
+            "next": "Step 2 (loop); Step 10 (backoff)",
+            "why": "Spaces the attempts so a briefly overloaded node can recover.",
+            "annotations": [
+              {
+                "id": "f1.6.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 100,
+                  "end_line": 102
+                },
+                "was": "No delay.",
+                "is": "Sleeps backoff(attempt): 200 ms doubling, capped at 4 s, plus jitter; then loops to step 2.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 100
+                  },
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 102
+                  },
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 29
+                  },
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 30
+                  }
+                ]
+              },
+              {
+                "id": "f1.6.a2",
+                "type": "flag",
+                "basis": "inference",
+                "range": {
+                  "start_line": 100,
+                  "end_line": 100
+                },
+                "was": "",
+                "is": "",
+                "text": "Potential sleep longer than max_delay:",
+                "evidence": [
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 30
+                  }
+                ],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "The backoff reaches the 4 s cap after a few attempts.",
+                    "Jitter is added after the cap.",
+                    "One sleep lasts longer than 4 s; a caller with a tight deadline waits longer than max_delay suggests."
+                  ],
+                  "not_checked": "The jitter range was read in the code; no timing was measured."
+                }
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "Latent: the 4 s cap is out of reach while every client uses the default of 3 attempts, and no setter can change it.",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.7",
+          "number": 7,
+          "facts": {
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "range": {
+              "start_line": 104,
+              "end_line": 106
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L104-L106",
+            "changed_lines": [
+              {
+                "start_line": 104,
+                "end_line": 106
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Give up: Exhausted",
+            "kind": "added",
+            "symbol": "RpcClient::send",
+            "called_by": "Step 5 (no)",
+            "decides": "Returns the new error instead of Timeout.",
+            "next": "back to the caller",
+            "why": "Callers need to tell a retried failure from a single timeout.",
+            "annotations": [
+              {
+                "id": "f1.7.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 104,
+                  "end_line": 105
+                },
+                "was": "Returned Err(Timeout).",
+                "is": "Returns Err(Exhausted { attempts }) once the policy refuses another attempt.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 104
+                  },
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 105
+                  },
+                  {
+                    "file": "src/rpc/error.rs",
+                    "side": "head",
+                    "line": 13
+                  }
+                ]
+              },
+              {
+                "id": "f1.7.a2",
+                "type": "consequence",
+                "basis": "fact",
+                "range": {
+                  "start_line": 105,
+                  "end_line": 105
+                },
+                "was": "",
+                "is": "",
+                "text": "Callers that matched on Timeout no longer see it from send; wallet::fetch_balance maps only Timeout to WalletError::Offline.",
+                "evidence": [
+                  {
+                    "file": "src/wallet/mod.rs",
+                    "side": "head",
+                    "line": 120
+                  },
+                  {
+                    "file": "src/wallet/mod.rs",
+                    "side": "head",
+                    "line": 121
+                  }
+                ]
+              },
+              {
+                "id": "f1.7.a3",
+                "type": "flag",
+                "basis": "inference",
+                "range": {
+                  "start_line": 104,
+                  "end_line": 106
+                },
+                "was": "",
+                "is": "",
+                "text": "Potential unhandled Exhausted where Timeout was matched:",
+                "evidence": [],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "A request times out on every attempt.",
+                    "send now returns Exhausted where it returned Timeout.",
+                    "A caller that matched Timeout falls into its wildcard arm (two sites, flow 3) and reports another error."
+                  ],
+                  "not_checked": "Callers outside this repository were not searched."
+                }
+              }
+            ],
+            "assessment": {
+              "headline": "Wallet users get a generic RPC error instead of the “offline” message once retries run out.",
+              "risk": "medium",
+              "reason": "User-visible message change on a common failure; no data is affected.",
+              "basis_note": "Read: 3 files",
+              "not_checked": "callers in other repositories",
+              "origin": "introduced",
+              "blocking": "follow_up",
+              "smallest_correction": "Map Exhausted to the same wallet error as Timeout."
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.8",
+          "number": 8,
+          "facts": {
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "range": {
+              "start_line": 107,
+              "end_line": 109
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L107-L109",
+            "changed_lines": [
+              {
+                "start_line": 107,
+                "end_line": 109
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Other errors returned as before",
+            "kind": "modified",
+            "symbol": "RpcClient::send",
+            "called_by": "Step 3 (other error)",
+            "decides": "Nothing; ends the call.",
+            "next": "",
+            "why": "Only timeouts are worth another attempt.",
+            "annotations": [
+              {
+                "id": "f1.8.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 107,
+                  "end_line": 107
+                },
+                "was": "Returned any error.",
+                "is": "Returns any non-timeout error at once.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 107
+                  }
+                ]
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "The existing error return remains separate from the timeout retry path.",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.9",
+          "number": 9,
+          "facts": {
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "range": {
+              "start_line": 30,
+              "end_line": 43
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L30-L43",
+            "changed_lines": [
+              {
+                "start_line": 35,
+                "end_line": 35
+              },
+              {
+                "start_line": 42,
+                "end_line": 42
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Client holds a retry policy",
+            "kind": "modified",
+            "symbol": "RpcClient::new",
+            "called_by": "every caller that builds an RpcClient",
+            "decides": "Stores RetryPolicy::default() in the new retry field.",
+            "next": "Step 2 (policy)",
+            "why": "send needs a policy; new gives every client the default of 3 attempts.",
+            "annotations": [
+              {
+                "id": "f1.9.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 35,
+                  "end_line": 42
+                },
+                "was": "RpcClient had no retry settings.",
+                "is": "Every client carries a RetryPolicy, set to the default in new.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 35
+                  },
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 42
+                  }
+                ]
+              },
+              {
+                "id": "f1.9.a2",
+                "type": "flag",
+                "basis": "inference",
+                "range": {
+                  "start_line": 42,
+                  "end_line": 42
+                },
+                "was": "",
+                "is": "",
+                "text": "Potential retries a caller cannot turn off:",
+                "evidence": [
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "head",
+                    "line": 42
+                  }
+                ],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "A caller builds RpcClient with the default constructor.",
+                    "No setter or constructor argument takes a retry policy.",
+                    "A request that must not be repeated is retried up to 3 times, with no way to opt out."
+                  ],
+                  "not_checked": "Downstream code was not searched for such callers."
+                }
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "Policy construction is bounded to client setup; retry exposure is assessed at the decision step.",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.10",
+          "number": 10,
+          "facts": {
+            "file": "src/rpc/retry.rs",
+            "side": "head",
+            "range": {
+              "start_line": 3,
+              "end_line": 32
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/retry.rs#L3-L32",
+            "changed_lines": [
+              {
+                "start_line": 5,
+                "end_line": 32
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": [
+              "PRRT_fixture482_t2"
+            ]
+          },
+          "llm": {
+            "title": "Retry policy: attempt limit and delays",
+            "kind": "added",
+            "symbol": "RetryPolicy",
+            "called_by": "Step 5 (should_retry); Step 6 (backoff)",
+            "decides": "Allows attempts while attempt < max_attempts; computes the delay before the next attempt.",
+            "next": "back to step 5 or step 6",
+            "why": "The loop needs a rule for when to stop and how long to wait; both live in one policy value.",
+            "annotations": [
+              {
+                "id": "f1.10.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 21,
+                  "end_line": 25
+                },
+                "was": "No retry rule; util::backoff had only the MAX_ATTEMPTS constant.",
+                "is": "should_retry allows another attempt while attempt < max_attempts (3).",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 23
+                  },
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 24
+                  },
+                  {
+                    "file": "src/util/backoff.rs",
+                    "side": "base",
+                    "line": 6
+                  }
+                ]
+              },
+              {
+                "id": "f1.10.a2",
+                "type": "consequence",
+                "basis": "fact",
+                "range": {
+                  "start_line": 28,
+                  "end_line": 30
+                },
+                "was": "",
+                "is": "",
+                "text": "Jitter is applied after the cap, so one delay can exceed max_delay by up to half; with the default 3 attempts the delays are 200 ms and 400 ms before jitter and never reach the cap.",
+                "evidence": [
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 17
+                  },
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 30
+                  },
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 46
+                  },
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 54
+                  }
+                ]
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "The default attempt limit bounds the loop; the send and jitter steps carry the concrete concerns.",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "f2",
+      "position": 2,
+      "group": "behaviour",
+      "facts": {
+        "files": [
+          "src/config.rs",
+          "src/sync/mod.rs"
+        ],
+        "step_count": 2
+      },
+      "llm": {
+        "title": "Default timeout 30 s → 5 s",
+        "classification": "behavioural",
+        "risk": "medium",
+        "introduction": {
+          "problem_before": "Every RPC call built from RpcConfig::default() waits up to 30 s; the wallet UI froze for 30 s on an unreachable peer (issue #470).",
+          "change": "Every attempt now waits at most 5 s.",
+          "example_before_after": "Before: timeout = Duration::from_secs(30). After: timeout = Duration::from_secs(5), for each of up to 3 attempts."
+        },
+        "depends_on": [],
+        "pattern_repetitions": []
+      },
+      "graph": {
+        "nodes": [
+          {
+            "step_id": "f2.1",
+            "number": 1,
+            "kind": "changed",
+            "label": "Default timeout 30 s → 5 s"
+          },
+          {
+            "step_id": "f2.2",
+            "number": 2,
+            "kind": "unchanged",
+            "label": "Affected code: sync::fetch_headers"
+          }
+        ],
+        "edges": [
+          {
+            "from": "f2.1",
+            "to": "f2.2",
+            "label": null
+          }
+        ]
+      },
+      "steps": [
+        {
+          "id": "f2.1",
+          "number": 1,
+          "facts": {
+            "file": "src/config.rs",
+            "side": "head",
+            "range": {
+              "start_line": 12,
+              "end_line": 26
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/config.rs#L12-L26",
+            "changed_lines": [
+              {
+                "start_line": 23,
+                "end_line": 23
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Default timeout 30 s → 5 s",
+            "kind": "modified",
+            "symbol": "RpcConfig::default",
+            "called_by": "RpcClient::new (src/rpc/client.rs:40)",
+            "decides": "Sets the default per-attempt timeout.",
+            "next": "Step 2; every send call",
+            "why": "The wallet UI froze for 30 s on an unreachable peer (issue #470).",
+            "annotations": [
+              {
+                "id": "f2.1.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 23,
+                  "end_line": 23
+                },
+                "was": "timeout = 30 s.",
+                "is": "timeout = 5 s, for each of up to 3 attempts.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/config.rs",
+                    "side": "head",
+                    "line": 23
+                  }
+                ]
+              },
+              {
+                "id": "f2.1.a2",
+                "type": "consequence",
+                "basis": "fact",
+                "range": {
+                  "start_line": 23,
+                  "end_line": 23
+                },
+                "was": "",
+                "is": "",
+                "text": "sync::fetch_headers relied on the longer wait; CI: sync_headers::slow_peer_2000_headers fails with a timeout after 5 s.",
+                "evidence": [
+                  {
+                    "file": "src/sync/mod.rs",
+                    "side": "head",
+                    "line": 63
+                  },
+                  {
+                    "file": "tests/sync_headers.rs",
+                    "side": "head",
+                    "line": 11
+                  }
+                ]
+              },
+              {
+                "id": "f2.1.a3",
+                "type": "flag",
+                "basis": "inference",
+                "range": {
+                  "start_line": 23,
+                  "end_line": 23
+                },
+                "was": "",
+                "is": "",
+                "text": "Potential header sync timeout on slow peers:",
+                "evidence": [
+                  {
+                    "file": "src/sync/mod.rs",
+                    "side": "head",
+                    "line": 63
+                  }
+                ],
+                "flag": {
+                  "level": "red",
+                  "scenario": [
+                    "A node syncs from a slow peer and requests 2000 headers.",
+                    "The reply takes 10 to 20 s, as the comment beside the setting says.",
+                    "The new 5 s timeout ends each attempt first, and every retry ends the same way.",
+                    "Header sync stalls; the failing CI test is about this path."
+                  ],
+                  "not_checked": "The CI test was not run here; peer timings were not measured."
+                }
+              }
+            ],
+            "assessment": {
+              "headline": "Header sync from slow peers may fail where it used to finish; an operator would see sync stall on slow links.",
+              "risk": "medium",
+              "reason": "Affects node sync on slow links, not wallet funds; CI already shows a failing test for it.",
+              "basis_note": "Read: 3 files (config.rs, sync/mod.rs, the CI log)",
+              "not_checked": "real peer latencies",
+              "origin": "introduced",
+              "blocking": "blocks_this_pr",
+              "smallest_correction": "Keep a longer timeout for get_headers or pass a per-request timeout in fetch_headers."
+            },
+            "moved_from": null,
+            "impact": [
+              {
+                "file": "tests/sync_headers.rs",
+                "range": {
+                  "start_line": 8,
+                  "end_line": 14
+                },
+                "symbol": "slow_peer_2000_headers",
+                "reason": "The failing CI test: its peer answers after 12 s, longer than the new 5 s timeout.",
+                "basis": "fact",
+                "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/tests/sync_headers.rs#L8-L14"
+              }
+            ]
+          }
+        },
+        {
+          "id": "f2.2",
+          "number": 2,
+          "facts": {
+            "file": "src/sync/mod.rs",
+            "side": "head",
+            "range": {
+              "start_line": 61,
+              "end_line": 67
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/sync/mod.rs#L61-L67",
+            "changed_lines": [],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Affected code: sync::fetch_headers",
+            "kind": "context",
+            "symbol": "sync::fetch_headers",
+            "called_by": "Step 1; the sync loop (src/sync/mod.rs:41)",
+            "decides": "Requests up to 2000 headers in one reply.",
+            "next": "decodes the headers",
+            "why": "Shown because the default timeout reaches it, although the file is not in the diff.",
+            "annotations": [
+              {
+                "id": "f2.2.a1",
+                "type": "consequence",
+                "basis": "fact",
+                "range": {
+                  "start_line": 64,
+                  "end_line": 65
+                },
+                "was": "",
+                "is": "",
+                "text": "A reply that needs 10-20 s now times out on every attempt.",
+                "evidence": [
+                  {
+                    "file": "src/sync/mod.rs",
+                    "side": "head",
+                    "line": 63
+                  },
+                  {
+                    "file": "src/sync/mod.rs",
+                    "side": "head",
+                    "line": 65
+                  }
+                ]
+              },
+              {
+                "id": "f2.2.a2",
+                "type": "note",
+                "basis": "inference",
+                "range": {
+                  "start_line": 64,
+                  "end_line": 64
+                },
+                "was": "",
+                "is": "",
+                "text": "Same risk as step 1: a 2000-header reply from a slow peer may take longer than 5 s.",
+                "evidence": []
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "This caller requests a large batch; the timeout change that reaches it is assessed in the preceding step.",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "f3",
+      "position": 3,
+      "group": "behaviour",
+      "facts": {
+        "files": [
+          "src/rpc/error.rs",
+          "src/wallet/mod.rs"
+        ],
+        "step_count": 2
+      },
+      "llm": {
+        "title": "New error variant RpcError::Exhausted",
+        "classification": "api_contract",
+        "risk": "medium",
+        "introduction": {
+          "problem_before": "send() could only fail with Timeout or Transport, so callers could not tell “retried and still failed” from one timeout.",
+          "change": "A third variant, Exhausted { attempts }, carries the attempt count; send() returns it after the last attempt (flow 1, step 7).",
+          "example_before_after": "Before: a match sees Timeout or Transport. After: a match also sees Exhausted { attempts }; wildcard arms swallow it."
+        },
+        "depends_on": [],
+        "pattern_repetitions": [
+          {
+            "description": "A wildcard Err(_) arm after explicit RpcError arms swallows Exhausted.",
+            "explained_in": "f3.2",
+            "sites": [
+              {
+                "file": "src/sync/peers.rs",
+                "side": "head",
+                "range": {
+                  "start_line": 201,
+                  "end_line": 205
+                },
+                "step_id": null,
+                "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/sync/peers.rs#L201-L205"
+              }
+            ]
+          }
+        ]
+      },
+      "graph": {
+        "nodes": [
+          {
+            "step_id": "f3.1",
+            "number": 1,
+            "kind": "added",
+            "label": "New error variant RpcError::Exhausted"
+          },
+          {
+            "step_id": "f3.2",
+            "number": 2,
+            "kind": "unchanged",
+            "label": "Affected code: wildcard match on send()"
+          }
+        ],
+        "edges": [
+          {
+            "from": "f3.1",
+            "to": "f3.2",
+            "label": null
+          }
+        ]
+      },
+      "steps": [
+        {
+          "id": "f3.1",
+          "number": 1,
+          "facts": {
+            "file": "src/rpc/error.rs",
+            "side": "head",
+            "range": {
+              "start_line": 7,
+              "end_line": 16
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/error.rs#L7-L16",
+            "changed_lines": [
+              {
+                "start_line": 12,
+                "end_line": 13
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "New error variant RpcError::Exhausted",
+            "kind": "added",
+            "symbol": "RpcError",
+            "called_by": "RpcClient::send (step 7 of flow 1)",
+            "decides": "Adds a variant that carries the attempt count.",
+            "next": "Step 2; every match on RpcError",
+            "why": "Callers need to tell “retried and failed” from one timeout.",
+            "annotations": [
+              {
+                "id": "f3.1.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 12,
+                  "end_line": 13
+                },
+                "was": "Two failure variants.",
+                "is": "Three; wildcard arms treat the new one as a generic failure.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/rpc/error.rs",
+                    "side": "head",
+                    "line": 12
+                  },
+                  {
+                    "file": "src/rpc/error.rs",
+                    "side": "head",
+                    "line": 13
+                  }
+                ]
+              },
+              {
+                "id": "f3.1.a2",
+                "type": "consequence",
+                "basis": "fact",
+                "range": {
+                  "start_line": 13,
+                  "end_line": 13
+                },
+                "was": "",
+                "is": "",
+                "text": "Two wildcard match sites outside the diff swallow it (wallet and peers).",
+                "evidence": [
+                  {
+                    "file": "src/wallet/mod.rs",
+                    "side": "head",
+                    "line": 121
+                  },
+                  {
+                    "file": "src/sync/peers.rs",
+                    "side": "head",
+                    "line": 204
+                  }
+                ]
+              },
+              {
+                "id": "f3.1.a3",
+                "type": "flag",
+                "basis": "inference",
+                "range": {
+                  "start_line": 13,
+                  "end_line": 13
+                },
+                "was": "",
+                "is": "",
+                "text": "Potential generic error where Timeout was handled:",
+                "evidence": [],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "A request exhausts its retries and send returns Exhausted.",
+                    "The two match sites with a wildcard arm treat it as an unknown error.",
+                    "The user sees a generic failure instead of the offline message Timeout gave."
+                  ],
+                  "not_checked": "The two sites were read; their messages were not run."
+                }
+              }
+            ],
+            "assessment": {
+              "headline": "A wallet user sees a generic RPC error; a peer that keeps timing out is ignored instead of being marked failed.",
+              "risk": "medium",
+              "reason": "Wrong handling of a common failure in two places; no data loss.",
+              "basis_note": "Read: 3 files and searched the repository for matches on send results",
+              "not_checked": "matches in other repositories",
+              "origin": "introduced",
+              "blocking": "follow_up",
+              "smallest_correction": "Handle Exhausted explicitly in both match sites."
+            },
+            "moved_from": null,
+            "impact": [
+              {
+                "file": "src/sync/peers.rs",
+                "range": {
+                  "start_line": 201,
+                  "end_line": 205
+                },
+                "symbol": "Prober::probe",
+                "reason": "Err(_) => {} drops Exhausted: a peer that keeps timing out is never marked failed.",
+                "basis": "fact",
+                "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/sync/peers.rs#L201-L205"
+              }
+            ]
+          }
+        },
+        {
+          "id": "f3.2",
+          "number": 2,
+          "facts": {
+            "file": "src/wallet/mod.rs",
+            "side": "head",
+            "range": {
+              "start_line": 118,
+              "end_line": 122
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/wallet/mod.rs#L118-L122",
+            "changed_lines": [],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Affected code: wildcard match on send()",
+            "kind": "context",
+            "symbol": "wallet::fetch_balance",
+            "called_by": "Step 1; the wallet balance view",
+            "decides": "Maps any other error to WalletError::Rpc.",
+            "next": "returns to the wallet UI",
+            "why": "Same pattern × 2; the second site is src/sync/peers.rs:204.",
+            "annotations": [
+              {
+                "id": "f3.2.a1",
+                "type": "consequence",
+                "basis": "fact",
+                "range": {
+                  "start_line": 121,
+                  "end_line": 121
+                },
+                "was": "",
+                "is": "",
+                "text": "The user message differs from the Timeout case.",
+                "evidence": [
+                  {
+                    "file": "src/wallet/mod.rs",
+                    "side": "head",
+                    "line": 120
+                  },
+                  {
+                    "file": "src/wallet/mod.rs",
+                    "side": "head",
+                    "line": 121
+                  }
+                ]
+              },
+              {
+                "id": "f3.2.a2",
+                "type": "note",
+                "basis": "inference",
+                "range": {
+                  "start_line": 121,
+                  "end_line": 121
+                },
+                "was": "",
+                "is": "",
+                "text": "Same risk as step 1, at this site: Exhausted does not map to WalletError::Offline as Timeout does.",
+                "evidence": []
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "This existing wildcard branch receives the new variant; its changed exposure is assessed at the variant definition.",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "f4",
+      "position": 4,
+      "group": "behaviour",
+      "facts": {
+        "files": [
+          "src/rpc/client.rs"
+        ],
+        "step_count": 1
+      },
+      "llm": {
+        "title": "Removed the single-attempt API send_once()",
+        "classification": "api_contract",
+        "risk": "medium",
+        "introduction": {
+          "problem_before": "A caller that must not retry used send_once(), next to send().",
+          "change": "send_once() is removed; send() is the only entry point and always retries. Side effect: no way is left to send without retry.",
+          "example_before_after": "Before: send() and send_once(). After: only send(), which always retries."
+        },
+        "depends_on": [],
+        "pattern_repetitions": []
+      },
+      "graph": {
+        "nodes": [
+          {
+            "step_id": "f4.1",
+            "number": 1,
+            "kind": "changed",
+            "label": "send_once() removed"
+          }
+        ],
+        "edges": []
+      },
+      "steps": [
+        {
+          "id": "f4.1",
+          "number": 1,
+          "facts": {
+            "file": "src/rpc/client.rs",
+            "side": "base",
+            "range": {
+              "start_line": 52,
+              "end_line": 61
+            },
+            "github_url": "https://github.com/acme/node-client/blob/92f2274efbb93570cc8f820a49c058cf66b0dbe9/src/rpc/client.rs#L52-L61",
+            "changed_lines": [
+              {
+                "start_line": 52,
+                "end_line": 61
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "send_once() removed",
+            "kind": "deleted_site",
+            "symbol": "RpcClient::send_once",
+            "called_by": "callers that must not retry (none left in this repository)",
+            "decides": "Nothing; the code is gone.",
+            "next": "callers now use send()",
+            "why": "One entry point instead of two.",
+            "annotations": [
+              {
+                "id": "f4.1.a1",
+                "type": "consequence",
+                "basis": "fact",
+                "range": {
+                  "start_line": 52,
+                  "end_line": 53
+                },
+                "was": "",
+                "is": "",
+                "text": "No way is left to send a request exactly once (see flow 1, step 5).",
+                "evidence": [
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "base",
+                    "line": 52
+                  },
+                  {
+                    "file": "src/rpc/client.rs",
+                    "side": "base",
+                    "line": 53
+                  }
+                ]
+              },
+              {
+                "id": "f4.1.a2",
+                "type": "flag",
+                "basis": "inference",
+                "range": {
+                  "start_line": 53,
+                  "end_line": 53
+                },
+                "was": "",
+                "is": "",
+                "text": "Potential build break in acme/node-sdk:",
+                "evidence": [],
+                "flag": {
+                  "level": "red",
+                  "scenario": [
+                    "acme/node-sdk (PR #118) calls send_once().",
+                    "This pull request removes send_once().",
+                    "The SDK no longer builds when it updates to this version."
+                  ],
+                  "not_checked": "The SDK's current code was not read."
+                }
+              },
+              {
+                "id": "f4.1.a3",
+                "type": "flag",
+                "basis": "inference",
+                "range": {
+                  "start_line": 52,
+                  "end_line": 53
+                },
+                "was": "",
+                "is": "",
+                "text": "Potential repeat of a request that must run once:",
+                "evidence": [],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "A caller used send_once() for a request that must run at most once.",
+                    "send_once() is removed, and send() is the only call left.",
+                    "send() retries on timeout, so the request may run twice."
+                  ],
+                  "not_checked": "Downstream use was not searched."
+                }
+              }
+            ],
+            "assessment": {
+              "headline": "A downstream developer gets a compile error; a user of broadcast_tx loses the only no-retry path.",
+              "risk": "medium",
+              "reason": "Public API removal with a known downstream user; ties to the double-send question.",
+              "basis_note": "Read: 2 files, searched this repository and the stacked PR title",
+              "not_checked": "other downstream crates",
+              "origin": "introduced",
+              "blocking": "blocks_this_pr",
+              "smallest_correction": "Keep send_once (or add a per-call retry opt-out) until the SDK has moved."
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "f5",
+      "position": 5,
+      "group": "behaviour",
+      "facts": {
+        "files": [
+          "src/rpc/retry.rs",
+          "src/lib.rs"
+        ],
+        "step_count": 2
+      },
+      "llm": {
+        "title": "Move of backoff helpers util/backoff.rs → rpc/retry.rs",
+        "classification": "move",
+        "risk": "low",
+        "introduction": {
+          "problem_before": "RetryPolicy::backoff (flow 1) calls delay helpers that live in the generic util/backoff.rs.",
+          "change": "The helpers move next to the policy, in rpc/retry.rs; 56 of 58 lines move as they were and 2 lines differ.",
+          "example_before_after": "Before: JITTER is a tenth, so a delay moves by up to a tenth either way. After: JITTER is a half, so a delay moves by up to half either way."
+        },
+        "depends_on": [],
+        "pattern_repetitions": []
+      },
+      "graph": {
+        "nodes": [
+          {
+            "step_id": "f5.1",
+            "number": 1,
+            "kind": "changed",
+            "label": "Backoff helpers moved"
+          },
+          {
+            "step_id": "f5.2",
+            "number": 2,
+            "kind": "changed",
+            "label": "Module tree: retry in, backoff out"
+          }
+        ],
+        "edges": [
+          {
+            "from": "f5.2",
+            "to": "f5.1",
+            "label": null
+          }
+        ]
+      },
+      "steps": [
+        {
+          "id": "f5.1",
+          "number": 1,
+          "facts": {
+            "file": "src/rpc/retry.rs",
+            "side": "head",
+            "range": {
+              "start_line": 38,
+              "end_line": 95
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/retry.rs#L38-L95",
+            "changed_lines": [
+              {
+                "start_line": 49,
+                "end_line": 50
+              }
+            ],
+            "moved": {
+              "from": {
+                "file": "src/util/backoff.rs",
+                "side": "base",
+                "range": {
+                  "start_line": 11,
+                  "end_line": 68
+                }
+              },
+              "badge": null,
+              "differing_lines": 2
+            },
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Backoff helpers moved",
+            "kind": "moved",
+            "symbol": "exp_delay, with_jitter, jitter_fraction",
+            "called_by": "Step 2; RetryPolicy::backoff (flow 1)",
+            "decides": "Computes the exponential delay and the jitter.",
+            "next": "returns the delay to backoff",
+            "why": "Keeps the helpers next to the policy that uses them.",
+            "annotations": [
+              {
+                "id": "f5.1.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 49,
+                  "end_line": 50
+                },
+                "was": "JITTER is a tenth: a delay moves by up to a tenth either way.",
+                "is": "JITTER is a half: a delay moves by up to half either way.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 50
+                  },
+                  {
+                    "file": "src/util/backoff.rs",
+                    "side": "base",
+                    "line": 23
+                  }
+                ]
+              },
+              {
+                "id": "f5.1.a2",
+                "type": "flag",
+                "basis": "inference",
+                "range": {
+                  "start_line": 49,
+                  "end_line": 50
+                },
+                "was": "",
+                "is": "",
+                "text": "Potential behaviour change inside a move:",
+                "evidence": [],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "The pull request describes the backoff code as moved.",
+                    "The moved jitter range grows from a tenth to a half of the delay.",
+                    "Retries spread wider than before; a reader who takes it as a pure move misses the change."
+                  ],
+                  "not_checked": "The intent was not confirmed with the author; timings were not measured."
+                }
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "A tuning change inside a bounded delay.",
+              "smallest_correction": null
+            },
+            "moved_from": {
+              "file": "src/util/backoff.rs",
+              "base_start": 11,
+              "base_end": 68
+            },
+            "impact": []
+          }
+        },
+        {
+          "id": "f5.2",
+          "number": 2,
+          "facts": {
+            "file": "src/lib.rs",
+            "side": "head",
+            "range": {
+              "start_line": 8,
+              "end_line": 20
+            },
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/lib.rs#L8-L20",
+            "changed_lines": [
+              {
+                "start_line": 13,
+                "end_line": 13
+              }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Module tree: retry in, backoff out",
+            "kind": "modified",
+            "symbol": null,
+            "called_by": "the crate root",
+            "decides": "Declares rpc::retry and drops util::backoff.",
+            "next": "Step 1",
+            "why": "The moved file needs its new module path.",
+            "annotations": [
+              {
+                "id": "f5.2.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": {
+                  "start_line": 13,
+                  "end_line": 13
+                },
+                "was": "util::backoff was a module of util.",
+                "is": "rpc::retry is a module of rpc; util::backoff is gone.",
+                "text": null,
+                "evidence": [
+                  {
+                    "file": "src/lib.rs",
+                    "side": "head",
+                    "line": 13
+                  },
+                  {
+                    "file": "src/lib.rs",
+                    "side": "base",
+                    "line": 18
+                  }
+                ]
+              }
+            ],
+            "assessment": {
+              "risk": "low",
+              "reason": "The module declarations wire the moved implementation; there is no runtime branch here.",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": []
+          }
+        }
+      ]
+    }
+  ],
+  "quiet": {
+    "unexplained": [
+      {
+        "file": "src/rpc/metrics.rs",
+        "side": "head",
+        "ranges": [
+          {
+            "start_line": 41,
+            "end_line": 46
+          }
+        ]
+      }
+    ],
+    "moves": [
+      {
+        "from": {
+          "file": "src/rpc/client.rs",
+          "side": "base",
+          "range": {
+            "start_line": 173,
+            "end_line": 213
+          }
+        },
+        "to": {
+          "file": "src/rpc/client.rs",
+          "side": "head",
+          "range": {
+            "start_line": 112,
+            "end_line": 152
+          }
+        },
+        "badge": "text_identical"
+      }
+    ],
+    "not_analysed": [
+      {
+        "category": "tests",
+        "file_count": 4,
+        "items": [
+          {
+            "file": "tests/common/mod.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 14,
+                "end_line": 14
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "tests/**",
+            "renderable": true,
+            "rule_kind": "path_glob"
+          },
+          {
+            "file": "tests/common/mod.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 14,
+                "end_line": 15
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "tests/**",
+            "renderable": true,
+            "rule_kind": "path_glob"
+          },
+          {
+            "file": "tests/rpc_retry.rs",
+            "side": "head",
+            "ranges": null,
+            "badge": "classified_by_path",
+            "rule": "tests/**",
+            "renderable": true,
+            "rule_kind": "path_glob"
+          },
+          {
+            "file": "tests/send_once.rs",
+            "side": "base",
+            "ranges": null,
+            "badge": "classified_by_path",
+            "rule": "tests/**",
+            "renderable": true,
+            "rule_kind": "path_glob"
+          },
+          {
+            "file": "tests/sync_headers.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 19,
+                "end_line": 19
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "tests/**",
+            "renderable": true,
+            "rule_kind": "path_glob"
+          },
+          {
+            "file": "tests/sync_headers.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 19,
+                "end_line": 19
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "tests/**",
+            "renderable": true,
+            "rule_kind": "path_glob"
+          }
+        ]
+      },
+      {
+        "category": "docs_comments",
+        "file_count": 3,
+        "items": [
+          {
+            "file": "README.md",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 15,
+                "end_line": 20
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "*.md",
+            "renderable": true,
+            "rule_kind": "path_glob"
+          },
+          {
+            "file": "docs/rpc.md",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 3,
+                "end_line": 3
+              },
+              {
+                "start_line": 7,
+                "end_line": 9
+              },
+              {
+                "start_line": 13,
+                "end_line": 13
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "docs/**",
+            "renderable": true,
+            "rule_kind": "path_glob"
+          },
+          {
+            "file": "docs/rpc.md",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 3,
+                "end_line": 3
+              },
+              {
+                "start_line": 7,
+                "end_line": 7
+              },
+              {
+                "start_line": 11,
+                "end_line": 12
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "docs/**",
+            "renderable": true,
+            "rule_kind": "path_glob"
+          },
+          {
+            "file": "src/rpc/client.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 99,
+                "end_line": 99
+              }
+            ],
+            "badge": "classified_by_line_rule",
+            "rule": "comment-only lines (Rust, by the compiler's lexer)",
+            "renderable": true,
+            "rule_kind": "lexer"
+          },
+          {
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 89,
+                "end_line": 89
+              }
+            ],
+            "badge": "classified_by_line_rule",
+            "rule": "comment-only lines (Rust, by the compiler's lexer)",
+            "renderable": true,
+            "rule_kind": "lexer"
+          }
+        ]
+      },
+      {
+        "category": "generated_mechanical",
+        "file_count": 1,
+        "items": [
+          {
+            "file": "Cargo.lock",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 30,
+                "end_line": 30
+              },
+              {
+                "start_line": 32,
+                "end_line": 32
+              },
+              {
+                "start_line": 36,
+                "end_line": 36
+              },
+              {
+                "start_line": 38,
+                "end_line": 38
+              },
+              {
+                "start_line": 42,
+                "end_line": 42
+              },
+              {
+                "start_line": 44,
+                "end_line": 44
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "Cargo.lock",
+            "renderable": true,
+            "rule_kind": "path_glob"
+          },
+          {
+            "file": "Cargo.lock",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 30,
+                "end_line": 30
+              },
+              {
+                "start_line": 32,
+                "end_line": 32
+              },
+              {
+                "start_line": 36,
+                "end_line": 36
+              },
+              {
+                "start_line": 38,
+                "end_line": 38
+              },
+              {
+                "start_line": 42,
+                "end_line": 42
+              },
+              {
+                "start_line": 44,
+                "end_line": 44
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "Cargo.lock",
+            "renderable": true,
+            "rule_kind": "path_glob"
+          }
+        ]
+      }
+    ]
+  },
+  "threads": [
+    {
+      "id": "PRRT_fixture482_t1",
+      "path": "src/rpc/client.rs",
+      "line": 99,
+      "start_line": null,
+      "side": "head",
+      "author": "bob",
+      "excerpt": "Should we retry non-idempotent calls at all?",
+      "comment_count": 2,
+      "url": "https://github.com/acme/node-client/pull/482#discussion_r2000000001",
+      "is_resolved": false,
+      "is_outdated": false,
+      "step_id": "f1.5",
+      "llm_status": "still_valid",
+      "llm_reason": "should_retry still retries every method, broadcast_tx included."
+    },
+    {
+      "id": "PRRT_fixture482_t2",
+      "path": "src/rpc/retry.rs",
+      "line": 30,
+      "start_line": null,
+      "side": "head",
+      "author": "carol",
+      "excerpt": "Use a seeded RNG for the jitter so tests are stable.",
+      "comment_count": 1,
+      "url": "https://github.com/acme/node-client/pull/482#discussion_r2000000002",
+      "is_resolved": false,
+      "is_outdated": false,
+      "step_id": "f1.10",
+      "llm_status": "stale",
+      "llm_reason": "The line now calls with_jitter; the random draw it refers to lives in jitter_fraction, moved in flow 5."
+    },
+    {
+      "id": "PRRT_fixture482_t3",
+      "path": "README.md",
+      "line": 17,
+      "start_line": 15,
+      "side": "head",
+      "author": "erin",
+      "excerpt": "Mention the new 5 s default here too.",
+      "comment_count": 1,
+      "url": "https://github.com/acme/node-client/pull/482#discussion_r2000000003",
+      "is_resolved": false,
+      "is_outdated": false,
+      "step_id": null,
+      "llm_status": null,
+      "llm_reason": null
+    }
+  ]
+}

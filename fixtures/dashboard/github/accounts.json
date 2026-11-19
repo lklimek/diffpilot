@@ -1,0 +1,55 @@
+{
+  "accounts": [
+    {
+      "login": "alice",
+      "id": 4820300,
+      "type": "User"
+    },
+    {
+      "login": "alice-helper",
+      "id": 4820301,
+      "type": "User",
+      "searchable": false
+    },
+    {
+      "login": "renata-s",
+      "id": 4820311,
+      "type": "User"
+    },
+    {
+      "login": "mira-k",
+      "id": 4820312,
+      "type": "User"
+    },
+    {
+      "login": "jun-park",
+      "id": 4820313,
+      "type": "User"
+    },
+    {
+      "login": "tobias-w",
+      "id": 4820314,
+      "type": "User"
+    },
+    {
+      "login": "olek-d",
+      "id": 4820315,
+      "type": "User"
+    },
+    {
+      "login": "dana",
+      "id": 4820316,
+      "type": "User"
+    },
+    {
+      "login": "dependabot[bot]",
+      "id": 4820399,
+      "type": "Bot"
+    },
+    {
+      "login": "acme",
+      "id": 4820001,
+      "type": "Organization"
+    }
+  ]
+}

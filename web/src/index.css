@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+/* Design tokens ported from docs/mockups/mockup.css; dark values follow the system setting. */
+@theme {
+  --color-bg: #f4f5f7;
+  --color-surface: #fff;
+  --color-surface-2: #eceff3;
+  --color-border: #c9d0da;
+  --color-text: #1a1f27;
+  --color-muted: #4b5565;
+  --color-accent: #1d5fc0;
+  --color-accent-bg: #e4eefb;
+  --color-focus: #0b57d0;
+  --color-code-bg: #fbfbfc;
+  --color-on-accent: #fff;
+  --color-high: #a8200d;
+  --color-high-bg: #fdeceb;
+  --color-high-bd: #d92d20;
+  --color-med: #7a4a00;
+  --color-med-bg: #fff2d2;
+  --color-med-bd: #c47700;
+  --color-low: #0a5580;
+  --color-low-bg: #e5f1f9;
+  --color-low-bd: #2b83b8;
+  --color-add: #0f6330;
+  --color-add-bg: #e3f5e8;
+  --color-add-bd: #2a9d57;
+  --color-chg: #0a5c5c;
+  --color-chg-bg: #dff1ef;
+  --color-chg-bd: #2a8f8a;
+  --color-mv: #555e6d;
+  --color-mv-bg: #eef0f3;
+  --color-mv-bd: #8d97a7;
+  --color-ok: #0f6330;
+  --color-ok-bg: #e3f5e8;
+  --color-llm: #5d2f94;
+  --color-llm-bg: #f0e8fa;
+  --color-mark: #5b6472;
+  --color-thread: #4a6380;
+  --color-rm-bg: #fdecec;
+  --color-ad-bg: #e6f6ea;
+  /* Dashboard charts (plan §F.3): closed more than opened / opened more than closed. */
+  --color-c-pos: #1d5fc0;
+  --color-c-neg: #c47700;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --shadow-tip: 0 4px 18px rgb(0 0 0 / 0.18);
+}
+
+/* Left column width of the review screen (mockup --wl). */
+:root {
+  --width-nav: clamp(270px, 17vw, 400px);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0f1218;
+    --color-surface: #171b23;
+    --color-surface-2: #1f2530;
+    --color-border: #374151;
+    --color-text: #e7eaf0;
+    --color-muted: #a6b0bf;
+    --color-accent: #8ab8ff;
+    --color-accent-bg: #17283f;
+    --color-focus: #8ab8ff;
+    --color-code-bg: #12161d;
+    --color-on-accent: #0b1220;
+    --color-high: #ffa8a0;
+    --color-high-bg: #3a1b19;
+    --color-high-bd: #f0605a;
+    --color-med: #f3c677;
+    --color-med-bg: #3a2d12;
+    --color-med-bd: #d0902a;
+    --color-low: #86cbf0;
+    --color-low-bg: #112f40;
+    --color-low-bd: #3f93c4;
+    --color-add: #86d9a2;
+    --color-add-bg: #13301f;
+    --color-add-bd: #34a463;
+    --color-chg: #7fd8d0;
+    --color-chg-bg: #0f2e2c;
+    --color-chg-bd: #3aa59e;
+    --color-mv: #a6b0bf;
+    --color-mv-bg: #1b2029;
+    --color-mv-bd: #556072;
+    --color-ok: #86d9a2;
+    --color-ok-bg: #13301f;
+    --color-llm: #d0b3f5;
+    --color-llm-bg: #2a2039;
+    --color-mark: #9aa5b6;
+    --color-thread: #a3b8d0;
+    --color-rm-bg: #3a1b19;
+    --color-ad-bg: #13301f;
+    --color-c-pos: #4a8fe8;
+    --color-c-neg: #c98500;
+    --shadow-tip: 0 4px 18px rgb(0 0 0 / 0.6);
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: light dark;
+    scrollbar-gutter: stable;
+  }
+  body {
+    @apply bg-bg font-sans text-text;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  a {
+    @apply text-accent underline;
+  }
+  code,
+  kbd {
+    @apply font-mono;
+  }
+  :focus-visible {
+    outline: 3px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+}
+
+/* Scroll-to-and-highlight target (useFlashTarget): a frame for 3 s and an amber tint fading to the element's own
+   background; with reduced motion only the frame. */
+[data-flash] {
+  outline: 2px solid var(--color-med-bd);
+  outline-offset: -2px;
+  animation: flash-fade 3s ease-out;
+}
+@keyframes flash-fade {
+  from {
+    background-color: var(--color-med-bg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-flash] {
+    animation: none;
+  }
+}

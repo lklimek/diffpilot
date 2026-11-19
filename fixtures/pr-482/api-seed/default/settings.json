@@ -1,0 +1,62 @@
+{
+  "llm_status": {
+    "at": "2026-11-16T09:31:00Z",
+    "status": {
+      "state": "working"
+    }
+  },
+  "language": "en",
+  "app_installations": [
+    {
+      "account": "acme",
+      "all_repositories": false
+    }
+  ],
+  "repos": [
+    {
+      "owner": "acme",
+      "name": "node-client"
+    }
+  ],
+  "memcan_status": {
+    "state": "not_checked",
+    "last_success_at": null
+  },
+  "llm_usage": {
+    "today": null,
+    "last_7_days": null
+  },
+  "llm_selection": {
+    "models": [
+      {
+        "id": "gpt-6.1-sol",
+        "label": "Sol 6.1"
+      },
+      {
+        "id": "gpt-6-sol",
+        "label": "Sol 6"
+      },
+      {
+        "id": "gpt-5.6-sol",
+        "label": "Sol 5.6"
+      },
+      {
+        "id": "gpt-6-astra",
+        "label": "Astra 6"
+      }
+    ],
+    "efforts": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "current": {
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "high"
+    },
+    "judge_effort": "low",
+    "ask_effort": "medium",
+    "changed_by": null,
+    "changed_at": null
+  }
+}

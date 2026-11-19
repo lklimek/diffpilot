@@ -1,0 +1,19 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.github.com/repos/acme/node-client/commits/52d2da140191a9d47becf6a446310be803c007fc/status?per_page=100",
+    "body": null
+  },
+  "status": 200,
+  "response": {
+    "state": "pending",
+    "total_count": 1,
+    "statuses": [
+      {
+        "context": "PR Hygiene",
+        "state": "pending",
+        "target_url": null
+      }
+    ]
+  }
+}

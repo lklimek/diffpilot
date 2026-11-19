@@ -1,0 +1,39 @@
+//! Counters and gauges for the metrics endpoint.
+
+use std::{collections::BTreeMap, sync::Mutex};
+
+/// Process-wide metrics registry.
+pub static METRICS: Registry = Registry::new();
+
+/// Named counters and gauges.
+pub struct Registry {
+    counters: Mutex<BTreeMap<String, u64>>,
+    gauges: Mutex<BTreeMap<String, f64>>,
+}
+
+impl Registry {
+    /// An empty registry.
+    pub const fn new() -> Self {
+        Self { counters: Mutex::new(BTreeMap::new()), gauges: Mutex::new(BTreeMap::new()) }
+    }
+
+    /// The counter called `name`.
+    pub fn counter(&self, name: &str) -> Counter<'_> {
+        Counter { registry: self, name: name.to_owned() }
+    }
+
+    /// The gauge called `name`.
+    pub fn gauge(&self, name: &str) -> Gauge<'_> {
+        Gauge { registry: self, name: name.to_owned() }
+    }
+}
+
+/// Counts requests per method.
+pub fn record_request(method: &str) {
+    METRICS.counter(&format!("rpc.request.{}", method)).incr_by(1);
+}
+
+/// Counts failed requests per method.
+pub fn record_failure(method: &str) {
+    METRICS.counter(&format!("rpc.failure.{}", method)).incr_by(1);
+}

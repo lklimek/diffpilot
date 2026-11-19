@@ -1,0 +1,124 @@
+{
+  "type": "object",
+  "properties": {
+    "problem": {
+      "type": "string",
+      "description": "The problem the pull request solves."
+    },
+    "why_needed": {
+      "type": "string",
+      "description": "Why the change is needed."
+    },
+    "what_it_gives": {
+      "type": "string",
+      "description": "What the change gives users or developers."
+    },
+    "related_work": {
+      "type": "array",
+      "items": {
+        "description": "One piece of related work.",
+        "type": "object",
+        "properties": {
+          "reference": {
+            "description": "URL or `owner/repo#number` of the related item.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Kind of relation. `duplicate`: Duplicates this change. `competing_solution`: A competing solution to the same problem. `stacked_pr`: A pull request stacked on or under this one. `linked_issue`: An issue linked to this change. `companion_repository`: A matching change in a companion repository.",
+            "type": "string",
+            "enum": [
+              "duplicate",
+              "competing_solution",
+              "stacked_pr",
+              "linked_issue",
+              "companion_repository"
+            ]
+          },
+          "overlap": {
+            "description": "One line on the overlap with this pull request.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reference",
+          "kind",
+          "overlap"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Related pull requests, issues or mechanisms; may be empty."
+    },
+    "fit_questions": {
+      "type": "array",
+      "items": {
+        "description": "A question about the fit of the change at project scale.",
+        "type": "object",
+        "properties": {
+          "question": {
+            "description": "The question, phrased as a question.",
+            "type": "string"
+          },
+          "topic": {
+            "description": "What the question is about. `layer_or_repository`: Right layer or repository? `size_for_problem`: Oversized for the problem? `duplicate_mechanism`: Duplicates an existing mechanism? `other`: Another fit question.",
+            "type": "string",
+            "enum": [
+              "layer_or_repository",
+              "size_for_problem",
+              "duplicate_mechanism",
+              "other"
+            ]
+          },
+          "evidence": {
+            "description": "Lines read that motivate the question.",
+            "type": "array",
+            "items": {
+              "description": "A line the agent actually read and cites as evidence.",
+              "type": "object",
+              "properties": {
+                "file": {
+                  "description": "Repository-relative path on that side.",
+                  "type": "string"
+                },
+                "side": {
+                  "description": "head for the checked-out code; base only for removed code read from the base commit. `head`: Lines of the head commit. `base`: Lines of the base commit (removed code).",
+                  "type": "string",
+                  "enum": [
+                    "head",
+                    "base"
+                  ]
+                },
+                "line": {
+                  "description": "1-based line number on that side.",
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "file",
+                "side",
+                "line"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "question",
+          "topic",
+          "evidence"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Questions about the fit of the change, never verdicts."
+    }
+  },
+  "required": [
+    "problem",
+    "why_needed",
+    "what_it_gives",
+    "related_work",
+    "fit_questions"
+  ],
+  "description": "The pull request at project scale.",
+  "additionalProperties": false
+}

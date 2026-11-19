@@ -1,0 +1,59 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "mutation($in:AddPullRequestReviewThreadInput!){addPullRequestReviewThread(input:$in){thread{...T}}}fragment T on PullRequestReviewThread{id path line startLine diffSide startDiffSide subjectType isOutdated\n comments(first:10){nodes{id databaseId state body url line startLine originalLine subjectType outdated commit{oid} pullRequestReview{id databaseId state}}}}",
+      "variables": {
+        "in": {
+          "pullRequestId": "PR_fixture482",
+          "path": "src/rpc/client.rs",
+          "line": 53,
+          "side": "LEFT",
+          "body": "send_once was the only path without retry; what replaces it for broadcast_tx?"
+        }
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "addPullRequestReviewThread": {
+        "thread": {
+          "id": "PRRT_fixture482_c2",
+          "path": "src/rpc/client.rs",
+          "line": 53,
+          "startLine": 53,
+          "diffSide": "LEFT",
+          "startDiffSide": null,
+          "subjectType": "LINE",
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "id": "PRRC_fixture482_c2",
+                "databaseId": 2100000002,
+                "state": "PENDING",
+                "body": "send_once was the only path without retry; what replaces it for broadcast_tx?",
+                "url": "https://github.com/acme/node-client/pull/482#discussion_r2100000002",
+                "line": 53,
+                "startLine": null,
+                "originalLine": 53,
+                "subjectType": "LINE",
+                "outdated": false,
+                "commit": {
+                  "oid": "52d2da140191a9d47becf6a446310be803c007fc"
+                },
+                "pullRequestReview": {
+                  "id": "PRR_fixture482_pending",
+                  "databaseId": 2200000001,
+                  "state": "PENDING"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

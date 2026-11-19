@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DashboardSettingsView",
+  "description": "Response of `GET`/`PUT /api/v1/settings/dashboard`.",
+  "type": "object",
+  "properties": {
+    "settings": {
+      "description": "The user's settings (the defaults when never saved).",
+      "$ref": "#/$defs/DashboardSettings"
+    },
+    "defaults": {
+      "description": "The defaults (\"Reset to defaults\").",
+      "$ref": "#/$defs/DashboardSettings"
+    },
+    "own_login": {
+      "description": "The signed-in login, always scanned.",
+      "type": "string"
+    },
+    "memcan_configured": {
+      "description": "MemCan is configured on this server.",
+      "type": "boolean"
+    },
+    "memcan_projects": {
+      "description": "Effective MemCan projects: the repositories' short names plus the extras, deduplicated.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unreachable": {
+      "description": "Repositories and owners of these settings the GitHub token could not see at the latest refresh.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "settings",
+    "defaults",
+    "own_login",
+    "memcan_configured",
+    "memcan_projects",
+    "unreachable"
+  ],
+  "$defs": {
+    "DashboardSettings": {
+      "description": "Per-user dashboard settings (body of `PUT /api/v1/settings/dashboard`); validated by the server (plan §F.6).",
+      "type": "object",
+      "properties": {
+        "linked_logins": {
+          "description": "Other GitHub logins of the user, scanned with the own login.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "repositories": {
+          "description": "Repositories with their rules, one row each.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RepositoryRule"
+          }
+        },
+        "enumerate_owners": {
+          "description": "Owners listed when GitHub search refuses a scanned login.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "lookback_days": {
+          "description": "Days an issue counts as new (1–30).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "ready_label": {
+          "description": "Label that marks a pull request ready for a human.",
+          "type": "string"
+        },
+        "skip_authors": {
+          "description": "Excluded authors: every pull request and issue they author is left out of the dashboard. Being listed\ndoes not make a login a bot.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "known_bots": {
+          "description": "Logins treated as bots besides GitHub's `Bot` accounts and `[bot]` logins: never a waiting human.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "thepastaclaw",
+            "Claudius-Maginificent",
+            "DCG-Claude"
+          ]
+        },
+        "include_todos": {
+          "description": "Show the user's MemCan TODOs.",
+          "type": "boolean"
+        },
+        "memcan_extra_projects": {
+          "description": "MemCan projects read besides the repositories' short names.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schedule_enabled": {
+          "description": "Daily automatic refresh on.",
+          "type": "boolean"
+        },
+        "schedule_time": {
+          "description": "Its local time, `HH:MM` (24 h, 15-minute steps).",
+          "type": "string"
+        },
+        "time_zone": {
+          "description": "IANA time zone; null until the browser sends one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "linked_logins",
+        "repositories",
+        "enumerate_owners",
+        "lookback_days",
+        "ready_label",
+        "skip_authors",
+        "include_todos",
+        "memcan_extra_projects",
+        "schedule_enabled",
+        "schedule_time"
+      ]
+    },
+    "RepositoryRule": {
+      "description": "Settings of one repository row.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "The repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "alias": {
+          "description": "Display alias prefix (`[A-Z0-9][A-Z0-9-]{0,11}`); null = the bare repository name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "watch_issues": {
+          "description": "Include its open issues.",
+          "type": "boolean"
+        },
+        "ownership_policy": {
+          "description": "File naming the owned paths; null = no ownership policy.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicyRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "branch_patterns": {
+          "description": "Release and long-lived branch patterns; empty = the built-ins.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "repo",
+        "watch_issues",
+        "branch_patterns"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "PolicyRef": {
+      "description": "An ownership policy file (JSON format of `stale_prs_are_bad`).",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "Repository holding the file.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "path": {
+          "description": "Relative path ending `.json`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "path"
+      ]
+    }
+  }
+}

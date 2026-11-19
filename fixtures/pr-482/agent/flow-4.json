@@ -1,0 +1,101 @@
+{
+  "flow_id": "f4",
+  "introduction": {
+    "problem_before": "A caller that must not retry used send_once(), next to send().",
+    "change": "send_once() is removed; send() is the only entry point and always retries. Side effect: no way is left to send without retry.",
+    "example_before_after": "Before: send() and send_once(). After: only send(), which always retries."
+  },
+  "steps": [
+    {
+      "id": "s1",
+      "title": "send_once() removed",
+      "file": "src/rpc/client.rs",
+      "side": "base",
+      "start_line": 52,
+      "end_line": 61,
+      "symbol": "RpcClient::send_once",
+      "kind": "deleted_site",
+      "moved_from": null,
+      "called_by": "callers that must not retry (none left in this repository)",
+      "decides": "Nothing; the code is gone.",
+      "next": "callers now use send()",
+      "why": "One entry point instead of two.",
+      "annotations": [
+        {
+          "type": "consequence",
+          "basis": "fact",
+          "start_line": 52,
+          "end_line": 53,
+          "was": "",
+          "is": "",
+          "text": "No way is left to send a request exactly once (see flow 1, step 5).",
+          "evidence": [
+            {
+              "file": "src/rpc/client.rs",
+              "side": "base",
+              "line": 52
+            },
+            {
+              "file": "src/rpc/client.rs",
+              "side": "base",
+              "line": 53
+            }
+          ],
+          "flag": null
+        },
+        {
+          "type": "flag",
+          "basis": "inference",
+          "start_line": 53,
+          "end_line": 53,
+          "was": "",
+          "is": "",
+          "text": "Potential build break in acme/node-sdk:",
+          "evidence": [],
+          "flag": {
+            "level": "red",
+            "scenario": [
+              "acme/node-sdk (PR #118) calls send_once().",
+              "This pull request removes send_once().",
+              "The SDK no longer builds when it updates to this version."
+            ],
+            "not_checked": "The SDK's current code was not read."
+          }
+        },
+        {
+          "type": "flag",
+          "basis": "inference",
+          "start_line": 52,
+          "end_line": 53,
+          "was": "",
+          "is": "",
+          "text": "Potential repeat of a request that must run once:",
+          "evidence": [],
+          "flag": {
+            "level": "yellow",
+            "scenario": [
+              "A caller used send_once() for a request that must run at most once.",
+              "send_once() is removed, and send() is the only call left.",
+              "send() retries on timeout, so the request may run twice."
+            ],
+            "not_checked": "Downstream use was not searched."
+          }
+        }
+      ],
+      "assessment": {
+        "headline": "A downstream developer gets a compile error; a user of broadcast_tx loses the only no-retry path.",
+        "risk": "medium",
+        "reason": "Public API removal with a known downstream user; ties to the double-send question.",
+        "basis_note": "Read: 2 files, searched this repository and the stacked PR title",
+        "not_checked": "other downstream crates",
+        "origin": "introduced",
+        "blocking": "blocks_this_pr",
+        "smallest_correction": "Keep send_once (or add a per-call retry opt-out) until the SDK has moved."
+      }
+    }
+  ],
+  "edges": [],
+  "impact_refs": [],
+  "pattern_repetitions": [],
+  "thread_statuses": []
+}

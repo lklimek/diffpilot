@@ -1,0 +1,1559 @@
+{
+  "revision": "r-0812-ranked",
+  "latest_refresh": {
+    "id": "8b0d6c1e-1118-4d2a-9c3b-000000000812",
+    "trigger": "manual",
+    "state": "finished",
+    "judged": 6,
+    "reused": 31,
+    "left_provisional": 0,
+    "steps": [
+      {
+        "key": "search_prs",
+        "state": "done",
+        "done": 6,
+        "total": 6,
+        "detail": null
+      },
+      {
+        "key": "issues",
+        "state": "done",
+        "done": 6,
+        "total": 6,
+        "detail": null
+      },
+      {
+        "key": "pr_details",
+        "state": "done",
+        "done": 41,
+        "total": 41,
+        "detail": null
+      },
+      {
+        "key": "context",
+        "state": "done",
+        "done": null,
+        "total": null,
+        "detail": null
+      },
+      {
+        "key": "history",
+        "state": "done",
+        "done": 4,
+        "total": 4,
+        "detail": null
+      },
+      {
+        "key": "todos",
+        "state": "done",
+        "done": 2,
+        "total": 2,
+        "detail": null
+      },
+      {
+        "key": "ranking",
+        "state": "done",
+        "done": 6,
+        "total": 6,
+        "detail": null
+      }
+    ],
+    "percent": 100,
+    "started_at": "2026-11-18T08:12:22Z",
+    "scanned_at": "2026-11-18T08:14:00Z",
+    "ranking": {
+      "state": "finished",
+      "judged": 6,
+      "total": 6,
+      "resumes_at": null,
+      "message": null
+    },
+    "failure": null,
+    "log": [
+      "08:12:22 refresh started (manual)",
+      "08:12:47 search PRs: 41 found (2 logins)",
+      "08:13:10 issues: 23 found",
+      "08:13:41 PR details: 41 of 41 in 5 batches",
+      "08:13:52 context: 2 ownership policies, 4 milestone lists",
+      "08:13:58 history: 4 searches",
+      "08:14:00 TODOs: 31 read from 2 MemCan projects",
+      "08:14:00 snapshot stored",
+      "08:15:04 ranking: judged 6, reused 31"
+    ]
+  },
+  "snapshot": {
+    "refresh_id": "8b0d6c1e-1118-4d2a-9c3b-000000000812",
+    "scanned_at": "2026-11-18T08:14:00Z",
+    "ranked_at": "2026-11-18T08:15:04Z",
+    "item_counts": {
+      "total": 14,
+      "pr": 8,
+      "issue": 4,
+      "todo": 2,
+      "p0": 1,
+      "p1": 5,
+      "p2": 5,
+      "p3": 3,
+      "not_judged": 0
+    },
+    "excluded": 3,
+    "awaiting": [
+      {
+        "id": "PLAT-1176",
+        "repo": {
+          "owner": "acme",
+          "name": "platform"
+        },
+        "number": 1176,
+        "title": "feat(sync): parallel header download",
+        "url": "https://github.com/acme/platform/pull/1176",
+        "waiting_on": [
+          "jun-park",
+          "team:core"
+        ],
+        "waiting_since": "2026-11-07T08:14:00Z",
+        "tags": [
+          {
+            "text": "CI passing",
+            "tip": "6 checks passed"
+          },
+          {
+            "text": "self-reviewed",
+            "tip": "The author marked it self-reviewed"
+          }
+        ],
+        "change_size": {
+          "size": "large",
+          "additions": 3200,
+          "deletions": 400
+        },
+        "total_tenths": null
+      },
+      {
+        "id": "NC-476",
+        "repo": {
+          "owner": "acme",
+          "name": "node-client"
+        },
+        "number": 476,
+        "title": "fix(rpc): close idle connections",
+        "url": "https://github.com/acme/node-client/pull/476",
+        "waiting_on": [
+          "tobias-w"
+        ],
+        "waiting_since": "2026-11-14T08:14:00Z",
+        "tags": [
+          {
+            "text": "CI passing",
+            "tip": "3 checks passed"
+          }
+        ],
+        "total_tenths": null
+      },
+      {
+        "id": "WUI-298",
+        "repo": {
+          "owner": "acme",
+          "name": "wallet-ui"
+        },
+        "number": 298,
+        "title": "feat(wallet): export transactions as CSV",
+        "url": "https://github.com/acme/wallet-ui/pull/298",
+        "waiting_on": [
+          "team:ui"
+        ],
+        "waiting_since": "2026-11-16T08:14:00Z",
+        "tags": [
+          {
+            "text": "CI passing",
+            "tip": "4 checks passed"
+          }
+        ],
+        "total_tenths": null
+      }
+    ],
+    "history": [
+      {
+        "kind": "pr_opened",
+        "at": "2026-08-26T10:00:00Z",
+        "item_id": "acme/wallet-ui#1001"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-08-26T11:00:00Z",
+        "item_id": "acme/node-client#1002"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-08-26T13:00:00Z",
+        "item_id": "acme/consensus#995"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-08-27T10:00:00Z",
+        "item_id": "acme/consensus#1003"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-08-27T11:00:00Z",
+        "item_id": "acme/platform#1004"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-08-27T12:00:00Z",
+        "item_id": "acme/wallet-ui#1005"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-08-27T13:00:00Z",
+        "item_id": "acme/node-client#998"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-08-27T16:00:00Z",
+        "item_id": "acme/wallet-ui#3005"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-08-28T10:00:00Z",
+        "item_id": "acme/node-client#1006"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-08-28T13:00:00Z",
+        "item_id": "acme/consensus#999"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-08-28T16:00:00Z",
+        "item_id": "acme/node-client#3006"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-08-31T10:00:00Z",
+        "item_id": "acme/consensus#1007"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-08-31T11:00:00Z",
+        "item_id": "acme/platform#1008"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-08-31T13:00:00Z",
+        "item_id": "acme/wallet-ui#1001"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-08-31T16:00:00Z",
+        "item_id": "acme/platform#3008"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-08-31T17:00:00Z",
+        "item_id": "acme/wallet-ui#3009"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-01T10:00:00Z",
+        "item_id": "acme/wallet-ui#1009"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-01T11:00:00Z",
+        "item_id": "acme/node-client#1010"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-01T13:00:00Z",
+        "item_id": "acme/consensus#1003"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-01T14:00:00Z",
+        "item_id": "acme/node-client#1002"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-01T16:00:00Z",
+        "item_id": "acme/node-client#3010"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-02T10:00:00Z",
+        "item_id": "acme/consensus#1011"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-02T11:00:00Z",
+        "item_id": "acme/platform#1012"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-02T12:00:00Z",
+        "item_id": "acme/wallet-ui#1013"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-02T16:00:00Z",
+        "item_id": "acme/wallet-ui#3013"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-02T17:00:00Z",
+        "item_id": "acme/node-client#3014"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-02T18:00:00Z",
+        "item_id": "acme/consensus#3015"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-03T10:00:00Z",
+        "item_id": "acme/node-client#1014"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-03T11:00:00Z",
+        "item_id": "acme/consensus#1015"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-03T12:00:00Z",
+        "item_id": "acme/platform#1016"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-03T13:00:00Z",
+        "item_id": "acme/wallet-ui#1009"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-03T16:00:00Z",
+        "item_id": "acme/platform#3016"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-03T17:00:00Z",
+        "item_id": "acme/wallet-ui#3017"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-03T18:00:00Z",
+        "item_id": "acme/node-client#3018"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-04T10:00:00Z",
+        "item_id": "acme/wallet-ui#1017"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-04T13:00:00Z",
+        "item_id": "acme/node-client#1010"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-07T10:00:00Z",
+        "item_id": "acme/node-client#1018"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-07T11:00:00Z",
+        "item_id": "acme/consensus#1019"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-07T12:00:00Z",
+        "item_id": "acme/platform#1020"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-07T16:00:00Z",
+        "item_id": "acme/platform#3020"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-08T10:00:00Z",
+        "item_id": "acme/wallet-ui#1021"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-08T11:00:00Z",
+        "item_id": "acme/node-client#1022"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-08T12:00:00Z",
+        "item_id": "acme/consensus#1023"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-08T16:00:00Z",
+        "item_id": "acme/consensus#3023"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-09T10:00:00Z",
+        "item_id": "acme/platform#1024"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-09T11:00:00Z",
+        "item_id": "acme/wallet-ui#1025"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-09T16:00:00Z",
+        "item_id": "acme/wallet-ui#3025"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-10T10:00:00Z",
+        "item_id": "acme/node-client#1026"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-10T11:00:00Z",
+        "item_id": "acme/consensus#1027"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-10T16:00:00Z",
+        "item_id": "acme/consensus#3027"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-11T10:00:00Z",
+        "item_id": "acme/platform#1028"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-11T13:00:00Z",
+        "item_id": "acme/wallet-ui#1021"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-11T14:00:00Z",
+        "item_id": "acme/platform#1020"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-11T16:00:00Z",
+        "item_id": "acme/platform#3028"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-11T17:00:00Z",
+        "item_id": "acme/wallet-ui#3029"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-11T18:00:00Z",
+        "item_id": "acme/node-client#3030"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-14T10:00:00Z",
+        "item_id": "acme/wallet-ui#1029"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-14T11:00:00Z",
+        "item_id": "acme/node-client#1030"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-14T17:00:00Z",
+        "item_id": "acme/consensus#3031"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-15T10:00:00Z",
+        "item_id": "acme/consensus#1031"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-15T11:00:00Z",
+        "item_id": "acme/platform#1032"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-15T12:00:00Z",
+        "item_id": "acme/wallet-ui#1033"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-15T13:00:00Z",
+        "item_id": "acme/node-client#1026"
+      },
+      {
+        "kind": "pr_closed_unmerged",
+        "at": "2026-09-15T15:00:00Z",
+        "item_id": "acme/platform#1024"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-15T16:00:00Z",
+        "item_id": "acme/wallet-ui#3033"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-15T17:00:00Z",
+        "item_id": "acme/node-client#3034"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-15T18:00:00Z",
+        "item_id": "acme/consensus#3035"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-16T10:00:00Z",
+        "item_id": "acme/node-client#1034"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-16T11:00:00Z",
+        "item_id": "acme/consensus#1035"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-16T12:00:00Z",
+        "item_id": "acme/platform#1036"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-16T13:00:00Z",
+        "item_id": "acme/wallet-ui#1029"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-16T16:00:00Z",
+        "item_id": "acme/platform#3036"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-16T17:00:00Z",
+        "item_id": "acme/wallet-ui#3037"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-16T18:00:00Z",
+        "item_id": "acme/node-client#3038"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-17T10:00:00Z",
+        "item_id": "acme/wallet-ui#1037"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-17T11:00:00Z",
+        "item_id": "acme/node-client#1038"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-17T12:00:00Z",
+        "item_id": "acme/consensus#1039"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-17T13:00:00Z",
+        "item_id": "acme/platform#1032"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-18T10:00:00Z",
+        "item_id": "acme/platform#1040"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-18T11:00:00Z",
+        "item_id": "acme/wallet-ui#1041"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-18T12:00:00Z",
+        "item_id": "acme/node-client#1042"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-18T16:00:00Z",
+        "item_id": "acme/node-client#3042"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-21T10:00:00Z",
+        "item_id": "acme/consensus#1043"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-21T11:00:00Z",
+        "item_id": "acme/platform#1044"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-21T12:00:00Z",
+        "item_id": "acme/wallet-ui#1045"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-21T13:00:00Z",
+        "item_id": "acme/node-client#1038"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-21T16:00:00Z",
+        "item_id": "acme/wallet-ui#3045"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-21T17:00:00Z",
+        "item_id": "acme/node-client#3046"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-21T18:00:00Z",
+        "item_id": "acme/consensus#3047"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-22T10:00:00Z",
+        "item_id": "acme/node-client#1046"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-22T11:00:00Z",
+        "item_id": "acme/consensus#1047"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-22T12:00:00Z",
+        "item_id": "acme/platform#1048"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-22T16:00:00Z",
+        "item_id": "acme/platform#3048"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-23T10:00:00Z",
+        "item_id": "acme/wallet-ui#1049"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-23T11:00:00Z",
+        "item_id": "acme/node-client#1050"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-23T13:00:00Z",
+        "item_id": "acme/consensus#1043"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-23T16:00:00Z",
+        "item_id": "acme/node-client#3050"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-23T17:00:00Z",
+        "item_id": "acme/consensus#3051"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-24T10:00:00Z",
+        "item_id": "acme/consensus#1051"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-24T13:00:00Z",
+        "item_id": "acme/platform#1044"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-24T17:00:00Z",
+        "item_id": "acme/platform#3052"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-25T10:00:00Z",
+        "item_id": "acme/platform#1052"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-25T11:00:00Z",
+        "item_id": "acme/wallet-ui#1053"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-25T12:00:00Z",
+        "item_id": "acme/node-client#1054"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-25T16:00:00Z",
+        "item_id": "acme/node-client#3054"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-25T17:00:00Z",
+        "item_id": "acme/consensus#3055"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-28T10:00:00Z",
+        "item_id": "acme/consensus#1055"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-28T11:00:00Z",
+        "item_id": "acme/platform#1056"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-28T13:00:00Z",
+        "item_id": "acme/wallet-ui#1049"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-28T16:00:00Z",
+        "item_id": "acme/platform#3056"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-29T10:00:00Z",
+        "item_id": "acme/wallet-ui#1057"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-29T13:00:00Z",
+        "item_id": "acme/node-client#1050"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-29T16:00:00Z",
+        "item_id": "acme/wallet-ui#3057"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-09-29T17:00:00Z",
+        "item_id": "acme/node-client#3058"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-30T10:00:00Z",
+        "item_id": "acme/node-client#1058"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-09-30T11:00:00Z",
+        "item_id": "acme/consensus#1059"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-30T13:00:00Z",
+        "item_id": "acme/platform#1052"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-09-30T14:00:00Z",
+        "item_id": "acme/consensus#1051"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-01T10:00:00Z",
+        "item_id": "acme/platform#1060"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-01T16:00:00Z",
+        "item_id": "acme/platform#3060"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-01T17:00:00Z",
+        "item_id": "acme/wallet-ui#3061"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-02T10:00:00Z",
+        "item_id": "acme/wallet-ui#1061"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-02T11:00:00Z",
+        "item_id": "acme/node-client#1062"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-02T16:00:00Z",
+        "item_id": "acme/node-client#3062"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-02T17:00:00Z",
+        "item_id": "acme/consensus#3063"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-02T18:00:00Z",
+        "item_id": "acme/platform#3064"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-05T10:00:00Z",
+        "item_id": "acme/consensus#1063"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-05T11:00:00Z",
+        "item_id": "acme/platform#1064"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-05T12:00:00Z",
+        "item_id": "acme/wallet-ui#1065"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-05T13:00:00Z",
+        "item_id": "acme/node-client#1058"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-06T10:00:00Z",
+        "item_id": "acme/node-client#1066"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-07T10:00:00Z",
+        "item_id": "acme/consensus#1067"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-07T11:00:00Z",
+        "item_id": "acme/platform#1068"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-07T12:00:00Z",
+        "item_id": "acme/wallet-ui#1069"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-07T16:00:00Z",
+        "item_id": "acme/wallet-ui#3069"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-08T10:00:00Z",
+        "item_id": "acme/node-client#1070"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-08T11:00:00Z",
+        "item_id": "acme/consensus#1071"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-08T13:00:00Z",
+        "item_id": "acme/platform#1064"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-08T14:00:00Z",
+        "item_id": "acme/consensus#1063"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-08T16:00:00Z",
+        "item_id": "acme/consensus#3071"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-08T17:00:00Z",
+        "item_id": "acme/platform#3072"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-08T18:00:00Z",
+        "item_id": "acme/wallet-ui#3073"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-09T10:00:00Z",
+        "item_id": "acme/platform#1072"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-09T11:00:00Z",
+        "item_id": "acme/wallet-ui#1073"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-09T12:00:00Z",
+        "item_id": "acme/node-client#1074"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-09T13:00:00Z",
+        "item_id": "acme/consensus#1067"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-09T16:00:00Z",
+        "item_id": "acme/node-client#3074"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-09T17:00:00Z",
+        "item_id": "acme/consensus#3075"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-09T18:00:00Z",
+        "item_id": "acme/platform#3076"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-12T10:00:00Z",
+        "item_id": "acme/consensus#1075"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-12T11:00:00Z",
+        "item_id": "acme/platform#1076"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-12T17:00:00Z",
+        "item_id": "acme/wallet-ui#3077"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-13T10:00:00Z",
+        "item_id": "acme/wallet-ui#1077"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-13T13:00:00Z",
+        "item_id": "acme/node-client#1070"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-14T10:00:00Z",
+        "item_id": "acme/node-client#1078"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-14T11:00:00Z",
+        "item_id": "acme/consensus#1079"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-14T13:00:00Z",
+        "item_id": "acme/platform#1072"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-14T14:00:00Z",
+        "item_id": "acme/consensus#1071"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-14T16:00:00Z",
+        "item_id": "acme/consensus#3079"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-14T17:00:00Z",
+        "item_id": "acme/platform#3080"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-14T18:00:00Z",
+        "item_id": "acme/wallet-ui#3081"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-15T10:00:00Z",
+        "item_id": "acme/platform#1080"
+      },
+      {
+        "kind": "pr_closed_unmerged",
+        "at": "2026-10-15T15:00:00Z",
+        "item_id": "acme/consensus#1071"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-16T10:00:00Z",
+        "item_id": "acme/wallet-ui#1081"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-16T13:00:00Z",
+        "item_id": "acme/node-client#1074"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-16T14:00:00Z",
+        "item_id": "acme/wallet-ui#1073"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-16T17:00:00Z",
+        "item_id": "acme/node-client#3082"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-16T18:00:00Z",
+        "item_id": "acme/consensus#3083"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-19T10:00:00Z",
+        "item_id": "acme/node-client#1082"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-19T11:00:00Z",
+        "item_id": "acme/consensus#1083"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-19T12:00:00Z",
+        "item_id": "acme/platform#1084"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-19T16:00:00Z",
+        "item_id": "acme/platform#3084"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-19T17:00:00Z",
+        "item_id": "acme/wallet-ui#3085"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-19T18:00:00Z",
+        "item_id": "acme/node-client#3086"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-20T10:00:00Z",
+        "item_id": "acme/wallet-ui#1085"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-21T10:00:00Z",
+        "item_id": "acme/node-client#1086"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-21T17:00:00Z",
+        "item_id": "acme/consensus#3087"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-22T10:00:00Z",
+        "item_id": "acme/consensus#1087"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-22T11:00:00Z",
+        "item_id": "acme/platform#1088"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-22T12:00:00Z",
+        "item_id": "acme/wallet-ui#1089"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-22T13:00:00Z",
+        "item_id": "acme/node-client#1082"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-23T10:00:00Z",
+        "item_id": "acme/node-client#1090"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-23T11:00:00Z",
+        "item_id": "acme/consensus#1091"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-23T12:00:00Z",
+        "item_id": "acme/platform#1092"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-23T16:00:00Z",
+        "item_id": "acme/platform#3092"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-23T17:00:00Z",
+        "item_id": "acme/wallet-ui#3093"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-23T18:00:00Z",
+        "item_id": "acme/node-client#3094"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-26T10:00:00Z",
+        "item_id": "acme/wallet-ui#1093"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-26T11:00:00Z",
+        "item_id": "acme/node-client#1094"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-26T13:00:00Z",
+        "item_id": "acme/consensus#1087"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-26T17:00:00Z",
+        "item_id": "acme/consensus#3095"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-26T18:00:00Z",
+        "item_id": "acme/platform#3096"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-27T10:00:00Z",
+        "item_id": "acme/consensus#1095"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-27T18:00:00Z",
+        "item_id": "acme/wallet-ui#3097"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-28T10:00:00Z",
+        "item_id": "acme/platform#1096"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-28T11:00:00Z",
+        "item_id": "acme/wallet-ui#1097"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-29T10:00:00Z",
+        "item_id": "acme/node-client#1098"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-29T11:00:00Z",
+        "item_id": "acme/consensus#1099"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-29T12:00:00Z",
+        "item_id": "acme/platform#1100"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-29T16:00:00Z",
+        "item_id": "acme/platform#3100"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-10-29T17:00:00Z",
+        "item_id": "acme/wallet-ui#3101"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-10-30T10:00:00Z",
+        "item_id": "acme/wallet-ui#1101"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-30T13:00:00Z",
+        "item_id": "acme/node-client#1094"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-10-30T14:00:00Z",
+        "item_id": "acme/wallet-ui#1093"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-02T10:00:00Z",
+        "item_id": "acme/node-client#1102"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-02T11:00:00Z",
+        "item_id": "acme/consensus#1103"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-03T10:00:00Z",
+        "item_id": "acme/platform#1104"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-03T11:00:00Z",
+        "item_id": "acme/wallet-ui#1105"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-03T13:00:00Z",
+        "item_id": "acme/node-client#1098"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-03T16:00:00Z",
+        "item_id": "acme/wallet-ui#3105"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-04T10:00:00Z",
+        "item_id": "acme/node-client#1106"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-04T11:00:00Z",
+        "item_id": "acme/consensus#1107"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-04T12:00:00Z",
+        "item_id": "acme/platform#1108"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-04T13:00:00Z",
+        "item_id": "acme/wallet-ui#1101"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-04T16:00:00Z",
+        "item_id": "acme/platform#3108"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-05T10:00:00Z",
+        "item_id": "acme/wallet-ui#1109"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-05T11:00:00Z",
+        "item_id": "acme/node-client#1110"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-05T12:00:00Z",
+        "item_id": "acme/consensus#1111"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-05T13:00:00Z",
+        "item_id": "acme/platform#1104"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-05T16:00:00Z",
+        "item_id": "acme/consensus#3111"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-06T10:00:00Z",
+        "item_id": "acme/platform#1112"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-06T11:00:00Z",
+        "item_id": "acme/wallet-ui#1113"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-06T13:00:00Z",
+        "item_id": "acme/node-client#1106"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-06T16:00:00Z",
+        "item_id": "acme/wallet-ui#3113"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-06T17:00:00Z",
+        "item_id": "acme/node-client#3114"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-06T18:00:00Z",
+        "item_id": "acme/consensus#3115"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-09T10:00:00Z",
+        "item_id": "acme/node-client#1114"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-09T11:00:00Z",
+        "item_id": "acme/consensus#1115"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-09T13:00:00Z",
+        "item_id": "acme/platform#1108"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-09T14:00:00Z",
+        "item_id": "acme/consensus#1107"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-10T10:00:00Z",
+        "item_id": "acme/platform#1116"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-10T13:00:00Z",
+        "item_id": "acme/wallet-ui#1109"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-10T16:00:00Z",
+        "item_id": "acme/platform#3116"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-10T17:00:00Z",
+        "item_id": "acme/wallet-ui#3117"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-11T10:00:00Z",
+        "item_id": "acme/wallet-ui#1117"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-11T11:00:00Z",
+        "item_id": "acme/node-client#1118"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-11T13:00:00Z",
+        "item_id": "acme/consensus#1111"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-12T10:00:00Z",
+        "item_id": "acme/consensus#1119"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-12T11:00:00Z",
+        "item_id": "acme/platform#1120"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-12T13:00:00Z",
+        "item_id": "acme/wallet-ui#1113"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-12T14:00:00Z",
+        "item_id": "acme/platform#1112"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-12T16:00:00Z",
+        "item_id": "acme/platform#3120"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-12T17:00:00Z",
+        "item_id": "acme/wallet-ui#3121"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-13T10:00:00Z",
+        "item_id": "acme/wallet-ui#1121"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-13T13:00:00Z",
+        "item_id": "acme/node-client#1114"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-13T17:00:00Z",
+        "item_id": "acme/node-client#3122"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-13T18:00:00Z",
+        "item_id": "acme/consensus#3123"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-16T10:00:00Z",
+        "item_id": "acme/node-client#1122"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-16T11:00:00Z",
+        "item_id": "acme/consensus#1123"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-16T13:00:00Z",
+        "item_id": "acme/platform#1116"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-16T14:00:00Z",
+        "item_id": "acme/consensus#1115"
+      },
+      {
+        "kind": "pr_closed_unmerged",
+        "at": "2026-11-16T15:00:00Z",
+        "item_id": "acme/node-client#1114"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-16T17:00:00Z",
+        "item_id": "acme/platform#3124"
+      },
+      {
+        "kind": "review_given",
+        "at": "2026-11-16T18:00:00Z",
+        "item_id": "acme/wallet-ui#3125"
+      },
+      {
+        "kind": "pr_opened",
+        "at": "2026-11-17T10:00:00Z",
+        "item_id": "acme/platform#1124"
+      },
+      {
+        "kind": "pr_merged",
+        "at": "2026-11-17T13:00:00Z",
+        "item_id": "acme/wallet-ui#1117"
+      }
+    ],
+    "todos": {
+      "status": "read",
+      "read_at": "2026-11-18T08:14:00Z",
+      "failed_at": null
+    },
+    "notes": [
+      {
+        "text": "acme/legacy-tools is archived and was skipped.",
+        "item": null
+      },
+      {
+        "text": "Review-request age for PLAT-1199 is approximate: the request is older than the last 50 timeline events, so the update time was used.",
+        "item": "acme~platform~pr~1199"
+      },
+      {
+        "text": "Mentions are read from the issue body and the last 50 comments only.",
+        "item": null
+      }
+    ],
+    "unreachable": [],
+    "checked": {
+      "pr": 14,
+      "issue": 4,
+      "todo": 2
+    },
+    "exclusions": {
+      "total": 3,
+      "counts": [
+        {
+          "reason": "excluded_author",
+          "count": 1
+        },
+        {
+          "reason": "outside_owned_areas",
+          "count": 1
+        },
+        {
+          "reason": "draft",
+          "count": 1
+        }
+      ],
+      "items": [
+        {
+          "key": "acme~wallet-ui~pr~330",
+          "kind": "pr",
+          "id": "WUI-330",
+          "repo": {
+            "owner": "acme",
+            "name": "wallet-ui"
+          },
+          "number": 330,
+          "url": "https://github.com/acme/wallet-ui/pull/330",
+          "title": "chore(deps): bump vite from 7.1.2 to 7.1.3",
+          "author": "dependabot",
+          "reason": "excluded_author",
+          "merged_into": null
+        },
+        {
+          "key": "acme~platform~pr~1188",
+          "kind": "pr",
+          "id": "PLAT-1188",
+          "repo": {
+            "owner": "acme",
+            "name": "platform"
+          },
+          "number": 1188,
+          "url": "https://github.com/acme/platform/pull/1188",
+          "title": "docs(api): fix a link in the identity guide",
+          "author": "olek-d",
+          "reason": "outside_owned_areas",
+          "merged_into": null
+        },
+        {
+          "key": "acme~node-client~pr~493",
+          "kind": "pr",
+          "id": "NC-493",
+          "repo": {
+            "owner": "acme",
+            "name": "node-client"
+          },
+          "number": 493,
+          "url": "https://github.com/acme/node-client/pull/493",
+          "title": "feat(rpc): stream block headers",
+          "author": "dana",
+          "reason": "draft",
+          "merged_into": null
+        }
+      ]
+    }
+  },
+  "schedule": {
+    "enabled": true,
+    "time": "06:00",
+    "time_zone": "Europe/Warsaw",
+    "next_run_at": "2026-11-19T05:00:00Z",
+    "last_run": {
+      "at": "2026-11-18T05:00:00Z",
+      "outcome": "started",
+      "reason": null
+    }
+  },
+  "older_prompt_judgements": 0
+}

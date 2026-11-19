@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReviewState",
+  "description": "Review state of one user for one analysis; a flow is reviewed when all its steps are ticked.",
+  "type": "object",
+  "properties": {
+    "ticked_steps": {
+      "description": "Ticked steps.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/StepId"
+      }
+    },
+    "last_viewed": {
+      "description": "Last viewed block; null before the first visit (starts at the PR context).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BlockRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "ticked_steps"
+  ],
+  "$defs": {
+    "StepId": {
+      "description": "Identifier of a step, assigned by the server in step order: `\"<flow>.<n>\"`, e.g. `f2.3`.",
+      "type": "string"
+    },
+    "BlockRef": {
+      "description": "A block of the Tour sequence or a menu row.",
+      "oneOf": [
+        {
+          "description": "The PR context.",
+          "type": "object",
+          "properties": {
+            "block": {
+              "type": "string",
+              "const": "pr_context"
+            }
+          },
+          "required": [
+            "block"
+          ]
+        },
+        {
+          "description": "A flow introduction.",
+          "type": "object",
+          "properties": {
+            "block": {
+              "type": "string",
+              "const": "flow_intro"
+            },
+            "flow_id": {
+              "description": "The flow.",
+              "$ref": "#/$defs/FlowId"
+            }
+          },
+          "required": [
+            "block",
+            "flow_id"
+          ]
+        },
+        {
+          "description": "A step.",
+          "type": "object",
+          "properties": {
+            "block": {
+              "type": "string",
+              "const": "step"
+            },
+            "step_id": {
+              "description": "The step.",
+              "$ref": "#/$defs/StepId"
+            }
+          },
+          "required": [
+            "block",
+            "step_id"
+          ]
+        },
+        {
+          "description": "A quiet row.",
+          "type": "object",
+          "properties": {
+            "block": {
+              "type": "string",
+              "const": "quiet"
+            },
+            "row": {
+              "description": "The row.",
+              "$ref": "#/$defs/QuietRowRef"
+            }
+          },
+          "required": [
+            "block",
+            "row"
+          ]
+        },
+        {
+          "description": "The pending-review list.",
+          "type": "object",
+          "properties": {
+            "block": {
+              "type": "string",
+              "const": "pending_review"
+            }
+          },
+          "required": [
+            "block"
+          ]
+        }
+      ]
+    },
+    "FlowId": {
+      "description": "Identifier of a flow, assigned by the `plan` job: `f1`, `f2`, ….",
+      "type": "string",
+      "pattern": "^f[0-9]+$"
+    },
+    "QuietRowRef": {
+      "description": "A quiet row of the menu.",
+      "oneOf": [
+        {
+          "description": "Unexplained lines.",
+          "type": "object",
+          "properties": {
+            "row": {
+              "type": "string",
+              "const": "unexplained"
+            }
+          },
+          "required": [
+            "row"
+          ]
+        },
+        {
+          "description": "Moves with identical text.",
+          "type": "object",
+          "properties": {
+            "row": {
+              "type": "string",
+              "const": "moves"
+            }
+          },
+          "required": [
+            "row"
+          ]
+        },
+        {
+          "description": "A Not analysed section.",
+          "type": "object",
+          "properties": {
+            "row": {
+              "type": "string",
+              "const": "not_analysed"
+            },
+            "category": {
+              "description": "The section.",
+              "$ref": "#/$defs/NotAnalysedCategory"
+            }
+          },
+          "required": [
+            "row",
+            "category"
+          ]
+        }
+      ]
+    },
+    "NotAnalysedCategory": {
+      "description": "Section of material that is not analysed.",
+      "oneOf": [
+        {
+          "description": "Tests.",
+          "type": "string",
+          "const": "tests"
+        },
+        {
+          "description": "Docs and comments.",
+          "type": "string",
+          "const": "docs_comments"
+        },
+        {
+          "description": "Mechanical and generated material, lockfiles included.",
+          "type": "string",
+          "const": "generated_mechanical"
+        }
+      ]
+    }
+  }
+}

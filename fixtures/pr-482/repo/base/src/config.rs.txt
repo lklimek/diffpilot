@@ -1,0 +1,26 @@
+//! Client configuration.
+
+use std::time::Duration;
+
+use url::Url;
+
+/// Endpoint used when none is configured: a node on this machine.
+pub fn default_endpoint() -> Url {
+    Url::parse("http://127.0.0.1:9998/").unwrap_or_else(|_| unreachable!("static URL parses"))
+}
+
+#[derive(Debug, Clone)]
+pub struct RpcConfig {
+    pub endpoint: Url,
+    /// Per-request timeout.
+    pub timeout: Duration,
+}
+
+impl Default for RpcConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: default_endpoint(),
+            timeout: Duration::from_secs(30),
+        }
+    }
+}

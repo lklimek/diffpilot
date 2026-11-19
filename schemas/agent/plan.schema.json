@@ -1,0 +1,152 @@
+{
+  "type": "object",
+  "properties": {
+    "flows": {
+      "type": "array",
+      "items": {
+        "description": "One flow: a logical change following control flow across files.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "Flow id: f1, f2, ….",
+            "type": "string",
+            "pattern": "^f[0-9]+$"
+          },
+          "title": {
+            "description": "Short title.",
+            "type": "string"
+          },
+          "classification": {
+            "description": "Classification. `behavioural`: Changes observable behaviour. `api_contract`: Changes a public API or contract. `new_code`: Adds new code. `refactor_pure`: Claimed refactor without behaviour change. `move`: Moves code. `rename`: Renames identifiers. `docs_comments`: Documentation and comments. `generated_mechanical`: Generated or mechanical changes. `config_build`: Configuration and build. `dependency`: Dependency changes. `other`: Anything else.",
+            "type": "string",
+            "enum": [
+              "behavioural",
+              "api_contract",
+              "new_code",
+              "refactor_pure",
+              "move",
+              "rename",
+              "docs_comments",
+              "generated_mechanical",
+              "config_build",
+              "dependency",
+              "other"
+            ]
+          },
+          "importance_rank": {
+            "description": "Reading priority: 1 = read first; unique per flow.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "intent": {
+            "description": "What the flow does, imperative, with the entry points.",
+            "type": "string"
+          },
+          "hunks": {
+            "description": "The hunks of this flow, whole or as head-line sub-ranges.",
+            "type": "array",
+            "items": {
+              "description": "A whole hunk (`head_start` and `head_end` null) or a head-line sub-range of it.",
+              "type": "object",
+              "properties": {
+                "hunk_id": {
+                  "description": "Hunk id from the hunk list.",
+                  "type": "string"
+                },
+                "head_start": {
+                  "description": "First head line of the sub-range, or null for the whole hunk.",
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "head_end": {
+                  "description": "Last head line of the sub-range, or null for the whole hunk.",
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "hunk_id",
+                "head_start",
+                "head_end"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "depends_on": {
+            "description": "Ids of flows this flow depends on.",
+            "type": "array",
+            "items": {
+              "description": "Identifier of a flow, assigned by the `plan` job: `f1`, `f2`, ….",
+              "type": "string",
+              "pattern": "^f[0-9]+$"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "classification",
+          "importance_rank",
+          "intent",
+          "hunks",
+          "depends_on"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Flows; every listed hunk line belongs to exactly one flow or to `unassigned`."
+    },
+    "unassigned": {
+      "type": "array",
+      "items": {
+        "description": "A hunk or sub-range that belongs to no flow.",
+        "type": "object",
+        "properties": {
+          "hunk_id": {
+            "description": "Hunk id from the hunk list.",
+            "type": "string"
+          },
+          "head_start": {
+            "description": "First head line of the sub-range, or null for the whole hunk.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "head_end": {
+            "description": "Last head line of the sub-range, or null for the whole hunk.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "reason": {
+            "description": "Why it belongs to no flow.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "hunk_id",
+          "head_start",
+          "head_end",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Hunks or hunk sub-ranges that belong to no flow, each with a reason."
+    }
+  },
+  "required": [
+    "flows",
+    "unassigned"
+  ],
+  "description": "The flows of the pull request and the hunks left unassigned.",
+  "additionalProperties": false
+}

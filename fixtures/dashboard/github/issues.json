@@ -1,0 +1,242 @@
+[
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1187,
+    "title": "Block sync stalls after the 2.4 upgrade on three nodes",
+    "author": {
+      "__typename": "User",
+      "login": "renata-s"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-17T07:30:00Z",
+    "updatedAt": "2026-11-18T08:10:00Z",
+    "authorAssociation": "MEMBER",
+    "milestone": {
+      "title": "v2.4",
+      "number": 12,
+      "state": "OPEN"
+    },
+    "body": "Three operators report stalled block sync after upgrading to 2.4. Logs attached.",
+    "labels": {
+      "nodes": [
+        {
+          "name": "bug"
+        },
+        {
+          "name": "production report"
+        }
+      ]
+    },
+    "assignees": {
+      "nodes": [
+        {
+          "login": "alice"
+        }
+      ]
+    },
+    "comments": {
+      "nodes": [
+        {
+          "author": {
+            "__typename": "User",
+            "login": "renata-s"
+          },
+          "body": "@alice can you take a look? This blocks the 2.4 rollout.",
+          "createdAt": "2026-11-18T08:10:00Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "mira-k"
+          },
+          "body": "Likely fixed by #1203.",
+          "createdAt": "2026-11-17T16:10:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1210,
+    "title": "Wallet balance shows a stale value after a reorg",
+    "author": {
+      "__typename": "User",
+      "login": "olek-d"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-09T10:00:00Z",
+    "updatedAt": "2026-11-12T10:00:00Z",
+    "authorAssociation": "MEMBER",
+    "milestone": {
+      "title": "v2.4",
+      "number": 12,
+      "state": "OPEN"
+    },
+    "body": "After a reorg the balance stays stale for about a minute.",
+    "labels": {
+      "nodes": [
+        {
+          "name": "bug"
+        }
+      ]
+    },
+    "assignees": {
+      "nodes": [
+        {
+          "login": "alice"
+        }
+      ]
+    },
+    "comments": {
+      "nodes": [
+        {
+          "author": {
+            "__typename": "User",
+            "login": "olek-d"
+          },
+          "body": "Seen twice on the test network.",
+          "createdAt": "2026-11-12T10:00:00Z"
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1215,
+    "title": "Document the snapshot format",
+    "author": {
+      "__typename": "User",
+      "login": "renata-s"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-14T10:00:00Z",
+    "updatedAt": "2026-11-14T10:00:00Z",
+    "authorAssociation": "MEMBER",
+    "milestone": null,
+    "body": "The snapshot format has no written description.",
+    "labels": {
+      "nodes": [
+        {
+          "name": "documentation"
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1150,
+    "title": "Flaky identity test on the nightly run",
+    "author": {
+      "__typename": "User",
+      "login": "mira-k"
+    },
+    "state": "CLOSED",
+    "createdAt": "2026-10-10T10:00:00Z",
+    "updatedAt": "2026-10-20T10:00:00Z",
+    "authorAssociation": "MEMBER",
+    "milestone": null,
+    "closedAt": "2026-10-20T10:00:00Z",
+    "assignees": {
+      "nodes": [
+        {
+          "login": "alice"
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/consensus"
+    },
+    "number": 1520,
+    "title": "Investigate memory growth in the mempool",
+    "author": {
+      "__typename": "User",
+      "login": "olek-d"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-11T09:00:00Z",
+    "updatedAt": "2026-11-11T11:00:00Z",
+    "authorAssociation": "MEMBER",
+    "milestone": {
+      "title": "1.9",
+      "number": 5,
+      "state": "OPEN"
+    },
+    "body": "Slow memory growth on one test node.\n\nBlocked by #1534.",
+    "labels": {
+      "nodes": [
+        {
+          "name": "blocked"
+        }
+      ]
+    },
+    "assignees": {
+      "nodes": [
+        {
+          "login": "alice"
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/consensus"
+    },
+    "number": 1525,
+    "title": "Add a metric for rejected proposals",
+    "author": {
+      "__typename": "User",
+      "login": "jun-park"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-15T09:00:00Z",
+    "updatedAt": "2026-11-15T09:00:00Z",
+    "authorAssociation": "MEMBER",
+    "milestone": null,
+    "assignees": {
+      "nodes": [
+        {
+          "login": "alice-helper"
+        }
+      ]
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/wallet-ui"
+    },
+    "number": 305,
+    "title": "Dark theme: low contrast on disabled buttons",
+    "author": {
+      "__typename": "User",
+      "login": "jun-park"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-06T09:00:00Z",
+    "updatedAt": "2026-11-06T09:30:00Z",
+    "authorAssociation": "MEMBER",
+    "milestone": null,
+    "body": "Disabled buttons are hard to read in the dark theme.",
+    "comments": {
+      "nodes": [
+        {
+          "author": {
+            "__typename": "User",
+            "login": "jun-park"
+          },
+          "body": "@alice which contrast token should we use here?",
+          "createdAt": "2026-11-06T09:30:00Z"
+        }
+      ]
+    }
+  }
+]

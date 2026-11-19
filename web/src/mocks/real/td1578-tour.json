@@ -1,0 +1,492 @@
+{
+  "analysis": {
+    "id": "2282ceab-8160-489e-8fb5-2649f6c8fb88",
+    "pr": {
+      "repo": { "owner": "dashpay", "name": "tenderdash" },
+      "number": 1578,
+      "title": "fix(statesync): refuse surplus light block responses without blocking",
+      "author": "Claudius-Maginificent",
+      "html_url": "https://github.com/dashpay/tenderdash/pull/1578",
+      "base_sha": "739d8b8b0c9c4d910990a700d3aaf7a6e5041acc",
+      "head_sha": "919c7c2ec66204950a39e25db4302cd2f5401a67"
+    },
+    "language": "en",
+    "state": { "state": "finished", "total": 1 },
+    "created_at": "2026-11-17T12:59:45.137815Z",
+    "finished_at": "2026-11-17T13:11:24.792018Z"
+  },
+  "pr_context": {
+    "facts": {
+      "ci": { "state": "passing", "total": 21, "failing": [] },
+      "threads_status": "checked",
+      "counters": {
+        "lines_removed_from_tests": 4,
+        "dependencies_changed": [],
+        "dependency_files_not_checked": []
+      },
+      "project_profile": { "sources": [], "memcan": "not_checked" },
+      "agent_instruction_files": [],
+      "related_work_checked": true,
+      "flow_count": 1,
+      "step_count": 6
+    },
+    "llm": {
+      "problem": "Surplus light-block responses can block state sync: the base Dispatcher.Respond waits on a full response channel while holding the mutex needed by the request caller's cleanup (base internal/statesync/dispatcher.go:159,172; head internal/statesync/dispatcher.go:81,92).",
+      "why_needed": "The reactor processes state-sync channels through one synchronous message loop, so blocked response delivery also prevents other state-sync messages from progressing (internal/statesync/reactor.go:1243,1270). Node startup enables state sync only when configured, excludes the sole validator, and skips it when local state already exists (node/node.go:329–332).",
+      "what_it_gives": "Empty, valid and malformed light-block replies use a shared nonblocking delivery helper; a full channel returns errUnsolicitedResponse, which the reactor logs (internal/statesync/dispatcher.go:172,181,187,194–199; internal/statesync/reactor.go:1172–1175). Regression cases exercise each surplus response kind while preserving the first buffered answer (internal/statesync/dispatcher_test.go:206–237). Test execution results are author claims; this job did not run tests.",
+      "related_work": [
+        {
+          "reference": "dashpay/tenderdash#1550",
+          "kind": "stacked_pr",
+          "overlap": "Already merged beneath the supplied base; adds connection-generation attribution to light-block responses, which this change preserves. The author's anticipated merge conflict is already incorporated at this base."
+        },
+        {
+          "reference": "dashpay/platform#5292",
+          "kind": "companion_repository",
+          "overlap": "Proposes dashmate configuration that enables Tenderdash state sync by default for fresh nodes, expanding the deployment exposure described by this PR."
+        }
+      ],
+      "fit_questions": [
+        {
+          "question": "What logging and peer-penalty policy should surplus light-block replies follow, given the per-response Info and Error logging and the peer-input handling introduced by #1550?",
+          "topic": "other",
+          "evidence": [
+            { "file": "internal/statesync/reactor.go", "side": "head", "line": 1171 },
+            { "file": "internal/statesync/reactor.go", "side": "head", "line": 1173 },
+            { "file": "internal/statesync/reactor.go", "side": "head", "line": 1286 }
+          ]
+        },
+        {
+          "question": "Should release planning account for dashpay/platform#5292 enabling state sync for fresh nodes, given this PR description's claim that dashmate disables it?",
+          "topic": "other",
+          "evidence": [
+            { "file": "node/node.go", "side": "head", "line": 329 },
+            { "file": "node/node.go", "side": "head", "line": 330 }
+          ]
+        }
+      ]
+    }
+  },
+  "flows": [
+    {
+      "id": "f1",
+      "position": 1,
+      "group": "behaviour",
+      "facts": {
+        "files": ["internal/statesync/reactor.go", "internal/statesync/dispatcher.go"],
+        "step_count": 6
+      },
+      "llm": {
+        "title": "Make light-block response delivery nonblocking",
+        "classification": "behavioural",
+        "risk": "high",
+        "introduction": {
+          "problem_before": "A peer could send enough light-block responses to fill its pending call's channel. Respond then waited for channel space while holding the dispatcher mutex. After consuming its answer, the caller needed that mutex for cleanup and stopped reading, leaving both caller cleanup and the reactor's shared message loop blocked.",
+          "change": "Deliver empty, valid and malformed light-block results through a nonblocking helper. Return errUnsolicitedResponse when the channel is full, and remove response-side context cancellation handling.",
+          "example_before_after": "A caller consumes its answer, another reply fills the channel before cleanup, and a further reply arrives. Previously that reply could block while holding the mutex; now it returns errUnsolicitedResponse, allowing cleanup and message handling to continue."
+        },
+        "depends_on": [],
+        "pattern_repetitions": []
+      },
+      "graph": {
+        "nodes": [
+          {
+            "step_id": "f1.1",
+            "number": 1,
+            "kind": "unchanged",
+            "label": "Receive the next state-sync message"
+          },
+          {
+            "step_id": "f1.2",
+            "number": 2,
+            "kind": "unchanged",
+            "label": "Route light-block channel messages"
+          },
+          {
+            "step_id": "f1.3",
+            "number": 3,
+            "kind": "changed",
+            "label": "Pass the response to the dispatcher"
+          },
+          {
+            "step_id": "f1.4",
+            "number": 4,
+            "kind": "changed",
+            "label": "Resolve and classify the pending reply"
+          },
+          {
+            "step_id": "f1.5",
+            "number": 5,
+            "kind": "added",
+            "label": "Send immediately or refuse a full channel"
+          },
+          {
+            "step_id": "f1.6",
+            "number": 6,
+            "kind": "unchanged",
+            "label": "Return the answer and clean up the call"
+          }
+        ],
+        "edges": [
+          { "from": "f1.1", "to": "f1.2", "label": null },
+          { "from": "f1.2", "to": "f1.3", "label": "LightBlockChannel response" },
+          { "from": "f1.3", "to": "f1.4", "label": null },
+          { "from": "f1.4", "to": "f1.3", "label": "No pending call: return errUnsolicitedResponse" },
+          { "from": "f1.4", "to": "f1.5", "label": "Pending call: empty, valid or malformed result" },
+          { "from": "f1.5", "to": "f1.4", "label": "Send succeeds: return nil" },
+          { "from": "f1.5", "to": "f1.4", "label": "Channel full: return errUnsolicitedResponse" },
+          { "from": "f1.5", "to": "f1.6", "label": "Delivered result wakes the caller independently" },
+          {
+            "from": "f1.4",
+            "to": "f1.3",
+            "label": "Delivery completes: return outcome, retaining the malformed error if delivered"
+          },
+          { "from": "f1.3", "to": "f1.1", "label": "Handler returns; process the next envelope" }
+        ]
+      },
+      "steps": [
+        {
+          "id": "f1.1",
+          "number": 1,
+          "facts": {
+            "file": "internal/statesync/reactor.go",
+            "side": "head",
+            "range": { "start_line": 1267, "end_line": 1270 },
+            "github_url": "https://github.com/dashpay/tenderdash/blob/919c7c2ec66204950a39e25db4302cd2f5401a67/internal/statesync/reactor.go#L1267-L1270",
+            "changed_lines": [],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Receive the next state-sync message",
+            "kind": "context",
+            "symbol": "Reactor.processChannels",
+            "called_by": "The running state-sync reactor receives messages from its merged channel iterator.",
+            "decides": "Process each envelope synchronously through handleMessage.",
+            "next": "Route the envelope by its channel.",
+            "why": "This shared loop explains why a blocked light-block response also delays other state-sync messages.",
+            "annotations": [],
+            "assessment": null,
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.2",
+          "number": 2,
+          "facts": {
+            "file": "internal/statesync/reactor.go",
+            "side": "head",
+            "range": { "start_line": 1237, "end_line": 1245 },
+            "github_url": "https://github.com/dashpay/tenderdash/blob/919c7c2ec66204950a39e25db4302cd2f5401a67/internal/statesync/reactor.go#L1237-L1245",
+            "changed_lines": [],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Route light-block channel messages",
+            "kind": "context",
+            "symbol": "Reactor.handleMessage",
+            "called_by": "processChannels calls handleMessage for the received envelope.",
+            "decides": "Select the handler using envelope.ChannelID.",
+            "next": "LightBlockChannel messages enter handleLightBlockMessage.",
+            "why": "This connects the shared message loop to the changed response path.",
+            "annotations": [],
+            "assessment": null,
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.3",
+          "number": 3,
+          "facts": {
+            "file": "internal/statesync/reactor.go",
+            "side": "head",
+            "range": { "start_line": 1166, "end_line": 1182 },
+            "github_url": "https://github.com/dashpay/tenderdash/blob/919c7c2ec66204950a39e25db4302cd2f5401a67/internal/statesync/reactor.go#L1166-L1182",
+            "changed_lines": [{ "start_line": 1172, "end_line": 1172 }],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Pass the response to the dispatcher",
+            "kind": "modified",
+            "symbol": "Reactor.handleLightBlockMessage",
+            "called_by": "handleMessage routes a LightBlockResponse here.",
+            "decides": "Pass the response, peer and connection generation to Respond. Log any returned error and finish handling the response.",
+            "next": "Respond attempts delivery; after it returns, the reactor can process the next envelope.",
+            "why": "Respond no longer accepts a context or returns cancellation from waiting for channel space.",
+            "annotations": [
+              {
+                "id": "f1.3.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": { "start_line": 1172, "end_line": 1175 },
+                "was": "Passed ctx to Respond and propagated context.Canceled before logging other errors.",
+                "is": "Calls Respond without ctx and logs any returned error.",
+                "text": null,
+                "evidence": [
+                  { "file": "internal/statesync/reactor.go", "side": "base", "line": 1172 },
+                  { "file": "internal/statesync/reactor.go", "side": "base", "line": 1173 },
+                  { "file": "internal/statesync/reactor.go", "side": "head", "line": 1172 },
+                  { "file": "internal/statesync/reactor.go", "side": "head", "line": 1173 }
+                ]
+              }
+            ],
+            "assessment": null,
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.4",
+          "number": 4,
+          "facts": {
+            "file": "internal/statesync/dispatcher.go",
+            "side": "head",
+            "range": { "start_line": 158, "end_line": 188 },
+            "github_url": "https://github.com/dashpay/tenderdash/blob/919c7c2ec66204950a39e25db4302cd2f5401a67/internal/statesync/dispatcher.go#L158-L188",
+            "changed_lines": [
+              { "start_line": 158, "end_line": 158 },
+              { "start_line": 172, "end_line": 172 },
+              { "start_line": 181, "end_line": 182 },
+              { "start_line": 184, "end_line": 184 },
+              { "start_line": 187, "end_line": 188 }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Resolve and classify the pending reply",
+            "kind": "modified",
+            "symbol": "Dispatcher.Respond",
+            "called_by": "handleLightBlockMessage supplies the peer's response.",
+            "decides": "Under the dispatcher mutex, reject an absent pending call, represent an empty reply, or decode a nonempty reply. Deliver the resulting block or decoding error through the shared helper.",
+            "next": "Return immediately for an unmatched peer; otherwise call deliverLightBlockResult and return its outcome.",
+            "why": "Every response kind previously had a channel send that could wait while holding the mutex.",
+            "annotations": [
+              {
+                "id": "f1.4.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": { "start_line": 172, "end_line": 187 },
+                "was": "Empty, malformed and valid replies each selected between sending a result and context cancellation, waiting if neither case was ready.",
+                "is": "All response kinds use deliverLightBlockResult. A malformed reply returns its decoding error when delivered, or the delivery error when refused.",
+                "text": null,
+                "evidence": [
+                  { "file": "internal/statesync/dispatcher.go", "side": "base", "line": 172 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "base", "line": 186 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "base", "line": 194 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 172 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 181 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 184 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 187 }
+                ]
+              },
+              {
+                "id": "f1.4.a2",
+                "type": "note",
+                "basis": "fact",
+                "range": { "start_line": 159, "end_line": 178 },
+                "was": "Acquired the dispatcher mutex before looking up the pending call and kept it held while decoding a nonempty response.",
+                "is": "Still acquires the dispatcher mutex before looking up the pending call and keeps it held while decoding a nonempty response.",
+                "text": "The mutex still covers call lookup and decoding. This change removes waiting for channel space; acquiring the mutex can still wait behind dispatch, which holds it while sending a request.",
+                "evidence": [
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 159 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 178 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 119 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 137 }
+                ]
+              }
+            ],
+            "assessment": null,
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.5",
+          "number": 5,
+          "facts": {
+            "file": "internal/statesync/dispatcher.go",
+            "side": "head",
+            "range": { "start_line": 190, "end_line": 201 },
+            "github_url": "https://github.com/dashpay/tenderdash/blob/919c7c2ec66204950a39e25db4302cd2f5401a67/internal/statesync/dispatcher.go#L190-L201",
+            "changed_lines": [
+              { "start_line": 190, "end_line": 194 },
+              { "start_line": 196, "end_line": 196 },
+              { "start_line": 198, "end_line": 199 }
+            ],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Send immediately or refuse a full channel",
+            "kind": "added",
+            "symbol": "deliverLightBlockResult",
+            "called_by": "Respond uses this helper for empty, valid and malformed replies while holding its mutex.",
+            "decides": "Send the result if the channel can accept it immediately. Otherwise return errUnsolicitedResponse through the default branch.",
+            "next": "Return to Respond, releasing its mutex when Respond exits; a delivered result can independently wake the waiting caller.",
+            "why": "A full answer channel must not keep the mutex held while the caller waits to acquire it for cleanup.",
+            "annotations": [
+              {
+                "id": "f1.5.a1",
+                "type": "consequence",
+                "basis": "inference",
+                "range": { "start_line": 195, "end_line": 199 },
+                "was": "Response delivery waited for channel space or context cancellation while Respond held the dispatcher mutex.",
+                "is": "Response delivery sends immediately when possible and otherwise returns errUnsolicitedResponse without waiting for channel space.",
+                "text": "The default branch breaks the circular wait between surplus response delivery and caller cleanup, allowing the reactor's message loop to resume.",
+                "evidence": [
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 199 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 81 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 105 },
+                  { "file": "internal/statesync/reactor.go", "side": "head", "line": 1270 }
+                ]
+              },
+              {
+                "id": "f1.5.a2",
+                "type": "note",
+                "basis": "fact",
+                "range": { "start_line": 198, "end_line": 199 },
+                "was": "A full response channel left delivery waiting until space became available or the response context ended.",
+                "is": "A full response channel selects the default branch and returns errUnsolicitedResponse.",
+                "text": "TestDispatcherSurplusResponseDoesNotBlock fills the channel with a valid answer, then exercises empty, valid and malformed surplus replies. It checks the refusal and preservation of the buffered answer. The test was read, not executed.",
+                "evidence": [
+                  { "file": "internal/statesync/dispatcher_test.go", "side": "head", "line": 206 },
+                  { "file": "internal/statesync/dispatcher_test.go", "side": "head", "line": 223 },
+                  { "file": "internal/statesync/dispatcher_test.go", "side": "head", "line": 230 },
+                  { "file": "internal/statesync/dispatcher_test.go", "side": "head", "line": 237 }
+                ]
+              }
+            ],
+            "assessment": {
+              "headline": "Surplus replies could stall all state-sync message handling.",
+              "risk": "high",
+              "reason": "The addressed condition can stop the shared reactor loop and prevent request cleanup, leaving active state sync unable to progress until the response context ends.",
+              "basis_note": "Read: the base response sends, head dispatcher and reactor paths, callers and regression cases. The severity skill was unavailable; the band reflects the component-wide availability effect.",
+              "not_checked": "Runtime scheduling, race detection, sustained response floods and live network behavior were not checked.",
+              "origin": "pre_existing",
+              "blocking": "follow_up",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": [
+              {
+                "file": "internal/statesync/dispatcher.go",
+                "range": { "start_line": 118, "end_line": 147 },
+                "symbol": "Dispatcher.dispatch",
+                "reason": "Creates the buffered answer channel and registers it under the same mutex used for response delivery.",
+                "basis": "fact",
+                "github_url": "https://github.com/dashpay/tenderdash/blob/919c7c2ec66204950a39e25db4302cd2f5401a67/internal/statesync/dispatcher.go#L118-L147"
+              },
+              {
+                "file": "internal/statesync/dispatcher.go",
+                "range": { "start_line": 244, "end_line": 269 },
+                "symbol": "BlockProvider.LightBlock",
+                "reason": "Consumes dispatcher results for the light client, translating empty replies and errors and validating returned blocks.",
+                "basis": "fact",
+                "github_url": "https://github.com/dashpay/tenderdash/blob/919c7c2ec66204950a39e25db4302cd2f5401a67/internal/statesync/dispatcher.go#L244-L269"
+              },
+              {
+                "file": "internal/statesync/reactor.go",
+                "range": { "start_line": 720, "end_line": 744 },
+                "symbol": "Reactor.backfill",
+                "reason": "Backfill waits for dispatcher results with a timeout and uses malformed-response errors and connection generation to handle the responding peer.",
+                "basis": "fact",
+                "github_url": "https://github.com/dashpay/tenderdash/blob/919c7c2ec66204950a39e25db4302cd2f5401a67/internal/statesync/reactor.go#L720-L744"
+              }
+            ]
+          }
+        },
+        {
+          "id": "f1.6",
+          "number": 6,
+          "facts": {
+            "file": "internal/statesync/dispatcher.go",
+            "side": "head",
+            "range": { "start_line": 72, "end_line": 113 },
+            "github_url": "https://github.com/dashpay/tenderdash/blob/919c7c2ec66204950a39e25db4302cd2f5401a67/internal/statesync/dispatcher.go#L72-L113",
+            "changed_lines": [],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Return the answer and clean up the call",
+            "kind": "context",
+            "symbol": "Dispatcher.lightBlockWithConn",
+            "called_by": "LightBlock or the backfill worker starts this request; successful response delivery wakes its receive branch.",
+            "decides": "Return the delivered block or error with its connection generation, or return the request context error. Deferred cleanup removes and closes the pending call under the mutex.",
+            "next": "The requesting light client or backfill worker handles the result.",
+            "why": "This caller reads one answer and then needs the same mutex held by Respond, completing the concurrency relationship behind the change.",
+            "annotations": [
+              {
+                "id": "f1.6.a1",
+                "type": "note",
+                "basis": "inference",
+                "range": { "start_line": 80, "end_line": 92 },
+                "was": "Registered deferred cleanup that acquires the mutex, removes and closes the pending call, then selected a single result from the answer channel.",
+                "is": "Still registers the same deferred cleanup and selects a single result from the answer channel.",
+                "text": "The helper rejects a full buffer rather than recording that an answer was already delivered. If the caller drains its answer before acquiring the cleanup lock, another reply can still enter the buffer and be discarded when cleanup closes the call.",
+                "evidence": [
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 81 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 85 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 92 },
+                  { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 196 }
+                ]
+              }
+            ],
+            "assessment": null,
+            "moved_from": null,
+            "impact": []
+          }
+        }
+      ]
+    }
+  ],
+  "quiet": {
+    "unexplained": [],
+    "moves": [],
+    "not_analysed": [
+      {
+        "category": "tests",
+        "file_count": 1,
+        "items": [
+          {
+            "file": "internal/statesync/dispatcher_test.go",
+            "side": "base",
+            "ranges": [
+              { "start_line": 85, "end_line": 85 },
+              { "start_line": 130, "end_line": 130 },
+              { "start_line": 167, "end_line": 167 },
+              { "start_line": 407, "end_line": 407 }
+            ],
+            "badge": "classified_by_path",
+            "rule": "*_test.go"
+          },
+          {
+            "file": "internal/statesync/dispatcher_test.go",
+            "side": "head",
+            "ranges": [
+              { "start_line": 85, "end_line": 85 },
+              { "start_line": 130, "end_line": 130 },
+              { "start_line": 167, "end_line": 167 },
+              { "start_line": 189, "end_line": 241 },
+              { "start_line": 460, "end_line": 460 }
+            ],
+            "badge": "classified_by_path",
+            "rule": "*_test.go"
+          }
+        ]
+      }
+    ]
+  },
+  "threads": []
+}

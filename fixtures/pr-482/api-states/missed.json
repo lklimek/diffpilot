@@ -1,0 +1,32 @@
+{
+  "pending-review": {
+    "comments": [
+      {
+        "id": "PRRC_fixture482_c1",
+        "thread_id": "PRRT_fixture482_c1",
+        "path": "src/rpc/client.rs",
+        "kind": "line",
+        "side": "head",
+        "start_line": null,
+        "line": 96,
+        "body": "Every attempt gets the full configured timeout (5 s), however little time the caller has left. wallet::send_payment wraps send in a 10 s deadline (src/wallet/pay.rs:57): attempt 2 starts after just over 5 s, the deadline cancels it before its own timeout, the third attempt never runs, and the wallet reports Offline although attempt 1 or 2 may have reached the node."
+      }
+    ]
+  },
+  "feedback": [
+    {
+      "id": "0e2b4c6d-0482-4a1b-8c3d-000000000003",
+      "target": {
+        "target": "line",
+        "path": "src/rpc/client.rs",
+        "side": "head",
+        "line": 96
+      },
+      "value": "missed_by_llm",
+      "note": null,
+      "created_at": "2026-11-16T10:12:00Z",
+      "memory": "pending",
+      "calibration_example": false
+    }
+  ]
+}

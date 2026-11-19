@@ -1,0 +1,71 @@
+{
+  "id": "8b0d6c1e-1118-4d2a-9c3b-000000001027",
+  "trigger": "manual",
+  "state": "ranking",
+  "judged": 10,
+  "reused": 27,
+  "left_provisional": 0,
+  "steps": [
+    {
+      "key": "search_prs",
+      "state": "done",
+      "done": 6,
+      "total": 6,
+      "detail": null
+    },
+    {
+      "key": "issues",
+      "state": "done",
+      "done": 6,
+      "total": 6,
+      "detail": null
+    },
+    {
+      "key": "pr_details",
+      "state": "done",
+      "done": 41,
+      "total": 41,
+      "detail": null
+    },
+    {
+      "key": "context",
+      "state": "done",
+      "done": null,
+      "total": null,
+      "detail": null
+    },
+    {
+      "key": "history",
+      "state": "done",
+      "done": 4,
+      "total": 4,
+      "detail": null
+    },
+    {
+      "key": "todos",
+      "state": "done",
+      "done": 2,
+      "total": 2,
+      "detail": null
+    },
+    {
+      "key": "ranking",
+      "state": "running",
+      "done": 10,
+      "total": 14,
+      "detail": null
+    }
+  ],
+  "percent": 100,
+  "started_at": "2026-11-18T09:22:22Z",
+  "scanned_at": "2026-11-18T09:24:00Z",
+  "ranking": {
+    "state": "running",
+    "judged": 10,
+    "total": 14,
+    "resumes_at": null,
+    "message": null
+  },
+  "failure": null,
+  "log": []
+}
