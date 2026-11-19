@@ -103,6 +103,7 @@ interface LinesCodeProps extends Pick<
   | "onSelectHunk"
   | "removedAnnotations"
   | "remarkStartOnly"
+  | "removedMarkerLine"
   | "askLineHint"
 > {
   ctx: CodeContext;

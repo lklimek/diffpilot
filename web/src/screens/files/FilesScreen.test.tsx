@@ -434,6 +434,42 @@ describe("Files code view", () => {
     expect(rows).toEqual(["52", "52", "53"]);
   });
 
+  it("the ◆ of such a remark still names the remark's own lines", async () => {
+    const tour = seedFor("default", "tour") as Tour;
+    const step = tour.flows.flatMap((f) => f.steps).find((s) => s.id === "f4.1")!;
+    const remark = step.llm.annotations.find((a) => a.range.start_line === 53)!;
+    remark.range = { start_line: 50, end_line: 54 };
+    server.use(http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json(tour)));
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
+    const row = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-line="52"][data-side="base"]');
+      expect(found?.querySelectorAll("[data-mark=remark]").length).toBe(3);
+      return found!;
+    });
+    // One of the ◆ on line 52 is that remark's; its popover names lines 50–54, as the LLM wrote them.
+    const shown = new Set<string>();
+    for (const marker of row.querySelectorAll<HTMLElement>("[data-mark=remark]")) {
+      await userEvent.setup().click(marker);
+      for (const d of document.querySelectorAll('[role="dialog"]')) shown.add(d.textContent ?? "");
+    }
+    expect([...shown].some((t) => t.includes("· lines 50–54 ·"))).toBe(true);
+    expect([...shown].some((t) => t.includes("· lines 52–54 ·"))).toBe(false);
+  });
+
+  it("a whitespace-only removed line is not where a remark on removed code puts its ◆", async () => {
+    const tour = seedFor("default", "tour") as Tour;
+    const step = tour.flows.flatMap((f) => f.steps).find((s) => s.id === "f4.1")!;
+    const remark = step.llm.annotations.find((a) => a.range.start_line === 53)!;
+    // Removed line 62 changed only in whitespace; the first removed line with a real change after it is 99.
+    remark.range = { start_line: 62, end_line: 99 };
+    server.use(http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json(tour)));
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
+    await waitFor(() =>
+      expect(document.querySelector('[data-line="99"][data-side="base"] [data-mark=remark]')).not.toBeNull(),
+    );
+    expect(document.querySelector('[data-line="62"][data-side="base"] [data-mark=remark]')).toBeNull();
+  });
+
   it("a selection of removed lines is marked on the removed rows", async () => {
     await open("#lines?file=src%2Frpc%2Fclient.rs&side=base&line=102&end=103");
     await waitFor(() =>

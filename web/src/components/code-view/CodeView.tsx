@@ -96,6 +96,8 @@ export interface CodeViewProps {
   removedAnnotations?: readonly Annotation[];
   /** A remark's ◆ only where its first line is shown (the file is drawn in several views). */
   remarkStartOnly?: boolean;
+  /** Line of a remark on removed code where its ◆ goes (default: its first line inside a removed block). */
+  removedMarkerLine?: (annotation: Annotation) => number;
   /** What the line's Ask popup says the action does. */
   askLineHint?: string;
   /** The hunk a changed line belongs to; its rows carry the hunk and a click in their code selects it. */
@@ -710,6 +712,7 @@ export function CodeView({
   onSelectHunk,
   removedAnnotations = [],
   remarkStartOnly = false,
+  removedMarkerLine,
   askLineHint,
 }: CodeViewProps) {
   const [dragging, setDragging] = useState(false);
@@ -872,10 +875,11 @@ export function CodeView({
   // Remarks on removed code: on the first shown removed line they cover.
   const removedAt = new Map<number, Annotation[]>();
   for (const a of removedAnnotations) {
+    const from = removedMarkerLine?.(a) ?? a.range.start_line;
     const at = lines.deleted
       .flatMap((d) => d.lines.map((_, i) => d.base_start + i))
-      .find((n) => a.range.start_line <= n && n <= a.range.end_line);
-    if (at === undefined || (remarkStartOnly && at !== a.range.start_line)) continue;
+      .find((n) => from <= n && n <= a.range.end_line);
+    if (at === undefined || (remarkStartOnly && at !== from)) continue;
     removedAt.set(at, [...(removedAt.get(at) ?? []), a]);
   }
   const firstOf = (run: Run) => {
