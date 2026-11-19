@@ -619,6 +619,23 @@ const SCENARIOS = {
     progress: (state) => waitingProgress(null, state),
   },
   finished: { analysis: { state: "finished", total: 5 } },
+  // A finished analysis whose flow 3 failed: its introduction and the flows dropdown offer to analyse it again.
+  "flow-failed": {
+    tour: (seed) => {
+      const tour = structuredClone(seed);
+      const flow = tour.flows[2]!;
+      flow.analysis_status = {
+        state: "failed",
+        started_at: null,
+        message: "The agent's answer did not have the expected structure.",
+      };
+      flow.steps = [];
+      flow.graph = { nodes: [], edges: [] };
+      flow.llm.risk = null;
+      flow.facts.step_count = 0;
+      return tour;
+    },
+  },
   "llm-error": {
     settings: {
       ...SETTINGS,

@@ -252,6 +252,10 @@ test("screenshots light and dark at 1600×900 and 2560×1080", async ({ page }) 
       await expect(page.getByRole("region", { name: "Why this flow" })).toBeVisible();
       await page.waitForLoadState("networkidle");
       await page.screenshot({ path: `${dir}/flows-why-strip-${colorScheme}-${width}x${height}.png` });
+      await page.goto(`/analyses/${ANALYSIS_ID}?scenario=flow-failed#f1.5`);
+      await page.getByRole("button", { name: /^Your progress/ }).click();
+      await expect(page.getByRole("button", { name: "Analyse flow 3 again" })).toBeVisible();
+      await page.screenshot({ path: `${dir}/flows-progress-failed-${colorScheme}-${width}x${height}.png` });
     }
   }
 });
