@@ -1,4 +1,4 @@
-import type { AskQuestion, Evidence, StepId } from "../../api/generated/types";
+import type { AskQuestion, Evidence, StepId, AskAnchor } from "../../api/generated/types";
 import { AskAnswers } from "../ask/AskAnswers";
 import { Note, QuietCard } from "../quiet/QuietCard";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -16,7 +16,7 @@ interface QuestionsBlockProps {
   placeOf: (step: StepId) => QuestionPlace | null;
   onEvidence?: (evidence: Evidence) => void;
   /** Asks a failed question again on its step. */
-  onAskAgain?: (step: StepId, text: string) => Promise<unknown> | void;
+  onAskAgain?: (anchor: AskAnchor, text: string) => Promise<unknown> | void;
 }
 
 const LINK =

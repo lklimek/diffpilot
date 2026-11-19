@@ -1,6 +1,6 @@
 // The code of one file in the Files view: its changes with context, unchanged lines folded between them and
 // loaded by range on Show (brief §7: never a whole file at once), drawn by the shared code view.
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { Annotation, LineRange, LineSide, PrFile } from "../../api/generated/types";
 import { useLines } from "../../api/queries";
 import type { CodeViewProps } from "../../components/code-view/CodeView";
@@ -28,6 +28,8 @@ interface FileCodeProps extends View {
   revealLine?: number;
   /** "Show old code": the classic diff of every shown range instead. */
   oldCode: boolean;
+  /** The file's length on the shown side, once a range of it was read. */
+  onTotalLines?: (lines: number) => void;
 }
 
 const overlaps = (a: Annotation, r: LineRange) =>
@@ -52,9 +54,14 @@ function RegionCode({
   last: boolean;
   onShow: (range: LineRange) => void;
 }) {
-  const { ctx, annotations, removedAnnotations, selection, revealLine, oldCode, ...view } = props;
+  const { ctx, annotations, removedAnnotations, selection, revealLine, oldCode, onTotalLines, ...view } =
+    props;
   const query = { path: pathOn(file, side), side, from: range.start_line, to: range.end_line };
   const lines = useLines(ctx.analysisId, query);
+  const total = lines.data?.total_lines;
+  useEffect(() => {
+    if (total !== undefined) onTotalLines?.(total);
+  }, [total, onTotalLines]);
   const reveal = revealLine !== undefined && revealLine >= range.start_line && revealLine <= range.end_line;
   return (
     <>

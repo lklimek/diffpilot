@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef } from "react";
-import type { AskQuestion, Evidence, StepId } from "../../api/generated/types";
+import type { AskQuestion, Evidence, StepId, AskAnchor } from "../../api/generated/types";
 import type { QuestionPlace } from "../questions/QuestionsBlock";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Answer } from "./AskAnswers";
@@ -37,7 +37,7 @@ export interface AskThreadProps {
   /** File of the open step; its evidence links are shown in bold. */
   currentFile?: string;
   /** Asks a failed question again on its step. */
-  onAskAgain?: (step: StepId, text: string) => Promise<unknown> | void;
+  onAskAgain?: (anchor: AskAnchor, text: string) => Promise<unknown> | void;
   /** "Use as review comment" on an answer asked on the open step (anchored on that step's lines). */
   onUseAsComment?: (question: AskQuestion) => void;
 }

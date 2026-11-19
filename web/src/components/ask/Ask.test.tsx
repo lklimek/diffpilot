@@ -329,7 +329,36 @@ describe("AskAnswers", () => {
     );
     expect(screen.getByRole("listitem")).toHaveTextContent("No answer: The LLM usage limit was reached.");
     await userEvent.click(screen.getByRole("button", { name: "Ask again" }));
-    expect(onAskAgain).toHaveBeenCalledWith("f1.5", "Is the reply deduplicated?");
+    expect(onAskAgain).toHaveBeenCalledWith(
+      { kind: "step", step_id: "f1.5", lines: null },
+      "Is the reply deduplicated?",
+    );
+  });
+
+  it("asks a failed question about lines again on the same lines, with or without a step", async () => {
+    const onAskAgain = vi.fn();
+    const lines = {
+      kind: "lines" as const,
+      path: "src/a.rs",
+      side: "base" as const,
+      range: { start_line: 4, end_line: 6 },
+    };
+    const stepLines = { kind: "step" as const, step_id: "f1.5", lines: { start_line: 99, end_line: 99 } };
+    render(
+      <AskAnswers
+        questions={[
+          question({ id: "a", state: "failed", failure: "x", anchor: lines, step_id: undefined }),
+          question({ id: "b", state: "failed", failure: "x", anchor: stepLines }),
+        ]}
+        onAskAgain={onAskAgain}
+      />,
+    );
+    const again = screen.getAllByRole("button", { name: "Ask again" });
+    expect(again).toHaveLength(2);
+    await userEvent.click(again[0]!);
+    expect(onAskAgain).toHaveBeenLastCalledWith(lines, "Is the reply deduplicated?");
+    await userEvent.click(again[1]!);
+    expect(onAskAgain).toHaveBeenLastCalledWith(stepLines, "Is the reply deduplicated?");
   });
 
   it("asks again once while pending and shows a rejection", async () => {

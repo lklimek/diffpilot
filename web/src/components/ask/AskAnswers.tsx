@@ -1,5 +1,5 @@
 import { CodeText } from "../section/CodeText";
-import type { AskQuestion, Evidence, StepId } from "../../api/generated/types";
+import type { AskAnchor, AskQuestion, Evidence } from "../../api/generated/types";
 import { busyTip } from "../button/button";
 import { clockText } from "../format/time";
 import { useAction } from "../inspector/action";
@@ -14,8 +14,8 @@ export interface AskAnswersProps {
   onEvidence?: (evidence: Evidence) => void;
   /** File of the step asked about; its evidence links are shown in bold. */
   currentFile?: string;
-  /** Asks a failed question again on its step; no button without it. One request at a time per question. */
-  onAskAgain?: (step: StepId, text: string) => Promise<unknown> | void;
+  /** Asks a failed question again on its anchor; no button without it. One request at a time per question. */
+  onAskAgain?: (anchor: AskAnchor, text: string) => Promise<unknown> | void;
 }
 
 function AskAgain({
@@ -23,20 +23,18 @@ function AskAgain({
   onAskAgain,
 }: { question: AskQuestion } & Required<Pick<AskAnswersProps, "onAskAgain">>) {
   const action = useAction();
-  const step = question.step_id;
-  if (step === undefined) return null;
   return (
     <>
       <Tooltip
         tip={busyTip(
-          "Asks the same question about this step again; the answer appears here. Nothing is sent to GitHub.",
+          "Asks the same question about the same step or lines again; the answer appears here. Nothing is sent to GitHub.",
           action.busy,
         )}
       >
         <button
           type="button"
           aria-disabled={action.busy || undefined}
-          onClick={() => !action.busy && void action.run(() => onAskAgain(step, question.text))}
+          onClick={() => !action.busy && void action.run(() => onAskAgain(question.anchor, question.text))}
           className="cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text aria-disabled:cursor-wait aria-disabled:opacity-60"
         >
           {action.busy ? "Asking…" : "Ask again"}

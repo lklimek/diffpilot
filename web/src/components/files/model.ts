@@ -231,6 +231,9 @@ export interface FilesLink {
   step?: StepId;
 }
 
+/** Most lines a selection or link spans (`RangeQuery::MAX_LINES`, `AskAnchor::MAX_LINES`). */
+export const MAX_SELECTION_LINES = 2000;
+
 const positive = (value: string | null) => {
   const n = Number(value);
   return value !== null && Number.isSafeInteger(n) && n > 0 ? n : undefined;
@@ -244,7 +247,12 @@ export function parseFilesHash(hash: string): FilesLink | undefined {
   if (!file) return undefined;
   const side: LineSide = query.get("side") === "base" ? "base" : "head";
   const line = positive(query.get("line"));
-  const end = line === undefined ? undefined : positive(query.get("end"));
+  const asked = line === undefined ? undefined : positive(query.get("end"));
+  // At most one request's worth of lines (RangeQuery::MAX_LINES): a huge link never loads a whole file.
+  const end =
+    asked === undefined || line === undefined
+      ? undefined
+      : Math.min(Math.max(asked, line - MAX_SELECTION_LINES + 1), line + MAX_SELECTION_LINES - 1);
   const step = line === undefined ? undefined : (query.get("step") ?? undefined);
   return {
     file,

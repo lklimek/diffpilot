@@ -25,6 +25,7 @@ import type {
   Tour,
 } from "../../api/generated/types";
 import {
+  useAskAnchored,
   useAskQuestion,
   useCommentActions,
   useFiles,
@@ -205,6 +206,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   usePrTabSubject(tour.analysis.pr);
   useTourNotifications(tour, questions.data);
   const ask = useAskQuestion(analysisId);
+  const askAnchored = useAskAnchored(analysisId);
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
   // A finished analysis takes a request for any flow shown failed (a stored flow today's checks reject, or one
@@ -627,7 +629,11 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         questions={myQuestions}
         placeOf={questionPlace}
         onEvidence={showEvidence}
-        onAskAgain={(step, text) => ask.mutateAsync({ step, text })}
+        onAskAgain={(anchor, text) =>
+          anchor.kind === "step" && anchor.lines === null
+            ? ask.mutateAsync({ step: anchor.step_id, text })
+            : askAnchored.mutateAsync({ anchor, text })
+        }
       />
     );
   } else if (current.block === "flow_intro" && flow) {
@@ -717,10 +723,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         oldCode={offersOldCode ? { shown: oldCode, onToggle: () => setOldCode((s) => !s) } : undefined}
         onSelectStep={selectStep}
         viewed={
-          files.data
-            ? (files.data.files.find((f) => f.path === step.facts.file || f.old_path === step.facts.file)
-                ?.viewed ?? undefined)
-            : undefined
+          // null: GitHub's mark was not read (said so); undefined: the file list is not known (no chip).
+          files.data?.files.find((f) => f.path === step.facts.file || f.old_path === step.facts.file)?.viewed
         }
         onOpenFile={() => void navigate(filesHref)}
       />

@@ -379,3 +379,59 @@ describe("Files code view", () => {
     ).toHaveTextContent("Changed: 1 line replaced");
   });
 });
+
+describe("Files links and selection edge cases", () => {
+  it("a link past the end of the file says so and opens the file", async () => {
+    const router = await open("#lines?file=src%2Flib.rs&side=head&line=999");
+    expect(
+      await screen.findByText("Line 999 is outside src/lib.rs at this analysis (20 lines)."),
+    ).toHaveAttribute("role", "status");
+    await waitFor(() => expect(hashOf(router)).toBe("#lines?file=src/lib.rs&side=head"));
+    expect(inspectorHeading()).toHaveTextContent("src/lib.rs");
+    await user().click(await within(screen.getByRole("main")).findByRole("button", { name: "Select line 13" }));
+    expect(screen.queryByText(/is outside src\/lib\.rs/)).toBeNull();
+  });
+
+  it("the not-in-PR notice goes away once the reader opens another file", async () => {
+    await open("#lines?file=src%2Fnope.rs&side=head");
+    expect(screen.getByText(/which is not a file of this pull request/)).toBeVisible();
+    await user().click(within(tree()).getByRole("button", { name: /lib\.rs/ }));
+    expect(screen.queryByText(/which is not a file of this pull request/)).toBeNull();
+  });
+
+  it("Shift+click extends a linked selection, and never from a line of another file", async () => {
+    const router = await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=100&end=102");
+    const number = (n: number) =>
+      within(screen.getByRole("main")).findByRole("button", { name: `Select line ${n}` });
+    const u = user();
+    await u.keyboard("{Shift>}");
+    await u.click(await number(105));
+    await u.keyboard("{/Shift}");
+    expect(hashOf(router)).toBe("#lines?file=src/rpc/client.rs&side=head&line=100&end=105");
+    await u.click(within(tree()).getByRole("button", { name: /metrics\.rs/ }));
+    await u.keyboard("{Shift>}");
+    await u.click(await number(42));
+    await u.keyboard("{/Shift}");
+    expect(hashOf(router)).toBe("#lines?file=src/rpc/metrics.rs&side=head&line=42");
+  });
+
+  it("c on a hunk of removed lines opens the comment on its first removed line", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=base&line=52&end=62");
+    expect(inspectorHeading()).toHaveTextContent("client.rs · hunk");
+    await waitFor(() => expect(document.querySelector('[data-side="base"][data-line="52"]')).not.toBeNull());
+    await user().keyboard("c");
+    expect(
+      await within(inspector()).findByRole("textbox", { name: /^Comment on src\/rpc\/client\.rs:52/ }),
+    ).toHaveFocus();
+  });
+
+  it("unreadable step ticks are said so, not shown as unticked facts", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/review-state", () =>
+        HttpResponse.json({ code: "internal", message: "The server failed." }, { status: 500 }),
+      ),
+    );
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
+    expect(await screen.findByText(/Your step ticks could not be read/)).toBeVisible();
+  });
+});

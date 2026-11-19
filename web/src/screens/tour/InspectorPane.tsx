@@ -145,7 +145,6 @@ export function InspectorPane(props: InspectorPaneProps) {
     anchor.kind === "step" && anchor.lines === null
       ? ask.mutateAsync({ step: anchor.step_id, text })
       : askAnchored.mutateAsync({ anchor, text });
-  const askAgain = (stepId: StepId, text: string) => ask.mutateAsync({ step: stepId, text });
   // Feedback on a plain line only where the server takes it: a changed line of the diff on its side.
   const line =
     commentLine && isChangedLine(commentLine.lines, commentLine.target) ? commentLine.target : null;
@@ -199,7 +198,7 @@ export function InspectorPane(props: InspectorPaneProps) {
         isCurrent={files?.isCurrent}
         onEvidence={props.onEvidence}
         currentFile={step?.facts.file}
-        onAskAgain={askAgain}
+        onAskAgain={onAsk}
         onUseAsComment={props.onAnswerAsComment}
       />
     ));

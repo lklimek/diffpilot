@@ -135,6 +135,7 @@ export function FilesScreen() {
       tour={tour.data}
       files={files.data}
       ticked={review.state.ticked_steps}
+      ticksUnread={review.status === "unreadable" ? errorText(review.loadError) : null}
       login={login}
     />
   );
@@ -156,6 +157,8 @@ interface FilesViewProps {
   tour: Tour;
   files: FilesResponse;
   ticked: readonly StepId[];
+  /** Why the step ticks could not be read; null when they were. */
+  ticksUnread: string | null;
   login: string | null;
 }
 
@@ -176,7 +179,7 @@ function subjectLines(
   return { side: l.side, from: l.start_line, to: l.end_line };
 }
 
-function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
+function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: FilesViewProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -205,7 +208,10 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
   const [inspectorFlash, setInspectorFlash] = useState<(MarkerTarget & { nonce: number }) | null>(null);
   const flashNonce = useRef(0);
   const openPath = useRef<string | null>(null);
-  const anchor = useRef<{ side: LineSide; line: number } | null>(null);
+  // Where Shift+click and drags extend from: the last line number pressed in this file.
+  const anchor = useRef<{ path: string; side: LineSide; line: number } | null>(null);
+  // Lines of the open file by side, once a range of it was read (for links past its end).
+  const [totals, setTotals] = useState<Record<string, number>>({});
   const mainRef = useRef<HTMLDivElement>(null);
   const askRef = useRef<HTMLTextAreaElement>(null);
   const commentRef = useRef<HTMLTextAreaElement>(null);
@@ -230,7 +236,8 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
     : { file: file.path, side: displaySide(file) };
   const subject = subjectOf(file, link);
   const hash = filesHash(link);
-  const [missing] = useState(() =>
+  // A factual note about the link that opened the view; gone once the reader goes elsewhere.
+  const [linkNotice, setLinkNotice] = useState(() =>
     asked && !known ? `This link names ${asked.file}, which is not a file of this pull request.` : null,
   );
 
@@ -252,7 +259,9 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
   const open = (path: string) => {
     const target = files.files.find((f) => f.path === path);
     if (!target) return;
+    setLinkNotice(null);
     if (target.path !== file.path) {
+      anchor.current = null;
       setOldCode(false);
       setCommentLine(null);
       setViewedError(null);
@@ -260,7 +269,10 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
     }
     go({ file: target.path, side: displaySide(target) });
   };
-  const select = (next: FilesSubject, of: PrFile = file) => go(subjectLink(of, next));
+  const select = (next: FilesSubject, of: PrFile = file) => {
+    setLinkNotice(null);
+    go(subjectLink(of, next));
+  };
 
   // The location always names what is shown (a missing or unknown fragment becomes the file shown).
   useEffect(() => {
@@ -277,6 +289,23 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
   useEffect(() => {
     openPath.current = file.path;
   });
+  const locationNotice = (location.state as { notice?: string } | null)?.notice ?? null;
+  // A link past the end of the file: say so and open the file; a range running past it ends at the last line.
+  const total = totals[`${file.path}:${displaySide(file)}`];
+  useEffect(() => {
+    if (total === undefined || subject.kind !== "lines" || subject.side !== displaySide(file)) return;
+    if (subject.from > total) {
+      // The notice travels with the location; the next selection replaces it.
+      const notice = `Line ${subject.from} is outside ${file.path} at this analysis (${total} ${total === 1 ? "line" : "lines"}).`;
+      void navigate(
+        { ...location, hash: filesHash({ file: file.path, side: subject.side }) },
+        { replace: true, state: { notice } },
+      );
+    } else if (subject.to > total) {
+      const link = { file: file.path, side: subject.side, line: subject.from, end: total };
+      void navigate({ ...location, hash: filesHash(link) }, { replace: true });
+    }
+  }, [total, subject, file, location, navigate]);
   // The review screen never scrolls the page; only the columns do.
   useEffect(() => {
     const style = document.documentElement.style;
@@ -363,12 +392,30 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
     queryClient
       .getQueriesData<LinesResponse>({ queryKey: ["lines", analysisId] })
       .map(([, data]) => data)
-      .find((d) => d && d.path === pathOn(file, side) && d.side === side && d.from <= line && line <= d.to);
+      .find(
+        (d) =>
+          d &&
+          ((d.path === pathOn(file, side) && d.side === side && d.from <= line && line <= d.to) ||
+            // A removed line is displayed inside the head range that holds its block.
+            (side === "base" &&
+              d.side === "head" &&
+              d.path === pathOn(file, "head") &&
+              d.deleted.some((b) => b.base_start <= line && line < b.base_start + b.lines.length))),
+      );
 
   const selectLines = (target: CommentTarget, how: { extend: boolean }, data: LinesResponse) => {
-    const from = how.extend && anchor.current?.side === target.side ? anchor.current.line : target.line;
-    if (!how.extend || anchor.current?.side !== target.side)
-      anchor.current = { side: target.side, line: target.line };
+    setLinkNotice(null);
+    // Without a pressed line in this file, a linked selection on the same side is the anchor.
+    const own = anchor.current?.path === file.path && anchor.current.side === target.side;
+    const start = own
+      ? anchor.current!.line
+      : subject.kind === "lines" && subject.side === target.side
+        ? subject.from
+        : null;
+    const from = how.extend && start !== null ? start : target.line;
+    if (!how.extend || start === null)
+      anchor.current = { path: file.path, side: target.side, line: target.line };
+    else if (!own) anchor.current = { path: file.path, side: target.side, line: start };
     const [a, b] = [Math.min(from, target.line), Math.max(from, target.line)];
     go({ file: file.path, side: target.side, line: a, end: b });
     // The composer targets the last line without taking the focus (Q16).
@@ -806,9 +853,17 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
   const hunkTitle = (x: { file: PrFile; hunk: FileHunk }) => `${fileName(x.file.path)} ${hunkLabel(x.hunk)}`;
   const centre = (
     <>
-      {missing && (
+      {(linkNotice ?? locationNotice) && (
         <p role="status" className="mb-2 rounded-md border border-border bg-surface px-3 py-1 text-[12.5px]">
-          {missing}
+          {linkNotice ?? locationNotice}
+        </p>
+      )}
+      {ticksUnread && (
+        <p
+          role="alert"
+          className="mb-2 rounded-md border border-l-4 border-border border-l-med-bd bg-surface px-3 py-1 text-[12.5px]"
+        >
+          Your step ticks could not be read, so ticks shown here may be missing: {ticksUnread}
         </p>
       )}
       <FileHeader
@@ -858,6 +913,11 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
             }
             revealLine={lines && lines.side === side ? lines.from : undefined}
             oldCode={oldCode}
+            onTotalLines={(n) =>
+              setTotals((all) =>
+                all[`${file.path}:${side}`] === n ? all : { ...all, [`${file.path}:${side}`]: n },
+              )
+            }
           />
         )}
       </div>

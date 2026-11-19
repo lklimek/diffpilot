@@ -46,6 +46,15 @@ describe("Files view model", () => {
     expect(hash).toBe("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=100&end=102");
     expect(parseFilesHash(hash)).toEqual({ file: "src/rpc/client.rs", side: "head", line: 100, end: 102 });
     expect(parseFilesHash("#lines?file=README.md")).toEqual({ file: "README.md", side: "head" });
+    // A range is at most one request's worth of lines (2000), however large the link says.
+    expect(parseFilesHash("#lines?file=a.rs&side=head&line=1&end=10000000")).toMatchObject({
+      line: 1,
+      end: 2000,
+    });
+    expect(parseFilesHash("#lines?file=a.rs&side=head&line=9000&end=1")).toMatchObject({
+      line: 9000,
+      end: 7001,
+    });
     expect(parseFilesHash("#lines?file=a.rs&line=-1")).toEqual({ file: "a.rs", side: "head" });
     expect(parseFilesHash("#questions")).toBeUndefined();
     expect(parseFilesHash(filesHash({ file: "a.rs", side: "head", line: 4, step: "f1.2" }))).toEqual({

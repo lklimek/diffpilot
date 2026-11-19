@@ -51,6 +51,15 @@ async function openStep(flow: string, step: string) {
 }
 
 describe("Tour screen (brief §4.3)", () => {
+  it("the step header says when the file's Viewed mark was not read from GitHub", async () => {
+    setScenario("viewed-not-read");
+    await open();
+    await openStep("2", "1");
+    await waitFor(() =>
+      expect(within(main()).getByText(/Viewed not read/, { selector: "[data-viewed]" })).toBeVisible(),
+    );
+  });
+
   it("s opens the Files view at the step's lines; the step header shows the file's GitHub Viewed mark", async () => {
     const router = await open();
     await openStep("2", "1");
