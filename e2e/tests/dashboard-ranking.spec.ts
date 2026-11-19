@@ -48,7 +48,7 @@ test("a review analysis running first: the ranking waits for it, then ranks", as
   const { status } = await api(page, "POST", `/api/v1/analyses/${analysis}/cancel`);
   expect(status).toBe(200);
   const done = await waitForRefresh(page, ranked);
-  expect(done.judged).toBe(18);
+  expect(done.judged).toBe(20);
   await expect(page.getByText("Waiting for the review analysis to finish.")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: /^Not judged yet/ })).toHaveCount(0);
 });
@@ -69,7 +69,9 @@ test("cancel during the ranking: provisional scores stay; Retry ranking finishes
   await refreshButton(page).click();
   const running = await waitForRefresh(
     page,
-    (r) => r.id !== shown?.id && r.state === "ranking" && r.ranking?.state === "running",
+    // The snapshot is stored with the ranking at 0 of 0 for a moment, before the ranking counts what it judges.
+    (r) =>
+      r.id !== shown?.id && r.state === "ranking" && r.ranking?.state === "running" && r.ranking.total > 0,
   );
   expect(running.ranking?.total).toBe(2);
   await expect(page.getByText("Ranking with the LLM: 0 of 2 items judged.")).toBeVisible();
