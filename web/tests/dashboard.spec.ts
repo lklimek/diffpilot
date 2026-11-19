@@ -72,8 +72,8 @@ test.describe("My work (msw)", () => {
     await expect(link).toHaveAttribute("href", "https://github.com/acme/wallet-ui/pull/330");
     await expect(link).toHaveAttribute("target", "_blank");
     await expect(authors.getByText("by @dependabot")).toBeVisible();
-    await authors.getByRole("link", { name: "Settings → Excluded authors" }).click();
-    await expect(page).toHaveURL(/\/settings$/);
+    await authors.getByRole("link", { name: "Excluded authors in the settings guide" }).click();
+    await expect(page).toHaveURL(/\/settings\/help#skip_authors$/);
   });
 
   test("size pills on PR rows and Waiting on others; Sizes shown filters pull requests only", async ({

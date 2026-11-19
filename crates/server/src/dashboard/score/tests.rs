@@ -73,6 +73,7 @@ fn pr() -> PrFacts {
         last_comment_at: None,
         owned_change: OwnedChange::NoPolicy,
         approved_by: vec![],
+        approved_by_bots: vec![],
         review_requested_from_others: vec![],
         others_review_requested_at: None,
     }
@@ -1424,21 +1425,28 @@ fn overrides_need_a_basis_and_values_are_closed() {
 
 #[test]
 fn eligibility_flip_needs_a_reason() {
+    let asked = PrFacts {
+        owned_change: OwnedChange::Unknown,
+        ..undirected()
+    };
     let mut j = judged(&JUDGED);
     j.eligibility = Some(EligibilityJudgement {
         eligible: false,
         reason: String::new(),
     });
     assert_eq!(
-        score_pr(&rules(), &pr(), Some(&j), now()),
+        score_pr(&rules(), &asked, Some(&j), now()),
         Err(ScoreError::EligibilityWithoutReason)
     );
     j.eligibility = Some(EligibilityJudgement {
         eligible: false,
         reason: "only test renames".into(),
     });
-    let item = score_pr(&rules(), &pr(), Some(&j), now()).expect("scores");
+    let item = score_pr(&rules(), &asked, Some(&j), now()).expect("scores");
     assert_eq!(item.excluded.as_deref(), Some("only test renames"));
+    // Not asked (eligibility settled by the facts): the answer is ignored.
+    let item = score_pr(&rules(), &pr(), Some(&j), now()).expect("scores");
+    assert_eq!(item.excluded, None);
 }
 
 #[test]
@@ -2008,6 +2016,16 @@ fn waits_on_others_only_when_nothing_is_the_users_move() {
                 ..platform.clone()
             },
             false,
+        ),
+        (
+            "no decision, only a GitHub App approved (Bot type, no [bot] suffix)",
+            PrFacts {
+                review_decision: None,
+                approved_by: vec!["review-helper".into()],
+                approved_by_bots: vec!["review-helper".into()],
+                ..platform.clone()
+            },
+            true,
         ),
         (
             "a comment awaits our reply",

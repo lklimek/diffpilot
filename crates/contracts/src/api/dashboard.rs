@@ -275,7 +275,8 @@ pub struct SnapshotMeta {
 /// Most excluded items listed by `GET /api/v1/dashboard?excluded=true`; the counts cover all.
 pub const EXCLUDED_ITEMS_LIMIT: usize = 200;
 
-/// The items the rules left out of the ranking, counted per reason (facts only, no LLM text).
+/// The items left out of the ranking, counted per reason. No LLM text; `judged_not_eligible` and
+/// `merged_into_another` are LLM decisions, the other reasons deterministic rules.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Exclusions {
     /// All left-out items.

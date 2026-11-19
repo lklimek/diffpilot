@@ -1102,7 +1102,8 @@ count: number, };
 export type ExclusionReason = "excluded_author" | "outside_owned_areas" | "draft" | "judged_not_eligible" | "merged_into_another";
 
 /**
- * The items the rules left out of the ranking, counted per reason (facts only, no LLM text).
+ * The items left out of the ranking, counted per reason. No LLM text; `judged_not_eligible` and
+ * `merged_into_another` are LLM decisions, the other reasons deterministic rules.
  */
 export type Exclusions = {
 /**

@@ -949,7 +949,7 @@
       ]
     },
     "Exclusions": {
-      "description": "The items the rules left out of the ranking, counted per reason (facts only, no LLM text).",
+      "description": "The items left out of the ranking, counted per reason. No LLM text; `judged_not_eligible` and\n`merged_into_another` are LLM decisions, the other reasons deterministic rules.",
       "type": "object",
       "properties": {
         "total": {

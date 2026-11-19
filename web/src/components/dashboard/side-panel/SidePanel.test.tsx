@@ -73,7 +73,9 @@ describe("side panel sections", () => {
     const items = screen.getAllByRole("listitem");
     expect(items[0]).toHaveTextContent("PLAT-1176");
     expect(items[0]).toHaveTextContent("waits on @jun-park, team:core for 11 d");
-    expect(items[2]).toHaveTextContent("—");
+    // Waiting items are never ranked: no score column, no focusable placeholder.
+    expect(items[2]).not.toHaveTextContent("—");
+    expect(screen.queryByText(/Not ranked/)).toBeNull();
     const first = SUMMARY.snapshot!.awaiting.find((item) => item.id === "PLAT-1176")!;
     const link = within(items[0]!).getByRole("link", { name: "Open PLAT-1176 on GitHub" });
     expect(link).toHaveAttribute("href", first.url);

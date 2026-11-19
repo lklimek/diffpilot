@@ -602,7 +602,8 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   `ExclusionReason` (`excluded_author`, `outside_owned_areas`, `draft`, `judged_not_eligible`,
   `merged_into_another`; clients treat an unknown value as "another rule"). `?excluded=true` adds `items`: at most
   200 (`EXCLUDED_ITEMS_LIMIT`) `ExcludedItem`s by reason, then display id (key, kind, display id, repository,
-  number, URL, plain title, author, reason, `merged_into`); no LLM text. Without the flag the summary carries the
+  number, URL, plain title, author, reason, `merged_into`); no LLM text, but `judged_not_eligible` and
+  `merged_into_another` are LLM decisions (the web says "by the LLM"), the other reasons deterministic rules. Without the flag the summary carries the
   counts only (a few hundred bytes; the list can reach tens of KB). Same scope as the rest of the summary.
 - **Item keys** (normative; `ItemKey` in `api/dashboard.rs` is the only constructor and parser, and rejects any
   other form on deserialisation): `<owner>~<repo>~pr~<number>`, `<owner>~<repo>~issue~<number>` (GitHub owner

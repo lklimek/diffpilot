@@ -249,8 +249,9 @@ def main():
                 parts[name] = {"value": rng.choice(allowed(name)), "basis": "synthetic override"}
         judged[item["id"]] = {name: v["value"] for name, v in parts.items()}
         entry = {"parts": parts}
-        if rng.random() < 0.05:
-            entry["eligible"], entry["eligibilityReason"] = not item["eligible"], "synthetic flip"
+        # Deviation: an eligibility answer counts only while eligibility is asked (an unreadable ownership policy);
+        # no synthetic item asks, so the drawn flip is not applied (the draw keeps the seeded sequence).
+        rng.random()
         judgment[item["id"]] = entry
     for todo_id, row in judgment.items():
         if todo_id.startswith("TODO-"):

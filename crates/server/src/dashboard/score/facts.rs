@@ -170,6 +170,10 @@ pub struct PrFacts {
     pub owned_change: OwnedChange,
     /// Logins whose latest review approves.
     pub approved_by: Vec<String>,
+    /// Those of `approved_by` that GitHub types as bots (Apps without the `[bot]` suffix included); empty in
+    /// snapshots stored before it was recorded.
+    #[serde(default)]
+    pub approved_by_bots: Vec<String>,
     /// Pending review requests to people and teams (`team:<slug>`) outside the scanned logins and bots.
     pub review_requested_from_others: Vec<String>,
     /// The oldest of those requests still open (`AwaitingItem.waiting_since`); null when the timeline page lacked it.

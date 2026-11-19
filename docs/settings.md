@@ -148,7 +148,7 @@ Format: the JSON files of https://github.com/dashpay/stale_prs_are_bad (folder p
 
 What counts: a pull request whose changes in your paths are only comments or docs, or only a few code lines (fewer than 12 distinct code lines, or fewer than 8 in any one file), is left out of Needs you, unless it is directed at you: your own (or a linked login's), assigned to you, or with your review requested directly. A review requested only from one of your teams does not count as directed. Excluded authors are left out whatever the policy says.
 
-When the file cannot be read: its pull requests stay in the list with ownership unverified, the LLM is asked to confirm, and What the scan missed names the file.
+When the file cannot be read: pull requests directed at you stay as usual; those of others not directed at you stay in the list with ownership unverified, the LLM is asked whether they concern you and may leave them out (Excluded: judged outside your areas by the LLM), and What the scan missed names the file.
 
 Worked examples: dashpay/platform uses dashpay/stale_prs_are_bad with policies/platform.json; dashpay/tenderdash uses policies/tenderdash.json; dashpay/dash-evo-tool uses policies/dash-evo-tool.json. A repository without a policy file: leave both fields empty.
 

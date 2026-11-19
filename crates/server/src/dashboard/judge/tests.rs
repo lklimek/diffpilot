@@ -89,6 +89,7 @@ fn pr(number: u32, title: &str) -> StoredPr {
             last_comment_at: None,
             owned_change: OwnedChange::NoPolicy,
             approved_by: Vec::new(),
+            approved_by_bots: Vec::new(),
             review_requested_from_others: Vec::new(),
             others_review_requested_at: None,
         },

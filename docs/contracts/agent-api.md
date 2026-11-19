@@ -78,7 +78,8 @@ Cheap polling (plan §E.5 E5-5):
 
 1. `GET /api/v1/dashboard` → `revision`, `snapshot` (scan time, counts, notes, `exclusions`: what the rules left
    out, counted per reason), `latest_refresh`, `schedule`. Add `?excluded=true` to list the left-out items too
-   (at most 200: id, URL, title, author, reason; facts only). `snapshot.awaiting` lists the user's PRs that
+   (at most 200: id, URL, title, author, reason; no LLM text, but `judged_not_eligible` and `merged_into_another` are LLM decisions, the other reasons
+   deterministic rules). `snapshot.awaiting` lists the user's PRs that
    wait only on others; they are not in the items below (no tier, nothing to do now). Pull request items carry
    `change_size` (`tiny` … `huge` with `additions`/`deletions`); filter by it on the client.
 2. Only when `revision` differs from the last one seen: read the items (step 3). The snapshot changes after a

@@ -1475,9 +1475,9 @@
     ],
     "unreachable": [],
     "checked": {
-      "pr": 41,
-      "issue": 23,
-      "todo": 31
+      "pr": 14,
+      "issue": 4,
+      "todo": 2
     },
     "exclusions": {
       "total": 3,

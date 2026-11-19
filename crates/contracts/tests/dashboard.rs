@@ -556,6 +556,24 @@ fn dashboard_fixtures_are_typed_and_consistent() {
             .all(|pair| pair[0].reason <= pair[1].reason),
         "listed by reason"
     );
+    // Every scanned item is in one place: Needs you, Waiting on others (pull requests) or Excluded.
+    let excluded_of = |kind: ItemKind| {
+        u32::try_from(listed.iter().filter(|item| item.kind == kind).count()).expect("count")
+    };
+    let waiting = u32::try_from(snapshot.awaiting.len()).expect("count");
+    let counts = snapshot.item_counts;
+    assert_eq!(
+        (
+            snapshot.checked.pr,
+            snapshot.checked.issue,
+            snapshot.checked.todo
+        ),
+        (
+            counts.pr + waiting + excluded_of(ItemKind::Pr),
+            counts.issue + excluded_of(ItemKind::Issue),
+            counts.todo + excluded_of(ItemKind::Todo),
+        )
+    );
     assert_eq!(items.revision, summary.revision);
     let latest = summary.latest_refresh.as_ref().expect("latest refresh");
     assert_eq!(latest.id, snapshot.refresh_id);

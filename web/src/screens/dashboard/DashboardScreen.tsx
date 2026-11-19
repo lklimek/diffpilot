@@ -73,9 +73,7 @@ export function DashboardScreen() {
   }, [snapshot, now]);
 
   const snapshotAt = snapshot?.scanned_at ?? null;
-  const excluded = snapshot && (
-    <ExcludedItems exclusions={snapshot.exclusions} settingsHref={SETTINGS_PATH} onNavigate={go} />
-  );
+  const excluded = snapshot && <ExcludedItems exclusions={snapshot.exclusions} onNavigate={go} />;
   const stale = view?.stale && snapshotAt ? clockText(snapshotAt, now) : null;
   const actionErrors = [page.refresh.error, page.cancel.error, page.rankAgain.error].filter(
     (e): e is string => e !== null,
