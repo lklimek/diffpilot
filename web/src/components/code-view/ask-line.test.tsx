@@ -180,6 +180,8 @@ describe("code-view icons: popup on hover, pinned by a click until the next clic
     expect(screen.queryByRole("button", { name: "Ask about this line" })).toBeNull();
     await userEvent.unhover(icon());
     expect(popup()).toBeNull();
+    // Keyboard focus (the last input was a key, not the pointer).
+    await userEvent.keyboard("{ArrowDown}");
     act(() => icon().focus());
     expect(popup()).toBeVisible();
   });

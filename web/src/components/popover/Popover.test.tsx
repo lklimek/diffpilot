@@ -20,6 +20,42 @@ const marker = (name: string, text: string) => (
   </Popover>
 );
 
+describe("Popover: focus from a pointer is not keyboard focus", () => {
+  const withElsewhere = (
+    <>
+      {marker("Remark", "Body text")}
+      <button type="button">Elsewhere</button>
+    </>
+  );
+
+  it("touch: the second tap closes", async () => {
+    const user = userEvent.setup();
+    render(withElsewhere);
+    const icon = screen.getByRole("button", { name: "Remark" });
+    await user.pointer({ keys: "[TouchA]", target: icon });
+    expect(screen.getByRole("dialog")).toBeVisible();
+    await user.pointer({ keys: "[TouchA]", target: icon });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("press inside the popup and release outside does not disable keyboard focus", async () => {
+    const user = userEvent.setup();
+    render(withElsewhere);
+    const icon = screen.getByRole("button", { name: "Remark" });
+    await user.click(icon);
+    await user.pointer([
+      { keys: "[MouseLeft>]", target: screen.getByText("Body text") },
+      { target: document.body },
+      { keys: "[/MouseLeft]", target: document.body },
+    ]);
+    await user.click(screen.getByRole("button", { name: "Elsewhere" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await user.tab({ shift: true });
+    expect(icon).toHaveFocus();
+    expect(screen.getByRole("dialog")).toBeVisible();
+  });
+});
+
 describe("Popover", () => {
   it("keeps a short hint as the trigger's description while closed", async () => {
     render(

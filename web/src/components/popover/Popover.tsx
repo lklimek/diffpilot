@@ -46,6 +46,23 @@ const setPinned = (id: string | null) => {
   for (const listener of listeners) listener();
 };
 
+// Whether the last input was the keyboard (what `:focus-visible` decides in browsers; jsdom cannot tell). Starts
+// true: focus set by a script follows the keyboard.
+let keyboard = true;
+const keyboardModality = () => keyboard;
+if (typeof document !== "undefined") {
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (!["Shift", "Control", "Alt", "Meta"].includes(event.key)) keyboard = true;
+    },
+    true,
+  );
+  for (const type of ["pointerdown", "mousedown", "touchstart"]) {
+    document.addEventListener(type, () => (keyboard = false), true);
+  }
+}
+
 const WIDTH = 360;
 // Distance kept from the viewport edges; the popover's gap and border.
 const MARGIN = 8;
@@ -75,9 +92,6 @@ export function Popover({ label, tag, content, hint, children, className = "" }:
   const pinned = useSyncExternalStore(subscribe, () => pinnedId === id);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
-  // A pointer press focuses the trigger; that focus is not "keyboard focus" and must not keep the popup open
-  // after the closing click (Tooltip does the same).
-  const pressed = useRef(false);
   // Closed by Escape or the close button; shown again after the pointer or the focus left and came back.
   const [dismissed, setDismissed] = useState(false);
   const [position, setPosition] = useState<{
@@ -106,6 +120,8 @@ export function Popover({ label, tag, content, hint, children, className = "" }:
   const unpin = () => {
     if (pinnedId === id) setPinned(null);
     setDismissed(true);
+    // The pointer was on the popup that is gone: it re-enters the wrapper to show the popup again.
+    setHovered(false);
     const popup = document.getElementById(id);
     if (popup?.contains(document.activeElement))
       (popup.parentElement?.firstElementChild as HTMLElement).focus();
@@ -169,17 +185,18 @@ export function Popover({ label, tag, content, hint, children, className = "" }:
     <span
       ref={wrapper}
       className={className}
-      onPointerEnter={() => setHovered(true)}
+      onPointerEnter={() => {
+        setHovered(true);
+        // Dismissed popups come back when the pointer re-enters.
+        setDismissed(false);
+      }}
       onPointerLeave={() => {
         setHovered(false);
         if (!focused) setDismissed(false);
       }}
-      onPointerDown={() => (pressed.current = true)}
-      onPointerUp={() => (pressed.current = false)}
-      onPointerCancel={() => (pressed.current = false)}
-      onFocus={() => {
-        if (!pressed.current) setFocused(true);
-      }}
+      // Only keyboard focus shows the popup: the focus a click or tap gives the trigger must not keep it open
+      // after the closing click.
+      onFocus={() => setFocused(keyboardModality())}
       onBlur={(event) => {
         if (wrapper.current?.contains(event.relatedTarget as Node | null)) return;
         setFocused(false);

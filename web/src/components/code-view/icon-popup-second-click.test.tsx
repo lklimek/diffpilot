@@ -64,4 +64,16 @@ describe("second click on the icon, then pointer away", () => {
     await user.unhover(icon);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+
+  it("after an action closed the popup by mouse, hovering the marker shows it again", async () => {
+    const user = userEvent.setup();
+    render(<CodeView lines={plain(1, ["a", "b", "c"])} comments={[mine]} />);
+    const icon = screen.getByRole("button", { name: "Your pending comment at line 2" });
+    await user.click(icon);
+    await user.click(screen.getByRole("button", { name: "Open the comment here" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await user.unhover(icon);
+    await user.hover(icon);
+    expect(screen.getByRole("dialog")).toBeVisible();
+  });
 });

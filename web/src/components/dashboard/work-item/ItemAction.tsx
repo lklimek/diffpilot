@@ -20,7 +20,7 @@ export function reviewAction(item: WorkItem): { label: string; tip: string; prim
   if (review.head_moved) {
     return {
       label: "Open",
-      tip: "The PR moved since your analysis. Opens the start page. Starts nothing.",
+      tip: "The PR moved. Opens the start page; starts nothing.",
       primary: true,
     };
   }
