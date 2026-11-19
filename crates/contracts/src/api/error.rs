@@ -71,11 +71,13 @@ pub enum ApiErrorCode {
     TokenLimitReached,
     /// Too many requests; retry after `Retry-After`.
     RateLimited,
+    /// GitHub refused a change made as the user (e.g. the Viewed mark); nothing was changed.
+    GithubRefused,
 }
 
 impl ApiErrorCode {
     /// Every code.
-    pub const ALL: [ApiErrorCode; 27] = [
+    pub const ALL: [ApiErrorCode; 28] = [
         Self::Configuration,
         Self::Unauthenticated,
         Self::LoginNotAllowed,
@@ -103,6 +105,7 @@ impl ApiErrorCode {
         Self::TokenNotAccepted,
         Self::TokenLimitReached,
         Self::RateLimited,
+        Self::GithubRefused,
     ];
 
     /// The HTTP status code of a response with this code.
@@ -129,7 +132,7 @@ impl ApiErrorCode {
             | Self::InvalidDashboardSettings => 422,
             Self::GithubRateLimited | Self::RateLimited => 429,
             Self::Internal | Self::Configuration => 500,
-            Self::GithubUnavailable => 502,
+            Self::GithubUnavailable | Self::GithubRefused => 502,
             Self::Unavailable => 503,
         }
     }

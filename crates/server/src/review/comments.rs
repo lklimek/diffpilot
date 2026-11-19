@@ -666,7 +666,7 @@ mod tests {
 
 /// Comment operations against a wiremock GitHub and the fixture repository of `acme/node-client#482`.
 #[cfg(test)]
-mod github_tests {
+pub(crate) mod github_tests {
     use std::path::Path;
     use std::process::Command;
 
@@ -688,7 +688,7 @@ mod github_tests {
     };
     use crate::review::tests::github_state_with;
 
-    const HEAD: &str = "52d2da140191a9d47becf6a446310be803c007fc";
+    pub(crate) const HEAD: &str = "52d2da140191a9d47becf6a446310be803c007fc";
     const CLIENT: &str = "src/rpc/client.rs";
 
     fn fixtures() -> std::path::PathBuf {
@@ -701,15 +701,15 @@ mod github_tests {
         serde_json::from_str::<Value>(&text).expect("JSON")["response"].clone()
     }
 
-    struct Fixture {
-        state: AppState,
-        summary: AnalysisSummary,
-        server: MockServer,
+    pub(crate) struct Fixture {
+        pub(crate) state: AppState,
+        pub(crate) summary: AnalysisSummary,
+        pub(crate) server: MockServer,
         _dir: TempDir,
     }
 
     /// A finished analysis of the fixture PR (flow documents stored) with its mirror, for user `u1`.
-    async fn fixture() -> Fixture {
+    pub(crate) async fn fixture() -> Fixture {
         let dir = tempfile::tempdir().expect("temp dir");
         let built = Command::new(fixtures().join("repo/build-repo.sh"))
             .arg(dir.path().join("remotes/acme/node-client.git"))
@@ -794,7 +794,7 @@ mod github_tests {
     }
 
     impl Fixture {
-        async fn mock(&self, request: Value, response: ResponseTemplate, calls: u64) {
+        pub(crate) async fn mock(&self, request: Value, response: ResponseTemplate, calls: u64) {
             Mock::given(method("POST"))
                 .and(path("/api/graphql"))
                 .and(body_partial_json(request))
@@ -804,7 +804,7 @@ mod github_tests {
                 .await;
         }
 
-        async fn head_is(&self, head: &str, calls: u64) {
+        pub(crate) async fn head_is(&self, head: &str, calls: u64) {
             let response = json!({"data": {"repository": {"pullRequest": {"id": "PR_fixture482", "headRefOid": head}}}});
             self.mock(
                 json!({"query": PULL_REQUEST_HEAD}),
@@ -854,7 +854,7 @@ mod github_tests {
             create(&self.state, "u1", &self.summary, &request).await
         }
 
-        async fn graphql_bodies(&self) -> Vec<Value> {
+        pub(crate) async fn graphql_bodies(&self) -> Vec<Value> {
             self.server
                 .received_requests()
                 .await

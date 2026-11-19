@@ -1,5 +1,5 @@
-//! Ask: list the questions of an analysis and ask a question about one of its steps (session, CSRF and tenant
-//! check; the work lives in `ask`). Answers arrive on the analysis's event stream.
+//! Ask: list the questions of an analysis and ask a question about one of its steps or about lines of one of its
+//! files (session, CSRF and tenant check; the work lives in `ask`). Answers arrive on the analysis's event stream.
 
 use std::borrow::Cow;
 
@@ -9,15 +9,16 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use contracts::api::error::ApiErrorCode;
-use contracts::api::questions::{AskQuestion, AskRequest};
+use contracts::api::questions::{AnchoredAskRequest, AskAnchor, AskQuestion, AskRequest};
 use contracts::ids::{AnalysisId, StepId};
-use contracts::routes::{ASK_QUESTION, LIST_QUESTIONS};
+use contracts::routes::{ASK_ANCHORED, ASK_QUESTION, LIST_QUESTIONS};
 use contracts::time::Timestamp;
 
 use crate::api::analyses::{AnalysisApiError, visible_analysis};
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::ask::{self, AskError, MAX_QUESTIONS_PER_ANALYSIS, MAX_QUESTIONS_PER_USER_PER_HOUR};
 use crate::auth::{Session, SessionCsrf};
+use crate::pipeline::PrDiffError;
 use crate::state::AppState;
 
 /// A questions request failed.
@@ -43,7 +44,13 @@ impl ApiErrorSource for QuestionsApiError {
             Self::Json(rejection) => rejection.code(),
             Self::Path(rejection) => rejection.code(),
             Self::Analysis(error) => error.code(),
-            Self::Ask(AskError::Empty | AskError::TooLong) => ApiErrorCode::InvalidRequest,
+            Self::Ask(AskError::Empty | AskError::TooLong | AskError::InvalidAnchor) => {
+                ApiErrorCode::InvalidRequest
+            }
+            Self::Ask(AskError::Diff(PrDiffError::NotPrepared)) => {
+                ApiErrorCode::AnalysisNotFinished
+            }
+            Self::Ask(AskError::Diff(_) | AskError::Mirror(_)) => ApiErrorCode::Internal,
             Self::Ask(AskError::NotFinished) => ApiErrorCode::AnalysisNotFinished,
             Self::Ask(AskError::UnknownStep) => ApiErrorCode::NotFound,
             Self::Ask(AskError::Superseded | AskError::AnalysisLimit | AskError::UserLimit) => {
@@ -72,6 +79,16 @@ impl ApiErrorSource for QuestionsApiError {
             Self::Ask(AskError::UnknownStep) => {
                 Cow::Borrowed("The step is not part of this analysis. Reload the review.")
             }
+            Self::Ask(AskError::InvalidAnchor) => Cow::Owned(format!(
+                "Ask about lines of the step or of a file of this pull request, at most {} lines.",
+                AskAnchor::MAX_LINES
+            )),
+            Self::Ask(AskError::Diff(PrDiffError::NotPrepared)) => {
+                Cow::Borrowed("The analysis has not finished yet.")
+            }
+            Self::Ask(AskError::Diff(_) | AskError::Mirror(_)) => {
+                Cow::Borrowed("Something went wrong on the server. Try again later.")
+            }
             Self::Ask(AskError::AnalysisLimit) => Cow::Owned(format!(
                 "You have {MAX_QUESTIONS_PER_ANALYSIS} questions on this analysis, the most allowed."
             )),
@@ -95,6 +112,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route(LIST_QUESTIONS.path, get(list))
         .route(ASK_QUESTION.path, post(create))
+        .route(ASK_ANCHORED.path, post(create_anchored))
 }
 
 async fn list(
@@ -126,7 +144,37 @@ async fn create(
         .await
         .map_err(|ApiFailure(error)| failure(error))?;
     let Json(request) = body.map_err(failure)?;
-    let mut question = ask::ask(&state, &session.user_id, &analysis, step, request)
+    let anchored = AnchoredAskRequest {
+        text: request.text,
+        anchor: AskAnchor::Step {
+            step_id: step,
+            lines: None,
+        },
+    };
+    asked(&state, &session.user_id, &analysis, anchored).await
+}
+
+async fn create_anchored(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    id: Result<Path<AnalysisId>, PathRejection>,
+    body: Result<Json<AnchoredAskRequest>, JsonRejection>,
+) -> QuestionsResult<(StatusCode, Json<AskQuestion>)> {
+    let Path(id) = id.map_err(failure)?;
+    let analysis = visible_analysis(&state, &session, id)
+        .await
+        .map_err(|ApiFailure(error)| failure(error))?;
+    let Json(request) = body.map_err(failure)?;
+    asked(&state, &session.user_id, &analysis, request).await
+}
+
+async fn asked(
+    state: &AppState,
+    user_id: &str,
+    analysis: &contracts::api::analyses::AnalysisSummary,
+    request: AnchoredAskRequest,
+) -> QuestionsResult<(StatusCode, Json<AskQuestion>)> {
+    let mut question = ask::ask(state, user_id, analysis, request)
         .await
         .map_err(failure)?;
     question.mine = Some(true);

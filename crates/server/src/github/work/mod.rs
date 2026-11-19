@@ -18,7 +18,7 @@ pub(crate) use mentions::incomplete;
 mod refs;
 mod search;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::collections::BTreeMap;
 use std::fmt;

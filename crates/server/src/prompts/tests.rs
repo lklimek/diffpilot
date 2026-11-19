@@ -194,6 +194,7 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
         job,
         step_id: &step_id,
         step: &f.flows[0].steps[4],
+        lines: None,
         question: QUESTION,
         profile: profile(f),
     };
@@ -215,8 +216,10 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
         pr_context: Some(&f.pr_context),
         flows: &f.flows,
         ask: Some(AskContext {
-            step_id: &step_id,
-            flow: &f.flows[0],
+            asked: Asked::Step {
+                step_id: &step_id,
+                flow: &f.flows[0],
+            },
             earlier: &earlier,
         }),
     };
@@ -232,6 +235,10 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
         ),
         (format!("ask.{lang}"), ask(&ask_input).expect("ask")),
         (
+            format!("ask_lines.{lang}"),
+            ask_lines(&ask_lines_input(job, f)).expect("ask_lines"),
+        ),
+        (
             format!("repair-analyse_flow-f1.{lang}"),
             repair(&repair_input).expect("repair"),
         ),
@@ -241,8 +248,89 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
             "context_pack-ask".to_owned(),
             context_pack(&pack_input).expect("pack"),
         ));
+        let touched = [(StepId("f1.6".to_owned()), &f.flows[0].steps[5])];
+        let lines_pack = ContextPackInput {
+            ask: Some(AskContext {
+                asked: Asked::Lines {
+                    lines: asked_lines(),
+                    steps: &touched,
+                },
+                earlier: &earlier,
+            }),
+            ..pack_input
+        };
+        out.push((
+            "context_pack-ask_lines".to_owned(),
+            context_pack(&lines_pack).expect("pack"),
+        ));
     }
     out
+}
+
+/// Lines 100–102 of the head of `src/rpc/client.rs`, as the Files view asks about them.
+fn asked_lines() -> AskedLines<'static> {
+    AskedLines {
+        path: "src/rpc/client.rs",
+        side: LineSide::Head,
+        range: Some(contracts::common::LineRange {
+            start_line: 100,
+            end_line: 102,
+        }),
+    }
+}
+
+/// An `ask` about lines of the fixture: two owners, one overlapping step and a short classic diff.
+fn ask_lines_input<'a>(job: JobContext<'a>, f: &'a Fixture) -> AskLinesInput<'a> {
+    use contracts::api::files::{HunkPart, PartOwner};
+    static FACTS: LazyLock<Vec<HunkPart>> = LazyLock::new(|| {
+        let range = |start_line, end_line| contracts::common::LineRange {
+            start_line,
+            end_line,
+        };
+        vec![
+            HunkPart {
+                side: LineSide::Head,
+                range: range(100, 101),
+                owner: PartOwner::Step {
+                    flow_id: FlowId("f1".to_owned()),
+                    step_id: StepId("f1.6".to_owned()),
+                },
+                also_in: Vec::new(),
+            },
+            HunkPart {
+                side: LineSide::Head,
+                range: range(102, 102),
+                owner: PartOwner::Unexplained { reason: None },
+                also_in: Vec::new(),
+            },
+        ]
+    });
+    static STEP: LazyLock<(StepId, FlowId)> =
+        LazyLock::new(|| (StepId("f1.6".to_owned()), FlowId("f1".to_owned())));
+    static STEPS: LazyLock<Vec<TouchedStep<'static>>> = LazyLock::new(|| {
+        vec![TouchedStep {
+            step_id: &STEP.0,
+            flow_id: &STEP.1,
+            flow_title: "Retry of a broadcast",
+            title: "Retry allowed?",
+            file: "src/rpc/client.rs",
+            side: LineSide::Head,
+            range: contracts::common::LineRange {
+                start_line: 96,
+                end_line: 101,
+            },
+            kind: contracts::common::FragmentKind::Modified,
+        }]
+    });
+    AskLinesInput {
+        job,
+        lines: asked_lines(),
+        diff: "@@ -98,3 +98,5 @@\n         if attempts > MAX {\n+            return Err(Error::Exhausted);\n+        }\n",
+        facts: &FACTS,
+        steps: &STEPS,
+        question: QUESTION,
+        profile: profile(f),
+    }
 }
 
 fn all_prompts() -> Vec<(String, String)> {
@@ -342,7 +430,7 @@ fn ask_and_flow_analysis_state_suspected_defects_as_risk_scenarios() {
         if name.starts_with("context_pack") {
             continue;
         }
-        let ask = name.starts_with("ask.");
+        let ask = name.starts_with("ask.") || name.starts_with("ask_lines.");
         let flow = name.contains("analyse_flow");
         assert_eq!(prompt.contains(statement_form), ask, "{name}");
         assert_eq!(prompt.contains(flag_form), flow, "{name}");
@@ -366,6 +454,7 @@ fn every_prompt_starts_with_its_job_line_and_names_the_pull_request() {
         let expected = match name.split('.').next().unwrap_or_default() {
             "analyse_flow-f1" => "Job: analyse_flow f1.".to_owned(),
             "repair-analyse_flow-f1" => "Job: repair analyse_flow f1.".to_owned(),
+            "ask_lines" => "Job: ask.".to_owned(),
             kind => format!("Job: {kind}."),
         };
         assert_eq!(first, expected, "{name}");
@@ -414,7 +503,7 @@ fn every_prompt_contains_the_rules_block() {
             "{name} lacks {output_rule}"
         );
         // Ask and flow analysis state risks as scenarios (brief §1 addenda 2026-11-18); plan and PR context ask.
-        let defect_form = if name.starts_with("ask.") {
+        let defect_form = if name.starts_with("ask") {
             "A suspected defect is an LLM statement of risk: a short title naming the risk class, prefixed \"Potential\""
         } else if name.contains("analyse_flow") {
             "A suspected defect is a `flag` annotation: a concrete risk scenario, never a question or a verdict."
@@ -677,6 +766,7 @@ fn instruction_files_get_the_t14_notice_in_every_prompt() {
         job,
         step_id: &step_id,
         step: &f.flows[0].steps[0],
+        lines: None,
         question: QUESTION,
         profile: profile(f),
     };
@@ -1255,8 +1345,10 @@ fn context_pack_stays_within_budget() {
         pr_context: Some(&f.pr_context),
         flows: &flows,
         ask: Some(AskContext {
-            step_id: &step_id,
-            flow: &big,
+            asked: Asked::Step {
+                step_id: &step_id,
+                flow: &big,
+            },
             earlier: &earlier,
         }),
     };
@@ -1370,8 +1462,10 @@ fn ask_keeps_the_full_asked_step_after_a_lost_session() {
         pr_context: Some(&f.pr_context),
         flows: &f.flows,
         ask: Some(AskContext {
-            step_id: &step_id,
-            flow: &flow,
+            asked: Asked::Step {
+                step_id: &step_id,
+                flow: &flow,
+            },
             earlier: &[],
         }),
     })
@@ -1395,6 +1489,7 @@ fn ask_keeps_the_full_asked_step_after_a_lost_session() {
         job: job(f, LlmLanguage::En),
         step_id: &step_id,
         step: flow.steps.last().expect("step"),
+        lines: None,
         question,
         profile: Profile::default(),
     })
@@ -1414,8 +1509,10 @@ fn ask_keeps_the_full_asked_step_after_a_lost_session() {
         pr_context: None,
         flows: &[],
         ask: Some(AskContext {
-            step_id: &unknown,
-            flow: &flow,
+            asked: Asked::Step {
+                step_id: &unknown,
+                flow: &flow,
+            },
             earlier: &[],
         }),
     };
@@ -1580,8 +1677,10 @@ fn context_pack_reserves_the_asked_step_before_the_other_sections() {
         pr_context: Some(&context),
         flows: &flows,
         ask: Some(AskContext {
-            step_id: &step_id,
-            flow: &flow,
+            asked: Asked::Step {
+                step_id: &step_id,
+                flow: &flow,
+            },
             earlier: &earlier,
         }),
     })
@@ -1605,8 +1704,10 @@ fn context_pack_reserves_the_asked_step_before_the_other_sections() {
         pr_context: None,
         flows: &[],
         ask: Some(AskContext {
-            step_id: &step_id,
-            flow: &flow,
+            asked: Asked::Step {
+                step_id: &step_id,
+                flow: &flow,
+            },
             earlier: &[],
         }),
     };

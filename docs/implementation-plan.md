@@ -377,7 +377,7 @@ the wording rules. Fixture ownership afterwards: §4.3.
 
 ## 8. Stage 2 — thin vertical slice
 
-Goal: URL → analysis with fixture agent output → Tour renders flow 1 through real server, runner and browser.
+Goal: URL → analysis with fixture agent output → Flows view renders flow 1 through real server, runner and browser.
 Scope is deliberately thin: no pre-pass rules, no repair, no comments, no Ask, no session resume (each job
 starts a session), no agent GitHub token; one happy path. All WPs run in parallel; Rust WPs queue their cargo
 runs. All agents: `claudius:developer-bilby`, opus.
@@ -436,7 +436,7 @@ agents fill the gaps. Every WP's acceptance items are named tests; trust tests p
 | WP3-BLOCKS | Navigation list (labels for LLM-classified refactors and tests), PR context, flow introduction, step block (four facts + code slot), quiet-row blocks (moves, Not analysed, Unexplained, pending-review list), badge + tooltip primitives, help dialog (legend, shortcuts) (§4.3) | `web/src/components/{nav,pr-context,flow-intro,step,quiet,badge,tooltip,help}/**` | — | — | ~1,000 |
 | WP3-INSPECTOR | Inspector (never empty; current block or selected annotation; Back to step) with 8 collapsible sections (state in localStorage; call hierarchy "n/a — needs a language plugin"); dock: Ask, feedback buttons, comment composer on any line (outside the diff: note "posted as a file comment") (§4.3 Inspector) | `web/src/components/{inspector,ask,feedback,comment}/**` | — | — | ~1,000 |
 | WP3-SCREENS | Home (sign-in, URL, resume, head-moved banner, errors incl. login not allowed, "Analysis cancelled — analyze again"), Analysis progress (SSE; planning with indeterminate bar "Planning flows…", running, paused, failed incl. before any flow, finished), Settings with LLM status of the last call (§4.1, §4.2, §4.4) | `web/src/screens/{home,progress,settings}/**` | — | — | ~700 |
-| WP3-TOUR | Tour assembly: top bar, 3 resizable/hideable/full-screen columns remembered, block sequence and flow order, keyboard map, ticks + "flows reviewed k / n", last viewed block, light/dark theme, six fixture states (§4.3) | `web/src/screens/tour/**`, `web/src/app/**` | BLOCKS, INSPECTOR, CODEVIEW, DIAGRAM | — | ~900 |
+| WP3-TOUR | Flows view assembly: top bar, 3 resizable/hideable/full-screen columns remembered, block sequence and flow order, keyboard map, ticks + "flows reviewed k / n", last viewed block, light/dark theme, six fixture states (§4.3) | `web/src/screens/tour/**`, `web/src/app/**` | BLOCKS, INSPECTOR, CODEVIEW, DIAGRAM | — | ~900 |
 | WP3-OPS | Dockerfiles (server: web build + Rust with `embed-ui`, `CARGO_BUILD_JOBS=2`; runner: pinned Codex CLI and `github-mcp-server`, git, ripgrep, two uids, no Docker socket); `deploy/egress-proxy/` from the research Dockerfile with a v1 config (explicit proxy, allow-all, host-name log, SSRF guard; no SSL-Bump, no CA, no cache); compose (server, runner, egress-proxy, named volumes incl. session store, internal runner network, pinned proxy subnet, healthchecks, no runtime containers, plain services for Portainer); `.env.example` with all §5.2 variables; proxy log retention and the later interception/allowlist step (reference to the research) in the runbook; CI image builds and web jobs; release builds without fakes (§5 Packaging, T1–T4, T8, T9) | `deploy/**`, `.github/**`, `.dockerignore`, `docs/runbook.md` | S6, WP1-T | yes | ~900 |
 | WP3-E2E | Fake MemCan; full-stack Playwright extended: comments (create/reuse/edit/delete, outside the diff), Ask, feedback, resume, head moved, cancel, the three hard cases, rendered-text wording in all states; compose-based run in CI | `e2e/**`, `tools/fake-memcan/**` | M3a + M3b | — | ~700 |
 
@@ -485,7 +485,7 @@ Key acceptance tests (in addition to the brief items in §11):
 | WP4-PERF | Synthetic large PR (10k-line diff, 15k-line file, 140k-line generated file): range limits, bounded event log, SQLite WAL under SSE + runner posts | developer-bilby, opus | ~300 |
 | WP4-DOCS | README, runbook (GitHub App, Codex device login into the runner volume, `SR_SECRET_KEY`, proxy log retention, MemCan allowlist entry, later TLS interception and allowlist, backups, upgrade), CLAUDE.md commands | technical-writer-trillian, opus | docs |
 | WP4-DEPLOY | Deploy the compose stack on the deployment host behind the owner's reverse proxy (O6) with `SR_PUBLIC_URL=https://review.klimek.ws`; check login with the real App, cookies, SSE through the proxy | developer-bilby, opus (coordinator grants the slot) | config |
-| WP4-GUI | Exploratory + scripted GUI testing of the REAL deployed stack in a real browser (`playwright-cli` skill): the whole path on a real analysis of P-CAP (sign in, analyse, progress, Tour, Ask, feedback, pending comment created and deleted), comparison with `docs/mockups/` and the brief, keyboard map, light and dark theme, wide (21:9) and narrow viewports, error states; findings go back to implementers; report archived | qa-engineer-marvin, opus | review |
+| WP4-GUI | Exploratory + scripted GUI testing of the REAL deployed stack in a real browser (`playwright-cli` skill): the whole path on a real analysis of P-CAP (sign in, analyse, progress, Flows view, Ask, feedback, pending comment created and deleted), comparison with `docs/mockups/` and the brief, keyboard map, light and dark theme, wide (21:9) and narrow viewports, error states; findings go back to implementers; report archived | qa-engineer-marvin, opus | review |
 
 Exit (coordinator): acceptance run against §13; WP4-GUI findings fixed or recorded; one **full**
 `claudius:review-changes` of `feat/v1` (Codex Astra, xhigh) with all findings resolved or recorded;
@@ -617,12 +617,12 @@ private repositories; per-job containers (`ContainerExecutor`, one-shot runner e
 with the job); TLS interception in the proxy (full-URL logs, splice list for `chatgpt.com`/`openai.com`, own CA
 in the runner image, caching) and the host allowlist — later configuration of the same Squid per
 `research/egress-proxy.md`; per-client MemCan tokens; built-in TLS/ACME;
-versioning, changelog and schema migrations (before deployment); Groups workspace, overview, files tree;
+versioning, changelog and schema migrations (before deployment); Groups workspace, overview;
 partial review while running; re-review with carried ticks; recent-reviews list; dashboard; LLM auto-comment;
-PR-description-vs-code check; static-analysis actions; GitHub "Viewed" sync; custom "not analysed" rules;
+PR-description-vs-code check; static-analysis actions; custom "not analysed" rules;
 tenant UI, real tenants, billing; automatic approve/reject; comment drafts beyond the browser tab (brief
 amendment 2026-11-18 keeps them per tab); PR-level risk or size
-statistics; numeric confidence.
+statistics; numeric confidence. The files tree and per-file GitHub "Viewed" sync moved to v1.2 (§17).
 
 ## 14. Risks and mitigations
 
@@ -702,6 +702,28 @@ WPs), reporting channel. Brief WHAT, not HOW. WPs over ~1,000 lines are split be
 | Visual checks | Delegated to a UX agent against the mockups; no owner wait | §12.5 |
 | GUI tests | Mandatory exploratory + scripted tests of the real deployed stack in a real browser at the end | §10 WP4-GUI, §12.6 |
 | Owner availability | Away during implementation; all owner input collected once before dispatch; coordinator authority in §1 | §1, §6.1 |
+
+## 17. Stage v1.2 — Files view
+
+Design: `/data/artifacts/diffpilot/2026-11-19/files-view/proposal.md` (owner decisions §14 there) and brief §4.5.
+Branch `feat/v1.2`; rules as in §1–§5.
+
+| ID | Change request | Contract |
+|---|---|---|
+| C1 | File list with hunks (zero-context runs) and, per hunk part, the owning step, flow or reason and the steps also showing it; computed by the server from the same coverage as Unexplained (one source of truth); a step may cover lines of another flow. | R12 `getFiles` (http-api.md) |
+| C2 | Per-file Viewed as the user on GitHub: read `viewerViewedState` (null when not read), mark and unmark with `markFileAsViewed` / `unmarkFileAsViewed`; 409 when the head moved; a GitHub refusal is `github_refused`. | R13 `setFileViewed` |
+| C3 | Ask anchor `step` (optionally lines of it) or `lines` (a range or a whole file of one side); `AskQuestion.anchor`; step route kept. | R14 `askAnchored`, migration 0012 |
+| C4 | The ask prompt and the context pack carry the anchor: for lines, the classic diff, the owners of their changed lines and the overlapping steps; ADR-004 sessions unchanged. | prompts `ask_lines` |
+
+**U1 spike.** Whether a GitHub App user access token may call `markFileAsViewed` (the App has no documented
+permission for it). Until a real call answers it, a refusal is typed (`github_refused`) and the UI offers "mark it
+on GitHub" (proposal Q15). Run once against a real pull request with the owner's sign-in; record the answer here.
+
+**Tests.** Server: projection unit tests (owners, also-in, removed lines, path rules, no quadratic work), an
+integration test on fixture PR 482 (every changed line in exactly one part; Unexplained parts equal the Tour's),
+Viewed against wiremock and fake-github, anchored Ask validation and prompts (goldens `ask_lines.*`,
+`context_pack-ask_lines`). Web: Playwright and axe for the Files view at a viewport of at least 1600 px wide (the
+side panel needs it).
 
 ## Appendix A. Review dispositions (`/data/artifacts/diffpilot/2026-11-16/reviews/plan-review-fable.md`)
 

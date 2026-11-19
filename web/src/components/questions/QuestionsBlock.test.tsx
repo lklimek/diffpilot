@@ -7,6 +7,7 @@ import { QuestionsBlock } from "./QuestionsBlock";
 
 const q = (over: Partial<AskQuestion>): AskQuestion => ({
   id: "q1",
+  anchor: { kind: "step", step_id: "f1.5", lines: null },
   step_id: "f1.5",
   text: "Is the broadcast deduplicated?",
   state: "answered",

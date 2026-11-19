@@ -1055,7 +1055,7 @@ fn api_states_show_what_the_inventory_names() {
         panic!("resume: one question")
     };
     assert!(
-        question.step_id.0 == "f1.5"
+        question.step_id == Some(StepId("f1.5".to_owned()))
             && question.state == AskState::Answered
             && question.answer.is_some()
     );

@@ -195,7 +195,10 @@ async fn questions_and_job_completion_run_concurrently() {
         let question = NewQuestion {
             id: QuestionId::new_random(),
             analysis_id: analysis,
-            step_id: StepId("f1.1".to_owned()),
+            anchor: contracts::api::questions::AskAnchor::Step {
+                step_id: StepId("f1.1".to_owned()),
+                lines: None,
+            },
             user_id: "u1".to_owned(),
             text: format!("question {round}?"),
         };

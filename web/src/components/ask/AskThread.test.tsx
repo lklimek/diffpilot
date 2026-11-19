@@ -10,6 +10,7 @@ const question = (over: Partial<AskQuestion>): AskQuestion => ({
   id: "q1",
   mine: true,
   asked_by: "alice",
+  anchor: { kind: "step", step_id: "f1.5", lines: null },
   step_id: "f1.5",
   text: "Is the reply deduplicated?",
   state: "answered",

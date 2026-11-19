@@ -10,6 +10,7 @@ pub mod dashboard;
 pub mod error;
 pub mod events;
 pub mod feedback;
+pub mod files;
 pub mod pr;
 pub mod questions;
 pub mod review;

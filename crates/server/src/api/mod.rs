@@ -18,6 +18,7 @@ pub mod diff;
 pub mod error;
 pub mod events;
 pub mod feedback;
+pub mod files;
 pub mod flow_work;
 pub mod health;
 pub mod lines;
@@ -49,6 +50,7 @@ pub fn router(state: AppState) -> Router {
         .merge(diff::routes())
         .merge(events::routes())
         .merge(feedback::routes())
+        .merge(files::routes())
         .merge(health::routes())
         .merge(lines::routes())
         .merge(pr::routes())

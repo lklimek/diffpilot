@@ -582,7 +582,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const stepOrder = tour.flows.flatMap((f) => f.steps.map((s) => s.id));
   const rank = (id: StepId) => (stepOrder.includes(id) ? stepOrder.indexOf(id) : stepOrder.length);
   const myQuestions = (questions.data ?? [])
-    .filter((q) => q.mine !== false)
+    // Questions about lines (Files view) have no step and are not part of the tour.
+    .filter((q): q is AskQuestion & { step_id: StepId } => q.mine !== false && q.step_id !== undefined)
     .sort((a, b) => rank(a.step_id) - rank(b.step_id));
   const questionCounts: Record<StepId, number> = {};
   for (const q of myQuestions) questionCounts[q.step_id] = (questionCounts[q.step_id] ?? 0) + 1;

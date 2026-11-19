@@ -33,7 +33,7 @@ fn repo_root() -> PathBuf {
 }
 
 /// Starts the fake with the dashboard world; returns its base URL.
-async fn spawn_fake() -> String {
+pub(crate) async fn spawn_fake() -> String {
     spawn_fake_in(repo_root().join("fixtures/dashboard/github")).await
 }
 
@@ -63,7 +63,7 @@ fn http() -> reqwest::Client {
 }
 
 /// The fake's OAuth web flow; returns the access token.
-async fn sign_in(base: &str) -> String {
+pub(crate) async fn sign_in(base: &str) -> String {
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes()));
     let mut authorize = Url::parse(&format!("{base}/login/oauth/authorize")).unwrap();
     authorize.query_pairs_mut().extend_pairs([

@@ -23,6 +23,8 @@ function AskAgain({
   onAskAgain,
 }: { question: AskQuestion } & Required<Pick<AskAnswersProps, "onAskAgain">>) {
   const action = useAction();
+  const step = question.step_id;
+  if (step === undefined) return null;
   return (
     <>
       <Tooltip
@@ -34,7 +36,7 @@ function AskAgain({
         <button
           type="button"
           aria-disabled={action.busy || undefined}
-          onClick={() => !action.busy && void action.run(() => onAskAgain(question.step_id, question.text))}
+          onClick={() => !action.busy && void action.run(() => onAskAgain(step, question.text))}
           className="cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text aria-disabled:cursor-wait aria-disabled:opacity-60"
         >
           {action.busy ? "Asking…" : "Ask again"}

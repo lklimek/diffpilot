@@ -35,6 +35,7 @@ pub mod batching;
 pub mod context;
 pub mod control;
 mod driver;
+pub mod files;
 pub mod ingest;
 pub mod lines;
 pub mod prepass;

@@ -245,13 +245,36 @@ async fn migration_0010_on_a_seeded_v9_database() {
         Some(0)
     );
     assert_eq!(schema_after.len(), schema_before.len() + 2);
+    // 0012 rebuilds `questions` with four anchor columns after `step_id`, empty for existing rows; its own test
+    // checks that table, so here it is compared without them.
+    let rebuilt = |entry: &String| entry.split('|').nth(2) == Some("questions");
+    let schema_before: Vec<_> = schema_before
+        .into_iter()
+        .filter(|entry| !rebuilt(entry))
+        .collect();
     let schema_after: Vec<_> = schema_after
         .into_iter()
-        .filter(|entry| entry.split('|').nth(2) != Some("dashboard_hidden_mentions"))
+        .filter(|entry| {
+            entry.split('|').nth(2) != Some("dashboard_hidden_mentions") && !rebuilt(entry)
+        })
         .collect();
     let rows_after: Vec<_> = rows_after
         .into_iter()
         .filter(|(t, _)| t != "_sqlx_migrations" && t != "dashboard_hidden_mentions")
+        .map(|(table, rows)| {
+            if table != "questions" {
+                return (table, rows);
+            }
+            let rows = rows
+                .into_iter()
+                .map(|row| {
+                    let fields: Vec<&str> = row.splitn(9, '|').collect();
+                    assert_eq!(fields[4..8], ["NULL"; 4], "{row}");
+                    [&fields[..4], &fields[8..]].concat().join("|")
+                })
+                .collect();
+            (table, rows)
+        })
         .collect();
     let rows_before: Vec<_> = rows_before
         .into_iter()

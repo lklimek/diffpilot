@@ -1,8 +1,9 @@
 //! `POST /graphql`: the review threads of `acme/node-client#482` and the fake user's pending review, kept in
 //! memory. Documents are recognised by the field they use (the server's documents, `server::github::review`);
 //! answers have GitHub's shape, including the silent `thread: null` for a position outside the diff hunks or a
-//! file outside the pull request (spike S3). Nothing can submit a review.
+//! file outside the pull request (spike S3), and the user's Viewed marks per file. Nothing can submit a review.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use axum::Json;
@@ -55,6 +56,8 @@ pub(crate) struct Graphql {
     files: Vec<FileLines>,
     threads: Value,
     pending: Mutex<PendingState>,
+    /// The user's Viewed state by path (`VIEWED`, or `DISMISSED` after a head move); absent: `UNVIEWED`.
+    viewed: Mutex<BTreeMap<String, &'static str>>,
 }
 
 #[derive(Default)]
@@ -155,6 +158,7 @@ impl Graphql {
             files: files.into_iter().map(file_lines).collect(),
             threads,
             pending: Mutex::default(),
+            viewed: Mutex::default(),
         })
     }
 
@@ -174,6 +178,47 @@ impl Graphql {
     pub(crate) fn move_head(&self, sha: String) {
         tracing::info!(%sha, "fake-github moved the pull request head");
         *self.head.lock().unwrap_or_else(PoisonError::into_inner) = sha;
+        // GitHub dismisses Viewed marks of files a later commit changes; the fake treats every file as changed.
+        for state in self.viewed().values_mut() {
+            *state = "DISMISSED";
+        }
+    }
+
+    fn viewed(&self) -> MutexGuard<'_, BTreeMap<String, &'static str>> {
+        self.viewed.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Every file of the pull request with the user's Viewed state, on one page.
+    fn files_viewed(&self) -> Value {
+        let viewed = self.viewed();
+        let nodes: Vec<Value> = self
+            .files
+            .iter()
+            .map(|file| {
+                let state = viewed.get(&file.path).copied().unwrap_or("UNVIEWED");
+                json!({"path": file.path, "viewerViewedState": state})
+            })
+            .collect();
+        self.pull_request(json!({"id": self.pull_id, "headRefOid": self.head(),
+            "files": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": nodes}}))
+    }
+
+    /// `markFileAsViewed` / `unmarkFileAsViewed`; an unknown pull request or path is `NOT_FOUND`.
+    fn set_viewed(&self, field: &str, input: &Value, viewed: bool) -> Value {
+        let path = input["path"].as_str().unwrap_or_default();
+        let known = input["pullRequestId"] == json!(self.pull_id)
+            && self.files.iter().any(|file| file.path == path);
+        if !known {
+            return json!({"data": {field: null}, "errors": [{"type": "NOT_FOUND", "path": [field],
+                "message": "Could not resolve the pull request or the file."}]});
+        }
+        if viewed {
+            self.viewed().insert(path.to_owned(), "VIEWED");
+        } else {
+            self.viewed().remove(path);
+        }
+        tracing::info!(path, viewed, "fake-github changed a Viewed mark");
+        json!({"data": {field: {"clientMutationId": null}}})
     }
 
     fn pull_request(&self, fields: Value) -> Value {
@@ -369,6 +414,12 @@ pub(crate) async fn serve(
             "fake-github refuses to create or submit a review; the server must never do this"
         );
         json!({"data": null, "errors": [{"type": "FORBIDDEN", "message": "not supported by fake-github"}]})
+    } else if query.contains("unmarkFileAsViewed") {
+        graphql.set_viewed("unmarkFileAsViewed", input, false)
+    } else if query.contains("markFileAsViewed") {
+        graphql.set_viewed("markFileAsViewed", input, true)
+    } else if query.contains("viewerViewedState") {
+        graphql.files_viewed()
     } else if query.contains("addPullRequestReviewThread") {
         graphql.add_thread(input)
     } else if query.contains("updatePullRequestReviewComment") {

@@ -18,6 +18,7 @@ use crate::github::{checks, threads};
 use crate::state::AppState;
 
 pub mod comments;
+pub mod viewed;
 
 /// Threads and CI status of the pull request, read once at ingest with the analysis creator's token; stored as
 /// the analysis's `github_snapshot` document.

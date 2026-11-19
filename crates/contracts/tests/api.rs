@@ -24,8 +24,12 @@ use contracts::api::events::AnalysisEvent;
 use contracts::api::feedback::{
     Feedback, FeedbackRequest, FeedbackTarget, FeedbackValue, UserFeedbackValue,
 };
+use contracts::api::files::{
+    FileGroup, FileHunk, FileViewedState, FilesResponse, HunkPart, PartOwner, SetViewedRequest,
+    ViewedStatus,
+};
 use contracts::api::pr::{PrSummary, ResolvePrResponse};
-use contracts::api::questions::{AskQuestion, AskRequest, AskState};
+use contracts::api::questions::{AnchoredAskRequest, AskAnchor, AskQuestion, AskRequest, AskState};
 use contracts::api::review::{BlockRef, QuietRowRef, ReviewState};
 use contracts::api::settings::{AppInstallation, RepoSettings, Settings};
 use contracts::api::tour::{
@@ -273,6 +277,7 @@ fn error_codes_map_to_statuses() {
         ("token_not_accepted", 403),
         ("token_limit_reached", 409),
         ("rate_limited", 429),
+        ("github_refused", 502),
     ];
     assert_eq!(ApiErrorCode::ALL.len(), expected.len());
     for (code, (name, status)) in ApiErrorCode::ALL.into_iter().zip(expected) {
@@ -477,12 +482,108 @@ fn tagged_wire_formats() {
 }
 
 #[test]
+fn ask_anchors_and_files_wire_formats() {
+    let lines = LineRange {
+        start_line: 100,
+        end_line: 102,
+    };
+    let cases = [
+        (
+            serde_json::to_value(AskAnchor::Step {
+                step_id: StepId("f1.6".to_owned()),
+                lines: Some(lines),
+            }),
+            json!({"kind": "step", "step_id": "f1.6", "lines": {"start_line": 100, "end_line": 102}}),
+        ),
+        (
+            serde_json::to_value(AnchoredAskRequest {
+                text: "q".to_owned(),
+                anchor: AskAnchor::Lines {
+                    path: "src/a.rs".to_owned(),
+                    side: LineSide::Head,
+                    range: None,
+                },
+            }),
+            json!({"text": "q", "anchor": {"kind": "lines", "path": "src/a.rs", "side": "head", "range": null}}),
+        ),
+        (
+            serde_json::to_value(PartOwner::Unexplained { reason: None }),
+            json!({"kind": "unexplained"}),
+        ),
+        (
+            serde_json::to_value(PartOwner::Step {
+                flow_id: FlowId("f1".to_owned()),
+                step_id: StepId("f1.2".to_owned()),
+            }),
+            json!({"kind": "step", "flow_id": "f1", "step_id": "f1.2"}),
+        ),
+        (
+            serde_json::to_value(PartOwner::WhitespaceOnly),
+            json!({"kind": "whitespace_only"}),
+        ),
+        (
+            serde_json::to_value(FileGroup::Code),
+            json!({"kind": "code"}),
+        ),
+        (
+            serde_json::to_value(SetViewedRequest {
+                path: "src/a.rs".to_owned(),
+                viewed: true,
+            }),
+            json!({"path": "src/a.rs", "viewed": true}),
+        ),
+        (
+            serde_json::to_value(FilesResponse {
+                files: Vec::new(),
+                viewed_status: ViewedStatus::NotChecked,
+                current_head: None,
+            }),
+            json!({"files": [], "viewed_status": "not_checked", "current_head": null}),
+        ),
+        (
+            serde_json::to_value(FileViewedState::Dismissed),
+            json!("dismissed"),
+        ),
+    ];
+    for (actual, expected) in cases {
+        assert_eq!(actual.expect("serialises"), expected);
+    }
+    let hunk = FileHunk {
+        id: contracts::ids::HunkId("h3".to_owned()),
+        base: Some(lines),
+        head: None,
+        after_line: Some(99),
+        parts: vec![HunkPart {
+            side: LineSide::Base,
+            range: lines,
+            owner: PartOwner::Flow {
+                flow_id: FlowId("f5".to_owned()),
+            },
+            also_in: vec![StepId("f1.2".to_owned())],
+        }],
+    };
+    let json = serde_json::to_value(&hunk).expect("serialises");
+    assert_eq!(
+        json["parts"][0]["owner"],
+        json!({"kind": "flow", "flow_id": "f5"})
+    );
+    assert_eq!(
+        serde_json::from_value::<FileHunk>(json).expect("round trip"),
+        hunk
+    );
+}
+
+#[test]
 fn sse_event_name_is_the_tag() {
     let question = AskQuestion {
         asked_by: None,
         mine: None,
         id: QuestionId::new_random(),
-        step_id: StepId("f1.1".to_owned()),
+        anchor: AskAnchor::Step {
+            step_id: StepId("f1.1".to_owned()),
+            lines: None,
+        },
+        step_id: Some(StepId("f1.1".to_owned())),
         text: "q".to_owned(),
         state: AskState::Answered,
         answer: Some(AskOutput {
@@ -514,7 +615,11 @@ fn ask_question_resumes_at_only_while_waiting_for_the_usage_limit() {
         asked_by: None,
         mine: None,
         id: QuestionId::new_random(),
-        step_id: StepId("f1.1".to_owned()),
+        anchor: AskAnchor::Step {
+            step_id: StepId("f1.1".to_owned()),
+            lines: None,
+        },
+        step_id: Some(StepId("f1.1".to_owned())),
         text: "q".to_owned(),
         state: AskState::Pending,
         answer: None,

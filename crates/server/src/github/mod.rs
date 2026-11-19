@@ -8,6 +8,7 @@ pub mod oauth;
 pub mod rest;
 pub mod review;
 pub mod threads;
+pub mod viewed;
 pub mod work;
 
 pub mod related;

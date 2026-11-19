@@ -25,7 +25,7 @@ const LINK =
 /** Every question the user asked in this review, grouped by step, each with its state or LLM answer. */
 export function QuestionsBlock({ questions, placeOf, onEvidence, onAskAgain }: QuestionsBlockProps) {
   const mine = questions.filter((q) => q.mine !== false);
-  const steps = [...new Set(mine.map((q) => q.step_id))];
+  const steps = [...new Set(mine.flatMap((q) => (q.step_id === undefined ? [] : [q.step_id])))];
   return (
     <QuietCard title={`Your questions and answers (${mine.length})`}>
       <Note>Only you see these questions. Answers are LLM analysis; the agent was told not to run code.</Note>

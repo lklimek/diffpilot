@@ -57,6 +57,7 @@ marked `read` in `routes.rs`; every other route answers 403 `token_not_accepted`
 | A14 | `GET /api/v1/analyses/{id}/pending-review` | `PendingReview` (`pending_review`) |
 | A15 | `GET /api/v1/settings`, `GET /api/v1/repos/{owner}/{name}/settings` | `Settings`, `RepoSettings` (`settings`, `repo_settings`) |
 | A16 | `GET /api/v1/analyses` | `MyAnalyses` (`my_analyses`), the user's own; query `MyAnalysesQuery` (`my_analyses_query`) |
+| A17 | `GET /api/v1/analyses/{id}/files` (R12) | `FilesResponse` (`files_response`): files, hunks and who explains each changed line; the user's GitHub Viewed marks |
 
 Never with a token: refreshing, cancelling or ranking the dashboard, any settings change, starting or steering an
 analysis, asking, feedback, pending comments, listing or creating tokens (`/api/v1/settings/access-tokens`), and
@@ -65,8 +66,11 @@ request item (A3). Reads backed by the user's GitHub token (A14, installations i
 without a GitHub sign-in when the server holds none: 401 `unauthenticated` with the message "Your GitHub sign-in
 has ended. Sign in again." and **no** `WWW-Authenticate` header (the access token itself is fine).
 
+A17 reads the Viewed marks with the user's GitHub token; without an answer it still serves the files, with
+`viewed_status: not_checked`.
+
 **Do not poll faster than once a minute.** Reads backed by the user's GitHub token (A9 related-link checks, A14,
-installations in A15) spend the user's own GitHub budget (5000 requests an hour, shared with the browser and the
+installations in A15, Viewed marks in A17) spend the user's own GitHub budget (5000 requests an hour, shared with the browser and the
 dashboard refresh); for a token the server reuses each such read for 60 s per user, so polling them faster only
 returns the same answer. A2 is a cheap database read.
 

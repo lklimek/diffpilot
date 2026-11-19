@@ -53,7 +53,10 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 | GET | `/api/v1/analyses/{id}/diff` | read | `RangeQuery` | `DiffResponse` (409 `analysis_not_finished` before the analysis is ready) |
 | GET / PUT | `/api/v1/analyses/{id}/review-state` | read / session_csrf | – / `ReviewState` | `ReviewState` / 204 (PUT: 409 `analysis_not_finished` before `finished`) |
 | GET | `/api/v1/analyses/{id}/questions` | read | – | `AskQuestion[]` |
-| POST | `/api/v1/analyses/{id}/steps/{step_id}/questions` | session_csrf | `AskRequest` | 202 `AskQuestion` |
+| POST | `/api/v1/analyses/{id}/steps/{step_id}/questions` | session_csrf | `AskRequest` | 202 `AskQuestion` (anchor `step` without lines) |
+| POST | `/api/v1/analyses/{id}/questions` | session_csrf | `AnchoredAskRequest` | 202 `AskQuestion` (R14 `askAnchored`, v1.2) |
+| GET | `/api/v1/analyses/{id}/files` | read | – | `FilesResponse` (R12 `getFiles`, v1.2; 409 `analysis_not_finished` until plan and PR context are accepted) |
+| PUT | `/api/v1/analyses/{id}/files/viewed` | session_csrf | `SetViewedRequest` | 204 (R13 `setFileViewed`, v1.2) |
 | GET / POST | `/api/v1/analyses/{id}/feedback` | read / session_csrf | – / `FeedbackRequest` | `Feedback[]` / `Feedback` |
 | DELETE | `…/feedback/{feedback_id}` | session_csrf | – | 204 |
 | GET | `/api/v1/analyses/{id}/pending-review` | read | – | `PendingReview` |
@@ -198,6 +201,32 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   question owned by its sender. Plain text:
   HTML-like tags (`<` followed by a letter, `/` or `!`) are allowed only inside code spans and closed fenced
   blocks; a GitHub URL carries no user info and no explicit port.
+- **Anchored Ask** (R14, v1.2). Same rules as the step route; the question is about `anchor`: `step` (a stored
+  step of the Tour, `not_found` otherwise; optional `lines` inside the step's range) or `lines` (`path` of a file
+  of the pull request on `side`; `range` within the file, or none for the whole file). Lines are 1-based,
+  `start_line ≤ end_line`, at most `AskAnchor::MAX_LINES` (2000); anything else is `invalid_request`. The step
+  route stores a `step` anchor without lines. `AskQuestion.anchor` is always set; `step_id` only for a step anchor.
+  A lines question's job gets the lines, their classic diff (three lines of context, clipped), the owners of their
+  changed lines from R12 and the overlapping steps in summary; its context pack those steps in full. Sessions as
+  ADR-004.
+- **Files** (R12, v1.2). Every file of the pull request in diff order: `path`, `old_path` (renames), `status`,
+  `binary`, `added`/`removed`, `group` (`code`, or `not_analysed` with the path rule's category, badge and rule),
+  `not_rendered` (`too_large`, `generated`, `binary`: the code of that file is never shown), `viewed`, and `hunks` (the diff
+  without context: `base`/`head` ranges, `after_line` for a pure deletion). Each hunk's `parts` split its lines,
+  base side first, into runs with one `owner`: `step` (the first step of the accepted flow whose verification
+  covered the line), `flow` (a flow not analysed yet whose plan holds the line), `unexplained` (with the Tour's
+  reason), `not_analysed`, `context_rule` (a line rule), `identical_move` (with both ranges) or `whitespace_only`;
+  `also_in` lists the other steps whose lines include the run. Owners come from the coverage the Tour uses: the
+  `unexplained` parts are exactly the Tour's Unexplained rows. `viewed` is the user's GitHub state (`viewed`,
+  `unviewed`, `dismissed`: viewed before a later commit changed the file) read as the user;
+  `viewed_status` says whether it was read (`checked`, `partial` beyond 3000 files, `not_checked` when GitHub did
+  not answer; then every `viewed` is null, never assumed) and `current_head` is the head GitHub reported. An
+  access-token reader gets the Viewed read cached for a minute.
+- **Viewed** (R13, v1.2). `{path, viewed}` marks or unmarks one file of the pull request as the user on GitHub
+  (`markFileAsViewed` / `unmarkFileAsViewed`). A path outside the pull request is `invalid_request`; a head that
+  moved since the analysis is `pr_head_changed` (nothing is written; the head can still move between that check
+  and the write); GitHub refusing it (e.g. the user token may not mark files) is `github_refused`, nothing changed;
+  an unexpected answer is `github_unavailable` (the mark may have changed; read again). Nothing is stored locally.
 - **MemCan status**: Settings and Tour PR-context facts expose `memcan_status {state, last_success_at}`,
   separate from `project_profile.memcan` (the stored analysis lookup). Read status never calls MemCan.
   `not_checked` means configured but no completed attempt since startup; `reachable` means the last attempt
@@ -255,8 +284,8 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `csrf_rejected` | 403 | missing or wrong `X-CSRF-Token` |
 | `not_found` | 404 | unknown or not visible |
 | `conflict` | 409 | state conflict (e.g. analysis already live for this head) |
-| `analysis_not_finished` | 409 | tour, questions, review-state writes before `finished`; lines, diff before the analysis is ready (stored base is the merge base); repository settings without a stored pre-pass |
-| `pr_head_changed` | 409 | comment write when the PR head moved (before or during the write) |
+| `analysis_not_finished` | 409 | tour, files, questions, review-state writes before `finished`; lines, diff before the analysis is ready (stored base is the merge base); repository settings without a stored pre-pass |
+| `pr_head_changed` | 409 | comment write when the PR head moved (before or during the write); Viewed write when the head moved since the analysis |
 | `comment_published` | 409 | edit or delete applied to a comment whose review was published meanwhile; or a new comment on a moved head removed from a review published meanwhile |
 | `private_repository` | 422 | v1 is public repositories only |
 | `app_not_installed` | 422 | comment routes without the App on the PR repo |
@@ -264,6 +293,7 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `not_rendered` | 422 | file classified as not rendered; diff of a binary file |
 | `internal` | 500 | anything else (no detail) |
 | `github_unavailable` | 502 | GitHub error or unexpected answer |
+| `github_refused` | 502 | GitHub refused a change made as the user (the Viewed mark, R13); nothing was changed |
 | `unavailable` | 503 | the database was busy or locked past its wait; carries `Retry-After: 1`. The web client retries a GET, PUT or DELETE once after that delay, never a POST |
 | `insufficient_scope` | 403 | a valid access token without the route's scope |
 | `token_not_accepted` | 403 | an access token on a route that is not `read` or on a non-safe method |
