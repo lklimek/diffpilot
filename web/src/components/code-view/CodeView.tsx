@@ -374,24 +374,11 @@ function DeletedRun({ block, rows, anchor, nested = false, onLoadDeleted, paired
             <Popover
               label={more}
               hint="Shows the rest of the deleted lines of this block, from the base commit."
-              content={(pinned, close) => (
-                <>
-                  <span className="block">
-                    Shows the rest of the deleted lines of this block, from the base commit.
-                  </span>
-                  {pinned && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onLoadDeleted(block);
-                        close();
-                      }}
-                      className="min-h-6 cursor-pointer justify-self-start rounded border border-border bg-surface px-2 text-text hover:border-accent"
-                    >
-                      Show the rest
-                    </button>
-                  )}
-                </>
+              onActivate={() => onLoadDeleted(block)}
+              content={() => (
+                <span className="block">
+                  Click to show the rest of the deleted lines of this block, from the base commit.
+                </span>
               )}
             >
               <button
@@ -506,7 +493,7 @@ export function AskLineButton({
   return (
     <Popover
       label={name}
-      hint="Hover, focus or click for how to ask the LLM about this line."
+      hint="Hover or click for how to ask the LLM about this line."
       className={className}
       content={(pinned, close) => (
         <>

@@ -30,6 +30,8 @@ interface PopoverProps {
   }>;
   /** Short plain text that describes the trigger while the popover is closed (the content is not mounted then). */
   hint?: string;
+  /** A click acts at once (a folded row): the popup only explains on hover or focus, and is never pinned. */
+  onActivate?: () => void;
   /** Classes of the wrapper (layout of the trigger). */
   className?: string;
 }
@@ -50,6 +52,11 @@ const setPinned = (id: string | null) => {
 // true: focus set by a script follows the keyboard.
 let keyboard = true;
 const keyboardModality = () => keyboard;
+
+/** Test-only: forgets the last pointer input, as at page load. */
+export const resetKeyboardModality = () => {
+  keyboard = true;
+};
 if (typeof document !== "undefined") {
   document.addEventListener(
     "keydown",
@@ -86,7 +93,7 @@ function clippedOut(element: HTMLElement, rect: DOMRect): boolean {
  * onto it); a click, Enter or Space pins it with selectable text until its close button, Escape, a click
  * outside, or another pinned popover closes it. Closing by button or Escape returns the focus to the trigger.
  */
-export function Popover({ label, tag, content, hint, children, className = "" }: PopoverProps) {
+export function Popover({ label, tag, content, hint, onActivate, children, className = "" }: PopoverProps) {
   const id = useId();
   const wrapper = useRef<HTMLSpanElement>(null);
   const pinned = useSyncExternalStore(subscribe, () => pinnedId === id);
@@ -217,6 +224,11 @@ export function Popover({ label, tag, content, hint, children, className = "" }:
         "aria-controls": open ? id : undefined,
         "aria-describedby": open ? `${id}-body` : hint ? `${id}-hint` : undefined,
         onClick: () => {
+          if (onActivate) {
+            setDismissed(true);
+            onActivate();
+            return;
+          }
           setDismissed(false);
           setPinned(pinned ? null : id);
         },

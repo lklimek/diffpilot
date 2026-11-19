@@ -24,12 +24,6 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
     reason: "Action inside the Ask icon's popover: labelled by its text, which the popover text explains.",
   },
   {
-    file: "components/code-view/CodeView.tsx",
-    match: "onLoadDeleted(block)",
-    reason:
-      "Action inside the show-the-rest icon's popover: labelled by its text, which the popover explains.",
-  },
-  {
     file: "components/comment/LineComments.tsx",
     match: "aria-controls={panelId}",
     reason:

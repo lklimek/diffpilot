@@ -329,13 +329,21 @@ describe("CodeView", () => {
     const block = { after_line: 1, base_start: 10, lines: ["x", "y"], total_lines: 7 };
     const lines = plain(1, ["a", "b"], { deleted: [block] });
     const { rerender } = render(<CodeView lines={lines} onLoadDeleted={onLoadDeleted} />);
-    // An icon: its popover explains it; the action is a labelled button in the pinned popover.
+    // An icon: hover shows its popup, one click acts (no pin step, no second button).
     const icon = screen.getByRole("button", { name: "Show 5 more deleted lines" });
     expect(icon).not.toHaveAttribute("title");
+    await userEvent.hover(icon);
+    expect(screen.getByRole("dialog", { name: "5 more deleted lines" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Show the rest" })).toBeNull();
     await userEvent.click(icon);
-    expect(onLoadDeleted).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: "Show the rest" }));
+    expect(onLoadDeleted).toHaveBeenCalledTimes(1);
     expect(onLoadDeleted).toHaveBeenCalledWith(block);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Enter and Space act too.
+    icon.focus();
+    await userEvent.keyboard("{Enter}");
+    await userEvent.keyboard(" ");
+    expect(onLoadDeleted).toHaveBeenCalledTimes(3);
     rerender(<CodeView lines={lines} />);
     expect(screen.queryByRole("button", { name: /more deleted lines/ })).toBeNull();
     expect(screen.getByText("5 more deleted lines")).toBeInTheDocument();
@@ -604,7 +612,7 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     expect(marker).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Is the retry bounded?")).toBeNull();
     expect(marker).toHaveAccessibleDescription(
-      "Your comment in your GitHub pending review; nothing is published. Hover, focus or click for its text.",
+      "Your comment in your GitHub pending review; nothing is published. Hover or click for its text.",
     );
     act(() => marker.focus());
     expect(marker).toHaveAccessibleDescription(

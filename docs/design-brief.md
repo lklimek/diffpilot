@@ -313,7 +313,7 @@ clicking anywhere on the strip restores it.
 - A moved block with identical text reads "Body text identical; call site changed in flow 1".
 
 **Code view.** Own line renderer. Gutter: neutral mark on every changed line; LLM colouring only on annotated
-ranges; markers for LLM remark, deleted site, GitHub thread, own comment. A highlight has no hover tooltip; clicking its remark marker opens a popover with Was and Is as separate blocks. The "?" (ask), "show the rest" and own-comment icons work the same way: hover or focus shows a popup, moving away hides it unless it was clicked, a click pins it until the next click; the action (ask, show the rest, open the comment) is a labelled button in the pinned popup.
+ranges; markers for LLM remark, deleted site, GitHub thread, own comment. A highlight has no hover tooltip; clicking its remark marker opens a popover with Was and Is as separate blocks. The "?" (ask) and own-comment icons work the same way: hover or focus shows a popup, moving away hides it unless it was clicked, a click pins it until the next click; the action (ask, open the comment) is a labelled button in the pinned popup. A folded row ("N more deleted lines", the comment/import fold) acts on one click, Enter or Space; hover or focus only shows its explaining popup, with no pin step and no second button.
 Legend (shown in `?`):
 
 | Drawing | Meaning |

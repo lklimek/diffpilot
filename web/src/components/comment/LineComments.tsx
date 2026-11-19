@@ -76,7 +76,7 @@ export function CommentMarker({
   return (
     <Popover
       label={name}
-      hint={`${about} Hover, focus or click for its text.`}
+      hint={`${about} Hover or click for its text.`}
       className="inline-flex"
       content={(pinned, close) => (
         <>

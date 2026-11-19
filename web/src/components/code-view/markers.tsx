@@ -85,7 +85,7 @@ export function RemarkMarker({
     <Popover
       label={`LLM remarks at line ${line}`}
       tag="llm"
-      hint="LLM remark. Hover, focus or click for its text."
+      hint="LLM remark. Hover or click for its text."
       content={(pinned) => [
         unrated && (
           <span key="unrated" className="block text-muted">
@@ -168,7 +168,7 @@ export function ThreadMarker({
     <Popover
       label={`${n === 1 ? "GitHub thread" : "GitHub threads"} at line ${line}`}
       tag="github"
-      hint="GitHub review thread. Hover, focus or click for its text."
+      hint="GitHub review thread. Hover or click for its text."
       content={(pinned) =>
         threads.map((t) => (
           <span key={t.id} className="block">
