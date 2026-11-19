@@ -50,6 +50,7 @@ impl ApiErrorSource for ViewedApiError {
             Self::Viewed(error) if error.unauthorized() => ApiErrorCode::Unauthenticated,
             Self::Viewed(ViewedError::UnknownFile) => ApiErrorCode::InvalidRequest,
             Self::Viewed(ViewedError::PrHeadChanged) => ApiErrorCode::PrHeadChanged,
+            Self::Viewed(ViewedError::Busy) => ApiErrorCode::Conflict,
             Self::Viewed(ViewedError::Refused(_) | ViewedError::MissingPullRequest) => {
                 ApiErrorCode::GithubRefused
             }
@@ -77,8 +78,11 @@ impl ApiErrorSource for ViewedApiError {
             Self::Viewed(ViewedError::PrHeadChanged) => {
                 "The pull request changed since this analysis; marking Viewed would apply to newer code. Analyse it again, or mark it on GitHub."
             }
+            Self::Viewed(ViewedError::Busy) => {
+                "Your previous Viewed change is still being saved. Try again in a moment."
+            }
             Self::Viewed(ViewedError::Refused(_) | ViewedError::MissingPullRequest) => {
-                "Not saved on GitHub: GitHub refused the change. Your mark is unchanged; mark it on GitHub."
+                "Not saved on GitHub: GitHub refused the change. Your mark is unchanged; try again later or mark it on GitHub."
             }
             Self::Viewed(ViewedError::Github(_) | ViewedError::NoPayload) => {
                 "GitHub did not confirm the change. Reload to see your mark, then try again."
@@ -112,11 +116,11 @@ async fn list(
     let viewed = github_read(
         &session,
         format!("files-viewed:{id}"),
-        viewed::read_cached(&state, &session.user_id, &summary),
+        viewed::read(&state, &session.user_id, &summary),
     );
     let (listed, viewed) = tokio::join!(file_list(&state, &summary), viewed);
     let mut listed = listed.map_err(failure)?;
-    let Ok(viewed) = viewed;
+    let viewed = viewed.map_err(failure)?;
     for file in &mut listed {
         file.viewed = viewed.files.get(&file.path).copied();
     }

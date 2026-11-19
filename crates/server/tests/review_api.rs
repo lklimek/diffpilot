@@ -73,6 +73,8 @@ fn config(dir: &Path) -> Config {
             format!("file://{}", dir.join("remotes").display()),
         ),
         ("SR_MEMCAN_URL", "http://memcan.example.test/mcp".to_owned()),
+        // Nothing listens there: a GitHub read with a user token fails at once, never reaching GitHub.
+        ("SR_GITHUB_API_URL", "http://127.0.0.1:9".to_owned()),
         ("SR_MEMCAN_TOKEN", "fake-memcan-token".to_owned()),
     ]);
     Config::from_lookup(|key| Ok(env.get(key).cloned())).expect("test configuration")
@@ -116,6 +118,26 @@ impl Harness {
             h.sign_in(DEFAULT_TENANT, user, github_id).await;
         }
         h
+    }
+
+    /// Stores a GitHub token pair for `user` (the API URL answers nothing, so its reads are "not checked").
+    async fn github_tokens(&self, user: &str) {
+        let lock = server::auth::lock_user(user).await;
+        let grant = server::github::oauth::TokenGrant {
+            access_token: secrecy::SecretString::from(format!("ghu_test_{user}")),
+            expires_in: 8 * 3600,
+            refresh_token: secrecy::SecretString::from(format!("ghr_test_{user}")),
+            refresh_token_expires_in: 180 * 86_400,
+        };
+        server::auth::store_sign_in_tokens(
+            &self.state,
+            &lock,
+            DEFAULT_TENANT,
+            &grant,
+            Timestamp::now(),
+        )
+        .await
+        .expect("tokens");
     }
 
     async fn sign_in(&self, tenant: &str, user: &str, github_id: i64) {
@@ -759,12 +781,19 @@ async fn analysis_routes_check_session_csrf_and_tenant() {
     h.sign_in("other", "u-carol", 3003).await;
     let get_diff = diff(id, "src/lib.rs", "head", 1, 5);
     let viewed = || Some(json!({ "path": "src/lib.rs", "viewed": true }));
+    let ask_lines = || {
+        Some(
+            json!({ "text": "Why?", "anchor": { "kind": "lines", "path": "src/lib.rs", "side": "head", "range": null } }),
+        )
+    };
+    let questions = format!("/api/v1/analyses/{id}/questions");
     for (method, uri, csrf, body) in [
         ("GET", review_state(id), false, None),
         ("PUT", review_state(id), true, body()),
         ("GET", get_diff.clone(), false, None),
         ("GET", files(id), false, None),
         ("PUT", files_viewed(id), true, viewed()),
+        ("POST", questions.clone(), true, ask_lines()),
     ] {
         let (status, error) = h.send(method, &uri, None, csrf, body.clone()).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
@@ -777,8 +806,12 @@ async fn analysis_routes_check_session_csrf_and_tenant() {
         );
         assert_eq!(error["code"], json!("not_found"));
     }
-    for (uri, body) in [(review_state(id), body()), (files_viewed(id), viewed())] {
-        let (status, error) = h.send("PUT", &uri, Some(ALICE), false, body).await;
+    for (method, uri, body) in [
+        ("PUT", review_state(id), body()),
+        ("PUT", files_viewed(id), viewed()),
+        ("POST", questions.clone(), ask_lines()),
+    ] {
+        let (status, error) = h.send(method, &uri, Some(ALICE), false, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
         assert_eq!(error["code"], json!("csrf_rejected"));
     }
@@ -959,7 +992,7 @@ async fn files_own_every_changed_line_once_and_agree_with_the_tour() {
     let h = Harness::new().await;
     let id = h.analysis(true).await;
     let tour = h.tour(id).await;
-    // Last request of the test: a session without GitHub tokens ends at its first GitHub-backed read.
+    h.github_tokens("u-alice").await;
     let (status, body) = h.get(&files(id)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let response: FilesResponse = serde_json::from_value(body).expect("files");
@@ -1076,6 +1109,10 @@ async fn files_wait_for_the_analysis_and_viewed_refuses_other_paths() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // Without a GitHub sign-in the Viewed marks cannot be read: sign in again, not "not checked".
+    let (status, body) = h.send("GET", &files(id), Some(BOB), false, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["code"], json!("unauthenticated"));
 }
 
 /// C1 contract: a `step` owner is a step of the named flow that holds the lines in the Tour, and head lines it owns
@@ -1084,6 +1121,7 @@ async fn files_wait_for_the_analysis_and_viewed_refuses_other_paths() {
 async fn files_step_owners_agree_with_the_tour_steps() {
     let h = Harness::new().await;
     let id = h.analysis(true).await;
+    h.github_tokens("u-alice").await;
     let tour = h.tour(id).await;
     let (status, body) = h.get(&files(id)).await;
     assert_eq!(status, StatusCode::OK, "{body}");

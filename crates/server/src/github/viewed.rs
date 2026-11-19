@@ -149,10 +149,12 @@ pub async fn read(
     if after.is_some() {
         read.incomplete = true;
     }
-    tracing::debug!(
-        files = read.files.len(),
-        "the Viewed state of more files exists than is read"
-    );
+    if read.incomplete {
+        tracing::debug!(
+            files = read.files.len(),
+            "the pull request has more files than the Viewed read covers"
+        );
+    }
     Ok(read)
 }
 
