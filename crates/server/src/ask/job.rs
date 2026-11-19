@@ -429,6 +429,13 @@ async fn submit(
                         },
                     })
                     .collect();
+            let ids: Vec<StepId> = steps.iter().map(|step| step.step_id.clone()).collect();
+            // Stored before the job exists, so its claim finds them.
+            state
+                .db
+                .questions()
+                .set_touched_steps(question.id, &ids)
+                .await?;
             prompts::ask_lines(&AskLinesInput {
                 job,
                 lines: AskedLines {
@@ -637,14 +644,14 @@ async fn lines_about(
 }
 
 /// The context pack of an `ask` job, built at claim: the stored results with the asked step in full, the rest of
-/// its flow analysis and this user's questions answered earlier across the PR. Without the stored step (never for a
-/// finished analysis) the pack holds the stored results only, so the claim is never blocked.
+/// its flow analysis (asked lines: the steps chosen at submit) and this user's questions answered earlier across the
+/// PR. Without the stored step (never for a finished analysis) the pack holds the stored results only, so the claim
+/// is never blocked.
 pub async fn context_pack(
-    state: &AppState,
+    db: &Db,
     analysis: AnalysisId,
     question: QuestionId,
 ) -> Result<Option<String>, ContextPackError> {
-    let db = &state.db;
     let record = db.questions().get(question, Timestamp::now()).await?;
     let summary = db.analyses().summary(analysis).await?;
     let results = StoredResults::load(db, analysis).await?;
@@ -670,16 +677,12 @@ pub async fn context_pack(
             Asked::Step { step_id, flow }
         }
         AskAnchor::Lines { path, side, range } => {
-            let ids: Vec<StepId> = match lines_facts(state, &summary, path, *side, *range).await {
-                Ok((facts, flows)) => touched(&flows, &facts, path, *side, *range)
-                    .map(|(_, step)| step.id.clone())
-                    .collect(),
-                Err(error) => {
-                    tracing::warn!(%analysis, %question, ?error,
-                        "the Tour of asked lines could not be built; the context pack holds no step of them");
-                    Vec::new()
-                }
-            };
+            // Chosen from the Tour at submit; the claim never rebuilds it.
+            let ids = record.touched_steps.clone().unwrap_or_else(|| {
+                tracing::warn!(%analysis, %question,
+                    "the steps of asked lines were not stored; the context pack holds no step of them");
+                Vec::new()
+            });
             touched_steps = ids
                 .into_iter()
                 .filter_map(|id| {

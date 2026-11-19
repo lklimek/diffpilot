@@ -343,7 +343,7 @@ async fn claim_job(
     authorize_runner(&state, &headers)?;
     let Json(request) = body.map_err(RunnerError::from)?;
     let packs = StoredPacks {
-        state: state.clone(),
+        db: state.db.clone(),
     };
     let response = claim::claim(&state.db, &state.config, &packs, &request, Timestamp::now())
         .await

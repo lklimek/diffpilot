@@ -1739,7 +1739,7 @@ async fn private_working_thread_is_committed_without_advancing_analytic_and_refo
             .contains("PRIVATE_MARKER")
     );
     let analytic_pack = crate::pipeline::context::StoredPacks {
-        state: f.state.clone(),
+        db: f.state.db.clone(),
     };
     use crate::jobs::claim::ContextPacks;
     for stage in [
@@ -1954,7 +1954,7 @@ async fn a_question_about_lines_carries_their_owners_and_steps() {
         assert!(prompt.contains(text), "{text} not in {prompt}");
     }
     assert!(prompt.contains("+"), "the classic diff is quoted");
-    let pack = job::context_pack(&f.state, f.analysis, id)
+    let pack = job::context_pack(&f.state.db, f.analysis, id)
         .await
         .expect("pack")
         .expect("some pack");
@@ -2058,7 +2058,7 @@ async fn a_question_about_moved_away_lines_gets_their_owning_step() {
             "owner {owner} of asked lines is not among the steps given to the job: {prompt}"
         );
     }
-    let pack = job::context_pack(&f.state, f.analysis, id)
+    let pack = job::context_pack(&f.state.db, f.analysis, id)
         .await
         .expect("pack")
         .expect("some pack");
@@ -2132,4 +2132,45 @@ fn a_whole_file_diff_says_where_it_stops() {
         None,
         "a range is quoted as asked"
     );
+}
+
+/// The claim reads the steps chosen at submit and does not rebuild the Tour: here the Tour cannot be built (no GitHub
+/// snapshot), yet the pack holds the stored step; a question without chosen steps gets none.
+#[tokio::test]
+async fn the_pack_of_a_lines_question_takes_the_steps_chosen_at_submit() {
+    let f = fixture(false).await;
+    let limits = db::repo::questions::QuestionLimits {
+        per_analysis: 1000,
+        per_user: 1000,
+        user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+    };
+    let questions = f.state.db.questions();
+    let mut asked = Vec::new();
+    for text in ["chosen", "not chosen"] {
+        let question = NewQuestion {
+            id: QuestionId::new_random(),
+            analysis_id: f.analysis,
+            anchor: AskAnchor::Lines {
+                path: "src/rpc/retry.rs".to_owned(),
+                side: contracts::common::LineSide::Head,
+                range: None,
+            },
+            user_id: "u1".to_owned(),
+            text: text.to_owned(),
+        };
+        asked.push(question.id);
+        questions
+            .create(question, limits, Timestamp::now())
+            .await
+            .expect("create");
+    }
+    questions
+        .set_touched_steps(asked[0], &[StepId("f1.1".to_owned())])
+        .await
+        .expect("steps");
+    let pack = |id| job::context_pack(&f.state.db, f.analysis, id);
+    let chosen = pack(asked[0]).await.expect("pack").expect("some pack");
+    assert!(chosen.contains(r#"{"step_id":"f1.1""#), "{chosen}");
+    let none = pack(asked[1]).await.expect("pack").expect("some pack");
+    assert!(!none.contains(r#"{"step_id":"#), "{none}");
 }

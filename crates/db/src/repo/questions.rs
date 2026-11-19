@@ -75,6 +75,8 @@ pub struct QuestionRecord {
     pub job_id: Option<JobId>,
     /// When the job's result confirmed the answer; `None` while an `answered` question shows a ready output.
     pub answered_at: Option<Timestamp>,
+    /// Tour steps the asked lines touch, chosen when the job was submitted; `None` until then (or for a step).
+    pub touched_steps: Option<Vec<StepId>>,
 }
 
 /// A state change of a question.
@@ -97,7 +99,7 @@ pub enum QuestionUpdate {
 macro_rules! question_select {
     () => {
         "SELECT q.id, q.analysis_id, q.step_id, q.path, q.side, q.start_line, q.end_line, q.user_id, q.text, q.state, q.answer, q.failure, q.job_id,
-             q.created_at, q.answered_at, u.login AS asked_by,
+             q.created_at, q.answered_at, q.touched_steps, u.login AS asked_by,
              CASE WHEN q.state = 'pending' THEN
                  CASE WHEN j.state = 'paused' AND j.resumes_at > ?1 THEN j.resumes_at
                       WHEN j.state = 'queued' AND c.paused_until > ?1 THEN c.paused_until END
@@ -122,6 +124,7 @@ fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
     let created_at: String = row.try_get("created_at")?;
     let answer: Option<String> = row.try_get("answer")?;
     let job: Option<String> = row.try_get("job_id")?;
+    let touched: Option<String> = row.try_get("touched_steps")?;
     let anchor = anchor_from_row(row)?;
     Ok(QuestionRecord {
         question: AskQuestion {
@@ -143,6 +146,10 @@ fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
             .map(|job| parse_wire(&job, "questions.job_id"))
             .transpose()?,
         answered_at: optional_ts(row, "answered_at")?,
+        touched_steps: touched
+            .map(|ids| serde_json::from_str::<Vec<String>>(&ids))
+            .transpose()?
+            .map(|ids| ids.into_iter().map(StepId).collect()),
     })
 }
 
@@ -399,6 +406,20 @@ impl Questions<'_> {
     pub async fn set_job(&self, id: QuestionId, job: JobId) -> Result<(), DbError> {
         let updated = sqlx::query("UPDATE questions SET job_id = ? WHERE id = ?")
             .bind(job.to_string())
+            .bind(id.to_string())
+            .execute(self.pool)
+            .await?;
+        if updated.rows_affected() == 0 {
+            return Err(DbError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Stores the Tour steps the asked lines touch (before the job is submitted, so its claim finds them).
+    pub async fn set_touched_steps(&self, id: QuestionId, steps: &[StepId]) -> Result<(), DbError> {
+        let ids: Vec<&str> = steps.iter().map(|step| step.0.as_str()).collect();
+        let updated = sqlx::query("UPDATE questions SET touched_steps = ? WHERE id = ?")
+            .bind(serde_json::to_string(&ids)?)
             .bind(id.to_string())
             .execute(self.pool)
             .await?;
@@ -703,6 +724,33 @@ mod tests {
             .await
             .expect("create");
         assert_eq!(fourth, Asked::AnalysisLimit);
+    }
+
+    #[tokio::test]
+    async fn touched_steps_are_stored_with_the_question() {
+        let db = Db::in_memory().await.expect("db");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let id = ask(&db, analysis, "f1.1", "a", at(0)).await;
+        let questions = db.questions();
+        let read = || async { questions.get(id, at(1)).await.expect("get").touched_steps };
+        assert_eq!(read().await, None);
+        let steps = [StepId("f1.2".to_owned()), StepId("f2.1".to_owned())];
+        questions
+            .set_touched_steps(id, &steps)
+            .await
+            .expect("store");
+        assert_eq!(read().await, Some(steps.to_vec()));
+        questions
+            .set_touched_steps(id, &[])
+            .await
+            .expect("store none");
+        assert_eq!(read().await, Some(Vec::new()));
+        assert!(matches!(
+            questions
+                .set_touched_steps(QuestionId::new_random(), &steps)
+                .await,
+            Err(DbError::NotFound)
+        ));
     }
 
     #[tokio::test]
