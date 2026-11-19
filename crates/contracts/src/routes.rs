@@ -290,6 +290,14 @@ pub const GET_DASHBOARD: Route = route("getDashboard", Get, "/api/v1/dashboard",
 /// R1b: ranked items of the latest snapshot (`ItemQuery`).
 pub const LIST_DASHBOARD_ITEMS: Route =
     route("listDashboardItems", Get, "/api/v1/dashboard/items", READ);
+/// Hides one mention for the signed-in browser user.
+pub const HIDE_DASHBOARD_MENTION: Route = route(
+    "hideDashboardMention",
+    Post,
+    "/api/v1/dashboard/mentions/{id}/hide",
+    SessionCsrf,
+);
+
 /// R2: starts a refresh.
 pub const START_DASHBOARD_REFRESH: Route = route(
     "startDashboardRefresh",
@@ -421,6 +429,7 @@ pub const ROUTES: &[Route] = &[
     GET_REPO_SETTINGS,
     GET_DASHBOARD,
     LIST_DASHBOARD_ITEMS,
+    HIDE_DASHBOARD_MENTION,
     START_DASHBOARD_REFRESH,
     GET_DASHBOARD_REFRESH,
     CANCEL_DASHBOARD_REFRESH,

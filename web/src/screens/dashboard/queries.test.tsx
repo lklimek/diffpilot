@@ -57,6 +57,7 @@ function wrapper() {
 }
 
 const page = (items: WorkItem[], revision: string, next: string | null): ItemPage => ({
+  mentions: [],
   revision,
   items,
   next_cursor: next,

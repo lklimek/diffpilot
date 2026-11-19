@@ -15,6 +15,9 @@ use crate::ids::{AnalysisId, CommitSha, RefreshId};
 /// Response of `GET /api/v1/dashboard`: the user's dashboard without its items.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct DashboardSummary {
+    /// Unanswered, unhidden mentions, oldest first; independent of the ranking.
+    #[serde(default)]
+    pub mentions: Vec<Mention>,
     /// Opaque; changes whenever the stored snapshot or its ranking changes (poll this, then fetch the items).
     pub revision: String,
     /// The newest refresh of the user, live or ended; null before the first.
@@ -519,6 +522,9 @@ impl ItemQuery {
 /// Response of `GET /api/v1/dashboard/items`: ranked items of the latest snapshot, in rank order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ItemPage {
+    /// All unanswered, unhidden mentions, independent of item filters and pagination.
+    #[serde(default)]
+    pub mentions: Vec<Mention>,
     /// The summary's `revision` the page belongs to.
     pub revision: String,
     /// Items of this page.
@@ -1092,4 +1098,31 @@ impl fmt::Display for ItemKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+/// A request addressed to a scanned login, outside the ranked list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct Mention {
+    /// Stable opaque identity of this post on this item (used by Hide).
+    pub id: String,
+    /// The containing item.
+    pub item_key: ItemKey,
+    /// Pull request or issue.
+    pub kind: GithubKind,
+    /// Repository.
+    pub repo: RepoRef,
+    /// Item number.
+    pub number: u32,
+    /// Item title, plain text.
+    pub title: String,
+    /// Mentioning author; a deleted account is shown as `ghost`.
+    pub author: String,
+    /// GitHub Bot type, [bot] suffix or the user's known bots.
+    pub is_bot: bool,
+    /// When the mentioning post was created.
+    pub created_at: Timestamp,
+    /// One line of the mentioning text, plain text only.
+    pub text: String,
+    /// Server-built GitHub link to the mentioning post.
+    pub url: String,
 }

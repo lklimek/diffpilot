@@ -28,10 +28,10 @@ closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nod
 assignees(first: 10) { nodes { login } } \
 reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } \
 ... on Bot { login } ... on Team { name } } } } \
-reviews(last: 20) { totalCount nodes { author { __typename login } state submittedAt } } \
-comments(last: 30) { nodes { author { __typename login } body createdAt } } \
-reviewThreads(first: 100) { nodes { isResolved isOutdated \
-comments(first: 5) { nodes { author { __typename login } body createdAt } } } } \
+reviews(last: 20) { totalCount nodes { author { __typename login } state submittedAt body url } } \
+comments(last: 30) { totalCount nodes { author { __typename login } body createdAt url } } \
+reviewThreads(first: 100) { totalCount nodes { isResolved isOutdated \
+comments(first: 5) { totalCount nodes { author { __typename login } body createdAt url } } } } \
 timelineItems(last: 50, itemTypes: [REVIEW_REQUESTED_EVENT]) { nodes { ... on ReviewRequestedEvent { \
 createdAt requestedReviewer { __typename ... on User { login } ... on Bot { login } } } } } \
 commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { \
@@ -132,6 +132,12 @@ pub struct Reviewer {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewNode {
+    /// Text of the review.
+    #[serde(default)]
+    pub body: String,
+    /// GitHub permalink.
+    #[serde(default)]
+    pub url: String,
     /// Author.
     pub author: Option<Actor>,
     /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, …
@@ -144,6 +150,9 @@ pub struct ReviewNode {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Comment {
+    /// GitHub permalink.
+    #[serde(default)]
+    pub url: String,
     /// Author.
     pub author: Option<Actor>,
     /// Text (untrusted).

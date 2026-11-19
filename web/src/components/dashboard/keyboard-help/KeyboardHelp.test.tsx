@@ -42,3 +42,18 @@ describe("EmptyWork", () => {
     expect(onNavigate).toHaveBeenCalledWith("/");
   });
 });
+
+it("does not say nothing needs you when quick replies are waiting", () => {
+  const snapshot = SUMMARY.snapshot!;
+  render(
+    <EmptyWork
+      checkedAt={snapshot.scanned_at}
+      checked={snapshot.checked}
+      awaiting={0}
+      hasMentions
+      reviewStartHref="/review"
+      now={NOW}
+    />,
+  );
+  expect(screen.getByRole("heading", { name: "No ranked work right now." })).toBeInTheDocument();
+});

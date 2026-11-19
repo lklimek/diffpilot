@@ -1,6 +1,7 @@
 import { HttpResponse } from "msw";
 import type {
   DashboardEvent,
+  Mention,
   DashboardSummary,
   ItemPage,
   RefreshStatus,
@@ -22,6 +23,19 @@ import { apiError, route } from "./common";
 // selects a scenario (the mockup states, DASHBOARD_SCENARIOS); a refresh started with R2 (or a ranking restarted
 // with R4) then follows a short script through scanning, ranking and finished, read alike by R1, R2b and the SSE.
 
+const MENTIONS: Mention[] = Array.from({ length: 5 }, (_, i) => ({
+  id: `mention-${i}`,
+  item_key: "acme~platform~pr~1203",
+  repo: { owner: "acme", name: "platform" },
+  number: 1203,
+  kind: "pr",
+  title: "A quick question",
+  author: i === 4 ? "helper" : "bob",
+  is_bot: i === 4,
+  created_at: `2026-11-18T0${i}:00:00Z`,
+  text: "@alice <script>please respond</script>",
+  url: `https://github.com/acme/platform/pull/1203#issuecomment-${i + 1}`,
+}));
 const SUMMARY = summaryJson as unknown as DashboardSummary;
 const ITEMS = itemsJson as unknown as ItemPage;
 const PROVISIONAL = provisionalJson as unknown as ItemPage;
@@ -108,7 +122,7 @@ const SCENARIOS = {
         revision: "r-1029-empty",
         snapshot: { ...SUMMARY.snapshot!, item_counts: zero, checked: { pr: 38, issue: 21, todo: 29 } },
       },
-      items: { revision: "r-1029-empty", items: [], next_cursor: null },
+      items: { mentions: [], revision: "r-1029-empty", items: [], next_cursor: null },
     };
   },
   /** The last scan stopped on GitHub's rate limit; the 08:12 snapshot stays; Refresh waits for the reset. */
@@ -138,10 +152,15 @@ const SCENARIOS = {
       items: ITEMS,
     };
   },
+  /** Quick replies, including one bot, independent of ranked items. */
+  mentions: (): Base => ({
+    summary: { ...SUMMARY, mentions: MENTIONS },
+    items: { ...ITEMS, mentions: MENTIONS },
+  }),
   /** No refresh yet: no snapshot, no items. */
   "first-run": (): Base => ({
     summary: { ...SUMMARY, revision: "r-none", latest_refresh: null, snapshot: null },
-    items: { revision: "r-none", items: [], next_cursor: null },
+    items: { mentions: [], revision: "r-none", items: [], next_cursor: null },
   }),
   /** First dashboard visit: no time zone stored, so the schedule cannot run yet (R6b stores it). */
   "no-time-zone": noTimeZone,
@@ -175,6 +194,8 @@ let run: Run | null = null;
 let previous: RefreshStatus | null = null;
 /** Refreshes changed by cancel or supersede, by id (they no longer follow the script). */
 const changed = new Map<string, RefreshStatus>();
+/** Hides persist across mock refreshes. */
+const hiddenMentions = new Set<string>();
 /** The time zone stored through R6b. */
 let timeZone: string | null = null;
 let runCount = 0;
@@ -185,6 +206,7 @@ export function resetDashboard(): void {
   run = null;
   previous = null;
   changed.clear();
+  hiddenMentions.clear();
   timeZone = null;
 }
 
@@ -335,7 +357,11 @@ export const getDashboard = route("getDashboard", () => {
   const { summary } = current();
   const time_zone = timeZone ?? summary.schedule.time_zone;
   const next_run_at = summary.schedule.next_run_at ?? (time_zone ? SUMMARY.schedule.next_run_at : null);
-  return HttpResponse.json({ ...summary, schedule: { ...summary.schedule, time_zone, next_run_at } });
+  return HttpResponse.json({
+    ...summary,
+    mentions: (summary.mentions ?? []).filter((m) => !hiddenMentions.has(m.id)),
+    schedule: { ...summary.schedule, time_zone, next_run_at },
+  });
 });
 
 /** Weak ETag of a body: a short hash of its JSON. */
@@ -371,6 +397,7 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
   const matching = page.items.filter(keep);
   const next = offset + limit < matching.length ? `${page.revision}:${offset + limit}` : null;
   const body: ItemPage = {
+    mentions: (page.mentions ?? []).filter((m) => !hiddenMentions.has(m.id)),
     revision: page.revision,
     items: matching.slice(offset, offset + limit),
     next_cursor: next,
@@ -504,4 +531,10 @@ export const dashboardRefreshEvents = route("dashboardRefreshEvents", ({ params,
   return new HttpResponse(body, {
     headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
   });
+});
+
+/** Session-only hide, persisted for the mock session. */
+export const hideDashboardMention = route("hideDashboardMention", ({ params }) => {
+  hiddenMentions.add(String(params.id));
+  return new HttpResponse(null, { status: 204 });
 });

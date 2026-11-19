@@ -146,6 +146,14 @@ pub(super) async fn scan<T: TokenSource>(
         .await?;
     let repos: Vec<RepoRef> = pulls
         .iter()
+        .filter(|item| {
+            candidates.pull_requests.get(item).is_some_and(|c| {
+                c.relations
+                    .values()
+                    .flatten()
+                    .any(|r| *r != crate::github::work::PrRelation::Mentioned)
+            })
+        })
         .map(|pr| pr.repo.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -193,6 +201,30 @@ pub(super) async fn scan<T: TokenSource>(
     progress
         .step(ScanStepKey::Context, StepState::Running, None, None)
         .await?;
+    let (mentions, mention_notes) = crate::dashboard::mentions::collect(
+        client,
+        input.rules,
+        &logins,
+        &candidates,
+        &details.found,
+    )
+    .await?;
+    notes.extend(mention_notes);
+    // Mention-only candidates never reach scoring, ownership reads or the judge.
+    details.found.retain(|item, _| {
+        candidates.pull_requests.get(item).is_some_and(|c| {
+            c.relations
+                .values()
+                .flatten()
+                .any(|r| *r != crate::github::work::PrRelation::Mentioned)
+        })
+    });
+    candidates.issues.retain(|_, issue| {
+        issue
+            .relations
+            .iter()
+            .any(|r| *r != crate::github::work::IssueRelation::Mentioned)
+    });
     let owned = owned_changes(client, input, &details.found, &mut notes).await?;
     let with_milestone: BTreeSet<RepoRef> = details
         .found
@@ -312,6 +344,7 @@ pub(super) async fn scan<T: TokenSource>(
         todo: count(todos.len()),
     };
     Ok(Snapshot {
+        mentions,
         version: SNAPSHOT_VERSION,
         own_login: input.own_login.to_owned(),
         settings: settings.clone(),

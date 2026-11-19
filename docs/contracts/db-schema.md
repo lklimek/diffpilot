@@ -95,3 +95,10 @@ while the counter is below 2 (the failure counts one) and so runs again whatever
 the agent request) only on request. A flow retry advances the job round only between serial pipeline jobs, in the
 transaction that chose the flow; succeeded jobs of other flows that have neither a flow document nor a failure
 (an output waiting for its postponed repair) move to the new round with it (`jobs.round`).
+
+### `dashboard_hidden_mentions` (migration 0011)
+Primary key `(tenant_id, user_id, mention_id)`, with `hidden_at` (UTC timestamp). Tenant/user foreign keys;
+user deletion cascades. `mention_id` is SHA-256 of canonical item key and post anchor, so different posts on the
+same item remain independent. Hiding is an idempotent insert; no read-modify-write transaction is needed.
+Refresh pruning does not delete hides. Snapshot JSON gains `mentions` (default `[]` for old documents); reads
+filter it with this user's hidden identities, then derive the revision. Ranking/judge never consume mentions.

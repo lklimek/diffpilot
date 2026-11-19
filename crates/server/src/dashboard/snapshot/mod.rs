@@ -27,6 +27,9 @@ pub const SNAPSHOT_VERSION: u32 = 1;
 /// One refresh's scan, as stored (`dashboard_refreshes.snapshot`). Untrusted text is capped at scan time.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Unanswered mentions from the scan, independent of scoring.
+    #[serde(default)]
+    pub mentions: Vec<contracts::api::dashboard::Mention>,
     /// [`SNAPSHOT_VERSION`].
     pub version: u32,
     /// The signed-in login at scan time.
@@ -141,6 +144,14 @@ pub async fn load(
     {
         hide_todos(&mut snapshot);
     }
+    let hidden = state
+        .db
+        .dashboard()
+        .hidden_mentions(tenant_id, user_id)
+        .await?;
+    snapshot
+        .mentions
+        .retain(|mention| !hidden.contains(&mention.id));
     Ok(Some((record, snapshot)))
 }
 

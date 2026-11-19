@@ -15,7 +15,7 @@ use super::batch::{literal, query};
 use super::client::{TokenSource, WorkClient, WorkError};
 use super::details::{Count, HistoryPr, Login, Name, Nodes, ReviewRequest};
 use super::search::{Candidates, IssueCandidate, IssueRelation, PrRelation};
-use super::{ItemRef, Milestone, note, parse_repo, repo_name};
+use super::{Actor, Comment, IssueDiscussion, ItemRef, Milestone, note, parse_repo, repo_name};
 use contracts::common::RepoRef;
 
 /// What the enumeration found for the unsearchable logins.
@@ -38,6 +38,9 @@ struct OwnerRepo {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenPull {
+    #[serde(default)]
+    body: String,
+    comments: Nodes<IssueComment>,
     number: u32,
     title: String,
     url: String,
@@ -57,10 +60,10 @@ struct OpenIssue {
     created_at: Timestamp,
     updated_at: Timestamp,
     author_association: Option<String>,
-    author: Option<Login>,
+    author: Option<Actor>,
     assignees: Nodes<Login>,
     labels: Nodes<Name>,
-    comments: Nodes<IssueComment>,
+    comments: Nodes<Comment>,
     milestone: Option<Milestone>,
 }
 
@@ -84,11 +87,11 @@ struct PageInfo {
     end_cursor: Option<String>,
 }
 
-const PULL_NODES: &str = "number title url author { login } assignees(first: 20) { nodes { login } } \
+const PULL_NODES: &str = "number title url body comments(last: 50) { nodes { body } } author { login } assignees(first: 20) { nodes { login } } \
 reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } }";
-const ISSUE_NODES: &str = "number title url body createdAt updatedAt authorAssociation author { login } \
+const ISSUE_NODES: &str = "number title url body createdAt updatedAt authorAssociation author { __typename login } \
 assignees(first: 20) { nodes { login } } labels(first: 20) { nodes { name } } \
-comments(last: 50) { totalCount nodes { body } } milestone { title number state }";
+comments(last: 50) { totalCount nodes { body createdAt url author { __typename login } } } milestone { title number state }";
 
 /// Pages read per repository by [`WorkClient::authored_pull_requests`] (100 pull requests each): paging stops at
 /// the window start, so only a repository with more than 3000 pull requests updated in the window is cut.
@@ -424,6 +427,11 @@ impl<T: TokenSource> WorkClient<T> {
                 for login in logins {
                     let relations = [
                         (
+                            mentions(&pull.body, login)
+                                || pull.comments.nodes.iter().any(|c| mentions(&c.body, login)),
+                            PrRelation::Mentioned,
+                        ),
+                        (
                             pull.author.as_ref().is_some_and(|a| same(&a.login, login)),
                             PrRelation::Authored,
                         ),
@@ -475,9 +483,20 @@ impl<T: TokenSource> WorkClient<T> {
                 found.add_issue(
                     item,
                     IssueCandidate {
+                        discussion: issue
+                            .comments
+                            .total_count
+                            .filter(|n| *n as usize == issue.comments.nodes.len())
+                            .map(|_| IssueDiscussion {
+                                state: "OPEN".to_owned(),
+                                body: issue.body.clone(),
+                                author: issue.author.clone(),
+                                created_at: issue.created_at,
+                                comments: issue.comments.clone(),
+                            }),
                         title: issue.title,
                         url: issue.url,
-                        author: issue.author.map(|a| a.login),
+                        author: issue.author.and_then(|a| a.login),
                         author_association: issue.author_association,
                         assignees: issue.assignees.nodes.into_iter().map(|a| a.login).collect(),
                         labels: issue.labels.nodes.into_iter().map(|l| l.name).collect(),

@@ -905,6 +905,10 @@ unreachable: Array<string>, };
  */
 export type DashboardSummary = {
 /**
+ * Unanswered, unhidden mentions, oldest first; independent of the ranking.
+ */
+mentions: Array<Mention>,
+/**
  * Opaque; changes whenever the stored snapshot or its ranking changes (poll this, then fetch the items).
  */
 revision: string,
@@ -1711,6 +1715,10 @@ export type ItemKind = "pr" | "issue" | "todo";
  */
 export type ItemPage = {
 /**
+ * All unanswered, unhidden mentions, independent of item filters and pagination.
+ */
+mentions: Array<Mention>,
+/**
  * The summary's `revision` the page belongs to.
  */
 revision: string,
@@ -2043,6 +2051,55 @@ state: MemcanState,
  * Last successful tool call in this server process, retained after a later failure.
  */
 last_success_at: string | null, };
+
+/**
+ * A request addressed to a scanned login, outside the ranked list.
+ */
+export type Mention = {
+/**
+ * Stable opaque identity of this post on this item (used by Hide).
+ */
+id: string,
+/**
+ * The containing item.
+ */
+item_key: ItemKey,
+/**
+ * Pull request or issue.
+ */
+kind: GithubKind,
+/**
+ * Repository.
+ */
+repo: RepoRef,
+/**
+ * Item number.
+ */
+number: number,
+/**
+ * Item title, plain text.
+ */
+title: string,
+/**
+ * Mentioning author; a deleted account is shown as `ghost`.
+ */
+author: string,
+/**
+ * GitHub Bot type, [bot] suffix or the user's known bots.
+ */
+is_bot: boolean,
+/**
+ * When the mentioning post was created.
+ */
+created_at: string,
+/**
+ * One line of the mentioning text, plain text only.
+ */
+text: string,
+/**
+ * Server-built GitHub link to the mentioning post.
+ */
+url: string, };
 
 /**
  * Model and reasoning effort (plan §5.2, ADR-002).

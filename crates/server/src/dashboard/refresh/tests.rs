@@ -760,15 +760,15 @@ async fn full_refresh_stores_the_expected_snapshot() {
     assert_eq!(
         meta.item_counts,
         ItemCounts {
-            total: 20,
+            total: 19,
             pr: 12,
-            issue: 6,
+            issue: 5,
             todo: 2,
             p0: 0,
             p1: 7,
             p2: 5,
-            p3: 8,
-            not_judged: 20,
+            p3: 7,
+            not_judged: 19,
         }
     );
     assert_eq!(meta.excluded, 1, "the excluded bot author");
@@ -776,7 +776,7 @@ async fn full_refresh_stores_the_expected_snapshot() {
         meta.checked,
         KindCounts {
             pr: 14,
-            issue: 6,
+            issue: 5,
             todo: 2
         }
     );
@@ -869,7 +869,6 @@ async fn full_refresh_stores_the_expected_snapshot() {
             "CON-1520",
             "CON-1525",
             "PLAT-1215",
-            "WUI-305",
             "TODO-91bd0a44",
         ]
     );
@@ -1190,7 +1189,7 @@ async fn items_page_with_cursor_etag_and_expired_cursor() {
     let w = world().await;
     w.refreshed().await;
     let all = w.items("").await;
-    assert_eq!(all.items.len(), 20, "default limit 100");
+    assert_eq!(all.items.len(), 19, "default limit 100");
     let first = w.items("?limit=5").await;
     assert_eq!(alias_ids(&first.items), alias_ids(&all.items[..5]));
     let cursor = first.next_cursor.clone().expect("next page");
@@ -1280,7 +1279,6 @@ async fn items_filters() {
             "CON-1520",
             "CON-1525",
             "PLAT-1215",
-            "WUI-305",
             "TODO-91bd0a44",
         ],
         "TODO items whatever kind says"
@@ -1289,21 +1287,11 @@ async fn items_filters() {
     assert_eq!(prs.items.len(), 12);
     assert!(prs.items.iter().all(|i| i.kind == ItemKind::Pr));
     let wallet = w.items("?repo=ACME/wallet-ui").await;
-    assert_eq!(
-        alias_ids(&wallet.items),
-        ["WUI-320", "WUI-311", "WUI-298", "WUI-305"]
-    );
+    assert_eq!(alias_ids(&wallet.items), ["WUI-320", "WUI-311", "WUI-298"]);
     let unjudged = w.items("?state=unjudged&tier=p3&todos=false").await;
     assert_eq!(
         alias_ids(&unjudged.items),
-        [
-            "PLAT-1210",
-            "CON-1541",
-            "CON-1520",
-            "CON-1525",
-            "PLAT-1215",
-            "WUI-305"
-        ]
+        ["PLAT-1210", "CON-1541", "CON-1520", "CON-1525", "PLAT-1215",]
     );
     let all = w.items("").await;
     let since = all.items.iter().map(|i| i.updated_at).max().expect("items");
@@ -1803,5 +1791,106 @@ async fn unread_event_feed_is_not_reported_as_reaching_back_to_the_window_start(
     assert!(
         !notes.iter().any(|n| n.contains("which reach back to")),
         "an unread feed is described as read back to a date: {notes:?}"
+    );
+}
+
+#[tokio::test]
+async fn mentions_stay_outside_ranking_and_hide_is_scoped_and_token_readable() {
+    use contracts::api::access_tokens::{AccessTokenId, TokenScope};
+    use db::repo::access_tokens::NewAccessToken;
+    let world = world().await;
+    world.refreshed().await;
+    let before = world.summary(ALICE).await;
+    let github_reads = world.gate.requests();
+    let mention = before
+        .mentions
+        .iter()
+        .find(|m| m.number == 305)
+        .expect("mention-only issue");
+    assert!(!mention.is_bot);
+    assert!(mention.url.ends_with("#issuecomment-1"));
+    assert!(
+        !world
+            .items("")
+            .await
+            .items
+            .iter()
+            .any(|i| i.key == mention.item_key)
+    );
+    assert!(
+        world
+            .items("")
+            .await
+            .items
+            .iter()
+            .any(|i| i.number == Some(1187)),
+        "watched/assigned issue stays ranked"
+    );
+    let secret = format!("srp_ABCDEFGH_{}", "a".repeat(43));
+    world
+        .state
+        .db
+        .access_tokens()
+        .create(
+            DEFAULT_TENANT,
+            "u1",
+            &NewAccessToken {
+                id: AccessTokenId("ABCDEFGH".into()),
+                name: "mentions test".into(),
+                token_hash: sha256(secret.as_bytes()),
+                scopes: vec![TokenScope::Read],
+                expires_at: Timestamp::now() + SignedDuration::from_hours(24),
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let bearer = format!("Bearer {secret}");
+    for uri in ["/api/v1/dashboard", "/api/v1/dashboard/items"] {
+        let read = world
+            .send("GET", uri, "", &[("authorization", &bearer)])
+            .await;
+        assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+        assert_eq!(
+            read.body["mentions"],
+            serde_json::to_value(&before.mentions).unwrap()
+        );
+    }
+    let uri = format!("/api/v1/dashboard/mentions/{}/hide", mention.id);
+    assert_eq!(
+        world
+            .send("POST", &uri, "", &[("authorization", &bearer)])
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        world.send("POST", &uri, COLLEAGUE, &[]).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        world.send("POST", &uri, ALICE, &[]).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        world.send("POST", &uri, ALICE, &[]).await.status,
+        StatusCode::NO_CONTENT
+    );
+    let after = world.summary(ALICE).await;
+    assert_ne!(before.revision, after.revision);
+    assert!(!after.mentions.iter().any(|m| m.id == mention.id));
+    assert_eq!(
+        world.gate.requests(),
+        github_reads,
+        "reads and hides use only stored data"
+    );
+    world.refreshed().await;
+    assert!(
+        !world
+            .summary(ALICE)
+            .await
+            .mentions
+            .iter()
+            .any(|m| m.id == mention.id)
     );
 }

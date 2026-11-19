@@ -685,3 +685,16 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   (server-internal); a late result of an earlier attempt or of a superseded ranking is ignored.
 - **Tolerant readers** (plan §E.5 E5-3): clients ignore unknown fields and treat unknown values of `kind`,
   `component`, `status`, `tier`, `TokenScope` and history `kind` as opaque. Changes stay additive (ADR-011).
+
+### Unanswered mentions
+`GET /api/v1/dashboard` (`DashboardSummary`) and `/api/v1/dashboard/items` (`ItemPage`) include `mentions:
+Mention[]`, oldest first. This is a separate list, unaffected by ranked-item filters or pagination (repeated on
+each items page), available equally to sessions and read tokens. Fields: `id`, `item_key`, `kind` (`pr`/`issue`),
+`repo`, `number`, `title`, `author`, `is_bot`, `created_at`, `text`, `url`. Text is untrusted plain text; `url`
+is built by the server. `is_bot` uses the user's known bots plus GitHub Bot type / `[bot]`. An empty list means
+no unanswered, unhidden mentions in the snapshot. Older stored snapshots deserialize with an empty list.
+
+`POST /api/v1/dashboard/mentions/{id}/hide` has no body. Session + CSRF only, no personal access tokens. Returns
+204 (including repeated hides), 404 for an identity outside the user's snapshot/hidden set. A hide changes the
+summary revision and items ETag, persists per user across devices/refreshes, and leaves ranking/judgement alone.
+New posts on the same item have independent identities. Hides are not an update to GitHub.

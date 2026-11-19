@@ -28,7 +28,7 @@ interface AppNavProps {
   current: AppSection | null;
   /** In-app hrefs. */
   hrefs: Record<AppSection, string>;
-  /** Ranked items of the latest snapshot; no count when null. */
+  /** Unhidden human mentions; no count when null. */
   myWorkCount: number | null;
   onNavigate?: Navigate;
 }

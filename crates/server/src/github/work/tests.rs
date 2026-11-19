@@ -34,6 +34,10 @@ fn repo_root() -> PathBuf {
 
 /// Starts the fake with the dashboard world; returns its base URL.
 async fn spawn_fake() -> String {
+    spawn_fake_in(repo_root().join("fixtures/dashboard/github")).await
+}
+
+async fn spawn_fake_in(fixture: PathBuf) -> String {
     let config = fake_github::Config {
         fixture_dir: repo_root().join("fixtures/pr-482/github"),
         app_url: Url::parse("http://app.test:3000").unwrap(),
@@ -41,7 +45,7 @@ async fn spawn_fake() -> String {
         user_id: None,
         app_id: None,
         app_public_key_file: None,
-        dashboard_fixture_dir: Some(repo_root().join("fixtures/dashboard/github")),
+        dashboard_fixture_dir: Some(fixture),
         dashboard_world_at: None,
     };
     let router = fake_github::router(&config).unwrap();
@@ -225,7 +229,10 @@ async fn search_is_paced_and_retried_on_secondary_limit() {
 
     let searches = fake.requests_on("search").await;
     let faulted: Vec<bool> = searches.iter().map(|r| r["fault"].is_string()).collect();
-    assert_eq!(faulted, [true, false, true, false, true, true, false]);
+    assert_eq!(
+        faulted,
+        [true, false, true, false, true, true, false, false]
+    );
     let gaps: Vec<u64> = searches
         .windows(2)
         .map(|pair| at_ms(&pair[1]) - at_ms(&pair[0]))
@@ -239,7 +246,7 @@ async fn search_is_paced_and_retried_on_secondary_limit() {
     );
 
     assert!(found.unsearchable.is_empty() && found.notes.is_empty());
-    assert_eq!(found.answered, 3, "a retried search counts once");
+    assert_eq!(found.answered, 4, "a retried search counts once");
     let prs = &found.candidates.pull_requests;
     let relations = |key: &str| prs[&item(key)].relations["alice"].clone();
     assert_eq!(
@@ -351,6 +358,12 @@ async fn unsearchable_login_falls_back_to_enumeration() {
     assert_eq!(
         found.issues[&item("acme/consensus#1525")].relations,
         BTreeSet::from([IssueRelation::Assigned])
+    );
+    assert!(
+        found.issues[&item("acme/consensus#1525")]
+            .discussion
+            .is_some(),
+        "enumeration reuses the complete discussion"
     );
     let graphql = fake.requests_on("graphql").await;
     assert!(graphql.iter().all(|r| r["rate_limit_selected"] == true));
@@ -900,7 +913,7 @@ async fn invalid_logins_and_repositories_never_reach_a_search() {
     let history = client.search_history("x y", since).await.unwrap();
 
     let searches = fake.requests_on("search").await;
-    assert_eq!(searches.len(), 3, "only alice's searches: {searches:?}");
+    assert_eq!(searches.len(), 4, "only alice's searches: {searches:?}");
     assert!(
         searches
             .iter()
@@ -1147,4 +1160,127 @@ async fn authored_pull_requests_stop_at_the_page_cap_and_say_where() {
         [repo("acme/secret")],
         "not visible to the token"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pr_mentions_are_discovered_by_search() {
+    let fake = Fake::start().await;
+    fake.client()
+        .search_pull_requests(&logins(&["alice"]))
+        .await
+        .unwrap();
+    assert!(fake.requests_on("search").await.iter().any(|r| {
+        r["q"]
+            .as_str()
+            .is_some_and(|q| q == "is:pr is:open archived:false mentions:alice")
+    }));
+}
+
+#[tokio::test(start_paused = true)]
+async fn pr_mention_search_and_enumeration_find_comment_only_candidates() {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let file = dir.path().join("pull-requests.json");
+    let mut prs: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let pr = prs
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["number"] == 1203)
+        .unwrap();
+    pr["comments"] = json!({"nodes": [{"author": {"__typename": "User", "login": "bob"}, "body": "@alice @alice-helper please respond", "createdAt": "2026-11-18T08:59:00Z"}]} );
+    std::fs::write(&file, serde_json::to_vec(&prs).unwrap()).unwrap();
+    let base = spawn_fake_in(dir.path().to_owned()).await;
+    let token = sign_in(&base).await;
+    let fake = Fake { base, token };
+    let client = fake.client();
+    let searched = client
+        .search_pull_requests(&logins(&["alice"]))
+        .await
+        .unwrap();
+    assert!(
+        searched.candidates.pull_requests[&item("acme/platform#1203")].relations["alice"]
+            .contains(&PrRelation::Mentioned)
+    );
+    let listed = client
+        .enumerate_owners(&logins(&["acme"]), &logins(&["alice-helper"]))
+        .await
+        .unwrap();
+    assert!(
+        listed.candidates.pull_requests[&item("acme/platform#1203")].relations["alice-helper"]
+            .contains(&PrRelation::Mentioned),
+        "{:?}",
+        listed.notes
+    );
+}
+
+#[tokio::test]
+async fn truncated_pr_discussion_reads_all_comments_and_submitted_reviews() {
+    let fake = Fake::start().await;
+    let item = item("acme/platform#1203");
+    let mut detail = fake
+        .client()
+        .pull_requests(std::slice::from_ref(&item))
+        .await
+        .unwrap()
+        .found
+        .remove(&item)
+        .unwrap();
+    detail.comments.total_count = Some(100);
+    detail.reviews.total_count = Some(100);
+    detail.review_threads.total_count = Some(100);
+    let mock = MockServer::start().await;
+    for (group, connection, extra) in [
+        (
+            "issues",
+            "comments",
+            json!({"created_at": "2026-11-18T08:00:00Z"}),
+        ),
+        (
+            "pulls",
+            "reviews",
+            json!({"submitted_at": "2026-11-18T08:30:00Z"}),
+        ),
+        (
+            "pulls",
+            "comments",
+            json!({"created_at": "2026-11-18T08:40:00Z"}),
+        ),
+    ] {
+        let mut post = json!({"id": 123, "user": {"login": "alice-helper", "type": "User"}, "body": "answered"});
+        post.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/repos/acme/platform/{group}/1203/{connection}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([post])))
+            .expect(1)
+            .mount(&mock)
+            .await;
+    }
+    let posts = mock_client(&mock)
+        .pull_discussion(&item, &detail)
+        .await
+        .unwrap();
+    assert_eq!(posts.len(), 3);
+    assert_eq!(
+        posts
+            .iter()
+            .map(|p| p.created_at)
+            .max()
+            .unwrap()
+            .to_string(),
+        "2026-11-18T08:40:00Z"
+    );
+    assert!(
+        posts
+            .iter()
+            .any(|p| p.url.ends_with("#pullrequestreview-123"))
+    );
+    mock.verify().await;
 }

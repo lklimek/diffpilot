@@ -292,3 +292,12 @@ export function useSaveBrowserTimeZone(summary: DashboardSummary | undefined): {
   }, [client, missing]);
   return { failed };
 }
+
+/** Hide persists server-side; invalidation also refreshes the navigation count. */
+export function useHideMention() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.hideDashboardMention(id),
+    onSuccess: () => client.invalidateQueries({ queryKey: SUMMARY_KEY }),
+  });
+}

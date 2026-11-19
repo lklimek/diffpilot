@@ -24,7 +24,7 @@ use contracts::api::error::ApiErrorCode;
 use contracts::ids::RefreshId;
 use contracts::routes::{
     CANCEL_DASHBOARD_REFRESH, DASHBOARD_REFRESH_EVENTS, GET_DASHBOARD, GET_DASHBOARD_REFRESH,
-    LIST_DASHBOARD_ITEMS, RANK_DASHBOARD_REFRESH, START_DASHBOARD_REFRESH,
+    HIDE_DASHBOARD_MENTION, LIST_DASHBOARD_ITEMS, RANK_DASHBOARD_REFRESH, START_DASHBOARD_REFRESH,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -153,6 +153,7 @@ type DashboardResult<T> = Result<T, DashboardError>;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(GET_DASHBOARD.path, get(summary))
+        .route(HIDE_DASHBOARD_MENTION.path, post(hide_mention))
         .route(LIST_DASHBOARD_ITEMS.path, get(items))
         .route(START_DASHBOARD_REFRESH.path, post(start))
         .route(GET_DASHBOARD_REFRESH.path, get(refresh_status))
@@ -223,18 +224,20 @@ async fn summary(
         Some(record) => Some(judge::status(&state, &record).await),
         None => None,
     };
-    let (revision, meta, older_prompt_judgements, scanned_at) =
+    let (revision, meta, older_prompt_judgements, scanned_at, mentions) =
         match current_view(&state, &scope).await? {
             Some((revision, snapshot, view, record, older)) => (
                 revision,
                 Some(view.meta(&snapshot, &record, list_excluded)),
                 older,
                 record.scanned_at,
+                snapshot.mentions,
             ),
-            None => (snapshot::NO_SNAPSHOT.to_owned(), None, 0, None),
+            None => (snapshot::NO_SNAPSHOT.to_owned(), None, 0, None, Vec::new()),
         };
     let stored = dashboard.settings(&scope.tenant_id, &scope.user_id).await?;
     Ok(Json(DashboardSummary {
+        mentions,
         revision,
         latest_refresh,
         snapshot: meta,
@@ -282,15 +285,15 @@ async fn items(
 ) -> DashboardResult<Response> {
     let Query(query) = query?;
     let scope = scope(&session);
-    let (revision, page, next_cursor) = match current_view(&state, &scope).await? {
-        Some((revision, _, view, _, _)) => {
+    let (revision, page, next_cursor, mentions) = match current_view(&state, &scope).await? {
+        Some((revision, snapshot, view, _, _)) => {
             let (page, next) = snapshot::page(&view.items, &query, &revision)?;
-            (revision, page, next)
+            (revision, page, next, snapshot.mentions)
         }
         None => {
             let revision = snapshot::NO_SNAPSHOT.to_owned();
             let (page, next) = snapshot::page(&[], &query, &revision)?;
-            (revision, page, next)
+            (revision, page, next, Vec::new())
         }
     };
     let mut items: Vec<WorkItem> = Vec::with_capacity(page.len());
@@ -301,6 +304,7 @@ async fn items(
     }
     review_links(&state, &session, &mut items, &heads).await?;
     let body = ItemPage {
+        mentions,
         revision,
         items,
         next_cursor,
@@ -544,4 +548,39 @@ fn sse_event(event: &DashboardEvent) -> Option<Event> {
             None
         }
     }
+}
+
+/// Session + CSRF only; the identity must belong to this user's current snapshot.
+async fn hide_mention(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    Path(id): Path<String>,
+) -> DashboardResult<StatusCode> {
+    let Some((_, snapshot)) = snapshot::load(&state, &session.tenant_id, &session.user_id).await?
+    else {
+        return Err(DbError::NotFound.into());
+    };
+    if !snapshot.mentions.iter().any(|m| m.id == id) {
+        if state
+            .db
+            .dashboard()
+            .hidden_mentions(&session.tenant_id, &session.user_id)
+            .await?
+            .contains(&id)
+        {
+            return Ok(StatusCode::NO_CONTENT);
+        }
+        return Err(DbError::NotFound.into());
+    }
+    state
+        .db
+        .dashboard()
+        .hide_mention(
+            &session.tenant_id,
+            &session.user_id,
+            &id,
+            state.dashboard.now(),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }

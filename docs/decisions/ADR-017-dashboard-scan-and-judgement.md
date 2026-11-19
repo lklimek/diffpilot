@@ -74,3 +74,22 @@ such items still count in the history. Being listed does not make a login a bot.
 (migration 0009; default `thepastaclaw`, `Claudius-Maginificent`, `DCG-Claude`, the former built-in list); nothing
 else is hard-coded. Bot classification reaches the judge only through the scan facts and scorer signals, so editing
 either list re-judges just the items whose judged inputs change.
+
+## Addendum (2026-11-19): unanswered mentions
+Owner-approved. My work has a compact Mentions strip above Needs you, outside P0–P3, scores and judgement.
+Discovery adds `mentions:<login>` to open-PR searches and body/comment matching to PR enumeration. Mention-only
+PRs and issues never enter the ranked snapshot; issues also assigned or in watched repositories remain ranked.
+A post counts while newer than every scanned login's latest comment or submitted review on that item. The
+scan reuses PR details and complete enumerated issue discussions, batching the remaining issues; truncated PR/issue connections are refilled only for
+mention detection. Failed complete reads omit that item's mentions with a scan note rather than inventing an
+unanswered state. Enumeration retains the documented body + last 50 conversation comments discovery window.
+
+Each post has a stable identity derived from item key and GitHub anchor. Migration 0011 stores hides per tenant,
+user and identity, independently of refresh history. A later post has a different identity. Session + CSRF is
+required to hide; read tokens receive the same unanswered, unhidden posts with bot classification. Both read
+responses expose `mentions`; they are independent of item filters, cursor pagination and ranking.
+
+The browser initially excludes bots (GitHub Bot type, `[bot]` suffix or the user's known bots), remembers its
+choice in `sr.dashboard.mentions.with-bots`, shows three oldest posts and expands the rest with “+N more”. The
+navigation count counts only unhidden human mentions. All external text stays plain text;
+GitHub links are rebuilt from validated repository/number and a fixed post-anchor grammar.

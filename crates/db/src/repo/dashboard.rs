@@ -313,6 +313,29 @@ pub struct StoredJudgement {
 }
 
 impl Dashboard<'_> {
+    /// Identities hidden by this user, across snapshots and devices.
+    pub async fn hidden_mentions(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<String>, DbError> {
+        Ok(sqlx::query_scalar("SELECT mention_id FROM dashboard_hidden_mentions WHERE tenant_id = ? AND user_id = ? ORDER BY mention_id")
+            .bind(tenant_id).bind(user_id).fetch_all(self.pool).await?)
+    }
+
+    /// Idempotently hides one mention; never changes the snapshot or ranking.
+    pub async fn hide_mention(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: &str,
+        now: Timestamp,
+    ) -> Result<(), DbError> {
+        sqlx::query("INSERT INTO dashboard_hidden_mentions (tenant_id, user_id, mention_id, hidden_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING")
+            .bind(tenant_id).bind(user_id).bind(id).bind(ts(now)).execute(self.pool).await?;
+        Ok(())
+    }
+
     /// The user's settings row; none means the defaults (`DashboardSettings::default`).
     pub async fn settings(
         &self,
@@ -1430,6 +1453,37 @@ mod tests {
             .parse::<Timestamp>()
             .unwrap_or_default()
             + SignedDuration::from_mins(minute)
+    }
+
+    #[tokio::test]
+    async fn hidden_mentions_are_per_user_and_survive_refreshes() {
+        let db = db().await;
+        let dash = db.dashboard();
+        dash.hide_mention(T, "u1", "old-comment", at(1))
+            .await
+            .unwrap();
+        dash.hide_mention(T, "u1", "old-comment", at(2))
+            .await
+            .unwrap();
+        ranking(&db, "u1", 3).await;
+        assert_eq!(
+            dash.hidden_mentions(T, "u1").await.unwrap(),
+            ["old-comment"]
+        );
+        assert!(dash.hidden_mentions(T, "u2").await.unwrap().is_empty());
+        assert!(
+            dash.hidden_mentions("other", "u1")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !dash
+                .hidden_mentions(T, "u1")
+                .await
+                .unwrap()
+                .contains(&"new-comment".to_owned())
+        );
     }
 
     async fn seed_users(db: &Db) {

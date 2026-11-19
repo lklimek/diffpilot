@@ -10,6 +10,34 @@ import { ANALYSIS_ID } from "./support";
 const SCRIPT_STEP_MS = 500;
 
 test.describe("My work (msw)", () => {
+  test("mentions: three rows, bot preference, hide, count, keyboard and narrow themes", async ({ page }) => {
+    await page.goto("/?dashboard=mentions");
+    const strip = page.getByRole("region", { name: "Mentions" });
+    await expect(strip.getByRole("link")).toHaveCount(3);
+    await expect(page.locator("[data-nav-count]")).toHaveText("4");
+    await strip.getByRole("button", { name: "+1 more" }).click();
+    await expect(strip.getByRole("link")).toHaveCount(4);
+    await strip.getByRole("checkbox", { name: "with bots" }).check();
+    await expect(strip.getByText("bot", { exact: true })).toBeVisible();
+    await expect(page.locator("[data-nav-count]")).toHaveText("4");
+    await page.reload();
+    await expect(strip.getByRole("checkbox", { name: "with bots" })).toBeChecked();
+    await strip
+      .getByRole("button", { name: /Hide mention/ })
+      .first()
+      .focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("[data-nav-count]")).toHaveText("3");
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(strip).toBeVisible();
+      const width = await strip.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+      expect(width.scroll).toBeLessThanOrEqual(width.client);
+      await expectAccessible(page);
+    }
+  });
+
   const open = async (page: Page, scenario = "normal", extra = "") => {
     await page.goto(`/?dashboard=${scenario}${extra}`);
     await expect(page.getByRole("heading", { name: "My work", level: 1 })).toBeVisible();
@@ -21,7 +49,7 @@ test.describe("My work (msw)", () => {
     await expect(
       page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /My work/ }),
     ).toHaveAttribute("aria-current", "page");
-    await expect(page.locator("[data-nav-count]")).toHaveText("14");
+    await expect(page.locator("[data-nav-count]")).toHaveText("0");
     await expect(main(page).getByText("fix(sync): retry header fetch after peer timeout")).toBeVisible();
     // Every kind on at first: pull requests, issues and TODOs.
     await expect(main(page).getByText("Wallet balance shows a stale value after a reorg")).toBeVisible();

@@ -236,9 +236,22 @@ async fn migration_0010_on_a_seeded_v9_database() {
         analyses_before.replace("('en', 'pl')", "('en', 'pl', 'ru')")
     );
     let (rows_after, schema_after) = snapshot(&old).await;
+    // Db::open also applies 0011: its new empty table/index are additive to this 0010 preservation check.
+    assert_eq!(
+        rows_after
+            .iter()
+            .find(|(t, _)| t == "dashboard_hidden_mentions")
+            .map(|(_, rows)| rows.len()),
+        Some(0)
+    );
+    assert_eq!(schema_after.len(), schema_before.len() + 2);
+    let schema_after: Vec<_> = schema_after
+        .into_iter()
+        .filter(|entry| entry.split('|').nth(2) != Some("dashboard_hidden_mentions"))
+        .collect();
     let rows_after: Vec<_> = rows_after
         .into_iter()
-        .filter(|(t, _)| t != "_sqlx_migrations")
+        .filter(|(t, _)| t != "_sqlx_migrations" && t != "dashboard_hidden_mentions")
         .collect();
     let rows_before: Vec<_> = rows_before
         .into_iter()

@@ -22,16 +22,24 @@ pub enum PrRelation {
     Assigned,
     /// Review requested from the login (directly; GitHub search also counts team requests).
     ReviewRequested,
+    /// Mentions a scanned login; discovery only, never a ranking relation.
+    Mentioned,
 }
 
 impl PrRelation {
-    const ALL: [Self; 3] = [Self::Authored, Self::Assigned, Self::ReviewRequested];
+    const ALL: [Self; 4] = [
+        Self::Authored,
+        Self::Assigned,
+        Self::ReviewRequested,
+        Self::Mentioned,
+    ];
 
     fn qualifier(self) -> &'static str {
         match self {
             Self::Authored => "author",
             Self::Assigned => "assignee",
             Self::ReviewRequested => "review-requested",
+            Self::Mentioned => "mentions",
         }
     }
 }
@@ -61,6 +69,8 @@ pub struct PrCandidate {
 /// An open issue found by search or enumeration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IssueCandidate {
+    /// Complete discussion already read by enumeration, when available.
+    pub discussion: Option<super::IssueDiscussion>,
     /// Title.
     pub title: String,
     /// Web URL.
@@ -122,7 +132,12 @@ impl Candidates {
     /// Adds an issue, merging its relations into an already found one.
     pub fn add_issue(&mut self, item: ItemRef, issue: IssueCandidate) {
         match self.issues.get_mut(&item) {
-            Some(found) => found.relations.extend(issue.relations),
+            Some(found) => {
+                found.relations.extend(issue.relations);
+                if found.discussion.is_none() {
+                    found.discussion = issue.discussion;
+                }
+            }
             None => {
                 self.issues.insert(item, issue);
             }
@@ -230,6 +245,7 @@ impl SearchItem {
 
     fn issue(self, relation: IssueRelation) -> IssueCandidate {
         IssueCandidate {
+            discussion: None,
             title: self.title,
             url: self.html_url,
             author: self.user.map(|user| user.login),
@@ -281,7 +297,7 @@ fn invalid_login(login: &str) -> ScanNote {
 }
 
 impl<T: TokenSource> WorkClient<T> {
-    /// Searches open, non-archived pull requests each login authored, is assigned or asked to review (Q1). The
+    /// Searches open, non-archived PRs each login authored, is assigned, asked to review or mentioned in (Q1). The
     /// first refusal marks a login unsearchable and skips its remaining searches. An invalid login is skipped
     /// with a note (it never reaches `q`).
     pub async fn search_pull_requests(&self, logins: &[String]) -> Result<PrSearch, WorkError> {
