@@ -1815,3 +1815,38 @@ async fn fallback_issue_selection_keeps_only_ranking_comment_fields() {
         "ranking needs only the author's login"
     );
 }
+
+#[tokio::test]
+async fn fallback_mention_only_issues_share_the_forty_conversation_budget() {
+    let (_, source) = fallback_issue_page().await;
+    let mut issue = source.issues[&item("acme/app#1")].clone();
+    issue.relations.remove(&IssueRelation::Assigned);
+    let mut candidates = Candidates::default();
+    for number in 1..=45 {
+        candidates.add_issue(ItemRef::new("acme", "app", number).unwrap(), issue.clone());
+    }
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data":{"a0":{"issue":null}}})),
+        )
+        .expect(40)
+        .mount(&mock)
+        .await;
+    let (_, _, unchecked) = crate::dashboard::refresh::mentions::collect(
+        &mock_client(&mock),
+        &crate::dashboard::score::ScoreRules::new("alice", &Default::default()),
+        &logins(&["alice"]),
+        &candidates,
+        &Default::default(),
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        unchecked, 45,
+        "failed reads and budget overflow stay accounted for"
+    );
+    mock.verify().await;
+}

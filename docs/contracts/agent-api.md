@@ -155,7 +155,7 @@ token, its hash, other headers and the query string are never logged. Settings s
 `partly_read` reports a bounded conversation window, without a safety implication.
 Read `mention_coverage` on the summary or any items page:
 `unchecked_items` counts real candidates not read within the budget/deadline or after a read failure;
-`unchecked_logins` lists logins whose discovery was unavailable (no enumeration fallback), and
+`unchecked_logins` lists logins whose mention search was unavailable (limited fallback for mention-only issues), and
 `timed_out_logins` lists PR mention searches exceeding their request budget. Report these gaps separately
 from the mentions; do not parse English scan notes or interpret a zero item count as full login coverage.
 Both dashboard summary and items responses expose `mentions`, independent of the ranked items and their

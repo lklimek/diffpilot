@@ -38,7 +38,7 @@ pub struct DashboardSummary {
 pub struct MentionCoverage {
     /// Real candidates not checked because of the read budget, deadline or read failure.
     pub unchecked_items: u32,
-    /// Logins whose mention discovery was unavailable; no enumeration fallback is attempted.
+    /// Logins whose mention search was unavailable; fallback covers only mention-only issues.
     pub unchecked_logins: Vec<String>,
     /// Logins whose PR mention search exceeded its request budget.
     pub timed_out_logins: Vec<String>,

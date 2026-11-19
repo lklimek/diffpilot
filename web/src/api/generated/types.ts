@@ -2122,7 +2122,7 @@ export type MentionCoverage = {
  */
 unchecked_items: number,
 /**
- * Logins whose mention discovery was unavailable; no enumeration fallback is attempted.
+ * Logins whose mention search was unavailable; fallback covers only mention-only issues.
  */
 unchecked_logins: Array<string>,
 /**

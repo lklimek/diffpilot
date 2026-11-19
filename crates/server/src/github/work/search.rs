@@ -90,8 +90,10 @@ impl PrCandidate {
 /// An open issue found by search or enumeration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IssueCandidate {
-    /// Found by mention search; enumeration relations alone never feed the mentions strip.
+    /// Found by mention search.
     pub mention_candidate: bool,
+    /// Refused logins with real text mentions; checked only if the issue has no ranking relation.
+    pub fallback_mention_logins: BTreeSet<String>,
     /// Title.
     pub title: String,
     /// Web URL.
@@ -166,6 +168,9 @@ impl Candidates {
             Some(found) => {
                 found.relations.extend(issue.relations);
                 found.mention_candidate |= issue.mention_candidate;
+                found
+                    .fallback_mention_logins
+                    .extend(issue.fallback_mention_logins);
             }
             None => {
                 self.issues.insert(item, issue);
@@ -281,6 +286,7 @@ impl SearchItem {
     fn issue(self, relation: IssueRelation) -> IssueCandidate {
         IssueCandidate {
             mention_candidate: relation == IssueRelation::Mentioned,
+            fallback_mention_logins: BTreeSet::new(),
             title: self.title,
             url: self.html_url,
             author: self.user.map(|user| user.login),

@@ -117,7 +117,7 @@ it("explains unavailable login searches once without an unrelated item count", (
     />,
   );
   expect(screen.getByRole("region", { name: "Mentions" })).toHaveTextContent(
-    "Mentions of @alice-helper were not checked because GitHub search is unavailable for this login.",
+    "Mention search for @alice-helper is unavailable; coverage is limited.",
   );
   expect(screen.queryByText(/on .* items/)).not.toBeInTheDocument();
 });

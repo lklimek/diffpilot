@@ -77,13 +77,15 @@ either list re-judges just the items whose judged inputs change.
 
 ## Addendum (2026-11-19): unanswered mentions
 Owner-approved. My work has a compact Mentions strip above Needs you, outside P0–P3, scores and judgement.
-Discovery adds `mentions:<login>` to open-PR searches; enumeration discovers ranking relations only;
-unsearchable logins have no mention fallback.
+Discovery adds `mentions:<login>` to open-PR searches; enumeration also discovers otherwise unranked issues with real text mentions
+of refused logins. These share the 40-conversation budget and the same quote, answer and excluded-author rules;
+only these items match their refused logins. Unrelated or ranked enumerated items stay out.
+Mention search for refused logins remains unavailable, so coverage is limited.
 Mention-only PRs and issues never enter the ranked snapshot; issues also assigned or in watched repositories remain ranked.
 A post counts while newer than every scanned login's latest comment or submitted review on that item. The
 scan uses separate bounded conversation queries for PRs and issues. Issue enumeration retains comment bodies
-only for the ranking's existing mention relation, never strip discovery.
-Q2's selection and batch size are unchanged. Only mention-search hits get conversation reads; the explicit
+for the ranking's existing mention relation and mention-only strip candidates.
+Q2's selection and batch size are unchanged. Only mention-search hits and mention-only fallback issues get conversation reads; the explicit
 request/time/window budgets are in plan §K. Truncated conversations keep mentions found in the read windows,
 with a factual `partly_read` row marker. Budget overflow, failed reads and deadline expiry leave one count of
 unchecked candidates in `mention_coverage.unchecked_items`; completed results remain.

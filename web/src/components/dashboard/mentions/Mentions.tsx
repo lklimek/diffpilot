@@ -45,7 +45,7 @@ export function Mentions({
     notes.push(`Mentions not checked on ${count} ${count === 1 ? "item" : "items"} this refresh.`);
   }
   for (const login of coverage?.unchecked_logins ?? []) {
-    notes.push(`Mentions of @${login} were not checked because GitHub search is unavailable for this login.`);
+    notes.push(`Mention search for @${login} is unavailable; coverage is limited.`);
   }
   for (const login of coverage?.timed_out_logins ?? []) {
     notes.push(`PR mentions of @${login} were not checked: GitHub search took too long.`);

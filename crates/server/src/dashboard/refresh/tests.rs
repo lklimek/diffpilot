@@ -2175,8 +2175,13 @@ async fn unsearchable_mentions_do_not_spend_the_budget_on_unrelated_open_prs() {
     }
     template["number"] = json!(450);
     template["body"] = json!("@alice please reply");
+    template["comments"] = json!({"nodes":[{
+        "author":{"__typename":"User","login":"carol"},
+        "body":"@alice-helper please reply", "createdAt":"2026-11-18T08:00:00Z"
+    }]});
     template["updatedAt"] = json!("2026-11-16T08:00:00Z");
     prs.as_array_mut().unwrap().push(template.clone());
+    template["comments"] = json!({"nodes":[],"totalCount":0});
     template["number"] = json!(451);
     template["body"] = json!("@alice-helper please reply");
     prs.as_array_mut().unwrap().push(template);
@@ -2191,6 +2196,51 @@ async fn unsearchable_mentions_do_not_spend_the_budget_on_unrelated_open_prs() {
         .unwrap();
     issue["body"] = json!("@alice-helper please reply");
     issue["comments"] = json!({"nodes":[],"totalCount":0});
+    let template = issue.clone();
+    for (number, author, commenter, body, text) in [
+        (600, "bob", "carol", "", "@alice-helper please reply"),
+        (601, "bob", "carol", "> @alice-helper quoted", ""),
+        (602, "dependabot", "carol", "@alice-helper please reply", ""),
+        (603, "bob", "dependabot", "", "@alice-helper please reply"),
+        (
+            604,
+            "bob",
+            "alice",
+            "@alice-helper please reply",
+            "Answered",
+        ),
+        (
+            605,
+            "bob",
+            "alice-helper",
+            "@alice-helper please reply",
+            "Answered",
+        ),
+        (
+            606,
+            "bob",
+            "carol",
+            "@alice-helper-extra",
+            "mail@alice-helper.dev",
+        ),
+    ] {
+        let mut extra = template.clone();
+        extra["number"] = json!(number);
+        extra["author"]["login"] = json!(author);
+        extra["body"] = json!(body);
+        extra["comments"] = json!({"nodes":[{
+            "author":{"__typename":"User","login":commenter}, "body":text,
+            "createdAt":"2026-11-18T08:00:00Z"
+        }]});
+        issues.as_array_mut().unwrap().push(extra);
+    }
+    for number in 700..745 {
+        let mut extra = template.clone();
+        extra["number"] = json!(number);
+        extra["body"] = json!("Unrelated issue");
+        extra["updatedAt"] = json!("2026-11-18T08:00:00Z");
+        issues.as_array_mut().unwrap().push(extra);
+    }
     issues
         .as_array_mut()
         .unwrap()
@@ -2216,13 +2266,28 @@ async fn unsearchable_mentions_do_not_spend_the_budget_on_unrelated_open_prs() {
         summary.mentions.iter().any(|m| m.number == 450),
         "the older real candidate must be read"
     );
-    assert!(
-        !summary
-            .mentions
-            .iter()
-            .any(|m| m.number == 451 || m.number == 305 || m.number == 1525),
-        "no fallback mention discovery for PRs or issues"
+    assert_eq!(
+        summary.mentions.iter().filter(|m| m.number == 450).count(),
+        1,
+        "a searchable PR must not match the refused login"
     );
+    for number in [305, 600] {
+        assert!(
+            summary.mentions.iter().any(|m| m.number == number),
+            "fallback issue {number} must not vanish"
+        );
+    }
+    assert!(
+        !ranked
+            .iter()
+            .any(|i| matches!(i.number, Some(305 | 600..=606 | 700..=744)))
+    );
+    for number in [451, 601, 602, 603, 604, 605, 606, 1525] {
+        assert!(
+            !summary.mentions.iter().any(|m| m.number == number),
+            "ineligible fallback {number}"
+        );
+    }
     let expected =
         json!({"unchecked_items":0,"unchecked_logins":["alice-helper"],"timed_out_logins":[]});
     for uri in ["/api/v1/dashboard", "/api/v1/dashboard/items"] {

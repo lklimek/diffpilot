@@ -183,7 +183,7 @@
           "minimum": 0
         },
         "unchecked_logins": {
-          "description": "Logins whose mention discovery was unavailable; no enumeration fallback is attempted.",
+          "description": "Logins whose mention search was unavailable; fallback covers only mention-only issues.",
           "type": "array",
           "items": {
             "type": "string"

@@ -431,9 +431,7 @@ test("structured mention coverage stays in the collapsed summary and out of scan
   await page.goto("/?dashboard=mention-coverage");
   const strip = page.getByRole("region", { name: "Mentions" });
   await expect(strip).toContainText("Mentions not checked on 5 items this refresh.");
-  await expect(strip).toContainText(
-    "Mentions of @alice-helper were not checked because GitHub search is unavailable for this login.",
-  );
+  await expect(strip).toContainText("Mention search for @alice-helper is unavailable; coverage is limited.");
   expect((await strip.boundingBox())!.height).toBeLessThanOrEqual(28);
   const heading = (await strip.getByRole("button", { name: "Mentions (1)" }).boundingBox())!;
   const coverage = (await strip.locator("span[title]").boundingBox())!;
@@ -444,6 +442,6 @@ test("structured mention coverage stays in the collapsed summary and out of scan
   await expect(page.getByRole("tooltip")).toContainText("@alice-helper");
   await expect(page.getByRole("tooltip")).toContainText("@slow");
   await strip.getByRole("button", { name: "Mentions (1)" }).click();
-  await expect(strip.getByText(/^Mentions of @alice-helper/)).toBeVisible();
+  await expect(strip.getByText(/^Mention search for @alice-helper/)).toBeVisible();
   await expect(page.locator("aside")).not.toContainText("Mentions not checked");
 });

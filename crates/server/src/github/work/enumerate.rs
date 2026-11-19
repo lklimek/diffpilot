@@ -466,6 +466,7 @@ impl<T: TokenSource> WorkClient<T> {
                 .all_nodes(lookup("issues", ISSUE_NODES), &["issues"])
                 .await?;
             for issue in issues {
+                let mut fallback_mention_logins = BTreeSet::new();
                 let mut relations = BTreeSet::new();
                 for login in logins {
                     if issue.assignees.nodes.iter().any(|a| same(&a.login, login)) {
@@ -473,6 +474,9 @@ impl<T: TokenSource> WorkClient<T> {
                     }
                     let mut texts = std::iter::once(issue.body.as_str())
                         .chain(issue.comments.nodes.iter().map(|c| c.body.as_str()));
+                    if texts.clone().any(|text| mentions(text, login)) {
+                        fallback_mention_logins.insert(login.clone());
+                    }
                     if texts.any(|text| ranking_mentions(text, login)) {
                         relations.insert(IssueRelation::Mentioned);
                     }
@@ -487,6 +491,7 @@ impl<T: TokenSource> WorkClient<T> {
                     item,
                     IssueCandidate {
                         mention_candidate: false,
+                        fallback_mention_logins,
                         title: issue.title,
                         url: issue.url,
                         author: issue.author.map(|a| a.login),

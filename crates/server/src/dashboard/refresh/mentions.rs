@@ -35,7 +35,7 @@ pub(crate) async fn collect<T: TokenSource>(
                 .issues
                 .iter()
                 .filter(|(_, i)| {
-                    i.mention_candidate
+                    (i.mention_candidate || (!i.ranked() && !i.fallback_mention_logins.is_empty()))
                         && !i
                             .author
                             .as_deref()
@@ -197,7 +197,14 @@ async fn read_one<T: TokenSource>(
         &discussion.body,
         discussion.created_at,
     ));
-    let mut found = unanswered(rules, logins, item, kind, title, &posts);
+    let mut matched_logins = logins.to_vec();
+    if kind == GithubKind::Issue {
+        let candidate = &candidates.issues[item];
+        if !candidate.ranked() {
+            matched_logins.extend(candidate.fallback_mention_logins.iter().cloned());
+        }
+    }
+    let mut found = unanswered(rules, &matched_logins, item, kind, title, &posts);
     for mention in &mut found {
         mention.partly_read = partly_read;
     }

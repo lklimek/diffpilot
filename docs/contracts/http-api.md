@@ -696,7 +696,7 @@ is built by the server. `is_bot` uses the user's known bots plus GitHub Bot type
 no unanswered, unhidden mentions found in the snapshot. `Mention.partly_read` is true when any bounded
 conversation window was truncated or its count unavailable; older snapshots default it to false.
 Both responses include `mention_coverage`: `unchecked_items` counts real candidates missed by budget, deadline or read failure;
-`unchecked_logins` names logins whose discovery was unavailable (no enumeration fallback);
+`unchecked_logins` names logins whose mention search was unavailable (limited fallback for mention-only issues);
 `timed_out_logins` names PR searches that exceeded their request budget. Coverage is independent of filters
 and present on every items page. The browser displays it in the collapsed summary, even without rows,
 without parsing or duplicating scan notes. Older snapshots default to an empty list and zero/empty coverage.
