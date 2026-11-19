@@ -166,8 +166,9 @@ interface LineContext {
   onSelectHunk?: (hunk: string) => void;
   /** Where hunks begin and end in display order (line keys), for their rules. */
   hunkEdges: { start: ReadonlySet<string>; end: ReadonlySet<string> };
-  /** A drag selection started on a line number (and the button is still down). */
-  dragging: { current: boolean };
+  /** A drag selection starts on a line number; only then do the numbers it passes over extend it. */
+  startDrag: () => void;
+  dragging: boolean;
   askLineHint?: string;
 }
 
@@ -266,7 +267,7 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
             onPointerDown={
               selecting
                 ? (event) => {
-                    ctx.dragging.current = true;
+                    ctx.startDrag();
                     ctx.onLineAction?.(target, { extend: event.shiftKey });
                   }
                 : undefined
@@ -274,8 +275,7 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
             onPointerOver={
               selecting
                 ? (event) => {
-                    if (event.buttons === 1 && ctx.dragging.current)
-                      ctx.onLineAction?.(target, { extend: true });
+                    if (event.buttons === 1 && ctx.dragging) ctx.onLineAction?.(target, { extend: true });
                   }
                 : undefined
             }
@@ -712,14 +712,13 @@ export function CodeView({
   remarkStartOnly = false,
   askLineHint,
 }: CodeViewProps) {
-  const dragging = useRef(false);
+  const [dragging, setDragging] = useState(false);
   useEffect(() => {
-    const stop = () => {
-      dragging.current = false;
-    };
+    if (!dragging) return;
+    const stop = () => setDragging(false);
     window.addEventListener("pointerup", stop);
     return () => window.removeEventListener("pointerup", stop);
-  }, []);
+  }, [dragging]);
   const id = useId();
   const view = useRef<HTMLDivElement>(null);
   const flash = useMemo(
@@ -853,6 +852,7 @@ export function CodeView({
     hunkOf,
     selectedHunk,
     hunkEdges: edgesOf(keys, hunkOf),
+    startDrag: () => setDragging(true),
     dragging,
     askLineHint,
     onSelectHunk,

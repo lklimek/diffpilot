@@ -274,6 +274,9 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
       /* Storage unavailable: the URL still holds the place. */
     }
   }, [analysisId, hash]);
+  useEffect(() => {
+    openPath.current = file.path;
+  });
   // The review screen never scrolls the page; only the columns do.
   useEffect(() => {
     const style = document.documentElement.style;
@@ -432,7 +435,6 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
 
   // Viewed: the mark changes only after GitHub confirmed; a mark then opens the next file (Q6, A1).
   const headMoved = files.current_head !== null && files.current_head !== tour.analysis.pr.head_sha;
-  openPath.current = file.path;
   const toggleViewed = () => {
     const at = file;
     const mark = at.viewed !== "viewed";
