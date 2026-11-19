@@ -320,4 +320,44 @@ describe("msw handlers of the screens", () => {
       await api.getRepoSettings({ owner: "acme", name: "other" }).catch((e: unknown) => e),
     ).toMatchObject({ status: 404, code: "not_found" });
   });
+
+  it("files (R12): every PR file with hunks; Viewed (R13) is set once GitHub confirmed and kept", async () => {
+    const api = createApiClient(BASE);
+    const files = await api.getFiles(ID);
+    expect(files.viewed_status).toBe("checked");
+    expect(files.files.map((f) => f.path)).toContain("src/rpc/client.rs");
+    expect(files.files.find((f) => f.path === "src/rpc/client.rs")?.viewed).toBe("unviewed");
+    await api.setFileViewed(ID, { path: "src/rpc/client.rs", viewed: true });
+    expect((await api.getFiles(ID)).files.find((f) => f.path === "src/rpc/client.rs")?.viewed).toBe("viewed");
+    expect(
+      await api.setFileViewed(ID, { path: "src/nope.rs", viewed: true }).catch((e: unknown) => e),
+    ).toMatchObject({ status: 400, code: "invalid_request" });
+    setScenario("viewed-refused");
+    expect(
+      await api.setFileViewed(ID, { path: "src/lib.rs", viewed: true }).catch((e: unknown) => e),
+    ).toMatchObject({ code: "github_refused" });
+    expect((await api.getFiles(ID)).files.find((f) => f.path === "src/lib.rs")?.viewed).toBe("unviewed");
+  });
+
+  it("files of a lazy tour: lines of a flow not analysed yet belong to that flow", async () => {
+    setScenario("lazy-flows");
+    const api = createApiClient(BASE);
+    const config = (await api.getFiles(ID)).files.find((f) => f.path === "src/config.rs")!;
+    expect(config.hunks[0]!.parts.map((p) => p.owner)).toContainEqual({ kind: "flow", flow_id: "f2" });
+  });
+
+  it("anchored Ask (R14): a lines question has no step", async () => {
+    const api = createApiClient(BASE);
+    const question = await api.askAnchored(ID, {
+      text: "Why?",
+      anchor: {
+        kind: "lines",
+        path: "src/rpc/metrics.rs",
+        side: "head",
+        range: { start_line: 41, end_line: 46 },
+      },
+    });
+    expect(question).toMatchObject({ state: "pending", anchor: { kind: "lines" } });
+    expect(question.step_id).toBeUndefined();
+  });
 });

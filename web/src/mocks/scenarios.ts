@@ -11,6 +11,7 @@ import type {
   FeedbackMemory,
   PendingReview,
   AskQuestion,
+  FilesResponse,
   LinesResponse,
   MeResponse,
   MyAnalyses,
@@ -103,6 +104,10 @@ interface Scenario {
   pendingReview?: (seed: PendingReview) => PendingReview;
   /** Comment writes answer 409 `comment_published` (the review was published meanwhile). */
   commentPublished?: true;
+  /** Changes to the `files` answer. */
+  files?: (seed: FilesResponse) => FilesResponse;
+  /** Viewed writes answer with this error code (GitHub refused, the head moved, GitHub did not answer). */
+  viewedError?: "github_refused" | "pr_head_changed" | "github_unavailable";
 }
 
 /** Step f1.2 with one behaviour remark over lines 90–95 (see `remarkLayoutLines`), rated LOW. */
@@ -511,6 +516,19 @@ const SCENARIOS = {
   },
   "signed-out": { me: () => ({ user: null, csrf_token: null }) },
   "no-reviews": { myAnalyses: () => ({ analyses: [] }) },
+  "viewed-refused": { viewedError: "github_refused" },
+  "viewed-not-read": {
+    files: (seed) => ({
+      ...seed,
+      viewed_status: "not_checked",
+      current_head: null,
+      files: seed.files.map((f) => ({ ...f, viewed: null })),
+    }),
+  },
+  "viewed-head-moved": {
+    files: (seed) => ({ ...seed, current_head: MOVED_HEAD }),
+    viewedError: "pr_head_changed",
+  },
   "head-moved": {
     resolve: (seed: ResolvePrResponse) => ({
       ...seed,

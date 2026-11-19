@@ -4,14 +4,17 @@ import { fixtureState, linesFor, seedFor } from "./fixtures";
 import { realLines } from "./real";
 import { realTour, scenario } from "./scenarios";
 
-const testSources = import.meta.glob<string>("../../../fixtures/pr-482/repo/{base,head}/tests/**/*.txt", {
+const repoSources = import.meta.glob<string>("../../../fixtures/pr-482/repo/{base,head}/**/*", {
   eager: true,
   query: "?raw",
   import: "default",
 });
 
-function testLines(path: string, side: LineSide, from: number, to: number): LinesResponse | undefined {
-  const text = testSources[`../../../fixtures/pr-482/repo/${side}/${path}.txt`];
+// A file of the fixture repository the lines seed does not hold (tests, docs): changed lines are its Not analysed
+// ranges.
+function repoLines(path: string, side: LineSide, from: number, to: number): LinesResponse | undefined {
+  const at = `../../../fixtures/pr-482/repo/${side}/${path}`;
+  const text = repoSources[`${at}.txt`] ?? repoSources[at];
   if (text === undefined) return undefined;
   const lines = text.replace(/\n$/, "").split("\n");
   const items = (seedFor("default", "tour") as Tour).quiet.not_analysed
@@ -44,8 +47,7 @@ export function mockLines(path: string, side: LineSide, from: number, to: number
   const tour = realTour();
   const answer = tour
     ? realLines(tour, path, side, from, to)
-    : (linesFor(fixtureState(), path, side, from, to) ??
-      (scenario().showLess ? testLines(path, side, from, to) : undefined));
+    : (linesFor(fixtureState(), path, side, from, to) ?? repoLines(path, side, from, to));
   if (answer && scenario().showLess && path === "src/rpc/client.rs" && side === "head") {
     answer.context_only = answer.changed.filter((line) => line === 89);
     answer.deleted = answer.deleted.map((block) => ({

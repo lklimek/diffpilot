@@ -5,6 +5,7 @@ import type {
   AnalysisEvent,
   AnalysisId,
   AnalysisSummary,
+  AskAnchor,
   AskQuestion,
   CreateAccessToken,
   CreateCommentRequest,
@@ -12,6 +13,7 @@ import type {
   Feedback,
   FeedbackId,
   FeedbackRequest,
+  FilesResponse,
   FlowId,
   LlmLanguage,
   PendingReview,
@@ -111,6 +113,45 @@ export const useAskQuestion = (id: AnalysisId) => {
   });
 };
 
+/** Asks about an anchor (a step, lines of it, or lines or a file without a step), like `useAskQuestion`. */
+export const useAskAnchored = (id: AnalysisId) => {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ anchor, text }: { anchor: AskAnchor; text: string }) =>
+      api.askAnchored(id, { anchor, text }),
+    onSuccess: (question) => arrive(client, id, question, false),
+  });
+};
+
+/** The PR's files with their hunks and the user's GitHub Viewed marks; read again when the tab regains focus. */
+export const useFiles = (id: AnalysisId) =>
+  useQuery({ queryKey: ["files", id], queryFn: () => api.getFiles(id), refetchOnWindowFocus: true });
+
+/**
+ * Marks or unmarks a file as viewed on GitHub. Nothing changes before GitHub confirmed; then the cached mark is
+ * set and the list read again.
+ */
+export const useSetFileViewed = (id: AnalysisId) => {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, viewed }: { path: string; viewed: boolean }) =>
+      api.setFileViewed(id, { path, viewed }),
+    onSuccess: (_, { path, viewed }) => {
+      client.setQueryData<FilesResponse>(
+        ["files", id],
+        (files) =>
+          files && {
+            ...files,
+            files: files.files.map((f) =>
+              f.path === path ? { ...f, viewed: viewed ? "viewed" : "unviewed" } : f,
+            ),
+          },
+      );
+      return client.invalidateQueries({ queryKey: ["files", id] });
+    },
+  });
+};
+
 /**
  * Keeps the questions current from the analysis event stream while mounted. When the browser gives up on the
  * stream, the list is read again and the stream reopened (its snapshot resyncs); `lost` meanwhile.
@@ -127,8 +168,11 @@ export function useQuestionEvents(id: AnalysisId): { lost: boolean } {
             event.event === "analysis" &&
             event.summary.id === id &&
             event.summary.review_ready !== undefined
-          )
+          ) {
+            // A flow accepted meanwhile changes who explains the lines of the Files view too.
             void client.invalidateQueries({ queryKey: ["tour", id] });
+            void client.invalidateQueries({ queryKey: ["files", id] });
+          }
           if (event.event === "question") arrive(client, id, event.question, true);
           if (event.event === "analysis" && event.summary.id === id && event.summary.usage !== undefined) {
             client.setQueryData<Tour>(
@@ -540,7 +584,11 @@ export function useForgetReanalysedFlows(id: AnalysisId, tour: Tour | undefined)
 
 export function useFlowWork(id: AnalysisId) {
   const client = useQueryClient();
-  const refresh = () => client.invalidateQueries({ queryKey: ["tour", id] });
+  const refresh = () =>
+    Promise.all([
+      client.invalidateQueries({ queryKey: ["tour", id] }),
+      client.invalidateQueries({ queryKey: ["files", id] }),
+    ]);
   return {
     request: useMutation({
       mutationFn: (flow: string) => api.requestFlow(id, flow),
