@@ -279,31 +279,45 @@ describe("NavList: LLM rating and remark pills", () => {
 });
 
 describe("NavList: LLM flag markers", () => {
-  it("a step with flags shows its strongest level beside the step, apart from its rating pill", () => {
-    renderNav({ current: { block: "step", step_id: "f1.5" }, onRemark: () => {} });
+  it("a step with flags shows its strongest level beside the step, apart from its rating pill; it jumps to the flag", async () => {
+    const onFlag = vi.fn();
+    const onSelect = vi.fn();
+    renderNav({ current: { block: "step", step_id: "f1.5" }, onRemark: () => {}, onFlag, onSelect });
     const row = screen.getByRole("button", { name: /^Step 5:/ }).closest("li")!;
-    const flag = within(row).getByRole("img", { name: "LLM flags on step 5: 1 red flag" });
+    const flag = within(row).getByRole("button", { name: "First red flag on step 5" });
     expect(flag).toHaveTextContent("⚑ red");
+    expect(flag).toHaveAccessibleDescription(/^LLM flags on step 5: 1 red flag\./);
     expect(
       within(row).getByRole("button", { name: "LLM rated step 5 HIGH (not checked)" }),
     ).not.toContainElement(flag);
     const yellow = screen.getByRole("button", { name: /^Step 7:/ }).closest("li")!;
-    expect(
-      within(yellow).getByRole("img", { name: /^LLM flags on step 7: 1 yellow flag$/ }),
-    ).toHaveTextContent("⚑ yellow");
-    const none = screen.getByRole("button", { name: /^Step 2:/ }).closest("li")!;
-    expect(within(none).queryByRole("img", { name: /LLM flags/ })).toBeNull();
-  });
-
-  it("each flow row shows its strongest flag, also while its steps are collapsed", () => {
-    renderNav();
-    const row = (n: number) => screen.getByRole("button", { name: new RegExp(`^Flow ${n}:`) }).closest("li")!;
-    expect(
-      within(row(4)).getByRole("img", { name: "LLM flags in flow 4: 1 red flag, 1 yellow flag" }),
-    ).toHaveTextContent("⚑ red");
-    expect(within(row(3)).getByRole("img", { name: "LLM flags in flow 3: 1 yellow flag" })).toHaveTextContent(
+    expect(within(yellow).getByRole("button", { name: "First yellow flag on step 7" })).toHaveTextContent(
       "⚑ yellow",
     );
+    const none = screen.getByRole("button", { name: /^Step 2:/ }).closest("li")!;
+    expect(within(none).queryByRole("button", { name: /flag/ })).toBeNull();
+    await userEvent.click(flag);
+    expect(onFlag).toHaveBeenCalledWith([tour.flows[0]!.steps[4]]);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("each flow row shows its strongest flag, also while its steps are collapsed; it jumps into the flow", async () => {
+    const onFlag = vi.fn();
+    renderNav({ onFlag });
+    const row = (n: number) => screen.getByRole("button", { name: new RegExp(`^Flow ${n}:`) }).closest("li")!;
+    const four = within(row(4)).getByRole("button", { name: "First red flag in flow 4" });
+    expect(four).toHaveTextContent("⚑ red");
+    expect(four).toHaveAccessibleDescription(/^LLM flags in flow 4: 1 red flag, 1 yellow flag\./);
+    expect(within(row(3)).getByRole("button", { name: "First yellow flag in flow 3" })).toHaveTextContent(
+      "⚑ yellow",
+    );
+    await userEvent.click(four);
+    expect(onFlag).toHaveBeenCalledWith(tour.flows[3]!.steps);
+  });
+
+  it("shows no flag markers without the callback", () => {
+    renderNav({ current: { block: "step", step_id: "f1.5" } });
+    expect(screen.queryByRole("button", { name: /^First .*flag/ })).toBeNull();
   });
 });
 

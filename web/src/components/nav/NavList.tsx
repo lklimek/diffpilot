@@ -41,6 +41,8 @@ interface NavListProps {
   handledRemarks?: ReadonlySet<AnnotationId>;
   /** A rating/remark pill: go to the first remark among `steps`; without it no pills are shown. */
   onRemark?: (steps: Step[]) => void;
+  /** A flag marker: go to the first flag at the strongest level among `steps`; without it no markers are shown. */
+  onFlag?: (steps: Step[]) => void;
   /** Ticks (`true`) or unticks (`false`) every step of a flow; no flow toggle without it. */
   onSetFlowReviewed?: (flow: Flow, reviewed: boolean) => void;
 }
@@ -115,6 +117,7 @@ export function NavList({
   questions,
   handledRemarks = new Set(),
   onRemark,
+  onFlag,
   onSetFlowReviewed,
 }: NavListProps) {
   const openFlow = currentFlowId(flows, shown);
@@ -192,11 +195,14 @@ export function NavList({
                   )}
                   <GroupLabel group={flow.group} />
                   <span className="flex flex-wrap items-center justify-end gap-1">
-                    <FlagMarker
-                      annotations={flow.steps.flatMap((s) => s.llm.annotations)}
-                      scope="flow"
-                      subject={`flow ${flow.position}`}
-                    />
+                    {onFlag && (
+                      <FlagMarker
+                        annotations={flow.steps.flatMap((s) => s.llm.annotations)}
+                        scope="flow"
+                        subject={`flow ${flow.position}`}
+                        onSelect={() => onFlag(flow.steps)}
+                      />
+                    )}
                     {onRemark && (
                       <RemarkPill
                         summary={summariseRemarks(flow.steps, handledRemarks)}
@@ -258,11 +264,14 @@ export function NavList({
                               onSelect={() => onRemark([step])}
                             />
                           )}
-                          <FlagMarker
-                            annotations={step.llm.annotations}
-                            scope="step"
-                            subject={`step ${step.number}`}
-                          />
+                          {onFlag && (
+                            <FlagMarker
+                              annotations={step.llm.annotations}
+                              scope="step"
+                              subject={`step ${step.number}`}
+                              onSelect={() => onFlag([step])}
+                            />
+                          )}
                         </span>
                       </li>
                     );

@@ -42,7 +42,13 @@ describe("SidePanel", () => {
     viewport(3440);
     const { unmount } = panel();
     expect(screen.getByText("sections")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Collapse the side panel" }));
+    const hide = screen.getByRole("button", { name: "Hide side panel" });
+    expect(hide).toHaveTextContent(/^Hide$/);
+    expect(hide).toHaveClass("text-[11.5px]");
+    expect(hide).toHaveAccessibleDescription(/rail/);
+    await userEvent.click(hide);
+    // The focus moves to the rail that opens the panel again.
+    expect(screen.getByRole("button", { name: /More · waiting on others 3/ })).toHaveFocus();
     unmount();
     panel();
     expect(screen.queryByText("sections")).toBeNull();

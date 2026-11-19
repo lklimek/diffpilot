@@ -6,7 +6,7 @@ import { FlagMarker } from "../../components/flag/FlagMarker";
 import { lineReference } from "../../components/ask/AskForm";
 import { REVIEW_START_PATH } from "../shell/paths";
 import { answerComment, flagComment } from "../../components/comment/prefill";
-import { remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
+import { flagTarget, remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
 import { useSectionState } from "../../components/inspector/sectionState";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
@@ -451,8 +451,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       ? (question: AskQuestion) => draftComment(currentLine(), answerComment(question.answer?.answer ?? ""))
       : undefined;
   // LLM remark pills and `r`: the remark's code line and its Inspector entry flash.
-  const jumpToRemark = (steps: Step[]) => {
-    const remark = remarkTarget(steps, handledRemarks);
+  // `flag`: the first flag at the strongest level (a flag marker); else the first remark (a rating pill, `r`).
+  const jumpToRemark = (steps: Step[], target: "remark" | "flag" = "remark") => {
+    const remark = target === "flag" ? flagTarget(steps) : remarkTarget(steps, handledRemarks);
     if (!remark) return;
     const { step: owner, annotation } = remark;
     if (!annotation) return go({ block: "step", step_id: owner.id });
@@ -642,6 +643,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             annotations={flow.steps.flatMap((s) => s.llm.annotations)}
             scope="flow"
             subject="this flow"
+            onSelect={() => jumpToRemark(flow.steps, "flag")}
           />
         </div>
         <FlowIntroBlock
@@ -687,7 +689,12 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
                 label="LLM rating and remarks:"
                 onSelect={() => jumpToRemark([step])}
               />
-              <FlagMarker annotations={step.llm.annotations} scope="step" subject="this step" />
+              <FlagMarker
+                annotations={step.llm.annotations}
+                scope="step"
+                subject="this step"
+                onSelect={() => jumpToRemark([step], "flag")}
+              />
             </div>
             {oldCode ? (
               <DiffCode analysisId={analysisId} query={stepQuery(step)} comments={ctx} />
@@ -947,6 +954,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             <NavList
               handledRemarks={handledRemarks}
               onRemark={jumpToRemark}
+              onFlag={(steps) => jumpToRemark(steps, "flag")}
               onSetFlowReviewed={(f, on) =>
                 setTicks(
                   f.steps.map((s) => s.id),

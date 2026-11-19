@@ -346,13 +346,24 @@ describe("Tour screen (brief §4.3)", () => {
   it("shows the step's and the flow's LLM flags next to their rating pills above the block", async () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 4:/ }));
-    expect(
-      within(main()).getByRole("img", { name: "LLM flags in this flow: 1 red flag, 1 yellow flag" }),
-    ).toHaveTextContent("⚑ red");
-    await openStep("2", "1");
-    expect(within(main()).getByRole("img", { name: "LLM flags on this step: 1 red flag" })).toHaveTextContent(
+    expect(within(main()).getByRole("button", { name: "First red flag in this flow" })).toHaveTextContent(
       "⚑ red",
     );
+    await openStep("2", "1");
+    expect(within(main()).getByRole("button", { name: "First red flag on this step" })).toHaveTextContent(
+      "⚑ red",
+    );
+  });
+
+  it("a flow's flag marker in the menu opens the step of its first strongest flag and flashes that flag", async () => {
+    await open();
+    // Flow 4's one step has a yellow flag (line 52) before its red flag (line 53): the red one is the target.
+    await user().click(within(nav()).getByRole("button", { name: "First red flag in flow 4" }));
+    expect(await within(main()).findByRole("heading", { level: 2, name: /^1/ })).toBeVisible();
+    await waitFor(() =>
+      expect(inspector().querySelector('[data-annotation-id="f4.1.a2"]')).toHaveAttribute("data-flash"),
+    );
+    expect(inspector().querySelector('[data-annotation-id="f4.1.a3"]')).not.toHaveAttribute("data-flash");
   });
 
   it("j / k walk the blocks, n / p the flow introductions", async () => {
