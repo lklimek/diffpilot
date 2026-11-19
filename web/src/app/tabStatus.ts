@@ -1,5 +1,5 @@
-// The browser tab's title says whether smart-review is still working or done, for a tab in the background
-// (owner request, 2026-11-18: "smart-review DET#1234: busy"). Screens feed their current activity; components never touch the title. No live
+// The browser tab's title says whether diffpilot is still working or done, for a tab in the background
+// (owner request, 2026-11-18: "diffpilot DET#1234: busy"). Screens feed their current activity; components never touch the title. No live
 // region: the title is not announced.
 import { useEffect } from "react";
 import type {
@@ -30,7 +30,7 @@ interface Work {
 }
 
 /**
- * The tab title over `document`: `<base> <subject>: <status>` (owner's format: "smart-review DET#1234: busy"),
+ * The tab title over `document`: `<base> <subject>: <status>` (owner's format: "diffpilot DET#1234: busy"),
  * the subject being the page's PR or "My work", the status only for work that lasted the threshold.
  */
 export function createTabStatus() {

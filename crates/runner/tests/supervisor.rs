@@ -1,4 +1,4 @@
-//! The real `smart-review-supervisor` binary, unprivileged (runner and agents share the test's uid; the sweep
+//! The real `diffpilot-supervisor` binary, unprivileged (runner and agents share the test's uid; the sweep
 //! is scoped to the supervisor's descendants outside the runner). The runner is this test binary re-run with
 //! `SR_TEST_SCENARIO`, talking to the supervisor through `runner::supervisor::client`. Check names follow the
 //! ADR-013 container test (`deploy/runner/r1-test/`) where a scenario runs without a container.
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use runner::supervisor::client::{Supervisor, SupervisorError};
 use tempfile::TempDir;
 
-const SUPERVISOR: &str = env!("CARGO_BIN_EXE_smart-review-supervisor");
+const SUPERVISOR: &str = env!("CARGO_BIN_EXE_diffpilot-supervisor");
 const SCENARIO: &str = "SR_TEST_SCENARIO";
 
 /// Runs `scenario` as the runner under the supervisor; the supervisor's exit code.

@@ -202,7 +202,7 @@ export function allowLogin(stack: Stack, login: string): void {
   execFileSync("sqlite3", [
     "-cmd",
     ".timeout 5000",
-    join(stack.stateDir, "server", "smart-review.sqlite"),
+    join(stack.stateDir, "server", "diffpilot.sqlite"),
     `INSERT OR IGNORE INTO tenant_allowed_logins (tenant_id, login) VALUES ('default', '${login}');`,
   ]);
 }

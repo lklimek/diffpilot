@@ -13,10 +13,10 @@ request approved by the coordinator (plan §4.3).
 
 ## Evidence
 - Independent review by Codex Astra (xhigh), four rounds; reports in
-  `/data/artifacts/smart-review/2026-11-16/reviews/wp1-a{1,2,3,4}-astra.md`. Final verdict: FREEZE, no open
+  `/data/artifacts/diffpilot/2026-11-16/reviews/wp1-a{1,2,3,4}-astra.md`. Final verdict: FREEZE, no open
   blocking finding.
 - Schema smoke: one real `codex exec --output-schema` per job kind accepted the final schemas
-  (`/data/artifacts/smart-review/2026-11-16/schema-smoke/`).
+  (`/data/artifacts/diffpilot/2026-11-16/schema-smoke/`).
 
 ## For the owner: deviations from the brief accepted at the gate
 - Lines in files that are not part of the PR diff cannot be commented in v1 (ADR-006).

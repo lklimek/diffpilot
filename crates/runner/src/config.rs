@@ -48,7 +48,7 @@ pub const SESSION_RETENTION_DAYS: &str = "SR_RUNNER_SESSION_RETENTION_DAYS";
 pub const DISK_RESERVE_MIB: &str = "SR_RUNNER_DISK_RESERVE_MIB";
 
 const DEFAULT_RUNNER_ID: &str = "runner";
-const DEFAULT_STATE_DIR: &str = "/var/lib/smart-review-runner";
+const DEFAULT_STATE_DIR: &str = "/var/lib/diffpilot-runner";
 const DEFAULT_CREDENTIAL_ID: &str = "default";
 const DEFAULT_CODEX_BIN: &str = "codex";
 const DEFAULT_GITHUB_MCP_BIN: &str = "/opt/github-mcp/github-mcp-server";
@@ -424,10 +424,7 @@ mod tests {
     #[test]
     fn defaults() {
         let config = config(&BASE).unwrap();
-        assert_eq!(
-            config.state_dir,
-            PathBuf::from("/var/lib/smart-review-runner")
-        );
+        assert_eq!(config.state_dir, PathBuf::from("/var/lib/diffpilot-runner"));
         assert_eq!(config.work_dir, config.state_dir.join("work"));
         assert_eq!(config.credential.id, "default");
         assert_eq!(config.provider, ProviderKind::Codex);
@@ -437,7 +434,7 @@ mod tests {
         );
         assert_eq!(
             config.master_auth(),
-            PathBuf::from("/var/lib/smart-review-runner/credentials/default/auth.json")
+            PathBuf::from("/var/lib/diffpilot-runner/credentials/default/auth.json")
         );
         assert!(!format!("{config:?}").contains("s3cret-value"));
     }

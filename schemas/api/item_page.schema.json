@@ -132,7 +132,7 @@
           ]
         },
         "review": {
-          "description": "The user's smart-review analysis of this pull request, read at request time; null when none.",
+          "description": "The user's diffpilot analysis of this pull request, read at request time; null when none.",
           "anyOf": [
             {
               "$ref": "#/$defs/ReviewLink"
@@ -568,7 +568,7 @@
       ]
     },
     "ReviewLink": {
-      "description": "The user's smart-review analysis of a pull request item.",
+      "description": "The user's diffpilot analysis of a pull request item.",
       "type": "object",
       "properties": {
         "analysis_id": {

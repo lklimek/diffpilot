@@ -149,7 +149,7 @@ class Supervisor:
     def __init__(self, runner_argv):
         self.runner_ids = user("runner")
         self.agent_ids = user("agent")
-        self.state_dir = os.environ.get("SR_RUNNER_STATE_DIR", "/var/lib/smart-review-runner")
+        self.state_dir = os.environ.get("SR_RUNNER_STATE_DIR", "/var/lib/diffpilot-runner")
         self.codex_homes = os.path.join(self.state_dir, "codex-homes")
         self.work_dir = os.environ.get("SR_RUNNER_WORK_DIR", "/work")
         self.deadline = int(os.environ.get("SR_SUPERVISOR_SWEEP_DEADLINE_MS", "5000")) / 1000

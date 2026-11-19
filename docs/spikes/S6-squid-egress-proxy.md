@@ -2,7 +2,7 @@
 
 Date: 2026-11-16. Squid 7.7 (`squid-openssl 7.7-0ubuntu0.26.04.2`, `ubuntu:26.04` pinned by digest), Docker
 29.9.2, Compose 5.6.1, Codex 0.167.0, `github-mcp-server` 2.1.0 (tarball SHA-256 `a442f9db…7b2b` re-verified).
-Evidence and reusable files: `/data/artifacts/smart-review/2026-11-16/spikes/S6/` — `proxy/` (Dockerfile,
+Evidence and reusable files: `/data/artifacts/diffpilot/2026-11-16/spikes/S6/` — `proxy/` (Dockerfile,
 `squid.conf`, `entrypoint.sh`), `compose.yaml` (spike), `compose-snippet.yaml` (WP3-OPS shape), `tests/`,
 `logs/` (part 1); `part2/` (`scripts/`, `inputs/`, `logs/`, `jobs/<run>/` with JSONL, `proxy-access.log`,
 env and leak checks; sanitised, token scan clean).

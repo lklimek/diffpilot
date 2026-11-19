@@ -2,9 +2,9 @@ import { expect, test } from "./fixtures";
 import { ANALYSIS_ID } from "./support";
 
 // The tab title says whether work that lasts over 10 s is still running or done (owner request, 2026-11-18):
-// "smart-review <short name>#<number>: busy | ready | attention".
+// "diffpilot <short name>#<number>: busy | ready | attention".
 // The fixture repository has the short name "NC" in the dashboard settings.
-const ID = "smart-review NC#482";
+const ID = "diffpilot NC#482";
 test("the tab title follows a requested flow analysis and an Ask answer", async ({ page }) => {
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=tab-status#f3`);
   const main = page.getByRole("main");

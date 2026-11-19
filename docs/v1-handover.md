@@ -1,4 +1,4 @@
-# smart-review: handover after v1 and v1.1
+# diffpilot: handover after v1 and v1.1
 
 Status of the code on `feat/v1`. Authoritative design: `docs/design-brief.md` (with its amendments),
 `docs/implementation-plan.md`, `docs/v1.1-dashboard-plan.md`, `docs/decisions/` (ADR-001 to ADR-020). Operating the

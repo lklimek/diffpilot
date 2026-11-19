@@ -1,5 +1,5 @@
-# smart-review egress proxy (v1, S6): Squid as an explicit forward proxy; no SSL-Bump, no CA, no cache.
-# Build: docker build -t smart-review-egress-proxy deploy/egress-proxy
+# diffpilot egress proxy (v1, S6): Squid as an explicit forward proxy; no SSL-Bump, no CA, no cache.
+# Build: docker build -t diffpilot-egress-proxy deploy/egress-proxy
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 RUN apt-get update \
  && apt-get install -y --no-install-recommends squid-openssl \

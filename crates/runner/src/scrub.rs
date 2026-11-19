@@ -342,7 +342,7 @@ mod token_shape_tests {
             "x[redacted] 9[redacted] key=x[redacted]"
         );
         // Lowercase identifiers that merely contain a prefix are not tokens.
-        let words = "smart-review-codex-staging-directory-name and art_of_the_lowercase_identifier";
+        let words = "diffpilot-codex-staging-directory-name and art_of_the_lowercase_identifier";
         assert_eq!(token_shapes(words, &["codex-", "rt_"]), words);
     }
 

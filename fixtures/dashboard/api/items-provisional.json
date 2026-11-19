@@ -454,7 +454,7 @@
         },
         {
           "text": "analysed",
-          "tip": "A smart-review analysis exists for head 52d2da1; the PR has moved to d41b7a0 since"
+          "tip": "A diffpilot analysis exists for head 52d2da1; the PR has moved to d41b7a0 since"
         }
       ],
       "change_size": {

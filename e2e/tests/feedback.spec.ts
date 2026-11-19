@@ -59,7 +59,7 @@ test("hard case 1: wrong + overrated on the HIGH step are stored; MemCan gets a 
   const written = (await fake.state()).memories[overrated?.id ?? ""];
   expect(written).toMatchObject({
     type: "severity-calibration",
-    source: "smart-review",
+    source: "diffpilot",
     value: "overrated",
     project: "node-client",
     user_id: "project:node-client",

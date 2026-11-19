@@ -88,7 +88,7 @@ impl ApiErrorSource for CommentError {
                 "The comment is not in your pending review. It may have been deleted on GitHub."
             }
             Self::AppNotInstalled => {
-                "Commenting needs the smart-review GitHub App installed on this repository."
+                "Commenting needs the diffpilot GitHub App installed on this repository."
             }
             Self::PrHeadChanged => {
                 "The pull request changed since this analysis. Analyse it again to comment."

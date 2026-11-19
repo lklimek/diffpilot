@@ -43,7 +43,7 @@ describe("TopBar", () => {
 
   it("works without a PR (home)", () => {
     render(<TopBar login={null} />);
-    expect(screen.getByRole("link", { name: "smart-review" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "diffpilot" })).toHaveAttribute("href", "/");
   });
 
   it("links the CI summary to the checks page it is given, in a new tab, with its tooltip", () => {

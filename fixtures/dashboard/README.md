@@ -1,6 +1,6 @@
 # Dashboard fixtures (v1.1)
 
-The fictional data of the approved dashboard mockup (`/data/artifacts/smart-review/2026-11-18/dashboard-mockup/`,
+The fictional data of the approved dashboard mockup (`/data/artifacts/diffpilot/2026-11-18/dashboard-mockup/`,
 `dashboard.js`) as API responses and scan facts. Everything is synthetic: accounts, repositories (`acme/*`), ids and
 tokens are fake. The signed-in user is `alice` (as `fixtures/pr-482`); `NC-482` is that fixture's pull request,
 analysed at its head `52d2da1` and moved since. Consistency and the wording rules are checked by

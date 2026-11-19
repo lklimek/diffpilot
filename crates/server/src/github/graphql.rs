@@ -14,7 +14,7 @@ use crate::config::GithubConfig;
 use crate::github::oauth::endpoint;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
-const CLIENT_NAME: &str = "smart-review";
+const CLIENT_NAME: &str = "diffpilot";
 
 /// A GraphQL call failed.
 #[derive(Debug, thiserror::Error)]

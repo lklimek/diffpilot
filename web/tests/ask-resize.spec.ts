@@ -54,7 +54,7 @@ test("the Ask area resizes by dragging or the keyboard, is remembered, and reset
 test("a small Ask dock with a comment being written scrolls instead of overlapping", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.addInitScript(() => {
-    const key = "smart-review.tour.layout";
+    const key = "diffpilot.tour.layout";
     const stored = JSON.parse(window.localStorage.getItem(key) ?? "null") as Record<string, unknown> | null;
     window.localStorage.setItem(
       key,

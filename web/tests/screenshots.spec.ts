@@ -2,7 +2,7 @@ import { test } from "./fixtures";
 import { openTour } from "./support";
 
 // Light and dark screenshots of the three blocks for the visual comparison with docs/mockups (plan §12.5).
-// Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/smart-review/<date>/wp2-web.
+// Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/diffpilot/<date>/wp2-web.
 const dir = process.env.SCREENSHOT_DIR;
 
 for (const colorScheme of ["light", "dark"] as const) {

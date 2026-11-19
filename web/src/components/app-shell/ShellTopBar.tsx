@@ -42,13 +42,13 @@ export function ShellTopBar({
       >
         Skip to content
       </a>
-      <Tooltip tip="smart-review start page: your GitHub work">
+      <Tooltip tip="diffpilot start page: your GitHub work">
         <a
           href={homeHref}
           onClick={navigateOnClick(homeHref, onNavigate)}
           className="text-[15px] font-bold text-text no-underline"
         >
-          smart<span className="text-accent">-</span>review
+          diff<span className="text-accent">pilot</span>
         </a>
       </Tooltip>
       {crumb && (

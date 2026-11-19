@@ -147,7 +147,7 @@ describe("Tour: unsent comment drafts survive navigation", () => {
     expect(within(inspector()).getByText("Draft")).toBeVisible();
     const login = (seedFor("default", "me") as MeResponse).user!.login;
     await waitFor(() =>
-      expect(window.sessionStorage.getItem(`smart-review.comment-drafts.${login}.${ID}`)).toContain(
+      expect(window.sessionStorage.getItem(`diffpilot.comment-drafts.${login}.${ID}`)).toContain(
         "Is the deadline respected?",
       ),
     );
@@ -155,7 +155,7 @@ describe("Tour: unsent comment drafts survive navigation", () => {
 
   it("keeps the drafts when the session ended (401); the same user gets them back after signing in", async () => {
     const login = (seedFor("default", "me") as MeResponse).user!.login;
-    const key = `smart-review.comment-drafts.${login}.${ID}`;
+    const key = `diffpilot.comment-drafts.${login}.${ID}`;
     await open(null, "#f1.2");
     await user().type(await commentOn95(), "kept over a timeout");
     await waitFor(() => expect(window.sessionStorage.getItem(key)).toContain("kept over a timeout"));

@@ -40,7 +40,7 @@ enum StartError {
     #[error("could not create the server client")]
     Client(#[from] ClientError),
     #[error(
-        "no supervisor: start the runner under smart-review-supervisor, or set SR_RUNNER_DEV_NO_ISOLATION=1 for development only"
+        "no supervisor: start the runner under diffpilot-supervisor, or set SR_RUNNER_DEV_NO_ISOLATION=1 for development only"
     )]
     NoIsolation,
     #[error("cannot use the supervisor (SR_SUPERVISOR_FD)")]
@@ -118,7 +118,7 @@ async fn run() -> Result<(), StartError> {
             );
         }
         None => tracing::warn!(
-            "process isolation off (development): agents run as the runner's uid; production runs under smart-review-supervisor (ADR-013)"
+            "process isolation off (development): agents run as the runner's uid; production runs under diffpilot-supervisor (ADR-013)"
         ),
     }
     remove_leftover_work_dirs(&dirs.work)?;

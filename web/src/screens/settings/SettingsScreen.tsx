@@ -86,7 +86,7 @@ function DashboardSection({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
 
 function RepoSection({ repos, userId }: { repos: RepoRef[]; userId: string }) {
   const [params, setParams] = useSearchParams();
-  const key = `smart-review:settings:repo:${userId}`;
+  const key = `diffpilot:settings:repo:${userId}`;
   let remembered: string | null = null;
   try {
     remembered = localStorage.getItem(key);

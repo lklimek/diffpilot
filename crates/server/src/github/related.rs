@@ -88,7 +88,7 @@ pub async fn verify(config: &GithubConfig, token: &SecretString, links: &mut [Re
                 ))
                 .bearer_auth(token.expose_secret())
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "smart-review")
+                .header("User-Agent", "diffpilot")
                 .header("X-GitHub-Api-Version", "2022-11-28")
                 .send()
                 .await;

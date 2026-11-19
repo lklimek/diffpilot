@@ -3,7 +3,7 @@ import { test } from "./fixtures";
 import { ANALYSIS_ID, openTour } from "./support";
 
 // The six fixture states in light and dark at 1440 and 3440 px for the comparison with docs/mockups
-// (plan §12.5). Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/smart-review/<date>/wp3-tour.
+// (plan §12.5). Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/diffpilot/<date>/wp3-tour.
 const dir = process.env.SCREENSHOT_DIR;
 
 const nav = (page: Page) => page.getByRole("navigation");

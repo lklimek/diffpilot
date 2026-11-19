@@ -114,7 +114,7 @@ async fn token_request(base: &str, params: &[(&str, &str)]) -> (StatusCode, Valu
     let response = client()
         .post(format!("{base}/login/oauth/access_token"))
         .header(ACCEPT, "application/json")
-        .header(USER_AGENT, "smart-review")
+        .header(USER_AGENT, "diffpilot")
         .form(&form)
         .send()
         .await
@@ -153,7 +153,7 @@ async fn get_user(base: &str, token: &str) -> reqwest::Response {
         .header(AUTHORIZATION, format!("Bearer {token}"))
         .header(ACCEPT, "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
-        .header(USER_AGENT, "smart-review")
+        .header(USER_AGENT, "diffpilot")
         .send()
         .await
         .unwrap()
@@ -467,7 +467,7 @@ async fn get_recorded(base: &str, file: &str, token: Option<&str>) -> reqwest::R
     let mut request = client()
         .get(format!("{base}{path_and_query}"))
         .header(ACCEPT, "application/vnd.github+json")
-        .header(USER_AGENT, "smart-review");
+        .header(USER_AGENT, "diffpilot");
     if let Some(token) = token {
         request = request.header(AUTHORIZATION, format!("Bearer {token}"));
     }
@@ -552,7 +552,7 @@ async fn unknown_route_is_404_and_logged() {
     let base = spawn(config()).await;
     let response = client()
         .get(format!("{base}/repos/acme/node-client/pulls/999"))
-        .header(USER_AGENT, "smart-review")
+        .header(USER_AGENT, "diffpilot")
         .send()
         .await
         .unwrap();
@@ -654,7 +654,7 @@ async fn graphql(base: &str, token: &str, query: &str, variables: Value) -> (Sta
     let response = client()
         .post(format!("{base}/graphql"))
         .header(AUTHORIZATION, format!("Bearer {token}"))
-        .header(USER_AGENT, "smart-review")
+        .header(USER_AGENT, "diffpilot")
         .json(&serde_json::json!({"query": query, "variables": variables}))
         .send()
         .await

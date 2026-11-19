@@ -4,7 +4,7 @@ Date: 2026-11-16. App `claudbot` (owner lklimek): contents read, issues write, m
 write; **checks not granted**. Installations at test time (17:03 UTC, re-checked before the tests):
 `lklimek` (all, 49 repos), `dashpay` (selected; App JWT check: `dash-evo-tool` covered, **`dashpay/platform` NOT
 installed**; the user's view also lists `dashpay/tenderdash`). Evidence:
-`/data/artifacts/smart-review/2026-11-16/spikes/S4/` — scripts `s4-installation.sh`, `s4-user-token.sh`,
+`/data/artifacts/diffpilot/2026-11-16/spikes/S4/` — scripts `s4-installation.sh`, `s4-user-token.sh`,
 `s4-refresh.sh`, `s4-checks.sh` (reuse `S3/scripts/spike-lib.sh`; run `S3/scripts/redact-app-ids.py` after new
 recordings); sanitised `responses/*.json`.
 

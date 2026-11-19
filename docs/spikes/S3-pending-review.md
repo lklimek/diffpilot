@@ -13,7 +13,7 @@ diff, list?
 Scripts: `scripts/spike-lib.sh` (recording, sanitising), `scripts/queries.sh` (all GraphQL documents),
 `scripts/s3-cleanup.sh` (delete + verify), `scripts/patch-lines.py` (diff line numbers per side).
 Recorded responses (fake-github fixtures): `responses/NN-*.json` = `{request, status, headers, response}`.
-All under `/data/artifacts/smart-review/2026-11-16/spikes/S3/`.
+All under `/data/artifacts/diffpilot/2026-11-16/spikes/S3/`.
 
 | # | Call | Result |
 |---|---|---|

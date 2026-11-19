@@ -1,6 +1,6 @@
-# S11-4 — Reading MemCan TODOs from the smart-review server
+# S11-4 — Reading MemCan TODOs from the diffpilot server
 
-Sources: memcan checkout `/home/ubuntu/git/memcan/rs` (`memcan-server/src/serve.rs`, `memcan-core/src/todo.rs`, `ui/api.rs`), smart-review `crates/server/src/memcan/client.rs`, plan §G. One real read via MCP tools (project `smart-review`, read-only).
+Sources: memcan checkout `/home/ubuntu/git/memcan/rs` (`memcan-server/src/serve.rs`, `memcan-core/src/todo.rs`, `ui/api.rs`), diffpilot `crates/server/src/memcan/client.rs`, plan §G. One real read via MCP tools (project `diffpilot`, read-only).
 
 ## 1. Interfaces
 
@@ -19,9 +19,9 @@ I1 TodoItem fields: `id` (uuid str), `title`, `description` (str|null), `project
 
 I2 answer is one text block: JSON `{"count":N,"offset":N,"data":"<JSONL string>"}`; each JSONL line = `{"_collection":"todos","id","collection","data":"<title>\n<description>", "title","description","project","priority","status","owner","blocked_by","created_at","completed_at"}`. Same fields as I1, plus a `data` field that DUPLICATES title+description, so an export page is ~2x the size of an I1 page and double-encoded (JSON in a string). `count` is the line count; there is no `has_more`; paging ends on a short page.
 
-Real read (project smart-review, 2 TODOs, both pending): I1 = 1 page, `has_more:false`; I2 (limit 2) payload about 3.2 KB, about 1.6 KB per TODO. Redacted example: `{"id":"<uuid>","title":"<..>","description":"<~600 chars>","project":"smart-review","priority":"high","status":"pending","owner":null,"blocked_by":[],"created_at":"2026-11-16T15:11:02.7+00:00","completed_at":null}`.
+Real read (project diffpilot, 2 TODOs, both pending): I1 = 1 page, `has_more:false`; I2 (limit 2) payload about 3.2 KB, about 1.6 KB per TODO. Redacted example: `{"id":"<uuid>","title":"<..>","description":"<~600 chars>","project":"diffpilot","priority":"high","status":"pending","owner":null,"blocked_by":[],"created_at":"2026-11-16T15:11:02.7+00:00","completed_at":null}`.
 
-## 3. smart-review client today
+## 3. diffpilot client today
 
 | ID | Fact |
 |---|---|
@@ -39,7 +39,7 @@ Real read (project smart-review, 2 TODOs, both pending): I1 = 1 page, `has_more:
 
 ## 5. Project list per user
 
-TODOs are per project string; MemCan has no user concept and no "list projects" tool (`list_collections` lists collections only). So the dashboard needs an explicit per-user setting `memcan_projects: [string]` (the F.6 scope field), default empty or derived from repo names of the user's tracked PRs (only a hint, MemCan project = git remote repo name per user convention, so `lklimek/smart-review` -> `smart-review`). Validate names (`^[A-Za-z0-9._-]{1,100}$`), cap count (for example 20), since each is one call. Alternative for discovery: one I2 scan with `filter` and collect distinct `project` (paged, heavy; not recommended on every refresh).
+TODOs are per project string; MemCan has no user concept and no "list projects" tool (`list_collections` lists collections only). So the dashboard needs an explicit per-user setting `memcan_projects: [string]` (the F.6 scope field), default empty or derived from repo names of the user's tracked PRs (only a hint, MemCan project = git remote repo name per user convention, so `lklimek/diffpilot` -> `diffpilot`). Validate names (`^[A-Za-z0-9._-]{1,100}$`), cap count (for example 20), since each is one call. Alternative for discovery: one I2 scan with `filter` and collect distinct `project` (paged, heavy; not recommended on every refresh).
 
 ## 6. Field mapping to dashboard item
 

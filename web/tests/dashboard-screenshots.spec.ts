@@ -3,7 +3,7 @@ import { expect, test } from "./fixtures";
 
 // Screenshots of every My work msw scenario at 1600×900 and 3440×1440 (light; `normal` also dark), plus `normal`
 // with an item expanded and the side panel open, and the pages the review-start rows lead to. Mock data only.
-// Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/smart-review/<date>/v1.1-dashboard-screens.
+// Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/diffpilot/<date>/v1.1-dashboard-screens.
 const dir = process.env.SCREENSHOT_DIR;
 
 /** 10:27 in Warsaw on the fixture day, as in the mockup: after every fixture scan (08:14, 09:24). */

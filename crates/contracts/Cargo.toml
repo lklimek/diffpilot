@@ -1,6 +1,6 @@
 [package]
 name = "contracts"
-description = "smart-review wire types: agent output, HTTP API, SSE events, runner protocol. Pure data, no IO."
+description = "diffpilot wire types: agent output, HTTP API, SSE events, runner protocol. Pure data, no IO."
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true

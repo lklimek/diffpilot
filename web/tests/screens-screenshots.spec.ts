@@ -4,7 +4,7 @@ import { analyze } from "./screens-support";
 import { ANALYSIS_ID } from "./support";
 
 // Light and dark screenshots of every Home, progress and Settings state at 1440 and 3440 (plan §12.5).
-// Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/smart-review/<date>/wp3-screens.
+// Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/diffpilot/<date>/wp3-screens.
 const dir = process.env.SCREENSHOT_DIR;
 const progress = `/analyses/${ANALYSIS_ID}/progress`;
 

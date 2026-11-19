@@ -1,4 +1,4 @@
-# smart-review production stack (plan §9 WP3-OPS, threat model T1–T4/T7b/T9, ADR-013): server, runner and
+# diffpilot production stack (plan §9 WP3-OPS, threat model T1–T4/T7b/T9, ADR-013): server, runner and
 # egress proxy as plain services (Portainer stack). Variables: .env.example; operations: docs/runbook.md.
 #   docker compose --env-file .env -f deploy/compose.yaml up -d
 # Local test variant on http://localhost: add -f deploy/compose.local.yaml (see that file).
@@ -15,13 +15,13 @@
 # proxy 256m, about 8.3 GB, leaves about 6.5 GB for the host and one build; CPUs runner 2 + server 2 + proxy 0.5.
 #
 # Storage (owner decision: nothing in RAM, no size limit for now): durable volumes server-data and runner-state,
-# and disposable scratch volumes named tmp-* with the label smart-review.volume=temporary (the job work area, the
+# and disposable scratch volumes named tmp-* with the label diffpilot.volume=temporary (the job work area, the
 # per-job Codex homes, both /tmp). Their content is safe to delete whenever the stack is stopped and is never
 # backed up; the runner and the server empty them at start (docs/runbook.md, "Temporary volumes").
-name: smart-review
+name: diffpilot
 
 x-temporary-volume: &temporary-volume
-  labels: { smart-review.volume: temporary }
+  labels: { diffpilot.volume: temporary }
 
 x-hardening: &hardening
   cap_drop: [ALL]
@@ -36,7 +36,7 @@ x-hardening: &hardening
 services:
   server:
     <<: *hardening
-    image: ${SR_SERVER_IMAGE:-smart-review-server:local}
+    image: ${SR_SERVER_IMAGE:-diffpilot-server:local}
     build:
       context: ..
       dockerfile: deploy/server/Dockerfile
@@ -45,7 +45,7 @@ services:
       SR_LISTEN_ADDR: ${SR_SERVER_PUBLIC_ADDR:-172.29.73.2}:3000
       SR_RUNNER_LISTEN_ADDR: ${SR_SERVER_RUNNER_ADDR:-172.29.71.2}:3001
       SR_TRUSTED_PROXIES: ${SR_TRUSTED_PROXIES:-}
-      SR_DATA_DIR: /var/lib/smart-review
+      SR_DATA_DIR: /var/lib/diffpilot
       # Secrets from .env, or empty there and read from files (compose.secrets.yaml); a missing one stops the
       # service at start, and check-production-config.sh --env-file reports it before.
       SR_SECRET_KEY: ${SR_SECRET_KEY:-}
@@ -63,7 +63,7 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       NO_COLOR: "1"
     volumes:
-      - server-data:/var/lib/smart-review
+      - server-data:/var/lib/diffpilot
       # The App key stays on the host, read-only (never copied into an image or volume).
       - type: bind
         source: ${SR_GITHUB_APP_PRIVATE_KEY_PATH:?set SR_GITHUB_APP_PRIVATE_KEY_PATH}
@@ -88,7 +88,7 @@ services:
 
   runner:
     <<: *hardening
-    image: ${SR_RUNNER_IMAGE:-smart-review-runner:local}
+    image: ${SR_RUNNER_IMAGE:-diffpilot-runner:local}
     build:
       context: runner
       additional_contexts: { workspace: .. }
@@ -122,10 +122,10 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       NO_COLOR: "1"
     volumes:
-      - runner-state:/var/lib/smart-review-runner
+      - runner-state:/var/lib/diffpilot-runner
       # Disposable (ADR-013): the supervisor gives the roots to the runner, the runner sets their modes and empties
       # them (after credential recovery from codex-homes) before the first claim.
-      - tmp-runner-codex-homes:/var/lib/smart-review-runner/codex-homes
+      - tmp-runner-codex-homes:/var/lib/diffpilot-runner/codex-homes
       - tmp-runner-work:/work
       - tmp-runner:/tmp
     healthcheck:
@@ -137,9 +137,9 @@ services:
         - /bin/sh
         - -c
         - >-
-          [ ! -e /var/lib/smart-review-runner/disk-below-reserve ] || exit 1;
+          [ ! -e /var/lib/diffpilot-runner/disk-below-reserve ] || exit 1;
           for p in /proc/[0-9]*; do
-          [ "$$(tr '\0' '\n' < $$p/cmdline 2> /dev/null | head -n 1)" = /usr/local/bin/smart-review-runner ] && exit 0;
+          [ "$$(tr '\0' '\n' < $$p/cmdline 2> /dev/null | head -n 1)" = /usr/local/bin/diffpilot-runner ] && exit 0;
           done; exit 1
       interval: 30s
       timeout: 5s
@@ -152,7 +152,7 @@ services:
 
   egress-proxy:
     <<: *hardening
-    image: ${SR_PROXY_IMAGE:-smart-review-egress-proxy:local}
+    image: ${SR_PROXY_IMAGE:-diffpilot-egress-proxy:local}
     build: { context: egress-proxy }
     # Kept in RAM on purpose: under 1 KB of configuration the entrypoint writes at every start (hosts file, MemCan
     # rule); nothing else is stored.

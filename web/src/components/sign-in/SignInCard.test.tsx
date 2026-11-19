@@ -10,7 +10,7 @@ describe("SignInCard", () => {
     expect(signIn).toHaveAttribute("href", "/auth/github/login");
     expect(signIn).toHaveAttribute("data-variant", "primary");
     expect(signIn).toHaveAccessibleDescription(/GitHub/);
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("smart-review");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("diffpilot");
     expect(document.body).toHaveTextContent("It never submits a review for you.");
     expectTrustWording(document.body.textContent ?? "");
   });

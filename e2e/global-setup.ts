@@ -11,8 +11,8 @@ const REPO = fileURLToPath(new URL("..", import.meta.url));
 const BUILD_TIMEOUT_MS = Number(process.env.SR_E2E_BUILD_TIMEOUT_MS ?? 30 * 60_000);
 /** Environment variable → cargo target name. */
 const BINARIES: [string, string][] = [
-  ["SR_DEV_SERVER_BIN", "smart-review-server"],
-  ["SR_DEV_RUNNER_BIN", "smart-review-runner"],
+  ["SR_DEV_SERVER_BIN", "diffpilot-server"],
+  ["SR_DEV_RUNNER_BIN", "diffpilot-runner"],
   ["SR_DEV_FAKE_GITHUB_BIN", "fake-github"],
   ["SR_DEV_FAKE_MEMCAN_BIN", "fake-memcan"],
 ];

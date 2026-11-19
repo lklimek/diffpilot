@@ -32,7 +32,7 @@ test("sign in → My work → Refresh → progress → provisional list → rank
   stack.script?.([{ id: "slow-judge", job: "judge_work", action: { replay: { step_delay_ms: 3000 } } }]);
   await signIn(page);
   await expect(page).toHaveURL(/\/$/);
-  await expect(page).toHaveTitle("smart-review My work");
+  await expect(page).toHaveTitle("diffpilot My work");
   await expect(page.getByText("Nothing scanned yet.")).toBeVisible();
   await checkScreen(page);
   await screens(page, "dashboard-empty");
@@ -56,7 +56,7 @@ test("sign in → My work → Refresh → progress → provisional list → rank
   await checkScreen(page);
   await screens(page, "dashboard-scanning");
   // Work that lasts 10 s shows in the tab title.
-  await expect(page).toHaveTitle("smart-review My work: busy", { timeout: 30_000 });
+  await expect(page).toHaveTitle("diffpilot My work: busy", { timeout: 30_000 });
 
   // The scan is stored: every item is provisional ("Not judged yet") until the first judged batch lands.
   // 12 pull requests (the ownership policy keeps PLAT-1203 and PLAT-1199, directed at alice), 6 issues, 2 TODOs;
@@ -74,7 +74,7 @@ test("sign in → My work → Refresh → progress → provisional list → rank
   const done = await waitForRefresh(page, ranked, 150_000);
   expect([done.judged, done.reused]).toEqual([20, 0]);
   await expect(banner).toHaveCount(0);
-  await expect(page).toHaveTitle("smart-review My work: ready");
+  await expect(page).toHaveTitle("diffpilot My work: ready");
   await expect(page.getByRole("heading", { name: /^Not judged yet/ })).toHaveCount(0);
   expect(await groupIds(page, "P1")).toEqual(["PLAT-1203", "WUI-320", "NC-482"]);
   expect((await groupIds(page, "P2"))[0]).toBe("WUI-311");

@@ -1,4 +1,4 @@
-# CLAUDE.md — smart-review
+# CLAUDE.md — diffpilot
 
 Self-hosted web tool that helps a human review a GitHub PR: final code with changed regions grouped into flows,
 walked step by step, with LLM analysis (Codex CLI) clearly separated from deterministic facts.
@@ -76,9 +76,9 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   numbered file in `crates/db/migrations` that upgrades in place; never edit an applied migration (its checksum is
   verified at start; `scripts/check-migrations.sh`, `--add-new` records a new file). No versioning or changelog.
   Code-mutating agents work in pre-created worktrees
-  `/data/git-worktrees/home-ubuntu-git-smart-review-<stream>`. Changes of 50+ code
+  `/data/git-worktrees/home-ubuntu-git-diffpilot-<stream>`. Changes of 50+ code
   lines get an independent review (`claudius:review-changes`).
-- Storage: heavy scratch in `/data/tmp`; durable artefacts in `/data/artifacts/smart-review/YYYY-MM-DD/`;
+- Storage: heavy scratch in `/data/tmp`; durable artefacts in `/data/artifacts/diffpilot/YYYY-MM-DD/`;
   no large files in `/tmp`.
 - Language: code, comments, commits and docs in English; talk to the owner in Polish.
 - Real dashpay PRs (plan §6.1 test targets): only pending review comments, deleted afterwards; never submit.

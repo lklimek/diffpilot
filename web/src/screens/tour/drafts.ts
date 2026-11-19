@@ -8,8 +8,8 @@ import type {
   UnresolvedPosts,
 } from "../../components/comment/CommentComposer";
 
-const PREFIX = "smart-review.comment-drafts.";
-const POSTS_PREFIX = "smart-review.comment-posts.";
+const PREFIX = "diffpilot.comment-drafts.";
+const POSTS_PREFIX = "diffpilot.comment-posts.";
 const storageKey = (login: string, id: AnalysisId) => `${PREFIX}${login}.${id}`;
 const postsKey = (login: string, id: AnalysisId) => `${POSTS_PREFIX}${login}.${id}`;
 

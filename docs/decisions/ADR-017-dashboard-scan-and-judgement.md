@@ -8,7 +8,7 @@
 ## Context
 The `daily-priorities` skill scans GitHub with `gh` (the owner's credential) across many repositories and
 organisations, computes mechanical score parts, lets the model judge the rest, and merges both into a ranking.
-In smart-review the runner must not hold user tokens (T3, ADR-005) or contain GitHub client code, and only
+In diffpilot the runner must not hold user tokens (T3, ADR-005) or contain GitHub client code, and only
 `runner::provider` may talk to Codex (A5). An installation token covers one installation and cannot express
 "everything this user works on".
 

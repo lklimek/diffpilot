@@ -16,7 +16,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   visible = true;
   focused = true;
-  document.title = "smart-review";
+  document.title = "diffpilot";
   vi.spyOn(document, "visibilityState", "get").mockImplementation(() => (visible ? "visible" : "hidden"));
   vi.spyOn(document, "hasFocus").mockImplementation(() => focused);
 });
@@ -37,28 +37,28 @@ const back = () => {
   window.dispatchEvent(new Event("focus"));
 };
 
-describe("tab status (owner's format: smart-review DET#1234: busy)", () => {
+describe("tab status (owner's format: diffpilot DET#1234: busy)", () => {
   it("shows busy only once work has lasted 10 s; shorter work never touches the title", () => {
     const tab = createTabStatus();
     tab.setSubject("dash-evo-tool#1234");
-    expect(document.title).toBe("smart-review dash-evo-tool#1234");
+    expect(document.title).toBe("diffpilot dash-evo-tool#1234");
     tab.start("pr");
     vi.advanceTimersByTime(TAB_STATUS_THRESHOLD_MS - 1);
-    expect(document.title).toBe("smart-review dash-evo-tool#1234");
+    expect(document.title).toBe("diffpilot dash-evo-tool#1234");
     tab.finish("pr", "ready");
     vi.advanceTimersByTime(TAB_STATUS_THRESHOLD_MS);
-    expect(document.title).toBe("smart-review dash-evo-tool#1234");
+    expect(document.title).toBe("diffpilot dash-evo-tool#1234");
     tab.start("analysis");
     vi.advanceTimersByTime(TAB_STATUS_THRESHOLD_MS);
-    expect(document.title).toBe("smart-review dash-evo-tool#1234: busy");
+    expect(document.title).toBe("diffpilot dash-evo-tool#1234: busy");
     tab.dispose();
   });
 
-  it("without a subject (review start before a PR is known): smart-review: busy", () => {
+  it("without a subject (review start before a PR is known): diffpilot: busy", () => {
     const tab = createTabStatus();
     tab.start("pr");
     vi.advanceTimersByTime(TAB_STATUS_THRESHOLD_MS);
-    expect(document.title).toBe("smart-review: busy");
+    expect(document.title).toBe("diffpilot: busy");
     tab.dispose();
   });
 
@@ -69,12 +69,12 @@ describe("tab status (owner's format: smart-review DET#1234: busy)", () => {
     vi.advanceTimersByTime(TAB_STATUS_THRESHOLD_MS);
     away();
     tab.finish("analysis", "ready");
-    expect(document.title).toBe("smart-review DET#7: ready");
+    expect(document.title).toBe("diffpilot DET#7: ready");
     vi.advanceTimersByTime(60_000);
-    expect(document.title).toBe("smart-review DET#7: ready");
+    expect(document.title).toBe("diffpilot DET#7: ready");
     back();
     vi.advanceTimersByTime(TAB_STATUS_LINGER_MS);
-    expect(document.title).toBe("smart-review DET#7");
+    expect(document.title).toBe("diffpilot DET#7");
     tab.dispose();
   });
 
@@ -83,9 +83,9 @@ describe("tab status (owner's format: smart-review DET#1234: busy)", () => {
     tab.start("ask");
     vi.advanceTimersByTime(TAB_STATUS_THRESHOLD_MS);
     tab.finish("ask", "attention");
-    expect(document.title).toBe("smart-review: attention");
+    expect(document.title).toBe("diffpilot: attention");
     vi.advanceTimersByTime(TAB_STATUS_LINGER_MS);
-    expect(document.title).toBe("smart-review");
+    expect(document.title).toBe("diffpilot");
     tab.dispose();
   });
 
@@ -95,20 +95,20 @@ describe("tab status (owner's format: smart-review DET#1234: busy)", () => {
     vi.advanceTimersByTime(5_000);
     tab.start("ask");
     vi.advanceTimersByTime(5_000);
-    expect(document.title).toBe("smart-review: busy");
+    expect(document.title).toBe("diffpilot: busy");
     away();
     vi.advanceTimersByTime(5_000);
     tab.finish("ask", "ready");
-    expect(document.title).toBe("smart-review: busy");
+    expect(document.title).toBe("diffpilot: busy");
     tab.finish("analysis", "attention");
-    expect(document.title).toBe("smart-review: attention");
+    expect(document.title).toBe("diffpilot: attention");
     tab.dispose();
   });
 
   it("an outcome without a start (a page opened on finished work) changes nothing", () => {
     const tab = createTabStatus();
     tab.finish("analysis", "ready");
-    expect(document.title).toBe("smart-review");
+    expect(document.title).toBe("diffpilot");
     tab.dispose();
   });
 

@@ -11,7 +11,7 @@ export function SignInCard({ loginHref }: { loginHref: string }) {
       aria-labelledby={titleId}
     >
       <h1 id={titleId} className="text-[22px] font-bold">
-        smart<span className="text-accent">-</span>review
+        diff<span className="text-accent">pilot</span>
       </h1>
       <p className="text-base text-muted">
         Review a GitHub pull request by what the change does, not by which lines moved.

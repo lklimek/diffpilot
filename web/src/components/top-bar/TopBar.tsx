@@ -57,7 +57,7 @@ export function TopBar({
   return (
     <header className="sticky top-0 z-30 flex h-12 flex-none items-center gap-3.5 border-b border-border bg-surface px-3.5 whitespace-nowrap">
       <a href="/" className="font-bold text-text no-underline">
-        smart<span className="text-accent">-</span>review
+        diff<span className="text-accent">pilot</span>
       </a>
       {pr && (
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">

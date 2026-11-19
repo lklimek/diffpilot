@@ -137,7 +137,7 @@ test.describe("stage and liveness", () => {
     await expect(dot).not.toHaveCSS("animation-name", "none");
   });
 
-  // Light and dark at 1440 with SCREENSHOT_DIR set, e.g. /data/artifacts/smart-review/<date>/wp3-tour-9.
+  // Light and dark at 1440 with SCREENSHOT_DIR set, e.g. /data/artifacts/diffpilot/<date>/wp3-tour-9.
   for (const colorScheme of ["light", "dark"] as const) {
     test(`screenshots ${colorScheme} 1440`, async ({ browser }) => {
       const dir = process.env.SCREENSHOT_DIR;

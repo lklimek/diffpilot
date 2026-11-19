@@ -175,11 +175,7 @@ export function createApiClient(baseUrl = "") {
         body: options.body === undefined ? undefined : JSON.stringify(options.body),
       });
     } catch {
-      throw new ApiError(
-        0,
-        "internal",
-        "Cannot reach the smart-review server. Check the connection and retry.",
-      );
+      throw new ApiError(0, "internal", "Cannot reach the diffpilot server. Check the connection and retry.");
     }
   }
 

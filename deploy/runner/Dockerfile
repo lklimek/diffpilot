@@ -4,7 +4,7 @@
 # only CHOWN, SETUID, SETGID and KILL (see ADR-013 and deploy/compose.yaml for the run options).
 #
 # Build (from the repository root; the named context `workspace` is the Cargo workspace):
-#   docker build --build-context workspace=. -t smart-review-runner deploy/runner
+#   docker build --build-context workspace=. -t diffpilot-runner deploy/runner
 # Target `base` is the same image before the strip step (the container test adds python3 to it, then strips).
 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS build
@@ -20,10 +20,10 @@ COPY --from=workspace . /src
 # without features: no test provider.
 ENV CARGO_BUILD_JOBS=2 \
     CARGO_TARGET_DIR=/build
-RUN --mount=type=cache,id=smart-review-cargo-registry,target=/root/.cargo/registry \
-    --mount=type=cache,id=smart-review-cargo-target,target=/build \
-    cargo build --release --locked -p runner -p analysis --bin smart-review-supervisor --bin smart-review-runner --bin sr-check \
-    && install -D -m 0755 -t /out /build/release/smart-review-supervisor /build/release/smart-review-runner /build/release/sr-check
+RUN --mount=type=cache,id=diffpilot-cargo-registry,target=/root/.cargo/registry \
+    --mount=type=cache,id=diffpilot-cargo-target,target=/build \
+    cargo build --release --locked -p runner -p analysis --bin diffpilot-supervisor --bin diffpilot-runner --bin sr-check \
+    && install -D -m 0755 -t /out /build/release/diffpilot-supervisor /build/release/diffpilot-runner /build/release/sr-check
 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS fetch
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -60,9 +60,9 @@ RUN apt-get update \
 
 COPY --from=fetch /opt/codex /opt/codex
 COPY --from=fetch /opt/github-mcp/github-mcp-server /usr/local/bin/github-mcp-server
-COPY --from=build /out/smart-review-supervisor /out/smart-review-runner /out/sr-check /usr/local/bin/
-COPY --chmod=0755 preflight.sh /usr/local/bin/smart-review-runner-preflight
-COPY --chmod=0755 strip-image.sh /usr/local/lib/smart-review/strip-image.sh
+COPY --from=build /out/diffpilot-supervisor /out/diffpilot-runner /out/sr-check /usr/local/bin/
+COPY --chmod=0755 preflight.sh /usr/local/bin/diffpilot-runner-preflight
+COPY --chmod=0755 strip-image.sh /usr/local/lib/diffpilot/strip-image.sh
 RUN ln -s /opt/codex/bin/codex /usr/local/bin/codex
 
 # No shared group: agent must not read anything group-readable by runner.
@@ -71,22 +71,22 @@ RUN groupadd --gid 10001 runner \
     && groupadd --gid 10002 agent \
     && useradd --uid 10002 --gid 10002 --no-create-home --home-dir /nonexistent --shell /bin/bash agent \
     && find / -xdev -type f -perm /6000 -exec chmod ug-s {} + \
-    && install -d -o 10001 -g 10001 -m 0711 /var/lib/smart-review-runner /var/lib/smart-review-runner/codex-homes \
+    && install -d -o 10001 -g 10001 -m 0711 /var/lib/diffpilot-runner /var/lib/diffpilot-runner/codex-homes \
     && install -d -o 10001 -g 10001 -m 0711 /work \
     && chown 10001:10001 /tmp && chmod 0700 /tmp
 
-# Mount points (ADR-013), all Docker volumes on disk: the durable state at /var/lib/smart-review-runner, and the
+# Mount points (ADR-013), all Docker volumes on disk: the durable state at /var/lib/diffpilot-runner, and the
 # disposable ones at its codex-homes/ (per-job CODEX_HOMEs), /work (checkouts) and /tmp (runner only). A fresh
 # volume takes these owners and modes; the supervisor and the runner set them again at every start.
-ENV SR_RUNNER_STATE_DIR=/var/lib/smart-review-runner \
+ENV SR_RUNNER_STATE_DIR=/var/lib/diffpilot-runner \
     SR_RUNNER_WORK_DIR=/work \
     SR_RUNNER_CODEX_BIN=/usr/local/bin/codex \
     SR_RUNNER_GITHUB_MCP_BIN=/usr/local/bin/github-mcp-server
 
 # The supervisor must start as root (it drops to runner and agent itself); never set USER here.
-ENTRYPOINT ["/usr/local/bin/smart-review-supervisor", "serve", "--"]
-CMD ["/usr/local/bin/smart-review-runner-preflight", "/usr/local/bin/smart-review-runner"]
+ENTRYPOINT ["/usr/local/bin/diffpilot-supervisor", "serve", "--"]
+CMD ["/usr/local/bin/diffpilot-runner-preflight", "/usr/local/bin/diffpilot-runner"]
 
 FROM base AS runner
 # T4 runner_image_has_no_toolchains: no package manager, no perl; checked again in deploy/runner/r1-test/run.sh.
-RUN /usr/local/lib/smart-review/strip-image.sh
+RUN /usr/local/lib/diffpilot/strip-image.sh

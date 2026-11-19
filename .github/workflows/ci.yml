@@ -134,7 +134,7 @@ jobs:
           deploy/check-production-config.sh --self-test
           deploy/check-production-config.sh
       - name: Build the egress proxy image
-        run: docker build -t smart-review-egress-proxy:local deploy/egress-proxy
+        run: docker build -t diffpilot-egress-proxy:local deploy/egress-proxy
       - name: Egress proxy test (SSRF guard, MemCan exception, no request data in logs)
         run: PROXY_SKIP_BUILD=1 deploy/egress-proxy/test.sh "$RUNNER_TEMP/egress-proxy-test.log"
       # Builds the runner image (targets base and runner) and the test image; the real-Codex job needs a login and
@@ -145,7 +145,7 @@ jobs:
           R1_SKIP_CODEX: "1"
         run: deploy/runner/r1-test/run.sh "$RUNNER_TEMP/r1-test.log"
       - name: Build the server image
-        run: docker build -f deploy/server/Dockerfile -t smart-review-server:local .
+        run: docker build -f deploy/server/Dockerfile -t diffpilot-server:local .
       - name: Server image answers its healthcheck
         run: |
           key="$(mktemp)"
@@ -157,7 +157,7 @@ jobs:
             -e SR_RUNNER_SECRET=ci-runner-secret -e SR_GITHUB_APP_ID=1 -e SR_GITHUB_CLIENT_ID=ci \
             -e SR_GITHUB_CLIENT_SECRET=ci -e SR_GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app.pem \
             -e SR_MEMCAN_URL=http://127.0.0.1:9/mcp -e SR_MEMCAN_TOKEN=ci \
-            --mount type=volume,target=/var/lib/smart-review smart-review-server:local
+            --mount type=volume,target=/var/lib/diffpilot diffpilot-server:local
           for _ in $(seq 60); do
             status="$(docker inspect -f '{{.State.Health.Status}}' sr-ci-server)"
             [ "$status" = healthy ] && break
@@ -258,7 +258,7 @@ jobs:
           cargo build --locked --message-format=json-render-diagnostics \
             -p server --features server/embed-ui -p runner --features runner/fake-provider \
             -p fake-github -p fake-memcan > "$RUNNER_TEMP/cargo-messages.json"
-          for pair in SR_DEV_SERVER_BIN=smart-review-server SR_DEV_RUNNER_BIN=smart-review-runner \
+          for pair in SR_DEV_SERVER_BIN=diffpilot-server SR_DEV_RUNNER_BIN=diffpilot-runner \
             SR_DEV_FAKE_GITHUB_BIN=fake-github SR_DEV_FAKE_MEMCAN_BIN=fake-memcan; do
             bin="$(jq -r --arg name "${pair#*=}" \
               'select(.reason == "compiler-artifact" and .target.name == $name) | .executable // empty' \
@@ -283,7 +283,7 @@ jobs:
         if: failure()
         run: |
           mkdir -p "$RUNNER_TEMP/stack-logs"
-          for dir in /data/tmp/smart-review-dev.*/logs; do
+          for dir in /data/tmp/diffpilot-dev.*/logs; do
             [ -d "$dir" ] && cp -r "$dir" "$RUNNER_TEMP/stack-logs/$(basename "$(dirname "$dir")")"
           done
       - name: Upload Playwright traces and stack logs

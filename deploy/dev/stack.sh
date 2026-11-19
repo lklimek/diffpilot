@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Development stack of smart-review on localhost: fake GitHub, fake MemCan, server (embedded web UI), runner
+# Development stack of diffpilot on localhost: fake GitHub, fake MemCan, server (embedded web UI), runner
 # (fake provider).
 # Runs in the foreground; Ctrl+C or SIGTERM stops every component. Fake credentials only: generated per state
 # dir or taken from the fixture recordings.
@@ -7,7 +7,7 @@
 # Usage: deploy/dev/stack.sh [--without COMPONENT]...     COMPONENT: runner | fake-github | fake-memcan
 #
 # Inputs (all optional):
-#   SR_DEV_STATE_DIR        state and logs (default: new dir /data/tmp/smart-review-dev.XXXXXX; relative paths
+#   SR_DEV_STATE_DIR        state and logs (default: new dir /data/tmp/diffpilot-dev.XXXXXX; relative paths
 #                           are resolved against the working directory); kept on exit;
 #                           reusing it keeps the database, the clone base and the generated secrets
 #   SR_DEV_PORT             public port of the server (default: a free port)
@@ -107,7 +107,7 @@ stop() {
     sleep 0.2
   done
   for pid in "${pids[@]}"; do kill -KILL -- "-$pid" 2> /dev/null || true; done
-  echo "smart-review dev stack stopped; logs in ${state:-?}/logs" >&2
+  echo "diffpilot dev stack stopped; logs in ${state:-?}/logs" >&2
 }
 trap stop EXIT
 trap 'exit 130' INT
@@ -135,7 +135,7 @@ for line in sys.stdin:
     if msg.get("reason") == "compiler-artifact" and msg["target"]["name"] == sys.argv[1] and msg.get("executable"):
         print(msg["executable"])' "$1" <<< "$built"
   }
-  server_bin="$(executable smart-review-server)" runner_bin="$(executable smart-review-runner)"
+  server_bin="$(executable diffpilot-server)" runner_bin="$(executable diffpilot-runner)"
   fake_github_bin="$(executable fake-github)" fake_memcan_bin="$(executable fake-memcan)"
 fi
 for bin in "$server_bin" "$runner_bin" "$fake_github_bin" "$fake_memcan_bin"; do
@@ -144,7 +144,7 @@ done
 
 # --- state, ports, generated credentials ----------------------------------------------------------------------
 mkdir -p /data/tmp
-state="${SR_DEV_STATE_DIR:-$(mktemp -d /data/tmp/smart-review-dev.XXXXXX)}"
+state="${SR_DEV_STATE_DIR:-$(mktemp -d /data/tmp/diffpilot-dev.XXXXXX)}"
 # Components start in other working directories: the state dir must be absolute.
 state="$(mkdir -p "$state" && cd "$state" && pwd)"
 mkdir -p "$state/logs" "$state/home" "$state/server" "$state/runner"
@@ -238,7 +238,7 @@ fi
 # The server reads a `.env` of its working directory or a parent: run it in the state dir.
 start server "$state" "${server_env[@]}" "$server_bin"
 wait_for server "$url/api/v1/me"
-sqlite3 -cmd ".timeout 5000" "$state/server/smart-review.sqlite" \
+sqlite3 -cmd ".timeout 5000" "$state/server/diffpilot.sqlite" \
   "INSERT OR IGNORE INTO tenant_allowed_logins (tenant_id, login) VALUES ('default', '$login');"
 if ! skipped runner; then
   start runner "$state" "${runner_env[@]}" "$runner_bin"
@@ -246,7 +246,7 @@ fi
 
 echo "SR_DEV_URL=$url"
 echo "SR_DEV_STATE_DIR=$state"
-echo "smart-review dev stack ready at $url (sign in as $login; fixture PR https://github.com/acme/node-client/pull/482)" >&2
+echo "diffpilot dev stack ready at $url (sign in as $login; fixture PR https://github.com/acme/node-client/pull/482)" >&2
 echo "skipped: ${without[*]:-none}; logs: $state/logs; Ctrl+C stops the stack" >&2
 # Stop the stack when any component exits.
 wait -n

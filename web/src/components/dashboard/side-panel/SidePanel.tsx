@@ -2,7 +2,7 @@ import { useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode
 import { Tooltip } from "../../tooltip/Tooltip";
 
 /** localStorage key of the side panel: `{ open, width }`. */
-export const SIDE_PANEL_STORAGE_KEY = "smart-review.dashboard.side-panel";
+export const SIDE_PANEL_STORAGE_KEY = "diffpilot.dashboard.side-panel";
 /** Below this viewport width the panel starts collapsed (OD5). */
 export const SIDE_PANEL_OPEN_FROM_PX = 1600;
 const MIN = 300;

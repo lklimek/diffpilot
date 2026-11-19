@@ -6,7 +6,7 @@
   "v3+: LLM-curated dashboard of PRs to review" (brief amendment below, inserted by WP11-DOCS).
 
 ## Context
-The owner replaces the `daily-priorities` skill with a page in smart-review: the PRs and issues the user authored,
+The owner replaces the `daily-priorities` skill with a page in diffpilot: the PRs and issues the user authored,
 is assigned or is asked to review, ranked with computed numeric scores and charts. The existing product (PR URL →
 check → Start analysis → Tour) stays and becomes reachable from that page. Brief §1 forbids numbers that read as
 confidence and badges for non-deterministic content; a numeric ranking would break those rules if they applied

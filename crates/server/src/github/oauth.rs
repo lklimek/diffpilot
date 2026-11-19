@@ -13,7 +13,7 @@ use url::Url;
 use crate::config::GithubConfig;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
-const CLIENT_NAME: &str = "smart-review";
+const CLIENT_NAME: &str = "diffpilot";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 
 /// An OAuth or user-profile call to GitHub failed.

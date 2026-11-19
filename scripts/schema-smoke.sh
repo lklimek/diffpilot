@@ -6,22 +6,22 @@
 # job per credential). A run passes when every job exits 0 and its output validates against its schema.
 #
 # Usage: scripts/schema-smoke.sh [job-kind ...]   (default: plan pr_context analyse_flow ask)
-# Env:   SMOKE_IMAGE (smart-review-spike-codex:0.167.0), SMOKE_VOLUME (sr-spike-codex-home),
+# Env:   SMOKE_IMAGE (diffpilot-spike-codex:0.167.0), SMOKE_VOLUME (sr-spike-codex-home),
 #        SMOKE_MODEL (gpt-6.1-sol), SMOKE_EFFORT (low), SMOKE_PROXY (unset = direct egress),
-#        SMOKE_ARCHIVE (/data/artifacts/smart-review/<today>/schema-smoke)
+#        SMOKE_ARCHIVE (/data/artifacts/diffpilot/<today>/schema-smoke)
 # Needs: docker, git, gh (read-only API call), python3 with jsonschema (apt python3-jsonschema).
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Host-side reads of agent-writable job directories go only through this helper (no symlink following).
 report="${repo_root}/scripts/schema-smoke-report.py"
-image="${SMOKE_IMAGE:-smart-review-spike-codex:0.167.0}"
+image="${SMOKE_IMAGE:-diffpilot-spike-codex:0.167.0}"
 volume="${SMOKE_VOLUME:-sr-spike-codex-home}"
 model="${SMOKE_MODEL:-gpt-6.1-sol}"
 effort="${SMOKE_EFFORT:-low}"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 work="/data/tmp/schema-smoke/${stamp}"
-archive="${SMOKE_ARCHIVE:-/data/artifacts/smart-review/$(date -u +%F)/schema-smoke}/${stamp}"
+archive="${SMOKE_ARCHIVE:-/data/artifacts/diffpilot/$(date -u +%F)/schema-smoke}/${stamp}"
 pr_repo="dashpay/dash-evo-tool"
 pr_number=1040
 

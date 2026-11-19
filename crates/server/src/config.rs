@@ -536,7 +536,7 @@ pub(crate) mod tests {
         env.insert(LISTEN_ADDR, "127.0.0.1:8080".to_owned());
         env.insert(RUNNER_LISTEN_ADDR, "172.20.0.2:9001".to_owned());
         env.insert(TRUSTED_PROXIES, " 172.18.0.0/16 , 10.0.0.5,::1 ".to_owned());
-        env.insert(DATA_DIR, "/var/lib/smart-review".to_owned());
+        env.insert(DATA_DIR, "/var/lib/diffpilot".to_owned());
         env.insert(GITHUB_API_URL, "http://127.0.0.1:9000/api".to_owned());
         env.insert(GITHUB_OAUTH_URL, "http://127.0.0.1:9000".to_owned());
         env.insert(GITHUB_CLONE_URL, "file:///data/tmp/remotes".to_owned());
@@ -552,7 +552,7 @@ pub(crate) mod tests {
             .map(ToString::to_string)
             .collect();
         assert_eq!(proxies, ["172.18.0.0/16", "10.0.0.5/32", "::1/128"]);
-        assert_eq!(config.data_dir, PathBuf::from("/var/lib/smart-review"));
+        assert_eq!(config.data_dir, PathBuf::from("/var/lib/diffpilot"));
         assert_eq!(config.github.api_url.as_str(), "http://127.0.0.1:9000/api");
         assert_eq!(config.github.oauth_url.as_str(), "http://127.0.0.1:9000/");
         assert_eq!(config.github.clone_url.as_str(), "file:///data/tmp/remotes");

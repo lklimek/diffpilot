@@ -32,11 +32,11 @@ test("an old /?pr= link lands on /review with the PR checked on arrival", async 
 
 test("the tab title rule of My work holds at `/`; Review a PR leaves it", async ({ page }) => {
   await page.goto("/?dashboard=refreshing");
-  await expect(page).toHaveTitle("smart-review My work");
+  await expect(page).toHaveTitle("diffpilot My work");
   // The running scan is loaded before the clock moves past the 10 s threshold.
   await expect(page.getByRole("progressbar", { name: "Scan progress" })).toBeVisible();
   await page.clock.fastForward(11_000);
-  await expect(page).toHaveTitle("smart-review My work: busy");
+  await expect(page).toHaveTitle("diffpilot My work: busy");
   await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Review a PR" }).click();
   await expect(page).not.toHaveTitle(/My work/);
 });

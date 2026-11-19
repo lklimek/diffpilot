@@ -23,7 +23,7 @@ def test_host_uid_volume_keeps_prepared_ownership():
     )
     server = json.loads(result.stdout)["services"]["server"]
     assert server["user"] == "1234:2345"
-    data = [mount for mount in server["volumes"] if mount["target"] == "/var/lib/smart-review"]
+    data = [mount for mount in server["volumes"] if mount["target"] == "/var/lib/diffpilot"]
     assert len(data) == 1
     assert data[0]["source"] == "server-data"
     assert data[0].get("volume", {}).get("nocopy") is True
