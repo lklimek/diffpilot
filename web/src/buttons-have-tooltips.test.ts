@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// Brief §4 rule 3 / plan §12.4: every button has a tooltip explaining it. A button outside a `<Tooltip>` must
+// Brief §4 rule 3 / plan §12.4: every button has a tooltip explaining it. A button outside a `<Tooltip>` or `<Popover>` must
 // be on this list, with the reason it does without one.
 const ALLOWED: { file: string; match: string; reason: string }[] = [
   {
@@ -17,45 +17,6 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
     match: "aria-describedby={descriptionId}",
     reason:
       "Highlight label: a hover tooltip would cover the code; its was → is is its accessible description and the remark marker's popover.",
-  },
-  {
-    file: "components/code-view/markers.tsx",
-    match: 'data-mark="remark"',
-    reason:
-      "LLM remark marker: hover and focus show its popover with the remark text, which serves as its tooltip.",
-  },
-  {
-    file: "components/code-view/markers.tsx",
-    match: 'data-mark="thread"',
-    reason:
-      "GitHub thread marker: hover and focus show its popover with the thread excerpt, which serves as its tooltip.",
-  },
-  {
-    file: "components/code-view/CodeView.tsx",
-    match: "Ask about this line",
-    reason: "Action button inside the Ask icon's popover, which says what it does.",
-  },
-  {
-    file: "components/code-view/CodeView.tsx",
-    match: "aria-label={`Show ${more}`}",
-    reason:
-      "Show-the-rest icon of a deleted block: hover and focus show its popover that explains it; its action button sits in that popover.",
-  },
-  {
-    file: "components/code-view/CodeView.tsx",
-    match: "onLoadDeleted(block)",
-    reason: "Action button inside the show-the-rest icon's popover, which says what it does.",
-  },
-  {
-    file: "components/comment/LineComments.tsx",
-    match: 'data-mark="comment"',
-    reason:
-      "Pending-comment marker: hover and focus show its popover with the comment text, which serves as its tooltip.",
-  },
-  {
-    file: "components/comment/LineComments.tsx",
-    match: "aria-controls={panelId}",
-    reason: "Action button inside the comment marker's popover, labelled Open or Hide the comment.",
   },
   {
     file: "components/ask/AskForm.tsx",
@@ -107,11 +68,11 @@ function sources(dir: string): string[] {
 
 /** Buttons outside every `<Tooltip>…</Tooltip>` of `code`: the source from `<button` to its `</button>`. */
 export function untipped(code: string): string[] {
-  const tips = [...code.matchAll(/<Tooltip\b[\s\S]*?<\/Tooltip>/g)].map((m) => [
+  const tips = [...code.matchAll(/<(Tooltip|Popover)\b[\s\S]*?<\/\1>/g)].map((m) => [
     m.index,
     m.index + m[0].length,
   ]);
-  return [...code.matchAll(/<(button|Button)\b[\s\S]*?<\/\1>/g)]
+  return [...code.matchAll(/<(button|Button)\b[\s\S]*?(?:<\/\1>|\/>)/g)]
     .filter((m) => !tips.some(([from, to]) => from! <= m.index && m.index < to!))
     .map((m) => m[0]);
 }
@@ -134,6 +95,12 @@ describe("buttons", () => {
       (a) => !found.some(({ file, button }) => a.file === file && button.includes(a.match)),
     );
     expect(unused).toEqual([]);
+  });
+
+  it("the check finds a self-closing button and ignores one inside a popover", () => {
+    expect(untipped('<Popover label="x"><button type="button" /></Popover><button type="button" />')).toEqual(
+      ['<button type="button" />'],
+    );
   });
 
   it("the check finds a button outside a tooltip and ignores one inside", () => {

@@ -65,7 +65,11 @@ test("… by keyboard, and after a reload", async ({ page }) => {
   await expect(
     code(page).getByRole("list", { name: "Your pending comments at line 96" }).getByText(TEXT),
   ).toBeVisible();
+  // The action closed the popup and returned the focus to the marker; Space pins it, its button hides the text.
+  await expect(marker).toBeFocused();
   await page.keyboard.press("Space");
+  await code(page).getByRole("button", { name: "Hide the comment here" }).focus();
+  await page.keyboard.press("Enter");
   await expect(code(page).getByRole("list", { name: "Your pending comments at line 96" })).toHaveCount(0);
 });
 

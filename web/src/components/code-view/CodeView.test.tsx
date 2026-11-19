@@ -277,6 +277,7 @@ describe("CodeView", () => {
     const threads = document.querySelectorAll("[data-mark=thread]");
     expect([...threads].map(rowOf)).toEqual([99]);
     expect(threads[0]).toHaveAccessibleName("GitHub thread by bob at line 99");
+    expect(threads[0]).toHaveAccessibleDescription(/GitHub review thread/);
     act(() => (threads[0] as HTMLElement).focus());
     expect(threads[0]).toHaveAccessibleDescription(/Should we retry non-idempotent calls at all\?/);
     unmount();
@@ -602,6 +603,9 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     expect(marker.querySelector("svg")).not.toBeNull();
     expect(marker).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Is the retry bounded?")).toBeNull();
+    expect(marker).toHaveAccessibleDescription(
+      "Your comment in your GitHub pending review; nothing is published. Hover, focus or click for its text.",
+    );
     act(() => marker.focus());
     expect(marker).toHaveAccessibleDescription(
       "Is the retry bounded? Your comment in your GitHub pending review; nothing is published.",
@@ -634,11 +638,14 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const open = screen.getByRole("button", { name: "Open the comment here" });
     expect(open).toHaveAttribute("aria-expanded", "false");
     await user.click(open);
+    // The action closes the popup, which would cover the opened text.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const panel = screen.getByRole("list", { name: "Your pending comments at line 2" });
+    await user.click(marker);
     expect(screen.getByRole("button", { name: "Hide the comment here" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
-    const panel = screen.getByRole("list", { name: "Your pending comments at line 2" });
     expect(screen.getByRole("button", { name: "Hide the comment here" })).toHaveAttribute(
       "aria-controls",
       panel.id,
@@ -664,6 +671,11 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     await user.keyboard("{Enter}");
     const panel = () => screen.queryByRole("list", { name: "Your pending comments at line 2" });
     expect(within(panel()!).getByText("Is the retry bounded?")).toBeVisible();
+    // The action closed the popup and handed the focus back to the marker; Space pins it again.
+    marker.focus();
+    await user.keyboard(" ");
+    await user.tab();
+    await user.tab();
     await user.keyboard(" ");
     expect(panel()).toBeNull();
   });

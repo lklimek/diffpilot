@@ -373,6 +373,7 @@ function DeletedRun({ block, rows, anchor, nested = false, onLoadDeleted, paired
           {onLoadDeleted && (
             <Popover
               label={more}
+              hint="Shows the rest of the deleted lines of this block, from the base commit."
               content={(pinned, close) => (
                 <>
                   <span className="block">
@@ -505,12 +506,13 @@ export function AskLineButton({
   return (
     <Popover
       label={name}
+      hint="Hover, focus or click for how to ask the LLM about this line."
       className={className}
       content={(pinned, close) => (
         <>
           <span className="block">
-            Asks the LLM about this line (or the selected lines): puts the file and line into the Ask field,
-            nothing is sent yet. The answer is LLM output.
+            Click, then "Ask about this line": puts this line (or the selected lines) into the Ask field.
+            Nothing is sent until you press Ask.
           </span>
           {pinned && (
             <button

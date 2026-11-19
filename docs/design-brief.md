@@ -660,7 +660,7 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   carried to another step. Supersedes "impact outside the diff inline under the step as real code" (§4.3 Step
   block).
 - **Open.** The link that goes to an existing review reads "Open", whether or not the user has started it, on
-  Home, the progress screen and the dashboard. It only navigates: its tooltip is one short sentence that says it starts nothing and, for a started review, that ticks and answers are kept. On the progress screen it
+  Home, the progress screen and the dashboard. It only navigates: its tooltip is one or two short sentences: it starts nothing and, for a started review, that ticks and answers are kept. On the progress screen it
   sits apart from the action buttons, as a navigation link with an arrow. "Resume" is only the button that
   continues a paused analysis. Supersedes "Resume review" and "Open review" of §4.1 and §4.2.
 - **Comment drafts.** An unsent comment text is kept per line in the browser tab (sessionStorage, per user login

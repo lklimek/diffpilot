@@ -335,7 +335,7 @@ export function AnalysisProgress({
             <Tooltip
               tip={
                 reviewStarted
-                  ? "Opens your review where you left it; ticks and answers are kept. Starts nothing."
+                  ? "Opens your review; ticks and answers are kept. Starts nothing."
                   : "Opens the review. Starts nothing."
               }
             >

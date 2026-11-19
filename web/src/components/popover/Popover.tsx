@@ -18,7 +18,7 @@ interface PopoverProps {
   label: string;
   /** Source of the content, shown as a provenance tag in the popover's top row. */
   tag?: ProvenanceSource;
-  /** The text; `pinned` adds what only a pinned popover offers (links, actions); `close` unpins it. Also the trigger's description. */
+  /** The text; `pinned` adds what only a pinned popover offers (links, actions); `close` unpins it. Also the trigger's description while open. */
   content: (pinned: boolean, close: () => void) => ReactNode;
   /** The trigger: one button without an `onClick`; it gets the ARIA state and the click. */
   children: ReactElement<{
@@ -28,6 +28,8 @@ interface PopoverProps {
     "aria-controls"?: string;
     "aria-describedby"?: string;
   }>;
+  /** Short plain text that describes the trigger while the popover is closed (the content is not mounted then). */
+  hint?: string;
   /** Classes of the wrapper (layout of the trigger). */
   className?: string;
 }
@@ -67,12 +69,15 @@ function clippedOut(element: HTMLElement, rect: DOMRect): boolean {
  * onto it); a click, Enter or Space pins it with selectable text until its close button, Escape, a click
  * outside, or another pinned popover closes it. Closing by button or Escape returns the focus to the trigger.
  */
-export function Popover({ label, tag, content, children, className = "" }: PopoverProps) {
+export function Popover({ label, tag, content, hint, children, className = "" }: PopoverProps) {
   const id = useId();
   const wrapper = useRef<HTMLSpanElement>(null);
   const pinned = useSyncExternalStore(subscribe, () => pinnedId === id);
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
+  // A pointer press focuses the trigger; that focus is not "keyboard focus" and must not keep the popup open
+  // after the closing click (Tooltip does the same).
+  const pressed = useRef(false);
   // Closed by Escape or the close button; shown again after the pointer or the focus left and came back.
   const [dismissed, setDismissed] = useState(false);
   const [position, setPosition] = useState<{
@@ -96,10 +101,14 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
     if (active === document.body || wrapper.current?.contains(active)) trigger()?.focus();
   };
 
-  // Unpins after an action in the popover; the focus stays where the action put it.
+  // Unpins after an action in the popover; the focus stays where the action put it, unless it is still in the
+  // popover that closes (then it returns to the trigger).
   const unpin = () => {
     if (pinnedId === id) setPinned(null);
     setDismissed(true);
+    const popup = document.getElementById(id);
+    if (popup?.contains(document.activeElement))
+      (popup.parentElement?.firstElementChild as HTMLElement).focus();
   };
 
   // Fixed position so scroll containers do not clip it; it follows its trigger while the page scrolls, below it
@@ -165,7 +174,12 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
         setHovered(false);
         if (!focused) setDismissed(false);
       }}
-      onFocus={() => setFocused(true)}
+      onPointerDown={() => (pressed.current = true)}
+      onPointerUp={() => (pressed.current = false)}
+      onPointerCancel={() => (pressed.current = false)}
+      onFocus={() => {
+        if (!pressed.current) setFocused(true);
+      }}
       onBlur={(event) => {
         if (wrapper.current?.contains(event.relatedTarget as Node | null)) return;
         setFocused(false);
@@ -184,12 +198,17 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
         "aria-haspopup": "dialog",
         // The dialog exists only while open, so the references are given only then.
         "aria-controls": open ? id : undefined,
-        "aria-describedby": open ? `${id}-body` : undefined,
+        "aria-describedby": open ? `${id}-body` : hint ? `${id}-hint` : undefined,
         onClick: () => {
           setDismissed(false);
           setPinned(pinned ? null : id);
         },
       })}
+      {!open && hint && (
+        <span id={`${id}-hint`} className="sr-only">
+          {hint}
+        </span>
+      )}
       {open && (
         <span
           ref={dialog}

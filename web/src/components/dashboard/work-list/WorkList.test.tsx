@@ -286,7 +286,7 @@ describe("WorkList", () => {
   it.each([
     [{ head_moved: false, has_my_state: true }, /ticks and answers are kept/, true],
     [{ head_moved: false, has_my_state: false }, /^Opens your review\./, false],
-    [{ head_moved: true, has_my_state: true }, /The PR has moved/, false],
+    [{ head_moved: true, has_my_state: true }, /The PR moved since your analysis/, false],
   ])("every Open link says it starts nothing (%j)", (review, extra, kept) => {
     const item = PROVISIONAL_ITEMS.find((i) => i.kind === "pr" && i.review);
     expect(item).toBeDefined();

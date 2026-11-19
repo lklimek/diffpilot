@@ -76,8 +76,9 @@ export function CommentMarker({
   return (
     <Popover
       label={name}
+      hint={`${about} Hover, focus or click for its text.`}
       className="inline-flex"
-      content={(pinned) => (
+      content={(pinned, close) => (
         <>
           {comments.map((c) => (
             <span key={c.id} className="line-clamp-6 whitespace-pre-wrap">
@@ -90,7 +91,10 @@ export function CommentMarker({
               type="button"
               aria-expanded={open}
               aria-controls={panelId}
-              onClick={onToggle}
+              onClick={() => {
+                onToggle();
+                close();
+              }}
               className="min-h-6 cursor-pointer justify-self-start rounded border border-border bg-surface px-2 text-text hover:border-accent"
             >
               {open

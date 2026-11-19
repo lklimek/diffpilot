@@ -21,6 +21,33 @@ const marker = (name: string, text: string) => (
 );
 
 describe("Popover", () => {
+  it("keeps a short hint as the trigger's description while closed", async () => {
+    render(
+      <Popover label="L" hint="Short hint." content={() => <p>Long text</p>}>
+        <button type="button">T</button>
+      </Popover>,
+    );
+    const trigger = screen.getByRole("button", { name: "T" });
+    expect(trigger).toHaveAccessibleDescription("Short hint.");
+    await userEvent.hover(trigger);
+    expect(trigger).toHaveAccessibleDescription("Long text");
+  });
+
+  it("the closing click closes even though a pointer press focused the trigger", async () => {
+    const user = userEvent.setup();
+    render(marker("Remark", "Full remark text"));
+    const trigger = screen.getByRole("button", { name: "Remark" });
+    await user.click(trigger);
+    await user.click(trigger);
+    await user.unhover(trigger);
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Keyboard focus still shows it.
+    await user.tab();
+    await user.tab({ shift: true });
+    expect(screen.getByRole("dialog")).toBeVisible();
+  });
+
   it("mounts its content only while open, with no dangling aria references when closed", async () => {
     const user = userEvent.setup();
     const { container } = render(marker("Remark", "Full remark text"));

@@ -174,7 +174,7 @@ describe("code-view icons: popup on hover, pinned by a click until the next clic
     expect(popup()).toBeNull();
     await userEvent.hover(icon());
     expect(popup()).toBeVisible();
-    expect(popup()).toHaveTextContent(/nothing is sent yet\. The answer is LLM output/);
+    expect(popup()).toHaveTextContent(/Nothing is sent until you press Ask/);
     expect(screen.queryByRole("tooltip")).toBeNull();
     // The action only appears once pinned.
     expect(screen.queryByRole("button", { name: "Ask about this line" })).toBeNull();

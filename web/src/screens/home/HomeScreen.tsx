@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ComponentProps, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ApiError } from "../../api/client";
 import type { MyAnalysis, ResolvePrResponse } from "../../api/generated/types";
@@ -40,6 +40,25 @@ const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 const short = (sha: string) => <code>{sha.slice(0, 7)}</code>;
 const SMALL_PRIMARY = buttonClass("primary", true);
+
+/** "Open" of an analysis: a navigation link with an arrow, set apart from action buttons by a divider when one precedes it. */
+function OpenLink({
+  divided,
+  children,
+  ...link
+}: { divided: boolean; children: ReactNode } & Omit<ComponentProps<typeof Link>, "className" | "children">) {
+  return (
+    <Link
+      {...link}
+      data-primary
+      className={`py-1.5 font-semibold whitespace-nowrap text-accent no-underline hover:underline ${
+        divided ? "border-l border-border pl-4" : ""
+      }`}
+    >
+      {children} <span aria-hidden="true">→</span>
+    </Link>
+  );
+}
 /** The review of a finished analysis, else its progress screen (which offers the review once it is ready). */
 const recentHref = (analysis: MyAnalysis) =>
   analysis.status === "finished" ? `/analyses/${analysis.id}` : `/analyses/${analysis.id}/progress`;
@@ -219,9 +238,9 @@ export function HomeScreen() {
                       title="Analysis found."
                       actions={
                         <Tooltip tip={openTip(outcome.analysis)}>
-                          <Link to={analysisHref(outcome.analysis)} data-primary className={SMALL_PRIMARY}>
+                          <OpenLink to={analysisHref(outcome.analysis)} divided={false}>
                             Open
-                          </Link>
+                          </OpenLink>
                         </Tooltip>
                       }
                     >
@@ -262,14 +281,15 @@ export function HomeScreen() {
                                 : "Opens the progress of the running analysis."
                             }
                           >
-                            <Link
+                            <OpenLink
                               to={analysisHref(outcome.analysis)}
-                              data-primary
-                              className="border-l border-border py-1.5 pl-4 font-semibold whitespace-nowrap text-accent no-underline hover:underline"
+                              divided={
+                                outcome.analysis.state.state === "paused" &&
+                                outcome.analysis.state.reason === "user"
+                              }
                             >
-                              {outcome.analysis.review_ready ? "Open" : "Show progress"}{" "}
-                              <span aria-hidden="true">→</span>
-                            </Link>
+                              {outcome.analysis.review_ready ? "Open" : "Show progress"}
+                            </OpenLink>
                           </Tooltip>
                         </>
                       }
