@@ -41,6 +41,7 @@ describe("current wire facts", () => {
   it("attributes shared questions and only offers ask-again for mine", () => {
     const question: AskQuestion = {
       id: "q1",
+      anchor: { kind: "step", step_id: "f1.1", lines: null },
       step_id: "f1.1",
       text: "Why?",
       state: "failed",

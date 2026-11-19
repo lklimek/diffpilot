@@ -247,6 +247,7 @@ const xssQuestions = (seed: AskQuestion[]): AskQuestion[] => [
   ...seed,
   {
     id: "3f1c5a7e-0482-4d2b-9e6f-0000000000x5",
+    anchor: { kind: "step", step_id: "f1.1", lines: null },
     step_id: "f1.1",
     text: XSS.markup,
     state: "answered",
@@ -340,6 +341,7 @@ const SCENARIOS = {
         id,
         mine: true,
         asked_by: base?.asked_by ?? "alice",
+        anchor: { kind: "step", step_id, lines: null },
         step_id,
         text,
         state: answer === null ? "answering" : "answered",

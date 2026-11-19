@@ -100,7 +100,8 @@ export function AskThread({
         >
           <ol aria-label="Ask conversation" className="m-0 grid list-none gap-2.5 p-0">
             {shown.map((q) => {
-              const place = scope === "conversation" ? placeOf(q.step_id) : undefined;
+              const place =
+                scope === "conversation" ? (q.step_id === undefined ? null : placeOf(q.step_id)) : undefined;
               return (
                 <li key={q.id} className="grid min-w-0 gap-1 [overflow-wrap:anywhere]">
                   {place === null ? (

@@ -1,0 +1,618 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FilesResponse",
+  "description": "Response of `GET /api/v1/analyses/{id}/files`.",
+  "type": "object",
+  "properties": {
+    "files": {
+      "description": "Every file of the diff, in diff (path) order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PrFile"
+      }
+    },
+    "viewed_status": {
+      "description": "Whether `PrFile::viewed` was read from GitHub for every file.",
+      "$ref": "#/$defs/ViewedStatus"
+    },
+    "current_head": {
+      "description": "The pull request's head on GitHub when the Viewed state was read; null when not read. Marking Viewed is\nrefused while it differs from the analysed head.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitSha"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "files",
+    "viewed_status"
+  ],
+  "$defs": {
+    "PrFile": {
+      "description": "One file of the pull request.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Path at the head commit (at the base commit for a deleted file); the path GitHub's Viewed mark uses.",
+          "type": "string"
+        },
+        "old_path": {
+          "description": "Path at the base commit of a renamed file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "How the file changed.",
+          "$ref": "#/$defs/FileChangeStatus"
+        },
+        "binary": {
+          "description": "Git treats the file as binary: no hunks.",
+          "type": "boolean"
+        },
+        "added": {
+          "description": "Added lines in the diff.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "removed": {
+          "description": "Removed lines in the diff.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "group": {
+          "description": "Group of the file tree: code, or recognised by a path rule.",
+          "$ref": "#/$defs/FileGroup"
+        },
+        "not_rendered": {
+          "description": "Why the file is never rendered; null when it is.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotRenderedReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "viewed": {
+          "description": "The user's GitHub Viewed mark; null when it was not read.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileViewedState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hunks": {
+          "description": "Hunks (runs of changed lines without context) in file order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileHunk"
+          }
+        }
+      },
+      "required": [
+        "path",
+        "status",
+        "binary",
+        "added",
+        "removed",
+        "group",
+        "hunks"
+      ]
+    },
+    "FileChangeStatus": {
+      "description": "How a file changed.",
+      "oneOf": [
+        {
+          "description": "New file.",
+          "type": "string",
+          "const": "added"
+        },
+        {
+          "description": "Changed in place.",
+          "type": "string",
+          "const": "modified"
+        },
+        {
+          "description": "Removed.",
+          "type": "string",
+          "const": "deleted"
+        },
+        {
+          "description": "Renamed (possibly with changes).",
+          "type": "string",
+          "const": "renamed"
+        }
+      ]
+    },
+    "FileGroup": {
+      "description": "Group of a file in the file tree.",
+      "oneOf": [
+        {
+          "description": "No path rule matched.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "code"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Recognised by a path rule (or binary); not analysed.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "not_analysed"
+            },
+            "category": {
+              "description": "Section.",
+              "$ref": "#/$defs/NotAnalysedCategory"
+            },
+            "badge": {
+              "description": "How it was recognised.",
+              "$ref": "#/$defs/ProvenanceBadge"
+            },
+            "rule": {
+              "description": "The matching rule or detector description.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "category",
+            "badge",
+            "rule"
+          ]
+        }
+      ]
+    },
+    "NotAnalysedCategory": {
+      "description": "Section of material that is not analysed.",
+      "oneOf": [
+        {
+          "description": "Tests.",
+          "type": "string",
+          "const": "tests"
+        },
+        {
+          "description": "Docs and comments.",
+          "type": "string",
+          "const": "docs_comments"
+        },
+        {
+          "description": "Mechanical and generated material, lockfiles included.",
+          "type": "string",
+          "const": "generated_mechanical"
+        }
+      ]
+    },
+    "ProvenanceBadge": {
+      "description": "A deterministic check that a badge names (brief §1, §3). No badge means LLM analysis.",
+      "oneOf": [
+        {
+          "description": "Moved block equal to its original after whitespace normalisation.",
+          "type": "string",
+          "const": "text_identical"
+        },
+        {
+          "description": "Recognised by a path rule.",
+          "type": "string",
+          "const": "classified_by_path"
+        },
+        {
+          "description": "Recognised by a line rule.",
+          "type": "string",
+          "const": "classified_by_line_rule"
+        },
+        {
+          "description": "Git treats the file as binary (content check); it is not shown or analysed.",
+          "type": "string",
+          "const": "binary_content"
+        }
+      ]
+    },
+    "NotRenderedReason": {
+      "description": "Why a file is never rendered.",
+      "oneOf": [
+        {
+          "description": "Larger than the code reader's per-file limit.",
+          "type": "string",
+          "const": "too_large"
+        },
+        {
+          "description": "Generated file.",
+          "type": "string",
+          "const": "generated"
+        },
+        {
+          "description": "Binary file.",
+          "type": "string",
+          "const": "binary"
+        }
+      ]
+    },
+    "FileViewedState": {
+      "description": "The user's GitHub Viewed mark of a file (GraphQL `FileViewedState`).",
+      "oneOf": [
+        {
+          "description": "Marked as viewed.",
+          "type": "string",
+          "const": "viewed"
+        },
+        {
+          "description": "Not marked as viewed.",
+          "type": "string",
+          "const": "unviewed"
+        },
+        {
+          "description": "Marked earlier; GitHub cleared the mark because new commits changed the file.",
+          "type": "string",
+          "const": "dismissed"
+        }
+      ]
+    },
+    "FileHunk": {
+      "description": "One hunk: a run of contiguous changed lines, removed and added together, without context.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Hunk id of the pre-pass.",
+          "$ref": "#/$defs/HunkId"
+        },
+        "base": {
+          "description": "Removed lines (base side); null when the hunk removes nothing.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head": {
+          "description": "Added lines (head side); null when the hunk adds nothing.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "after_line": {
+          "description": "Head line after which the removed lines were (0 = before line 1); set when `head` is null and the file\nexists at head.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "parts": {
+          "description": "The hunk's changed lines by owner, base parts first; together they hold every changed line once.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HunkPart"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "parts"
+      ]
+    },
+    "HunkId": {
+      "description": "Identifier of a diff hunk from the server's pre-pass: `h1`, `h2`, ….",
+      "type": "string"
+    },
+    "LineRange": {
+      "description": "Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.",
+      "type": "object",
+      "properties": {
+        "start_line": {
+          "description": "First line, 1-based.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_line": {
+          "description": "Last line, inclusive.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start_line",
+        "end_line"
+      ]
+    },
+    "HunkPart": {
+      "description": "Changed lines of a hunk with one owner.",
+      "type": "object",
+      "properties": {
+        "side": {
+          "description": "Side of the lines.",
+          "$ref": "#/$defs/LineSide"
+        },
+        "range": {
+          "description": "The lines.",
+          "$ref": "#/$defs/LineRange"
+        },
+        "owner": {
+          "description": "Where the lines are explained, or why they are in no flow.",
+          "$ref": "#/$defs/PartOwner"
+        },
+        "also_in": {
+          "description": "Other steps (of any flow) whose lines include these lines, in Tour order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StepId"
+          }
+        }
+      },
+      "required": [
+        "side",
+        "range",
+        "owner",
+        "also_in"
+      ]
+    },
+    "LineSide": {
+      "description": "Commit a line number refers to. Head is the common case (final code); base only for code that no longer\nexists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).",
+      "oneOf": [
+        {
+          "description": "Lines of the head commit.",
+          "type": "string",
+          "const": "head"
+        },
+        {
+          "description": "Lines of the base commit (removed code).",
+          "type": "string",
+          "const": "base"
+        }
+      ]
+    },
+    "PartOwner": {
+      "description": "Where changed lines are explained, decided by the server from the same coverage that yields Unexplained.",
+      "oneOf": [
+        {
+          "description": "The plan places the lines in this flow, and this step of it explains them.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "step"
+            },
+            "flow_id": {
+              "description": "The flow.",
+              "$ref": "#/$defs/FlowId"
+            },
+            "step_id": {
+              "description": "The step.",
+              "$ref": "#/$defs/StepId"
+            }
+          },
+          "required": [
+            "kind",
+            "flow_id",
+            "step_id"
+          ]
+        },
+        {
+          "description": "The plan places the lines in this flow, but no step of it holds them: the flow is not analysed yet, or\nthey are blank lines no step needs.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "flow"
+            },
+            "flow_id": {
+              "description": "The flow.",
+              "$ref": "#/$defs/FlowId"
+            }
+          },
+          "required": [
+            "kind",
+            "flow_id"
+          ]
+        },
+        {
+          "description": "In no flow: \"Unexplained — read these yourself\".",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unexplained"
+            },
+            "reason": {
+              "description": "Why the server did not send them to the LLM; absent when the LLM did not explain them.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/UnexplainedReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "In no flow: the file is recognised by a path rule.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "not_analysed"
+            },
+            "category": {
+              "description": "Section.",
+              "$ref": "#/$defs/NotAnalysedCategory"
+            },
+            "badge": {
+              "description": "How it was recognised.",
+              "$ref": "#/$defs/ProvenanceBadge"
+            },
+            "rule": {
+              "description": "The matching rule.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "category",
+            "badge",
+            "rule"
+          ]
+        },
+        {
+          "description": "In no flow: a line rule covers them; sent to the LLM as context without the duty to explain them.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "context_rule"
+            },
+            "badge": {
+              "description": "How it was recognised.",
+              "$ref": "#/$defs/ProvenanceBadge"
+            },
+            "rule": {
+              "description": "The matching rule.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "badge",
+            "rule"
+          ]
+        },
+        {
+          "description": "In no flow: a block moved with identical text; says nothing about behaviour at the new place.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "identical_move"
+            },
+            "from": {
+              "description": "Original block at the base commit.",
+              "$ref": "#/$defs/FileRange"
+            },
+            "to": {
+              "description": "New block at the head commit.",
+              "$ref": "#/$defs/FileRange"
+            }
+          },
+          "required": [
+            "kind",
+            "from",
+            "to"
+          ]
+        },
+        {
+          "description": "In no flow: only whitespace changed; the code view shows the lines as unchanged.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "whitespace_only"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "FlowId": {
+      "description": "Identifier of a flow, assigned by the `plan` job: `f1`, `f2`, ….",
+      "type": "string",
+      "pattern": "^f[0-9]+$"
+    },
+    "StepId": {
+      "description": "Identifier of a step, assigned by the server in step order: `\"<flow>.<n>\"`, e.g. `f2.3`.",
+      "type": "string"
+    },
+    "UnexplainedReason": {
+      "description": "Why the server left Unexplained lines out of every LLM request.",
+      "oneOf": [
+        {
+          "description": "Not sent to the LLM: the request holding them would be larger than one prompt may be.",
+          "type": "string",
+          "const": "too_large_for_prompt"
+        }
+      ]
+    },
+    "FileRange": {
+      "description": "A line range of one file.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path on that side.",
+          "type": "string"
+        },
+        "side": {
+          "description": "Commit the lines refer to.",
+          "$ref": "#/$defs/LineSide"
+        },
+        "range": {
+          "description": "The lines.",
+          "$ref": "#/$defs/LineRange"
+        }
+      },
+      "required": [
+        "file",
+        "side",
+        "range"
+      ]
+    },
+    "ViewedStatus": {
+      "description": "How completely the Viewed state was read.",
+      "oneOf": [
+        {
+          "description": "Read for every file GitHub lists.",
+          "type": "string",
+          "const": "checked"
+        },
+        {
+          "description": "Only the first files were read (read cap); the others are null.",
+          "type": "string",
+          "const": "partial"
+        },
+        {
+          "description": "Not read (no token, GitHub refused or did not answer); nothing is assumed.",
+          "type": "string",
+          "const": "not_checked"
+        }
+      ]
+    },
+    "CommitSha": {
+      "description": "A full 40-character hexadecimal git commit id.",
+      "type": "string"
+    }
+  }
+}

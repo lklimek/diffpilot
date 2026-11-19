@@ -382,6 +382,23 @@ pub const REVOKE_ACCESS_TOKEN: Route = route(
     SessionCsrf,
 );
 
+/// R12: the files of the pull request with their hunks, owners and the user's GitHub Viewed marks.
+pub const GET_FILES: Route = route("getFiles", Get, "/api/v1/analyses/{id}/files", READ);
+/// R13: marks a file as viewed on GitHub, or removes the mark, as the user.
+pub const SET_FILE_VIEWED: Route = route(
+    "setFileViewed",
+    Put,
+    "/api/v1/analyses/{id}/files/viewed",
+    SessionCsrf,
+);
+/// R14: asks a question about a step or about lines of a file.
+pub const ASK_ANCHORED: Route = route(
+    "askAnchored",
+    Post,
+    "/api/v1/analyses/{id}/questions",
+    SessionCsrf,
+);
+
 /// Every route.
 pub const ROUTES: &[Route] = &[
     REQUEST_FLOW,
@@ -407,6 +424,9 @@ pub const ROUTES: &[Route] = &[
     PUT_REVIEW_STATE,
     LIST_QUESTIONS,
     ASK_QUESTION,
+    ASK_ANCHORED,
+    GET_FILES,
+    SET_FILE_VIEWED,
     LIST_FEEDBACK,
     POST_FEEDBACK,
     DELETE_FEEDBACK,

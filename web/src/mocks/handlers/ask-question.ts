@@ -14,6 +14,7 @@ export const askQuestion = route(
     const { text } = (await request.json()) as AskRequest;
     const question: AskQuestion = {
       id: crypto.randomUUID(),
+      anchor: { kind: "step", step_id: String(params.step_id), lines: null },
       step_id: String(params.step_id),
       text,
       state: "pending",

@@ -268,6 +268,19 @@ created_at: string,
 finished_at: string | null, };
 
 /**
+ * Body of `POST /api/v1/analyses/{id}/questions`: a question with what it is about.
+ */
+export type AnchoredAskRequest = {
+/**
+ * The question, at most `AskRequest::MAX_TEXT_CHARS` characters.
+ */
+text: string,
+/**
+ * What the question is about.
+ */
+anchor: AskAnchor, };
+
+/**
  * An annotation anchored to lines of a step (same side as the step); its range is a highlight.
  */
 export type Annotation = {
@@ -335,7 +348,7 @@ message: string, };
 /**
  * Machine-readable API error code.
  */
-export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable" | "refresh_running" | "github_rate_limited" | "invalid_dashboard_settings" | "cursor_expired" | "insufficient_scope" | "token_not_accepted" | "token_limit_reached" | "rate_limited";
+export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable" | "refresh_running" | "github_rate_limited" | "invalid_dashboard_settings" | "cursor_expired" | "insufficient_scope" | "token_not_accepted" | "token_limit_reached" | "rate_limited" | "github_refused";
 
 /**
  * A GitHub App installation.
@@ -351,6 +364,31 @@ account: string,
 all_repositories: boolean, };
 
 /**
+ * What a question is about.
+ */
+export type AskAnchor = { "kind": "step",
+/**
+ * The step.
+ */
+step_id: StepId,
+/**
+ * Lines inside the step, on its side and file; null for the whole step.
+ */
+lines: LineRange | null, } | { "kind": "lines",
+/**
+ * Repository-relative path on `side`.
+ */
+path: string,
+/**
+ * Commit the lines refer to.
+ */
+side: LineSide,
+/**
+ * The lines, at most `AskAnchor::MAX_LINES`; null for the whole file.
+ */
+range: LineRange | null, };
+
+/**
  * An LLM answer to a question about a step.
  */
 export type AskOutput = {
@@ -364,7 +402,7 @@ answer: string,
 evidence: Array<Evidence>, };
 
 /**
- * A private question and its LLM answer, pinned to the step; returned only to its asker.
+ * A private question and its LLM answer, pinned to its anchor; returned only to its asker.
  */
 export type AskQuestion = {
 /**
@@ -380,9 +418,13 @@ asked_by?: string,
  */
 mine?: boolean,
 /**
- * The step.
+ * What the question is about.
  */
-step_id: StepId,
+anchor: AskAnchor,
+/**
+ * The step of a step anchor; absent for a lines anchor.
+ */
+step_id?: StepId,
 /**
  * The question.
  */
@@ -1239,6 +1281,54 @@ line: number, };
 export type FeedbackValue = "correct" | "wrong" | "irrelevant" | "overrated" | "underrated" | "missed_by_llm";
 
 /**
+ * How a file changed.
+ */
+export type FileChangeStatus = "added" | "modified" | "deleted" | "renamed";
+
+/**
+ * Group of a file in the file tree.
+ */
+export type FileGroup = { "kind": "code" } | { "kind": "not_analysed",
+/**
+ * Section.
+ */
+category: NotAnalysedCategory,
+/**
+ * How it was recognised.
+ */
+badge: ProvenanceBadge,
+/**
+ * The matching rule or detector description.
+ */
+rule: string, };
+
+/**
+ * One hunk: a run of contiguous changed lines, removed and added together, without context.
+ */
+export type FileHunk = {
+/**
+ * Hunk id of the pre-pass.
+ */
+id: HunkId,
+/**
+ * Removed lines (base side); null when the hunk removes nothing.
+ */
+base: LineRange | null,
+/**
+ * Added lines (head side); null when the hunk adds nothing.
+ */
+head: LineRange | null,
+/**
+ * Head line after which the removed lines were (0 = before line 1); set when `head` is null and the file
+ * exists at head.
+ */
+after_line: number | null,
+/**
+ * The hunk's changed lines by owner, base parts first; together they hold every changed line once.
+ */
+parts: Array<HunkPart>, };
+
+/**
  * A line range of one file.
  */
 export type FileRange = {
@@ -1271,6 +1361,29 @@ side: LineSide,
  * The lines, ascending and disjoint.
  */
 ranges: Array<LineRange>, };
+
+/**
+ * The user's GitHub Viewed mark of a file (GraphQL `FileViewedState`).
+ */
+export type FileViewedState = "viewed" | "unviewed" | "dismissed";
+
+/**
+ * Response of `GET /api/v1/analyses/{id}/files`.
+ */
+export type FilesResponse = {
+/**
+ * Every file of the diff, in diff (path) order.
+ */
+files: Array<PrFile>,
+/**
+ * Whether `PrFile::viewed` was read from GitHub for every file.
+ */
+viewed_status: ViewedStatus,
+/**
+ * The pull request's head on GitHub when the Viewed state was read; null when not read. Marking Viewed is
+ * refused while it differs from the analysed head.
+ */
+current_head: CommitSha | null, };
 
 /**
  * A question about the fit of the change at project scale.
@@ -1604,6 +1717,32 @@ item_id: string, };
  * Kind of a history event; pull requests and reviews only (OD16).
  */
 export type HistoryKind = "pr_opened" | "pr_merged" | "pr_closed_unmerged" | "review_given";
+
+/**
+ * Identifier of a diff hunk from the server's pre-pass: `h1`, `h2`, ….
+ */
+export type HunkId = string;
+
+/**
+ * Changed lines of a hunk with one owner.
+ */
+export type HunkPart = {
+/**
+ * Side of the lines.
+ */
+side: LineSide,
+/**
+ * The lines.
+ */
+range: LineRange,
+/**
+ * Where the lines are explained, or why they are in no flow.
+ */
+owner: PartOwner,
+/**
+ * Other steps (of any flow) whose lines include these lines, in Tour order.
+ */
+also_in: Array<StepId>, };
 
 /**
  * A moved block whose text is identical after whitespace normalisation. The UI says "Body text identical"
@@ -2226,9 +2365,63 @@ file_count: number,
 items: Array<NotAnalysedItem>, };
 
 /**
+ * Why a file is never rendered.
+ */
+export type NotRenderedReason = "too_large" | "generated" | "binary";
+
+/**
  * Whether an issue was introduced by the pull request.
  */
 export type Origin = "introduced" | "pre_existing" | "unclear";
+
+/**
+ * Where changed lines are explained, decided by the server from the same coverage that yields Unexplained.
+ */
+export type PartOwner = { "kind": "step",
+/**
+ * The flow.
+ */
+flow_id: FlowId,
+/**
+ * The step.
+ */
+step_id: StepId, } | { "kind": "flow",
+/**
+ * The flow.
+ */
+flow_id: FlowId, } | { "kind": "unexplained",
+/**
+ * Why the server did not send them to the LLM; absent when the LLM did not explain them.
+ */
+reason?: UnexplainedReason, } | { "kind": "not_analysed",
+/**
+ * Section.
+ */
+category: NotAnalysedCategory,
+/**
+ * How it was recognised.
+ */
+badge: ProvenanceBadge,
+/**
+ * The matching rule.
+ */
+rule: string, } | { "kind": "context_rule",
+/**
+ * How it was recognised.
+ */
+badge: ProvenanceBadge,
+/**
+ * The matching rule.
+ */
+rule: string, } | { "kind": "identical_move",
+/**
+ * Original block at the base commit.
+ */
+from: FileRange,
+/**
+ * New block at the head commit.
+ */
+to: FileRange, } | { "kind": "whitespace_only" };
 
 /**
  * Who decides a part.
@@ -2468,6 +2661,51 @@ related_work: Array<RelatedWork>,
  * Questions about the fit of the change, never verdicts.
  */
 fit_questions: Array<FitQuestion>, };
+
+/**
+ * One file of the pull request.
+ */
+export type PrFile = {
+/**
+ * Path at the head commit (at the base commit for a deleted file); the path GitHub's Viewed mark uses.
+ */
+path: string,
+/**
+ * Path at the base commit of a renamed file.
+ */
+old_path: string | null,
+/**
+ * How the file changed.
+ */
+status: FileChangeStatus,
+/**
+ * Git treats the file as binary: no hunks.
+ */
+binary: boolean,
+/**
+ * Added lines in the diff.
+ */
+added: number,
+/**
+ * Removed lines in the diff.
+ */
+removed: number,
+/**
+ * Group of the file tree: code, or recognised by a path rule.
+ */
+group: FileGroup,
+/**
+ * Why the file is never rendered; null when it is.
+ */
+not_rendered: NotRenderedReason | null,
+/**
+ * The user's GitHub Viewed mark; null when it was not read.
+ */
+viewed: FileViewedState | null,
+/**
+ * Hunks (runs of changed lines without context) in file order.
+ */
+hunks: Array<FileHunk>, };
 
 /**
  * A pull request of a repository.
@@ -3119,6 +3357,19 @@ export type SetTimeZoneRequest = {
 time_zone: string, };
 
 /**
+ * Body of `PUT /api/v1/analyses/{id}/files/viewed`.
+ */
+export type SetViewedRequest = {
+/**
+ * `PrFile::path` of a file of the analysis.
+ */
+path: string,
+/**
+ * True marks the file as viewed on GitHub, false removes the mark.
+ */
+viewed: boolean, };
+
+/**
  * Response of `GET /api/v1/settings`.
  */
 export type Settings = {
@@ -3523,6 +3774,11 @@ last_7_days: UsageTotals | null, };
  * Feedback values a reviewer can choose.
  */
 export type UserFeedbackValue = "correct" | "wrong" | "irrelevant" | "overrated" | "underrated";
+
+/**
+ * How completely the Viewed state was read.
+ */
+export type ViewedStatus = "checked" | "partial" | "not_checked";
 
 /**
  * One ranked item.
