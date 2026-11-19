@@ -1,6 +1,6 @@
 import { type Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { expectAccessible, expectKeyboardTooltips, PR_URL } from "./screens-support";
+import { expectAccessible, expectKeyboardTooltips, netChartBar, PR_URL } from "./screens-support";
 import { ANALYSIS_ID } from "./support";
 
 // My work at `/` (plan §F) against the msw dashboard scenarios
@@ -304,6 +304,44 @@ test.describe("My work (msw)", () => {
     expect(first.y).toBeLessThan(900);
   });
 
+  test("a chart bar lists its pull requests under the chart; again, Hide or another period closes it", async ({
+    page,
+  }) => {
+    await open(page);
+    // Mon 16 Nov: the third bar from the right of the 20 working days.
+    const { chart, at } = await netChartBar(page, 17);
+    const list = page.getByRole("region", { name: "Pull requests of Mon 16 Nov" });
+    await chart.hover(at);
+    await expect(page.locator("[data-chart-tip]")).toContainText("Click to list its pull requests");
+    await chart.click(at);
+    await expect(list.getByRole("group", { name: "Opened (2)" })).toBeVisible();
+    const closed = list.getByRole("group", { name: "Closed (3)" });
+    await expect(closed.getByRole("listitem").filter({ hasText: "acme/node-client#1114" })).toContainText(
+      "closed without merge",
+    );
+    await expect(closed.getByRole("link", { name: /^acme\/platform#1116/ })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/platform/pull/1116",
+    );
+    await chart.click(at);
+    await expect(list).toHaveCount(0);
+    // By keyboard: read a bar, Enter lists it, Hide returns to the chart. Focus starts on the last bar.
+    await page.mouse.move(0, 0);
+    await chart.blur();
+    await chart.focus();
+    for (let i = 0; i < 2; i++) await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("Enter");
+    await expect(list).toBeVisible();
+    await list.getByRole("button", { name: "Hide pull requests of Mon 16 Nov" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(list).toHaveCount(0);
+    await expect(chart).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(list).toBeVisible();
+    await page.getByRole("button", { name: "Weeks" }).click();
+    await expect(page.getByRole("region", { name: /^Pull requests of/ })).toHaveCount(0);
+  });
+
   test("signed out: the sign-in card", async ({ page }) => {
     await page.goto("/?scenario=signed-out");
     await expect(page.getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute(
@@ -334,7 +372,7 @@ test.describe("My work (msw)", () => {
       }
     });
 
-    test(`no serious axe violations at 1600 px: side panel open, a row expanded, chart table, ${colorScheme}`, async ({
+    test(`no serious axe violations at 1600 px: side panel open, a row expanded, chart table and bar list, ${colorScheme}`, async ({
       page,
     }) => {
       await page.setViewportSize({ width: 1600, height: 900 });
@@ -348,6 +386,9 @@ test.describe("My work (msw)", () => {
       await expect(page.getByRole("group", { name: "Drafts: 1" })).toBeVisible();
       await page.getByRole("button", { name: "Show as table" }).click();
       await expect(page.getByRole("region", { name: "Net per day as a table" })).toBeVisible();
+      const bar = await netChartBar(page, 17);
+      await bar.chart.click(bar.at);
+      await expect(page.getByRole("region", { name: "Pull requests of Mon 16 Nov" })).toBeVisible();
       await expectAccessible(page);
     });
   }

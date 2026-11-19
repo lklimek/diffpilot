@@ -139,3 +139,90 @@ describe("NetChart keyboard reading", () => {
     expect(svg.innerHTML).not.toMatch(/#[0-9a-f]{3,6}\b|rgb\(/i);
   });
 });
+
+describe("NetChart: a bar lists its pull requests", () => {
+  const LISTED = {
+    opened: [{ id: "acme/a#5", title: "feat: five", url: "https://github.com/acme/a/pull/5" }],
+    closed: [],
+  };
+
+  function Selecting() {
+    const [unit, setUnit] = useState<ChartUnit>("day");
+    const [selected, setSelected] = useState<number | null>(null);
+    return (
+      <Headline
+        figures={FIGURES}
+        days={DAYS}
+        weeks={WEEKS}
+        unit={unit}
+        onUnitChange={setUnit}
+        selected={selected}
+        onSelect={setSelected}
+        listed={selected === null ? null : LISTED}
+      />
+    );
+  }
+
+  // Without layout the chart is 720 px wide: three slots of (720 − 34 − 46) / 3 px after the left margin.
+  const clickBar = (i: number) =>
+    fireEvent.click(screen.getByRole("img"), { clientX: 34 + ((720 - 80) / 3) * (i + 0.5) });
+  const list = (name: string) => screen.queryByRole("region", { name: `Pull requests of ${name}` });
+
+  it("a click on a bar lists its pull requests under the chart; a second click closes the list", () => {
+    render(<Selecting />);
+    clickBar(1);
+    expect(list("Day 17 Nov")).toBeVisible();
+    // The tip follows the clicked bar, also when the click also focused the chart.
+    expect(document.querySelector("[data-chart-tip]")).toHaveTextContent(
+      /^Day 17 Nov.*Click to hide its pull requests$/,
+    );
+    expect(document.querySelector('[data-point="1"][data-selected]')).not.toBeNull();
+    expect(screen.getByRole("link", { name: /^acme\/a#5/ })).toBeVisible();
+    clickBar(2);
+    expect(list("Day 17 Nov")).toBeNull();
+    expect(list("Day 18 Nov (so far)")).toBeVisible();
+    clickBar(2);
+    expect(list("Day 18 Nov (so far)")).toBeNull();
+    expect(document.querySelector("[data-selected]")).toBeNull();
+  });
+
+  it("Enter or Space lists the bar being read; again closes it; Hide returns the focus to the chart", async () => {
+    render(<Selecting />);
+    const chart = screen.getByRole("img");
+    expect(chart).toHaveAccessibleName(/Enter or Space lists the pull requests of the day read/);
+    chart.focus();
+    fireEvent.keyDown(chart, { key: "ArrowLeft" });
+    fireEvent.keyDown(chart, { key: "Enter" });
+    expect(list("Day 17 Nov")).toBeVisible();
+    expect(document.querySelector("[data-chart-reading]")).toHaveTextContent(
+      "Pull requests of Day 17 Nov listed under the chart",
+    );
+    fireEvent.keyDown(chart, { key: " " });
+    expect(list("Day 17 Nov")).toBeNull();
+    fireEvent.keyDown(chart, { key: "Enter" });
+    screen.getByRole("button", { name: "Hide pull requests of Day 17 Nov" }).focus();
+    await userEvent.keyboard("{Enter}");
+    expect(list("Day 17 Nov")).toBeNull();
+    expect(chart).toHaveFocus();
+    // Back on the chart, the bar just hidden is read, and Enter lists it again.
+    expect(document.querySelector("[data-chart-reading]")).toHaveTextContent(/^Day 17 Nov:/);
+    fireEvent.keyDown(chart, { key: "Enter" });
+    expect(list("Day 17 Nov")).toBeVisible();
+  });
+
+  it("the hover tip says a bar can be clicked", () => {
+    render(<Selecting />);
+    fireEvent.mouseMove(screen.getByRole("img"), { clientX: 34 + (720 - 80) / 6 });
+    expect(document.querySelector("[data-chart-tip]")).toHaveTextContent("Click to list its pull requests");
+  });
+
+  it("without a selection handler the chart offers no listing", () => {
+    render(<Harness />);
+    const chart = screen.getByRole("img");
+    expect(chart).not.toHaveAccessibleName(/Enter or Space/);
+    clickBar(1);
+    expect(document.querySelector("[data-selected]")).toBeNull();
+    fireEvent.mouseMove(chart, { clientX: 34 + (720 - 80) / 6 });
+    expect(document.querySelector("[data-chart-tip]")).not.toHaveTextContent(/Click/);
+  });
+});

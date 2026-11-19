@@ -2,6 +2,7 @@
 // counted by the browser's local working day and week. Pull requests only (OD16): closed = merged or closed
 // unmerged, opened = opened; reviews given are counted apart and never enter the net.
 import type { HistoryEvent, HistoryKind } from "../../api/generated/types";
+import type { BarPullRequest } from "../../components/dashboard/bar-pull-requests/BarPullRequests";
 
 /** One bucket of the net chart; `day` is its first local date (`YYYY-MM-DD`; Monday for weeks). */
 export interface NetBucket {
@@ -271,4 +272,43 @@ export function throughputWeeks(
     reviews: reviews[i]!.count,
     partial: week.partial,
   }));
+}
+
+// GitHub logins: letters, digits and hyphens; repository names add `_` and `.` (but are never `.` or `..`).
+const PR_ID = /^([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)#(\d+)$/;
+
+/** GitHub link of a pull request `owner/name#number`; null for anything else. */
+export function pullRequestUrl(id: string): string | null {
+  const match = PR_ID.exec(id);
+  if (!match || match[2] === "." || match[2] === "..") return null;
+  return `https://github.com/${match[1]}/${match[2]}/pull/${match[3]}`;
+}
+
+/**
+ * The pull requests behind one bar of the net chart (the bar starting at `day`), bucketed as the chart buckets
+ * them; `titles` maps `owner/name#number` to the titles the snapshot knows. In event order.
+ */
+export function barPullRequests(
+  events: readonly HistoryEvent[],
+  day: string,
+  unit: "day" | "week",
+  titles: ReadonlyMap<string, string>,
+): { opened: BarPullRequest[]; closed: BarPullRequest[] } {
+  const inBar = events
+    .filter((e) => {
+      const bucket = workingDay(new Date(e.at));
+      return localDay(unit === "day" ? bucket : monday(bucket)) === day;
+    })
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const pr = (e: HistoryEvent): BarPullRequest => ({
+    id: e.item_id,
+    title: titles.get(e.item_id) ?? null,
+    url: pullRequestUrl(e.item_id),
+  });
+  return {
+    opened: inBar.filter((e) => OPENED.includes(e.kind)).map(pr),
+    closed: inBar
+      .filter((e) => CLOSED.includes(e.kind))
+      .map((e) => ({ ...pr(e), outcome: e.kind === "pr_merged" ? "merged" : "closed_unmerged" })),
+  };
 }
