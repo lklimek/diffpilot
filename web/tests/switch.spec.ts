@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { expectAccessible, expectKeyboardTooltips, PR_URL } from "./screens-support";
 
 // Plan §F.1 after the switch: My work at `/`, the review start page at `/review`, old links redirected.
@@ -31,7 +31,6 @@ test("an old /?pr= link lands on /review with the PR checked on arrival", async 
 });
 
 test("the tab title rule of My work holds at `/`; Review a PR leaves it", async ({ page }) => {
-  await page.clock.install();
   await page.goto("/?dashboard=refreshing");
   await expect(page).toHaveTitle("smart-review My work");
   // The running scan is loaded before the clock moves past the 10 s threshold.

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { ANALYSIS_ID } from "./support";
 import { expectAccessible, analyze } from "./screens-support";
 
@@ -50,7 +50,6 @@ for (const width of [1280, 2560])
   });
 
 test("pause and resume retain progress; cancellation explains loss before confirmation", async ({ page }) => {
-  await page.clock.install();
   await page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=estimate-recent`);
   await page.getByRole("button", { name: "Pause analysis", exact: true }).click();
   await expect(page.getByText(/Paused by alice/)).toBeVisible();

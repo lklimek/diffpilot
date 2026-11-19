@@ -1,10 +1,9 @@
-import { test, expect } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { ANALYSIS_ID } from "./support";
 
 test("flows run on request only: opening one requests nothing, Analyse this flow runs it over SSE", async ({
   page,
 }) => {
-  await page.clock.install();
   let requests = 0;
   page.on("request", (r) => {
     if (r.method() === "POST" && /\/flows\/[^/]+\/request$/.test(r.url())) requests += 1;

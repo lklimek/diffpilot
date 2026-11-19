@@ -13,6 +13,9 @@ export default defineConfig({
     baseURL: `http://localhost:${PORT}`,
     ...devices["Desktop Chrome"],
     viewport: { width: 1440, height: 900 },
+    // With the clock pinned in tests/fixtures.ts, fixed zone and locale make every time text reproducible.
+    timezoneId: "UTC",
+    locale: "en-US",
     trace: "retain-on-failure",
   },
   webServer: {

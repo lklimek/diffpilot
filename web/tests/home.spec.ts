@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { analyze, expectAccessible, expectTooltips, PR_URL, startAnalysis } from "./screens-support";
 import { ANALYSIS_ID, expectTrustWording } from "./support";
 

@@ -1,4 +1,5 @@
-import { test, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+import { test } from "./fixtures";
 import { ANALYSIS_ID, openTour } from "./support";
 
 // The six fixture states in light and dark at 1440 and 3440 px for the comparison with docs/mockups

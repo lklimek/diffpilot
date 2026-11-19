@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 // Screenshots of every My work msw scenario at 1600×900 and 3440×1440 (light; `normal` also dark), plus `normal`
 // with an item expanded and the side panel open, and the pages the review-start rows lead to. Mock data only.

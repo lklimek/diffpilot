@@ -1,4 +1,4 @@
-import { test } from "@playwright/test";
+import { test } from "./fixtures";
 import { openTour } from "./support";
 
 // Light and dark screenshots of the three blocks for the visual comparison with docs/mockups (plan §12.5).

@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { expectAccessible, expectKeyboardTooltips, PR_URL } from "./screens-support";
 import { ANALYSIS_ID } from "./support";
 
@@ -139,7 +140,6 @@ test.describe("My work (msw)", () => {
   });
 
   test("Refresh: scan, provisional ranking, then Ranking finished (mock clock)", async ({ page }) => {
-    await page.clock.install();
     await open(page);
     await pauseClock(page);
     await page.getByRole("button", { name: "Refresh" }).click();
@@ -168,7 +168,6 @@ test.describe("My work (msw)", () => {
   });
 
   test("a failed ranking keeps the estimates; Retry ranking ranks again (mock clock)", async ({ page }) => {
-    await page.clock.install();
     await open(page, "ranking-failed");
     await expect(
       page.getByText("LLM ranking failed: The LLM stopped answering. Provisional scores stay approximate."),
