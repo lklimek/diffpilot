@@ -10,6 +10,8 @@ RUN --mount=type=cache,id=smart-review-npm,target=/root/.npm npm ci --no-audit -
 COPY web/ ./
 # The type check of the build reads the dashboard fixtures the browser mocks import.
 COPY fixtures/dashboard/api /src/fixtures/dashboard/api
+# The type check also reads the API schemas the settings help test imports.
+COPY schemas/api /src/schemas/api
 RUN npm run build
 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS build
