@@ -5,7 +5,8 @@
 
 mod facts;
 mod history;
-mod owned;
+pub(crate) mod mentions;
+pub(crate) mod owned;
 mod progress;
 pub mod rank;
 mod scan;

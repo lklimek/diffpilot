@@ -46,10 +46,10 @@ describe("WorkList", () => {
     render(<List />);
     expect(screen.getByRole("group", { name: "Kinds shown" })).toBeInTheDocument();
     const prs = screen.getByRole("button", { name: /PRs 8/ });
-    const issues = screen.getByRole("button", { name: /Issues 4/ });
+    const issues = screen.getByRole("button", { name: /Issues 3/ });
     const todos = screen.getByRole("button", { name: /TODOs 2/ });
     for (const button of [prs, issues, todos]) expect(button).toHaveAttribute("aria-pressed", "true");
-    expect(rowIds()).toHaveLength(13);
+    expect(rowIds()).toHaveLength(12);
 
     await userEvent.click(issues);
     expect(issues).toHaveAttribute("aria-pressed", "false");
@@ -102,7 +102,7 @@ describe("WorkList", () => {
   it("the last kind on stays on and says why; keyboard toggles", async () => {
     render(<List initial={["pr", "issue"]} />);
     const prs = screen.getByRole("button", { name: /PRs 8/ });
-    const issues = screen.getByRole("button", { name: /Issues 4/ });
+    const issues = screen.getByRole("button", { name: /Issues 3/ });
     expect(prs).not.toHaveAttribute("aria-disabled");
     issues.focus();
     await userEvent.keyboard("{Enter}");
@@ -335,11 +335,11 @@ describe("WorkList", () => {
     render(<List initial={["pr", "todo"]} />);
     const listed = () =>
       document.querySelectorAll("li[data-item]").length + document.querySelectorAll("[data-alarm]").length;
-    const header = () => screen.getByText(/of 14 items, ranked/);
-    expect(header()).toHaveTextContent(`${listed()} of 14 items, ranked`);
-    expect(header()).toHaveTextContent("11 of 14 items, ranked");
-    await userEvent.click(screen.getByRole("button", { name: /Issues 4/ }));
-    expect(header()).toHaveTextContent(`${listed()} of 14 items, ranked`);
+    const header = () => screen.getByText(/of 13 items, ranked/);
+    expect(header()).toHaveTextContent(`${listed()} of 13 items, ranked`);
+    expect(header()).toHaveTextContent("11 of 13 items, ranked");
+    await userEvent.click(screen.getByRole("button", { name: /Issues 3/ }));
+    expect(header()).toHaveTextContent(`${listed()} of 13 items, ranked`);
     expect(header()).not.toHaveTextContent(/listed with every choice/);
   });
 

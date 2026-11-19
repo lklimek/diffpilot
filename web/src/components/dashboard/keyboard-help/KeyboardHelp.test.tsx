@@ -37,8 +37,23 @@ describe("EmptyWork", () => {
       />,
     );
     expect(screen.getByRole("heading", { name: "Nothing needs you right now." })).toBeInTheDocument();
-    expect(screen.getByText(/Checked at/)).toHaveTextContent("14 PRs, 4 issues and 2 open TODOs");
+    expect(screen.getByText(/Checked at/)).toHaveTextContent("14 PRs, 3 issues and 2 open TODOs");
     fireEvent.click(screen.getByRole("link", { name: "Review a PR by URL" }));
     expect(onNavigate).toHaveBeenCalledWith("/");
   });
+});
+
+it("does not say nothing needs you when quick replies are waiting", () => {
+  const snapshot = SUMMARY.snapshot!;
+  render(
+    <EmptyWork
+      checkedAt={snapshot.scanned_at}
+      checked={snapshot.checked}
+      awaiting={0}
+      hasMentions
+      reviewStartHref="/review"
+      now={NOW}
+    />,
+  );
+  expect(screen.getByRole("heading", { name: "No ranked work right now." })).toBeInTheDocument();
 });

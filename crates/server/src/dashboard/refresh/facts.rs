@@ -336,10 +336,11 @@ fn pr_relations(candidate: &PrCandidate) -> Vec<Relation> {
     let found: BTreeSet<PrRelation> = candidate.relations.values().flatten().copied().collect();
     found
         .into_iter()
-        .map(|relation| match relation {
-            PrRelation::Authored => Relation::Authored,
-            PrRelation::Assigned => Relation::Assigned,
-            PrRelation::ReviewRequested => Relation::ReviewRequested,
+        .filter_map(|relation| match relation {
+            PrRelation::Authored => Some(Relation::Authored),
+            PrRelation::Assigned => Some(Relation::Assigned),
+            PrRelation::ReviewRequested => Some(Relation::ReviewRequested),
+            PrRelation::Mentioned => None,
         })
         .collect()
 }
@@ -423,6 +424,7 @@ mod tests {
         let detail: PullDetail = serde_json::from_value(node).expect("detail");
         let rules = ScoreRules::new("alice", &DashboardSettings::default());
         let candidate = PrCandidate {
+            updated_at: None,
             title: detail.title.clone(),
             url: detail.url.clone(),
             relations: BTreeMap::new(),

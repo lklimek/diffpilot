@@ -54,7 +54,7 @@ describe("RefreshControl", () => {
 
   it("allows Refresh while the LLM ranks: a new scan supersedes the ranking", () => {
     const onRefresh = renderControl(RANKING);
-    expect(info()).toHaveTextContent("LLM ranking 10 / 14");
+    expect(info()).toHaveTextContent("LLM ranking 10 / 13");
     fireEvent.click(button());
     expect(onRefresh).toHaveBeenCalledOnce();
     fireEvent.focus(button());

@@ -10,7 +10,11 @@ mod batch;
 mod client;
 mod details;
 mod enumerate;
+mod mentions;
 mod reads;
+pub(crate) use enumerate::mentions;
+pub use mentions::IssueDiscussion;
+pub(crate) use mentions::incomplete;
 mod refs;
 mod search;
 #[cfg(test)]

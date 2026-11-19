@@ -132,6 +132,12 @@ pub struct Reviewer {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewNode {
+    /// Text of the review.
+    #[serde(default)]
+    pub body: String,
+    /// GitHub permalink.
+    #[serde(default)]
+    pub url: String,
     /// Author.
     pub author: Option<Actor>,
     /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, …
@@ -144,6 +150,9 @@ pub struct ReviewNode {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Comment {
+    /// GitHub permalink.
+    #[serde(default)]
+    pub url: String,
     /// Author.
     pub author: Option<Actor>,
     /// Text (untrusted).

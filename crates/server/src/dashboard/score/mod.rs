@@ -35,6 +35,7 @@ pub use parts::{
 };
 pub use rules::{BUILTIN_BRANCH_PATTERNS, ScoreRules, todo_display_ids};
 
+pub(crate) use parts::pull_eligibility;
 use parts::{Eligibility, Part};
 
 /// P1 from this many tenths of a point.

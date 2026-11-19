@@ -1,4 +1,28 @@
 {
+  "mention_coverage": {
+    "unchecked_items": 0,
+    "unchecked_logins": [],
+    "timed_out_logins": []
+  },
+  "mentions": [
+    {
+      "id": "f7da86982a7e447e0245d5fb6b0885357d517df0c6736aae75eaa33c357cec34",
+      "item_key": "acme~wallet-ui~issue~305",
+      "repo": {
+        "owner": "acme",
+        "name": "wallet-ui"
+      },
+      "number": 305,
+      "kind": "issue",
+      "title": "Dark theme: low contrast on disabled buttons",
+      "author": "jun-park",
+      "partly_read": false,
+      "is_bot": false,
+      "created_at": "2026-11-06T09:30:00Z",
+      "text": "@alice which contrast token should we use here?",
+      "url": "https://github.com/acme/wallet-ui/issues/305#issuecomment-1"
+    }
+  ],
   "revision": "r-0812-ranked",
   "latest_refresh": {
     "id": "8b0d6c1e-1118-4d2a-9c3b-000000000812",
@@ -86,14 +110,14 @@
     "scanned_at": "2026-11-18T08:14:00Z",
     "ranked_at": "2026-11-18T08:15:04Z",
     "item_counts": {
-      "total": 14,
+      "total": 13,
       "pr": 8,
-      "issue": 4,
+      "issue": 3,
       "todo": 2,
       "p0": 1,
       "p1": 5,
       "p2": 5,
-      "p3": 3,
+      "p3": 2,
       "not_judged": 0
     },
     "excluded": 3,
@@ -1476,7 +1500,7 @@
     "unreachable": [],
     "checked": {
       "pr": 14,
-      "issue": 4,
+      "issue": 3,
       "todo": 2
     },
     "exclusions": {

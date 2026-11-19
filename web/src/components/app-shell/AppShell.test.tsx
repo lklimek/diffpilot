@@ -70,3 +70,13 @@ describe("ShellTopBar", () => {
     expect(screen.queryByRole("link", { name: /signed in/ })).toBeNull();
   });
 });
+
+it("pluralizes the mention count and preserves the section description", () => {
+  render(<AppNav current="my-work" hrefs={HREFS} myWorkCount={1} />);
+  const link = screen.getByRole("link", { name: "My work, 1 unanswered mention from people" });
+  fireEvent.focus(link);
+  expect(screen.getByRole("tooltip")).toHaveTextContent(
+    "Your PRs, issues and TODOs, ranked; throughput charts",
+  );
+  expect(screen.getByRole("tooltip")).toHaveTextContent("1 unanswered mention from people");
+});

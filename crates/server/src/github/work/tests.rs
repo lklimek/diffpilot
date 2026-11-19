@@ -34,6 +34,10 @@ fn repo_root() -> PathBuf {
 
 /// Starts the fake with the dashboard world; returns its base URL.
 pub(crate) async fn spawn_fake() -> String {
+    spawn_fake_in(repo_root().join("fixtures/dashboard/github")).await
+}
+
+async fn spawn_fake_in(fixture: PathBuf) -> String {
     let config = fake_github::Config {
         fixture_dir: repo_root().join("fixtures/pr-482/github"),
         app_url: Url::parse("http://app.test:3000").unwrap(),
@@ -41,7 +45,7 @@ pub(crate) async fn spawn_fake() -> String {
         user_id: None,
         app_id: None,
         app_public_key_file: None,
-        dashboard_fixture_dir: Some(repo_root().join("fixtures/dashboard/github")),
+        dashboard_fixture_dir: Some(fixture),
         dashboard_world_at: None,
     };
     let router = fake_github::router(&config).unwrap();
@@ -225,7 +229,10 @@ async fn search_is_paced_and_retried_on_secondary_limit() {
 
     let searches = fake.requests_on("search").await;
     let faulted: Vec<bool> = searches.iter().map(|r| r["fault"].is_string()).collect();
-    assert_eq!(faulted, [true, false, true, false, true, true, false]);
+    assert_eq!(
+        faulted,
+        [true, false, true, false, true, true, false, false]
+    );
     let gaps: Vec<u64> = searches
         .windows(2)
         .map(|pair| at_ms(&pair[1]) - at_ms(&pair[0]))
@@ -239,7 +246,7 @@ async fn search_is_paced_and_retried_on_secondary_limit() {
     );
 
     assert!(found.unsearchable.is_empty() && found.notes.is_empty());
-    assert_eq!(found.answered, 3, "a retried search counts once");
+    assert_eq!(found.answered, 4, "a retried search counts once");
     let prs = &found.candidates.pull_requests;
     let relations = |key: &str| prs[&item(key)].relations["alice"].clone();
     assert_eq!(
@@ -337,12 +344,21 @@ async fn unsearchable_login_falls_back_to_enumeration() {
     assert!(enumerated.notes.is_empty(), "{:?}", enumerated.notes);
     let found = &enumerated.candidates;
     assert_eq!(
-        found.pull_requests.keys().cloned().collect::<Vec<_>>(),
+        found
+            .pull_requests
+            .iter()
+            .filter(|(_, pr)| pr.ranked())
+            .map(|(item, _)| item.clone())
+            .collect::<Vec<_>>(),
         [item("acme/consensus#1541")]
     );
     assert_eq!(
         found.pull_requests[&item("acme/consensus#1541")].relations["alice-helper"],
         BTreeSet::from([PrRelation::Authored])
+    );
+    assert!(
+        found.pull_requests.values().all(|pr| !pr.mentioned()),
+        "enumeration never discovers mentions for unsearchable logins"
     );
     assert_eq!(
         found.issues.keys().cloned().collect::<Vec<_>>(),
@@ -351,6 +367,10 @@ async fn unsearchable_login_falls_back_to_enumeration() {
     assert_eq!(
         found.issues[&item("acme/consensus#1525")].relations,
         BTreeSet::from([IssueRelation::Assigned])
+    );
+    assert!(
+        !found.issues[&item("acme/consensus#1525")].mention_candidate,
+        "enumeration alone does not discover strip candidates"
     );
     let graphql = fake.requests_on("graphql").await;
     assert!(graphql.iter().all(|r| r["rate_limit_selected"] == true));
@@ -900,7 +920,7 @@ async fn invalid_logins_and_repositories_never_reach_a_search() {
     let history = client.search_history("x y", since).await.unwrap();
 
     let searches = fake.requests_on("search").await;
-    assert_eq!(searches.len(), 3, "only alice's searches: {searches:?}");
+    assert_eq!(searches.len(), 4, "only alice's searches: {searches:?}");
     assert!(
         searches
             .iter()
@@ -1147,4 +1167,686 @@ async fn authored_pull_requests_stop_at_the_page_cap_and_say_where() {
         [repo("acme/secret")],
         "not visible to the token"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pr_mentions_are_discovered_by_search() {
+    let fake = Fake::start().await;
+    fake.client()
+        .search_pull_requests(&logins(&["alice"]))
+        .await
+        .unwrap();
+    assert!(fake.requests_on("search").await.iter().any(|r| {
+        r["q"]
+            .as_str()
+            .is_some_and(|q| q == "is:pr is:open archived:false mentions:alice")
+    }));
+}
+
+#[tokio::test(start_paused = true)]
+async fn pr_mention_search_finds_comment_only_candidates_without_enumeration_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let file = dir.path().join("pull-requests.json");
+    let mut prs: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let pr = prs
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["number"] == 1203)
+        .unwrap();
+    pr["comments"] = json!({"nodes": [{"author": {"__typename": "User", "login": "bob"}, "body": "@alice @alice-helper please respond", "createdAt": "2026-11-18T08:59:00Z"}]} );
+    std::fs::write(&file, serde_json::to_vec(&prs).unwrap()).unwrap();
+    let base = spawn_fake_in(dir.path().to_owned()).await;
+    let token = sign_in(&base).await;
+    let fake = Fake { base, token };
+    let client = fake.client();
+    let searched = client
+        .search_pull_requests(&logins(&["alice"]))
+        .await
+        .unwrap();
+    assert!(
+        searched.candidates.pull_requests[&item("acme/platform#1203")].relations["alice"]
+            .contains(&PrRelation::Mentioned)
+    );
+    let listed = client
+        .enumerate_owners(&logins(&["acme"]), &logins(&["alice-helper"]))
+        .await
+        .unwrap();
+    assert!(
+        !listed
+            .candidates
+            .pull_requests
+            .contains_key(&item("acme/platform#1203")),
+        "{:?}",
+        listed.notes
+    );
+}
+
+#[tokio::test]
+async fn truncated_pr_discussion_keeps_read_posts_without_rest_refills() {
+    let fake = Fake::start().await;
+    let key = item("acme/platform#1203");
+    let mut discussion = fake
+        .client()
+        .pull_discussions(std::slice::from_ref(&key))
+        .await
+        .unwrap()
+        .found
+        .remove(&key)
+        .unwrap();
+    discussion.issue.comments.nodes.push(
+        serde_json::from_value(json!({
+            "author":{"__typename":"User","login":"bob"}, "body":"@alice read me",
+            "url":"#issuecomment-123", "createdAt":"2026-11-18T08:00:00Z"
+        }))
+        .unwrap(),
+    );
+    let before = discussion.posts();
+    discussion.issue.comments.total_count = Some(100);
+    assert_eq!(discussion.posts(), before, "keep the read window");
+    assert!(discussion.partly_read());
+    assert!(fake.requests_on("issue_comments").await.is_empty());
+}
+
+#[tokio::test]
+async fn mention_query_is_light_and_q2_excludes_review_bodies() {
+    let fake = Fake::start().await;
+    let key = item("acme/platform#1203");
+    let details = fake
+        .client()
+        .pull_requests(std::slice::from_ref(&key))
+        .await
+        .unwrap();
+    assert!(
+        details.found[&key]
+            .reviews
+            .nodes
+            .iter()
+            .all(|r| r.body.is_empty())
+    );
+    let discussion = fake.client().pull_discussions(&[key]).await.unwrap();
+    assert_eq!(discussion.found.len(), 1);
+}
+
+#[tokio::test]
+async fn mention_conversation_budget_never_reads_more_than_forty_items() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data":{"a0":{"pullRequest":null}}})),
+        )
+        .expect(40)
+        .mount(&mock)
+        .await;
+    let mut candidates = Candidates::default();
+    for n in 1..=45 {
+        candidates.add_pr(
+            ItemRef::new("acme", "app", n).unwrap(),
+            "Mention",
+            "",
+            "alice",
+            PrRelation::Mentioned,
+        );
+    }
+    let settings = contracts::api::dashboard::DashboardSettings::default();
+    let (mentions, _notes, unchecked) = crate::dashboard::refresh::mentions::collect(
+        &mock_client(&mock),
+        &crate::dashboard::score::ScoreRules::new("alice", &settings),
+        &["alice".into()],
+        &candidates,
+        &Default::default(),
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert!(mentions.is_empty());
+    assert_eq!(unchecked, 45);
+    mock.verify().await;
+}
+
+#[tokio::test]
+async fn mention_search_cap_has_a_note_and_never_fetches_the_next_page() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"total_count":0,"items":[]})))
+        .with_priority(10)
+        .expect(3)
+        .mount(&mock)
+        .await;
+    let items: Vec<_> = (1..=100)
+        .map(|number| {
+            json!({
+                "number":number,"title":"Mention","html_url":"https://github.com/acme/app/pull/1",
+                "repository_url":"https://api.github.com/repos/acme/app",
+                "created_at":"2026-11-18T08:00:00Z","updated_at":"2026-11-18T08:00:00Z"
+            })
+        })
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .and(query_param_contains("q", "mentions:alice"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header(
+                    "link",
+                    "<https://api.github.com/search/issues?page=2>; rel=\"next\"",
+                )
+                .set_body_json(json!({"total_count":101,"items":items})),
+        )
+        .with_priority(1)
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let mut client = mock_client(&mock);
+    client.search_interval = Duration::ZERO;
+    let result = client
+        .search_pull_requests(&["alice".into()])
+        .await
+        .unwrap();
+    assert_eq!(result.candidates.pull_requests.len(), 100);
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|n| n.text.contains("100") && n.text.contains("mention"))
+    );
+    mock.verify().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn mention_search_pacing_does_not_starve_later_logins() {
+    let fake = Fake::start().await;
+    let logins = logins(&[
+        "alice", "renata-s", "mira-k", "jun-park", "tobias-w", "olek-d", "dana",
+    ]);
+    let found = fake.client().search_pull_requests(&logins).await.unwrap();
+    let requests = fake.requests_on("search").await;
+    for login in logins {
+        assert!(
+            requests.iter().any(|r| r["q"]
+                .as_str()
+                .is_some_and(|q| q.ends_with(&format!("mentions:{login}")))),
+            "missing {login}: {:?}",
+            found.notes
+        );
+    }
+}
+
+fn mention_response() -> Value {
+    json!({"data":{"a0":{"pullRequest":{
+        "isDraft":false,"state":"OPEN","body":"@alice please","createdAt":"2026-11-18T08:00:00Z",
+        "author":{"__typename":"User","login":"bob"},
+        "comments":{"nodes":[],"totalCount":0},"reviews":{"nodes":[],"totalCount":0},
+        "reviewThreads":{"nodes":[],"totalCount":0}
+    }}}})
+}
+
+#[tokio::test(start_paused = true)]
+async fn mention_deadline_keeps_finished_results_and_counts_unchecked_items() {
+    let router = axum::Router::new().route(
+        "/graphql",
+        axum::routing::post(|axum::Json(request): axum::Json<Value>| async move {
+            if request["query"].as_str().unwrap().contains("number: 2)") {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+            axum::Json(mention_response())
+        }),
+    );
+    let client = local_client(router).await;
+    let mut candidates = Candidates::default();
+    for n in 1..=2 {
+        candidates.add_pr(
+            ItemRef::new("acme", "app", n).unwrap(),
+            "Mention",
+            "",
+            "alice",
+            PrRelation::Mentioned,
+        );
+    }
+    let settings = contracts::api::dashboard::DashboardSettings::default();
+    let (mentions, _notes, unchecked) = crate::dashboard::refresh::mentions::collect(
+        &client,
+        &crate::dashboard::score::ScoreRules::new("alice", &settings),
+        &["alice".into()],
+        &candidates,
+        &Default::default(),
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(mentions.len(), 1, "finished results survive the deadline");
+    assert_eq!(unchecked, 1);
+}
+
+#[tokio::test]
+async fn mention_enumeration_does_not_select_conversations_on_ranked_pages() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/graphql"))
+        .respond_with(|r: &wiremock::Request| {
+            let body = String::from_utf8_lossy(&r.body);
+            let data = if body.contains("repositoryOwner") {
+                json!({"repositories":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
+                    {"nameWithOwner":"acme/app","pullRequests":{"totalCount":1},"issues":{"totalCount":0}}
+                ]}})
+            } else {
+                json!({"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
+                    {"number":1,"title":"Ranked","url":"","updatedAt":"2026-11-18T08:00:00Z","body":"","comments":{"nodes":[]},
+                     "author":{"login":"alice"},"assignees":{"nodes":[]},"reviewRequests":{"nodes":[]}}
+                ]}})
+            };
+            ResponseTemplate::new(200).set_body_json(json!({"data":{"a0":data}}))
+        }).mount(&mock).await;
+    let result = mock_client(&mock)
+        .enumerate_owners(&logins(&["acme"]), &logins(&["alice"]))
+        .await
+        .unwrap();
+    assert!(result.candidates.pull_requests[&item("acme/app#1")].ranked());
+    for request in mock.received_requests().await.unwrap() {
+        let query = String::from_utf8_lossy(&request.body);
+        if query.contains("pullRequests(states: OPEN, first: 50") {
+            assert!(
+                !query.contains("body"),
+                "ranked enumeration must not carry conversation bodies: {query}"
+            );
+        }
+    }
+}
+
+async fn local_client(router: axum::Router) -> WorkClient<TestTokens> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    WorkClient::new(
+        Url::parse(&format!("http://{address}")).unwrap(),
+        TestTokens::new("ghu_fake", None),
+    )
+    .unwrap()
+}
+
+fn search_item(number: u32, updated: &str) -> Value {
+    json!({"number":number,"title":"Mention","html_url":"https://github.com/acme/app/pull/1",
+        "repository_url":"https://api.github.com/repos/acme/app", "created_at":"2026-11-18T08:00:00Z",
+        "updated_at":updated})
+}
+
+#[tokio::test(start_paused = true)]
+async fn mention_search_deadline_keeps_finished_logins_and_continues_after_timeout() {
+    let router = axum::Router::new().route(
+        "/search/issues",
+        axum::routing::get(
+            |axum::extract::Query(query): axum::extract::Query<
+                std::collections::HashMap<String, String>,
+            >| async move {
+                let q = &query["q"];
+                if q.ends_with("mentions:slow") {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+                let items = if q.contains("mentions:") {
+                    vec![search_item(
+                        if q.ends_with("later") { 3 } else { 1 },
+                        "2026-11-18T08:00:00Z",
+                    )]
+                } else {
+                    vec![]
+                };
+                axum::Json(json!({"total_count":items.len(),"items":items}))
+            },
+        ),
+    );
+    let client = local_client(router).await;
+    let found = client
+        .search_pull_requests(&logins(&["alice", "slow", "later"]))
+        .await
+        .unwrap();
+    assert!(
+        found
+            .candidates
+            .pull_requests
+            .contains_key(&item("acme/app#1"))
+    );
+    assert!(
+        found
+            .candidates
+            .pull_requests
+            .contains_key(&item("acme/app#3"))
+    );
+    assert!(found.notes.is_empty());
+    assert_eq!(found.timed_out_mention_logins, ["slow"]);
+}
+
+#[tokio::test]
+async fn mention_budget_selects_newest_across_prs_and_issues() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .respond_with(|r: &wiremock::Request| {
+            let q = r.url.query_pairs().find(|(k, _)| k == "q").unwrap().1;
+            let items = if q.contains("mentions:") {
+                if q.contains("is:pr") {
+                    (1..=41)
+                        .map(|n| search_item(n, &format!("2026-11-18T08:{n:02}:00Z")))
+                        .collect()
+                } else {
+                    vec![search_item(99, "2026-11-18T09:00:00Z")]
+                }
+            } else {
+                vec![]
+            };
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"total_count":items.len(),"items":items}))
+        })
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mention_response()))
+        .expect(40)
+        .mount(&mock)
+        .await;
+    let mut client = mock_client(&mock);
+    client.search_interval = Duration::ZERO;
+    let mut candidates = client
+        .search_pull_requests(&logins(&["alice"]))
+        .await
+        .unwrap()
+        .candidates;
+    candidates.merge(
+        client
+            .search_issues(&[], &logins(&["alice"]))
+            .await
+            .unwrap()
+            .candidates,
+    );
+    let settings = contracts::api::dashboard::DashboardSettings::default();
+    let (found, _notes, unchecked) = crate::dashboard::refresh::mentions::collect(
+        &client,
+        &crate::dashboard::score::ScoreRules::new("alice", &settings),
+        &logins(&["alice"]),
+        &candidates,
+        &Default::default(),
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert!(found.iter().any(|m| m.number == 41));
+    assert!(!found.iter().any(|m| m.number == 1));
+    assert!(
+        mock.received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| String::from_utf8_lossy(&r.body).contains("issue(number: 99)"))
+    );
+    assert_eq!(unchecked, 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn mention_policy_is_shared_and_file_reads_are_concurrent_with_finished_results_kept() {
+    use contracts::api::dashboard::{DashboardSettings, PolicyRef, RepositoryRule};
+    let policy_reads = Arc::new(AtomicUsize::new(0));
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let policy_count = policy_reads.clone();
+    let file_active = active.clone();
+    let file_peak = peak.clone();
+    let router = axum::Router::new()
+        .route("/graphql", axum::routing::post(|| async { axum::Json(mention_response()) }))
+        .route("/repos/acme/policy/contents/policy.json", axum::routing::get(move || {
+            policy_count.fetch_add(1, Ordering::SeqCst);
+            async { r#"{"areas":[{"paths":["src/"],"owners":["alice"]}]}"# }
+        }))
+        .route("/repos/acme/app/pulls/{number}/files", axum::routing::get(move |axum::extract::Path(number): axum::extract::Path<u32>| {
+            let active = file_active.clone(); let peak = file_peak.clone();
+            async move {
+                let n = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(n, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_secs(if number == 5 {60} else {2})).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                axum::Json(json!([{"filename":"src/lib.rs","status":"modified","additions":20,"deletions":0}]))
+            }
+        }));
+    let client = local_client(router).await;
+    let settings = DashboardSettings {
+        repositories: vec![RepositoryRule {
+            repo: repo("acme/app"),
+            alias: None,
+            watch_issues: false,
+            branch_patterns: vec![],
+            ownership_policy: Some(PolicyRef {
+                repo: repo("acme/policy"),
+                path: "policy.json".into(),
+            }),
+        }],
+        ..Default::default()
+    };
+    let ownership = crate::dashboard::refresh::owned::Ownership::new(&settings);
+    let rules = crate::dashboard::score::ScoreRules::new("alice", &settings);
+    // Ranking has already read this policy. Mention-only PRs reuse it.
+    assert!(
+        ownership
+            .paths(&client, &rules, &repo("acme/app"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let mut candidates = Candidates::default();
+    for n in 1..=5 {
+        candidates.add_pr(
+            item(&format!("acme/app#{n}")),
+            "Mention",
+            "",
+            "alice",
+            PrRelation::Mentioned,
+        );
+    }
+    let (found, _notes, unchecked) = crate::dashboard::refresh::mentions::collect(
+        &client,
+        &rules,
+        &logins(&["alice"]),
+        &candidates,
+        &Default::default(),
+        &ownership,
+    )
+    .await
+    .unwrap();
+    assert_eq!(found.len(), 4);
+    assert_eq!(policy_reads.load(Ordering::SeqCst), 1);
+    assert!((2..=4).contains(&peak.load(Ordering::SeqCst)));
+    assert_eq!(unchecked, 1);
+}
+
+#[tokio::test]
+async fn mention_truncated_issue_keeps_the_read_window() {
+    let mock = MockServer::start().await;
+    let mut issue = mention_response()["data"]["a0"]["pullRequest"].clone();
+    issue["comments"] = json!({"totalCount":60,"nodes":[{
+        "author":{"__typename":"User","login":"bob"}, "body":"@alice read me",
+        "url":"#issuecomment-123", "createdAt":"2026-11-18T08:00:00Z"
+    }]});
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data":{"a0":{"issue":issue}}})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let found = mock_client(&mock)
+        .issue_discussions(&[item("acme/app#1")])
+        .await
+        .unwrap();
+    assert_eq!(found.found[&item("acme/app#1")].comments.nodes.len(), 1);
+}
+
+#[tokio::test]
+async fn mention_policy_failures_warn_once_per_repository_per_refresh() {
+    use contracts::api::dashboard::{DashboardSettings, PolicyRef, RepositoryRule};
+    for (response, message) in [
+        (
+            ResponseTemplate::new(404),
+            "Ownership policy could not be read",
+        ),
+        (
+            ResponseTemplate::new(200).set_body_string("invalid json"),
+            "Ownership policy could not be parsed",
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(response)
+            .expect(2)
+            .mount(&mock)
+            .await;
+        let settings = DashboardSettings {
+            repositories: vec![RepositoryRule {
+                repo: repo("acme/app"),
+                alias: None,
+                watch_issues: false,
+                branch_patterns: vec![],
+                ownership_policy: Some(PolicyRef {
+                    repo: repo("acme/policy"),
+                    path: "policy.json".into(),
+                }),
+            }],
+            ..Default::default()
+        };
+        let rules = crate::dashboard::score::ScoreRules::new("alice", &settings);
+        let client = mock_client(&mock);
+        let capture = LogCapture::start();
+        for refresh in 1..=2 {
+            let ownership = crate::dashboard::refresh::owned::Ownership::new(&settings);
+            let canonical = repo("acme/app");
+            let alias = repo("ACME/App");
+            let (first, second) = tokio::join!(
+                ownership.paths(&client, &rules, &canonical),
+                ownership.paths(&client, &rules, &alias),
+            );
+            assert!(first.unwrap().is_none());
+            assert!(second.unwrap().is_none());
+            let logs = capture.text();
+            let warnings: Vec<_> = logs.lines().filter(|l| l.contains(message)).collect();
+            assert_eq!(warnings.len(), refresh, "{logs}");
+            assert!(warnings.iter().all(|l| l.contains("WARN")
+                && l.contains("acme/app")
+                && l.contains("policy.json")
+                && l.contains("error=")));
+        }
+        mock.verify().await;
+    }
+}
+
+async fn fallback_issue_page() -> (MockServer, Candidates) {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/graphql"))
+        .respond_with(|r: &wiremock::Request| {
+            let query = String::from_utf8_lossy(&r.body);
+            let data = if query.contains("repositoryOwner") {
+                json!({"repositories":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
+                    {"nameWithOwner":"acme/app","pullRequests":{"totalCount":0},"issues":{"totalCount":4}}
+                ]}})
+            } else {
+                let nodes: Vec<_> = [
+                    (1, "@ALICE-helper please reply", ""),
+                    (2, "", "@alice-helper please reply"),
+                    (3, "> @alice-helper quoted", ""),
+                    (4, "@alice-helper-extra", "mail@alice-helper.dev"),
+                ].into_iter().map(|(number, body, comment)| json!({
+                    "number":number,"title":"Assigned issue","url":"","body":body,
+                    "createdAt":"2026-11-18T08:00:00Z","updatedAt":"2026-11-18T08:00:00Z",
+                    "author":{"login":"bob"},"assignees":{"nodes":[{"login":"alice-helper"}]},
+                    "labels":{"nodes":[]},"comments":{"totalCount":1,"nodes":[{"body":comment,"createdAt":"2026-11-18T08:00:00Z"}]}
+                })).collect();
+                json!({"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":nodes}})
+            };
+            ResponseTemplate::new(200).set_body_json(json!({"data":{"a0":data}}))
+        }).mount(&mock).await;
+    let result = mock_client(&mock)
+        .enumerate_owners(&logins(&["acme"]), &logins(&["alice-helper"]))
+        .await
+        .unwrap();
+    assert!(result.notes.is_empty(), "{:?}", result.notes);
+    (mock, result.candidates)
+}
+
+#[tokio::test]
+async fn fallback_issue_relations_match_base_without_discovering_strip_mentions() {
+    let (mock, candidates) = fallback_issue_page().await;
+    for number in 1..=4 {
+        let issue = &candidates.issues[&item(&format!("acme/app#{number}"))];
+        let mut expected = BTreeSet::from([IssueRelation::Assigned]);
+        if number < 4 {
+            expected.insert(IssueRelation::Mentioned);
+        }
+        assert_eq!(issue.relations, expected, "issue {number}");
+        assert_eq!(issue.comments, 1);
+    }
+    let before = mock.received_requests().await.unwrap().len();
+    let (mentions, _, unchecked) = crate::dashboard::refresh::mentions::collect(
+        &mock_client(&mock),
+        &crate::dashboard::score::ScoreRules::new("alice", &Default::default()),
+        &logins(&["alice"]),
+        &candidates,
+        &Default::default(),
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert!(mentions.is_empty());
+    assert_eq!(unchecked, 0);
+    assert_eq!(mock.received_requests().await.unwrap().len(), before);
+}
+
+#[tokio::test]
+async fn fallback_issue_selection_keeps_only_ranking_comment_fields() {
+    let (mock, _) = fallback_issue_page().await;
+    let requests = mock.received_requests().await.unwrap();
+    let query: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+    let query = query["query"].as_str().unwrap();
+    assert!(
+        query.contains("comments(last: 50) { totalCount nodes { body } }"),
+        "{query}"
+    );
+    assert!(
+        !query.contains("__typename"),
+        "ranking needs only the author's login"
+    );
+}
+
+#[tokio::test]
+async fn fallback_mention_only_issues_share_the_forty_conversation_budget() {
+    let (_, source) = fallback_issue_page().await;
+    let mut issue = source.issues[&item("acme/app#1")].clone();
+    issue.relations.remove(&IssueRelation::Assigned);
+    let mut candidates = Candidates::default();
+    for number in 1..=45 {
+        candidates.add_issue(ItemRef::new("acme", "app", number).unwrap(), issue.clone());
+    }
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data":{"a0":{"issue":null}}})),
+        )
+        .expect(40)
+        .mount(&mock)
+        .await;
+    let (_, _, unchecked) = crate::dashboard::refresh::mentions::collect(
+        &mock_client(&mock),
+        &crate::dashboard::score::ScoreRules::new("alice", &Default::default()),
+        &logins(&["alice"]),
+        &candidates,
+        &Default::default(),
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        unchecked, 45,
+        "failed reads and budget overflow stay accounted for"
+    );
+    mock.verify().await;
 }

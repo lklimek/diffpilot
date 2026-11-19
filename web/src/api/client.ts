@@ -299,6 +299,7 @@ export function createApiClient(baseUrl = "") {
     /** One page of ranked items; `etag` of the same request's previous answer makes a 304 `unchanged`. */
     listDashboardItems: (query: ItemQuery, etag: string | null = null) =>
       conditional<ItemPage>("listDashboardItems", { query: itemQueryParams(query) }, etag),
+    hideDashboardMention: (id: string) => call<void>("hideDashboardMention", { params: { id } }),
     startDashboardRefresh: () => call<RefreshStatus>("startDashboardRefresh"),
     getDashboardRefresh: (id: RefreshId) => call<RefreshStatus>("getDashboardRefresh", { params: { id } }),
     cancelDashboardRefresh: (id: RefreshId) =>

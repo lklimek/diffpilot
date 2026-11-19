@@ -49,7 +49,7 @@ const emit = (status: RefreshStatus) =>
 describe("useDashboardPage", () => {
   it("loads the summary and all items; the list opens with every kind on", async () => {
     const { result } = renderPage();
-    await waitFor(() => expect(result.current.allItems).toHaveLength(14));
+    await waitFor(() => expect(result.current.allItems).toHaveLength(13));
     expect(result.current.view).toMatchObject({ scanning: null, ranking: null, empty: false });
     expect(result.current.filter).toEqual(["pr", "issue", "todo"]);
     // A finished refresh has no stream.
@@ -164,7 +164,7 @@ describe("useDashboardPage", () => {
       http.get("/api/v1/dashboard", () => HttpResponse.json({ ...summary, latest_refresh: finished })),
     );
     emit(finished);
-    await waitFor(() => expect(result.current.notice).toBe("Ranking finished: 14 items judged."));
+    await waitFor(() => expect(result.current.notice).toBe("Ranking finished: 13 items judged."));
   });
 
   it("Rank again restarts a failed ranking", async () => {

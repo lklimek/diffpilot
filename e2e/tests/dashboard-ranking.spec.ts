@@ -48,7 +48,7 @@ test("a review analysis running first: the ranking waits for it, then ranks", as
   const { status } = await api(page, "POST", `/api/v1/analyses/${analysis}/cancel`);
   expect(status).toBe(200);
   const done = await waitForRefresh(page, ranked);
-  expect(done.judged).toBe(20);
+  expect(done.judged).toBe(19);
   await expect(page.getByText("Waiting for the review analysis to finish.")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: /^Not judged yet/ })).toHaveCount(0);
 });

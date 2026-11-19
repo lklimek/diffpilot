@@ -10,6 +10,7 @@ import { RefreshError } from "../../components/dashboard/refresh-error/RefreshEr
 import { Headline, type ChartUnit } from "../../components/dashboard/headline/Headline";
 import { WorkList } from "../../components/dashboard/work-list/WorkList";
 import { ExcludedItems } from "../../components/dashboard/excluded-items/ExcludedItems";
+import { Mentions } from "../../components/dashboard/mentions/Mentions";
 import { EmptyWork } from "../../components/dashboard/work-list/EmptyWork";
 import { SidePanel } from "../../components/dashboard/side-panel/SidePanel";
 import { WaitingOnOthers } from "../../components/dashboard/waiting-on-others/WaitingOnOthers";
@@ -21,6 +22,7 @@ import { KeyboardHelp } from "../../components/dashboard/keyboard-help/KeyboardH
 import { clockText } from "../../components/format/time";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
+import { Tooltip } from "../../components/tooltip/Tooltip";
 import {
   chartPoints,
   dailySeries,
@@ -51,7 +53,7 @@ export function DashboardScreen() {
   useDashboardTabStatus(summary?.latest_refresh);
   // The shell (layout route) shows My work's count, this page's help and its refresh control.
   const { setCount, setHelp } = useShellSlots();
-  const count = snapshot?.item_counts.total ?? null;
+  const count = snapshot ? (summary?.mentions ?? []).filter((m) => !m.is_bot).length : null;
   useEffect(() => setCount(count), [count, setCount]);
   const signedIn = user !== null;
   useEffect(() => {
@@ -138,12 +140,34 @@ export function DashboardScreen() {
           staleNote={stale && `From the ${stale} snapshot.`}
         />
       )}
+      <Mentions
+        items={summary.mentions ?? []}
+        coverage={summary.mention_coverage}
+        withBots={page.withBots}
+        onWithBotsChange={page.setWithBots}
+        onHide={(id) => page.hideMention.mutate(id)}
+        hidingIds={page.hideMention.pendingIds}
+        expanded={page.mentionsExpanded}
+        onExpandedChange={page.setMentionsExpanded}
+        now={now}
+      />
+      {page.hideMention.isError && (
+        <StatusMessage kind="error">
+          Could not hide this mention. Try again. {errorText(page.hideMention.error)}{" "}
+          <Tooltip tip="Dismiss this error message">
+            <button type="button" className="underline" onClick={page.hideMention.dismissError}>
+              Dismiss
+            </button>
+          </Tooltip>
+        </StatusMessage>
+      )}
       {snapshot && view.empty && (
         <EmptyWork
           checkedAt={snapshot.scanned_at}
           checked={snapshot.checked}
           excluded={excluded}
           awaiting={snapshot.awaiting.length}
+          hasMentions={(summary.mentions ?? []).length > 0}
           reviewStartHref={REVIEW_START_PATH}
           onNavigate={go}
           now={now}

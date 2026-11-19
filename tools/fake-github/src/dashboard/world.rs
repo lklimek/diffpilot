@@ -284,6 +284,43 @@ fn normalise(
         }
         object.entry(key).or_insert(value);
     }
+    let base = format!("https://github.com/{nwo}/{path}/{number}");
+    for (connection, prefix) in [
+        ("comments", "issuecomment-"),
+        ("reviews", "pullrequestreview-"),
+    ] {
+        if let Some(posts) = object
+            .get_mut(connection)
+            .and_then(|v| v["nodes"].as_array_mut())
+        {
+            for (index, post) in posts.iter_mut().enumerate() {
+                if let Some(post) = post.as_object_mut() {
+                    post.entry("url")
+                        .or_insert_with(|| json!(format!("{base}#{prefix}{}", index + 1)));
+                    post.entry("body").or_insert_with(|| json!(""));
+                }
+            }
+        }
+    }
+    if let Some(threads) = object
+        .get_mut("reviewThreads")
+        .and_then(|v| v["nodes"].as_array_mut())
+    {
+        for (thread_index, thread) in threads.iter_mut().enumerate() {
+            if let Some(posts) = thread["comments"]["nodes"].as_array_mut() {
+                for (index, post) in posts.iter_mut().enumerate() {
+                    if let Some(post) = post.as_object_mut() {
+                        post.entry("url").or_insert_with(|| {
+                            json!(format!(
+                                "{base}#discussion_r{}",
+                                thread_index * 1000 + index + 1
+                            ))
+                        });
+                    }
+                }
+            }
+        }
+    }
     object.insert("repository".to_owned(), repository.clone());
     if typename == "PullRequest" {
         object.insert("baseRepository".to_owned(), repository.clone());

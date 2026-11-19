@@ -59,10 +59,10 @@ test("sign in → My work → Refresh → progress → provisional list → rank
   await expect(page).toHaveTitle("diffpilot My work: busy", { timeout: 30_000 });
 
   // The scan is stored: every item is provisional ("Not judged yet") until the first judged batch lands.
-  // 12 pull requests (the ownership policy keeps PLAT-1203 and PLAT-1199, directed at alice), 6 issues, 2 TODOs;
+  // 12 pull requests (the ownership policy keeps PLAT-1203 and PLAT-1199, directed at alice), 5 issues, 2 TODOs;
   // the list opens with every kind shown.
-  const banner = page.getByText(/^Ranking with the LLM: \d+ of 20 items judged\.$/);
-  await expect(workList(page).getByRole("heading", { name: /^Not judged yet.*·\s*20$/ })).toBeVisible({
+  const banner = page.getByText(/^Ranking with the LLM: \d+ of 19 items judged\.$/);
+  await expect(workList(page).getByRole("heading", { name: /^Not judged yet.*·\s*19$/ })).toBeVisible({
     timeout: 90_000,
   });
   expect((await groupIds(page, "Not judged yet")).slice(0, 3)).toEqual(["PLAT-1203", "WUI-320", "NC-482"]);
@@ -72,13 +72,16 @@ test("sign in → My work → Refresh → progress → provisional list → rank
   await screens(page, "dashboard-provisional");
 
   const done = await waitForRefresh(page, ranked, 150_000);
-  expect([done.judged, done.reused]).toEqual([20, 0]);
+  expect([done.judged, done.reused]).toEqual([19, 0]);
+  // Mention-only WUI-305 is a quick reply outside the ranking.
+  await page.getByRole("region", { name: "Mentions" }).getByRole("button", { name: /^Mentions/ }).click();
+  await expect(page.getByRole("link", { name: "Open mention on acme/wallet-ui#305 on GitHub" })).toBeVisible();
   await expect(banner).toHaveCount(0);
   await expect(page).toHaveTitle("diffpilot My work: ready");
   await expect(page.getByRole("heading", { name: /^Not judged yet/ })).toHaveCount(0);
   expect(await groupIds(page, "P1")).toEqual(["PLAT-1203", "WUI-320", "NC-482"]);
   expect((await groupIds(page, "P2"))[0]).toBe("WUI-311");
-  await expect(page.getByText(/^Refreshed manually at \d\d:\d\d · .* · judged 20 · reused 0$/)).toBeVisible();
+  await expect(page.getByText(/^Refreshed manually at \d\d:\d\d · .* · judged 19 · reused 0$/)).toBeVisible();
   await checkScreen(page);
   await screens(page, "dashboard-ranked");
 });

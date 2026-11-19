@@ -35,7 +35,7 @@ describe("ScanProgress", () => {
 describe("RankingBanner", () => {
   it("counts judged items while the LLM ranks", () => {
     render(<RankingBanner ranking={RANKING.ranking!} scannedAt={snapshotAt} onRetry={() => {}} now={NOW} />);
-    expect(screen.getByRole("status")).toHaveTextContent("Ranking with the LLM: 10 of 14 items judged.");
+    expect(screen.getByRole("status")).toHaveTextContent("Ranking with the LLM: 10 of 13 items judged.");
   });
 
   it("waits for a review analysis that holds the LLM", () => {

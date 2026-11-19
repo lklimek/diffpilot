@@ -141,6 +141,8 @@ fn todo(title: &str) -> StoredTodo {
 
 fn snapshot(prs: Vec<StoredPr>, issues: Vec<StoredIssue>, todos: Vec<StoredTodo>) -> Snapshot {
     Snapshot {
+        mentions: Vec::new(),
+        mention_coverage: Default::default(),
         version: SNAPSHOT_VERSION,
         own_login: "alice".to_owned(),
         settings: DashboardSettings {
