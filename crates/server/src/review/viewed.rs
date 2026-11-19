@@ -51,6 +51,9 @@ pub enum ViewedError {
     /// GitHub did not return the pull request.
     #[error("GitHub did not return the pull request")]
     MissingPullRequest,
+    /// The pull request's head could not be read before the change; nothing was sent.
+    #[error("the pull request could not be read from GitHub")]
+    HeadUnread(#[source] GraphqlError),
     /// Another Viewed write of the user on this analysis is still running.
     #[error("another Viewed change is still being saved")]
     Busy,
@@ -67,7 +70,9 @@ impl ViewedError {
     pub fn unauthorized(&self) -> bool {
         matches!(
             self,
-            Self::Github(GraphqlError::Unauthorized) | Self::Refused(GraphqlError::Unauthorized)
+            Self::Github(GraphqlError::Unauthorized)
+                | Self::Refused(GraphqlError::Unauthorized)
+                | Self::HeadUnread(GraphqlError::Unauthorized)
         )
     }
 }
@@ -215,7 +220,7 @@ async fn write(
     let config = &state.config.github;
     let pull = match review::pull_request_head(config, token, &pr_of(summary)).await {
         Ok(pull) => pull,
-        Err(PendingReviewError::Graphql(error)) => return Err(classify(error)),
+        Err(PendingReviewError::Graphql(error)) => return Err(ViewedError::HeadUnread(error)),
         Err(_) => return Err(ViewedError::MissingPullRequest),
     };
     if pull.head_oid != summary.pr.head_sha.0 {

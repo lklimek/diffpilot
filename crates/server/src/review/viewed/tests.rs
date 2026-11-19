@@ -372,3 +372,22 @@ async fn a_read_without_a_sign_in_asks_to_sign_in() {
         "{read:?}"
     );
 }
+
+/// A failed read of the pull request's head comes before the mutation: nothing was sent, so it is a read failure
+/// with the mark unchanged, never "did not confirm the change".
+#[tokio::test]
+async fn a_failed_head_read_is_not_a_mutation_outcome() {
+    let f = fixture().await;
+    f.mock(
+        json!({"query": crate::github::review::PULL_REQUEST_HEAD}),
+        ResponseTemplate::new(502),
+        1,
+    )
+    .await;
+    let unread = set(&f.state, "u1", &f.summary, CLIENT, true).await;
+    assert!(
+        matches!(unread, Err(ViewedError::HeadUnread(_))),
+        "{unread:?}"
+    );
+    assert!(mutations(&f.graphql_bodies().await).is_empty());
+}
