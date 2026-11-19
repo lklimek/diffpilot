@@ -1,8 +1,9 @@
 import type { UseQueryResult } from "@tanstack/react-query";
-import { useState, type RefObject } from "react";
+import { useState, type ReactNode, type RefObject } from "react";
 import type {
   AnalysisId,
   Annotation,
+  AskAnchor,
   AskQuestion,
   AnnotationId,
   BlockRef,
@@ -16,6 +17,7 @@ import type {
   Tour,
 } from "../../api/generated/types";
 import {
+  useAskAnchored,
   useAskQuestion,
   useFeedback,
   useDeleteFeedback,
@@ -23,8 +25,8 @@ import {
   useQuestions,
   type useCommentActions,
 } from "../../api/queries";
-import { AskForm } from "../../components/ask/AskForm";
-import { AskThread, type AskScope } from "../../components/ask/AskThread";
+import { AskForm, stepSubject, type AskSubject } from "../../components/ask/AskForm";
+import { AskThread, type AskFilter, type AskScope } from "../../components/ask/AskThread";
 import {
   CommentComposer,
   type CommentDrafts,
@@ -34,7 +36,12 @@ import { commentPlacement, isChangedLine } from "../../components/comment/placem
 import type { QuestionPlace } from "../../components/questions/QuestionsBlock";
 import { FeedbackButtons } from "../../components/feedback/FeedbackButtons";
 import { githubLineUrl } from "../../components/github/links";
-import { Inspector, type InspectorProps } from "../../components/inspector/Inspector";
+import {
+  Inspector,
+  type InspectorBack,
+  type InspectorPanel,
+  type InspectorProps,
+} from "../../components/inspector/Inspector";
 import type { SectionControl } from "../../components/inspector/sectionState";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { DiffCode, errorText } from "./code";
@@ -90,6 +97,24 @@ interface InspectorPaneProps {
   /** Draft text for the comment composer ("Use as review comment"); `onCommentPrefilled` once it is in. */
   commentPrefill: { text: string } | null;
   onCommentPrefilled: () => void;
+  /** Where any question was asked (step or lines), for its link in the conversation. */
+  placeOfQuestion?: (question: AskQuestion) => QuestionPlace | null;
+  /** The Files view: its own panel and Ask subject instead of the block's (the block then names a narrowed step). */
+  files?: FilesInspector;
+}
+
+/** What the Files view shows in the Inspector and its dock. */
+export interface FilesInspector {
+  /** The file, hunk or selection panel; none while a step is narrowed (the block's step panel shows). */
+  panel?: InspectorPanel;
+  back?: InspectorBack;
+  ask: AskSubject | null;
+  askFilters: AskFilter[];
+  isCurrent: (question: AskQuestion) => boolean;
+  /** The step feedback rates; null with the reason feedback is not offered here. */
+  feedback: { target: FeedbackTarget; subject: string } | { none: string };
+  /** Classic diff of the hunk or selection (section of the panel). */
+  diff?: ReactNode;
 }
 
 /** GitHub link to a line at the analysed commit of its side (offered only outside the PR diff). */
@@ -105,42 +130,57 @@ export function InspectorPane(props: InspectorPaneProps) {
   const { analysisId, tour, block, step, annotationId, pending, comments, commentLine } = props;
   const questions = useQuestions(analysisId);
   const ask = useAskQuestion(analysisId);
+  const askAnchored = useAskAnchored(analysisId);
+  const files = props.files;
   const feedback = useFeedback(analysisId);
   const postFeedback = usePostFeedback(analysisId);
   const deleteFeedback = useDeleteFeedback(analysisId);
   const annotation = step?.llm.annotations.find((a) => a.id === annotationId);
   const [askScope, setAskScope] = useState<AskScope>("conversation");
 
-  const onAsk = (stepId: StepId, text: string) => ask.mutateAsync({ step: stepId, text });
+  // A whole step goes to its step route; lines, with or without a step, to the anchored route (R14).
+  const onAsk = (anchor: AskAnchor, text: string) =>
+    anchor.kind === "step" && anchor.lines === null
+      ? ask.mutateAsync({ step: anchor.step_id, text })
+      : askAnchored.mutateAsync({ anchor, text });
+  const askAgain = (stepId: StepId, text: string) => ask.mutateAsync({ step: stepId, text });
   // Feedback on a plain line only where the server takes it: a changed line of the diff on its side.
   const line =
     commentLine && isChangedLine(commentLine.lines, commentLine.target) ? commentLine.target : null;
-  const target: FeedbackTarget | null = annotation
-    ? { target: "annotation", annotation_id: annotation.id }
-    : line
-      ? { target: "line", path: line.path, side: line.side, line: line.line }
-      : step
-        ? { target: "step", step_id: step.id }
-        : null;
+  const target: FeedbackTarget | null = files
+    ? "target" in files.feedback && !annotation
+      ? files.feedback.target
+      : annotation
+        ? { target: "annotation", annotation_id: annotation.id }
+        : null
+    : annotation
+      ? { target: "annotation", annotation_id: annotation.id }
+      : line
+        ? { target: "line", path: line.path, side: line.side, line: line.line }
+        : step
+          ? { target: "step", step_id: step.id }
+          : null;
 
-  const diff = step && (
-    <DiffCode
-      analysisId={analysisId}
-      comments={{
-        comments: pending.data?.comments ?? [],
-        onEditComment: comments.edit,
-        onDeleteComment: comments.remove,
-        onAskLine: props.onAskLine,
-      }}
-      query={
-        annotation
-          ? { ...stepQuery(step), from: annotation.range.start_line, to: annotation.range.end_line }
-          : stepQuery(step)
-      }
-    />
-  );
+  const diff =
+    files?.diff ??
+    (step && (
+      <DiffCode
+        analysisId={analysisId}
+        comments={{
+          comments: pending.data?.comments ?? [],
+          onEditComment: comments.edit,
+          onDeleteComment: comments.remove,
+          onAskLine: props.onAskLine,
+        }}
+        query={
+          annotation
+            ? { ...stepQuery(step), from: annotation.range.start_line, to: annotation.range.end_line }
+            : stepQuery(step)
+        }
+      />
+    ));
   const answers =
-    step &&
+    (step || files) &&
     (questions.isError ? (
       <StatusMessage kind="error">Cannot read the questions: {errorText(questions.error)}</StatusMessage>
     ) : questions.isPending ? (
@@ -148,13 +188,16 @@ export function InspectorPane(props: InspectorPaneProps) {
     ) : questions.data.length === 0 ? null : (
       <AskThread
         questions={questions.data}
-        stepId={step.id}
+        stepId={files ? undefined : step?.id}
         scope={askScope}
         onScope={setAskScope}
         placeOf={props.placeOf}
+        placeOfQuestion={props.placeOfQuestion}
+        filters={files?.askFilters}
+        isCurrent={files?.isCurrent}
         onEvidence={props.onEvidence}
-        currentFile={step.facts.file}
-        onAskAgain={onAsk}
+        currentFile={step?.facts.file}
+        onAskAgain={askAgain}
         onUseAsComment={props.onAnswerAsComment}
       />
     ));
@@ -195,9 +238,11 @@ export function InspectorPane(props: InspectorPaneProps) {
       sections={props.sections}
       onFlagAsComment={props.onFlagAsComment}
       dockHeight={props.askHeight}
-      onDockHeight={step ? props.onAskHeight : undefined}
+      onDockHeight={step || files ? props.onAskHeight : undefined}
       tour={tour}
       block={block}
+      panel={files?.panel}
+      back={files?.back}
       annotationId={annotationId}
       flash={props.flash}
       onFlashed={props.onFlashed}
@@ -211,7 +256,13 @@ export function InspectorPane(props: InspectorPaneProps) {
           {/* While a comment is written its composer leads the dock, so its line reference is in view. */}
           {commentLine && comment}
           <AskForm
-            step={step ? { id: step.id, label: `Step ${step.number} · ${step.llm.title}` } : null}
+            subject={
+              files
+                ? files.ask
+                : step
+                  ? stepSubject(step.id, `Step ${step.number} · ${step.llm.title}`)
+                  : null
+            }
             onAsk={onAsk}
             inputRef={props.askRef}
             insert={props.askInsert}
@@ -224,24 +275,37 @@ export function InspectorPane(props: InspectorPaneProps) {
                 : null
             }
             count={
-              step && questions.data ? questions.data.filter((q) => q.step_id === step.id).length : undefined
+              files
+                ? questions.data?.filter(files.isCurrent).length
+                : step && questions.data
+                  ? questions.data.filter((q) => q.step_id === step.id).length
+                  : undefined
             }
           />
-          <FeedbackButtons
-            target={target}
-            subject={
-              annotation
-                ? "this annotation"
-                : line
-                  ? `line ${line.line}`
-                  : step
-                    ? `step ${step.number}`
-                    : "this block"
-            }
-            feedback={feedback.data ?? []}
-            onSubmit={postFeedback.mutateAsync}
-            onRemove={deleteFeedback.mutateAsync}
-          />
+          {files && "none" in files.feedback && !annotation ? (
+            <section aria-label="Feedback">
+              <h3 className="m-0 text-[10.5px] font-bold tracking-wide text-muted uppercase">Feedback</h3>
+              <p className="text-[12.5px] text-muted">{files.feedback.none}</p>
+            </section>
+          ) : (
+            <FeedbackButtons
+              target={target}
+              subject={
+                annotation
+                  ? "this annotation"
+                  : files && "subject" in files.feedback
+                    ? files.feedback.subject
+                    : line
+                      ? `line ${line.line}`
+                      : step
+                        ? `step ${step.number}`
+                        : "this block"
+              }
+              feedback={feedback.data ?? []}
+              onSubmit={postFeedback.mutateAsync}
+              onRemove={deleteFeedback.mutateAsync}
+            />
+          )}
           {feedback.isError && (
             <p role="alert" className="text-[12px] text-high">
               Stored feedback could not be read: {errorText(feedback.error)}

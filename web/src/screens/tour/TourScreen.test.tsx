@@ -253,18 +253,18 @@ describe("Tour screen (brief §4.3)", () => {
   it("returns to the last viewed block with the stored ticks (interrupted review)", async () => {
     await open("resume");
     expect(blockHeading()).toHaveTextContent("5 Retry allowed?");
-    expect(topBar()).toHaveTextContent("flows reviewed 0 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 0 / 5");
   });
 
   it("x ticks the current step; a flow with every step ticked counts in the top bar", async () => {
     await open("resume");
     await openStep("2", "2");
     await act(() => user().keyboard("x"));
-    expect(topBar()).toHaveTextContent("flows reviewed 1 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 1 / 5");
     expect(within(nav()).getByRole("button", { name: /^Flow 2: .*, reviewed$/ })).toBeInTheDocument();
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f2.1", "f2.2"]));
     await user().click(within(main()).getByRole("button", { name: /Mark reviewed/ }));
-    expect(topBar()).toHaveTextContent("flows reviewed 0 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 0 / 5");
   });
 
   it("Next and j tick the current step and move on; Previous and the flow introduction never tick", async () => {
@@ -327,7 +327,7 @@ describe("Tour screen (brief §4.3)", () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 3:/ }));
     await user().click(within(main()).getByRole("button", { name: /Mark flow reviewed/ }));
-    expect(topBar()).toHaveTextContent("flows reviewed 1 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 1 / 5");
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f3.1", "f3.2"]));
   });
 
