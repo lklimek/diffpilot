@@ -225,7 +225,8 @@ PR risk.
 Rules for every screen:
 1. Use the full page width (the owner works on a 21:9 monitor); no narrow centred column. Light and dark
    themes follow the system setting, as in the mockups.
-2. The PR number in the top bar opens the PR on GitHub in a new tab.
+2. In the review views the breadcrumb's repository and PR number open the PR context; its GitHub icon opens the
+   PR on GitHub in a new tab.
 3. Every label (risk level, classification, provenance badge, status, button, column header) has a tooltip
    explaining it, except the code-view highlight label, whose explanation is the remark popover.
 4. The legend (how code is drawn, §4.3) is not on the page; it is in the `?` help together with the
@@ -379,8 +380,8 @@ header shows the file's GitHub Viewed state as a read-only chip. Next ticks the
 current step as it leaves it.
 
 **Keyboard**: `j` / `k` next / previous block (introduction or step; `j` and the Next button also tick the current step, never untick, `k` never ticks), `n` / `p` next / previous flow, `x`
-tick the current step, `d` show / hide old code, `c` comment on the current line, `a` ask, `?` help, `Esc`
-close.
+tick the current step, `d` show / hide old code, `c` comment on the current line, `a` ask, `s` switch to the
+Files view at the current place, `?` help, `Esc` close.
 
 **Three hard cases the mockup shows as switchable states:** (1) a confident but wrong HIGH, marked wrong /
 overrated; (2) a defect in a plain changed line without annotation, commented by the reviewer and recorded as
