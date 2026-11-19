@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { expectAccessible, expectTooltips } from "./screens-support";
 import { ANALYSIS_ID, expectTrustWording } from "./support";
 
@@ -83,7 +84,6 @@ test.describe("stage and liveness", () => {
   test("the stage line follows the server: planning, PR context, flow 1 with its title; time is real", async ({
     page,
   }) => {
-    await page.clock.install();
     await open(page, "first-flow");
     await expect(page.getByText("Planning flows…")).toBeVisible();
     await expect(page.getByText("Reading the PR context.")).toBeVisible();
@@ -99,7 +99,6 @@ test.describe("stage and liveness", () => {
   });
 
   test("a long flow with heartbeats stays Working", async ({ page }) => {
-    await page.clock.install();
     await open(page, "running");
     await expect(page.getByText(/^Analysing flow 3 of 5: /)).toBeVisible();
     for (let i = 0; i < 41; i += 1) await page.clock.runFor(15_000);
@@ -118,7 +117,6 @@ test.describe("stage and liveness", () => {
   });
 
   test("no heartbeat: the notice says so with the real time and the indicator stops", async ({ page }) => {
-    await page.clock.install();
     await open(page, "signal-lost");
     await expect(indicator(page)).toBeVisible();
     await page.clock.runFor(60_000);
@@ -145,7 +143,6 @@ test.describe("stage and liveness", () => {
       const dir = process.env.SCREENSHOT_DIR;
       test.skip(!dir, "SCREENSHOT_DIR not set");
       const page = await browser.newPage({ colorScheme, viewport: { width: 1440, height: 900 } });
-      await page.clock.install();
       const shoot = async (scenario: string, name: string, wait: number, expected: RegExp) => {
         await page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=${scenario}`);
         await expect(
@@ -165,7 +162,6 @@ test.describe("stage and liveness", () => {
 });
 
 test("plan parts retain the whole-run clock, counters and estimate", async ({ page }) => {
-  await page.clock.install();
   await open(page, "plan-parts");
   await expect(page.getByText("Planning the review, part 6 of 23.")).toBeVisible();
   const stages = page.getByRole("list", { name: "Analysis stages" });
@@ -197,7 +193,6 @@ for (const [scenario, text] of [
   ["estimate-none", "No estimate yet"],
 ] as const) {
   test(`waiting estimate: ${scenario}`, async ({ page }) => {
-    await page.clock.install();
     await open(page, scenario);
     await expect(page.getByText(text, { exact: false })).toBeVisible();
     if (scenario === "estimate-none") await expect(bar(page)).not.toHaveAttribute("aria-valuenow", /.*/);
@@ -205,7 +200,6 @@ for (const [scenario, text] of [
 }
 
 test("paused run shows the resume time instead of an ETA", async ({ page }) => {
-  await page.clock.install();
   await open(page, "estimate-paused");
   await expect(page.getByText(/^Paused until/)).toBeVisible();
   await expect(page.getByText(/About .* left|No estimate yet/)).toHaveCount(0);

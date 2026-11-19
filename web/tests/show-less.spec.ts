@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { ANALYSIS_ID } from "./support";
 
 for (const width of [1280, 2560]) {

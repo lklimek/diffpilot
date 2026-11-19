@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { ANALYSIS_ID, expectTrustWording, openTour } from "./support";
 
 const heading = (page: import("@playwright/test").Page) =>

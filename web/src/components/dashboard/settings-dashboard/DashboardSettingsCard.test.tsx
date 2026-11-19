@@ -136,6 +136,8 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Add to linked logins" }));
     expect(screen.getByRole("list", { name: "Linked logins" })).toHaveTextContent("alice-work");
     expect(field).toHaveValue("");
+    // A 24 px target (WCAG 2.5.8), not just the × glyph.
+    expect(screen.getByRole("button", { name: "Remove alice-ci" }).className).toMatch(/min-h-6.*min-w-6/);
     await userEvent.click(screen.getByRole("button", { name: "Remove alice-ci" }));
     expect(screen.getByRole("list", { name: "Linked logins" })).not.toHaveTextContent("alice-ci");
   });

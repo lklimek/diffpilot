@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { ANALYSIS_ID } from "./support";
 
 // A 27-step flow with branches, joins, a back edge, skip edges and detached chains, on a 21:9 screen: neighbours

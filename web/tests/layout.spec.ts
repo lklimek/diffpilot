@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { ANALYSIS_ID } from "./support";
 
 // Regression: the review page overflowed the window; wheel over the top bar or Space/PageDown scrolled the whole
