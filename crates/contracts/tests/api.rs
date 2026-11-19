@@ -503,8 +503,24 @@ fn ask_anchors_and_files_wire_formats() {
                     side: LineSide::Head,
                     range: None,
                 },
+                parent_id: None,
             }),
             json!({"text": "q", "anchor": {"kind": "lines", "path": "src/a.rs", "side": "head", "range": null}}),
+        ),
+        (
+            serde_json::to_value(AskAnchor::Flow {
+                flow_id: FlowId("f2".to_owned()),
+            }),
+            json!({"kind": "flow", "flow_id": "f2"}),
+        ),
+        (serde_json::to_value(AskAnchor::Pr), json!({"kind": "pr"})),
+        (
+            serde_json::to_value(AnchoredAskRequest {
+                text: "and then?".to_owned(),
+                anchor: AskAnchor::Pr,
+                parent_id: Some(QuestionId(uuid::Uuid::nil())),
+            }),
+            json!({"text": "and then?", "anchor": {"kind": "pr"}, "parent_id": "00000000-0000-0000-0000-000000000000"}),
         ),
         (
             serde_json::to_value(PartOwner::Unexplained { reason: None }),
@@ -584,6 +600,7 @@ fn sse_event_name_is_the_tag() {
             lines: None,
         },
         step_id: Some(StepId("f1.1".to_owned())),
+        parent_id: None,
         text: "q".to_owned(),
         state: AskState::Answered,
         answer: Some(AskOutput {
@@ -620,6 +637,7 @@ fn ask_question_resumes_at_only_while_waiting_for_the_usage_limit() {
             lines: None,
         },
         step_id: Some(StepId("f1.1".to_owned())),
+        parent_id: None,
         text: "q".to_owned(),
         state: AskState::Pending,
         answer: None,
@@ -629,6 +647,10 @@ fn ask_question_resumes_at_only_while_waiting_for_the_usage_limit() {
     };
     let json = serde_json::to_value(&question).expect("serialises");
     assert!(json.get("resumes_at").is_none(), "{json}");
+    assert!(
+        json.get("parent_id").is_none(),
+        "a first question has no parent: {json}"
+    );
     assert_eq!(
         serde_json::from_value::<AskQuestion>(json).expect("deserialises"),
         question

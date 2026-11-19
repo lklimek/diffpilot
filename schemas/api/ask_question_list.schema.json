@@ -33,10 +33,21 @@
           "$ref": "#/$defs/AskAnchor"
         },
         "step_id": {
-          "description": "The step of a step anchor; absent for a lines anchor.",
+          "description": "The step of a step anchor; absent for other anchors.",
           "anyOf": [
             {
               "$ref": "#/$defs/StepId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent_id": {
+          "description": "A follow-up: the first question of its thread; absent for a first question.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuestionId"
             },
             {
               "type": "null"
@@ -161,6 +172,37 @@
             "path",
             "side"
           ]
+        },
+        {
+          "description": "An analysed flow as a whole.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "flow"
+            },
+            "flow_id": {
+              "description": "The flow.",
+              "$ref": "#/$defs/FlowId"
+            }
+          },
+          "required": [
+            "kind",
+            "flow_id"
+          ]
+        },
+        {
+          "description": "The whole pull request.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pr"
+            }
+          },
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -204,6 +246,11 @@
           "const": "base"
         }
       ]
+    },
+    "FlowId": {
+      "description": "Identifier of a flow, assigned by the `plan` job: `f1`, `f2`, ….",
+      "type": "string",
+      "pattern": "^f[0-9]+$"
     },
     "AskState": {
       "description": "State of a question.",

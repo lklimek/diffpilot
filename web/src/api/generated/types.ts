@@ -276,9 +276,14 @@ export type AnchoredAskRequest = {
  */
 text: string,
 /**
- * What the question is about.
+ * What the question is about; a follow-up repeats its thread's anchor.
  */
-anchor: AskAnchor, };
+anchor: AskAnchor,
+/**
+ * A follow-up: a question of the thread it continues (the thread's first question is stored); absent for a new
+ * thread.
+ */
+parent_id?: QuestionId, };
 
 /**
  * An annotation anchored to lines of a step (same side as the step); its range is a highlight.
@@ -386,7 +391,11 @@ side: LineSide,
 /**
  * The lines, at most `AskAnchor::MAX_LINES`; null for the whole file.
  */
-range: LineRange | null, };
+range: LineRange | null, } | { "kind": "flow",
+/**
+ * The flow.
+ */
+flow_id: FlowId, } | { "kind": "pr" };
 
 /**
  * An LLM answer to a question about a step.
@@ -422,9 +431,13 @@ mine?: boolean,
  */
 anchor: AskAnchor,
 /**
- * The step of a step anchor; absent for a lines anchor.
+ * The step of a step anchor; absent for other anchors.
  */
 step_id?: StepId,
+/**
+ * A follow-up: the first question of its thread; absent for a first question.
+ */
+parent_id?: QuestionId,
 /**
  * The question.
  */

@@ -19,6 +19,7 @@ use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::files::HunkPart;
 use contracts::api::pr::PrSummary;
+use contracts::api::questions::AskState;
 use contracts::api::tour::GithubThread;
 use contracts::common::{Classification, FragmentKind, LineRange, LineSide, LlmLanguage};
 use contracts::ids::{FlowId, HunkId, StepId};
@@ -33,6 +34,8 @@ const PR_CONTEXT: &str = include_str!("../../../prompts/pr_context.md");
 const ANALYSE_FLOW: &str = include_str!("../../../prompts/analyse_flow.md");
 const ASK: &str = include_str!("../../../prompts/ask.md");
 const ASK_LINES: &str = include_str!("../../../prompts/ask_lines.md");
+const ASK_FLOW: &str = include_str!("../../../prompts/ask_flow.md");
+const ASK_PR: &str = include_str!("../../../prompts/ask_pr.md");
 const REPAIR: &str = include_str!("../../../prompts/repair.md");
 const CONTEXT_PACK: &str = include_str!("../../../prompts/context_pack.md");
 
@@ -70,6 +73,15 @@ const MAX_QUESTION_CHARS: usize = 4_000;
 const MAX_ASK_DIFF_BYTES: usize = 32 * 1024;
 /// Line owners and overlapping steps quoted in an `ask` prompt about lines, at most (each).
 const MAX_ASK_FACTS_BYTES: usize = 16 * 1024;
+/// A flow quoted in an `ask` prompt about it, and the plan's flows and the PR context in one about the whole PR, at
+/// most (each).
+const MAX_ASK_CONTEXT_BYTES: usize = 32 * 1024;
+/// Earlier questions of a thread quoted in a follow-up's prompt, at most; the first question always stays.
+const MAX_ASK_THREAD_BYTES: usize = 32 * 1024;
+/// Latest follow-ups quoted after a thread's first question, at most.
+const MAX_THREAD_FOLLOW_UPS: usize = 6;
+/// Characters quoted per earlier answer of a thread, at most.
+const MAX_THREAD_ANSWER_CHARS: usize = 4_000;
 const MAX_ISSUE_CHARS: usize = 1_000;
 const MAX_LISTED_PATHS: usize = 50;
 const MAX_LISTED_MOVES: usize = 100;
@@ -232,6 +244,52 @@ pub struct AskInput<'a> {
     pub lines: Option<LineRange>,
     /// The reviewer's question.
     pub question: &'a str,
+    /// Earlier questions of its thread, oldest first; empty for a first question.
+    pub thread: &'a [ThreadQuestion<'a>],
+    /// Project profile.
+    pub profile: Profile<'a>,
+}
+
+/// An earlier question of a follow-up's thread with its answer, if any.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct ThreadQuestion<'a> {
+    /// The reviewer's question.
+    pub question: &'a str,
+    /// Its state when the follow-up was submitted.
+    pub state: AskState,
+    /// The answer text, once answered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<&'a str>,
+}
+
+/// Input of the `ask` prompt about an analysed flow as a whole.
+#[derive(Clone, Copy, Debug)]
+pub struct AskFlowInput<'a> {
+    /// Common context.
+    pub job: JobContext<'a>,
+    /// The flow's analysis.
+    pub flow: &'a FlowAnalysisOutput,
+    /// The reviewer's question.
+    pub question: &'a str,
+    /// Earlier questions of its thread, oldest first.
+    pub thread: &'a [ThreadQuestion<'a>],
+    /// Project profile.
+    pub profile: Profile<'a>,
+}
+
+/// Input of the `ask` prompt about the whole pull request.
+#[derive(Clone, Copy, Debug)]
+pub struct AskPrInput<'a> {
+    /// Common context.
+    pub job: JobContext<'a>,
+    /// The stored plan.
+    pub plan: Option<&'a PlanOutput>,
+    /// The stored PR context.
+    pub pr_context: Option<&'a PrContextOutput>,
+    /// The reviewer's question.
+    pub question: &'a str,
+    /// Earlier questions of its thread, oldest first.
+    pub thread: &'a [ThreadQuestion<'a>],
     /// Project profile.
     pub profile: Profile<'a>,
 }
@@ -307,6 +365,8 @@ pub struct AskLinesInput<'a> {
     pub steps: &'a [TouchedStep<'a>],
     /// The reviewer's question.
     pub question: &'a str,
+    /// Earlier questions of its thread, oldest first.
+    pub thread: &'a [ThreadQuestion<'a>],
     /// Project profile.
     pub profile: Profile<'a>,
 }
@@ -363,6 +423,13 @@ pub enum Asked<'a> {
         /// The flow analysis containing the step.
         flow: &'a FlowAnalysisOutput,
     },
+    /// An analysed flow as a whole, given in full.
+    Flow {
+        /// The flow analysis.
+        flow: &'a FlowAnalysisOutput,
+    },
+    /// The whole pull request: the pack's plan, PR context and flows are the context.
+    Pr,
     /// Lines without a single step, given with the steps overlapping them in full.
     Lines {
         /// The lines.
@@ -513,6 +580,7 @@ pub fn ask(input: &AskInput<'_>) -> Result<String, PromptError> {
             ("profile", &profile(input.profile)?),
             ("step", &data("step", &step)),
             ("question", &question),
+            ("thread", &thread_block(input.thread)?),
         ],
     )?;
     let prompt = frame("ask", input.job, &task)?;
@@ -569,10 +637,140 @@ pub fn ask_lines(input: &AskLinesInput<'_>) -> Result<String, PromptError> {
                 )?,
             ),
             ("question", &question),
+            ("thread", &thread_block(input.thread)?),
         ],
     )?;
     let prompt = frame("ask", input.job, &task)?;
     within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+/// The `ask` prompt about an analysed flow as a whole: its introduction and its steps in summary, with server ids.
+pub fn ask_flow(input: &AskFlowInput<'_>) -> Result<String, PromptError> {
+    let flow = input.flow;
+    let ids: Vec<String> = (1..=flow.steps.len())
+        .map(|number| format!("{}.{number}", flow.flow_id.0))
+        .collect();
+    let entry = AnalysedFlowEntry {
+        flow_id: &flow.flow_id,
+        introduction: &flow.introduction,
+        steps: flow
+            .steps
+            .iter()
+            .zip(&ids)
+            .map(|(step, id)| StepEntry::of(id, step))
+            .collect(),
+    };
+    let question = clipped_data("question", input.question, MAX_QUESTION_CHARS)?;
+    let task = fill(
+        ASK_FLOW,
+        &[
+            ("flow_id", &plain(&flow.flow_id.0)),
+            ("ask_rules", part("ask_rules")?),
+            ("lenses", part("lenses")?),
+            ("profile", &profile(input.profile)?),
+            (
+                "flow",
+                &json_block(
+                    "flow",
+                    &serde_json::to_string(&entry)?,
+                    MAX_ASK_CONTEXT_BYTES,
+                )?,
+            ),
+            ("question", &question),
+            ("thread", &thread_block(input.thread)?),
+        ],
+    )?;
+    let prompt = frame("ask", input.job, &task)?;
+    within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+/// The `ask` prompt about the whole pull request: the plan's flows and the PR context, each bounded.
+pub fn ask_pr(input: &AskPrInput<'_>) -> Result<String, PromptError> {
+    let flows = input
+        .plan
+        .map(|plan| {
+            plan.flows
+                .iter()
+                .map(|flow| serde_json::to_string(&FlowEntry::of(flow)))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let context = input
+        .pr_context
+        .map(serde_json::to_string)
+        .transpose()?
+        .unwrap_or_default();
+    let question = clipped_data("question", input.question, MAX_QUESTION_CHARS)?;
+    let task = fill(
+        ASK_PR,
+        &[
+            ("ask_rules", part("ask_rules")?),
+            ("lenses", part("lenses")?),
+            ("profile", &profile(input.profile)?),
+            (
+                "flows",
+                &lines_block("planned flows", flows, MAX_ASK_CONTEXT_BYTES)?,
+            ),
+            (
+                "context",
+                &json_block("PR context", &context, MAX_ASK_CONTEXT_BYTES)?,
+            ),
+            ("question", &question),
+            ("thread", &thread_block(input.thread)?),
+        ],
+    )?;
+    let prompt = frame("ask", input.job, &task)?;
+    within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+/// The earlier questions of a follow-up's thread with an introduction, or nothing for a first question: the first
+/// question, then the latest follow-ups that fit [`MAX_ASK_THREAD_BYTES`] (at most [`MAX_THREAD_FOLLOW_UPS`]), each
+/// clipped, with a note on the omitted ones.
+fn thread_block(thread: &[ThreadQuestion<'_>]) -> Result<String, PromptError> {
+    #[derive(Serialize)]
+    struct Entry {
+        question: String,
+        state: AskState,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        answer: Option<String>,
+    }
+    let entries = thread
+        .iter()
+        .map(|asked| {
+            serde_json::to_string(&Entry {
+                question: clip(asked.question, MAX_QUESTION_CHARS).0,
+                state: asked.state,
+                answer: asked
+                    .answer
+                    .map(|answer| clip(answer, MAX_THREAD_ANSWER_CHARS).0),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some((first, rest)) = entries.split_first() else {
+        return Ok(String::new());
+    };
+    let mut used = first.len();
+    let mut latest = Vec::new();
+    for entry in rest.iter().rev().take(MAX_THREAD_FOLLOW_UPS) {
+        if used + entry.len() > MAX_ASK_THREAD_BYTES {
+            break;
+        }
+        used += entry.len();
+        latest.push(entry.as_str());
+    }
+    let omitted = rest.len() - latest.len();
+    let mut content = format!("{first}\n");
+    for entry in latest.iter().rev() {
+        content.push_str(entry);
+        content.push('\n');
+    }
+    let mut out = format!("{}\n", part("thread")?);
+    out.push_str(&data("earlier questions of this thread", &content));
+    if omitted > 0 {
+        out.push_str(&omitted_note(omitted)?);
+    }
+    Ok(out)
 }
 
 fn side_label(side: LineSide) -> &'static str {
@@ -674,12 +872,16 @@ pub fn context_pack(input: &ContextPackInput<'_>) -> Result<String, PromptError>
     let mut blocks = String::new();
     let mut sections: Vec<(String, Vec<String>, usize, bool)> = Vec::new();
     if let Some(ask) = &input.ask {
-        let (asked, label, rest) = match ask.asked {
-            Asked::Step { step_id, flow } => asked_flow(step_id, flow)?,
-            Asked::Lines { lines, steps } => asked_lines(lines, steps)?,
+        let asked = match ask.asked {
+            Asked::Step { step_id, flow } => Some(asked_flow(step_id, flow)?),
+            Asked::Flow { flow } => Some(asked_whole_flow(flow)?),
+            Asked::Lines { lines, steps } => Some(asked_lines(lines, steps)?),
+            Asked::Pr => None,
         };
-        blocks.push_str(&asked);
-        sections.push((label, rest, PACK_ASK_FLOW_BYTES, true));
+        if let Some((asked, label, rest)) = asked {
+            blocks.push_str(&asked);
+            sections.push((label, rest, PACK_ASK_FLOW_BYTES, true));
+        }
         let earlier = ask
             .earlier
             .iter()
@@ -773,6 +975,39 @@ fn asked_lines(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let label = "steps overlapping the asked lines (full analysis)".to_owned();
+    Ok((asked, label, entries))
+}
+
+/// The asked flow's introduction (a data block), and the label and entries of its steps in full and the rest of its
+/// analysis.
+fn asked_whole_flow(
+    flow: &FlowAnalysisOutput,
+) -> Result<(String, String, Vec<String>), PromptError> {
+    let flow_id = plain(&flow.flow_id.0);
+    let introduction = serde_json::to_string(&AnalysedFlowEntry {
+        flow_id: &flow.flow_id,
+        introduction: &flow.introduction,
+        steps: Vec::new(),
+    })?;
+    let asked = data(
+        &format!("asked flow {flow_id} (introduction)"),
+        &introduction,
+    );
+    let mut entries = Vec::with_capacity(flow.steps.len() + 1);
+    for (at, step) in flow.steps.iter().enumerate() {
+        let step_id = format!("{}.{}", flow.flow_id.0, at + 1);
+        entries.push(serde_json::to_string(&AskedStep {
+            step_id: &step_id,
+            step,
+        })?);
+    }
+    entries.push(serde_json::to_string(&FlowRest {
+        edges: &flow.edges,
+        impact_refs: &flow.impact_refs,
+        pattern_repetitions: &flow.pattern_repetitions,
+        thread_statuses: &flow.thread_statuses,
+    })?);
+    let label = format!("steps and rest of the asked flow {flow_id}");
     Ok((asked, label, entries))
 }
 

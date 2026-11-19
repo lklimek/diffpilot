@@ -3,7 +3,7 @@
 use contracts::agent::ask::AskOutput;
 use contracts::api::questions::{AskAnchor, AskQuestion, AskState};
 use contracts::common::LineRange;
-use contracts::ids::{AnalysisId, JobId, QuestionId, StepId};
+use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId, StepId};
 use contracts::time::Timestamp;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -32,8 +32,10 @@ pub struct NewQuestion {
     pub id: QuestionId,
     /// The analysis.
     pub analysis_id: AnalysisId,
-    /// What the question is about (a step: its canonical Tour id).
+    /// What the question is about (a step: its canonical Tour id); a follow-up repeats its thread's anchor.
     pub anchor: AskAnchor,
+    /// A follow-up: the first question of its thread (same analysis and user, checked by the caller).
+    pub parent_id: Option<QuestionId>,
     /// Who asked.
     pub user_id: String,
     /// The question text (user input, stored as given).
@@ -99,7 +101,7 @@ pub enum QuestionUpdate {
 macro_rules! question_select {
     () => {
         "SELECT q.id, q.analysis_id, q.step_id, q.path, q.side, q.start_line, q.end_line, q.user_id, q.text, q.state, q.answer, q.failure, q.job_id,
-             q.created_at, q.answered_at, q.touched_steps, u.login AS asked_by,
+             q.created_at, q.answered_at, q.touched_steps, q.kind, q.flow_id, q.parent_id, u.login AS asked_by,
              CASE WHEN q.state = 'pending' THEN
                  CASE WHEN j.state = 'paused' AND j.resumes_at > ?1 THEN j.resumes_at
                       WHEN j.state = 'queued' AND c.paused_until > ?1 THEN c.paused_until END
@@ -125,6 +127,7 @@ fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
     let answer: Option<String> = row.try_get("answer")?;
     let job: Option<String> = row.try_get("job_id")?;
     let touched: Option<String> = row.try_get("touched_steps")?;
+    let parent: Option<String> = row.try_get("parent_id")?;
     let anchor = anchor_from_row(row)?;
     Ok(QuestionRecord {
         question: AskQuestion {
@@ -132,6 +135,9 @@ fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
             mine: None,
             id: parse_wire(&id, "questions.id")?,
             step_id: anchor.step_id().cloned(),
+            parent_id: parent
+                .map(|parent| parse_wire(&parent, "questions.parent_id"))
+                .transpose()?,
             anchor,
             text: row.try_get("text")?,
             state: parse_wire(&state, "questions.state")?,
@@ -153,7 +159,8 @@ fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
     })
 }
 
-/// The anchor columns of a question row (`CHECK`ed: exactly one of step and path; both line ends or none).
+/// The anchor columns of a question row (`CHECK`ed per `kind`: its step, path and side, or flow; lines only for a
+/// step or lines).
 fn anchor_from_row(row: &SqliteRow) -> Result<AskAnchor, DbError> {
     let start: Option<u32> = row.try_get("start_line")?;
     let end: Option<u32> = row.try_get("end_line")?;
@@ -161,35 +168,44 @@ fn anchor_from_row(row: &SqliteRow) -> Result<AskAnchor, DbError> {
         start_line,
         end_line,
     });
+    let kind: String = row.try_get("kind")?;
     let step: Option<String> = row.try_get("step_id")?;
-    if let Some(step) = step {
-        return Ok(AskAnchor::Step {
-            step_id: StepId(step),
-            lines,
-        });
-    }
     let path: Option<String> = row.try_get("path")?;
     let side: Option<String> = row.try_get("side")?;
-    match (path, side) {
-        (Some(path), Some(side)) => Ok(AskAnchor::Lines {
-            path,
-            side: parse_wire(&side, "questions.side")?,
-            range: lines,
+    let flow: Option<String> = row.try_get("flow_id")?;
+    let corrupt = |column| DbError::Corrupt { column };
+    match kind.as_str() {
+        "step" => Ok(AskAnchor::Step {
+            step_id: StepId(step.ok_or(corrupt("questions.step_id"))?),
+            lines,
         }),
-        _ => Err(DbError::Corrupt {
-            column: "questions.path",
+        "lines" => match (path, side) {
+            (Some(path), Some(side)) => Ok(AskAnchor::Lines {
+                path,
+                side: parse_wire(&side, "questions.side")?,
+                range: lines,
+            }),
+            _ => Err(corrupt("questions.path")),
+        },
+        "flow" => Ok(AskAnchor::Flow {
+            flow_id: FlowId(flow.ok_or(corrupt("questions.flow_id"))?),
         }),
+        "pr" => Ok(AskAnchor::Pr),
+        _ => Err(corrupt("questions.kind")),
     }
 }
 
-/// Anchor columns (step, path, side, start line, end line) of `anchor`.
-type AnchorColumns<'a> = (
-    Option<&'a str>,
-    Option<&'a str>,
-    Option<String>,
-    Option<u32>,
-    Option<u32>,
-);
+/// The anchor columns of a question.
+#[derive(Default)]
+struct AnchorColumns<'a> {
+    kind: &'static str,
+    step: Option<&'a str>,
+    path: Option<&'a str>,
+    side: Option<String>,
+    start: Option<u32>,
+    end: Option<u32>,
+    flow: Option<&'a str>,
+}
 
 fn anchor_columns(anchor: &AskAnchor) -> Result<AnchorColumns<'_>, DbError> {
     let ends = |lines: &Option<LineRange>| {
@@ -201,18 +217,34 @@ fn anchor_columns(anchor: &AskAnchor) -> Result<AnchorColumns<'_>, DbError> {
     Ok(match anchor {
         AskAnchor::Step { step_id, lines } => {
             let (start, end) = ends(lines);
-            (Some(step_id.0.as_str()), None, None, start, end)
+            AnchorColumns {
+                kind: "step",
+                step: Some(step_id.0.as_str()),
+                start,
+                end,
+                ..AnchorColumns::default()
+            }
         }
         AskAnchor::Lines { path, side, range } => {
             let (start, end) = ends(range);
-            (
-                None,
-                Some(path.as_str()),
-                Some(wire_name(side)?),
+            AnchorColumns {
+                kind: "lines",
+                path: Some(path.as_str()),
+                side: Some(wire_name(side)?),
                 start,
                 end,
-            )
+                ..AnchorColumns::default()
+            }
         }
+        AskAnchor::Flow { flow_id } => AnchorColumns {
+            kind: "flow",
+            flow: Some(flow_id.0.as_str()),
+            ..AnchorColumns::default()
+        },
+        AskAnchor::Pr => AnchorColumns {
+            kind: "pr",
+            ..AnchorColumns::default()
+        },
     })
 }
 
@@ -224,16 +256,17 @@ impl Questions<'_> {
         limits: QuestionLimits,
         now: Timestamp,
     ) -> Result<Asked, DbError> {
-        let (step, path, side, start, end) = anchor_columns(&question.anchor)?;
+        let anchor = anchor_columns(&question.anchor)?;
         let inserted = sqlx::query(
             "INSERT INTO questions (id, tenant_id, analysis_id, step_id, path, side, start_line, end_line, user_id,
-                 text, state, created_at)
-             SELECT ?1, a.tenant_id, a.id, ?2, ?10, ?11, ?12, ?13, ?3, ?4, 'pending', ?5 FROM analyses a WHERE a.id = ?6
+                 text, state, created_at, kind, flow_id, parent_id)
+             SELECT ?1, a.tenant_id, a.id, ?2, ?10, ?11, ?12, ?13, ?3, ?4, 'pending', ?5, ?14, ?15, ?16
+             FROM analyses a WHERE a.id = ?6
                  AND (SELECT COUNT(*) FROM questions WHERE analysis_id = a.id AND user_id = ?3) < ?7
                  AND (SELECT COUNT(*) FROM questions WHERE user_id = ?3 AND created_at >= ?8) < ?9",
         )
         .bind(question.id.to_string())
-        .bind(step)
+        .bind(anchor.step)
         .bind(&question.user_id)
         .bind(&question.text)
         .bind(ts(now))
@@ -241,10 +274,13 @@ impl Questions<'_> {
         .bind(limits.per_analysis)
         .bind(ts(limits.user_window_start))
         .bind(limits.per_user)
-        .bind(path)
-        .bind(side)
-        .bind(start)
-        .bind(end)
+        .bind(anchor.path)
+        .bind(anchor.side)
+        .bind(anchor.start)
+        .bind(anchor.end)
+        .bind(anchor.kind)
+        .bind(anchor.flow)
+        .bind(question.parent_id.map(|parent| parent.to_string()))
         .execute(self.pool)
         .await?;
         if inserted.rows_affected() == 1 {
@@ -355,6 +391,27 @@ impl Questions<'_> {
              ORDER BY q.created_at, q.rowid"
         ))
         .bind(ts(now))
+        .fetch_all(self.pool)
+        .await?;
+        rows.iter().map(record_from_row).collect()
+    }
+
+    /// The questions of `question`'s thread (its first question and follow-ups) asked before it by the same user,
+    /// oldest first, in any state.
+    pub async fn thread_before(
+        &self,
+        question: QuestionId,
+        now: Timestamp,
+    ) -> Result<Vec<QuestionRecord>, DbError> {
+        let rows = sqlx::query(concat!(
+            question_select!(),
+            ", questions asked
+             WHERE asked.id = ?2 AND q.user_id = asked.user_id AND q.analysis_id = asked.analysis_id
+                 AND COALESCE(asked.parent_id, asked.id) IN (q.id, q.parent_id) AND q.rowid < asked.rowid
+             ORDER BY q.rowid"
+        ))
+        .bind(ts(now))
+        .bind(question.to_string())
         .fetch_all(self.pool)
         .await?;
         rows.iter().map(record_from_row).collect()
@@ -506,6 +563,7 @@ mod tests {
                 step_id: StepId(step.to_owned()),
                 lines: None,
             },
+            parent_id: None,
             user_id: "u1".to_owned(),
             text: text.to_owned(),
         }
@@ -724,6 +782,72 @@ mod tests {
             .await
             .expect("create");
         assert_eq!(fourth, Asked::AnalysisLimit);
+    }
+
+    #[tokio::test]
+    async fn flow_and_pr_anchors_and_threads_round_trip() {
+        let db = Db::in_memory().await.expect("db");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let questions = db.questions();
+        let store = |anchor: AskAnchor, parent_id: Option<QuestionId>, text: &str, n: i64| {
+            let question = NewQuestion {
+                parent_id,
+                anchor,
+                ..new_question(analysis, "f1.1", text)
+            };
+            let id = question.id;
+            let questions = db.questions();
+            let limits = QuestionLimits {
+                per_analysis: 100,
+                per_user: 100,
+                ..LIMITS
+            };
+            async move {
+                match questions
+                    .create(question, limits, at(n))
+                    .await
+                    .expect("create")
+                {
+                    Asked::Stored(record) => (id, *record),
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        let flow = AskAnchor::Flow {
+            flow_id: FlowId("f2".to_owned()),
+        };
+        let (root, stored) = store(flow.clone(), None, "the flow?", 0).await;
+        assert_eq!(stored.question.anchor, flow);
+        assert_eq!(
+            (stored.question.step_id, stored.question.parent_id),
+            (None, None)
+        );
+        let (other, _) = store(AskAnchor::Pr, None, "the PR?", 1).await;
+        let (first, stored) = store(flow.clone(), Some(root), "and then?", 2).await;
+        assert_eq!(stored.question.parent_id, Some(root));
+        let (second, _) = store(flow.clone(), Some(root), "and after?", 3).await;
+        let texts = |records: Vec<QuestionRecord>| -> Vec<String> {
+            records
+                .into_iter()
+                .map(|record| record.question.text)
+                .collect()
+        };
+        let before = |id| questions.thread_before(id, at(9));
+        assert_eq!(
+            texts(before(root).await.expect("thread")),
+            Vec::<String>::new()
+        );
+        assert_eq!(texts(before(first).await.expect("thread")), ["the flow?"]);
+        assert_eq!(
+            texts(before(second).await.expect("thread")),
+            ["the flow?", "and then?"]
+        );
+        assert_eq!(
+            texts(before(other).await.expect("thread")),
+            Vec::<String>::new()
+        );
+        let listed = questions.list(analysis, at(9)).await.expect("list");
+        assert_eq!(listed[1].anchor, AskAnchor::Pr);
     }
 
     #[tokio::test]

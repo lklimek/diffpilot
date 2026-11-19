@@ -1386,6 +1386,165 @@ async fn question_anchors_migration_keeps_every_question_as_a_step_anchor() {
     assert_eq!(check, "");
 }
 
+/// Migration 0014 rebuilds `questions` for threads and wider anchors: every stored question stays with the kind of
+/// its anchor and no parent; the new checks hold.
+#[tokio::test]
+async fn question_threads_migration_keeps_every_question_with_its_kind() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before_threads = MIGRATIONS
+        .iter()
+        .position(|(_, name, _)| *name == "question_threads")
+        .expect("migration 0014");
+    migrate(&pool, before_threads)
+        .await
+        .expect("schema before 0014");
+    let db = Db { pool };
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO questions (id, tenant_id, analysis_id, step_id, path, side, start_line, end_line, user_id, text,
+             state, answer, job_id, created_at, answered_at, touched_steps)
+           VALUES ('q1', 'default', 'a1', 'f1.1', NULL, NULL, 3, 4, 'u1', 'why?', 'answered',
+                   '{\"answer\":\"a\",\"evidence\":[]}', 'j9', 't1', 't2', NULL),
+                  ('q2', 'default', 'a2', NULL, 'src/a.rs', 'base', NULL, NULL, 'u1', 'how?', 'pending', NULL, NULL,
+                   't3', NULL, '[\"f1.2\"]');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("questions of the old schema");
+    // An id that sorts first but was stored last: the fallback history orders by rowid, which must survive.
+    sqlx::raw_sql(
+        "INSERT INTO questions (id, tenant_id, analysis_id, step_id, user_id, text, state, created_at)
+           VALUES ('q0', 'default', 'a1', 'f1.2', 'u1', 'last?', 'pending', 't0');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("a later question");
+    let order = || async {
+        sqlx::query_as::<_, (i64, String)>("SELECT rowid, id FROM questions ORDER BY rowid")
+            .fetch_all(&db.pool)
+            .await
+            .expect("rowids")
+    };
+    let schema = || async {
+        sqlx::query_as::<_, (String, String, Option<String>)>(
+            "SELECT type, name, sql FROM sqlite_schema WHERE tbl_name = 'questions' AND type IN ('index', 'trigger')
+             ORDER BY name",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("schema")
+    };
+    let (order_before, schema_before) = (order().await, schema().await);
+    migrate(&db.pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+    assert_eq!(
+        order().await,
+        order_before,
+        "rowids and their order are kept"
+    );
+    let schema_after = schema().await;
+    for entry in &schema_before {
+        assert!(
+            schema_after.contains(entry),
+            "{entry:?} is kept: {schema_after:?}"
+        );
+    }
+    assert_eq!(
+        schema_after.len(),
+        schema_before.len() + 1,
+        "only questions_by_parent is new: {schema_after:?}"
+    );
+    type Row = (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, kind, step_id, path, start_line, touched_steps, flow_id, parent_id FROM questions
+         WHERE id IN ('q1', 'q2') ORDER BY rowid",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("questions");
+    assert_eq!(
+        rows,
+        [
+            (
+                "q1".to_owned(),
+                "step".to_owned(),
+                Some("f1.1".to_owned()),
+                None,
+                Some(3),
+                None,
+                None,
+                None
+            ),
+            (
+                "q2".to_owned(),
+                "lines".to_owned(),
+                None,
+                Some("src/a.rs".to_owned()),
+                None,
+                Some(r#"["f1.2"]"#.to_owned()),
+                None,
+                None
+            ),
+        ]
+    );
+    // A flow anchor needs its flow and no lines; a pull-request anchor names nothing; a follow-up's parent exists.
+    let insert = |values: &'static str| {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO questions (id, tenant_id, analysis_id, step_id, path, side, start_line, end_line, user_id,
+                 text, state, created_at, kind, flow_id, parent_id) VALUES {values}"
+        )))
+        .execute(&db.pool)
+    };
+    insert("('q3', 'default', 'a1', NULL, NULL, NULL, NULL, NULL, 'u1', 'f?', 'pending', 't4', 'flow', 'f2', NULL)")
+        .await
+        .expect("flow anchor");
+    insert("('q4', 'default', 'a1', NULL, NULL, NULL, NULL, NULL, 'u1', 'p?', 'pending', 't5', 'pr', NULL, 'q3')")
+        .await
+        .expect("a pull-request follow-up");
+    for bad in [
+        "('x1', 'default', 'a1', NULL, NULL, NULL, NULL, NULL, 'u1', 'x', 'pending', 't6', 'flow', NULL, NULL)",
+        "('x2', 'default', 'a1', NULL, NULL, NULL, 1, 2, 'u1', 'x', 'pending', 't6', 'pr', NULL, NULL)",
+        "('x3', 'default', 'a1', 'f1.1', NULL, NULL, NULL, NULL, 'u1', 'x', 'pending', 't6', 'pr', NULL, NULL)",
+        "('x4', 'default', 'a1', NULL, NULL, NULL, NULL, NULL, 'u1', 'x', 'pending', 't6', 'pr', NULL, 'missing')",
+        "('x5', 'default', 'a1', NULL, NULL, NULL, NULL, NULL, 'u1', 'x', 'pending', 't6', 'pr', NULL, 'x5')",
+    ] {
+        assert!(insert(bad).await.is_err(), "{bad}");
+    }
+    let indexes: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_schema WHERE name IN ('questions_by_analysis', 'questions_by_parent')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("indexes");
+    assert_eq!(indexes, 2);
+    let check: String = sqlx::query_scalar("PRAGMA foreign_key_check")
+        .fetch_optional(&db.pool)
+        .await
+        .expect("check")
+        .unwrap_or_default();
+    assert_eq!(check, "");
+}
+
 /// Another connection that read the old definitions before migration 0010 accepts Russian afterwards.
 #[tokio::test]
 async fn russian_migration_reaches_other_open_connections() {

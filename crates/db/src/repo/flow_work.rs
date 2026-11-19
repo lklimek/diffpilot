@@ -1324,6 +1324,7 @@ mod tests {
                         id: question,
                         analysis_id: id,
                         anchor,
+                        parent_id: None,
                         user_id: "u1".into(),
                         text: "why?".into(),
                     },
