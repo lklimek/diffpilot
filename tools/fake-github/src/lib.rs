@@ -51,6 +51,10 @@ pub struct Config {
     /// Dashboard world (e.g. `fixtures/dashboard/github`); without it the dashboard endpoints answer 404.
     #[arg(long, env = "FAKE_GITHUB_DASHBOARD_FIXTURE_DIR")]
     pub dashboard_fixture_dir: Option<PathBuf>,
+    /// The instant the dashboard world was written for: its dates move by the time since then, as of start-up,
+    /// so the world is as recent as on that day; without it the dates are served as written.
+    #[arg(long, env = "FAKE_GITHUB_DASHBOARD_WORLD_AT")]
+    pub dashboard_world_at: Option<jiff::Timestamp>,
 }
 
 /// The fake GitHub could not start.
@@ -170,7 +174,14 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
     let dashboard = config
         .dashboard_fixture_dir
         .as_deref()
-        .map(|dir| dashboard::Dashboard::load(dir, Arc::clone(&graphql), &pull_path))
+        .map(|dir| {
+            dashboard::Dashboard::load(
+                dir,
+                Arc::clone(&graphql),
+                &pull_path,
+                config.dashboard_world_at,
+            )
+        })
         .transpose()?
         .map(Arc::new);
     let mut router = Router::new()

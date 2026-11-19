@@ -32,6 +32,7 @@ fn config(dashboard: Option<PathBuf>) -> Config {
         app_id: None,
         app_public_key_file: None,
         dashboard_fixture_dir: dashboard,
+        dashboard_world_at: None,
     }
 }
 
@@ -1585,4 +1586,82 @@ async fn pull_requests_are_ordered_by_update_time_newest_first() {
     assert_eq!(numbers, [1536, 1541], "{body}");
     assert_eq!(connection["pageInfo"]["hasNextPage"], true);
     assert_eq!(body["data"]["a0"]["nameWithOwner"], "acme/consensus");
+}
+
+/// The fixture node `repository#number` of `file` (unshifted).
+fn fixture_node(file: &str, repository: &str, number: u64) -> Value {
+    let nodes: Vec<Value> =
+        serde_json::from_str(&std::fs::read_to_string(world_dir().join(file)).unwrap()).unwrap();
+    nodes
+        .into_iter()
+        .find(|n| n["repository"]["nameWithOwner"] == repository && n["number"] == number)
+        .unwrap()
+}
+
+fn at(text: &str) -> jiff::Timestamp {
+    text.parse().unwrap()
+}
+
+#[tokio::test]
+async fn world_dates_are_shifted_so_that_world_at_is_now() {
+    let world_at = at("2026-11-18T19:30:00Z");
+    let base = spawn_with(Config {
+        dashboard_world_at: Some(world_at),
+        ..config(Some(world_dir()))
+    })
+    .await;
+    let fake = Fake {
+        token: sign_in(&base).await,
+        base,
+    };
+    let clock: Value = client()
+        .get(format!("{}/_fake/dashboard/clock", fake.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(clock["world_at"], "2026-11-18T19:30:00Z");
+    let shift = clock["shift_seconds"].as_i64().unwrap();
+    let expected = jiff::Timestamp::now().as_second() - world_at.as_second();
+    assert!((expected - shift).abs() < 60, "{shift} vs {expected}");
+
+    // Every date moves by the same whole number of seconds: a pull request's, and a history search window.
+    let raw = fixture_node("pull-requests.json", "acme/platform", 1176);
+    let (_, body) = fake
+        .search("is:pr is:open repo:acme/platform author:alice")
+        .await;
+    let served = at(body["items"][0]["updated_at"].as_str().unwrap());
+    let recorded = at(raw["updatedAt"].as_str().unwrap());
+    assert_eq!(served.as_second() - recorded.as_second(), shift);
+    let window = (at("2026-08-26T00:00:00Z") + jiff::SignedDuration::from_secs(shift))
+        .strftime("%Y-%m-%d")
+        .to_string();
+    let created = fake
+        .found(&format!("is:pr author:alice created:>={window}"))
+        .await;
+    assert!(created.contains("acme/platform#1190") && !created.contains("acme/platform#1100"));
+}
+
+#[tokio::test]
+async fn world_dates_stay_as_written_without_world_at() {
+    let fake = spawn().await;
+    let clock: Value = client()
+        .get(format!("{}/_fake/dashboard/clock", fake.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(clock, json!({"world_at": null, "shift_seconds": 0}));
+    let raw = fixture_node("pull-requests.json", "acme/platform", 1176);
+    let (_, body) = fake
+        .search("is:pr is:open repo:acme/platform author:alice")
+        .await;
+    assert_eq!(
+        at(body["items"][0]["updated_at"].as_str().unwrap()),
+        at(raw["updatedAt"].as_str().unwrap())
+    );
 }

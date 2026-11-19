@@ -3,7 +3,8 @@
 Served by `tools/fake-github --dashboard-fixture-dir fixtures/dashboard/github` (format: `tools/fake-github/README.md`,
 "Dashboard world"). Invented data only: organisation `acme`, logins `alice` (the fake's signed-in user),
 `alice-helper` (linked login that search refuses), `renata-s`, `mira-k`, `jun-park`, `tobias-w`, `olek-d`, `dana`,
-`dependabot[bot]`. Dates are fixed around 2026-11-18; tests use that day as "now" (12-week window from 2026-08-26).
+`dependabot[bot]`. Dates are fixed around 2026-11-18; in-process tests use that day as "now" (12-week window from 2026-08-26), and
+the dev stack serves the world moved to today (`--dashboard-world-at 2026-11-18T19:30:00Z`).
 
 | Case | Items |
 |---|---|

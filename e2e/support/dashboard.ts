@@ -87,15 +87,37 @@ export async function saveSettings(page: Page, settings: DashboardSettings): Pro
 
 type Todo = Record<string, unknown>;
 
-/** Puts the fixture TODOs (fixtures/dashboard/scan/todos.json) into fake MemCan, each through `change`. */
+/**
+ * How far fake GitHub moved the world's dates (`GET /_fake/dashboard/clock`): the world was written for one day,
+ * and the stack serves it as if that day were today (`deploy/dev/stack.sh`, `SR_DEV_DASHBOARD_WORLD_AT`).
+ */
+export async function worldShiftMs(page: Page, stack: Stack): Promise<number> {
+  if (!stack.github) return 0;
+  const response = await page.request.get(`${stack.github}/_fake/dashboard/clock`);
+  expect(response.ok()).toBe(true);
+  return ((await response.json()) as { shift_seconds: number }).shift_seconds * 1000;
+}
+
+/** `iso` moved by `shiftMs`, in the fixtures' form (`2026-11-18T09:50:00Z`). */
+const shifted = (iso: string, shiftMs: number) =>
+  new Date(Date.parse(iso) + shiftMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+
+/**
+ * Puts the fixture TODOs (fixtures/dashboard/scan/todos.json) into fake MemCan, dated like fake GitHub's world,
+ * each through `change`.
+ */
 export async function seedTodos(page: Page, stack: Stack, change = (todo: Todo) => todo): Promise<void> {
   if (!stack.memcan) throw new Error("this stack has no reachable fake MemCan");
   const projects = JSON.parse(
     readFileSync(new URL("../../fixtures/dashboard/scan/todos.json", import.meta.url), "utf8"),
   ) as Record<string, { todos: Todo[] }>;
+  const shift = await worldShiftMs(page, stack);
+  const todos = Object.values(projects).flatMap((project) =>
+    project.todos.map((todo) => change({ ...todo, created_at: shifted(String(todo.created_at), shift) })),
+  );
   const response = await page.request.post(`${stack.memcan.url}/_fake/todos`, {
     headers: { authorization: `Bearer ${stack.memcan.token}` },
-    data: Object.values(projects).flatMap((project) => project.todos.map(change)),
+    data: todos,
   });
   expect(response.status()).toBe(204);
 }

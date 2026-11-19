@@ -42,6 +42,7 @@ async fn spawn_fake() -> String {
         app_id: None,
         app_public_key_file: None,
         dashboard_fixture_dir: Some(repo_root().join("fixtures/dashboard/github")),
+        dashboard_world_at: None,
     };
     let router = fake_github::router(&config).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
