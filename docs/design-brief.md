@@ -46,7 +46,7 @@ can judge the PR at project scale, not only line by line.
   not evidence of no defects."
 - **Verdict after evidence.** Evidence (behaviour, why, consequences, call hierarchy) comes before
   assessment; assessment is collapsed until clicked. LLM suspicions are phrased as questions to check, not
-  verdicts. The remark marker's popover (opened by click) states the was → is fact of a behaviour remark: no risk, no verdict; a highlight has no hover tooltip.
+  verdicts. The remark marker's popover (opens on hover or focus of the marker; a click pins it) states the was → is fact of a behaviour remark: no risk, no verdict; a highlight has no hover tooltip.
 - **No numeric confidence** anywhere (no decimals, no percentages). Observed facts carry a line reference;
   inferences are marked as inferences; hedges survive shortening.
   Review ticks must not become points or a percentage score.
@@ -226,7 +226,7 @@ Rules for every screen:
    themes follow the system setting, as in the mockups.
 2. The PR number in the top bar opens the PR on GitHub in a new tab.
 3. Every label (risk level, classification, provenance badge, status, button, column header) has a tooltip
-   explaining it.
+   explaining it, except the code-view highlight label, whose explanation is the remark popover.
 4. The legend (how code is drawn, §4.3) is not on the page; it is in the `?` help together with the
    keyboard shortcuts.
 5. Review-screen top bar: repo, PR number and title, head SHA, CI status (failing checks in the tooltip),
