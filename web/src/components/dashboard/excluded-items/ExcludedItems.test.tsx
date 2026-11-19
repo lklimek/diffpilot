@@ -52,7 +52,8 @@ describe("ExcludedItems", () => {
     const hide = screen.getByRole("button", { name: "Hide excluded items" });
     expect(hide).toHaveTextContent(/^Hide$/);
     expect(hide).toHaveAccessibleDescription(/Hides the list/);
-    await userEvent.click(hide);
+    hide.focus();
+    await userEvent.keyboard("{Enter}");
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryAllByRole("group")).toHaveLength(0);
     expect(toggle).toHaveFocus();

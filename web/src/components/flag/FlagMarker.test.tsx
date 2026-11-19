@@ -31,7 +31,7 @@ it("writes the strongest level in its colour and jumps to the first flag at that
       />
     </div>,
   );
-  const marker = screen.getByRole("button", { name: "First red flag on step 2" });
+  const marker = screen.getByRole("button", { name: "Go to the first red flag on step 2" });
   expect(marker).toHaveTextContent(/^⚑ red$/);
   expect(marker).toHaveClass("text-high");
   expect(marker).toHaveAccessibleDescription(
@@ -49,7 +49,7 @@ it("a yellow flag reads yellow; a flow says 'in'", () => {
   render(
     <FlagMarker annotations={[remark("y", "yellow")]} scope="flow" subject="flow 4" onSelect={() => {}} />,
   );
-  const marker = screen.getByRole("button", { name: "First yellow flag in flow 4" });
+  const marker = screen.getByRole("button", { name: "Go to the first yellow flag in flow 4" });
   expect(marker).toHaveTextContent(/^⚑ yellow$/);
   expect(marker).toHaveClass("text-med");
   expect(marker).toHaveAccessibleDescription(/^LLM flags in flow 4: 1 yellow flag\./);
@@ -59,8 +59,10 @@ it("a flag stored without a level shows the glyph without a colour level", () =>
   render(
     <FlagMarker annotations={[remark("u", "none")]} scope="step" subject="step 1" onSelect={() => {}} />,
   );
-  const marker = screen.getByRole("button", { name: "First flag without a level on step 1" });
+  const marker = screen.getByRole("button", { name: "Go to the first flag without a level on step 1" });
   expect(marker).toHaveTextContent(/^⚑$/);
+  // Such a flag has no scenario: the tooltip does not promise one.
+  expect(marker).not.toHaveAccessibleDescription(/scenario/);
 });
 
 it("shows nothing without flags (never an all-clear)", () => {

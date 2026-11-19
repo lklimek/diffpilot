@@ -284,16 +284,16 @@ describe("NavList: LLM flag markers", () => {
     const onSelect = vi.fn();
     renderNav({ current: { block: "step", step_id: "f1.5" }, onRemark: () => {}, onFlag, onSelect });
     const row = screen.getByRole("button", { name: /^Step 5:/ }).closest("li")!;
-    const flag = within(row).getByRole("button", { name: "First red flag on step 5" });
+    const flag = within(row).getByRole("button", { name: "Go to the first red flag on step 5" });
     expect(flag).toHaveTextContent("⚑ red");
     expect(flag).toHaveAccessibleDescription(/^LLM flags on step 5: 1 red flag\./);
     expect(
       within(row).getByRole("button", { name: "LLM rated step 5 HIGH (not checked)" }),
     ).not.toContainElement(flag);
     const yellow = screen.getByRole("button", { name: /^Step 7:/ }).closest("li")!;
-    expect(within(yellow).getByRole("button", { name: "First yellow flag on step 7" })).toHaveTextContent(
-      "⚑ yellow",
-    );
+    expect(
+      within(yellow).getByRole("button", { name: "Go to the first yellow flag on step 7" }),
+    ).toHaveTextContent("⚑ yellow");
     const none = screen.getByRole("button", { name: /^Step 2:/ }).closest("li")!;
     expect(within(none).queryByRole("button", { name: /flag/ })).toBeNull();
     await userEvent.click(flag);
@@ -305,19 +305,37 @@ describe("NavList: LLM flag markers", () => {
     const onFlag = vi.fn();
     renderNav({ onFlag });
     const row = (n: number) => screen.getByRole("button", { name: new RegExp(`^Flow ${n}:`) }).closest("li")!;
-    const four = within(row(4)).getByRole("button", { name: "First red flag in flow 4" });
+    const four = within(row(4)).getByRole("button", { name: "Go to the first red flag in flow 4" });
     expect(four).toHaveTextContent("⚑ red");
     expect(four).toHaveAccessibleDescription(/^LLM flags in flow 4: 1 red flag, 1 yellow flag\./);
-    expect(within(row(3)).getByRole("button", { name: "First yellow flag in flow 3" })).toHaveTextContent(
-      "⚑ yellow",
+    expect(
+      within(row(3)).getByRole("button", { name: "Go to the first yellow flag in flow 3" }),
+    ).toHaveTextContent("⚑ yellow");
+    // The marker (go to the flag) and the remark pill are different stops with different names.
+    const flagged = render(
+      <NavList
+        flows={tour.flows}
+        quiet={tour.quiet}
+        ticked={[]}
+        current={{ block: "pr_context" }}
+        onSelect={() => {}}
+        onFlag={onFlag}
+        onRemark={() => {}}
+        onSetFlowReviewed={() => {}}
+      />,
     );
+    const names = within(flagged.container)
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent);
+    expect(new Set(names).size).toBe(names.length);
+    flagged.unmount();
     await userEvent.click(four);
     expect(onFlag).toHaveBeenCalledWith(tour.flows[3]!.steps);
   });
 
   it("shows no flag markers without the callback", () => {
     renderNav({ current: { block: "step", step_id: "f1.5" } });
-    expect(screen.queryByRole("button", { name: /^First .*flag/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Go to the first .*flag/ })).toBeNull();
   });
 });
 

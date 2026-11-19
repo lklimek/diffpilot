@@ -46,8 +46,9 @@ describe("SidePanel", () => {
     expect(hide).toHaveTextContent(/^Hide$/);
     expect(hide).toHaveClass("text-[11.5px]");
     expect(hide).toHaveAccessibleDescription(/rail/);
-    await userEvent.click(hide);
-    // The focus moves to the rail that opens the panel again.
+    hide.focus();
+    await userEvent.keyboard("{Enter}");
+    // By keyboard, the focus moves to the rail that opens the panel again.
     expect(screen.getByRole("button", { name: /More · waiting on others 3/ })).toHaveFocus();
     unmount();
     panel();

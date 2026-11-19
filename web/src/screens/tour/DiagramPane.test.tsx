@@ -53,7 +53,8 @@ describe("DiagramPane", () => {
     const hide = screen.getByRole("button", { name: "Hide flow diagram" });
     expect(hide).toHaveTextContent(/^Hide$/);
     expect(hide).toHaveAccessibleDescription(/Hides the diagram/);
-    await userEvent.click(hide);
+    hide.focus();
+    await userEvent.keyboard("{Enter}");
     expect(onToggle).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: /^Hide flow diagram\s*Flow 1/ })).toHaveFocus();
     rerender(

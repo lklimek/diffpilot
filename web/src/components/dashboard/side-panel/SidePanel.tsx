@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { HideButton } from "../../button/HideButton";
+import { keyboardModality } from "../../tooltip/modality";
 import { Tooltip } from "../../tooltip/Tooltip";
 
 /** localStorage key of the side panel: `{ open, width }`. */
@@ -60,7 +61,7 @@ export function SidePanel({ main, children, railText }: SidePanelProps) {
   const [state, setState] = useState<Stored>(load);
   const aside = useRef<HTMLElement>(null);
   const rail = useRef<HTMLButtonElement>(null);
-  // Set by Hide: the rail that replaces the panel takes the focus once it is drawn.
+  // Set by Hide after keyboard use: the rail that replaces the panel takes the focus once it is drawn.
   const focusRail = useRef(false);
   const open = state.open ?? wide();
   const update = (next: Partial<Stored>) =>
@@ -139,7 +140,7 @@ export function SidePanel({ main, children, railText }: SidePanelProps) {
                 name="Hide side panel"
                 tip="Collapses the side panel to a rail at the right; the rail opens it again."
                 onHide={() => {
-                  focusRail.current = true;
+                  focusRail.current = keyboardModality();
                   update({ open: false });
                 }}
               />

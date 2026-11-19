@@ -1,3 +1,4 @@
+import { keyboardModality } from "../tooltip/modality";
 import { Tooltip } from "../tooltip/Tooltip";
 import { HEAD_BUTTON } from "./button";
 
@@ -8,7 +9,10 @@ interface HideButtonProps {
   tip: string;
   /** Hides the panel. */
   onHide: () => void;
-  /** The control that shows the panel again: it gets the focus, as this button leaves with its panel. */
+  /**
+   * The control that shows the panel again: after keyboard use it gets the focus, as this button leaves with its
+   * panel. A click leaves the focus alone, so the control's tooltip does not open under the pointer.
+   */
   focusAfter?: () => HTMLElement | null | undefined;
 }
 
@@ -21,7 +25,7 @@ export function HideButton({ name, tip, onHide, focusAfter }: HideButtonProps) {
         aria-label={name}
         className={HEAD_BUTTON}
         onClick={() => {
-          focusAfter?.()?.focus();
+          if (keyboardModality()) focusAfter?.()?.focus();
           onHide();
         }}
       >

@@ -676,7 +676,8 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const hide = screen.getByRole("button", { name: "Hide your pending comment" });
     expect(hide).toHaveTextContent(/^Hide$/);
     expect(hide).toHaveAccessibleDescription(/marker/);
-    await user.click(hide);
+    hide.focus();
+    await user.keyboard("{Enter}");
     expect(screen.queryByRole("list", { name: /^Your pending comments/ })).toBeNull();
     expect(marker).toHaveFocus();
   });
@@ -762,6 +763,10 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const panel = screen.getByRole("list", { name: "Your pending file comments on src/a.rs" });
     expect(within(panel).getByText("File-level note.")).toBeVisible();
     expect(within(panel).getByText("No link.")).toBeVisible();
+    screen.getByRole("button", { name: "Hide your pending comments" }).focus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("list", { name: "Your pending file comments on src/a.rs" })).toBeNull();
+    expect(top).toHaveFocus();
   });
 });
 

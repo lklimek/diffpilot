@@ -55,7 +55,7 @@ const ITEM =
 const QUIET_ITEM = `${ITEM} text-[12.5px] text-mv`;
 const SMALL = "block text-[11px] font-normal text-muted";
 const FLOW_TICK =
-  "mt-1 inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent font-bold text-muted hover:bg-surface-2 aria-pressed:text-accent";
+  "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent font-bold text-muted hover:bg-surface-2 aria-pressed:text-accent";
 
 const currentFlowId = (flows: Flow[], current: BlockRef): string | undefined => {
   if (current.block === "flow_intro") return current.flow_id;
@@ -150,32 +150,10 @@ export function NavList({
           return (
             <li key={flow.id} className="mb-1">
               <div className="flex items-start gap-1">
-                {onSetFlowReviewed &&
-                  (flow.steps.length > 0 ? (
-                    <Tooltip
-                      tip={
-                        reviewed
-                          ? `Unticks all ${plural(flow.steps.length, "step")} of flow ${flow.position}.`
-                          : `Ticks all ${plural(flow.steps.length, "step")} of flow ${flow.position} as reviewed by you; press again to untick them.`
-                      }
-                    >
-                      <button
-                        type="button"
-                        aria-pressed={reviewed}
-                        aria-label={`Mark flow ${flow.position} reviewed`}
-                        className={FLOW_TICK}
-                        onClick={() => onSetFlowReviewed(flow, !reviewed)}
-                      >
-                        <span aria-hidden>{reviewed ? "☑" : "☐"}</span>
-                      </button>
-                    </Tooltip>
-                  ) : (
-                    <span aria-hidden className="size-6 shrink-0" />
-                  ))}
                 <button
                   type="button"
                   data-row="menu"
-                  className={`${ITEM} min-w-0 flex-1 [overflow-wrap:anywhere]`}
+                  className={`${ITEM} min-w-0 flex-1 break-words`}
                   aria-current={ariaCurrent(current?.block === "flow_intro" && current.flow_id === flow.id)}
                   onClick={() => onSelect({ block: "flow_intro", flow_id: flow.id })}
                   aria-label={`Flow ${flow.position}: ${flow.llm.title}${reviewed ? ", reviewed" : ""}`}
@@ -194,26 +172,46 @@ export function NavList({
                     <RiskLabel risk={flow.llm.risk} />
                   )}
                   <GroupLabel group={flow.group} />
-                  <span className="flex flex-wrap items-center justify-end gap-1">
-                    {onFlag && (
-                      <FlagMarker
-                        annotations={flow.steps.flatMap((s) => s.llm.annotations)}
-                        scope="flow"
-                        subject={`flow ${flow.position}`}
-                        onSelect={() => onFlag(flow.steps)}
-                      />
-                    )}
-                    {onRemark && (
-                      <RemarkPill
-                        summary={summariseRemarks(flow.steps, handledRemarks)}
-                        scope="flow"
-                        subject={`flow ${flow.position}`}
-                        withRating={false}
-                        onSelect={() => onRemark(flow.steps)}
-                      />
-                    )}
-                  </span>
                 </span>
+              </div>
+              {/* Under the title, so the title keeps the row's width: tick toggle, flag marker, remark pill. */}
+              <div className="flex flex-wrap items-center gap-1 pl-3 empty:hidden">
+                {onSetFlowReviewed && flow.steps.length > 0 && (
+                  <Tooltip
+                    tip={
+                      reviewed
+                        ? `Unticks all ${plural(flow.steps.length, "step")} of flow ${flow.position}.`
+                        : `Ticks all ${plural(flow.steps.length, "step")} of flow ${flow.position} as reviewed by you; press again to untick them.`
+                    }
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={reviewed}
+                      aria-label={`Mark flow ${flow.position} reviewed`}
+                      className={FLOW_TICK}
+                      onClick={() => onSetFlowReviewed(flow, !reviewed)}
+                    >
+                      <span aria-hidden>{reviewed ? "☑" : "☐"}</span>
+                    </button>
+                  </Tooltip>
+                )}
+                {onFlag && (
+                  <FlagMarker
+                    annotations={flow.steps.flatMap((s) => s.llm.annotations)}
+                    scope="flow"
+                    subject={`flow ${flow.position}`}
+                    onSelect={() => onFlag(flow.steps)}
+                  />
+                )}
+                {onRemark && (
+                  <RemarkPill
+                    summary={summariseRemarks(flow.steps, handledRemarks)}
+                    scope="flow"
+                    subject={`flow ${flow.position}`}
+                    withRating={false}
+                    onSelect={() => onRemark(flow.steps)}
+                  />
+                )}
               </div>
               {flow.id === openFlow && (
                 <ol className="my-0.5 mb-1.5 ml-3.5 list-none border-l-2 border-border py-0 pl-1.5">

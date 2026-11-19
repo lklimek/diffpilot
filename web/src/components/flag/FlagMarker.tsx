@@ -28,11 +28,11 @@ export function FlagMarker({ annotations, scope, subject, onSelect }: FlagMarker
   const where = `${scope === "flow" ? "in" : "on"} ${subject}`;
   return (
     <Tooltip
-      tip={`LLM flags ${where}: ${flagCountText(countFlags(annotations))}. Click to go to the first ${FLAG_WORD[level]}. LLM statements, not checked; the Inspector shows each flag with its scenario.`}
+      tip={`LLM flags ${where}: ${flagCountText(countFlags(annotations))}. Click to go to the first ${FLAG_WORD[level]}. LLM statements, not checked; the Inspector shows each flag on its step.`}
     >
       <button
         type="button"
-        aria-label={`First ${FLAG_WORD[level]} ${where}`}
+        aria-label={`Go to the first ${FLAG_WORD[level]} ${where}`}
         onClick={(event) => {
           event.stopPropagation();
           onSelect();
