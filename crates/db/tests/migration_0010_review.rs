@@ -236,7 +236,8 @@ async fn migration_0010_on_a_seeded_v9_database() {
         analyses_before.replace("('en', 'pl')", "('en', 'pl', 'ru')")
     );
     let (rows_after, schema_after) = snapshot(&old).await;
-    // Db::open also applies 0011: its new empty table/index are additive to this 0010 preservation check.
+    // Db::open also applies 0011 (a new empty table and its index) and 0014 (the `questions_by_parent` index): additive
+    // to this 0010 preservation check.
     assert_eq!(
         rows_after
             .iter()
@@ -244,9 +245,10 @@ async fn migration_0010_on_a_seeded_v9_database() {
             .map(|(_, rows)| rows.len()),
         Some(0)
     );
-    assert_eq!(schema_after.len(), schema_before.len() + 2);
-    // 0012 rebuilds `questions` with four anchor columns after `step_id` and 0013 appends `touched_steps`, all empty
-    // for existing rows; the repository tests check that table, so here it is compared without them.
+    assert_eq!(schema_after.len(), schema_before.len() + 3);
+    // 0012 rebuilds `questions` with four anchor columns after `step_id`, 0013 appends `touched_steps` and 0014
+    // `kind`, `flow_id` and `parent_id`, all empty for existing step questions except `kind`; the repository and
+    // schema tests check that table, so here it is compared without them.
     let rebuilt = |entry: &String| entry.split('|').nth(2) == Some("questions");
     let schema_before: Vec<_> = schema_before
         .into_iter()
@@ -271,7 +273,7 @@ async fn migration_0010_on_a_seeded_v9_database() {
                     let fields: Vec<&str> = row.splitn(9, '|').collect();
                     assert_eq!(fields[4..8], ["NULL"; 4], "{row}");
                     let row = [&fields[..4], &fields[8..]].concat().join("|");
-                    row.strip_suffix("|NULL")
+                    row.strip_suffix("|NULL|'step'|NULL|NULL")
                         .unwrap_or_else(|| panic!("{row}"))
                         .to_owned()
                 })

@@ -1014,10 +1014,21 @@
           "$ref": "#/$defs/AskAnchor"
         },
         "step_id": {
-          "description": "The step of a step anchor; absent for a lines anchor.",
+          "description": "The step of a step anchor; absent for other anchors.",
           "anyOf": [
             {
               "$ref": "#/$defs/StepId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent_id": {
+          "description": "A follow-up: the first question of its thread; absent for a first question.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuestionId"
             },
             {
               "type": "null"
@@ -1141,6 +1152,37 @@
             "kind",
             "path",
             "side"
+          ]
+        },
+        {
+          "description": "An analysed flow as a whole.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "flow"
+            },
+            "flow_id": {
+              "description": "The flow.",
+              "$ref": "#/$defs/FlowId"
+            }
+          },
+          "required": [
+            "kind",
+            "flow_id"
+          ]
+        },
+        {
+          "description": "The whole pull request.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pr"
+            }
+          },
+          "required": [
+            "kind"
           ]
         }
       ]

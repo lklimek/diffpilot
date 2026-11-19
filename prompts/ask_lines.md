@@ -10,5 +10,5 @@ Who explains each changed line, from the server's deterministic checks (Unexplai
 {{facts}}
 Steps of the analysis whose lines overlap these lines (summaries; data):
 {{steps}}
-The reviewer's question:
+{{thread}}The reviewer's question:
 {{question}}

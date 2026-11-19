@@ -297,6 +297,37 @@ impl Fixture {
     }
 
     /// Asks `text` about `anchor` through the anchored route.
+    /// Posts `body` (text, anchor, parent) to the anchored-question route as the fixture user.
+    async fn ask_body(&self, body: Value) -> (StatusCode, Value) {
+        let path = ASK_ANCHORED
+            .path
+            .replace("{id}", &self.analysis.to_string());
+        let request = Request::post(path)
+            .header(header::COOKIE, &self.cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-csrf-token", "csrf")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+        json_of(
+            router(self.state.clone())
+                .oneshot(request)
+                .await
+                .expect("response"),
+        )
+        .await
+    }
+
+    /// Answers `question` with [`good_answer`] and waits until it is shown.
+    async fn answer_with_good_answer(&self, question: QuestionId) {
+        let job = self.scripted_job(question).await.spec.job_id;
+        self.scripted
+            .send(job, JobUpdate::OutputReady(good_answer()));
+        self.scripted.send(job, succeeded(job, good_answer()));
+        self.scripted.close(job);
+        self.wait_for(question, |q| q.state == AskState::Answered)
+            .await;
+    }
+
     async fn ask_anchored(&self, anchor: Value, text: &str) -> (StatusCode, Value) {
         let path = ASK_ANCHORED
             .path
@@ -646,6 +677,7 @@ async fn ask_limits_questions_per_user_and_hour() {
                         step_id: StepId("f1.1".to_owned()),
                         lines: None,
                     },
+                    parent_id: None,
                     user_id: "u1".to_owned(),
                     text: "earlier".to_owned(),
                 },
@@ -969,6 +1001,7 @@ async fn restart_follows_open_questions_to_their_end() {
                     step_id: StepId("f2.1".to_owned()),
                     lines: None,
                 },
+                parent_id: None,
                 user_id: "u1".to_owned(),
                 text: QUESTION.to_owned(),
             },
@@ -1017,6 +1050,7 @@ impl Fixture {
                         step_id: StepId("f1.5".to_owned()),
                         lines: None,
                     },
+                    parent_id: None,
                     user_id: "u1".to_owned(),
                     text: QUESTION.to_owned(),
                 },
@@ -1486,6 +1520,7 @@ async fn private_questions_never_expose_another_asker() {
                     step_id: StepId("f1.5".to_owned()),
                     lines: None,
                 },
+                parent_id: None,
                 user_id: "u2".to_owned(),
                 text: "Another user's question".to_owned(),
             },
@@ -2087,6 +2122,7 @@ async fn the_question_limit_is_checked_before_the_anchor() {
                 step_id: StepId("f1.1".to_owned()),
                 lines: None,
             },
+            parent_id: None,
             user_id: "u1".to_owned(),
             text: format!("q{n}"),
         };
@@ -2155,6 +2191,7 @@ async fn the_pack_of_a_lines_question_takes_the_steps_chosen_at_submit() {
                 side: contracts::common::LineSide::Head,
                 range: None,
             },
+            parent_id: None,
             user_id: "u1".to_owned(),
             text: text.to_owned(),
         };
@@ -2173,4 +2210,186 @@ async fn the_pack_of_a_lines_question_takes_the_steps_chosen_at_submit() {
     assert!(chosen.contains(r#"{"step_id":"f1.1""#), "{chosen}");
     let none = pack(asked[1]).await.expect("pack").expect("some pack");
     assert!(!none.contains(r#"{"step_id":"#), "{none}");
+}
+
+fn id_of(body: &Value) -> QuestionId {
+    serde_json::from_value(body["id"].clone()).expect("id")
+}
+
+/// A follow-up's job carries its thread (the first question with its answer, then earlier follow-ups), so the
+/// context survives a lost or re-forked session; a follow-up to a follow-up joins the first question's thread.
+#[tokio::test]
+async fn a_follow_up_carries_its_thread_in_the_prompt() {
+    let f = fixture(false).await;
+    let flow = json!({ "kind": "flow", "flow_id": "f1" });
+    let (status, body) = f
+        .ask_body(json!({ "text": "Why retry here at all?", "anchor": flow }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let root = id_of(&body);
+    let first_prompt = f.scripted_job(root).await.spec.prompt;
+    f.answer_with_good_answer(root).await;
+    let (status, body) = f
+        .ask_body(
+            json!({ "text": "And with a repeated submit?", "anchor": flow, "parent_id": root }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["parent_id"], json!(root));
+    let follow_up = id_of(&body);
+    let prompt = f.scripted_job(follow_up).await.spec.prompt;
+    for part in [
+        "Why retry here at all?",
+        "mempool::broadcast_tx accepts each transaction once",
+    ] {
+        assert!(prompt.contains(part), "the thread holds {part:?}: {prompt}");
+        assert!(
+            !first_prompt.contains(part) || part.starts_with("Why"),
+            "{first_prompt}"
+        );
+    }
+    // A reply to the follow-up joins the first question's thread and sees both earlier questions.
+    let (status, body) = f
+        .ask_body(json!({ "text": "Third?", "anchor": flow, "parent_id": follow_up }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(
+        body["parent_id"],
+        json!(root),
+        "one level: the thread's first question"
+    );
+    let prompt = f.scripted_job(id_of(&body)).await.spec.prompt;
+    let (asked, replied) = (
+        prompt
+            .find("Why retry here at all?")
+            .expect("first question"),
+        prompt
+            .find("And with a repeated submit?")
+            .expect("follow-up"),
+    );
+    assert!(asked < replied, "oldest first: {prompt}");
+}
+
+/// A parent must be a question of this user on this analysis (else not found, as for a foreign question), and a
+/// follow-up keeps its thread's anchor; nothing is stored or submitted when refused.
+#[tokio::test]
+async fn a_follow_up_needs_the_users_own_parent_and_its_anchor() {
+    let f = fixture(false).await;
+    let flow = json!({ "kind": "flow", "flow_id": "f1" });
+    let (_, body) = f.ask_body(json!({ "text": "Root?", "anchor": flow })).await;
+    let root = id_of(&body);
+    f.scripted_job(root).await;
+    let foreign = QuestionId::new_random();
+    let limits = db::repo::questions::QuestionLimits {
+        per_analysis: 1000,
+        per_user: 1000,
+        user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+    };
+    f.state
+        .db
+        .users()
+        .upsert_member(
+            DEFAULT_TENANT,
+            "u2",
+            &db::repo::users::GithubProfile {
+                github_id: 2,
+                login: "colleague".to_owned(),
+                name: None,
+                avatar_url: None,
+            },
+            Timestamp::now(),
+        )
+        .await
+        .expect("second user");
+    f.state
+        .db
+        .questions()
+        .create(
+            NewQuestion {
+                id: foreign,
+                analysis_id: f.analysis,
+                anchor: AskAnchor::Pr,
+                parent_id: None,
+                user_id: "u2".to_owned(),
+                text: "theirs".to_owned(),
+            },
+            limits,
+            Timestamp::now(),
+        )
+        .await
+        .expect("foreign question");
+    let before = f.scripted.requests().len();
+    for (parent, anchor, status) in [
+        (
+            QuestionId::new_random(),
+            flow.clone(),
+            StatusCode::NOT_FOUND,
+        ),
+        (foreign, json!({ "kind": "pr" }), StatusCode::NOT_FOUND),
+        (root, json!({ "kind": "pr" }), StatusCode::BAD_REQUEST),
+    ] {
+        let (got, body) = f
+            .ask_body(json!({ "text": "Follow?", "anchor": anchor, "parent_id": parent }))
+            .await;
+        assert_eq!(got, status, "{body}");
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(f.scripted.requests().len(), before, "no job submitted");
+    let (_, listed) = f.list().await;
+    assert_eq!(listed.as_array().map(Vec::len), Some(1), "{listed}");
+}
+
+/// A question about a flow gets that flow's analysis; one about the whole PR gets the plan's flows; an unknown flow
+/// is not found.
+#[tokio::test]
+async fn flow_and_pr_questions_get_their_context() {
+    let f = fixture(false).await;
+    let (status, body) = f
+        .ask_body(json!({ "text": "Why 5 s?", "anchor": { "kind": "flow", "flow_id": "f2" } }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["anchor"], json!({ "kind": "flow", "flow_id": "f2" }));
+    let prompt = f.scripted_job(id_of(&body)).await.spec.prompt;
+    assert!(
+        prompt.contains("Every RPC call built from RpcConfig::default()"),
+        "{prompt}"
+    );
+    let (status, body) = f
+        .ask_body(json!({ "text": "What is risky here?", "anchor": { "kind": "pr" } }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id = id_of(&body);
+    let prompt = f.scripted_job(id).await.spec.prompt;
+    assert!(
+        prompt.contains("Move of backoff helpers util/backoff.rs"),
+        "{prompt}"
+    );
+    let (status, body) = f
+        .ask_body(json!({ "text": "?", "anchor": { "kind": "flow", "flow_id": "f99" } }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    // The packs come from stored documents only.
+    let pack = job::context_pack(&f.state.db, f.analysis, id)
+        .await
+        .expect("pack")
+        .expect("some pack");
+    assert!(pack.contains("Move of backoff helpers"), "{pack}");
+}
+
+/// The context pack of a flow question holds that flow's analysis in full, marked as asked.
+#[tokio::test]
+async fn the_pack_of_a_flow_question_holds_the_flow() {
+    let f = fixture(false).await;
+    let (_, body) = f
+        .ask_body(json!({ "text": "Why 5 s?", "anchor": { "kind": "flow", "flow_id": "f2" } }))
+        .await;
+    let pack = job::context_pack(&f.state.db, f.analysis, id_of(&body))
+        .await
+        .expect("pack")
+        .expect("some pack");
+    assert!(pack.contains("asked flow f2"), "{pack}");
+    assert!(
+        pack.contains("Every RPC call built from RpcConfig::default()"),
+        "{pack}"
+    );
 }

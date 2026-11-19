@@ -562,6 +562,7 @@ async fn token_reads_as_its_user_only() {
                         step_id: StepId("f1.1".to_owned()),
                         lines: None,
                     },
+                    parent_id: None,
                     user_id: user.to_owned(),
                     text: format!("PRIVATE_{user}"),
                 },
