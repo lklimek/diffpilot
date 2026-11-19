@@ -4,6 +4,7 @@ import type {
   AnalysisId,
   Annotation,
   AnnotationId,
+  AskQuestion,
   BlockRef,
   CommentTarget,
   Evidence,
@@ -14,7 +15,6 @@ import type {
   StepId,
   Tour,
 } from "../../api/generated/types";
-import type { ChatQuestion } from "../../api/askChat";
 import {
   useFeedback,
   useDeleteFeedback,
@@ -164,7 +164,7 @@ export function InspectorPane(props: InspectorPaneProps) {
     ) : (
       <QuestionsHere
         threads={questionsAt(
-          (questions.data as ChatQuestion[]).filter((q) => q.mine !== false),
+          (questions.data as AskQuestion[]).filter((q) => q.mine !== false),
           place,
           tour,
         )}

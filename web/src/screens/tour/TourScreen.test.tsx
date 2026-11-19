@@ -898,6 +898,38 @@ describe("Use as review comment (owner request F31): anchors and availability", 
     expect((composer() as HTMLTextAreaElement).value).toContain("In `RpcConfig::default`.");
   });
 
+  it("an answer about lines of a file opens them in the Files view", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/questions", () =>
+        HttpResponse.json([
+          {
+            id: "l1",
+            mine: true,
+            anchor: {
+              kind: "lines",
+              path: "src/config.rs",
+              side: "head",
+              range: { start_line: 3, end_line: 4 },
+            },
+            text: "Why here?",
+            state: "answered",
+            answer: { answer: "Because.", evidence: [] },
+            failure: null,
+            created_at: "2026-11-16T10:00:00Z",
+          },
+        ]),
+      ),
+    );
+    const router = await open();
+    await openStep("1", "5");
+    await user().keyboard("a");
+    await user().click(within(await thread("l1")).getByRole("button", { name: "Use as review comment" }));
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/\/files$/));
+    expect(decodeURIComponent(router.state.location.hash)).toBe(
+      "#lines?file=src/config.rs&side=head&line=3&end=4",
+    );
+  });
+
   it("an answer about another step opens that step first", async () => {
     setScenario("ask-thread");
     await open();

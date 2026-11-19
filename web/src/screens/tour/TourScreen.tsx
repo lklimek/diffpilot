@@ -502,11 +502,16 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             ? { kind: "pr" }
             : null,
   );
-  // An answer's evidence opens here; "Use as review comment" drafts on the step's lines (AC12).
+  // An answer's evidence opens here; "Use as review comment" drafts on the step's lines (AC12). An answer about
+  // another step or about lines of a file opens that place first; pressing it there drafts.
   useEffect(() => {
     chat.setActions({
       onEvidence: showEvidence,
       onUseAsComment: (anchor, text) => {
+        if (anchor.kind === "lines" && anchor.range)
+          return void navigate(
+            `${filesPath}${filesHash({ file: anchor.path, side: anchor.side, line: anchor.range.start_line, end: anchor.range.end_line })}`,
+          );
         if (anchor.kind !== "step") return;
         if (!step || anchor.step_id !== step.id || !stepLines.data)
           return go({ block: "step", step_id: anchor.step_id });

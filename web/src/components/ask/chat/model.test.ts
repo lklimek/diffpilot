@@ -1,17 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { ChatAnchor, ChatQuestion } from "../../../api/askChat";
-import type { Tour } from "../../../api/generated/types";
+import type { AskAnchor, AskQuestion, Tour } from "../../../api/generated/types";
 import { seedFor } from "../../../mocks/fixtures";
 import { questionsAt, subjectOf, threadsOf, unreadOf } from "./model";
 
 const tour = seedFor("default", "tour") as Tour;
 
-const q = (
-  id: string,
-  minute: number,
-  anchor: ChatAnchor,
-  extra: Partial<ChatQuestion> = {},
-): ChatQuestion => ({
+const q = (id: string, minute: number, anchor: AskAnchor, extra: Partial<AskQuestion> = {}): AskQuestion => ({
   id,
   mine: true,
   anchor,
@@ -22,7 +16,7 @@ const q = (
   created_at: `2026-11-19T10:${String(minute).padStart(2, "0")}:00Z`,
   ...extra,
 });
-const step = (id: string, lines: { start_line: number; end_line: number } | null = null): ChatAnchor => ({
+const step = (id: string, lines: { start_line: number; end_line: number } | null = null): AskAnchor => ({
   kind: "step",
   step_id: id,
   lines,
@@ -107,7 +101,7 @@ describe("questionsAt: the Inspector copy of a place", () => {
     q("e", 6, { kind: "pr" }),
     q("f", 7, { kind: "lines", path: "src/rpc/client.rs", side: "head", range: null }),
   ];
-  const ids = (place: ChatAnchor) => questionsAt(all, place, tour).map((t) => t.root.id);
+  const ids = (place: AskAnchor) => questionsAt(all, place, tour).map((t) => t.root.id);
 
   it("keeps the threads about the place, with their follow-ups", () => {
     expect(ids(step("f1.5"))).toEqual(["a"]);

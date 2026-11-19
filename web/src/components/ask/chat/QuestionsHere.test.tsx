@@ -1,11 +1,11 @@
+import type { AskQuestion } from "../../../api/generated/types";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { ChatQuestion } from "../../../api/askChat";
 import { threadsOf } from "./model";
 import { QuestionsHere } from "./QuestionsHere";
 
-const q = (id: string, extra: Partial<ChatQuestion> = {}): ChatQuestion => ({
+const q = (id: string, extra: Partial<AskQuestion> = {}): AskQuestion => ({
   id,
   mine: true,
   anchor: { kind: "pr" },

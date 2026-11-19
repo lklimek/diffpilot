@@ -24,7 +24,6 @@ import type {
   StepId,
   Tour,
 } from "./generated/types";
-import type { ChatAskRequest } from "./askChat";
 import { api } from "./client";
 import { reviewStates } from "./review-state";
 
@@ -134,8 +133,7 @@ export const useAskAnchored = (id: AnalysisId) => {
 export const useAskInChat = (id: AnalysisId) => {
   const client = useQueryClient();
   return useMutation({
-    // The planned contract (ChatAskRequest) is a superset of the generated request type.
-    mutationFn: (body: ChatAskRequest) => api.askAnchored(id, body as unknown as AnchoredAskRequest),
+    mutationFn: (body: AnchoredAskRequest) => api.askAnchored(id, body),
     onSuccess: (question) => arrive(client, id, question, false),
   });
 };

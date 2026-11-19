@@ -1,6 +1,5 @@
 import { HttpResponse } from "msw";
-import type { ChatAnchor, ChatQuestion } from "../../api/askChat";
-import type { AskQuestion, AskRequest, QuestionId } from "../../api/generated/types";
+import type { AskAnchor, AskQuestion, AskRequest, QuestionId } from "../../api/generated/types";
 import { ANSWER_MS, publishQuestion, updateStore } from "../review-store";
 import { scenario } from "../scenarios";
 import { forAnalysis, route } from "./common";
@@ -12,8 +11,8 @@ const ANSWER =
  * Stores a pending question about `anchor` (a follow-up of `parent`'s thread) and answers it after the scenario's
  * delay; returns it pending.
  */
-export function answerLater(anchor: ChatAnchor, text: string, parent?: QuestionId): AskQuestion {
-  const question: ChatQuestion = {
+export function answerLater(anchor: AskAnchor, text: string, parent?: QuestionId): AskQuestion {
+  const question: AskQuestion = {
     id: crypto.randomUUID(),
     anchor,
     ...(anchor.kind === "step" ? { step_id: anchor.step_id } : {}),
@@ -27,13 +26,13 @@ export function answerLater(anchor: ChatAnchor, text: string, parent?: QuestionI
     created_at: new Date().toISOString(),
   };
   // The store and the event stream carry the generated shape; the chat's extra fields ride along.
-  const save = (q: ChatQuestion) =>
+  const save = (q: AskQuestion) =>
     updateStore((store) => {
       store.questions = [...store.questions.filter((x) => x.id !== q.id), q as AskQuestion];
     });
   save(question);
   setTimeout(() => {
-    const answered: ChatQuestion = {
+    const answered: AskQuestion = {
       ...question,
       state: "answered",
       answer: { answer: ANSWER, evidence: [] },

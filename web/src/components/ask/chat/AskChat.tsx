@@ -8,8 +8,7 @@ import {
   type PointerEvent,
   type Ref,
 } from "react";
-import type { ChatAnchor, ChatQuestion } from "../../../api/askChat";
-import type { AskQuestion, Evidence, QuestionId, Tour } from "../../../api/generated/types";
+import type { AskAnchor, AskQuestion, Evidence, QuestionId, Tour } from "../../../api/generated/types";
 import { HEAD_BUTTON, busyTip } from "../../button/button";
 import { clockText } from "../../format/time";
 import { Kbd } from "../../help/Kbd";
@@ -45,7 +44,7 @@ export interface AskChatProps {
   /** The user's threads of the analysis, oldest first (`threadsOf`). */
   threads: ChatThread[];
   /** What the next question is about. */
-  subject: ChatAnchor;
+  subject: AskAnchor;
   /** The subject follows the reader's place (× asks about the whole PR instead). */
   following: boolean;
   /** "this step", "these lines"…: where the reader is, offered while the subject is the whole PR by choice. */
@@ -55,16 +54,16 @@ export interface AskChatProps {
   /** Sends a new question about `subject`; a rejection keeps the text and shows its message. */
   onSend: (text: string) => Promise<unknown> | void;
   /** Sends a follow-up in the thread of `root` (same subject; the LLM gets the thread). */
-  onReply: (root: ChatQuestion, text: string) => Promise<unknown> | void;
+  onReply: (root: AskQuestion, text: string) => Promise<unknown> | void;
   /** Asks a question without an answer again, in its thread. */
-  onAskAgain: (question: ChatQuestion) => Promise<unknown> | void;
+  onAskAgain: (question: AskQuestion) => Promise<unknown> | void;
   onUnanchor: () => void;
   onUsePlace: () => void;
   /** Opens what a thread is about (its subject chip); the chat stays open. */
-  onGoto: (anchor: ChatAnchor) => void;
+  onGoto: (anchor: AskAnchor) => void;
   onEvidence?: (evidence: Evidence) => void;
   /** "Use as review comment" on an answer about lines; absent while commenting is unavailable. */
-  onUseAsComment?: (question: ChatQuestion) => void;
+  onUseAsComment?: (question: AskQuestion) => void;
   /** Hides the chat (Esc); its drafts and answers are kept. */
   onHide: () => void;
   size: ChatSize;
@@ -93,7 +92,7 @@ const sends = (event: KeyboardEvent<HTMLTextAreaElement>) =>
   event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing;
 
 /** A subject as chip text: view, code, words. */
-function SubjectText({ anchor, tour }: { anchor: ChatAnchor; tour: Tour }) {
+function SubjectText({ anchor, tour }: { anchor: AskAnchor; tour: Tour }) {
   const s = subjectOf(anchor, tour);
   return (
     <>
@@ -109,7 +108,7 @@ function Question({
   root,
   tour,
   onGoto,
-}: { question: ChatQuestion; root: boolean } & Pick<AskChatProps, "tour" | "onGoto">) {
+}: { question: AskQuestion; root: boolean } & Pick<AskChatProps, "tour" | "onGoto">) {
   return (
     <div className="flex min-w-0 flex-col items-end gap-0.5">
       <div className="flex max-w-full flex-wrap items-center justify-end gap-1.5 text-[11.5px] text-muted">
@@ -147,7 +146,7 @@ function Reply({
   onReply,
   onClose,
 }: {
-  root: ChatQuestion;
+  root: AskQuestion;
   draft: string;
   onDraft: (text: string) => void;
   onReply: AskChatProps["onReply"];
@@ -614,7 +613,7 @@ function ChatAnswer({
   onAskAgain,
   onEvidence,
   onUseAsComment,
-}: { question: ChatQuestion; anchor: ChatAnchor } & Pick<
+}: { question: AskQuestion; anchor: AskAnchor } & Pick<
   AskChatProps,
   "onAskAgain" | "onEvidence" | "onUseAsComment"
 >) {

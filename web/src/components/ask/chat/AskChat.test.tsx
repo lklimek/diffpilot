@@ -3,19 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { expectTrustWording } from "../../../__tests__/wording";
-import type { ChatAnchor, ChatQuestion } from "../../../api/askChat";
-import type { Tour } from "../../../api/generated/types";
+import type { AskAnchor, AskQuestion, Tour } from "../../../api/generated/types";
 import { seedFor } from "../../../mocks/fixtures";
 import { AskChat, type AskChatProps } from "./AskChat";
 import { threadsOf } from "./model";
 
 const tour = seedFor("default", "tour") as Tour;
-const q = (
-  id: string,
-  minute: number,
-  anchor: ChatAnchor,
-  extra: Partial<ChatQuestion> = {},
-): ChatQuestion => ({
+const q = (id: string, minute: number, anchor: AskAnchor, extra: Partial<AskQuestion> = {}): AskQuestion => ({
   id,
   mine: true,
   anchor,
@@ -26,10 +20,10 @@ const q = (
   created_at: `2026-11-19T10:${String(minute).padStart(2, "0")}:00Z`,
   ...extra,
 });
-const STEP: ChatAnchor = { kind: "step", step_id: "f1.5", lines: null };
+const STEP: AskAnchor = { kind: "step", step_id: "f1.5", lines: null };
 const QUESTIONS = [q("a", 1, STEP), q("b", 2, STEP, { parent_id: "a" }), q("c", 3, { kind: "pr" })];
 
-function Harness(over: Partial<AskChatProps> & { questions?: ChatQuestion[] }) {
+function Harness(over: Partial<AskChatProps> & { questions?: AskQuestion[] }) {
   const [draft, setDraft] = useState("");
   const props: AskChatProps = {
     tour,

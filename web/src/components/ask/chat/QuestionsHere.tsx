@@ -1,6 +1,5 @@
 import { useId } from "react";
-import type { ChatQuestion } from "../../../api/askChat";
-import type { QuestionId } from "../../../api/generated/types";
+import type { AskQuestion, QuestionId } from "../../../api/generated/types";
 import { CodeText } from "../../section/CodeText";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { AskButton } from "./AskButton";
@@ -20,14 +19,14 @@ export interface QuestionsHereProps {
 
 const BUTTON =
   "min-h-6 cursor-pointer rounded-md border border-border bg-surface px-2 text-[12px] text-text hover:border-accent";
-const STATE: Record<ChatQuestion["state"], string> = {
+const STATE: Record<AskQuestion["state"], string> = {
   pending: "waiting",
   answering: "being answered",
   answered: "answered",
   failed: "no answer",
 };
 
-function Outcome({ question }: { question: ChatQuestion }) {
+function Outcome({ question }: { question: AskQuestion }) {
   if (question.state === "answered" && question.answer) {
     return (
       <p className="m-0 mb-1 line-clamp-3 border-l-[3px] border-l-llm pl-1.5 whitespace-pre-wrap">

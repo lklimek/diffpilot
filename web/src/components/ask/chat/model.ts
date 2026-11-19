@@ -1,20 +1,19 @@
 // The Ask chat's threads, subjects and unread answers: plain functions of the questions and the tour.
-import type { ChatAnchor, ChatQuestion } from "../../../api/askChat";
-import type { LineSide, QuestionId, Step, Tour } from "../../../api/generated/types";
+import type { AskAnchor, AskQuestion, LineSide, QuestionId, Step, Tour } from "../../../api/generated/types";
 import { rangeText } from "../../section/format";
 
 /** A first question with its follow-ups, oldest first. */
 export interface ChatThread {
-  root: ChatQuestion;
-  followUps: ChatQuestion[];
+  root: AskQuestion;
+  followUps: AskQuestion[];
 }
 
-const asked = (a: ChatQuestion, b: ChatQuestion) => Date.parse(a.created_at) - Date.parse(b.created_at);
+const asked = (a: AskQuestion, b: AskQuestion) => Date.parse(a.created_at) - Date.parse(b.created_at);
 
 /** Threads oldest first; a follow-up of a follow-up joins the thread of its first question (one level). */
-export function threadsOf(questions: readonly ChatQuestion[]): ChatThread[] {
+export function threadsOf(questions: readonly AskQuestion[]): ChatThread[] {
   const byId = new Map(questions.map((q) => [q.id, q]));
-  const rootOf = (q: ChatQuestion): ChatQuestion => {
+  const rootOf = (q: AskQuestion): AskQuestion => {
     const seen = new Set<QuestionId>();
     let at = q;
     while (at.parent_id && byId.has(at.parent_id) && !seen.has(at.id)) {
@@ -52,7 +51,7 @@ const flowOfStep = (tour: Tour, id: string) => tour.flows.find((f) => f.steps.so
 const old = (side: LineSide) => (side === "base" ? " (old code)" : "");
 
 /** The name of what a question is about. */
-export function subjectOf(anchor: ChatAnchor, tour: Tour): Subject {
+export function subjectOf(anchor: AskAnchor, tour: Tour): Subject {
   switch (anchor.kind) {
     case "step": {
       const step = findStep(tour, anchor.step_id);
@@ -115,7 +114,7 @@ export function subjectOf(anchor: ChatAnchor, tour: Tour): Subject {
 
 /** Lines of a file an anchor covers (`to` null: the whole file); null for a flow or the whole PR. */
 export function linesOf(
-  anchor: ChatAnchor,
+  anchor: AskAnchor,
   tour: Tour,
 ): { path: string; side: LineSide; from: number; to: number | null } | null {
   if (anchor.kind === "lines")
@@ -136,7 +135,7 @@ const overlap = (a: { from: number; to: number | null }, b: { from: number; to: 
   (a.to === null || b.from <= a.to) && (b.to === null || a.from <= b.to);
 
 /** Whether a thread's subject belongs to the Inspector copy of `place`. */
-function about(anchor: ChatAnchor, place: ChatAnchor, tour: Tour): boolean {
+function about(anchor: AskAnchor, place: AskAnchor, tour: Tour): boolean {
   switch (place.kind) {
     case "pr":
       return anchor.kind === "pr";
@@ -159,12 +158,12 @@ function about(anchor: ChatAnchor, place: ChatAnchor, tour: Tour): boolean {
 }
 
 /** The threads about a place (its Inspector copy), oldest first. */
-export function questionsAt(questions: readonly ChatQuestion[], place: ChatAnchor, tour: Tour): ChatThread[] {
+export function questionsAt(questions: readonly AskQuestion[], place: AskAnchor, tour: Tour): ChatThread[] {
   return threadsOf(questions).filter((t) => about(t.root.anchor, place, tour));
 }
 
 /** Ids of questions with an outcome (answer or failure) not in `seen`, oldest first. */
-export function unreadOf(questions: readonly ChatQuestion[], seen: ReadonlySet<QuestionId>): QuestionId[] {
+export function unreadOf(questions: readonly AskQuestion[], seen: ReadonlySet<QuestionId>): QuestionId[] {
   return [...questions]
     .filter((q) => (q.state === "answered" || q.state === "failed") && !seen.has(q.id))
     .sort(asked)
@@ -172,5 +171,5 @@ export function unreadOf(questions: readonly ChatQuestion[], seen: ReadonlySet<Q
 }
 
 /** Whether an answer about the anchor can become a review comment: it has lines to anchor on. */
-export const hasLines = (anchor: ChatAnchor) =>
+export const hasLines = (anchor: AskAnchor) =>
   anchor.kind === "step" || (anchor.kind === "lines" && anchor.range !== null);

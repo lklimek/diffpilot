@@ -4,8 +4,7 @@ import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
-import type { ChatAskRequest } from "../../api/askChat";
-import type { AnalysisSummary, AskQuestion } from "../../api/generated/types";
+import type { AnalysisSummary, AnchoredAskRequest, AskQuestion } from "../../api/generated/types";
 import { seedFor, setFixtureState } from "../../mocks/fixtures";
 import { setScenario } from "../../mocks/scenarios";
 
@@ -36,13 +35,13 @@ async function openTour(hash = "") {
 
 // Records the bodies of new questions.
 function captureAsk() {
-  const bodies: ChatAskRequest[] = [];
+  const bodies: AnchoredAskRequest[] = [];
   const record = ({ request }: { request: Request }) => {
     if (request.method === "POST" && /\/analyses\/[^/]+\/questions$/.test(request.url))
       void request
         .clone()
         .json()
-        .then((body: ChatAskRequest) => bodies.push(body));
+        .then((body: AnchoredAskRequest) => bodies.push(body));
   };
   server.events.on("request:start", record);
   return { bodies, stop: () => server.events.removeListener("request:start", record) };

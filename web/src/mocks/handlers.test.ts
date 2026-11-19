@@ -1,9 +1,8 @@
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { ChatAskRequest, ChatQuestion } from "../api/askChat";
 import { ApiError, createApiClient } from "../api/client";
 import { routes } from "../api/generated/routes";
-import type { AnalysisEvent, AnchoredAskRequest } from "../api/generated/types";
+import type { AnalysisEvent, AnchoredAskRequest, AskQuestion } from "../api/generated/types";
 import { setFixtureState } from "./fixtures";
 import { handlers } from "./handlers";
 import { setMockLanguage } from "./handlers/get-settings";
@@ -381,19 +380,33 @@ describe("msw handlers of the screens", () => {
 
   it("Ask chat: a follow-up keeps its thread (parent_id); flow and whole-PR questions are taken", async () => {
     const api = createApiClient(BASE);
-    const ask = (body: ChatAskRequest) => api.askAnchored(ID, body as unknown as AnchoredAskRequest);
-    const root = (await ask({ text: "Why?", anchor: { kind: "pr" } })) as ChatQuestion;
+    const ask = (body: AnchoredAskRequest) => api.askAnchored(ID, body);
+    const root = (await ask({ text: "Why?", anchor: { kind: "pr" } })) as AskQuestion;
     expect(root).toMatchObject({ state: "pending", anchor: { kind: "pr" } });
     expect(root.parent_id).toBeUndefined();
     const follow = (await ask({
       text: "And then?",
       anchor: { kind: "pr" },
       parent_id: root.id,
-    })) as ChatQuestion;
+    })) as AskQuestion;
     expect(follow.parent_id).toBe(root.id);
-    const flow = (await ask({ text: "What?", anchor: { kind: "flow", flow_id: "f2" } })) as ChatQuestion;
+    const flow = (await ask({ text: "What?", anchor: { kind: "flow", flow_id: "f2" } })) as AskQuestion;
     expect(flow.anchor).toEqual({ kind: "flow", flow_id: "f2" });
-    const listed = (await api.listQuestions(ID)) as ChatQuestion[];
+    const listed = (await api.listQuestions(ID)) as AskQuestion[];
     expect(listed.find((q) => q.id === follow.id)?.parent_id).toBe(root.id);
+    // Like the server: a follow-up of a follow-up joins the thread's first question; its anchor must match it.
+    const deeper = (await ask({ text: "And?", anchor: { kind: "pr" }, parent_id: follow.id })) as AskQuestion;
+    expect(deeper.parent_id).toBe(root.id);
+    await expect(
+      ask({ text: "?", anchor: { kind: "flow", flow_id: "f2" }, parent_id: root.id }),
+    ).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(ask({ text: "?", anchor: { kind: "pr" }, parent_id: "nope" })).rejects.toMatchObject({
+      status: 404,
+    });
+    await expect(ask({ text: "?", anchor: { kind: "flow", flow_id: "f99" } })).rejects.toMatchObject({
+      status: 404,
+    });
   });
 });
