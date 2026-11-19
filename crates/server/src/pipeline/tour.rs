@@ -107,13 +107,19 @@ pub enum TourLoadError {
 /// The Tour of a review-ready analysis: its stored outputs verified again (verification is deterministic), then
 /// projected with the stored pre-pass and GitHub snapshot.
 pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, TourLoadError> {
+    ready(summary)?;
+    let results = StoredResults::load(&state.db, summary.id).await?;
+    load_from(state, summary, results).await
+}
+
+/// The analysis has a Tour: it is review-ready or finished.
+pub fn ready(summary: &AnalysisSummary) -> Result<(), TourLoadError> {
     if summary.review_ready != Some(true)
         && !matches!(summary.state, AnalysisState::Finished { .. })
     {
         return Err(TourLoadError::NotFinished);
     }
-    let results = StoredResults::load(&state.db, summary.id).await?;
-    load_from(state, summary, results).await
+    Ok(())
 }
 
 /// The Tour of `results`, the stored outputs read earlier: a flow stored since is still shown as it was then.
@@ -122,6 +128,17 @@ pub async fn load_from(
     summary: &AnalysisSummary,
     results: StoredResults,
 ) -> Result<Tour, TourLoadError> {
+    with_projection(state, summary, results, |_, tour| tour).await
+}
+
+/// `f` over the Tour of `results` and everything it was projected from, so a view derived from both (the Files
+/// view) uses exactly the Tour's facts.
+pub async fn with_projection<T>(
+    state: &AppState,
+    summary: &AnalysisSummary,
+    results: StoredResults,
+    f: impl FnOnce(&Projection<'_>, Tour) -> T,
+) -> Result<T, TourLoadError> {
     let (Some(plan), Some(pr_context)) = (results.plan, results.pr_context) else {
         return Err(DbError::NotFound.into());
     };
@@ -190,7 +207,7 @@ pub async fn load_from(
         .into_iter()
         .map(|(_, unsent)| unsent)
         .collect();
-    Ok(project(&Projection {
+    let projection = Projection {
         summary,
         skeleton: &skeleton,
         pr_context,
@@ -202,7 +219,9 @@ pub async fn load_from(
         unsent: &unsent,
         memcan_profile: profile::stored(&state.db, summary.id).await?.found(),
         waiting: &waiting,
-    }))
+    };
+    let tour = project(&projection);
+    Ok(f(&projection, tour))
 }
 
 /// The server's issue codes of a stored flow that today's checks reject (for the log, never user text).
