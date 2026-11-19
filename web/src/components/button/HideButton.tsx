@@ -13,7 +13,7 @@ interface HideButtonProps {
    * The control that shows the panel again: after keyboard use it gets the focus, as this button leaves with its
    * panel. A click leaves the focus alone, so the control's tooltip does not open under the pointer.
    */
-  focusAfter?: () => HTMLElement | null | undefined;
+  focusAfter?: () => HTMLElement | SVGElement | null | undefined;
 }
 
 /** "Hide" in the top-right corner of an open panel: the same button as a column head's Hide. */

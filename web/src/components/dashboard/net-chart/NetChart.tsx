@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type Ref } from "react";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { netTone, signed } from "../common/format";
 
@@ -34,6 +34,9 @@ export function netRows(points: NetPoint[]): NetRow[] {
   });
 }
 
+/** The point's name, `(so far)` while it is running. */
+const describePeriod = (point: NetPoint) => `${point.full}${point.partial ? " (so far)" : ""}`;
+
 const niceStep = (span: number) => [1, 2, 5, 10, 20, 50].find((step) => span / step <= 6) ?? 100;
 const MARGIN = { l: 34, r: 46, t: 12, b: 26 };
 const FALLBACK_WIDTH = 720;
@@ -53,13 +56,20 @@ interface NetChartProps {
   points: NetPoint[];
   /** What one point covers. */
   unit: "day" | "week";
+  /** The bar whose pull requests are listed. */
+  selected?: number | null;
+  /** Lists a bar's pull requests (its index), or closes the list (null); without it bars are not chosen. */
+  onSelect?: (index: number | null) => void;
+  /** The chart's focusable SVG. */
+  chartRef?: Ref<SVGSVGElement>;
 }
 
 /**
  * Net closed − opened per day or week as bars, with the cumulative total as a line (mockup `drawNet`). Hand-written
- * SVG; focusable, ←/→/Home/End read one point into a live region; the same numbers as a table on request.
+ * SVG; focusable, ←/→/Home/End read one point into a live region; the same numbers as a table on request. With
+ * `onSelect`, a click or Enter/Space on a bar chooses it; choosing it again lets it go.
  */
-export function NetChart({ points, unit }: NetChartProps) {
+export function NetChart({ points, unit, selected = null, onSelect, chartRef }: NetChartProps) {
   const box = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(FALLBACK_WIDTH);
   const [at, setAt] = useState<number | null>(null);
@@ -77,6 +87,14 @@ export function NetChart({ points, unit }: NetChartProps) {
   }, []);
 
   const rows = netRows(points);
+  // Opening and closing the list is announced, whatever closed it (the bar again, Hide, the period switch).
+  const chosen = selected !== null && rows[selected] ? describePeriod(rows[selected]) : null;
+  const [announced, setAnnounced] = useState(chosen);
+  if (announced !== chosen) {
+    setAnnounced(chosen);
+    if (chosen !== null) setReading(`Pull requests of ${chosen} listed under the chart`);
+    else if (announced !== null) setReading(`Pull requests of ${announced} hidden`);
+  }
   if (rows.length === 0) {
     return <p className="text-xs text-muted">No pull request activity in this period.</p>;
   }
@@ -97,13 +115,27 @@ export function NetChart({ points, unit }: NetChartProps) {
   const now = unit === "day" ? "today" : "this week";
 
   const describe = (row: NetRow) =>
-    `${row.full}${row.partial ? " (so far)" : ""}: closed ${row.closed}, opened ${row.opened}, net ${signed(row.net)}, cumulative ${signed(row.running)}`;
+    `${describePeriod(row)}: closed ${row.closed}, opened ${row.opened}, net ${signed(row.net)}, cumulative ${signed(row.running)}`;
   const show = (i: number, read: boolean) => {
     setAt(i);
     if (read) setReading(describe(rows[i]!));
   };
+  const choose = (i: number) => {
+    onSelect?.(i === selected ? null : i);
+  };
+  const indexAt = (event: MouseEvent<SVGSVGElement>) => {
+    const i = Math.floor(
+      (event.clientX - event.currentTarget.getBoundingClientRect().left - MARGIN.l) / slot,
+    );
+    return i >= 0 && i < rows.length ? i : null;
+  };
   const onKeyDown = (event: KeyboardEvent<SVGSVGElement>) => {
-    const current = at ?? rows.length - 1;
+    const current = at ?? selected ?? rows.length - 1;
+    if (onSelect && (event.key === "Enter" || event.key === " ")) {
+      event.preventDefault();
+      choose(current);
+      return;
+    }
     const next = { ArrowLeft: current - 1, ArrowRight: current + 1, Home: 0, End: rows.length - 1 }[
       event.key
     ];
@@ -141,20 +173,35 @@ export function NetChart({ points, unit }: NetChartProps) {
           viewBox={`0 0 ${width} ${height}`}
           role="img"
           tabIndex={0}
-          aria-label={`Net closed minus opened pull requests per ${unit} for the last ${rows.length} ${unit}s; cumulative total ${signed(last.running)}. Use the left and right arrow keys to read each ${unit}.`}
+          aria-label={`Net closed minus opened pull requests per ${unit} for the last ${rows.length} ${unit}s; cumulative total ${signed(last.running)}. Use the left and right arrow keys to read each ${unit}.${onSelect ? ` Enter or Space lists the pull requests of the ${unit} read.` : ""}`}
+          ref={chartRef}
           onKeyDown={onKeyDown}
-          onFocus={() => show(at ?? rows.length - 1, true)}
+          onFocus={() => show(at ?? selected ?? rows.length - 1, true)}
           onBlur={() => setAt(null)}
           onMouseMove={(event) => {
-            const i = Math.floor(
-              (event.clientX - event.currentTarget.getBoundingClientRect().left - MARGIN.l) / slot,
-            );
-            if (i >= 0 && i < rows.length) show(i, false);
+            const i = indexAt(event);
+            if (i !== null) show(i, false);
             else setAt(null);
           }}
           onMouseLeave={() => setAt(null)}
-          className="block overflow-visible rounded focus-visible:outline-offset-4"
+          onClick={(event) => {
+            const i = indexAt(event);
+            if (i === null) return;
+            setAt(i);
+            choose(i);
+          }}
+          className={`block overflow-visible rounded focus-visible:outline-offset-4 ${onSelect ? "cursor-pointer" : ""}`}
         >
+          {/* Under the bars: the bar whose pull requests are listed. */}
+          {selected !== null && selected < rows.length && (
+            <rect
+              x={MARGIN.l + slot * selected}
+              y={MARGIN.t}
+              width={slot}
+              height={ih}
+              className="fill-accent opacity-[.14]"
+            />
+          )}
           {grid.map((v) => (
             <g key={v}>
               <line
@@ -175,7 +222,7 @@ export function NetChart({ points, unit }: NetChartProps) {
             </g>
           ))}
           {rows.map((row, i) => (
-            <g key={`${row.label}-${i}`} data-point={i}>
+            <g key={`${row.label}-${i}`} data-point={i} data-selected={i === selected || undefined}>
               {/* The running day or week: a dashed outline, visible on both themes and at net 0. */}
               {row.partial ? (
                 <path
@@ -254,6 +301,14 @@ export function NetChart({ points, unit }: NetChartProps) {
             <br />
             {/* Neutral: the inverted tooltip gives the net tokens under 2.3:1 in both themes. */}
             net <b>{signed(hover.net)}</b> · cumulative <b>{signed(hover.running)}</b>
+            {onSelect && (
+              <>
+                <br />
+                {at === selected
+                  ? "Click or press Enter to hide its pull requests"
+                  : "Click or press Enter to list its pull requests"}
+              </>
+            )}
           </div>
         )}
         <span className="sr-only" aria-live="polite" data-chart-reading>

@@ -1,8 +1,10 @@
 import { type Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
+import { netChartBar } from "./screens-support";
 
 // Screenshots of every My work msw scenario at 1600×900 and 3440×1440 (light; `normal` also dark), plus `normal`
-// with an item expanded and the side panel open, and the pages the review-start rows lead to. Mock data only.
+// with an item expanded and the side panel open, `normal` with a chart bar's pull requests listed, and the pages
+// the review-start rows lead to. Mock data only.
 // Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/diffpilot/<date>/v1.1-dashboard-screens.
 const dir = process.env.SCREENSHOT_DIR;
 
@@ -80,6 +82,11 @@ for (const [width, height] of [
       await openDashboard(page, "normal");
       await expandAll(page);
       await shoot(page, `dashboard-normal-expanded-${colorScheme}-${width}`);
+      await openDashboard(page, "normal");
+      const bar = await netChartBar(page, 17);
+      await bar.chart.click(bar.at);
+      await expect(page.getByRole("region", { name: "Pull requests of Mon 16 Nov" })).toBeVisible();
+      await shoot(page, `dashboard-normal-bar-list-${colorScheme}-${width}`);
       if (colorScheme === "light") {
         // Where the NC-482 row leads: review start at /review (new, moved; checked on arrival) or the review
         // itself (found).

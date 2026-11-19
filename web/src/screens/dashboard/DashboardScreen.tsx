@@ -24,6 +24,7 @@ import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import {
+  barPullRequests,
   chartPoints,
   dailySeries,
   fullDayLabel,
@@ -47,6 +48,8 @@ export function DashboardScreen() {
   const go = (href: string) => void navigate(href);
   const [helpOpen, setHelpOpen] = useState(false);
   const [unit, setUnit] = useState<ChartUnit>("day");
+  // The chart bar whose pull requests are listed, by its first day; it belongs to one unit.
+  const [bar, setBar] = useState<{ unit: ChartUnit; day: string } | null>(null);
   const { me, user, view, now } = page;
   const summary = page.summary.data;
   const snapshot = summary?.snapshot ?? null;
@@ -73,6 +76,21 @@ export function DashboardScreen() {
       yesterday: yesterday(events, now),
     };
   }, [snapshot, now]);
+
+  const points = charts && (unit === "day" ? charts.days : charts.weeks);
+  const selectedIndex = bar?.unit === unit ? (points?.findIndex((p) => p.day === bar.day) ?? -1) : -1;
+  const listed = useMemo(() => {
+    if (!snapshot || !bar) return null;
+    const titles = new Map<string, string>();
+    for (const item of [
+      ...(page.allItems ?? []),
+      ...snapshot.awaiting,
+      ...(snapshot.exclusions?.items ?? []),
+    ])
+      if (item.repo && item.number !== null)
+        titles.set(`${item.repo.owner}/${item.repo.name}#${item.number}`, item.title);
+    return barPullRequests(snapshot.history, bar.day, bar.unit, titles);
+  }, [snapshot, bar, page.allItems]);
 
   const snapshotAt = snapshot?.scanned_at ?? null;
   const excluded = snapshot && <ExcludedItems exclusions={snapshot.exclusions} onNavigate={go} />;
@@ -137,6 +155,9 @@ export function DashboardScreen() {
           weeks={charts.weeks}
           unit={unit}
           onUnitChange={setUnit}
+          selected={selectedIndex >= 0 ? selectedIndex : null}
+          onSelect={(i) => setBar(i === null || !points?.[i] ? null : { unit, day: points[i].day })}
+          listed={listed}
           staleNote={stale && `From the ${stale} snapshot.`}
         />
       )}

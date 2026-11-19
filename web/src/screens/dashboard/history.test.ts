@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { HistoryEvent, HistoryKind } from "../../api/generated/types";
 import {
+  barPullRequests,
   chartPoints,
   dailySeries,
   fullDayLabel,
   headline,
   localDay,
+  pullRequestUrl,
   throughputWeeks,
   weeklyCounts,
   weeklySeries,
@@ -164,6 +166,87 @@ describe("chart labels", () => {
       { label: "9 Nov", merged: 1, reviews: 0, partial: false },
       { label: "16 Nov", merged: 2, reviews: 1, partial: true },
     ]);
+  });
+});
+
+describe("barPullRequests (the pull requests behind one bar)", () => {
+  const titles = new Map([["acme/a#2", "fix: retry"]]);
+
+  it("lists a working day's opened and closed pull requests in time order, the weekend on its Friday", () => {
+    const events = [
+      ev("pr_merged", 11, 17, "acme/a#3", 15),
+      ev("pr_merged", 11, 17, "acme/a#2", 9),
+      ev("review_given", 11, 17, "acme/b#9"),
+      ev("issue_closed", 11, 17, "acme/a#8"),
+      ev("pr_opened", 11, 16, "acme/a#1"),
+    ];
+    expect(barPullRequests(events, "2026-11-17", "day", titles)).toEqual({
+      opened: [],
+      closed: [
+        {
+          id: "acme/a#2",
+          title: "fix: retry",
+          url: "https://github.com/acme/a/pull/2",
+          outcome: "merged",
+        },
+        { id: "acme/a#3", title: null, url: "https://github.com/acme/a/pull/3", outcome: "merged" },
+      ],
+    });
+    const friday = barPullRequests(EVENTS, "2026-11-13", "day", titles);
+    expect(friday.opened.map((pr) => pr.id)).toEqual(["acme/a#5"]);
+    expect(friday.closed.map((pr) => pr.id)).toEqual(["acme/a#6"]);
+  });
+
+  it("lists a week (Monday to Sunday) and marks a pull request closed without merge", () => {
+    const week = barPullRequests(EVENTS, "2026-11-16", "week", titles);
+    expect(week.opened.map((pr) => pr.id)).toEqual(["acme/a#1"]);
+    expect(week.closed.map((pr) => [pr.id, pr.outcome])).toEqual([
+      ["acme/a#2", "merged"],
+      ["acme/a#3", "merged"],
+      ["acme/a#4", "closed_unmerged"],
+    ]);
+    // The same buckets as the chart's bars.
+    const bars = weeklySeries(EVENTS, NOW);
+    for (const bar of bars) {
+      const listed = barPullRequests(EVENTS, bar.day, "week", titles);
+      expect([listed.closed.length, listed.opened.length]).toEqual([bar.closed, bar.opened]);
+    }
+    for (const bar of dailySeries(EVENTS, NOW)) {
+      const listed = barPullRequests(EVENTS, bar.day, "day", titles);
+      expect([listed.closed.length, listed.opened.length]).toEqual([bar.closed, bar.opened]);
+    }
+  });
+
+  it("a pull request opened and merged in one bar is in both lists; opened ones carry no outcome", () => {
+    const listed = barPullRequests(
+      [ev("pr_opened", 11, 18, "acme/a#9", 9), ev("pr_merged", 11, 18, "acme/a#9", 11)],
+      "2026-11-18",
+      "day",
+      new Map(),
+    );
+    expect(listed.opened).toEqual([{ id: "acme/a#9", title: null, url: "https://github.com/acme/a/pull/9" }]);
+    expect(listed.closed.map((pr) => pr.id)).toEqual(["acme/a#9"]);
+  });
+});
+
+describe("pullRequestUrl", () => {
+  it("builds the GitHub link of `owner/name#number`, and nothing from anything else", () => {
+    expect(pullRequestUrl("dashpay/rust-dashcore#1234")).toBe(
+      "https://github.com/dashpay/rust-dashcore/pull/1234",
+    );
+    expect(pullRequestUrl("a-b/c_d-e.f#7")).toBe("https://github.com/a-b/c_d-e.f/pull/7");
+    for (const bad of [
+      "acme#1",
+      "acme/a#",
+      "acme/a#1x",
+      "../x/y#1",
+      "../x#1",
+      "acme/..#1",
+      "acme/a/b#1",
+      "javascript:x/y#1",
+      "a/b#1?x",
+    ])
+      expect(pullRequestUrl(bad)).toBeNull();
   });
 });
 
