@@ -93,7 +93,7 @@ describe("structured related links", () => {
       { reference: "javascript:alert(1)", repo: "acme/node", number: 42, kind: "issue", verified: false },
     ];
     render(<PrContextBlock pr={tour.analysis.pr} context={context} threadCount={0} />);
-    const link = screen.getByRole("link", { name: "acme/node#42" });
+    const link = screen.getByRole("link", { name: "acme/node#42 (opens on GitHub in a new tab)" });
     expect(link).toHaveAttribute("href", "https://github.com/acme/node/issues/42");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");

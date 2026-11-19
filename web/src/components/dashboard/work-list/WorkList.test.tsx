@@ -379,11 +379,11 @@ describe("WorkList: a visible link out on every row (F38)", () => {
   it("each row and the P0 alarm have an icon link named and tipped 'Open <id> on GitHub', in a new tab", () => {
     render(<List />);
     for (const item of [pr, alarm]) {
-      const link = screen.getByRole("link", { name: `Open ${item.id} on GitHub` });
+      const link = screen.getByRole("link", { name: `Open ${item.id} on GitHub (new tab)` });
       expect(link).toHaveAttribute("href", item.url);
       expect(link).toHaveAttribute("target", "_blank");
       expect(link).toHaveAttribute("rel", "noopener noreferrer");
-      expect(link).toHaveAccessibleDescription(`Open ${item.id} on GitHub`);
+      expect(link).toHaveAccessibleDescription(`Open ${item.id} on GitHub (new tab)`);
       expect(link.querySelector("svg")).not.toBeNull();
       expect(link.className).toMatch(/min-h-6/);
       expect(link.className).toMatch(/min-w-6/);
@@ -397,7 +397,7 @@ describe("WorkList: a visible link out on every row (F38)", () => {
       { ...pr, key: "js-url", id: "JS-1", url: "javascript:alert(1)" },
     ];
     render(<List items={items} />);
-    expect(screen.getByRole("link", { name: "Open TODO in MemCan" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Open TODO in MemCan (new tab)" })).toHaveAttribute(
       "href",
       "http://memcan.example/ui/tasks/1",
     );
@@ -408,7 +408,7 @@ describe("WorkList: a visible link out on every row (F38)", () => {
 
   it("clicking the icon does not expand or select the row", async () => {
     render(<List />);
-    const link = screen.getByRole("link", { name: `Open ${pr.id} on GitHub` });
+    const link = screen.getByRole("link", { name: `Open ${pr.id} on GitHub (new tab)` });
     link.addEventListener("click", (event) => event.preventDefault());
     const bubbled = vi.fn();
     // React handlers run at the root; a stopped click does not reach the body beyond it.

@@ -1,5 +1,7 @@
 import type { WorkItem } from "../../../api/generated/types";
 import { buttonClass } from "../../button/button";
+import { GithubMark } from "../../github/GithubMark";
+import { isGithubUrl } from "../../github/links";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { ExternalIcon } from "../common/icons";
 import { navigateOnClick, type Navigate } from "../common/navigate";
@@ -72,7 +74,7 @@ export function ItemAction({ item, reviewHref, onNavigate }: ItemActionProps) {
         rel="noopener noreferrer"
         className={`${buttonClass("plain", true)} ${WIDTH}`}
       >
-        Open {what} <ExternalIcon />
+        Open {what} {isGithubUrl(url) ? <GithubMark /> : <ExternalIcon />}
       </a>
     </Tooltip>
   );

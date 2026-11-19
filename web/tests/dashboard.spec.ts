@@ -90,7 +90,7 @@ test.describe("My work (msw)", () => {
     await expect(main(page).getByRole("link", { name: "Open PLAT-1187 on GitHub" })).toBeVisible();
     await expect(main(page).getByRole("link", { name: "Open TODO in MemCan" })).toHaveCount(2);
     await link.focus();
-    await expect(page.getByRole("tooltip")).toHaveText("Open PLAT-1203 on GitHub");
+    await expect(page.getByRole("tooltip")).toHaveText("Open PLAT-1203 on GitHub (new tab)");
     await page.context().route("https://github.com/**", (route) => route.fulfill({ body: "GitHub" }));
     const popup = page.waitForEvent("popup");
     await link.click();

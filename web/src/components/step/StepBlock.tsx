@@ -2,6 +2,7 @@ import { CodeText } from "../section/CodeText";
 import { useId, useState, type ReactNode } from "react";
 import type { ImpactRef, PatternRepetition, Step, StepId, ThreadsStatus } from "../../api/generated/types";
 import { KindLabel } from "../badge/LlmLabel";
+import { stepGithubLink, type PrLinkBase } from "../github/links";
 import { GithubLink } from "../inspector/text";
 import { rangeText, threadsNote } from "../section/format";
 import { ProvenanceTag } from "../section/ProvenanceTag";
@@ -12,6 +13,8 @@ import { ReviewToggle } from "./ReviewToggle";
 interface StepBlockProps {
   /** The step. */
   step: Step;
+  /** The pull request; with it the header links the step's changed lines in the PR diff on GitHub. */
+  pr?: PrLinkBase;
   /** The code of the step (code view, or its loading / error state). */
   code: ReactNode;
   /** The flow's pattern repetitions; those explained in this step show as "Same pattern × N". */
@@ -222,6 +225,7 @@ function Pattern({
 /** Step title, decision, review actions and full-width code; details live in the Inspector. */
 export function StepBlock({
   step,
+  pr,
   code,
   patterns = [],
   impactCode,
@@ -236,6 +240,7 @@ export function StepBlock({
   const { facts, llm } = step;
   const changed = facts.changed_lines.reduce((n, r) => n + r.end_line - r.start_line + 1, 0);
   const repeated = patterns.filter((p) => p.explained_in === step.id);
+  const github = stepGithubLink(pr, facts);
   return (
     <article aria-labelledby={headingId} className="@container rounded-lg border border-border bg-surface">
       <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
@@ -248,10 +253,7 @@ export function StepBlock({
         <KindLabel kind={llm.kind} />
         <code className="font-semibold">{facts.file}</code>
         {llm.symbol && <span className="text-muted">{llm.symbol}</span>}
-        <GithubLink
-          url={facts.github_url}
-          tip={`Open these lines on GitHub at the ${facts.side} commit (new tab)`}
-        >
+        <GithubLink url={github.url} tip={github.tip}>
           L{rangeText(facts.range)}
         </GithubLink>
         <Markers step={step} ownComments={ownComments} threadsStatus={threadsStatus} />

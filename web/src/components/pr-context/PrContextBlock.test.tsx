@@ -213,7 +213,8 @@ it("links the CI summary to the checks page it is given", () => {
   render(
     <PrContextBlock pr={tour.analysis.pr} context={tour.pr_context} threadCount={0} checksHref={href} />,
   );
-  const link = screen.getByRole("link", { name: /^Check runs: .*↗$/ });
+  const link = screen.getByRole("link", { name: /^Check runs: .* \(opens on GitHub in a new tab\)$/ });
+  expect(link.querySelector('svg[data-icon="github"]')).not.toBeNull();
   expect(link).toHaveAttribute("href", href);
   expect(link).toHaveAttribute("target", "_blank");
   expect(link).toHaveAccessibleDescription(/^Open the checks on GitHub \(new tab\)/);

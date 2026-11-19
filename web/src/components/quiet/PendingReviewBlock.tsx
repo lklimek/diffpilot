@@ -1,5 +1,6 @@
 import type { PendingComment, PendingReview } from "../../api/generated/types";
 import { PendingCommentItem } from "../comment/PendingCommentItem";
+import { GithubMark } from "../github/GithubMark";
 import { PENDING_INCOMPLETE } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Note, QuietCard } from "./QuietCard";
@@ -62,7 +63,8 @@ export function PendingReviewBlock({ review, prUrl, onEdit, onDelete, placeOf }:
         <p>
           <Tooltip tip="Open the pull request's files on GitHub, where you submit the review (new tab)">
             <a href={`${prUrl}/files`} target="_blank" rel="noopener noreferrer" className="font-semibold">
-              Finish on GitHub ↗
+              Finish on GitHub
+              <GithubMark />
             </a>
           </Tooltip>
         </p>

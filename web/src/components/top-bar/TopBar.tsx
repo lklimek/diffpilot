@@ -1,3 +1,4 @@
+import { GithubMark } from "../github/GithubMark";
 import { CHECKS_LINK_TIP, ciText, ciTip } from "../section/ci";
 import type { CiStatus, LlmLanguage, PrSummary } from "../../api/generated/types";
 import { LanguageTag } from "../language-tag/LanguageTag";
@@ -68,10 +69,12 @@ export function TopBar({
             className="text-muted"
           >
             {repo}
+            <GithubMark />
           </a>
           <Tooltip tip="Open the pull request on GitHub (new tab)">
             <a href={pr.html_url} target="_blank" rel="noopener noreferrer" className="font-bold">
-              #{pr.number} ↗
+              #{pr.number}
+              <GithubMark />
             </a>
           </Tooltip>
           <strong className="truncate font-semibold">{pr.title}</strong>
@@ -91,7 +94,8 @@ export function TopBar({
                   ci.state === "failing" ? "border-high-bd bg-high-bg text-high" : "border-border text-text"
                 }`}
               >
-                {ciText(ci)} ↗
+                {ciText(ci)}
+                <GithubMark />
               </a>
             </Tooltip>
           )}

@@ -1,3 +1,5 @@
+import { GithubMark } from "../github/GithubMark";
+import { isGithubUrl } from "../github/links";
 import { Tooltip } from "../tooltip/Tooltip";
 import { ModelsUsed } from "../usage/ModelsUsed";
 import { UsageLine } from "../usage/UsageLine";
@@ -74,6 +76,7 @@ function Related({ item, target }: { item: RelatedWork; target?: RelatedWorkLink
           <code>
             {target.repo}#{target.number}
           </code>
+          <GithubMark />
         </a>
       ) : (
         <code className="break-all">{item.reference}</code>
@@ -204,7 +207,8 @@ export function PrContextBlock({
               {checksHref ? (
                 <Tooltip tip={CHECKS_LINK_TIP}>
                   <a href={checksHref} target="_blank" rel="noopener noreferrer">
-                    {ciText(facts.ci)} ↗
+                    {ciText(facts.ci)}
+                    <GithubMark />
                   </a>
                 </Tooltip>
               ) : (
@@ -217,6 +221,7 @@ export function PrContextBlock({
                       {check.url ? (
                         <a href={check.url} target="_blank" rel="noopener noreferrer">
                           {check.name}
+                          {isGithubUrl(check.url) && <GithubMark />}
                         </a>
                       ) : (
                         check.name

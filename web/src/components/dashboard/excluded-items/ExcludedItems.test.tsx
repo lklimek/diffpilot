@@ -58,7 +58,7 @@ describe("ExcludedItems", () => {
       "Drafts: 2",
     ]);
     const authors = within(groups[1]!);
-    const link = authors.getByRole("link", { name: "Open PLAT-1 on GitHub" });
+    const link = authors.getByRole("link", { name: "Open PLAT-1 on GitHub (new tab)" });
     expect(link.getAttribute("href")).toBe("https://github.com/acme/platform/pull/1");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(authors.getByText("<b>bump</b> serde")).toBeTruthy();
