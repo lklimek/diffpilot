@@ -215,28 +215,14 @@ describe("NavList: the user's questions", () => {
     expect(screen.getAllByText(/^\?\d$/)).toHaveLength(2);
   });
 
-  it("one entry with the count opens the questions page; while open, it is the current row", async () => {
+  it("one entry with the count opens the Ask chat; it is never the current row", async () => {
     const onOpen = vi.fn();
-    const { rerender } = renderNav({ questions: { count: 3, open: false, onOpen } });
+    renderNav({ questions: { count: 3, onOpen } });
     const row = screen.getByRole("button", { name: "Your questions and answers: 3" });
     expect(row).toHaveAccessibleDescription(/only you see them/i);
+    expect(row).not.toHaveAttribute("aria-current");
     await userEvent.click(row);
     expect(onOpen).toHaveBeenCalledOnce();
-    rerender(
-      <NavList
-        flows={tour.flows}
-        quiet={tour.quiet}
-        ticked={[]}
-        current={{ block: "pr_context" }}
-        onSelect={() => {}}
-        questions={{ count: 3, open: true, onOpen }}
-      />,
-    );
-    expect(screen.getByRole("button", { name: "Your questions and answers: 3" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
-    expect(screen.getByRole("button", { name: "PR context" })).not.toHaveAttribute("aria-current");
   });
 });
 

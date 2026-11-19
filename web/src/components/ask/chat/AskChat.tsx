@@ -14,15 +14,31 @@ import { clockText } from "../../format/time";
 import { Kbd } from "../../help/Kbd";
 import { assignRef, growField, useAction } from "../../inspector/action";
 import { Tooltip } from "../../tooltip/Tooltip";
-import { Answer } from "../AskAnswers";
+import { Answer } from "../Answer";
 import { hasLines, subjectOf, type ChatThread } from "./model";
 
-// A refusal that waiting will not change (limit, unfinished analysis, unknown flow) is said as it is; a busy
-// server or a lost connection adds when to try again.
+// The server's message says what to do; a hint is added only to a retryable failure whose message has none.
 const RETRY_LATER = new Set(["unavailable", "rate_limited"]);
 function notSent(message: string, code: string | null): string {
+  if (/try again|retry/i.test(message)) return `Not sent: ${message}`;
   if (code !== null && RETRY_LATER.has(code)) return `Not sent: ${message} Try again in a moment.`;
   return code === null || code === "internal" ? `Not sent: ${message} Try again.` : `Not sent: ${message}`;
+}
+
+/** Why a question was not sent; a lost sign-in gets the "Sign in again" link (the text is kept). */
+function NotSent({ id, text, signIn }: { id?: string; text: string; signIn?: string }) {
+  return (
+    <p id={id} role="alert" className="m-0 mt-1 flex flex-wrap items-baseline gap-x-2 text-[12px] text-high">
+      {text}
+      {signIn && (
+        <Tooltip tip="Opens the GitHub sign-in; your text stays here and nothing is sent.">
+          <a href={signIn} className="font-semibold text-accent underline">
+            Sign in again
+          </a>
+        </Tooltip>
+      )}
+    </p>
+  );
 }
 
 /** The chat's remembered size: null = the default; `full` = the whole height above the dock. */
@@ -59,6 +75,13 @@ export interface AskChatProps {
   placeWhat: string | null;
   draft: string;
   onDraft: (text: string) => void;
+  /** Follow-up drafts by thread (the first question's id); kept by the caller across Hide and reload. */
+  replyDrafts: Readonly<Record<QuestionId, string>>;
+  onReplyDraft: (root: QuestionId, text: string) => void;
+  /** The current time (ms): waiting questions show the time since they were asked. */
+  now: number;
+  /** The sign-in page, offered when a question is refused for a lost sign-in. */
+  signInHref: string;
   /** Sends a new question about `subject`; a rejection keeps the text and shows its message. */
   onSend: (text: string) => Promise<unknown> | void;
   /** Sends a follow-up in the thread of `root` (same subject; the LLM gets the thread). */
@@ -153,12 +176,14 @@ function Reply({
   onDraft,
   onReply,
   onClose,
+  signInHref,
 }: {
   root: AskQuestion;
   draft: string;
   onDraft: (text: string) => void;
   onReply: AskChatProps["onReply"];
   onClose: (sent: boolean) => void;
+  signInHref: string;
 }) {
   const id = useId();
   const action = useAction();
@@ -223,9 +248,7 @@ function Reply({
         </Tooltip>
       </div>
       {error && (
-        <p role="alert" className="m-0 text-[12px] text-high">
-          {error}
-        </p>
+        <NotSent text={error} signIn={action.code === "unauthenticated" && !empty ? signInHref : undefined} />
       )}
     </form>
   );
@@ -301,6 +324,41 @@ function SizeHandle({
   );
 }
 
+/** The top-left corner: drags width and height together (the separators are its keyboard alternative). */
+function CornerHandle({ geometry, size, onSize }: Pick<AskChatProps, "geometry" | "size" | "onSize">) {
+  const start = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
+  const clamp = (value: number, min: number, max: number) => Math.round(Math.min(max, Math.max(min, value)));
+  return (
+    <div
+      data-resize-corner
+      aria-hidden="true"
+      onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
+        start.current = {
+          x: event.clientX,
+          y: event.clientY,
+          width: geometry.width,
+          height: geometry.height,
+        };
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
+      }}
+      onPointerMove={(event: PointerEvent<HTMLDivElement>) => {
+        const from = start.current;
+        if (!from) return;
+        onSize({
+          ...size,
+          width: clamp(from.width + from.x - event.clientX, geometry.minWidth, geometry.maxWidth),
+          height: clamp(from.height + from.y - event.clientY, geometry.minHeight, geometry.maxHeight),
+          full: false,
+        });
+      }}
+      onPointerUp={() => (start.current = null)}
+      onPointerCancel={() => (start.current = null)}
+      className="absolute -top-1 -left-1 z-[3] size-3.5 cursor-nwse-resize touch-none rounded-tl-[10px] hover:bg-accent"
+    />
+  );
+}
+
 /**
  * The floating Ask chat (proposal AC2–AC10): one private conversation per analysis and user, threads oldest first
  * with their subject chips and follow-ups, the composer whose subject follows the reader, Full height, Hide and
@@ -318,11 +376,38 @@ export function AskChat(props: AskChatProps) {
   const action = useAction();
   const [empty, setEmpty] = useState(false);
   const [replyFor, setReplyFor] = useState<QuestionId | null>(null);
-  const [replyDrafts, setReplyDrafts] = useState<Record<QuestionId, string>>({});
   const replyButtons = useRef(new Map<QuestionId, HTMLButtonElement>());
   const threadItems = useRef(new Map<QuestionId, HTMLLIElement>());
   const s = subjectOf(subject, tour);
-  const total = threads.reduce((n, t) => n + 1 + t.followUps.length, 0);
+  const all = threads.flatMap((t) => [t.root, ...t.followUps]);
+  const total = all.length;
+  // Questions are answered one at a time: a pending one waits behind any earlier one still waiting.
+  const waiting = all.filter((q) => q.state === "pending" || q.state === "answering");
+  const queued = (q: AskQuestion) =>
+    q.state === "pending" &&
+    waiting.some((w) => w.id !== q.id && Date.parse(w.created_at) < Date.parse(q.created_at));
+
+  // An outcome that arrives while the chat is open: "↓ New answer" until its thread is in view (AC5).
+  const states = Object.fromEntries(all.map((q) => [q.id, q.state]));
+  const [known, setKnown] = useState(states);
+  const [arrived, setArrived] = useState<QuestionId | null>(null);
+  if (JSON.stringify(states) !== JSON.stringify(known)) {
+    const got = all.find(
+      (q) =>
+        known[q.id] !== undefined &&
+        known[q.id] !== q.state &&
+        (q.state === "answered" || q.state === "failed"),
+    );
+    setKnown(states);
+    if (got) setArrived(threads.find((t) => t.root.id === got.id || t.followUps.includes(got))!.root.id);
+  }
+  const inView = (id: QuestionId) => {
+    const item = threadItems.current.get(id);
+    const box = list.current?.getBoundingClientRect();
+    if (!item || !box || box.height === 0) return true;
+    const at = item.getBoundingClientRect();
+    return at.top < box.bottom && at.bottom > box.top;
+  };
 
   // Follows the newest entry unless the reader scrolled up; a question just sent always shows.
   useLayoutEffect(() => {
@@ -330,6 +415,9 @@ export function AskChat(props: AskChatProps) {
     const added = total > count.current;
     count.current = total;
     if (element && (added || following_.current)) element.scrollTop = element.scrollHeight;
+    if (!arrived) return;
+    const frame = requestAnimationFrame(() => inView(arrived) && setArrived(null));
+    return () => cancelAnimationFrame(frame);
   });
   const focusId = props.focusThread?.id;
   const focusNonce = props.focusThread?.nonce;
@@ -420,6 +508,7 @@ export function AskChat(props: AskChatProps) {
         onScroll={(event) => {
           const e = event.currentTarget;
           following_.current = e.scrollTop + e.clientHeight >= e.scrollHeight - FOLLOW_PX;
+          if (arrived && inView(arrived)) setArrived(null);
         }}
         className="min-h-0 flex-1 overflow-auto overscroll-contain px-3 py-2.5"
       >
@@ -458,7 +547,7 @@ export function AskChat(props: AskChatProps) {
                     </span>
                   )}
                   <Question question={root} root tour={tour} onGoto={props.onGoto} />
-                  <ChatAnswer question={root} anchor={root.anchor} {...props} />
+                  <ChatAnswer question={root} anchor={root.anchor} queued={queued(root)} {...props} />
                   {followUps.length > 0 && (
                     <ol
                       aria-label="Follow-ups"
@@ -467,7 +556,7 @@ export function AskChat(props: AskChatProps) {
                       {followUps.map((f) => (
                         <li key={f.id} className="grid gap-1.5">
                           <Question question={f} root={false} tour={tour} onGoto={props.onGoto} />
-                          <ChatAnswer question={f} anchor={root.anchor} {...props} />
+                          <ChatAnswer question={f} anchor={root.anchor} queued={queued(f)} {...props} />
                         </li>
                       ))}
                     </ol>
@@ -475,10 +564,11 @@ export function AskChat(props: AskChatProps) {
                   {replyFor === root.id ? (
                     <Reply
                       root={root}
-                      draft={replyDrafts[root.id] ?? ""}
-                      onDraft={(text) => setReplyDrafts((all) => ({ ...all, [root.id]: text }))}
+                      draft={props.replyDrafts[root.id] ?? ""}
+                      onDraft={(text) => props.onReplyDraft(root.id, text)}
                       onReply={props.onReply}
                       onClose={() => closeReply(root.id)}
+                      signInHref={props.signInHref}
                     />
                   ) : (
                     <div className="ml-3.5 pl-2.5">
@@ -503,6 +593,27 @@ export function AskChat(props: AskChatProps) {
           </ol>
         )}
       </div>
+      {arrived && (
+        <div className="relative h-0 flex-none">
+          <Tooltip
+            tip="Scrolls to the answer that arrived out of view"
+            className="absolute bottom-2 left-1/2 -translate-x-1/2"
+          >
+            <button
+              type="button"
+              onClick={() => {
+                const item = threadItems.current.get(arrived);
+                item?.scrollIntoView?.({ block: "nearest" });
+                item?.focus({ preventScroll: true });
+                setArrived(null);
+              }}
+              className="cursor-pointer rounded-full border border-accent bg-accent px-3 py-0.5 text-[12px] font-semibold text-on-accent shadow"
+            >
+              ↓ New answer
+            </button>
+          </Tooltip>
+        </div>
+      )}
       <form
         noValidate
         onSubmit={(event) => {
@@ -596,9 +707,11 @@ export function AskChat(props: AskChatProps) {
           </Tooltip>
         </div>
         {error && (
-          <p id={`${fieldId}-e`} role="alert" className="m-0 mt-1 text-[12px] text-high">
-            {error}
-          </p>
+          <NotSent
+            id={`${fieldId}-e`}
+            text={error}
+            signIn={action.code === "unauthenticated" && !empty ? props.signInHref : undefined}
+          />
         )}
         <p className="m-0 mt-1 text-[11px] text-muted">
           <Kbd>Enter</Kbd> sends · <Kbd>Shift</Kbd>+<Kbd>Enter</Kbd> new line · <Kbd>Esc</Kbd> hides the chat
@@ -608,6 +721,7 @@ export function AskChat(props: AskChatProps) {
         <>
           <SizeHandle dimension="height" geometry={geometry} size={size} onSize={onSize} />
           <SizeHandle dimension="width" geometry={geometry} size={size} onSize={onSize} />
+          <CornerHandle geometry={geometry} size={size} onSize={onSize} />
         </>
       )}
     </section>
@@ -618,19 +732,21 @@ export function AskChat(props: AskChatProps) {
 function ChatAnswer({
   question,
   anchor,
+  queued,
+  now,
   onAskAgain,
   onEvidence,
   onUseAsComment,
-}: { question: AskQuestion; anchor: AskAnchor } & Pick<
+}: { question: AskQuestion; anchor: AskAnchor; queued: boolean } & Pick<
   AskChatProps,
-  "onAskAgain" | "onEvidence" | "onUseAsComment"
+  "now" | "onAskAgain" | "onEvidence" | "onUseAsComment"
 >) {
-  // `Answer` passes the anchor back only to `onAskAgain`, which asks this question again in its thread.
-  const shown = question as unknown as AskQuestion;
   return (
     <div className="max-w-24/25 min-w-0 text-[13px]">
       <Answer
-        question={shown}
+        question={question}
+        queued={queued}
+        now={now}
         onAskAgain={() => onAskAgain(question)}
         onEvidence={onEvidence}
         onUseAsComment={onUseAsComment && hasLines(anchor) ? () => onUseAsComment(question) : undefined}

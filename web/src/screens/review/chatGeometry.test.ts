@@ -13,16 +13,17 @@ describe("chatGeometry (proposal AC2, AC14)", () => {
       740,
       size,
     );
-    expect(g).toMatchObject({ right: 8, bottom: 168, width: 424, narrow: false });
-    // Room above the dock: 900 - 168 - 48 = 684.
-    expect(g.maxHeight).toBe(684);
-    expect(g.height).toBe(Math.round(684 * 0.75));
+    // Its bottom edge touches the dock's top edge: no strip of Inspector text shows between them.
+    expect(g).toMatchObject({ right: 8, bottom: 160, width: 424, narrow: false });
+    // Room above the dock: 900 - 160 - 48 = 692.
+    expect(g.maxHeight).toBe(692);
+    expect(g.height).toBe(Math.round(692 * 0.75));
     expect(
       chatGeometry({ width: 1600, height: 900 }, ws, { left: 1160, right: 1600, width: 440 }, 740, {
         ...size,
         full: true,
       }).height,
-    ).toBe(684);
+    ).toBe(692);
   });
 
   it("keeps a chosen size within the limits", () => {

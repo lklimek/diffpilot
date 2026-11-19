@@ -6,7 +6,6 @@ import type {
   AnalysisId,
   AnalysisSummary,
   AnchoredAskRequest,
-  AskAnchor,
   AskQuestion,
   CreateAccessToken,
   CreateCommentRequest,
@@ -21,7 +20,6 @@ import type {
   QuestionId,
   RangeQuery,
   RepoRef,
-  StepId,
   Tour,
 } from "./generated/types";
 import { api } from "./client";
@@ -106,25 +104,6 @@ function arrive(client: QueryClient, id: AnalysisId, question: AskQuestion, repl
     return [...all.filter((q) => q.id !== question.id), question];
   });
 }
-
-/** Asks about a step; the pending question joins the list, its answer arrives on the event stream. */
-export const useAskQuestion = (id: AnalysisId) => {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: ({ step, text }: { step: StepId; text: string }) => api.askQuestion(id, step, { text }),
-    onSuccess: (question) => arrive(client, id, question, false),
-  });
-};
-
-/** Asks about an anchor (a step, lines of it, or lines or a file without a step), like `useAskQuestion`. */
-export const useAskAnchored = (id: AnalysisId) => {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: ({ anchor, text }: { anchor: AskAnchor; text: string }) =>
-      api.askAnchored(id, { anchor, text }),
-    onSuccess: (question) => arrive(client, id, question, false),
-  });
-};
 
 /**
  * Asks in the Ask chat: a new thread about `anchor`, or a follow-up (`parent_id`) that keeps its thread's anchor.

@@ -35,7 +35,9 @@ import {
   useFlowWork,
   useForgetReanalysedFlows,
   useQuestions,
+  linesQuery,
 } from "../../api/queries";
+import { useQueryClient } from "@tanstack/react-query";
 import { useReviewStateStore } from "../../api/review-state";
 import { BlockNav } from "../../components/block-nav/BlockNav";
 import type { MarkerTarget } from "../../components/code-view/markers";
@@ -85,10 +87,9 @@ import {
 import { useNow } from "../../app/now";
 import { FlowsMenu } from "./FlowsMenu";
 import { Workspace } from "./Workspace";
-import { useAskChat, useAskPlace } from "../review/askChat";
+import { useAskChat, useAskPlace, type AnswerDraft } from "../review/askChat";
+import { rangeText } from "../../components/section/format";
 import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "./review";
-import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
-import { useTourNotifications } from "../../app/workNotifications";
 
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
 
@@ -180,10 +181,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const work = useFlowWork(analysisId);
   useForgetReanalysedFlows(analysisId, tour);
   const questions = useQuestions(analysisId);
-  useTabActivity("analysis", analysisActivity(tour.analysis.state));
-  useTabActivity("ask", questionsActivity(questions.data ?? []));
-  usePrTabSubject(tour.analysis.pr);
-  useTourNotifications(tour, questions.data);
   const chat = useAskChat();
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
@@ -206,6 +203,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const sequence = useMemo(() => buildSequence(tour), [tour]);
   const location = useLocation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const navigationType = useNavigationType();
   const [locationKey, setLocationKey] = useState(location.key);
   const known = (last: BlockRef | null | undefined): last is BlockRef =>
@@ -504,34 +502,44 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             ? { kind: "pr" }
             : null,
   );
-  // An answer's evidence opens here; "Use as review comment" drafts on the step's lines (AC12). An answer about
-  // another step or about lines of a file opens that place first; pressing it there drafts.
+  // An answer's evidence opens here; "Use as review comment" drafts on its lines and focuses the composer (AC12).
+  // An answer about another step or lines of a file opens that place first, says so, and drafts there.
   useEffect(() => {
     chat.setActions({
       onEvidence: showEvidence,
       onUseAsComment: (anchor, text) => {
-        if (anchor.kind === "lines" && anchor.range)
-          return void navigate(
-            `${filesPath}${filesHash({ file: anchor.path, side: anchor.side, line: anchor.range.start_line, end: anchor.range.end_line })}`,
-          );
+        const moved = (where: string) =>
+          chat.announce(`Opened ${where} to comment on its lines; the draft is in the Comment composer.`);
+        if (anchor.kind === "lines" && anchor.range) {
+          const { path, side, range } = anchor;
+          moved(`${path}:${rangeText(range)}`);
+          const hash = filesHash({ file: path, side, line: range.start_line, end: range.end_line });
+          return void navigate(`${filesPath}${hash}`, {
+            state: { commentDraft: { path, side, range, text } satisfies AnswerDraft },
+          });
+        }
         if (anchor.kind !== "step") return;
-        if (!step || anchor.step_id !== step.id || !stepLines.data)
-          return go({ block: "step", step_id: anchor.step_id });
-        const lines = anchor.lines;
-        draftComment(
-          lines
-            ? {
-                target: {
-                  path: step.facts.file,
-                  side: step.facts.side,
-                  start_line: lines.start_line === lines.end_line ? null : lines.start_line,
-                  line: lines.end_line,
-                },
-                lines: stepLines.data,
-              }
-            : currentLine(),
-          text,
-        );
+        const found = findStep(tour, anchor.step_id);
+        if (!found) return;
+        const target = found.step;
+        const draftOn = (lines: LinesResponse, first: number | undefined) => {
+          const at = anchor.lines ?? (first === undefined ? null : { start_line: first, end_line: first });
+          if (!at) return;
+          const where = { path: target.facts.file, side: target.facts.side };
+          const start_line = at.start_line === at.end_line ? null : at.start_line;
+          draftComment({ target: { ...where, start_line, line: at.end_line }, lines }, text);
+          setFocusNext("comment");
+        };
+        if (step && target.id === step.id && stepLines.data) {
+          if (!anchor.lines && commentLine) draftComment(commentLine, text);
+          else draftOn(stepLines.data, currentLine()?.target.line);
+          return setFocusNext("comment");
+        }
+        go({ block: "step", step_id: target.id });
+        moved(`flow ${found.flow.position} · step ${target.number}`);
+        queryClient
+          .fetchQuery(linesQuery(analysisId, stepQuery(target)))
+          .then((lines) => draftOn(lines, lines.changed[0] ?? lines.from));
       },
     });
   });
@@ -545,23 +553,21 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     activeLine: commentLine?.target ?? null,
     onComment: comment,
     // "Ask about this line": the chat opens about the line (or the selected lines); nothing is sent.
+    // A step anchor only for lines inside the step (the server refuses others); else lines of the file.
     onAskLine: step
-      ? (target) =>
+      ? (target) => {
+          const range = { start_line: target.start_line ?? target.line, end_line: target.line };
+          const inside =
+            target.side === step.facts.side &&
+            target.path === step.facts.file &&
+            step.facts.range.start_line <= range.start_line &&
+            range.end_line <= step.facts.range.end_line;
           chat.open({
-            anchor:
-              target.side === step.facts.side && target.path === step.facts.file
-                ? {
-                    kind: "step",
-                    step_id: step.id,
-                    lines: { start_line: target.start_line ?? target.line, end_line: target.line },
-                  }
-                : {
-                    kind: "lines",
-                    path: target.path,
-                    side: target.side,
-                    range: { start_line: target.start_line ?? target.line, end_line: target.line },
-                  },
-          })
+            anchor: inside
+              ? { kind: "step", step_id: step.id, lines: range }
+              : { kind: "lines", path: target.path, side: target.side, range },
+          });
+        }
       : undefined,
     revealComment,
     onEditComment: comments.edit,
@@ -996,7 +1002,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
                   : questions.isError
                     ? "error"
                     : "loading",
-                open: false,
                 onOpen: () => chat.open(),
               }}
             />

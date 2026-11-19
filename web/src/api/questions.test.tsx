@@ -10,7 +10,7 @@ import type { AnalysisSummary, AskQuestion, MeResponse, Tour } from "./generated
 import {
   ANALYSIS_RECONNECT_MS,
   mergeFetchedQuestions,
-  useAskQuestion,
+  useAskInChat,
   useQuestionEvents,
   useQuestions,
   useTour,
@@ -37,7 +37,7 @@ const server = setupServer(
     lists += 1;
     return HttpResponse.json(await listed());
   }),
-  http.post(`/api/v1/analyses/${ID}/steps/:step/questions`, async () =>
+  http.post(`/api/v1/analyses/${ID}/questions`, async () =>
     HttpResponse.json(await asked(), { status: 202 }),
   ),
 );
@@ -65,7 +65,7 @@ function setup() {
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
   return renderHook(
-    () => ({ list: useQuestions(ID), stream: useQuestionEvents(ID), ask: useAskQuestion(ID) }),
+    () => ({ list: useQuestions(ID), stream: useQuestionEvents(ID), ask: useAskInChat(ID) }),
     { wrapper },
   );
 }
@@ -103,7 +103,7 @@ describe("question cache", () => {
     asked = () => reply.promise;
     const { result } = setup();
     await waitFor(() => expect(result.current.list.isSuccess).toBe(true));
-    const asking = act(() => result.current.ask.mutateAsync({ step: "f1.5", text: "Twice?" }));
+    const asking = act(() => result.current.ask.mutateAsync({ anchor: { kind: "pr" }, text: "Twice?" }));
     await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
     emit(q("new", "answered"));
     reply.resolve(q("new", "pending"));

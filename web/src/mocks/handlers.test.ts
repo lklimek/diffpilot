@@ -408,5 +408,15 @@ describe("msw handlers of the screens", () => {
     await expect(ask({ text: "?", anchor: { kind: "flow", flow_id: "f99" } })).rejects.toMatchObject({
       status: 404,
     });
+    // Step lines must lie inside the step (f1.5 is head line 99), as on the server.
+    await expect(
+      ask({ text: "?", anchor: { kind: "step", step_id: "f1.5", lines: { start_line: 98, end_line: 99 } } }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(
+      await ask({
+        text: "?",
+        anchor: { kind: "step", step_id: "f1.5", lines: { start_line: 99, end_line: 99 } },
+      }),
+    ).toMatchObject({ state: "pending" });
   });
 });

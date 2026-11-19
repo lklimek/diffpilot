@@ -326,13 +326,18 @@ describe("events of the review", () => {
       { kind: "flow", flow_id: "f1" },
       { kind: "pr" },
       { kind: "lines", path: "src/a.rs", side: "head", range: null },
+      { kind: "lines", path: "src/a.rs", side: "base", range: { start_line: 3, end_line: 4 } },
     ];
     const before = anchors.map((a, i) => q(`q${i}`, a, "answering"));
     const after = anchors.map((a, i) => q(`q${i}`, a, "answered"));
     expect(questionEvents("a1", before, after, t, PR).map((e) => [e.body, e.path])).toEqual([
       ["LLM answer to your question on flow 1.", "/analyses/a1#f1"],
       ["LLM answer to your question on the whole PR.", "/analyses/a1#pr_context"],
-      ["LLM answer to your question on lines of a file.", "/analyses/a1"],
+      ["LLM answer to your question on src/a.rs.", "/analyses/a1/files#lines?file=src%2Fa.rs&side=head"],
+      [
+        "LLM answer to your question on src/a.rs:3–4.",
+        "/analyses/a1/files#lines?file=src%2Fa.rs&side=base&line=3&end=4",
+      ],
     ]);
   });
 

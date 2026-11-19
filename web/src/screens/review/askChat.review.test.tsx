@@ -1,4 +1,4 @@
-// Independent QA repros for the floating Ask chat (review of feat/ask-chat-web, f7d727b).
+// Review repros for the floating Ask chat: chip links, anchors, drafts, sign-in and refusal texts.
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
@@ -45,7 +45,7 @@ function captureAsk() {
   return { bodies, stop: () => server.events.removeListener("request:start", record) };
 }
 
-describe("Ask chat (Marvin repros)", () => {
+describe("Ask chat review repros", () => {
   it("a thread chip labelled Files opens the Files view, as its label and tooltip say (AC7)", async () => {
     const router = renderRoute(
       `/analyses/${ID}/files#lines?file=src/rpc/client.rs&side=head&line=100&end=102`,

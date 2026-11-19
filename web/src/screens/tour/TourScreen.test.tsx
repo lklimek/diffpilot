@@ -607,6 +607,8 @@ describe("Tour screen (brief §4.3)", () => {
     const copy = within(inspector()).getByRole("region", { name: /^Your questions about this step \(\d+\)/ });
     expect(copy).toHaveTextContent("Is the retry idempotent?");
     expect(within(inspector()).queryByRole("textbox", { name: /Ask/ })).toBeNull();
+    // Right after the step's Flags (proposal AC11), not at the end of the Inspector.
+    expect(copy.previousElementSibling?.textContent).toMatch(/Flags \(\d+\)/);
   });
 
   it("rating pills: the flow intro and step show them; a pill jumps to the first remark and flashes it", async () => {
@@ -898,7 +900,7 @@ describe("Use as review comment (owner request F31): anchors and availability", 
     expect((composer() as HTMLTextAreaElement).value).toContain("In `RpcConfig::default`.");
   });
 
-  it("an answer about lines of a file opens them in the Files view", async () => {
+  it("an answer about lines of a file opens them in the Files view and drafts there", async () => {
     server.use(
       http.get("/api/v1/analyses/:id/questions", () =>
         HttpResponse.json([
@@ -928,9 +930,14 @@ describe("Use as review comment (owner request F31): anchors and availability", 
     expect(decodeURIComponent(router.state.location.hash)).toBe(
       "#lines?file=src/config.rs&side=head&line=3&end=4",
     );
+    // The draft is waiting there, focused, and the move is said.
+    const files = await screen.findByRole("textbox", { name: /^Comment on src\/config\.rs:3–4/ });
+    await waitFor(() => expect(files).toHaveFocus());
+    expect((files as HTMLTextAreaElement).value).toContain("Because.");
+    expect(screen.getByText(/^Opened src\/config\.rs:3–4 to comment on its lines/)).toBeInTheDocument();
   });
 
-  it("an answer about another step opens that step first", async () => {
+  it("an answer about another step opens that step and drafts there", async () => {
     setScenario("ask-thread");
     await open();
     await openStep("1", "5");
@@ -938,6 +945,11 @@ describe("Use as review comment (owner request F31): anchors and availability", 
     await user().click(within(await thread("t2")).getByRole("button", { name: "Use as review comment" }));
     await waitFor(() => expect(blockHeading()).toHaveTextContent(/^2 /));
     expect(screen.getByRole("dialog", { name: "Ask" })).toBeVisible();
+    // The draft goes on that step's first changed line, focused, and the move is said.
+    await waitFor(() => expect(composer()).toHaveFocus());
+    expect(composer()).toHaveAccessibleName("Comment on src/rpc/client.rs:89");
+    expect((composer() as HTMLTextAreaElement).value).toContain("In `RpcConfig::default`.");
+    expect(screen.getByText(/^Opened flow 1 · step 2 to comment on its lines/)).toBeInTheDocument();
   });
 
   it.each([

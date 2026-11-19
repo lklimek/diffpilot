@@ -23,8 +23,11 @@ const q = (id: string, minute: number, anchor: AskAnchor, extra: Partial<AskQues
 const STEP: AskAnchor = { kind: "step", step_id: "f1.5", lines: null };
 const QUESTIONS = [q("a", 1, STEP), q("b", 2, STEP, { parent_id: "a" }), q("c", 3, { kind: "pr" })];
 
+const NOW = Date.parse("2026-11-19T10:10:00Z");
+
 function Harness(over: Partial<AskChatProps> & { questions?: AskQuestion[] }) {
   const [draft, setDraft] = useState("");
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const props: AskChatProps = {
     tour,
     threads: threadsOf(over.questions ?? QUESTIONS),
@@ -33,6 +36,10 @@ function Harness(over: Partial<AskChatProps> & { questions?: AskQuestion[] }) {
     placeWhat: "this step",
     draft,
     onDraft: setDraft,
+    replyDrafts,
+    onReplyDraft: (id, text) => setReplyDrafts((all) => ({ ...all, [id]: text })),
+    now: NOW,
+    signInHref: "/auth/github/login",
     onSend: vi.fn(),
     onReply: vi.fn(),
     onAskAgain: vi.fn(),
@@ -127,6 +134,12 @@ describe("AskChat (proposal AC3–AC10)", () => {
       "not_found",
       "This flow is not analysed in this review.",
       "Not sent: This flow is not analysed in this review.",
+    ],
+    [
+      503,
+      "unavailable",
+      "The server is busy. Try again in a moment.",
+      "Not sent: The server is busy. Try again in a moment.",
     ],
     [503, "unavailable", "The server is busy.", "Not sent: The server is busy. Try again in a moment."],
   ])(
@@ -234,5 +247,93 @@ describe("AskChat (proposal AC3–AC10)", () => {
       .getAllByRole("listitem")
       .find((li) => li.dataset.thread === "a")!;
     expect(thread).toHaveTextContent(/^new/);
+  });
+
+  it("a 401 offers Sign in again and keeps the text", async () => {
+    const onSend = vi.fn(() =>
+      Promise.reject(
+        Object.assign(new Error("Sign in to continue."), { status: 401, code: "unauthenticated" }),
+      ),
+    );
+    render(<Harness onSend={onSend} />);
+    await userEvent.setup().type(field(), "Why?{Enter}");
+    const alert = await within(chat()).findByRole("alert");
+    expect(alert).toHaveTextContent("Not sent: Sign in to continue.");
+    expect(within(alert).getByRole("link", { name: "Sign in again" })).toHaveAttribute(
+      "href",
+      "/auth/github/login",
+    );
+    expect(field()).toHaveValue("Why?");
+  });
+
+  it("a question still waiting says so in one line, with a spinner and the time since it was asked", () => {
+    render(
+      <Harness
+        questions={[
+          q("a", 8, STEP, { state: "answering", answer: null }),
+          q("b", 9, { kind: "pr" }, { state: "pending", answer: null }),
+        ]}
+      />,
+    );
+    const [a, b] = within(chat())
+      .getAllByRole("listitem")
+      .filter((li) => li.dataset.thread);
+    expect(within(a!).getByRole("status")).toHaveTextContent(/^Being written$/);
+    expect(a).toHaveTextContent("Being written · 2:00");
+    expect(a!.querySelector(".animate-spin")).not.toBeNull();
+    expect(within(b!).getByRole("status")).toHaveTextContent(/^Queued behind your earlier question$/);
+    expect(b).toHaveTextContent("Queued behind your earlier question · 1:00");
+  });
+
+  it("a follow-up draft is the caller's: it is there again when the chat comes back", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<Harness replyDrafts={{ c: "kept" }} onReplyDraft={vi.fn()} />);
+    const thread = within(chat())
+      .getAllByRole("listitem")
+      .find((li) => li.dataset.thread === "c")!;
+    await user.click(within(thread).getByRole("button", { name: "Ask a follow-up" }));
+    expect(within(thread).getByRole("textbox", { name: /^Follow-up in this thread/ })).toHaveValue("kept");
+    unmount();
+  });
+
+  it("an answer arriving out of view shows New answer, which scrolls to it", async () => {
+    const user = userEvent.setup();
+    const pending = q("c", 3, { kind: "pr" }, { state: "answering", answer: null });
+    const { rerender } = render(<Harness questions={[...QUESTIONS.slice(0, 2), pending]} />);
+    const list = within(chat()).getByRole("region", { name: "Conversation, oldest first" });
+    // The reader has scrolled up: the thread is out of view.
+    Object.defineProperties(list, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    list.scrollTop = 0;
+    fireEvent.scroll(list);
+    const item = chat().querySelector<HTMLElement>('[data-thread="c"]')!;
+    item.getBoundingClientRect = () => ({ top: 900, bottom: 960 }) as DOMRect;
+    list.getBoundingClientRect = () => ({ top: 0, bottom: 200 }) as DOMRect;
+    const scrolled = vi.fn();
+    item.scrollIntoView = scrolled;
+    rerender(
+      <Harness
+        questions={[
+          ...QUESTIONS.slice(0, 2),
+          { ...pending, state: "answered", answer: { answer: "Done.", evidence: [] } },
+        ]}
+      />,
+    );
+    const jump = await within(chat()).findByRole("button", { name: "↓ New answer" });
+    await user.click(jump);
+    expect(scrolled).toHaveBeenCalled();
+    expect(within(chat()).queryByRole("button", { name: "↓ New answer" })).toBeNull();
+  });
+
+  it("the top-left corner resizes width and height together by dragging; Enter on a separator still resets", () => {
+    const onSize = vi.fn();
+    render(<Harness onSize={onSize} />);
+    const corner = chat().querySelector<HTMLElement>("[data-resize-corner]")!;
+    fireEvent.pointerDown(corner, { clientX: 500, clientY: 300, pointerId: 1 });
+    fireEvent.pointerMove(corner, { clientX: 470, clientY: 260, pointerId: 1 });
+    expect(onSize).toHaveBeenLastCalledWith({ width: 450, height: 540, full: false });
+    fireEvent.pointerUp(corner, { pointerId: 1 });
   });
 });

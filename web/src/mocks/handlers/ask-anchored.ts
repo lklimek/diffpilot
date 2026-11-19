@@ -21,6 +21,16 @@ export const askAnchored = route(
       (!flow || (flow.analysis_status && flow.analysis_status.state !== "analysed"))
     )
       return apiError(404, "not_found", "This flow is not analysed in this review.");
+    if (anchor.kind === "step" && anchor.lines) {
+      const step = tour.flows.flatMap((f) => f.steps).find((x) => x.id === anchor.step_id);
+      const r = step?.facts.range;
+      if (!r || anchor.lines.start_line < r.start_line || anchor.lines.end_line > r.end_line)
+        return apiError(
+          400,
+          "invalid_request",
+          "Ask about lines of the step or of a file of this pull request, at most 2000 lines.",
+        );
+    }
     let root = undefined;
     if (parent_id) {
       const questions = readStore("questions");

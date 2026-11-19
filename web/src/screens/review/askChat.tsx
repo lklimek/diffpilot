@@ -11,7 +11,20 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router";
-import type { AnalysisId, AskAnchor, AskQuestion, Evidence, QuestionId } from "../../api/generated/types";
+import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
+import { useNow } from "../../app/now";
+import { useTourNotifications } from "../../app/workNotifications";
+import { routes } from "../../api/generated/routes";
+import type {
+  AnalysisId,
+  AskAnchor,
+  AskQuestion,
+  Evidence,
+  QuestionId,
+  LineRange,
+  LineSide,
+  Tour,
+} from "../../api/generated/types";
 import {
   useAskInChat,
   useMe,
@@ -22,7 +35,7 @@ import {
 } from "../../api/queries";
 import { AskChat, type ChatSize } from "../../components/ask/chat/AskChat";
 import { AskLauncher } from "../../components/ask/chat/AskLauncher";
-import { subjectOf, threadsOf, unreadOf } from "../../components/ask/chat/model";
+import { linesOf, subjectOf, threadsOf, unreadOf, withoutRetried } from "../../components/ask/chat/model";
 import { answerComment } from "../../components/comment/prefill";
 import { filesHash } from "../../components/files/model";
 import { blockFragment } from "../tour/sequence";
@@ -35,6 +48,14 @@ export interface ChatActions {
   onUseAsComment?: (anchor: AskAnchor, text: string) => void;
 }
 
+/** "Use as review comment" handed from Flows to Files: the answer's text for the composer on these lines. */
+export interface AnswerDraft {
+  path: string;
+  side: LineSide;
+  range: LineRange;
+  text: string;
+}
+
 /** The chat as screens see it. */
 export interface AskChatControl {
   /** Where the reader is (the composer's subject while it follows); null outside a place. */
@@ -43,9 +64,17 @@ export interface AskChatControl {
   /** Opens the chat about the place (or `anchor`), or at a thread; focuses its field. Nothing is sent. */
   open: (options?: { anchor?: AskAnchor; thread?: QuestionId }) => void;
   setActions: (actions: ChatActions) => void;
+  /** Says something politely to screen readers (e.g. where "Use as review comment" moved the review). */
+  announce: (text: string) => void;
 }
 
-const NONE: AskChatControl = { place: null, setPlace: () => {}, open: () => {}, setActions: () => {} };
+const NONE: AskChatControl = {
+  place: null,
+  setPlace: () => {},
+  open: () => {},
+  setActions: () => {},
+  announce: () => {},
+};
 const Context = createContext<AskChatControl>(NONE);
 
 /** The review's chat; a no-op outside a review layout (component tests of a screen). */
@@ -84,8 +113,12 @@ interface Remembered extends ChatSize {
 }
 const FIRST: Remembered = { open: false, width: null, height: null, full: false };
 
-const linkOf = (id: AnalysisId, anchor: AskAnchor): string => {
+// Where a subject chip goes: lines (a step's too) are selected in Files, the rest open in Flows.
+const linkOf = (id: AnalysisId, anchor: AskAnchor, tour: Tour): string => {
   const base = `/analyses/${encodeURIComponent(id)}`;
+  const lines = anchor.kind === "step" && anchor.lines ? linesOf(anchor, tour) : null;
+  if (lines)
+    return `${base}/files${filesHash({ file: lines.path, side: lines.side, line: lines.from, end: lines.to ?? lines.from })}`;
   switch (anchor.kind) {
     case "pr":
       return `${base}#${blockFragment({ block: "pr_context" })}`;
@@ -102,6 +135,15 @@ const linkOf = (id: AnalysisId, anchor: AskAnchor): string => {
   }
 };
 
+/** Browser notifications and the tab title's work status, for Flows and Files alike. */
+function ReviewActivity({ tour, questions }: { tour: Tour; questions: readonly AskQuestion[] | undefined }) {
+  useTabActivity("analysis", analysisActivity(tour.analysis.state));
+  useTabActivity("ask", questionsActivity(questions ?? []));
+  usePrTabSubject(tour.analysis.pr);
+  useTourNotifications(tour, questions);
+  return null;
+}
+
 /** Provides the chat to the review's screens and draws it (or its launcher) over them. */
 export function AskChatProvider({ analysisId, children }: { analysisId: AnalysisId; children: ReactNode }) {
   const [place, setPlaceState] = useState<AskAnchor | null>(null);
@@ -117,13 +159,17 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
   const questions = useQuestions(analysisId);
   const stream = useQuestionEvents(analysisId);
   const ask = useAskInChat(analysisId);
-  const all = (questions.data ?? []) as AskQuestion[];
+  // A failed question asked again gives way to its retry.
+  const all = withoutRetried(questions.data ?? []);
+  const clock = useNow();
 
   const layoutKey = `diffpilot.askChat.${login}`;
   const draftKey = `diffpilot.askChat.draft.${login}.${analysisId}`;
   const seenKey = `diffpilot.askChat.seen.${login}.${analysisId}`;
+  const repliesKey = `diffpilot.askChat.replies.${login}.${analysisId}`;
   const [remembered, setRemembered] = useState(() => read(local, layoutKey, FIRST));
   const [draft, setDraft] = useState(() => read(session, draftKey, { text: "" }).text);
+  const [replies, setReplies] = useState(() => read<Record<QuestionId, string>>(session, repliesKey, {}));
   // The subject: the place, unless × chose the whole PR; an Ask button's own subject until the place changes.
   const [wholePr, setWholePr] = useState(false);
   const placeKey = JSON.stringify(place);
@@ -144,6 +190,7 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
     setReadFor(login);
     setRemembered(read(local, layoutKey, FIRST));
     setDraft(read(session, draftKey, { text: "" }).text);
+    setReplies(read<Record<QuestionId, string>>(session, repliesKey, {}));
     const stored = read<{ ids: QuestionId[] | null }>(local, seenKey, { ids: null }).ids;
     setSeen(stored ? new Set(stored) : null);
   } else if (seen === null && questions.isSuccess && me.isSuccess) setSeen(new Set(unreadOf(all, new Set())));
@@ -205,7 +252,7 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
     setChosen(options.anchor ? { anchor: options.anchor, at: placeKey } : null);
     show(options.thread);
   };
-  const control: AskChatControl = { place, setPlace, open, setActions };
+  const control: AskChatControl = { place, setPlace, open, setActions, announce: setAnnouncement };
 
   const subject: AskAnchor = wholePr
     ? { kind: "pr" }
@@ -233,10 +280,20 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
       );
       setBox((old) => (JSON.stringify(old) === JSON.stringify(next) ? old : next));
       const inspectorHidden = (rect('[data-column="inspector"]')?.width ?? 0) < (2 * next.minWidth) / 3;
+      // The launcher's corner stays free: the Inspector (or, without it, the centre) ends above it.
+      const launcherBox = launcher.current?.querySelector("button")?.getBoundingClientRect();
+      const launcherPad = launcherBox?.height ? `${Math.ceil(view.height - launcherBox.top) + 8}px` : "0px";
       document.documentElement.style.setProperty(
         "--ask-chat-pad",
-        remembered.open && inspectorHidden ? `${next.height + 24}px` : "0px",
+        remembered.open
+          ? inspectorHidden
+            ? `${next.height + 24}px`
+            : "0px"
+          : inspectorHidden
+            ? launcherPad
+            : "0px",
       );
+      document.documentElement.style.setProperty("--ask-launcher-pad", remembered.open ? "0px" : launcherPad);
     };
     measure();
     window.addEventListener("resize", measure);
@@ -272,18 +329,21 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
       observer?.disconnect();
       mutations?.disconnect();
       document.documentElement.style.removeProperty("--ask-chat-pad");
+      document.documentElement.style.removeProperty("--ask-launcher-pad");
     };
   }, [remembered]);
 
   const pending = usePendingReview(analysisId);
   const commenting = pending.data?.commenting_available === true;
   if (!tour.data) return <Context.Provider value={control}>{children}</Context.Provider>;
+  const theTour = tour.data;
   const pr = tour.data.analysis.pr;
   const send = (body: { text: string; anchor: AskAnchor; parent_id?: QuestionId }) => ask.mutateAsync(body);
   const busy = all.some((q) => q.state === "answering");
   return (
     <Context.Provider value={control}>
       {children}
+      <ReviewActivity tour={theTour} questions={questions.data} />
       <p className="sr-only" aria-live="polite">
         {announcement}
       </p>
@@ -299,31 +359,42 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
             setDraft(text);
             write(session, draftKey, text ? { text } : null);
           }}
+          replyDrafts={replies}
+          onReplyDraft={(root, text) => {
+            const next = { ...replies, [root]: text };
+            if (!text) delete next[root];
+            setReplies(next);
+            write(session, repliesKey, Object.keys(next).length ? next : null);
+          }}
+          now={clock}
+          signInHref={routes.authLogin.path}
           onSend={(text) => send({ text, anchor: subject })}
           onReply={(root, text) => send({ text, anchor: root.anchor, parent_id: root.id })}
+          // The same question again in the same place: a first question as a first question, a follow-up in its
+          // thread; the retry then replaces the failed entry (`withoutRetried`).
           onAskAgain={(q) =>
-            send({
-              text: q.text,
-              anchor: q.anchor,
-              ...(q.parent_id ? { parent_id: q.parent_id } : { parent_id: q.id }),
-            })
+            send({ text: q.text, anchor: q.anchor, ...(q.parent_id ? { parent_id: q.parent_id } : {}) })
           }
           onUnanchor={() => setWholePr(true)}
           onUsePlace={() => {
             setWholePr(false);
             setChosen(null);
           }}
-          onGoto={(anchor) => void navigate(linkOf(analysisId, anchor))}
+          onGoto={(anchor) => void navigate(linkOf(analysisId, anchor, theTour))}
           onEvidence={(evidence) =>
             actions.current.onEvidence
               ? actions.current.onEvidence(evidence)
               : void navigate(
-                  linkOf(analysisId, {
-                    kind: "lines",
-                    path: evidence.file,
-                    side: evidence.side,
-                    range: { start_line: evidence.line, end_line: evidence.line },
-                  }),
+                  linkOf(
+                    analysisId,
+                    {
+                      kind: "lines",
+                      path: evidence.file,
+                      side: evidence.side,
+                      range: { start_line: evidence.line, end_line: evidence.line },
+                    },
+                    theTour,
+                  ),
                 )
           }
           onUseAsComment={

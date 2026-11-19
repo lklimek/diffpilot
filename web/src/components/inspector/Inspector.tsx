@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
 import type {
   Annotation,
   AnnotationId,
@@ -54,7 +54,7 @@ export interface InspectorProps {
   diff?: ReactNode;
   /** Dock under the sections: feedback and comment (e.g. `FeedbackButtons`, `CommentComposer`). */
   dock?: ReactNode;
-  /** The Ask chat's questions about this place (a read-only copy), after the panel's sections. */
+  /** The Ask chat's questions about this place (a read-only copy): after a step's Flags, else after the sections. */
   questions?: ReactNode;
   /** The user's pending review, for the pending-review summary. */
   pendingReview?: PendingReview | null;
@@ -114,7 +114,12 @@ export interface InspectorPanel {
   body: ReactNode;
   /** Set when an annotation is selected: context line for Back to step. */
   backTo?: string;
+  /** The body has a step's sections, which place the Ask chat's questions right after Flags. */
+  questionsInside?: boolean;
 }
+
+// The Ask chat's questions about the place, placed by `StepDetails` after Flags (proposal AC11).
+const QuestionsSlot = createContext<ReactNode>(null);
 type Panel = InspectorPanel;
 
 function stepPanel(
@@ -129,6 +134,7 @@ function stepPanel(
   const stepTitle = `Step ${step.number} · ${step.llm.title}`;
   const github = stepGithubLink(tour.analysis.pr, step.facts);
   return {
+    questionsInside: true,
     title: annotation ? `${annotationName(annotation)} · ${linesWord(annotation.range)}` : stepTitle,
     backTo: annotation ? stepTitle : undefined,
     meta: (
@@ -181,6 +187,7 @@ export function StepDetails({
   const anns = annotation ? [annotation] : step.llm.annotations;
   const byType = (type: AnnotationType) => anns.filter((a) => a.type === type);
   const stepThreads = tour.threads.filter((t) => step.facts.thread_ids.includes(t.id));
+  const questions = useContext(QuestionsSlot);
   return (
     <>
       {step.facts.moved && (
@@ -245,6 +252,7 @@ export function StepDetails({
         sections={sections}
         onUseAsComment={onFlagAsComment}
       />
+      {questions}
       <AssessmentSection assessment={step.llm.assessment} sections={sections} />
       {!files && (
         <ThreadsSection
@@ -383,7 +391,11 @@ export function Inspector(props: InspectorProps) {
   });
 
   return (
-    <div ref={root} data-inspector className="flex h-full min-h-0 flex-col bg-surface">
+    <div
+      ref={root}
+      data-inspector
+      className="flex h-full min-h-0 flex-col bg-surface pb-[var(--ask-launcher-pad,0px)]"
+    >
       <div ref={scroller} tabIndex={0} className="min-h-0 flex-1 overflow-auto overscroll-contain">
         <div className="px-3 pt-2.5 pb-1.5">
           {back && (
@@ -412,8 +424,10 @@ export function Inspector(props: InspectorProps) {
             {panel.title}
           </p>
         </div>
-        {panel.body}
-        {props.questions}
+        <QuestionsSlot value={panel.questionsInside ? (props.questions ?? null) : null}>
+          {panel.body}
+        </QuestionsSlot>
+        {!panel.questionsInside && props.questions}
       </div>
       {dock && (
         <div

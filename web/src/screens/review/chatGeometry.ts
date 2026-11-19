@@ -24,8 +24,9 @@ export function chatGeometry(
   const narrow = viewport.width < NARROW_PX;
   const shown = !narrow && inspector && inspector.width > (2 * MIN_WIDTH) / 3 ? inspector : null;
   const right = GAP + (shown ? viewport.width - shown.right : ws ? viewport.width - ws.right : 0);
+  // Over the Inspector it sits right on the dock (no strip of Inspector text between them).
   const bottom =
-    GAP + (shown && dockTop !== null ? viewport.height - dockTop : ws ? viewport.height - ws.bottom : 0);
+    shown && dockTop !== null ? viewport.height - dockTop : GAP + (ws ? viewport.height - ws.bottom : 0);
   const top = (ws?.top ?? 0) + GAP;
   const maxHeight = Math.max(120, viewport.height - bottom - top);
   const minHeight = Math.min(MIN_HEIGHT, maxHeight);

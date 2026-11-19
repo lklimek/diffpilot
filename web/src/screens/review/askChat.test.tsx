@@ -137,6 +137,46 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
     expect(chat()).toHaveTextContent(/About:\s*Flows\s*flow 2 · /);
   });
 
+  it("Ask again on a failed first question asks it again as a first question, which replaces the failed one", async () => {
+    const failed: AskQuestion = {
+      id: "f1",
+      mine: true,
+      anchor: { kind: "step", step_id: "f1.5", lines: null },
+      step_id: "f1.5",
+      text: "Does it retry twice?",
+      state: "failed",
+      answer: null,
+      failure: "the LLM did not finish.",
+      created_at: "2026-11-16T10:00:00Z",
+    };
+    let listed: AskQuestion[] = [failed];
+    server.use(http.get("/api/v1/analyses/:id/questions", () => HttpResponse.json(listed)));
+    const seen = captureAsk();
+    try {
+      await openTour("#f1.5");
+      await user().keyboard("a");
+      const thread = await waitFor(() => {
+        const t = chat().querySelector<HTMLElement>('[data-thread="f1"]');
+        expect(t).not.toBeNull();
+        return t!;
+      });
+      expect(within(thread).getByRole("button", { name: "Ask again" })).toHaveAccessibleDescription(
+        /its new answer takes the place of this one/,
+      );
+      await user().click(within(thread).getByRole("button", { name: "Ask again" }));
+      await waitFor(() => expect(seen.bodies).toHaveLength(1));
+      expect(seen.bodies[0]).toEqual({ text: "Does it retry twice?", anchor: failed.anchor });
+      listed = [
+        failed,
+        { ...failed, id: "f2", state: "pending", failure: null, created_at: "2026-11-16T10:05:00Z" },
+      ];
+      await waitFor(() => expect(chat().querySelector('[data-thread="f1"]')).toBeNull());
+      expect(chat().querySelectorAll("[data-thread]")).toHaveLength(1);
+    } finally {
+      seen.stop();
+    }
+  });
+
   it("a send failure keeps the question and says why", async () => {
     server.use(
       http.post("/api/v1/analyses/:id/questions", () =>

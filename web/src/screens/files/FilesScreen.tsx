@@ -73,7 +73,8 @@ import { loadLayout, saveLayout, showColumn, type TourLayout } from "../tour/lay
 import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "../tour/review";
 import { FlowsMenu } from "../tour/FlowsMenu";
 import { Workspace } from "../tour/Workspace";
-import { useAskChat, useAskPlace } from "../review/askChat";
+import { useAskChat, useAskPlace, type AnswerDraft } from "../review/askChat";
+import { rangeText } from "../../components/section/format";
 import { FileCode } from "./FileCode";
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -667,80 +668,92 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     const target = fileOf(files.files, { file: e.file, side: e.side });
     if (target) go({ file: target.path, side: e.side, line: e.line });
   };
-  // "Use as review comment" on a flag: the composer opens on the flag's lines with it as a draft; nothing is sent.
-  // Lines folded away are read first.
   // "Use as review comment": the composer opens on the lines with `text` as a draft; nothing is sent. Lines folded
   // away are read first.
-  const draftOn = (side: LineSide, start_line: number, end_line: number, text: string, what: string) => {
-    const draft = (data: LinesResponse) => {
+  // The composer on the lines with `text` as a draft, focused; nothing is sent.
+  const draftAt =
+    (path: string, side: LineSide, start_line: number, end_line: number, text: string) =>
+    (data: LinesResponse) => {
       commentOn({
-        target: {
-          path: pathOn(file, side),
-          side,
-          start_line: start_line === end_line ? null : start_line,
-          line: end_line,
-        },
+        target: { path, side, start_line: start_line === end_line ? null : start_line, line: end_line },
         lines: data,
       });
       setCommentPrefill({ text });
       openInspector();
+      setFocusNext("comment");
     };
-    const cached = cachedLines(side, end_line);
+  // Lines folded away (or of another file) are read first.
+  const readLines = (path: string, side: LineSide, start_line: number, end_line: number) =>
+    queryClient.fetchQuery(
+      linesQuery(analysisId, {
+        path,
+        side,
+        from: Math.max(start_line, end_line - MAX_RANGE_LINES + 1),
+        to: end_line,
+      }),
+    );
+  const draftOn = (
+    path: string,
+    side: LineSide,
+    start_line: number,
+    end_line: number,
+    text: string,
+    what: string,
+  ) => {
+    const draft = draftAt(path, side, start_line, end_line, text);
+    const cached = path === pathOn(file, side) ? cachedLines(side, end_line) : undefined;
     if (cached) return draft(cached);
-    const query = {
-      path: pathOn(file, side),
-      side,
-      from: Math.max(start_line, end_line - MAX_RANGE_LINES + 1),
-      to: end_line,
-    };
-    queryClient
-      .fetchQuery(linesQuery(analysisId, query))
-      .then(draft, (error: unknown) => setLinkNotice(`${what} could not be read: ${errorText(error)}`));
+    readLines(path, side, start_line, end_line).then(draft, (error: unknown) =>
+      setLinkNotice(`${what} could not be read: ${errorText(error)}`),
+    );
   };
   const onFlagAsComment =
     pending.data?.commenting_available === true
       ? (flag: Annotation) => {
           const owner = ownerOf.get(flag.id)?.step;
           if (!owner) return;
-          draftOn(
-            owner.facts.side,
-            flag.range.start_line,
-            flag.range.end_line,
-            flagComment(flag),
-            "The flag's lines",
-          );
+          const side = owner.facts.side;
+          const { start_line, end_line } = flag.range;
+          draftOn(pathOn(file, side), side, start_line, end_line, flagComment(flag), "The flag's lines");
         }
       : undefined;
-  // An answer's evidence opens here; its draft goes on the lines it was asked about, in this file (AC12).
+  // "Use as review comment" on an answer: the draft goes on the lines it was asked about and the composer takes the
+  // focus (AC12); lines of another file open that file first, and the move is said.
+  const answerAsComment = (anchor: AskAnchor, text: string) => {
+    const step = anchor.kind === "step" ? stepPlace(tour, anchor.step_id)?.step : undefined;
+    const at =
+      anchor.kind === "lines" && anchor.range
+        ? { path: anchor.path, side: anchor.side, range: anchor.range }
+        : step && {
+            path: step.facts.file,
+            side: step.facts.side,
+            range: anchor.kind === "step" && anchor.lines ? anchor.lines : step.facts.range,
+          };
+    if (!at) return;
+    const { start_line, end_line } = at.range;
+    const other =
+      at.path === pathOn(file, at.side) ? undefined : fileOf(files.files, { file: at.path, side: at.side });
+    if (other) {
+      go({ file: other.path, side: at.side, line: start_line, end: end_line });
+      chat.announce(
+        `Opened ${at.path}:${rangeText(at.range)} to comment on its lines; the draft is in the Comment composer.`,
+      );
+    } else if (at.path !== pathOn(file, at.side)) return;
+    draftOn(at.path, at.side, start_line, end_line, text, "The answer's lines");
+  };
+  // A draft handed over from Flows ("Use as review comment" on an answer about lines of a file) is taken once.
+  const incoming = (location.state as { commentDraft?: AnswerDraft } | null)?.commentDraft;
+  const taken = useRef<string | null>(null);
   useEffect(() => {
-    chat.setActions({
-      onEvidence,
-      onUseAsComment: (anchor, text) => {
-        const at =
-          anchor.kind === "lines" && anchor.range
-            ? { path: anchor.path, side: anchor.side, range: anchor.range }
-            : anchor.kind === "step"
-              ? (() => {
-                  const step = stepPlace(tour, anchor.step_id)?.step;
-                  return (
-                    step && {
-                      path: step.facts.file,
-                      side: step.facts.side,
-                      range: anchor.lines ?? step.facts.range,
-                    }
-                  );
-                })()
-              : undefined;
-        if (!at) return;
-        if (at.path !== pathOn(file, at.side)) {
-          const other = fileOf(files.files, { file: at.path, side: at.side });
-          if (other)
-            go({ file: other.path, side: at.side, line: at.range.start_line, end: at.range.end_line });
-          return;
-        }
-        draftOn(at.side, at.range.start_line, at.range.end_line, text, "The answer's lines");
-      },
-    });
+    chat.setActions({ onEvidence, onUseAsComment: answerAsComment });
+    if (!incoming || taken.current === location.key) return;
+    taken.current = location.key;
+    void navigate({ ...location }, { replace: true, state: null });
+    const { path, side, range, text } = incoming;
+    readLines(path, side, range.start_line, range.end_line).then(
+      draftAt(path, side, range.start_line, range.end_line, text),
+      (error: unknown) => setLinkNotice(`The answer's lines could not be read: ${errorText(error)}`),
+    );
   });
   const panelContext: FilesPanelContext = {
     tour,

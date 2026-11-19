@@ -36,8 +36,8 @@ interface NavListProps {
   onSelect: (block: BlockRef) => void;
   /** Number of the user's own questions per step; steps without one are omitted. */
   questionCounts?: Readonly<Record<StepId, number>>;
-  /** The entry of the user's questions page; no entry when omitted. */
-  questions?: { count: number | "loading" | "error"; open: boolean; onOpen: () => void };
+  /** The entry that opens the user's Ask chat; no entry when omitted. */
+  questions?: { count: number | "loading" | "error"; onOpen: () => void };
   /** Remarks with the user's feedback (their pills dim). */
   handledRemarks?: ReadonlySet<AnnotationId>;
   /** A rating/remark pill: go to the first remark among `steps`; without it no pills are shown. */
@@ -122,8 +122,7 @@ export function NavList({
   onSetFlowReviewed,
 }: NavListProps) {
   const openFlow = currentFlowId(flows, shown);
-  // The questions page replaces the block in the centre: no block row is current meanwhile.
-  const current = questions?.open ? undefined : shown;
+  const current = shown;
   const unexplainedLines = quiet.unexplained.reduce((n, f) => n + lineCount(f.ranges), 0);
   const sections = quiet.not_analysed.filter((s) => s.items.length > 0);
   const rowProps = { current, onSelect };
@@ -367,7 +366,6 @@ export function NavList({
               type="button"
               data-row="menu"
               className={ITEM}
-              aria-current={questions.open ? "page" : undefined}
               aria-label={`Your questions and answers: ${QUESTIONS_COUNT[questions.count] ?? questions.count}`}
               onClick={questions.onOpen}
             >
