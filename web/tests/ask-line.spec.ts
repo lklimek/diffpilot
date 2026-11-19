@@ -26,6 +26,7 @@ test("Ask the LLM about this line fills the Ask field from the code view and the
   await expect(action).toBeFocused();
   await expect(action).toHaveCSS("opacity", "1");
   await page.keyboard.press("Enter");
+  await main.getByRole("button", { name: "Ask about this line" }).click();
   await expect(field).toBeFocused();
   await expect(field).toHaveValue("src/rpc/client.rs:89 ");
   await page.keyboard.type("is this the retry?");
@@ -38,6 +39,7 @@ test("Ask the LLM about this line fills the Ask field from the code view and the
     .getByRole("button", { name: /^Ask the LLM about line \d+$/ })
     .first()
     .click();
+  await diff.getByRole("button", { name: "Ask about this line" }).click();
   await expect(field).toHaveValue(/^src\/rpc\/client\.rs:\d+ src\/rpc\/client\.rs:89 is this the retry\?$/);
   await expect(field).toBeFocused();
   expect(posts).toEqual([]);

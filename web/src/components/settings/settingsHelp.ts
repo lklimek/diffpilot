@@ -14,6 +14,7 @@ export const HELP_SECTIONS = [
   "LLM",
   "Memory",
   "Language",
+  "Notifications",
   "GitHub App",
   "Repository settings",
   "Dashboard",
@@ -130,6 +131,16 @@ const HELP = {
     empty: "English.",
     limits: "English, Polski or Русский.",
     example: "Polski, then analyse the pull request again to get its texts in Polish.",
+  },
+  notify_when_done: {
+    section: "Notifications",
+    title: "Notify me when work finishes",
+    what: "A browser notification when an Ask answer of yours arrives, a flow is analysed, or an analysis is ready to review, finishes or fails. It names the pull request and the flow or step, never the answer text; a click opens it.",
+    when: "While a diffpilot tab showing that review or its progress is open and you are in another tab or window. A tab you are looking at does not notify. Several open tabs notify once.",
+    empty: "Off. Turning it on asks the browser's permission; the choice is kept in this browser only.",
+    limits:
+      "Needs https (or localhost) and the browser's permission. Closed tabs do not notify. Mobile browsers show none.",
+    example: "Ask a question, switch to your editor, and get a notification when the answer is ready.",
   },
   app_installations: {
     section: "GitHub App",

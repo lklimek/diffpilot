@@ -335,8 +335,8 @@ export function AnalysisProgress({
             <Tooltip
               tip={
                 reviewStarted
-                  ? "Opens your review of this analysis where you left it; ticks and answers are kept. Starts nothing: no analysis, no LLM use."
-                  : "Opens the review of this analysis. Starts nothing: no analysis, no LLM use."
+                  ? "Opens your review; ticks and answers are kept. Starts nothing."
+                  : "Opens the review. Starts nothing."
               }
             >
               <a

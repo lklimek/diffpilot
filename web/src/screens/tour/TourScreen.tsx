@@ -77,6 +77,7 @@ import {
 import { useNow } from "../../app/now";
 import { Workspace } from "./Workspace";
 import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
+import { useTourNotifications } from "../../app/workNotifications";
 
 /** The PR's checks page on GitHub, which the CI summary links to. */
 const checksHref = (pr: { html_url: string }) => `${pr.html_url.replace(/\/+$/, "")}/checks`;
@@ -206,6 +207,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   useTabActivity("analysis", analysisActivity(tour.analysis.state));
   useTabActivity("ask", questionsActivity(questions.data ?? []));
   usePrTabSubject(tour.analysis.pr);
+  useTourNotifications(tour, questions.data);
   const ask = useAskQuestion(analysisId);
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
@@ -312,6 +314,13 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const go = (block: BlockRef | undefined) => {
     if (!block) return;
     openFragment(blockFragment(block));
+  };
+
+  // Next / `j`: on a step it first ticks the step (never unticks), then moves on.
+  const tickedOnNext = questionsView || lineView ? undefined : step;
+  const goNext = () => {
+    if (tickedOnNext && !ticked.includes(tickedOnNext.id)) setTicks([tickedOnNext.id], true);
+    go(next);
   };
 
   // `owner`: the step the line belongs to, when known (a remark); else the first step covering the line.
@@ -468,7 +477,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       if (event.defaultPrevented || helpOpen || isTyping(event)) return;
       switch (shortcutAction(event.key)) {
         case "next_block":
-          return go(next);
+          return goNext();
         case "previous_block":
           return go(previous);
         case "next_flow":
@@ -877,7 +886,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         previous={previous && blockTitle(tour, previous)}
         next={next && blockTitle(tour, next)}
         onPrevious={() => go(previous)}
-        onNext={() => go(next)}
+        marksReviewed={Boolean(tickedOnNext)}
+        onNext={goNext}
       />
       <p className="sr-only" aria-live="polite">
         {questionsView ? "Your questions and answers" : blockTitle(tour, current)}

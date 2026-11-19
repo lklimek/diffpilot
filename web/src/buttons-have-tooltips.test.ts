@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// Brief §4 rule 3 / plan §12.4: every button has a tooltip explaining it. A button outside a `<Tooltip>` must
+// Brief §4 rule 3 / plan §12.4: every button has a tooltip explaining it. A button outside a `<Tooltip>` or `<Popover>` must
 // be on this list, with the reason it does without one.
 const ALLOWED: { file: string; match: string; reason: string }[] = [
   {
@@ -19,16 +19,15 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
       "Highlight label: a hover tooltip would cover the code; its was → is is its accessible description and the remark marker's popover.",
   },
   {
-    file: "components/code-view/markers.tsx",
-    match: 'data-mark="remark"',
-    reason:
-      "LLM remark marker: hover and focus show its popover with the remark text, which serves as its tooltip.",
+    file: "components/code-view/CodeView.tsx",
+    match: "Ask about this line",
+    reason: "Action inside the Ask icon's popover: labelled by its text, which the popover text explains.",
   },
   {
-    file: "components/code-view/markers.tsx",
-    match: 'data-mark="thread"',
+    file: "components/comment/LineComments.tsx",
+    match: "aria-controls={panelId}",
     reason:
-      "GitHub thread marker: hover and focus show its popover with the thread excerpt, which serves as its tooltip.",
+      "Action inside the comment marker's popover: labelled Open or Hide the comment, which it explains.",
   },
   {
     file: "components/ask/AskForm.tsx",
@@ -78,13 +77,20 @@ function sources(dir: string): string[] {
   });
 }
 
-/** Buttons outside every `<Tooltip>…</Tooltip>` of `code`: the source from `<button` to its `</button>`. */
+/**
+ * Buttons outside every `<Tooltip>…</Tooltip>` of `code`, and outside a `<Popover>`'s trigger (its last button:
+ * the popover is the trigger's tooltip); buttons in a popover's content are not exempt.
+ */
 export function untipped(code: string): string[] {
-  const tips = [...code.matchAll(/<Tooltip\b[\s\S]*?<\/Tooltip>/g)].map((m) => [
-    m.index,
-    m.index + m[0].length,
-  ]);
-  return [...code.matchAll(/<(button|Button)\b[\s\S]*?<\/\1>/g)]
+  const popovers = [...code.matchAll(/<Popover\b[\s\S]*?<\/Popover>/g)].map((m) => {
+    const trigger = m[0].lastIndexOf("<button");
+    return trigger < 0 ? [0, 0] : [m.index + trigger, m.index + m[0].length];
+  });
+  const tips = [
+    ...[...code.matchAll(/<Tooltip\b[\s\S]*?<\/Tooltip>/g)].map((m) => [m.index, m.index + m[0].length]),
+    ...popovers,
+  ];
+  return [...code.matchAll(/<(button|Button)\b[\s\S]*?(?:<\/\1>|\/>)/g)]
     .filter((m) => !tips.some(([from, to]) => from! <= m.index && m.index < to!))
     .map((m) => m[0]);
 }
@@ -107,6 +113,12 @@ describe("buttons", () => {
       (a) => !found.some(({ file, button }) => a.file === file && button.includes(a.match)),
     );
     expect(unused).toEqual([]);
+  });
+
+  it("the check finds a self-closing button and ignores one inside a popover", () => {
+    expect(untipped('<Popover label="x"><button type="button" /></Popover><button type="button" />')).toEqual(
+      ['<button type="button" />'],
+    );
   });
 
   it("the check finds a button outside a tooltip and ignores one inside", () => {

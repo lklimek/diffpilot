@@ -4,6 +4,7 @@ description = "diffpilot deterministic, language-agnostic PR analysis."
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 contracts.workspace = true

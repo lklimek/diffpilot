@@ -142,7 +142,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
     expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute("href", "/analyses/a1");
     expect(screen.queryByRole("link", { name: /review/i })).toBeNull();
     expect(screen.getByRole("link", { name: "Open" })).toHaveAccessibleDescription(
-      /^Opens the review of this analysis\. Starts nothing: no analysis, no LLM use\.$/,
+      /^Opens the review\. Starts nothing\.$/,
     );
     expect(buttons()).toEqual([]);
   });

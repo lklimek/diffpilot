@@ -242,7 +242,7 @@ describe("Home (brief §4.1)", () => {
       `This analysis is for ${analysis.pr.head_sha.slice(0, 7)}; the PR is now at ${MOVED_HEAD.slice(0, 7)}.`,
     );
     expect(within(moved).getByRole("link", { name: "Open the old analysis" })).toHaveAccessibleDescription(
-      "Opens the analysis of the older head. Starts nothing: no analysis, no LLM use.",
+      "Opens the analysis of the older head. Starts nothing.",
     );
     expect(within(moved).getByRole("link", { name: "Open the old analysis" })).toHaveAttribute(
       "href",
@@ -416,7 +416,7 @@ it.each([
     const found = await banner("An analysis of this PR is in progress.", "status");
     const open = within(found).getByRole("link", { name: "Open" });
     expect(open).toHaveAttribute("href", `/analyses/${analysis.id}`);
-    expect(open).toHaveAccessibleDescription(/Starts nothing: no analysis, no LLM use\.$/);
+    expect(open).toHaveAccessibleDescription(/Starts nothing\.$/);
     const description = open.getAttribute("aria-describedby") ?? "";
     expect(document.getElementById(description)?.textContent?.includes("ticks and answers are kept")).toBe(
       kept,

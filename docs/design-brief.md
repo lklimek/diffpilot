@@ -273,6 +273,13 @@ Accepted flows support review state, comments and private Ask immediately. Pause
 retain their existing semantics. This supersedes the completion barrier above because the measured large-PR
 run produced about 184k output tokens in over 80 minutes before any review was readable.
 
+Owner request (2026-11-19): with "Notify me when work finishes" on (Settings, per browser, off by default; the
+browser's permission is asked when it is turned on), an open diffpilot tab that is hidden or unfocused shows a browser
+notification when the user's Ask answer arrives or fails, a flow is analysed or fails, the review becomes ready, or
+the analysis finishes or fails: PR and flow or step only, never answer text; LLM answers are labelled as such; one
+per event across tabs; a click focuses the tab and opens the step or flow. No service worker: closed tabs, http
+outside localhost and mobile browsers get none.
+
 Owner-approved assessment amendment (2026-11-17): the lowest band needs only its band and one sentence
 reason; higher bands retain the full assessment. Detailed fields are optional in the data model and omitted
 for concise low assessments. Assessments remain collapsed by default; no step-count cap or per-kind effort.
@@ -322,7 +329,9 @@ ranges; markers for LLM remark, deleted site, GitHub thread, own comment. No hov
 per LLM remark in the gutter (overlapping remarks keep one bar and one label). Every icon in the code (◆, ?, ❝,
 ▣, Show rows) has a popup: hover or focus shows it, moving away hides it, a click pins it until the next click,
 Esc closes it; its action is a button inside. The ◆ popup shows Was and Is as separate blocks. Selecting line
-numbers writes a permalink (`#lines?file&side&line[&end]`) into the URL.
+numbers writes a permalink (`#lines?file&side&line[&end]`) into the URL. A folded row ("N more
+deleted lines", the comment/import fold) acts on one click, Enter or Space; hover or focus only shows its
+explaining popup, with no pin step and no second button.
 Legend (shown in `?`):
 
 | Drawing | Meaning |
@@ -363,9 +372,10 @@ Legend (shown in `?`):
 
 **Progress.** Tick per step, in the Flows view only; a flow is reviewed when all its steps are ticked; top bar
 "Your progress k / n". Analysis state is shown per flow inside its dropdown, never as a top-bar count. Each step
-header shows the file's GitHub Viewed state as a read-only chip.
+header shows the file's GitHub Viewed state as a read-only chip. Next ticks the
+current step as it leaves it.
 
-**Keyboard**: `j` / `k` next / previous block (introduction or step), `n` / `p` next / previous flow, `x`
+**Keyboard**: `j` / `k` next / previous block (introduction or step; `j` and the Next button also tick the current step, never untick, `k` never ticks), `n` / `p` next / previous flow, `x`
 tick the current step, `d` show / hide old code, `c` comment on the current line, `a` ask, `?` help, `Esc`
 close.
 
@@ -684,8 +694,7 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   carried to another step. Supersedes "impact outside the diff inline under the step as real code" (§4.3 Step
   block).
 - **Open.** The link that goes to an existing review reads "Open", whether or not the user has started it, on
-  Home, the progress screen and the dashboard. It only navigates: its tooltip says it starts nothing (no
-  analysis, no LLM use) and, for a started review, that ticks and answers are kept. On the progress screen it
+  Home, the progress screen and the dashboard. It only navigates: its tooltip is one or two short sentences: it starts nothing and, for a started review, that ticks and answers are kept. On the progress screen it
   sits apart from the action buttons, as a navigation link with an arrow. "Resume" is only the button that
   continues a paused analysis. Supersedes "Resume review" and "Open review" of §4.1 and §4.2.
 - **Comment drafts.** An unsent comment text is kept per line in the browser tab (sessionStorage, per user login
@@ -782,7 +791,7 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
 - **Ask about a line.** Each line of the step's code view and of the classic diff has a small "?" action (shown on
   hover and on keyboard focus; Tab from the line's comment action reaches it, arrow keys move between lines). It
   puts `path:line` (`path:start-end` when the line is inside a selection of several lines; " (old code)" for a
-  removed line) into the Ask field at the cursor, opens Ask and focuses the field; nothing is sent.
+  removed line) into the Ask field at the cursor, opens Ask and focuses the field; nothing is sent. The "?" shows a popup (hover, focus; a click pins it) whose button "Ask about this line" does this.
 - **Use as review comment.** A flag card and an Ask answer asked on the open step offer "Use as review comment"
   (only while commenting is available). It opens the existing comment composer: a flag on its line range, an
   answer on the open comment's line, else the step's first changed line; placement falls back as for any
