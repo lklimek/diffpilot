@@ -95,7 +95,15 @@ export interface CodeContext {
 
 interface LinesCodeProps extends Pick<
   CodeViewProps,
-  "bandOf" | "remarkOwner" | "selection" | "hunkOf" | "selectedHunk" | "onSelectHunk"
+  | "bandOf"
+  | "remarkOwner"
+  | "selection"
+  | "hunkOf"
+  | "selectedHunk"
+  | "onSelectHunk"
+  | "removedAnnotations"
+  | "remarkStartOnly"
+  | "askLineHint"
 > {
   ctx: CodeContext;
   revealLine?: number;

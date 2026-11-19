@@ -101,8 +101,9 @@ describe("CodeView in the Files view (brief §4.5)", () => {
     const onLineAction = vi.fn();
     render(<CodeView lines={plain(1, ["a", "b", "c"])} selection={null} onLineAction={onLineAction} />);
     const number = (n: number) => screen.getByRole("button", { name: `Select line ${n}` });
+    fireEvent.pointerDown(number(1), { buttons: 1 });
     fireEvent.pointerOver(number(2), { buttons: 0 });
-    expect(onLineAction).not.toHaveBeenCalled();
+    expect(onLineAction).toHaveBeenCalledTimes(1);
     fireEvent.pointerOver(number(3), { buttons: 1 });
     expect(onLineAction).toHaveBeenCalledWith(
       { path: "src/a.rs", side: "head", start_line: null, line: 3 },
@@ -134,5 +135,94 @@ describe("CodeView in the Files view (brief §4.5)", () => {
       />,
     );
     expect([...document.querySelectorAll("[data-hunk-selected]")].map(rowOf)).toEqual([2, 3]);
+  });
+
+  it("draws remarks on removed code: their bar and one ◆ on the first removed line they cover", () => {
+    const lines = plain(10, ["a", "b"], {
+      changed: [11],
+      deleted: [{ after_line: 10, base_start: 20, lines: ["x", "y", "z"], total_lines: 3 }],
+    });
+    render(
+      <CodeView lines={lines} removedAnnotations={[remark("r1", 21, 22, "consequence")]} band="medium" />,
+    );
+    const marks = [...document.querySelectorAll("[data-mark=remark]")];
+    expect(marks).toHaveLength(1);
+    expect(marks[0]!.closest("[data-line]")).toHaveAttribute("data-side", "base");
+    expect(rowOf(marks[0]!)).toBe(21);
+    expect(document.querySelectorAll("[data-highlight]")).toHaveLength(1);
+  });
+
+  it("with markers at the start only, a remark that starts above the shown lines gets no ◆ here", () => {
+    render(
+      <CodeView
+        lines={plain(10, ["a", "b"])}
+        annotations={[remark("n1", 5, 11)]}
+        remarkStartOnly
+        band="low"
+      />,
+    );
+    expect(document.querySelectorAll("[data-mark=remark]")).toHaveLength(0);
+    expect(document.querySelectorAll("[data-highlight]")).toHaveLength(1);
+  });
+
+  it("marks a selection of removed lines, keeps change colours under a selection, and outlines it", () => {
+    const lines = plain(10, ["a", "b", "c"], {
+      changed: [11],
+      deleted: [{ after_line: 10, base_start: 20, lines: ["x", "y"], total_lines: 2 }],
+    });
+    const { rerender } = render(
+      <CodeView lines={lines} selection={{ side: "base", from: 20, to: 21 }} onLineAction={() => {}} />,
+    );
+    const selected = [...document.querySelectorAll("[data-selected-line]")];
+    expect(selected.map((r) => `${r.getAttribute("data-side")}:${r.getAttribute("data-line")}`)).toEqual([
+      "base:20",
+      "base:21",
+    ]);
+    rerender(<CodeView lines={lines} selection={{ from: 11, to: 11 }} onLineAction={() => {}} />);
+    const row = document.querySelector('[data-line="11"][data-side="head"]') as HTMLElement;
+    expect(row.className).toContain("bg-ad-bg");
+    expect(row.style.boxShadow).toContain("var(--color-accent)");
+  });
+
+  it("marks where hunks start and end, so adjacent hunks are told apart", () => {
+    const lines = plain(1, ["a", "b", "c", "d"], { changed: [1, 2, 3, 4] });
+    render(
+      <CodeView
+        lines={lines}
+        hunkOf={(_, line) => (line <= 2 ? "h1" : "h2")}
+        selectedHunk="h2"
+        onSelectHunk={() => {}}
+      />,
+    );
+    const at = (n: number) => document.querySelector(`[data-line="${n}"]`)!;
+    expect(at(1)).toHaveAttribute("data-hunk-start");
+    expect(at(2)).toHaveAttribute("data-hunk-end");
+    expect(at(3)).toHaveAttribute("data-hunk-start");
+    expect((at(3) as HTMLElement).style.boxShadow).toContain("var(--color-accent)");
+    expect((at(1) as HTMLElement).style.boxShadow).not.toContain("var(--color-accent)");
+  });
+
+  it("drags a selection only from a line number: a text drag passing over the numbers does not select", () => {
+    const onLineAction = vi.fn();
+    render(<CodeView lines={plain(10, ["a", "b", "c"])} selection={null} onLineAction={onLineAction} />);
+    fireEvent.pointerOver(screen.getByRole("button", { name: "Select line 11" }), { buttons: 1 });
+    expect(onLineAction).not.toHaveBeenCalled();
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Select line 10" }), { buttons: 1 });
+    fireEvent.pointerOver(screen.getByRole("button", { name: "Select line 12" }), { buttons: 1 });
+    expect(onLineAction).toHaveBeenLastCalledWith(expect.objectContaining({ line: 12 }), { extend: true });
+  });
+
+  it("the line's Ask popup can describe what the view does", async () => {
+    render(
+      <CodeView
+        lines={plain(10, ["a"])}
+        onAskLine={() => {}}
+        askLineHint="Selects the line and opens Ask in the Inspector; the answer is LLM output."
+      />,
+    );
+    await userEvent.hover(screen.getByRole("button", { name: "Ask the LLM about line 10" }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent(
+      "Selects the line and opens Ask in the Inspector",
+    );
   });
 });

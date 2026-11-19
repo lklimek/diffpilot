@@ -8,15 +8,20 @@ import { UnchangedFold } from "../../components/code-view/UnchangedFold";
 import { displaySide, fileRegions, pathOn } from "../../components/files/model";
 import { DiffCode, LinesCode, MAX_RANGE_LINES, rangeChunks, type CodeContext } from "../tour/code";
 
-type View = Pick<CodeViewProps, "bandOf" | "remarkOwner" | "hunkOf" | "selectedHunk" | "onSelectHunk">;
+type View = Pick<
+  CodeViewProps,
+  "bandOf" | "remarkOwner" | "hunkOf" | "selectedHunk" | "onSelectHunk" | "askLineHint"
+>;
 
 interface FileCodeProps extends View {
   file: PrFile;
   ctx: CodeContext;
   /** LLM remarks of every analysed step on the file's side (one ◆ each). */
   annotations: readonly Annotation[];
-  /** The reader's selected lines on the file's side; null for none. */
-  selection: { from: number; to: number } | null;
+  /** LLM remarks of steps on the file's removed code (base line numbers). */
+  removedAnnotations: readonly Annotation[];
+  /** The reader's selected lines (head, or removed lines with side base); null for none. */
+  selection: { side: LineSide; from: number; to: number } | null;
   /** Lines to show even when unchanged (a selection or link into folded code). */
   show?: LineRange;
   /** Line scrolled into view when the file opens or the subject changes. */
@@ -47,7 +52,7 @@ function RegionCode({
   last: boolean;
   onShow: (range: LineRange) => void;
 }) {
-  const { ctx, annotations, selection, revealLine, oldCode, ...view } = props;
+  const { ctx, annotations, removedAnnotations, selection, revealLine, oldCode, ...view } = props;
   const query = { path: pathOn(file, side), side, from: range.start_line, to: range.end_line };
   const lines = useLines(ctx.analysisId, query);
   const reveal = revealLine !== undefined && revealLine >= range.start_line && revealLine <= range.end_line;
@@ -60,6 +65,9 @@ function RegionCode({
           ctx={ctx}
           lines={lines}
           annotations={annotations.filter((a) => overlaps(a, range))}
+          removedAnnotations={removedAnnotations}
+          // Each remark's first line is shown in exactly one region (see FileCode); its ◆ goes there only.
+          remarkStartOnly
           revealLine={reveal ? revealLine : undefined}
           selection={selection}
           {...view}
@@ -80,7 +88,12 @@ function RegionCode({
 export function FileCode({ file, show, ...props }: FileCodeProps) {
   const [opened, setOpened] = useState<readonly LineRange[]>([]);
   const side = displaySide(file);
-  const regions = fileRegions(file, show ? [...opened, show] : opened);
+  // Every remark's first line is shown, so its one ◆ is never folded away.
+  const starts = props.annotations.map((a) => ({
+    start_line: a.range.start_line,
+    end_line: a.range.start_line,
+  }));
+  const regions = fileRegions(file, [...opened, ...starts, ...(show ? [show] : [])]);
   const onShow = (range: LineRange) => setOpened((all) => [...all, range]);
   const chunks = regions.flatMap((r) =>
     rangeChunks(pathOn(file, side), side, [r]).map((q) => ({ start_line: q.from, end_line: q.to })),

@@ -1,5 +1,6 @@
 // The mocks' source of file lines: a real scenario's synthetic files, else the fixture PR's seed.
-import type { LineSide, LinesResponse, Tour } from "../api/generated/types";
+import type { FilesResponse, LineSide, LinesResponse, Tour } from "../api/generated/types";
+import filesSeed from "./files-482.json";
 import { fixtureState, linesFor, seedFor } from "./fixtures";
 import { realLines } from "./real";
 import { realTour, scenario } from "./scenarios";
@@ -42,12 +43,32 @@ function repoLines(path: string, side: LineSide, from: number, to: number): Line
   };
 }
 
+// The server's `replacement` (http-api.md "Deterministic context and replacement lines"): the head range of the
+// same diff hunk; the lines seed predates the field.
+function withReplacements(answer: LinesResponse): LinesResponse {
+  const file = (filesSeed as FilesResponse).files.find((f) => f.path === answer.path);
+  if (!file || answer.side !== "head") return answer;
+  return {
+    ...answer,
+    deleted: answer.deleted.map((block) => {
+      const hunk = file.hunks.find(
+        (h) =>
+          h.base && h.head && h.base.start_line <= block.base_start && block.base_start <= h.base.end_line,
+      );
+      return hunk?.head && !block.replacement ? { ...block, replacement: hunk.head } : block;
+    }),
+  };
+}
+
 /** Lines `from..=to` of `path` on `side`; undefined when the file is not part of the analysis. */
 export function mockLines(path: string, side: LineSide, from: number, to: number): LinesResponse | undefined {
   const tour = realTour();
+  const seeded = linesFor(fixtureState(), path, side, from, to);
   const answer = tour
     ? realLines(tour, path, side, from, to)
-    : (linesFor(fixtureState(), path, side, from, to) ?? repoLines(path, side, from, to));
+    : seeded
+      ? withReplacements(seeded)
+      : repoLines(path, side, from, to);
   if (answer && scenario().showLess && path === "src/rpc/client.rs" && side === "head") {
     answer.context_only = answer.changed.filter((line) => line === 89);
     answer.deleted = answer.deleted.map((block) => ({

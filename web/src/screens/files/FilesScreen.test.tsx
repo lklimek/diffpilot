@@ -345,3 +345,37 @@ describe("Files Inspector panels (proposal §3)", () => {
     expect(inspector()).toHaveTextContent(/classified by path/i);
   });
 });
+
+describe("Files code view", () => {
+  it("draws the remarks of a step on removed code on the removed rows (no ◆ means no remark)", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
+    await waitFor(() =>
+      expect(document.querySelectorAll('[data-side="base"] [data-mark=remark]').length).toBeGreaterThan(0),
+    );
+    const rows = [...document.querySelectorAll('[data-side="base"] [data-mark=remark]')].map((m) =>
+      m.closest("[data-line]")!.getAttribute("data-line"),
+    );
+    // f4.1: a consequence and two flags on removed lines 52–53.
+    expect(rows).toEqual(["52", "52", "53"]);
+  });
+
+  it("a selection of removed lines is marked on the removed rows", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=base&line=102&end=103");
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll("[data-selected-line]")].map(
+          (r) => `${r.getAttribute("data-side")}:${r.getAttribute("data-line")}`,
+        ),
+      ).toEqual(["base:102", "base:103"]),
+    );
+  });
+
+  it("a removed block replaced in the same hunk reads as changed, not removed", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=42");
+    expect(
+      await within(screen.getByRole("main")).findByRole("group", {
+        name: /^Changed code after line 41: 1 line/,
+      }),
+    ).toHaveTextContent("Changed: 1 line replaced");
+  });
+});

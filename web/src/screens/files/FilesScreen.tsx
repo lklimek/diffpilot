@@ -338,13 +338,22 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
       : subjectLines(file, subject);
 
   // Remarks of every analysed step on this file's side: one ◆ each, named with their step.
-  const steps = tour.flows.flatMap((f) =>
-    f.steps.filter((s) => s.facts.file === path && s.facts.side === side).map((s) => ({ flow: f, step: s })),
-  );
+  // ... and of steps on its removed code (base numbers), drawn on the removed rows of the head view.
+  const stepsOn = (on: LineSide) =>
+    tour.flows.flatMap((f) =>
+      f.steps
+        .filter((s) => s.facts.side === on && s.facts.file === pathOn(file, on))
+        .map((s) => ({ flow: f, step: s })),
+    );
+  const steps = stepsOn(side);
+  const removedSteps = side === "head" ? stepsOn("base") : [];
   const ownerOf = new Map(
-    steps.flatMap(({ flow, step }) => step.llm.annotations.map((a) => [a.id, { flow, step }] as const)),
+    [...steps, ...removedSteps].flatMap(({ flow, step }) =>
+      step.llm.annotations.map((a) => [a.id, { flow, step }] as const),
+    ),
   );
   const annotations = steps.flatMap(({ step }) => step.llm.annotations);
+  const removedAnnotations = removedSteps.flatMap(({ step }) => step.llm.annotations);
 
   // A changed line's displayed range in the cache (for `c` without a clicked line).
   const cachedLines = (side: LineSide, line: number): LinesResponse | undefined =>
@@ -380,7 +389,7 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
     if (target.kind === "annotation") {
       const owner = ownerOf.get(target.id);
       const annotation = owner?.step.llm.annotations.find((a) => a.id === target.id);
-      const at = annotation && hunkAt(file, side, annotation.range.start_line);
+      const at = annotation && owner && hunkAt(file, owner.step.facts.side, annotation.range.start_line);
       const into = at ?? (owner ? hunkOfStep(owner.step.id) : undefined);
       if (owner && into) select({ kind: "hunk", id: into.id, step: owner.step.id });
     } else {
@@ -825,6 +834,8 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
             file={file}
             ctx={ctx}
             annotations={annotations}
+            removedAnnotations={removedAnnotations}
+            askLineHint="Selects the line and opens Ask in the Inspector; the answer is LLM output."
             bandOf={(a) => ownerOf.get(a.id)?.step.llm.assessment?.risk ?? null}
             remarkOwner={(a) => {
               const owner = ownerOf.get(a.id);
@@ -834,8 +845,8 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
             selectedHunk={hunk?.id ?? null}
             onSelectHunk={(id) => select({ kind: "hunk", id })}
             selection={
-              (subject.kind === "lines" || stepHere) && lines && lines.side === side
-                ? { from: lines.from, to: lines.to }
+              (subject.kind === "lines" || stepHere) && lines
+                ? { side: lines.side, from: lines.from, to: lines.to }
                 : null
             }
             show={

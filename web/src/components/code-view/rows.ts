@@ -25,13 +25,24 @@ const covers = (a: Annotation, line: number) => a.range.start_line <= line && li
  * Splits the displayed lines into segments: annotations that overlap form one highlight, adjacent disjoint ones
  * stay apart; deleted blocks sit after their anchor line (0 = before the first) and split a highlight.
  */
-export function buildSegments(lines: LinesResponse, annotations: readonly Annotation[]): Segment[] {
+export function buildSegments(
+  lines: LinesResponse,
+  annotations: readonly Annotation[],
+  /** Remarks on removed code, by base line: they mark the removed blocks they cover. */
+  removed: readonly Annotation[] = [],
+): Segment[] {
   const changed = new Set(lines.changed);
   const segments: Segment[] = [];
+  const onBlock = (block: DeletedBlock) =>
+    removed.filter(
+      (a) =>
+        a.range.start_line <= block.base_start + block.lines.length - 1 &&
+        a.range.end_line >= block.base_start,
+    );
   const deletedAfter = (line: number) =>
     lines.deleted
       .filter((d) => d.after_line === line)
-      .forEach((block) => segments.push({ kind: "deleted", block, paired: [], annotations: [] }));
+      .forEach((block) => segments.push({ kind: "deleted", block, paired: [], annotations: onBlock(block) }));
 
   deletedAfter(lines.from - 1);
   lines.lines.forEach((text, index) => {
