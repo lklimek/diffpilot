@@ -84,15 +84,15 @@ for (const [width, height] of [
         // Where the NC-482 row leads: review start at /review (new, moved; checked on arrival) or the review
         // itself (found).
         for (const [scenario, link] of [
-          ["review-new", "Review"],
-          ["review-moved", "Open"],
-          ["review-found", "Open"],
+          ["review-new", /^Review pull request /],
+          ["review-moved", /^Open review of /],
+          ["review-found", /^Open review of /],
         ] as const) {
           await openDashboard(page, scenario);
           await page
             .getByRole("listitem")
             .filter({ hasText: NC482 })
-            .getByRole("link", { name: link, exact: true })
+            .getByRole("link", { name: link })
             .click();
           if (scenario !== "review-found")
             await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();

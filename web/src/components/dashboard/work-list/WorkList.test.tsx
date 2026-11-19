@@ -268,6 +268,21 @@ describe("WorkList", () => {
     );
   });
 
+  it("review links have unique accessible names that start with the visible label", () => {
+    render(<List items={PROVISIONAL_ITEMS} />);
+    const links = [...document.querySelectorAll<HTMLAnchorElement>("a[data-review-link]")];
+    expect(links.length).toBeGreaterThan(1);
+    const names = links.map((a) => a.getAttribute("aria-label") ?? "");
+    for (const a of links) {
+      const name = a.getAttribute("aria-label") ?? "";
+      expect(name.startsWith(a.textContent ?? "?")).toBe(true);
+      expect(name).toMatch(/#\d+ /);
+    }
+    expect(new Set(names).size).toBe(names.length);
+    expect(screen.getByRole("link", { name: /^Open review of #482 / })).toBeVisible();
+    expect(screen.getByRole("link", { name: /^Review pull request #1203 / })).toBeVisible();
+  });
+
   it.each([
     [{ head_moved: false, has_my_state: true }, /ticks and answers are kept/],
     [{ head_moved: false, has_my_state: false }, /^Opens your review of the current head\./],

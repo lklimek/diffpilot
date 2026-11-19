@@ -44,10 +44,14 @@ interface ItemActionProps {
 export function ItemAction({ item, reviewHref, onNavigate }: ItemActionProps) {
   if (item.kind === "pr" && reviewHref) {
     const { label, tip, primary } = reviewAction(item);
+    // Unique per row and starting with the visible label (WCAG 2.5.3); aria-describedby is taken by the tooltip.
+    const subject = `#${item.number ?? ""} ${item.title}`;
+    const name = label === "Open" ? `Open review of ${subject}` : `Review pull request ${subject}`;
     return (
       <Tooltip tip={tip}>
         <a
           href={reviewHref}
+          aria-label={name}
           data-review-link
           onClick={navigateOnClick(reviewHref, onNavigate)}
           className={`${buttonClass(primary ? "primary" : "plain", true)} ${WIDTH}`}
