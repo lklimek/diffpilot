@@ -5,9 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { AnalysisSummary, AnchoredAskRequest } from "../../api/generated/types";
+import type { AnalysisSummary, AnchoredAskRequest, FilesResponse } from "../../api/generated/types";
+import seed from "../../mocks/files-482.json";
 import { seedFor } from "../../mocks/fixtures";
-import { setScenario } from "../../mocks/scenarios";
+import { MOVED_HEAD, setScenario } from "../../mocks/scenarios";
 
 const server = startMockServer();
 const ID = (seedFor("default", "analysis") as AnalysisSummary).id;
@@ -179,6 +180,30 @@ describe("Files view (brief §4.5)", () => {
     const toggle = screen.getByRole("button", { name: "Viewed" });
     expect(toggle).toHaveAttribute("aria-disabled", "true");
     expect(toggle).toHaveAccessibleDescription(/the PR is now at d41b7a0/);
+  });
+
+  it("pr_head_changed on save re-reads the file list, so the toggle explains that the PR moved on", async () => {
+    let moved = false;
+    server.use(
+      http.put("/api/v1/analyses/:id/files/viewed", () => {
+        moved = true;
+        return HttpResponse.json(
+          { code: "pr_head_changed", message: "The pull request has new commits." },
+          { status: 409 },
+        );
+      }),
+      http.get("/api/v1/analyses/:id/files", () => {
+        const files = structuredClone(seed) as FilesResponse;
+        if (moved) files.current_head = MOVED_HEAD;
+        return HttpResponse.json(files);
+      }),
+    );
+    await open("#lines?file=src%2Flib.rs&side=head");
+    await user().click(screen.getByRole("button", { name: "Viewed" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("The pull request has new commits.");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Viewed" })).toHaveAttribute("aria-disabled", "true"),
+    );
   });
 
   it("a link to a file outside the PR says so and opens the first file", async () => {

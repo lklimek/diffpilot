@@ -4,6 +4,7 @@ import { Navigate, useLocation, useNavigate, useParams } from "react-router";
 import { ApiError } from "../../api/client";
 import type {
   AnalysisId,
+  ApiErrorCode,
   AskAnchor,
   AskQuestion,
   CommentTarget,
@@ -409,7 +410,13 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
             `Marked ${fileName(at.path)} as viewed on GitHub. Opened the next file, ${fileName(next.path)}.`,
           );
         },
-        onError: (error) => setViewedError({ path: at.path, message: errorText(error) }),
+        onError: (error) => {
+          setViewedError({ path: at.path, message: errorText(error) });
+          // The PR moved on: re-read the head so the toggle says why it is off.
+          const code: ApiErrorCode | null = error instanceof ApiError ? error.code : null;
+          if (code === "pr_head_changed")
+            void queryClient.invalidateQueries({ queryKey: ["files", analysisId] });
+        },
       },
     );
   };
