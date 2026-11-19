@@ -190,6 +190,17 @@ describe("Files view (brief §4.5)", () => {
     expect(within(alert).getByRole("button", { name: "Retry" })).toBeVisible();
   });
 
+  it("a pull request GitHub could not read says nothing was sent, with Retry", async () => {
+    setScenario("viewed-head-unread");
+    await open("#lines?file=src%2Flib.rs&side=head");
+    await user().click(screen.getByRole("button", { name: "Viewed" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Could not read the pull request from GitHub, so nothing was sent. Your mark is unchanged; try again.",
+    );
+    expect(within(alert).getByRole("button", { name: "Retry" })).toBeVisible();
+  });
+
   it("an ended GitHub sign-in on Viewed offers Sign in again, not Retry", async () => {
     setScenario("viewed-signed-out");
     await open("#lines?file=src%2Flib.rs&side=head");

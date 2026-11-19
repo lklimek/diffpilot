@@ -344,6 +344,15 @@ describe("msw handlers of the screens", () => {
     expect(
       await api.setFileViewed(ID, { path: "src/lib.rs", viewed: true }).catch((e: unknown) => e),
     ).toMatchObject({ status: 401, code: "unauthenticated" });
+    setScenario("viewed-head-unread");
+    expect(
+      await api.setFileViewed(ID, { path: "src/lib.rs", viewed: true }).catch((e: unknown) => e),
+    ).toMatchObject({
+      status: 502,
+      code: "github_unavailable",
+      message:
+        "Could not read the pull request from GitHub, so nothing was sent. Your mark is unchanged; try again.",
+    });
     expect((await api.getFiles(ID)).files.find((f) => f.path === "src/lib.rs")?.viewed).toBe("unviewed");
   });
 

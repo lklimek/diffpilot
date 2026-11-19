@@ -22,6 +22,11 @@ const ERRORS = {
   github_unavailable: [502, "GitHub did not confirm the change. Reload to see your mark, then try again."],
   conflict: [409, "Your previous Viewed change is still being saved. Try again in a moment."],
   unauthenticated: [401, "Your GitHub sign-in has ended. Sign in again."],
+  // GitHub did not answer the read of the pull request before the write: sent as github_unavailable.
+  head_unread: [
+    502,
+    "Could not read the pull request from GitHub, so nothing was sent. Your mark is unchanged; try again.",
+  ],
 } as const;
 
 /** `PUT /api/v1/analyses/{id}/files/viewed` (R13): 204 once "GitHub" confirmed; nothing is stored on refusal. */
@@ -34,7 +39,10 @@ export const setFileViewed = route(
     }
     await delay(VIEWED_MS);
     const failure = scenario().viewedError;
-    if (failure) return apiError(ERRORS[failure][0], failure, ERRORS[failure][1]);
+    if (failure) {
+      const code = failure === "head_unread" ? "github_unavailable" : failure;
+      return apiError(ERRORS[failure][0], code, ERRORS[failure][1]);
+    }
     updateStore((store) => {
       store.viewed = { ...store.viewed, [path]: viewed ? "viewed" : "unviewed" };
     });

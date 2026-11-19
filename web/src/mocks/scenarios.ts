@@ -106,8 +106,14 @@ interface Scenario {
   commentPublished?: true;
   /** Changes to the `files` answer. */
   files?: (seed: FilesResponse) => FilesResponse;
-  /** Viewed writes answer with this error code (GitHub refused, the head moved, GitHub did not answer). */
-  viewedError?: "github_refused" | "pr_head_changed" | "github_unavailable" | "conflict" | "unauthenticated";
+  /** Viewed writes fail like this (GitHub refused, the head moved or was not read, GitHub did not answer, busy, signed out). */
+  viewedError?:
+    | "github_refused"
+    | "pr_head_changed"
+    | "github_unavailable"
+    | "conflict"
+    | "unauthenticated"
+    | "head_unread";
 }
 
 /** Step f1.2 with one behaviour remark over lines 90–95 (see `remarkLayoutLines`), rated LOW. */
@@ -521,6 +527,8 @@ const SCENARIOS = {
   "viewed-busy": { viewedError: "conflict" },
   // The user's GitHub sign-in ended.
   "viewed-signed-out": { viewedError: "unauthenticated" },
+  // GitHub did not answer the read of the pull request before the write; nothing was sent.
+  "viewed-head-unread": { viewedError: "head_unread" },
   "viewed-not-read": {
     files: (seed) => ({
       ...seed,
