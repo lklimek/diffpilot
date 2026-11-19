@@ -304,10 +304,18 @@ export function useHideMention() {
   });
   const mutation = useMutation({
     mutationKey: ["hide-mention"],
-    mutationFn: (id: string) => api.hideDashboardMention(id),
-    onMutate: () => setError(null),
+    mutationFn: async (id: string) => {
+      try {
+        await api.hideDashboardMention(id);
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 404)) throw error;
+      }
+    },
     onError: setError,
-    onSuccess: () => client.invalidateQueries({ queryKey: SUMMARY_KEY }),
+    onSuccess: () => {
+      setError(null);
+      return client.invalidateQueries({ queryKey: SUMMARY_KEY });
+    },
   });
-  return { ...mutation, pendingIds, error, isError: error !== null };
+  return { ...mutation, pendingIds, error, isError: error !== null, dismissError: () => setError(null) };
 }

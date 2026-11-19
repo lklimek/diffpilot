@@ -2057,6 +2057,10 @@ last_success_at: string | null, };
  */
 export type Mention = {
 /**
+ * Only a bounded part of this conversation was read.
+ */
+partly_read: boolean,
+/**
  * Stable opaque identity of this post on this item (used by Hide).
  */
 id: string,

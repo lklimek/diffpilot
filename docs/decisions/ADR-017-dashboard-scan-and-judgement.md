@@ -77,13 +77,16 @@ either list re-judges just the items whose judged inputs change.
 
 ## Addendum (2026-11-19): unanswered mentions
 Owner-approved. My work has a compact Mentions strip above Needs you, outside P0–P3, scores and judgement.
-Discovery adds `mentions:<login>` to open-PR searches and body/comment matching to PR enumeration. Mention-only
+Discovery adds `mentions:<login>` to open-PR searches; enumerated PRs are potential mention candidates. Mention-only
 PRs and issues never enter the ranked snapshot; issues also assigned or in watched repositories remain ranked.
 A post counts while newer than every scanned login's latest comment or submitted review on that item. The
 scan uses a separate lightweight PR conversation query and reuses complete enumerated issue discussions.
 Q2's selection and batch size are unchanged. Only Mentioned candidates get conversation reads; the explicit
-request/time/window budgets are in plan §K. Truncated conversations are omitted with a scan note. Failed complete reads omit that item's mentions with a scan note rather than inventing an
-unanswered state. Enumeration retains the documented body + last 50 conversation comments discovery window.
+request/time/window budgets are in plan §K. Truncated conversations keep mentions found in the read windows,
+with a factual `partly_read` row marker. Budget overflow, failed reads and deadline expiry leave one count of
+unchecked items in the strip; completed results remain. PR enumeration selects no conversation bodies and
+cannot lose ranked items because a mention read fails. Ownership reuses ranking's eligibility rule and a
+refresh-local policy cache; unreadable policies keep mentions with ownership unverified.
 
 Each post has a stable identity derived from item key and GitHub anchor. Migration 0011 stores hides per tenant,
 user and identity, independently of refresh history. A later post has a different identity. Session + CSRF is

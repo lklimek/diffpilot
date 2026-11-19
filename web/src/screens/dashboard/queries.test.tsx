@@ -23,6 +23,7 @@ import {
   useRefreshEvents,
   useSaveBrowserTimeZone,
   useStartRefresh,
+  useHideMention,
 } from "./queries";
 
 const ITEMS = (itemsJson as unknown as ItemPage).items;
@@ -399,4 +400,35 @@ describe("refresh statuses are applied in order (never an older one over a newer
     renderHook(() => useDashboardSummary(true), { wrapper: w });
     await waitFor(() => expect(latest(client)?.state).toBe("ranking"));
   });
+});
+
+it("treats an already gone mention as a successful hide and refreshes the summary", async () => {
+  const { client, wrapper: w } = wrapper();
+  const invalidate = vi.spyOn(client, "invalidateQueries");
+  server.use(
+    http.post("/api/v1/dashboard/mentions/:id/hide", () =>
+      HttpResponse.json({ code: "not_found", message: "Gone" }, { status: 404 }),
+    ),
+  );
+  const hook = renderHook(useHideMention, { wrapper: w });
+  act(() => hook.result.current.mutate("gone"));
+  await waitFor(() => expect(hook.result.current.isPending).toBe(false));
+  expect(hook.result.current.error).toBeNull();
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: SUMMARY_KEY });
+});
+
+it("keeps real hide failures and clears them after another hide succeeds", async () => {
+  const { wrapper: w } = wrapper();
+  server.use(
+    http.post("/api/v1/dashboard/mentions/:id/hide", () =>
+      HttpResponse.json({ code: "internal_error", message: "Failed" }, { status: 500 }),
+    ),
+  );
+  const hook = renderHook(useHideMention, { wrapper: w });
+  act(() => hook.result.current.mutate("one"));
+  await waitFor(() => expect(hook.result.current.error).not.toBeNull());
+  server.use(http.post("/api/v1/dashboard/mentions/:id/hide", () => new HttpResponse(null, { status: 204 })));
+  act(() => hook.result.current.mutate("two"));
+  await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
+  expect(hook.result.current.error).toBeNull();
 });

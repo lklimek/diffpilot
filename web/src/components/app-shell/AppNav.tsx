@@ -53,44 +53,37 @@ export function AppNav({ current, hrefs, myWorkCount, onNavigate }: AppNavProps)
       // Storage unavailable: the state lives for this page only.
     }
   };
+  const mentions = `${myWorkCount} unanswered ${myWorkCount === 1 ? "mention" : "mentions"} from people`;
   const item = (centered: boolean) =>
-    `flex min-h-[34px] w-full cursor-pointer items-center gap-2.5 rounded-md border-0 border-l-4 border-transparent bg-transparent py-1.5 text-left text-text no-underline hover:bg-surface-2 ${centered ? "justify-center px-0" : "justify-center px-0 sm:justify-start sm:px-2.5"}`;
+    `flex min-h-[34px] w-full cursor-pointer items-center gap-2.5 rounded-md border-0 border-l-4 border-transparent bg-transparent py-1.5 text-left text-text no-underline hover:bg-surface-2 ${centered ? "justify-center px-0" : "px-2.5"}`;
   return (
     <nav
       aria-label="Main"
       data-collapsed={collapsed || undefined}
-      className={`sticky top-12 flex h-[calc(100vh-48px)] flex-none flex-col gap-0.5 overflow-auto border-r border-border bg-surface px-2 py-2.5 ${collapsed ? "w-[52px]" : "w-[52px] sm:w-[216px]"}`}
+      className={`sticky top-12 flex h-[calc(100vh-48px)] flex-none flex-col gap-0.5 overflow-auto border-r border-border bg-surface px-2 py-2.5 ${collapsed ? "w-[52px]" : "w-[216px]"}`}
     >
       {ENTRIES.map(({ section, name, tip }) => (
         <div key={section} className="contents">
           {section === "settings" && <div role="presentation" className="mx-1 my-2 h-px bg-border" />}
           <Tooltip
-            tip={
-              section === "my-work" && myWorkCount !== null
-                ? `${myWorkCount} unanswered mentions from people`
-                : tip
-            }
+            tip={section === "my-work" && myWorkCount !== null ? `${tip}; ${mentions}` : tip}
             placement="right"
             className="block"
           >
             <a
               href={hrefs[section]}
               aria-current={current === section ? "page" : undefined}
-              aria-label={
-                section === "my-work" && myWorkCount !== null
-                  ? `My work, ${myWorkCount} unanswered mentions from people`
-                  : name
-              }
+              aria-label={section === "my-work" && myWorkCount !== null ? `My work, ${mentions}` : name}
               onClick={navigateOnClick(hrefs[section], onNavigate)}
               className={`${item(collapsed)} aria-[current=page]:border-accent aria-[current=page]:bg-accent-bg aria-[current=page]:font-semibold`}
             >
               <NavIcon name={section} />
-              {!collapsed && <span className="hidden truncate sm:inline">{name}</span>}
+              {!collapsed && <span className="truncate">{name}</span>}
               {!collapsed && section === "my-work" && myWorkCount !== null && (
                 <span
                   aria-hidden="true"
                   data-nav-count
-                  className="ml-auto hidden rounded-full border border-border bg-surface-2 px-1.5 text-[11px] font-bold sm:inline"
+                  className="ml-auto rounded-full border border-border bg-surface-2 px-1.5 text-[11px] font-bold"
                 >
                   {myWorkCount}
                 </span>
@@ -99,7 +92,7 @@ export function AppNav({ current, hrefs, myWorkCount, onNavigate }: AppNavProps)
           </Tooltip>
         </div>
       ))}
-      <div className="mt-auto hidden sm:block">
+      <div className="mt-auto">
         <Tooltip
           tip={collapsed ? "Show the navigation labels" : "Hide the navigation labels"}
           placement="right"

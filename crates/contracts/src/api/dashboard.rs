@@ -1103,6 +1103,9 @@ impl fmt::Display for ItemKey {
 /// A request addressed to a scanned login, outside the ranked list.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Mention {
+    /// Only a bounded part of this conversation was read.
+    #[serde(default)]
+    pub partly_read: bool,
     /// Stable opaque identity of this post on this item (used by Hide).
     pub id: String,
     /// The containing item.

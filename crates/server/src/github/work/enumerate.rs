@@ -38,9 +38,7 @@ struct OwnerRepo {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenPull {
-    #[serde(default)]
-    body: String,
-    comments: Nodes<IssueComment>,
+    updated_at: Timestamp,
     number: u32,
     title: String,
     url: String,
@@ -68,12 +66,6 @@ struct OpenIssue {
 }
 
 #[derive(Deserialize)]
-struct IssueComment {
-    #[serde(default)]
-    body: String,
-}
-
-#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Page {
     page_info: PageInfo,
@@ -87,7 +79,7 @@ struct PageInfo {
     end_cursor: Option<String>,
 }
 
-const PULL_NODES: &str = "number title url body comments(last: 50) { nodes { body } } author { login } assignees(first: 20) { nodes { login } } \
+const PULL_NODES: &str = "number title url updatedAt author { login } assignees(first: 20) { nodes { login } } \
 reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } }";
 const ISSUE_NODES: &str = "number title url body createdAt updatedAt authorAssociation author { __typename login } \
 assignees(first: 20) { nodes { login } } labels(first: 20) { nodes { name } } \
@@ -432,8 +424,7 @@ impl<T: TokenSource> WorkClient<T> {
                 for login in logins {
                     let relations = [
                         (
-                            mentions(&pull.body, login)
-                                || pull.comments.nodes.iter().any(|c| mentions(&c.body, login)),
+                            true, // Potential mention: the bounded conversation read decides.
                             PrRelation::Mentioned,
                         ),
                         (
@@ -458,6 +449,9 @@ impl<T: TokenSource> WorkClient<T> {
                     for (hit, relation) in relations {
                         if hit {
                             found.add_pr(item.clone(), &pull.title, &pull.url, login, relation);
+                            if let Some(candidate) = found.pull_requests.get_mut(&item) {
+                                candidate.updated_at = Some(pull.updated_at);
+                            }
                         }
                     }
                 }

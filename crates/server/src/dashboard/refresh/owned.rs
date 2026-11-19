@@ -1,12 +1,83 @@
 //! Ownership policies (Q3, Q4; skill `fetch_owned_paths`, `owned_change`): the paths whose areas name a scanned
 //! login as owner or reviewer, and how much real code a pull request changes there.
 
-use std::collections::BTreeSet;
+use crate::github::work::{ItemRef, TokenSource, WorkClient, WorkError};
+use contracts::api::dashboard::{DashboardSettings, PolicyRef};
+use contracts::common::RepoRef;
+use std::collections::{BTreeMap, BTreeSet};
+use tokio::sync::OnceCell;
 
 use serde::Deserialize;
 
 use crate::dashboard::score::{OwnedChange, ScoreRules};
 use crate::github::work::PullFile;
+
+/// Refresh-local policy cache shared by ranking and concurrent mention reads.
+#[derive(Default)]
+pub(crate) struct Ownership {
+    pub verdicts: BTreeMap<ItemRef, OwnedChange>,
+    policies: BTreeMap<RepoRef, CachedPolicy>,
+}
+
+struct CachedPolicy {
+    source: PolicyRef,
+    paths: OnceCell<Option<Vec<String>>>,
+}
+
+impl Ownership {
+    pub fn new(settings: &DashboardSettings) -> Self {
+        Self {
+            verdicts: BTreeMap::new(),
+            policies: settings
+                .repositories
+                .iter()
+                .filter_map(|row| {
+                    Some((
+                        row.repo.clone(),
+                        CachedPolicy {
+                            source: row.ownership_policy.clone()?,
+                            paths: OnceCell::new(),
+                        },
+                    ))
+                })
+                .collect(),
+        }
+    }
+
+    fn policy(&self, repo: &RepoRef) -> Option<&CachedPolicy> {
+        self.policies
+            .iter()
+            .find(|(key, _)| super::scan::same_repo(key, repo))
+            .map(|(_, p)| p)
+    }
+
+    pub fn has_policy(&self, repo: &RepoRef) -> bool {
+        self.policy(repo).is_some()
+    }
+
+    pub async fn paths<T: TokenSource>(
+        &self,
+        client: &WorkClient<T>,
+        rules: &ScoreRules,
+        repo: &RepoRef,
+    ) -> Result<Option<&[String]>, WorkError> {
+        let Some(cached) = self.policy(repo) else {
+            return Ok(None);
+        };
+        let policy = &cached.source;
+        let paths = cached
+            .paths
+            .get_or_try_init(|| async {
+                match client.file_contents(&policy.repo, &policy.path).await {
+                    Ok(text) => Ok(owned_paths(rules, &text).ok()),
+                    Err(error) if error.ends_refresh() => Err(error),
+                    Err(_) => Ok(None),
+                }
+            })
+            .await?;
+        Ok(paths.as_deref())
+    }
+}
 
 const NON_CODE_SUFFIXES: [&str; 6] = [".md", ".txt", ".lock", ".snap", ".svg", ".png"];
 const HASH_COMMENT_SUFFIXES: [&str; 5] = [".py", ".sh", ".toml", ".yml", ".yaml"];

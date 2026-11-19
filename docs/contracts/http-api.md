@@ -693,7 +693,10 @@ Mention[]`, oldest first. This is a separate list, unaffected by ranked-item fil
 (without a cursor); cursor pages return `[]`, available equally to sessions and read tokens. Fields: `id`, `item_key`, `kind` (`pr`/`issue`),
 `repo`, `number`, `title`, `author`, `is_bot`, `created_at`, `text`, `url`. Text is untrusted plain text; `url`
 is built by the server. `is_bot` uses the user's known bots plus GitHub Bot type / `[bot]`. An empty list means
-no unanswered, unhidden mentions in the snapshot. Older stored snapshots deserialize with an empty list.
+no unanswered, unhidden mentions found in the snapshot. `Mention.partly_read` is true when any bounded
+conversation window was truncated or its count unavailable; older snapshots default it to false. Snapshot
+scan notes include a factual count of items whose mentions were not checked (budget, deadline or read failure),
+which the browser displays in the strip even without rows. Older snapshots deserialize with an empty list.
 
 `POST /api/v1/dashboard/mentions/{id}/hide` (R11) has no body. Session + CSRF only, no personal access tokens. Returns
 204 (including repeated hides), 404 for an identity outside the user's snapshot/hidden set. A hide changes the

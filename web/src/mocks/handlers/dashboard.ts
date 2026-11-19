@@ -31,6 +31,7 @@ const MENTIONS: Mention[] = Array.from({ length: 5 }, (_, i) => ({
   kind: "pr",
   title: "A quick question",
   author: i === 4 ? "helper" : "bob",
+  partly_read: false,
   is_bot: i === 4,
   created_at: `2026-11-18T0${i}:00:00Z`,
   text: "@alice <script>please respond</script>",
@@ -157,6 +158,10 @@ const SCENARIOS = {
   mentions: (): Base => ({
     summary: { ...SUMMARY, mentions: MENTIONS },
     items: { ...ITEMS, mentions: MENTIONS },
+  }),
+  "mention-hide-gone": (): Base => ({
+    summary: { ...SUMMARY, mentions: MENTIONS },
+    items: ITEMS,
   }),
   "mention-hide-fails": (): Base => ({
     summary: { ...SUMMARY, mentions: MENTIONS },
@@ -548,5 +553,7 @@ export const dashboardRefreshEvents = route("dashboardRefreshEvents", ({ params,
 export const hideDashboardMention = route("hideDashboardMention", ({ params }) => {
   if (scenarioName === "mention-hide-fails") return apiError(500, "internal", "Could not hide this mention");
   hiddenMentions.add(String(params.id));
+  if (scenarioName === "mention-hide-gone")
+    return apiError(404, "not_found", "The requested item was not found.");
   return new HttpResponse(null, { status: 204 });
 });

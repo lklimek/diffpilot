@@ -40,6 +40,11 @@
       "description": "A request addressed to a scanned login, outside the ranked list.",
       "type": "object",
       "properties": {
+        "partly_read": {
+          "description": "Only a bounded part of this conversation was read.",
+          "type": "boolean",
+          "default": false
+        },
         "id": {
           "description": "Stable opaque identity of this post on this item (used by Hide).",
           "type": "string"

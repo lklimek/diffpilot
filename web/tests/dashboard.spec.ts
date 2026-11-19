@@ -37,11 +37,16 @@ test.describe("My work (msw)", () => {
       page.getByRole("link", { name: "My work, 3 unanswered mentions from people" }),
     ).toBeVisible();
     await page.getByRole("link", { name: "My work, 3 unanswered mentions from people" }).hover();
-    await expect(page.getByRole("tooltip", { name: "3 unanswered mentions from people" })).toBeVisible();
+    await expect(
+      page.getByRole("tooltip", { name: /Your PRs, issues and TODOs.*3 unanswered mentions from people/ }),
+    ).toBeVisible();
     for (const colorScheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme });
       await page.setViewportSize({ width: 390, height: 844 });
       await expect(strip).toBeVisible();
+      const nav = page.getByRole("navigation", { name: "Main" });
+      await expect(page.locator("[data-nav-count]")).toBeVisible();
+      await expect(nav.getByRole("button", { name: "Collapse navigation" })).toBeVisible();
       const width = await strip.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
       expect(width.scroll).toBeLessThanOrEqual(width.client);
       expect((await strip.getByRole("listitem").first().boundingBox())!.height).toBeLessThanOrEqual(48);
@@ -405,4 +410,18 @@ test("failed mention hide keeps the row and count and shows a retry message", as
   await expect(page.getByText(/Could not hide this mention. Try again./)).toBeVisible();
   await expect(strip.getByRole("link")).toHaveCount(3);
   await expect(page.locator("[data-nav-count]")).toHaveText("4");
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(page.getByText(/Could not hide this mention. Try again./)).toHaveCount(0);
+});
+
+test("hiding a vanished mention removes its row and updates the count without an error", async ({ page }) => {
+  await page.goto("/?dashboard=mention-hide-gone");
+  const strip = page.getByRole("region", { name: "Mentions" });
+  await strip.getByRole("button", { name: "Mentions (4)" }).click();
+  const first = strip.getByRole("button", { name: /Hide mention/ }).first();
+  const href = await strip.getByRole("link").first().getAttribute("href");
+  await first.click();
+  await expect(page.locator("[data-nav-count]")).toHaveText("3");
+  await expect(strip.locator(`a[href="${href}"]`)).toHaveCount(0);
+  await expect(page.getByText(/Could not hide this mention. Try again./)).toHaveCount(0);
 });

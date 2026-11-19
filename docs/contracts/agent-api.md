@@ -152,6 +152,8 @@ token, its hash, other headers and the query string are never logged. Settings s
 (recorded at most once a minute).
 
 ### Mentions outside the ranking
+`partly_read` reports a bounded conversation window, without a safety implication. Snapshot scan notes state
+how many items were not checked when the read budget/deadline or an upstream failure prevented completion.
 Both dashboard summary and items responses expose `mentions`, independent of the ranked items and their
 filters. The items response includes them only on its first page; cursor pages return `[]`. List these as quick replies separately from P0–P3. They are unanswered, unhidden posts
 addressed to a scanned login, oldest first. `is_bot` allows callers to filter automated requests; the browser

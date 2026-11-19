@@ -22,6 +22,7 @@ import { KeyboardHelp } from "../../components/dashboard/keyboard-help/KeyboardH
 import { clockText } from "../../components/format/time";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
+import { Tooltip } from "../../components/tooltip/Tooltip";
 import {
   chartPoints,
   dailySeries,
@@ -81,7 +82,7 @@ export function DashboardScreen() {
   );
 
   const main = view && summary && (
-    <div className="grid content-start gap-2">
+    <div className="grid content-start gap-0.5">
       <div>
         <h1 className="text-[22px] font-bold">My work</h1>
         <p className="text-muted">
@@ -141,6 +142,12 @@ export function DashboardScreen() {
       )}
       <Mentions
         items={summary.mentions ?? []}
+        notes={(snapshot?.notes ?? [])
+          .filter(
+            (n) =>
+              n.text.startsWith("Mentions not checked on ") || n.text.startsWith("PR mention search for "),
+          )
+          .map((n) => n.text)}
         withBots={page.withBots}
         onWithBotsChange={page.setWithBots}
         onHide={(id) => page.hideMention.mutate(id)}
@@ -151,7 +158,12 @@ export function DashboardScreen() {
       />
       {page.hideMention.isError && (
         <StatusMessage kind="error">
-          Could not hide this mention. Try again. {errorText(page.hideMention.error)}
+          Could not hide this mention. Try again. {errorText(page.hideMention.error)}{" "}
+          <Tooltip tip="Dismiss this error message">
+            <button type="button" className="underline" onClick={page.hideMention.dismissError}>
+              Dismiss
+            </button>
+          </Tooltip>
         </StatusMessage>
       )}
       {snapshot && view.empty && (

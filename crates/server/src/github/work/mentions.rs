@@ -47,9 +47,9 @@ pub(crate) fn incomplete<N>(nodes: &Nodes<N>) -> bool {
 }
 
 impl PullDiscussion {
-    /// All comments and submitted reviews, only when every window is complete.
-    pub fn posts(&self) -> Option<Vec<Comment>> {
-        if incomplete(&self.issue.comments)
+    /// Whether any bounded connection omits part of the conversation.
+    pub fn partly_read(&self) -> bool {
+        incomplete(&self.issue.comments)
             || incomplete(&self.reviews)
             || incomplete(&self.review_threads)
             || self
@@ -57,9 +57,10 @@ impl PullDiscussion {
                 .nodes
                 .iter()
                 .any(|t| incomplete(&t.comments))
-        {
-            return None;
-        }
+    }
+
+    /// Comments and submitted reviews in the read windows.
+    pub fn posts(&self) -> Vec<Comment> {
         let mut posts = self.issue.comments.nodes.clone();
         posts.extend(self.reviews.nodes.iter().filter_map(|r| {
             Some(Comment {
@@ -75,15 +76,15 @@ impl PullDiscussion {
                 .iter()
                 .flat_map(|t| t.comments.nodes.iter().cloned()),
         );
-        Some(posts)
+        posts
     }
 }
 
 const DISCUSSION: &str = "state body createdAt author { __typename login } \
 comments(last: 50) { totalCount nodes { author { __typename login } body createdAt url } }";
 const REVIEWS: &str = "reviews(last: 20) { totalCount nodes { author { __typename login } state submittedAt body url } } \
-reviewThreads(first: 20) { totalCount nodes { isResolved isOutdated \
-comments(first: 5) { totalCount nodes { author { __typename login } body createdAt url } } } }";
+reviewThreads(last: 20) { totalCount nodes { isResolved isOutdated \
+comments(last: 5) { totalCount nodes { author { __typename login } body createdAt url } } } }";
 
 impl<T: TokenSource> WorkClient<T> {
     /// One bounded query per issue; no REST refills or batch-split amplification.
@@ -104,11 +105,11 @@ impl<T: TokenSource> WorkClient<T> {
         let mut result = Fetched::default();
         for (item, value) in answers.resolved {
             match serde_json::from_value::<IssueDiscussion>(value["issue"].clone()) {
-                Ok(discussion) if !incomplete(&discussion.comments) => {
+                Ok(discussion) => {
                     result.found.insert(item, discussion);
                 }
                 _ => result.notes.push(super::note(
-                    format!("The discussion of {item} is incomplete; its mentions are omitted"),
+                    format!("The discussion of {item} could not be read"),
                     item.issue_key(),
                 )),
             }

@@ -7,6 +7,7 @@ import { OpenExternal } from "../common/OpenExternal";
 
 interface Props {
   items: Mention[];
+  notes?: string[];
   withBots: boolean;
   onWithBotsChange: (withBots: boolean) => void;
   expanded: boolean;
@@ -28,6 +29,7 @@ const waiting = (at: string, now: Date) => {
 /** Quick replies outside the ranking; all untrusted strings render as text. */
 export function Mentions({
   items,
+  notes = [],
   withBots,
   onWithBotsChange,
   expanded,
@@ -37,7 +39,7 @@ export function Mentions({
   now,
 }: Props) {
   const [all, setAll] = useState(false);
-  if (items.length === 0) return null;
+  if (items.length === 0 && notes.length === 0) return null;
   const visible = items
     .filter((item) => withBots || !item.is_bot)
     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.id.localeCompare(b.id));
@@ -60,21 +62,28 @@ export function Mentions({
             </button>
           </Tooltip>
         </h2>
-        {!expanded && visible.length === 0 && (
+        {!expanded && items.length > 0 && visible.length === 0 && (
           <span className="truncate text-xs text-muted">Only bot mentions ({items.length})</span>
         )}
       </header>
-      {expanded && (
+      {notes.map((note) => (
+        <p key={note} className="text-xs text-muted">
+          {note}
+        </p>
+      ))}
+      {expanded && items.length > 0 && (
         <>
-          <Segmented
-            label="Mention authors"
-            value={withBots ? "all" : "human"}
-            onChange={(value) => onWithBotsChange(value === "all")}
-            options={[
-              { value: "human", label: "without bots", tip: "Show mentions from people" },
-              { value: "all", label: "with bots", tip: "Show mentions from people and bots" },
-            ]}
-          />
+          <div className="[&_[role=group]]:max-w-full [&_button]:px-1">
+            <Segmented
+              label="Mention authors"
+              value={withBots ? "all" : "human"}
+              onChange={(value) => onWithBotsChange(value === "all")}
+              options={[
+                { value: "human", label: "without bots", tip: "Show mentions from people" },
+                { value: "all", label: "with bots", tip: "Show mentions from people and bots" },
+              ]}
+            />
+          </div>
           {visible.length === 0 ? (
             <p className="text-sm text-muted">
               Only bot mentions are waiting ({items.length}). Choose with bots to show them.
@@ -99,7 +108,7 @@ export function Mentions({
                       <time dateTime={item.created_at} title={dateTimeText(item.created_at)}>
                         waiting {waiting(item.created_at, now)}
                       </time>{" "}
-                      · {item.text}
+                      {item.partly_read && <span>· partly read </span>}· {item.text}
                     </p>
                   </div>
                   <OpenExternal

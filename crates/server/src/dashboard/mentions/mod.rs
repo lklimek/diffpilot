@@ -77,6 +77,7 @@ pub(crate) fn unanswered(
                 .take(300)
                 .collect();
             Some(Mention {
+                partly_read: false,
                 id,
                 item_key: key.clone(),
                 kind,

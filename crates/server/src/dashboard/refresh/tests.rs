@@ -1927,6 +1927,9 @@ async fn mention_only_prs_search_and_enumeration_honor_exclusions_and_hide_ident
         (324, "bob", "dependabot", "@alice please"),
         (325, "bob", "carol", "> @alice quoted"),
         (326, "bob", "KNOWN", "@alice please"),
+        (327, "bob", "carol", "@alice draft"),
+        (328, "bob", "carol", "@alice answered"),
+        (329, "bob", "carol", "@alice newest window"),
     ] {
         let mut pr = template.clone();
         pr["number"] = json!(number);
@@ -1940,6 +1943,24 @@ async fn mention_only_prs_search_and_enumeration_honor_exclusions_and_hide_ident
             {"author":{"__typename":"User","login":commenter},"body":text,"createdAt":"2026-11-18T08:30:00Z"},
             {"author":{"__typename":"User","login":commenter},"body":text,"createdAt":"2026-11-18T08:40:00Z"}
         ]});
+        if number == 327 {
+            pr["isDraft"] = json!(true);
+        }
+        if number == 328 {
+            pr["comments"]["nodes"].as_array_mut().unwrap().push(json!({
+                "author":{"__typename":"User","login":"alice-helper"},"body":"Answered",
+                "createdAt":"2026-11-18T08:50:00Z"
+            }));
+        }
+        if number == 329 {
+            let mut comments = Vec::new();
+            for n in 0..55 {
+                comments.push(json!({"author":{"__typename":"User","login":"carol"},
+                    "body":if n == 54 {"@alice newest window"} else {"Older"},
+                    "createdAt":format!("2026-11-18T08:{n:02}:00Z")}));
+            }
+            pr["comments"] = json!({"nodes":comments});
+        }
         prs.as_array_mut().unwrap().push(pr);
     }
     // Existing files are minor in the ownership policy; a mention is not a directed review request.
@@ -1993,12 +2014,18 @@ async fn mention_only_prs_search_and_enumeration_honor_exclusions_and_hide_ident
             .count(),
         2
     );
-    for number in [323, 324, 325, 1203] {
+    for number in [323, 324, 325, 327, 328, 1203] {
         assert!(
             !before.mentions.iter().any(|m| m.number == number),
             "excluded {number}"
         );
     }
+    let partial = before
+        .mentions
+        .iter()
+        .find(|m| m.number == 329)
+        .expect("truncated conversation kept");
+    assert_eq!(serde_json::to_value(partial).unwrap()["partly_read"], true);
     let old = before.mentions.iter().find(|m| m.number == 321).unwrap();
     let newer = before
         .mentions
@@ -2046,4 +2073,67 @@ async fn mention_only_prs_search_and_enumeration_honor_exclusions_and_hide_ident
         .items(&format!("?limit=1&cursor={}", first.next_cursor.unwrap()))
         .await;
     assert!(second.mentions.is_empty());
+}
+
+#[tokio::test]
+async fn mention_unreadable_policy_keeps_the_same_unverified_items_as_ranking() {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let file = dir.path().join("pull-requests.json");
+    let mut prs: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let pr = prs
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["number"] == 1203)
+        .unwrap();
+    pr["reviewRequests"] = json!({"nodes":[]});
+    pr["body"] = json!("@alice please");
+    std::fs::write(&file, serde_json::to_vec(&prs).unwrap()).unwrap();
+    let w = world_in(
+        Arc::new(NoopRanker),
+        Duration::from_secs(120),
+        dir.path().to_owned(),
+    )
+    .await;
+    let mut configured = settings();
+    configured
+        .repositories
+        .iter_mut()
+        .find(|r| r.repo.name == "platform")
+        .unwrap()
+        .ownership_policy
+        .as_mut()
+        .unwrap()
+        .path = "missing.json".into();
+    w.state
+        .db
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, "u1", &configured, now())
+        .await
+        .unwrap();
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    assert!(
+        w.summary(ALICE)
+            .await
+            .mentions
+            .iter()
+            .any(|m| m.number == 1203)
+    );
+}
+
+#[tokio::test]
+async fn mention_only_items_are_not_counted_in_ranking_progress() {
+    let w = world().await;
+    let done = w.refreshed().await;
+    let total = |key| done.steps.iter().find(|s| s.key == key).unwrap().total;
+    let summary = w.summary(ALICE).await;
+    assert_eq!(total(ScanStepKey::SearchPrs), total(ScanStepKey::PrDetails));
+    assert_eq!(
+        total(ScanStepKey::Issues),
+        Some(summary.snapshot.unwrap().checked.issue)
+    );
 }

@@ -1,245 +1,91 @@
 //! Bounded conversation orchestration for the separate mentions strip.
 
-use super::owned;
-use crate::dashboard::score::{OwnedChange, ScoreRules};
+use super::{facts, owned};
+use crate::dashboard::mentions::{body, unanswered};
+use crate::dashboard::score::{OwnedChange, Relation, ScoreRules, pull_eligibility};
 use crate::github::work::{
     Candidates, IssueRelation, ItemRef, PullDetail, TokenSource, WorkClient, WorkError, incomplete,
 };
-use contracts::api::dashboard::{DashboardSettings, GithubKind, Mention, ScanNote};
+use contracts::api::dashboard::{GithubKind, Mention, ScanNote};
+use futures::{StreamExt, stream::FuturesUnordered};
 use std::collections::BTreeMap;
 use std::time::Duration;
+use tokio::time::{Instant, timeout_at};
 
-use crate::dashboard::mentions::{body, unanswered};
-
-/// At most 40 conversation reads and 80 ownership reads; four HTTP calls in flight.
+/// At most 40 uncached conversations; the client limits HTTP calls to four in flight.
 const MAX_DISCUSSIONS: usize = 40;
-/// Mention work cannot consume the five-minute ranking refresh budget.
 const MENTION_LIMIT: Duration = Duration::from_secs(30);
 
-/// Bounded mention collection; an exhausted budget leaves a visible note, never a failed ranking.
+/// Recency across both kinds determines the read budget; completed results survive the deadline.
 pub(crate) async fn collect<T: TokenSource>(
     client: &WorkClient<T>,
     rules: &ScoreRules,
     logins: &[String],
     candidates: &Candidates,
     details: &BTreeMap<ItemRef, PullDetail>,
-    settings: &DashboardSettings,
-    owned_changes: &BTreeMap<ItemRef, OwnedChange>,
+    ownership: &owned::Ownership,
 ) -> Result<(Vec<Mention>, Vec<ScanNote>), WorkError> {
-    match tokio::time::timeout(
-        MENTION_LIMIT,
-        collect_window(
-            client,
-            rules,
-            logins,
-            candidates,
-            details,
-            settings,
-            owned_changes,
-        ),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => Ok((
-            Vec::new(),
-            vec![ScanNote {
-                text: "Mention reads exceeded 30 seconds; mentions are omitted for this refresh"
-                    .into(),
-                item: None,
-            }],
-        )),
-    }
-}
-
-async fn collect_window<T: TokenSource>(
-    client: &WorkClient<T>,
-    rules: &ScoreRules,
-    logins: &[String],
-    candidates: &Candidates,
-    details: &BTreeMap<ItemRef, PullDetail>,
-    settings: &DashboardSettings,
-    owned_changes: &BTreeMap<ItemRef, OwnedChange>,
-) -> Result<(Vec<Mention>, Vec<ScanNote>), WorkError> {
-    let mut found = Vec::new();
-    let mut notes = Vec::new();
-    let pulls: Vec<_> = candidates
+    let mut wanted: Vec<_> = candidates
         .pull_requests
         .iter()
-        .filter(|(_, p)| p.mentioned())
-        .map(|(item, _)| item.clone())
+        .filter(|(_, pr)| pr.mentioned())
+        .map(|(item, pr)| (item, GithubKind::Pr, pr.updated_at, false))
+        .chain(
+            candidates
+                .issues
+                .iter()
+                .filter(|(_, i)| {
+                    i.relations.contains(&IssueRelation::Mentioned)
+                        && !i
+                            .author
+                            .as_deref()
+                            .is_some_and(|a| rules.is_skipped_author(a))
+                })
+                .map(|(item, i)| {
+                    (
+                        item,
+                        GithubKind::Issue,
+                        Some(i.updated_at),
+                        i.discussion.is_some(),
+                    )
+                }),
+        )
         .collect();
-    let issues: Vec<_> = candidates
-        .issues
-        .iter()
-        .filter(|(_, i)| {
-            i.relations.contains(&IssueRelation::Mentioned)
-                && !i
-                    .author
-                    .as_deref()
-                    .is_some_and(|a| rules.is_skipped_author(a))
+    wanted.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(b.0)));
+    let total = wanted.len();
+    let mut reads = 0;
+    wanted.retain(|(_, _, _, cached)| {
+        if *cached {
+            return true;
+        }
+        reads += 1;
+        reads <= MAX_DISCUSSIONS
+    });
+    let deadline = Instant::now() + MENTION_LIMIT;
+    let mut pending: FuturesUnordered<_> = wanted
+        .into_iter()
+        .map(|(item, kind, _, _)| {
+            read_one(
+                client, rules, logins, candidates, details, ownership, item, kind,
+            )
         })
-        .map(|(item, _)| item.clone())
         .collect();
-    if pulls.len() + issues.len() > MAX_DISCUSSIONS {
+    let mut unchecked = total;
+    let mut found = Vec::new();
+    let mut notes = Vec::new();
+    while let Ok(Some(result)) = timeout_at(deadline, pending.next()).await {
+        if let Some((mentions, note)) = result? {
+            unchecked -= 1;
+            found.extend(mentions);
+            notes.extend(note);
+        }
+    }
+    if unchecked > 0 {
+        let noun = if unchecked == 1 { "item" } else { "items" };
         notes.push(ScanNote {
-            text: "Mention reads are limited to 40 conversations per refresh; \
-                   remaining conversations are omitted"
-                .into(),
+            text: format!("Mentions not checked on {unchecked} {noun} this refresh."),
             item: None,
         });
-    }
-    let pulls = &pulls[..pulls.len().min(MAX_DISCUSSIONS)];
-    let issues = &issues[..issues.len().min(MAX_DISCUSSIONS - pulls.len())];
-    let missing: Vec<_> = issues
-        .iter()
-        .filter(|item| candidates.issues[*item].discussion.is_none())
-        .cloned()
-        .collect();
-    let (pr_reads, issue_reads) = tokio::try_join!(
-        client.pull_discussions(pulls),
-        client.issue_discussions(&missing)
-    )?;
-    notes.extend(pr_reads.notes);
-    notes.extend(issue_reads.notes);
-    for (item, discussion) in pr_reads.found {
-        let author = discussion
-            .issue
-            .author
-            .as_ref()
-            .and_then(|a| a.login.as_deref())
-            .unwrap_or("ghost");
-        if discussion.issue.state != "OPEN"
-            || rules.is_skipped_author(author)
-            || (discussion.is_draft && !rules.is_scanned(author))
-        {
-            continue;
-        }
-        let Some(mut posts) = discussion.posts() else {
-            notes.push(ScanNote {
-                text: format!("The discussion of {item} is incomplete; its mentions are omitted"),
-                item: item.pr_key(),
-            });
-            continue;
-        };
-        let directed = details.get(&item).is_some_and(|d| {
-            rules.is_scanned(author)
-                || d.assignees.nodes.iter().any(|a| rules.is_scanned(&a.login))
-                || d.review_requests
-                    .nodes
-                    .iter()
-                    .filter_map(|r| r.requested_reviewer.as_ref())
-                    .any(|r| r.login.as_deref().is_some_and(|a| rules.is_scanned(a)))
-        });
-        if !directed {
-            if matches!(
-                owned_changes.get(&item),
-                Some(OwnedChange::None | OwnedChange::Minor)
-            ) {
-                continue;
-            }
-            if !details.contains_key(&item)
-                && let Some(policy) = settings
-                    .repositories
-                    .iter()
-                    .find(|r| {
-                        r.repo.owner.eq_ignore_ascii_case(&item.repo.owner)
-                            && r.repo.name.eq_ignore_ascii_case(&item.repo.name)
-                    })
-                    .and_then(|r| r.ownership_policy.as_ref())
-            {
-                let read = async {
-                    let text = client.file_contents(&policy.repo, &policy.path).await?;
-                    let files = client.mention_files(&item).await?;
-                    Ok::<_, WorkError>((text, files))
-                }
-                .await;
-                match read {
-                    Ok((text, files)) => match owned::owned_paths(rules, &text) {
-                        Ok(paths) if files.len() < 100 => {
-                            if matches!(
-                                owned::verdict(&files, &paths),
-                                OwnedChange::None | OwnedChange::Minor
-                            ) {
-                                continue;
-                            }
-                        }
-                        _ => {
-                            notes.push(ScanNote {
-                                text: format!(
-                                    "Ownership of {item} could not be established; \
-                                               its mentions are omitted"
-                                ),
-                                item: item.pr_key(),
-                            });
-                            continue;
-                        }
-                    },
-                    Err(e) if e.ends_refresh() => return Err(e),
-                    Err(_) => {
-                        notes.push(ScanNote {
-                            text: format!(
-                                "Ownership of {item} could not be read; its mentions are omitted"
-                            ),
-                            item: item.pr_key(),
-                        });
-                        continue;
-                    }
-                }
-            }
-        }
-        posts.push(body(
-            discussion.issue.author,
-            &discussion.issue.body,
-            discussion.issue.created_at,
-        ));
-        found.extend(unanswered(
-            rules,
-            logins,
-            &item,
-            GithubKind::Pr,
-            &candidates.pull_requests[&item].title,
-            &posts,
-        ));
-    }
-    for item in issues {
-        let discussion = candidates.issues[item]
-            .discussion
-            .as_ref()
-            .or_else(|| issue_reads.found.get(item));
-        let Some(discussion) = discussion else {
-            continue;
-        };
-        if discussion.state != "OPEN"
-            || discussion
-                .author
-                .as_ref()
-                .and_then(|a| a.login.as_deref())
-                .is_some_and(|a| rules.is_skipped_author(a))
-        {
-            continue;
-        }
-        if incomplete(&discussion.comments) {
-            notes.push(ScanNote {
-                text: format!("The discussion of {item} is incomplete; its mentions are omitted"),
-                item: item.issue_key(),
-            });
-            continue;
-        }
-        let mut posts = discussion.comments.nodes.clone();
-        posts.push(body(
-            discussion.author.clone(),
-            &discussion.body,
-            discussion.created_at,
-        ));
-        found.extend(unanswered(
-            rules,
-            logins,
-            item,
-            GithubKind::Issue,
-            &candidates.issues[item].title,
-            &posts,
-        ));
     }
     found.sort_by(|a, b| {
         a.created_at
@@ -248,4 +94,139 @@ async fn collect_window<T: TokenSource>(
     });
     found.dedup_by(|a, b| a.id == b.id);
     Ok((found, notes))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one refresh context and one item; no additional state"
+)]
+async fn read_one<T: TokenSource>(
+    client: &WorkClient<T>,
+    rules: &ScoreRules,
+    logins: &[String],
+    candidates: &Candidates,
+    details: &BTreeMap<ItemRef, PullDetail>,
+    ownership: &owned::Ownership,
+    item: &ItemRef,
+    kind: GithubKind,
+) -> Result<Option<(Vec<Mention>, Option<ScanNote>)>, WorkError> {
+    let empty = || Some((Vec::new(), None));
+    let mut note = None;
+    let (mut posts, discussion, partly_read, title) = match kind {
+        GithubKind::Pr => {
+            let Some(pr) = client
+                .pull_discussions(std::slice::from_ref(item))
+                .await?
+                .found
+                .remove(item)
+            else {
+                return Ok(None);
+            };
+            let author = pr.issue.author.as_ref().and_then(|a| a.login.as_deref());
+            let mut owned = ownership
+                .verdicts
+                .get(item)
+                .copied()
+                .unwrap_or(OwnedChange::NoPolicy);
+            let (assigned, pending) = if let Some(detail) = details.get(item) {
+                let facts = facts::pr(
+                    rules,
+                    item,
+                    detail,
+                    facts::PrContext {
+                        candidate: &candidates.pull_requests[item],
+                        blockers: None,
+                        owned,
+                        milestones: Default::default(),
+                    },
+                )
+                .facts;
+                (
+                    facts.relations.contains(&Relation::Assigned),
+                    facts.review_pending_for_us,
+                )
+            } else {
+                (false, false)
+            };
+            if pr.issue.state != "OPEN"
+                || pull_eligibility(rules, author, pr.is_draft, assigned, pending, owned)
+                    .excluded_by
+                    .is_some()
+            {
+                return Ok(empty());
+            }
+            if !ownership.verdicts.contains_key(item) && ownership.has_policy(&item.repo) {
+                owned = match ownership.paths(client, rules, &item.repo).await? {
+                    Some(paths) => match client.mention_files(item).await {
+                        Ok(files) if files.len() < 100 => owned::verdict(&files, paths),
+                        Err(error) if error.ends_refresh() => return Err(error),
+                        _ => OwnedChange::Unknown,
+                    },
+                    None => OwnedChange::Unknown,
+                };
+            }
+            if pull_eligibility(rules, author, pr.is_draft, assigned, pending, owned)
+                .excluded_by
+                .is_some()
+            {
+                return Ok(empty());
+            }
+            if owned == OwnedChange::Unknown {
+                note = Some(ScanNote {
+                    text: format!("Ownership of {item} is unverified; its mentions are included"),
+                    item: item.pr_key(),
+                });
+            }
+            let partly_read = pr.partly_read();
+            (
+                pr.posts(),
+                pr.issue,
+                partly_read,
+                &candidates.pull_requests[item].title,
+            )
+        }
+        GithubKind::Issue => {
+            let candidate = &candidates.issues[item];
+            let discussion = match &candidate.discussion {
+                Some(cached) => cached.clone(),
+                None => {
+                    let Some(read) = client
+                        .issue_discussions(std::slice::from_ref(item))
+                        .await?
+                        .found
+                        .remove(item)
+                    else {
+                        return Ok(None);
+                    };
+                    read
+                }
+            };
+            if discussion.state != "OPEN"
+                || discussion
+                    .author
+                    .as_ref()
+                    .and_then(|a| a.login.as_deref())
+                    .is_some_and(|a| rules.is_skipped_author(a))
+            {
+                return Ok(empty());
+            }
+            let partly_read = incomplete(&discussion.comments);
+            (
+                discussion.comments.nodes.clone(),
+                discussion,
+                partly_read,
+                &candidate.title,
+            )
+        }
+    };
+    posts.push(body(
+        discussion.author,
+        &discussion.body,
+        discussion.created_at,
+    ));
+    let mut found = unanswered(rules, logins, item, kind, title, &posts);
+    for mention in &mut found {
+        mention.partly_read = partly_read;
+    }
+    Ok(Some((found, note)))
 }

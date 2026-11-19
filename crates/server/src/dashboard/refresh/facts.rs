@@ -424,6 +424,7 @@ mod tests {
         let detail: PullDetail = serde_json::from_value(node).expect("detail");
         let rules = ScoreRules::new("alice", &DashboardSettings::default());
         let candidate = PrCandidate {
+            updated_at: None,
             title: detail.title.clone(),
             url: detail.url.clone(),
             relations: BTreeMap::new(),

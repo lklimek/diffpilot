@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
-use tokio::time::{Instant, timeout};
+use tokio::time::timeout;
 
 use contracts::api::dashboard::ScanNote;
 use contracts::time::Timestamp;
@@ -24,7 +24,7 @@ pub enum PrRelation {
     Assigned,
     /// Review requested from the login (directly; GitHub search also counts team requests).
     ReviewRequested,
-    /// Mentions a scanned login; discovery only, never a ranking relation.
+    /// Potential mention from search or enumeration; never a ranking relation.
     Mentioned,
 }
 
@@ -64,6 +64,8 @@ pub struct PrCandidate {
     pub title: String,
     /// Web URL.
     pub url: String,
+    /// Most recent update reported by discovery.
+    pub updated_at: Option<Timestamp>,
     /// Relations per scanned login.
     pub relations: BTreeMap<String, BTreeSet<PrRelation>>,
 }
@@ -77,7 +79,7 @@ impl PrCandidate {
             .any(|r| *r != PrRelation::Mentioned)
     }
 
-    /// At least one scanned login was mentioned.
+    /// Needs a conversation read to find mentions of scanned logins.
     pub fn mentioned(&self) -> bool {
         self.relations
             .values()
@@ -116,6 +118,15 @@ pub struct IssueCandidate {
     pub relations: BTreeSet<IssueRelation>,
 }
 
+impl IssueCandidate {
+    /// Has a ranking relation beyond mention discovery.
+    pub fn ranked(&self) -> bool {
+        self.relations
+            .iter()
+            .any(|r| *r != IssueRelation::Mentioned)
+    }
+}
+
 /// Candidates of the scan, keyed by item, relations merged across searches and enumeration.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Candidates {
@@ -138,6 +149,7 @@ impl Candidates {
         self.pull_requests
             .entry(item)
             .or_insert_with(|| PrCandidate {
+                updated_at: None,
                 title: title.to_owned(),
                 url: url.to_owned(),
                 relations: BTreeMap::new(),
@@ -166,10 +178,14 @@ impl Candidates {
     /// Merges `other` into these candidates.
     pub fn merge(&mut self, other: Self) {
         for (item, pr) in other.pull_requests {
+            let updated_at = pr.updated_at;
             for (login, relations) in pr.relations {
                 for relation in relations {
                     self.add_pr(item.clone(), &pr.title, &pr.url, &login, relation);
                 }
+            }
+            if let Some(found) = self.pull_requests.get_mut(&item) {
+                found.updated_at = found.updated_at.max(updated_at);
             }
         }
         for (item, issue) in other.issues {
@@ -321,7 +337,7 @@ impl<T: TokenSource> WorkClient<T> {
     /// with a note (it never reaches `q`).
     pub async fn search_pull_requests(&self, logins: &[String]) -> Result<PrSearch, WorkError> {
         let mut found = PrSearch::default();
-        let mut mention_budget = Duration::from_secs(15);
+
         for login in logins {
             if !valid_login(login) {
                 found.notes.push(invalid_login(login));
@@ -334,17 +350,17 @@ impl<T: TokenSource> WorkClient<T> {
                 );
                 let what = format!("pull requests of {login}");
                 let read = if relation == PrRelation::Mentioned {
-                    let started = Instant::now();
-                    let read =
-                        timeout(mention_budget, self.search_capped::<SearchItem>(&q, 100)).await;
-                    mention_budget = mention_budget.saturating_sub(started.elapsed());
+                    // Each login gets its own request allowance plus the paced start.
+                    let read = timeout(
+                        Duration::from_secs(15) + self.search_interval,
+                        self.search_capped::<SearchItem>(&q, 100),
+                    )
+                    .await;
                     match read {
                         Ok(read) => read,
                         Err(_) => {
                             found.notes.push(note(
-                                "PR mention search exceeded its 15-second budget; \
-                                 some mentions may be missing"
-                                    .into(),
+                                format!("PR mention search for {login} was not completed within its request budget"),
                                 None,
                             ));
                             continue;
@@ -382,9 +398,16 @@ impl<T: TokenSource> WorkClient<T> {
                 found.notes.extend(cut_short(&what, &page));
                 for item in page.items {
                     if let Some(key) = item.item() {
-                        found
-                            .candidates
-                            .add_pr(key, &item.title, &item.html_url, login, relation);
+                        found.candidates.add_pr(
+                            key.clone(),
+                            &item.title,
+                            &item.html_url,
+                            login,
+                            relation,
+                        );
+                        if let Some(pr) = found.candidates.pull_requests.get_mut(&key) {
+                            pr.updated_at = Some(item.updated_at);
+                        }
                     }
                 }
             }
