@@ -347,6 +347,22 @@ describe("Files Inspector panels (proposal §3)", () => {
 });
 
 describe("Files code view", () => {
+  it("a hunk of several steps keeps one remark label and one rating bar per step", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=96&end=109");
+    await waitFor(() => expect(document.querySelectorAll("[data-highlight]").length).toBeGreaterThan(1));
+    // Each label names the remarks of one step; steps 3-8 each have their own label.
+    const steps = [
+      ...document.querySelectorAll("[data-highlight] > :is(span, button)[aria-describedby]"),
+    ].map((label) => [...new Set([...(label.textContent ?? "").matchAll(/step (\d+)\)/g)].map((m) => m[1]))]);
+    for (const named of steps) expect(named.length).toBeLessThanOrEqual(1);
+    for (const step of ["3", "4", "5", "6", "7", "8"])
+      expect(steps.filter((named) => named[0] === step)).toHaveLength(1);
+    const run = (line: number) =>
+      document.querySelector(`[data-line="${line}"][data-side="head"]`)!.closest("[data-highlight]")!;
+    expect(run(99)).toHaveAttribute("data-band", "high");
+    expect(run(97)).toHaveAttribute("data-band", "low");
+  });
+
   it("draws the remarks of a step on removed code on the removed rows (no ◆ means no remark)", async () => {
     await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
     await waitFor(() =>

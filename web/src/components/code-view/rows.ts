@@ -58,11 +58,14 @@ export function buildSegments(
     };
     const covering = annotations.filter((a) => covers(a, line));
     const last = segments.at(-1);
+    // A replacing line stays with its removed block while it carries no other remark than the block's (its
+    // first line may bring them); a line with other remarks, e.g. another step's, starts its own run.
     if (
       last?.kind === "deleted" &&
       last.block.replacement &&
       line >= last.block.replacement.start_line &&
-      line <= last.block.replacement.end_line
+      line <= last.block.replacement.end_line &&
+      (last.paired.length === 0 || covering.every((a) => last.annotations.includes(a)))
     ) {
       last.paired.push(row);
       for (const a of covering) if (!last.annotations.includes(a)) last.annotations.push(a);
