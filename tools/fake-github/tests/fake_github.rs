@@ -40,6 +40,7 @@ fn config() -> Config {
         app_id: None,
         app_public_key_file: None,
         dashboard_fixture_dir: None,
+        dashboard_world_at: None,
     }
 }
 

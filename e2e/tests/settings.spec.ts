@@ -65,7 +65,7 @@ test("Sign out ends the session and shows the signed-out Home", async ({ page })
   const account = page.getByRole("region", { name: "Account" });
   await expect(account).toContainText("Signed in as alice");
   await checkScreen(page);
-  await account.getByRole("button", { name: "Sign out" }).click();
+  await account.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
   // The session is gone on the server too, not only in this page.

@@ -271,19 +271,26 @@ pub(crate) struct Dashboard {
     recorded_pull: Option<(String, u64)>,
     started: Instant,
     started_epoch: i64,
+    /// The instant the world was written for, and how far its dates moved (`--dashboard-world-at`).
+    world_at: Option<jiff::Timestamp>,
+    shift_seconds: i64,
     /// Arrival counter of `RequestRecord::seq`.
     arrivals: AtomicUsize,
     live: Mutex<Live>,
 }
 
 impl Dashboard {
-    /// Loads the world of `dir`; `pull_path` is the recorded pull request's REST path.
+    /// Loads the world of `dir`, its dates moved so that `world_at` is now; `pull_path` is the recorded pull
+    /// request's REST path.
     pub(crate) fn load(
         dir: &Path,
         graphql: Arc<Graphql>,
         pull_path: &str,
+        world_at: Option<jiff::Timestamp>,
     ) -> Result<Self, StartError> {
-        let world = World::load(dir)?;
+        let started_epoch = Timestamp::now().as_second();
+        let shift_seconds = world_at.map_or(0, |at| started_epoch - at.as_second());
+        let world = World::load(dir, shift_seconds)?;
         let segments: Vec<&str> = pull_path.trim_start_matches('/').split('/').collect();
         let recorded_pull = match segments.as_slice() {
             ["repos", owner, name, "pulls", number] => {
@@ -296,6 +303,7 @@ impl Dashboard {
             pull_requests = world.pull_requests.len(),
             issues = world.issues.len(),
             dir = %dir.display(),
+            shift_seconds,
             "fake-github loaded the dashboard world"
         );
         Ok(Self {
@@ -303,7 +311,9 @@ impl Dashboard {
             graphql,
             recorded_pull,
             started: Instant::now(),
-            started_epoch: Timestamp::now().as_second(),
+            started_epoch,
+            world_at,
+            shift_seconds,
             arrivals: AtomicUsize::new(0),
             live: Mutex::default(),
         })
@@ -797,7 +807,16 @@ pub(crate) fn control_routes(dashboard: Arc<Dashboard>) -> Router {
     Router::new()
         .route("/_fake/dashboard/requests", get(requests))
         .route("/_fake/dashboard/faults", post(add_faults))
+        .route("/_fake/dashboard/clock", get(clock))
         .with_state(dashboard)
+}
+
+/// `GET /_fake/dashboard/clock`: the instant the world was written for and how far its dates moved.
+async fn clock(State(dashboard): State<Arc<Dashboard>>) -> Json<Value> {
+    Json(json!({
+        "world_at": dashboard.world_at.map(|at| at.to_string()),
+        "shift_seconds": dashboard.shift_seconds,
+    }))
 }
 
 /// `GET /_fake/dashboard/requests`: every dashboard request served so far, in order.
@@ -845,6 +864,7 @@ mod tests {
             app_id: None,
             app_public_key_file: None,
             dashboard_fixture_dir: None,
+            dashboard_world_at: None,
         };
         let oauth = Arc::new(Oauth::load(&config).unwrap());
         let graphql = Arc::new(Graphql::load(&config, oauth).unwrap());
@@ -852,6 +872,7 @@ mod tests {
             &root.join("fixtures/dashboard/github"),
             graphql,
             "/repos/acme/node-client/pulls/482",
+            None,
         )
         .unwrap()
     }

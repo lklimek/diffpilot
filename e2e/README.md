@@ -34,6 +34,8 @@ job tokens are known only by that shape: the server keeps just their hash) and a
 | `dashboard-ranking.spec.ts`       | the ranking waits for a running review analysis; a cancelled ranking → Retry ranking                                  |
 | `dashboard-failures.spec.ts`      | GitHub rate limit: failed with "Retry at HH:MM", 429 until then; GitHub down: a plain message; the previous list stays |
 | `dashboard-text.spec.ts`          | hostile TODO and LLM text (markup, markdown and `javascript:` links) renders as text (`dashboard_llm_text_renders_as_text`) |
+| `dashboard-views.spec.ts`         | Excluded disclosure with its reason; a PR waiting only on others; size pills and Sizes shown; kind toggles kept over a reload; Recent reviews |
+| `dashboard-language.spec.ts`      | Polish chosen: every ranking job's prompt asks for Polish                                                             |
 | `dashboard-settings.spec.ts`      | Dashboard settings validation and save, ranking effort; access token: bearer reads, writes 403, revoked 401; second user |
 
 ## Run
@@ -86,9 +88,10 @@ What a test can reach of a local stack (`Stack` in `support/stack.ts`):
 - The stack's launcher is tied to its worker: a guard process stops it when the worker dies, also on SIGKILL.
 - `stack.github`: fake GitHub's URL for its test controls: dashboard faults (`githubFaults`) and the user of later
   sign-ins (`nextGithubUser`, with `allowLogin` for the server's allow-list) in `support/dashboard.ts`, which also
-  holds the dashboard world's settings (`worldSettings`) and fake MemCan's TODOs (`seedTodos`). The world's dates
-  are fixed around 2026-11-18 and the server reads the real clock, so the ranked order the specs expect holds near
-  that day only.
+  holds the dashboard world's settings (`worldSettings`) and fake MemCan's TODOs (`seedTodos`). The world was
+  written for 2026-11-18T19:30:00Z; the launcher's fake GitHub moves its dates so that instant is its start-up
+  (`SR_DEV_DASHBOARD_WORLD_AT`, `GET /_fake/dashboard/clock`) and `seedTodos` dates the TODOs the same way, so the
+  ranked order the specs expect holds on any day, with no clock in the server.
 - `stack.moveHead()` pushes a commit onto the PR head in the clone base and moves fake GitHub's head
   (`POST /_fake/head`).
 

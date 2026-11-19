@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::schema::Schema;
@@ -108,18 +109,18 @@ pub(crate) fn number(node: &Value) -> u64 {
 }
 
 impl World {
-    /// Loads and normalises the fixtures of `dir`.
-    pub(crate) fn load(dir: &Path) -> Result<Self, StartError> {
+    /// Loads and normalises the fixtures of `dir`, every date moved by `shift_seconds`.
+    pub(crate) fn load(dir: &Path, shift_seconds: i64) -> Result<Self, StartError> {
         if !dir.is_dir() {
             return Err(StartError::FixtureDirMissing {
                 path: dir.to_path_buf(),
             });
         }
-        let accounts: Accounts = load(dir, ACCOUNTS)?;
-        let mut repositories: Vec<Value> = load(dir, REPOSITORIES)?;
-        let mut pull_requests: Vec<Value> = load(dir, PULL_REQUESTS)?;
-        let mut issues: Vec<Value> = load(dir, ISSUES)?;
-        let rest: RestData = load(dir, REST)?;
+        let accounts: Accounts = load_shifted(dir, ACCOUNTS, shift_seconds)?;
+        let mut repositories: Vec<Value> = load_shifted(dir, REPOSITORIES, shift_seconds)?;
+        let mut pull_requests: Vec<Value> = load_shifted(dir, PULL_REQUESTS, shift_seconds)?;
+        let mut issues: Vec<Value> = load_shifted(dir, ISSUES, shift_seconds)?;
+        let rest: RestData = load_shifted(dir, REST, shift_seconds)?;
         for repository in &mut repositories {
             let Some(object) = repository.as_object_mut().filter(|r| {
                 r.get("nameWithOwner")
@@ -187,6 +188,47 @@ impl World {
     /// The issue `repository#number`.
     pub(crate) fn issue(&self, repository: &str, number: u64) -> Option<&Value> {
         find(&self.issues, repository, number)
+    }
+}
+
+/// The fixture `file` of `dir` with every date moved by `shift_seconds`.
+fn load_shifted<T: DeserializeOwned>(
+    dir: &Path,
+    file: &str,
+    shift_seconds: i64,
+) -> Result<T, StartError> {
+    let mut value: Value = load(dir, file)?;
+    if shift_seconds != 0 {
+        shift_dates(&mut value, shift_seconds);
+    }
+    serde_json::from_value(value).map_err(|source| StartError::ParseFixture {
+        path: dir.join(file),
+        source,
+    })
+}
+
+/// Moves every string that is a whole-second UTC date (`2026-11-18T09:50:00Z`, the fixtures' only date form).
+fn shift_dates(value: &mut Value, shift_seconds: i64) {
+    match value {
+        Value::String(text) => {
+            let moved = (text.len() == 20 && text.ends_with('Z'))
+                .then(|| text.parse::<jiff::Timestamp>().ok())
+                .flatten()
+                .and_then(|at| {
+                    at.checked_add(jiff::SignedDuration::from_secs(shift_seconds))
+                        .ok()
+                });
+            if let Some(moved) = moved {
+                *text = moved.to_string();
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| shift_dates(item, shift_seconds)),
+        Value::Object(fields) => fields
+            .values_mut()
+            .for_each(|field| shift_dates(field, shift_seconds)),
+        _ => {}
     }
 }
 
