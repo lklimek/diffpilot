@@ -1,6 +1,7 @@
 import { CodeText } from "../section/CodeText";
 import { useId, useState, type ReactNode } from "react";
 import type {
+  FileViewedState,
   ImpactRef,
   PatternRepetition,
   PatternSite,
@@ -16,6 +17,7 @@ import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Section } from "../section/Section";
 import { Tooltip } from "../tooltip/Tooltip";
 import { ReviewToggle } from "./ReviewToggle";
+import { ViewedChip } from "../files/ViewedChip";
 
 interface StepBlockProps {
   /** The step. */
@@ -42,6 +44,10 @@ interface StepBlockProps {
   stepOf?: (step: StepId) => Step | undefined;
   /** Whether the PR's review threads were read completely (`PrContextFacts.threads_status`). */
   threadsStatus?: ThreadsStatus;
+  /** The file's GitHub Viewed mark (null: not read); no chip while unknown (undefined). */
+  viewed?: FileViewedState | null;
+  /** Opens the Files view at this step; the file path stays plain text without it. */
+  onOpenFile?: () => void;
 }
 
 const HATCH = "bg-[image:repeating-linear-gradient(135deg,transparent_0_6px,rgb(120_130_150/0.16)_6px_7px)]";
@@ -248,6 +254,8 @@ export function StepBlock({
   onSelectStep,
   stepOf,
   threadsStatus = "checked",
+  viewed,
+  onOpenFile,
 }: StepBlockProps) {
   const headingId = useId();
   const { facts, llm } = step;
@@ -264,7 +272,20 @@ export function StepBlock({
           {llm.title}
         </h2>
         <KindLabel kind={llm.kind} />
-        <code className="font-semibold">{facts.file}</code>
+        {onOpenFile ? (
+          <Tooltip tip="Opens this file in the Files view at this step's lines (s).">
+            <button
+              type="button"
+              onClick={onOpenFile}
+              className="cursor-pointer border-0 bg-transparent p-0 font-mono font-semibold text-accent underline"
+            >
+              {facts.file}
+            </button>
+          </Tooltip>
+        ) : (
+          <code className="font-semibold">{facts.file}</code>
+        )}
+        {viewed !== undefined && <ViewedChip state={viewed} path={facts.file} />}
         {llm.symbol && <span className="text-muted">{llm.symbol}</span>}
         <GithubLink url={github.url} tip={github.tip}>
           L{rangeText(facts.range)}

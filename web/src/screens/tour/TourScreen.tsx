@@ -27,6 +27,7 @@ import type {
 import {
   useAskQuestion,
   useCommentActions,
+  useFiles,
   useLines,
   useMe,
   usePendingReview,
@@ -47,6 +48,8 @@ import { HelpDialog } from "../../components/help/HelpDialog";
 import { quietTitle } from "../../components/inspector/summaries";
 import { shortcutAction } from "../../components/help/shortcuts";
 import { NavList } from "../../components/nav/NavList";
+import { filesHash, stepFilesLink } from "../../components/files/model";
+import { rangeText } from "../../components/section/format";
 import { PrContextBlock } from "../../components/pr-context/PrContextBlock";
 import { QuestionsBlock } from "../../components/questions/QuestionsBlock";
 import { MovesBlock } from "../../components/quiet/MovesBlock";
@@ -58,7 +61,15 @@ import { StepBlock } from "../../components/step/StepBlock";
 import { TopBar } from "../../components/top-bar/TopBar";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { busyTip } from "../../components/button/button";
-import { ChunkedCode, DiffCode, FileDiffCode, LinesCode, errorText, type CodeContext } from "./code";
+import {
+  ChunkedCode,
+  DiffCode,
+  FileDiffCode,
+  LinesCode,
+  errorText,
+  useHideContextChanges,
+  type CodeContext,
+} from "./code";
 import { DiagramPane } from "./DiagramPane";
 import { useCommentDrafts, useUnresolvedPosts } from "./drafts";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
@@ -183,22 +194,7 @@ function resumedAt(tour: Tour, block: BlockRef): string {
 }
 
 function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
-  const contextKey = `diffpilot.hide-context-changes.${login ?? "anonymous"}`;
-  const [hideContextChanges, setHideContextChanges] = useState(() => {
-    try {
-      return localStorage.getItem(contextKey) !== "false";
-    } catch {
-      return true;
-    }
-  });
-  const changeContextVisibility = (hide: boolean) => {
-    setHideContextChanges(hide);
-    try {
-      localStorage.setItem(contextKey, String(hide));
-    } catch {
-      /* Storage unavailable; keep this view's preference. */
-    }
-  };
+  const [hideContextChanges, changeContextVisibility] = useHideContextChanges(login);
   const { state, change: save, loadError, saveError } = review;
   const work = useFlowWork(analysisId);
   useForgetReanalysedFlows(analysisId, tour);
@@ -215,6 +211,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   // that failed for good); the request analyses it again from scratch.
   const finished = tour.analysis.state.state === "finished";
   const pending = usePendingReview(analysisId);
+  // The GitHub Viewed marks shown in step headers (read-only here).
+  const files = useFiles(analysisId);
   // Remarks the user gave feedback on dim their pills; nothing else is per-user state of a remark.
   const feedback = useFeedback(analysisId);
   const handledRemarks = new Set(
@@ -289,6 +287,10 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     found?.flow ??
     (current.block === "flow_intro" ? tour.flows.find((f) => f.id === current.flow_id) : undefined);
   const stepLines = useLines(analysisId, step && stepQuery(step));
+  // The Files view at the current place: a step's lines, a flow's first step, else its first file.
+  const filesPath = `/analyses/${analysisId}/files`;
+  const filesStep = step ?? (current.block === "flow_intro" ? flow?.steps[0] : undefined);
+  const filesHref = filesStep ? `${filesPath}${filesHash(stepFilesLink(filesStep))}` : filesPath;
   // Lines of the step the code view hides ("hide comment and import changes"); `c` and the reveal skip them.
   const stepHidden =
     step && stepLines.data
@@ -515,6 +517,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           openInspector();
           sections.reveal("ask");
           return setFocusNext("ask");
+        case "switch_view":
+          return void navigate(filesHref);
         case "help":
           return setHelpOpen(true);
         case "close":
@@ -712,6 +716,13 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         ownComments={pendingComments.filter((c) => onStep(c, step)).length}
         oldCode={offersOldCode ? { shown: oldCode, onToggle: () => setOldCode((s) => !s) } : undefined}
         onSelectStep={selectStep}
+        viewed={
+          files.data
+            ? (files.data.files.find((f) => f.path === step.facts.file || f.old_path === step.facts.file)
+                ?.viewed ?? undefined)
+            : undefined
+        }
+        onOpenFile={() => void navigate(filesHref)}
       />
     );
   } else if (current.block === "quiet") {
@@ -930,6 +941,13 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         pendingCount={pendingCount}
         onOpenPending={() => go({ block: "pending_review" })}
         onHelp={() => setHelpOpen(true)}
+        view={{
+          current: "flows",
+          flowsHref: `${location.pathname}${location.hash}`,
+          filesHref,
+          prContextHref: `/analyses/${analysisId}#${blockFragment(PR_CONTEXT)}`,
+          onNavigate: (href) => void navigate(href),
+        }}
       />
       <Workspace
         layout={layout}
@@ -971,6 +989,19 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             onBackToStep={() => setAnnotationId(null)}
             onSelectStep={selectStep}
             placeOf={questionPlace}
+            placeOfQuestion={(q) => {
+              if (q.anchor.kind === "step") return questionPlace(q.anchor.step_id);
+              const { path, side, range } = q.anchor;
+              const link = {
+                file: path,
+                side,
+                ...(range ? { line: range.start_line, end: range.end_line } : {}),
+              };
+              return {
+                label: `${path}${range ? `:${rangeText(range)}` : ""} · in Files`,
+                open: () => void navigate(`${filesPath}${filesHash(link)}`),
+              };
+            }}
             onEvidence={showEvidence}
             codeShown={
               !!step || !!lineView || (current.block === "quiet" && current.row.row !== "not_analysed")

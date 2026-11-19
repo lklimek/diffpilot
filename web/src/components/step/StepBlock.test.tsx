@@ -359,4 +359,14 @@ describe("StepBlock", () => {
       }
     }
   });
+
+  it("shows the file's GitHub Viewed mark after its path, read-only; the path opens the Files view", async () => {
+    const onOpenFile = vi.fn();
+    render(<StepBlock step={stepOf(tour, "f1.2")} code={null} viewed="viewed" onOpenFile={onOpenFile} />);
+    const chip = document.querySelector("[data-viewed]")!;
+    expect(chip).toHaveTextContent("☑ viewed");
+    expect(chip).toHaveAccessibleDescription(/Set it in the Files view \(v\) or on GitHub/);
+    await userEvent.click(screen.getByRole("button", { name: "src/rpc/client.rs" }));
+    expect(onOpenFile).toHaveBeenCalledOnce();
+  });
 });

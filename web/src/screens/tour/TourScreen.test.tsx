@@ -51,6 +51,19 @@ async function openStep(flow: string, step: string) {
 }
 
 describe("Tour screen (brief §4.3)", () => {
+  it("s opens the Files view at the step's lines; the step header shows the file's GitHub Viewed mark", async () => {
+    const router = await open();
+    await openStep("2", "1");
+    await waitFor(() =>
+      expect(within(main()).getByText(/viewed/, { selector: "[data-viewed]" })).toHaveTextContent("☑ viewed"),
+    );
+    await user().keyboard("s");
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}/files`));
+    expect(decodeURIComponent(router.state.location.hash)).toBe(
+      "#lines?file=src/config.rs&side=head&line=23&step=f2.1",
+    );
+  });
+
   it("does not reveal a hidden comment just because it is the step's first changed line", async () => {
     server.use(
       http.get("/api/v1/analyses/:id/lines", () =>
