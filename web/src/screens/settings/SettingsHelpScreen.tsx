@@ -21,8 +21,8 @@ export function SettingsHelpScreen() {
         </Tooltip>
       </div>
       <p className="max-w-[100ch] text-sm">
-        Every option on the Settings page: what it is, when smart-review uses it, what happens when it is
-        empty, its limits and an example.
+        Every option on the Settings page: what it is, when diffpilot uses it, what happens when it is empty,
+        its limits and an example.
       </p>
       <SettingsHelpGuide />
     </div>

@@ -76,13 +76,13 @@ limits="$(docker inspect -f 'NanoCpus={{.HostConfig.NanoCpus}} Memory={{.HostCon
 check runner_limits_and_hardening "$([[ "$limits" == "NanoCpus=2000000000 Memory=6442450944 PidsLimit=1024 CapAdd=[CAP_CHOWN CAP_KILL CAP_SETGID CAP_SETUID] CapDrop=[ALL] SecurityOpt=[no-new-privileges:true] ReadonlyRootfs=true IpcMode=none Restart=unless-stopped" ]] && echo 1)" "$limits"
 # Nothing in RAM (owner decision): scratch on the disposable tmp-* volumes, owned and moded as ADR-013 needs.
 tmpfs="$(docker inspect -f '{{.Name}}={{json .HostConfig.Tmpfs}}' "$server" "$runner" | tr '\n' ' ')"
-temporary="$(docker volume ls -q --filter label=smart-review.volume=temporary \
+temporary="$(docker volume ls -q --filter label=diffpilot.volume=temporary \
   --filter "label=com.docker.compose.project=$project" | sort | tr '\n' ' ')"
-modes="$(docker exec "$runner" stat -c '%n=%a:%u' /tmp /work /var/lib/smart-review-runner/codex-homes | tr '\n' ' ')"
+modes="$(docker exec "$runner" stat -c '%n=%a:%u' /tmp /work /var/lib/diffpilot-runner/codex-homes | tr '\n' ' ')"
 agent_tmp="$(docker exec -u 10002 "$runner" ls /tmp 2>&1 || true)"
 check scratch_on_temporary_volumes "$([[ "$tmpfs" != *'"/'* \
   && "$temporary" == "${project}_tmp-runner ${project}_tmp-runner-codex-homes ${project}_tmp-runner-work ${project}_tmp-server " \
-  && "$modes" == "/tmp=700:10001 /work=711:10001 /var/lib/smart-review-runner/codex-homes=711:10001 " \
+  && "$modes" == "/tmp=700:10001 /work=711:10001 /var/lib/diffpilot-runner/codex-homes=711:10001 " \
   && "$agent_tmp" == *"Permission denied"* ]] && echo 1)" \
   "tmpfs: $tmpfs; temporary volumes: $temporary; runner modes: $modes; agent lists /tmp: $agent_tmp"
 

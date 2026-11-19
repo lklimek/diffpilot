@@ -1137,10 +1137,10 @@ fn supervisor_binary() -> PathBuf {
         .parent()
         .and_then(Path::parent)
         .unwrap()
-        .join("smart-review-supervisor");
+        .join("diffpilot-supervisor");
     assert!(
         binary.exists(),
-        "build the smart-review-supervisor binary first: {}",
+        "build the diffpilot-supervisor binary first: {}",
         binary.display()
     );
     binary

@@ -1,7 +1,7 @@
 # S2 — claudius skills in Codex
 
 Date: 2026-11-16. Codex CLI 0.167.0. `lklimek/claudius` at `d31993add8b8332ae03352c471be2931c72f7c24`
-(main, 2026-11-10). Evidence (sanitised): `/data/artifacts/smart-review/2026-11-16/spikes/S2/`.
+(main, 2026-11-10). Evidence (sanitised): `/data/artifacts/diffpilot/2026-11-16/spikes/S2/`.
 
 ## Question
 How does Codex 0.167 discover skills from a git checkout of `lklimek/claudius` at a configurable ref? Is
@@ -38,7 +38,7 @@ How does Codex 0.167 discover skills from a git checkout of `lklimek/claudius` a
    `delegate`, `review-changes`, `git-and-github`) fire on a review task. They make the agent write tracking
    files, delegate to sub-agents and read many references: about 6× the tokens and 2.7× the time of the curated
    run.
-4. `report-format` instructs the claudius report JSON shape and wording. In smart-review the output shape is our
+4. `report-format` instructs the claudius report JSON shape and wording. In diffpilot the output shape is our
    `--output-schema`, so `report-format` competes with it and should not be mounted.
 5. `severity` produces numeric likelihood/impact/relevance floats. Brief §1 forbids numeric confidence in the
    UI. Either the schema has no place for them, or the server maps them to bands and never renders numbers. This

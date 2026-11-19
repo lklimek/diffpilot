@@ -3,7 +3,7 @@
 <!-- Generated from web/src/components/settings/settingsHelp.ts; the in-app guide at /settings/help shows
 the same text. Update: UPDATE_GENERATED=1 npx vitest run src/components/settings/settingsHelp.test.ts -->
 
-Every option on the Settings page: what it is, when smart-review uses it, what happens when it is empty, its limits and an example. The `?` next to an option shows the same text.
+Every option on the Settings page: what it is, when diffpilot uses it, what happens when it is empty, its limits and an example. The `?` next to an option shows the same text.
 
 ## Account
 
@@ -89,7 +89,7 @@ Personal access tokens keep working after Sign out.
 
 ### GitHub App
 
-- **What:** The installations of the smart-review GitHub App your GitHub sign-in can see. Comments go into your pending review only where the App is installed.
+- **What:** The installations of the diffpilot GitHub App your GitHub sign-in can see. Comments go into your pending review only where the App is installed.
 - **When used:** Read when Settings opens. Read-only; install or change the App on GitHub.
 - **Empty or default:** No installation: pull requests can be analysed, but comments must be written on GitHub.
 - **Example:** Install the App on dashpay to comment on dashpay/platform from here.

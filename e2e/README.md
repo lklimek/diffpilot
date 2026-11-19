@@ -70,7 +70,7 @@ through a wrapper: set all four of `SR_DEV_SERVER_BIN`, `SR_DEV_RUNNER_BIN`, `SR
 
 Each spec file gets its own stack, started with its first test and stopped when the worker moves on
 (`support/fixtures.ts`, `support/stack.ts`): `deploy/dev/stack.sh` on free localhost ports, state and logs under
-`/data/tmp/smart-review-dev.*` (kept; the launcher prints the path). Tests of one file share that stack and run in
+`/data/tmp/diffpilot-dev.*` (kept; the launcher prints the path). Tests of one file share that stack and run in
 order. The server allows one live analysis per PR head and language, so a file that needs a fresh analysis
 (cancel, failure, pause) lives in a file of its own.
 

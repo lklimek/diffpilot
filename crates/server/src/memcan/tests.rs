@@ -147,7 +147,7 @@ async fn hard_case_1_wrong_and_overrated_reach_memcan_with_the_bearer_token_in_t
     assert_eq!(calibration["user_id"], "project:node-client");
     assert_eq!(calibration["project"], "node-client");
     assert_eq!(calibration["type"], "severity-calibration");
-    assert_eq!(calibration["source"], "smart-review");
+    assert_eq!(calibration["source"], "diffpilot");
     assert_eq!(calibration["value"], "overrated");
     assert_eq!(calibration["revision"], 1);
     let text = calibration["data"].as_str().expect("text");
@@ -649,12 +649,15 @@ async fn calibration_examples_are_bounded_text_of_the_project() {
     let example = |value: &str, text: &str| {
         json!({
             "data": text, "user_id": "project:node-client", "project": "node-client",
-            "type": "severity-calibration", "source": "smart-review", "value": value, "private_text_excluded": true,
+            "type": "severity-calibration", "source": "diffpilot", "value": value, "private_text_excluded": true,
         })
     };
     let long = format!("Overrated\u{1b}[31m retry\n{}", "z".repeat(5000));
     fake.insert_memory("a1", example("overrated", &long));
-    fake.insert_memory("a2", example("underrated", "Underrated: a lost reply."));
+    // Written under the project's former name: still a calibration example.
+    let mut former = example("underrated", "Underrated: a lost reply.");
+    former["source"] = json!("smart-review");
+    fake.insert_memory("a2", former);
     let mut legacy = example("overrated", "PRIVATE_LEGACY_NOTE");
     legacy
         .as_object_mut()

@@ -21,7 +21,7 @@ use crate::secrets::secrets_equal;
 use crate::state::AppState;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
-const CLIENT_NAME: &str = "smart-review";
+const CLIENT_NAME: &str = "diffpilot";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 /// Searches of one user run one at a time, at least this far apart (S11-2: 3 s never tripped the limit).
 pub(crate) const SEARCH_INTERVAL: Duration = Duration::from_secs(3);

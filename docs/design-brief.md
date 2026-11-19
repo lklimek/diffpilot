@@ -1,4 +1,4 @@
-# smart-review — design brief
+# diffpilot — design brief
 
 Status: Design approved 2026-11-16. Implementation follows `docs/implementation-plan.md`.
 
@@ -617,7 +617,7 @@ Only what is not decided:
 
 ## Background material
 
-Outside the repository, in `/data/artifacts/smart-review/2026-11-16/`:
+Outside the repository, in `/data/artifacts/diffpilot/2026-11-16/`:
 - `research/prior-art.md` — survey of existing review tools and the base shape of the candidate JSON (§5).
 - `research/llm-runtime.md` — running Codex and Claude as an agent runtime; credential constraints.
 - `reviews/psych-astra.md`, `reviews/psych-fable.md` — two psychology reviews of the first mockups.

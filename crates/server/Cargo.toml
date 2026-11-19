@@ -1,12 +1,12 @@
 [package]
 name = "server"
-description = "smart-review server: HTTP API, SSE, GitHub integration, pipeline and job queue."
+description = "diffpilot server: HTTP API, SSE, GitHub integration, pipeline and job queue."
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "smart-review-server"
+name = "diffpilot-server"
 path = "src/main.rs"
 
 [features]

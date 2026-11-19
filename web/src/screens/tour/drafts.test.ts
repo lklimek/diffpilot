@@ -44,7 +44,7 @@ it("writes a pending change when the page is left", () => {
 });
 
 it("without a signed-in user keeps drafts in memory only", () => {
-  window.sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "alice's" }));
+  window.sessionStorage.setItem("diffpilot.comment-drafts.alice.a1", JSON.stringify({ k: "alice's" }));
   const { result, unmount } = renderHook(() => useCommentDrafts("a1", null));
   expect(result.current.get("k")).toBe("");
   act(() => result.current.set("k", "anonymous"));
@@ -53,16 +53,16 @@ it("without a signed-in user keeps drafts in memory only", () => {
 });
 
 it("sign-out clears that login's drafts and posts only; a store from before does not write them back", () => {
-  window.sessionStorage.setItem("smart-review.comment-drafts.bob.a2", JSON.stringify({ k: "bob's" }));
-  window.sessionStorage.setItem("smart-review.comment-posts.alice.a3", JSON.stringify({}));
-  window.sessionStorage.setItem("smart-review.layout", "kept");
+  window.sessionStorage.setItem("diffpilot.comment-drafts.bob.a2", JSON.stringify({ k: "bob's" }));
+  window.sessionStorage.setItem("diffpilot.comment-posts.alice.a3", JSON.stringify({}));
+  window.sessionStorage.setItem("diffpilot.layout", "kept");
   const { result, unmount } = renderHook(() => useCommentDrafts("a1", "alice"));
   act(() => result.current.set("k", "alice's"));
   clearCommentDrafts("alice");
   unmount();
   expect(stored()).not.toContain("alice");
   expect(stored()).toContain("bob's");
-  expect(window.sessionStorage.getItem("smart-review.layout")).toBe("kept");
+  expect(window.sessionStorage.getItem("diffpilot.layout")).toBe("kept");
 });
 
 const request: CreateCommentRequest = {
@@ -87,7 +87,7 @@ it("keeps unconfirmed posts per user and analysis; one still in flight comes bac
 
 it("ignores damaged stored posts", () => {
   window.sessionStorage.setItem(
-    "smart-review.comment-posts.alice.a1",
+    "diffpilot.comment-posts.alice.a1",
     JSON.stringify({ a: { request: { body: 1 } }, b: "x", c: { request, error: "GitHub did not answer." } }),
   );
   const [posts] = renderHook(() => useUnresolvedPosts("a1", "alice")).result.current;
@@ -95,7 +95,7 @@ it("ignores damaged stored posts", () => {
 });
 
 it("without storage (or with damaged data) the drafts still live in memory", () => {
-  window.sessionStorage.setItem("smart-review.comment-drafts.alice.a1", "not json");
+  window.sessionStorage.setItem("diffpilot.comment-drafts.alice.a1", "not json");
   vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
     throw new Error("quota");
   });

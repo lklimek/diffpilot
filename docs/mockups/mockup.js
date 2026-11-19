@@ -1,4 +1,4 @@
-/* smart-review mockups v2 - shared behaviour. No network, no dependencies. */
+/* diffpilot mockups v2 - shared behaviour. No network, no dependencies. */
 (function () {
   'use strict';
   var $ = function (s, r) { return (r || document).querySelector(s); };

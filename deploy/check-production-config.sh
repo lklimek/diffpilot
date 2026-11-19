@@ -163,7 +163,7 @@ check_env() {
       "skills follow every push; a commit id (40 hex) or refs/tags/<tag> is recommended" >&2
   fi
   if ((${3})); then
-    secrets_dir="${values[SR_SECRETS_DIR]:-/srv/smart-review/secrets}"
+    secrets_dir="${values[SR_SECRETS_DIR]:-/srv/diffpilot/secrets}"
     for key in "${secrets[@]}"; do
       if [[ -n "${values[$key]:-}" ]]; then say "$key must be empty with secrets as files (the file is used)"; fi
       check_secret_file "$key" "$secrets_dir/${secret_file_names[$key]}" || found=1

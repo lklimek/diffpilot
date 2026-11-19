@@ -2892,7 +2892,7 @@ analysis: AnalysisSummary | null,
 head_moved: boolean, };
 
 /**
- * The user's smart-review analysis of a pull request item.
+ * The user's diffpilot analysis of a pull request item.
  */
 export type ReviewLink = {
 /**
@@ -3590,6 +3590,6 @@ score: ItemScore,
  */
 llm: ItemText | null,
 /**
- * The user's smart-review analysis of this pull request, read at request time; null when none.
+ * The user's diffpilot analysis of this pull request, read at request time; null when none.
  */
 review: ReviewLink | null, };

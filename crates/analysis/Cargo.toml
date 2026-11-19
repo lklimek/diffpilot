@@ -1,6 +1,6 @@
 [package]
 name = "analysis"
-description = "smart-review deterministic, language-agnostic PR analysis."
+description = "diffpilot deterministic, language-agnostic PR analysis."
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true

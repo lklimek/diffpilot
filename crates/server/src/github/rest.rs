@@ -18,7 +18,7 @@ use crate::config::GithubConfig;
 use crate::github::oauth::endpoint;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
-const CLIENT_NAME: &str = "smart-review";
+const CLIENT_NAME: &str = "diffpilot";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const GITHUB_HOSTS: [&str; 2] = ["github.com", "www.github.com"];
 

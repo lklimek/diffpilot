@@ -124,13 +124,11 @@ test("Sign out still clears this login's drafts with the dashboard section on th
   await page.goto("/settings");
   await expect(dashboard(page)).toBeVisible();
   await page.evaluate(() =>
-    sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "mine" })),
+    sessionStorage.setItem("diffpilot.comment-drafts.alice.a1", JSON.stringify({ k: "mine" })),
   );
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
-  expect(
-    await page.evaluate(() => sessionStorage.getItem("smart-review.comment-drafts.alice.a1")),
-  ).toBeNull();
+  expect(await page.evaluate(() => sessionStorage.getItem("diffpilot.comment-drafts.alice.a1"))).toBeNull();
 });
 
 test("unsaved changes are marked and leaving the page asks first", async ({ page }) => {
@@ -140,7 +138,7 @@ test("unsaved changes are marked and leaving the page asks first", async ({ page
   await card.getByLabel("Watch issues of acme/node-client").check();
   await expect(card.getByText("Unsaved changes")).toBeVisible();
   // Inside the shell the brand link is an in-app move: the screen asks.
-  await page.getByRole("link", { name: "smart-review" }).first().click();
+  await page.getByRole("link", { name: "diffpilot" }).first().click();
   const ask = page.getByRole("alertdialog", { name: "Unsaved dashboard settings" });
   await ask.getByRole("button", { name: "Stay" }).click();
   await expect(ask).toHaveCount(0);

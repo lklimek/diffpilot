@@ -62,7 +62,7 @@ pub mod testing {
         dir: &Path,
         busy_timeout: Duration,
     ) -> Result<Db, DbError> {
-        Db::open_with(&dir.join("smart-review.sqlite"), busy_timeout).await
+        Db::open_with(&dir.join("diffpilot.sqlite"), busy_timeout).await
     }
 
     /// Makes every later write of an in-memory `db` fail while reads still work, as on a full disk

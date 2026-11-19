@@ -66,8 +66,8 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
       </p>
       <p className="text-xs text-muted">
         Send it as <code className="font-mono">Authorization: Bearer srp_…</code>. The agent API is described
-        in <code className="font-mono">docs/contracts/agent-api.md</code> of smart-review. Signing out
-        everywhere revokes every token.
+        in <code className="font-mono">docs/contracts/agent-api.md</code> of diffpilot. Signing out everywhere
+        revokes every token.
       </p>
       {tokens.length === 0 ? (
         <p className="text-muted">No tokens yet.</p>

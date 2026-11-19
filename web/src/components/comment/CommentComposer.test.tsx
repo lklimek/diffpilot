@@ -86,7 +86,7 @@ describe("CommentComposer", () => {
     // The server cannot tell a missing App from a failed check (commenting_available is one boolean).
     expect(document.body).not.toHaveTextContent(/App is not installed/);
     expect(document.body).toHaveTextContent(
-      "The smart-review GitHub App may not be installed on it, or its installation could not be checked.",
+      "The diffpilot GitHub App may not be installed on it, or its installation could not be checked.",
     );
   });
 
@@ -153,7 +153,7 @@ describe("CommentComposer", () => {
   it.each([
     ["pr_head_changed", "The pull request changed since this analysis. Analyse it again to comment."],
     ["position_rejected", "GitHub did not accept a comment on this line."],
-    ["app_not_installed", "The smart-review GitHub App is not installed on this repository."],
+    ["app_not_installed", "The diffpilot GitHub App is not installed on this repository."],
     ["invalid_request", "The comment is too long."],
   ])(
     "a definite refusal (%s) states the reason, keeps the text editable and offers no Retry",

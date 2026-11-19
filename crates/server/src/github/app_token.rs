@@ -20,7 +20,7 @@ use crate::github::rest::is_valid_repo;
 
 /// Per call; lookup and mint at claim stay below the runner's 10 s request timeout.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(4);
-const CLIENT_NAME: &str = "smart-review";
+const CLIENT_NAME: &str = "diffpilot";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 
 /// Permissions of every job token, always sent explicitly: without them GitHub grants the App's write access.

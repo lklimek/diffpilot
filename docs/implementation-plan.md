@@ -1,4 +1,4 @@
-# smart-review — implementation plan (v1)
+# diffpilot — implementation plan (v1)
 
 Status: implementation plan, 2026-11-16. Authoritative design: `docs/design-brief.md` (cited as "brief §N").
 This plan says HOW v1 is built and by whom; it does not change the design. The owner's decisions are in §16
@@ -16,7 +16,7 @@ English.
 2. `docs/design-brief.md` completely. Mockups: `docs/mockups/index.html`; `05-tour.html` + `mockup.js` hold the
    example PR `acme/node-client#482` used by every fixture.
 3. `docs/decisions/` (ADRs), `docs/spikes/` (spike findings), `docs/contracts/` — once they exist.
-4. Background outside the repo, only when a work package needs it (`/data/artifacts/smart-review/2026-11-16/`):
+4. Background outside the repo, only when a work package needs it (`/data/artifacts/diffpilot/2026-11-16/`):
    `research/llm-runtime.md`; `research/prior-art.md` (§5 candidate JSON — see the drop list in §7);
    `research/egress-proxy.md` with `research/egress-proxy-squid-tested.conf` and
    `research/egress-proxy-squid-tested.Dockerfile` (Squid setup for S6 and WP3-OPS; its SSL-Bump, CA and cache
@@ -27,18 +27,18 @@ English.
 Codex launcher reference for reviews), `claudius:git-and-github`, `claudius:coding-best-practices`;
 `claudius:architecture` for contract reviews and change requests; `claudius:review-changes` at every gate.
 
-**Tracking** — one record: `/data/artifacts/smart-review/implementation-tracking.md` (outside git, survives
+**Tracking** — one record: `/data/artifacts/diffpilot/implementation-tracking.md` (outside git, survives
 reboot). One row per work package (WP): `WP | status (todo/dispatched/review/merged/blocked) | branch |
 worktree | agent id | base SHA | review report | notes`, plus a section **For the owner** listing every ADR,
 deviation from brief or plan, accepted fallback and owner-only follow-up as it happens; at the end it becomes
 `docs/v1-handover.md`. Update before and after every dispatch, review and merge. MemCan
-(`project="smart-review"`) holds durable decisions only. Review reports and spike evidence: copy to
-`/data/artifacts/smart-review/YYYY-MM-DD/` right after each round.
+(`project="diffpilot"`) holds durable decisions only. Review reports and spike evidence: copy to
+`/data/artifacts/diffpilot/YYYY-MM-DD/` right after each round.
 
 **Resume after an interruption**
-1. Re-read the tracking file; `search(query="smart-review implementation", project="smart-review")`.
+1. Re-read the tracking file; `search(query="diffpilot implementation", project="diffpilot")`.
 2. Reconcile with reality: `git branch -a`, `git worktree list`, `git status` in every worktree under
-   `/data/git-worktrees/home-ubuntu-git-smart-review-*`. Git state wins over the file.
+   `/data/git-worktrees/home-ubuntu-git-diffpilot-*`. Git state wins over the file.
 3. Worktree with uncommitted work and no live agent: dispatch a fresh agent into the same worktree with the
    original brief plus "first review the existing uncommitted diff, then continue". Never delete it.
 4. Continue with the earliest stage whose exit gate is not met.
@@ -62,9 +62,9 @@ it waits for the owner.
   and continue with all work that does not depend on it (for example on the fake provider).
 
 **Git flow** — one branch, no pull requests until v1 is deployed.
-- `lklimek/smart-review` exists and is public; the owner pushes `main` himself. Feature branch `feat/v1` is cut
+- `lklimek/diffpilot` exists and is public; the owner pushes `main` himself. Feature branch `feat/v1` is cut
   from the tip of `docs/initial-design`. WP branches are cut from `feat/v1` at a recorded SHA, each in a
-  pre-created worktree `/data/git-worktrees/home-ubuntu-git-smart-review-<wp>`.
+  pre-created worktree `/data/git-worktrees/home-ubuntu-git-diffpilot-<wp>`.
 - The coordinator merges WP branches into `feat/v1` (merge, no rebase, no amend, no force-push), verifies
   (§4.2) and pushes `feat/v1` itself (`ghsudo git push`) as it progresses. Never `main`.
 - Until v1 is deployed there is no versioning and no changelog, and contracts may be reshaped by change request
@@ -289,19 +289,19 @@ The process model behind T1 (supervisor, uids, private socket) is decided in ADR
 
 ## 6. Stage 0 — spikes (time-boxed, throwaway code)
 
-Spike code in `/data/tmp/smart-review-spikes/<id>/`; at the end its reusable parts (Dockerfile, compose snippet,
+Spike code in `/data/tmp/diffpilot-spikes/<id>/`; at the end its reusable parts (Dockerfile, compose snippet,
 recorded JSONL, sanitised GitHub responses, scripts) are archived with the evidence in
-`/data/artifacts/smart-review/YYYY-MM-DD/spikes/<id>/`. Each spike writes `docs/spikes/S<id>-<name>.md`
+`/data/artifacts/diffpilot/YYYY-MM-DD/spikes/<id>/`. Each spike writes `docs/spikes/S<id>-<name>.md`
 (≤150 lines: question, runs, evidence, finding, decision, plan impact) and an ADR where it decides something.
 Time box: one agent session (~3 h); overrun → stop and report what is known.
 
 ### 6.1 Owner session items (§1; all collected before any dispatch)
 | # | Item |
 |---|---|
-| O1 | Push `main` to `lklimek/smart-review` (public; GitHub Actions enabled). |
+| O1 | Push `main` to `lklimek/diffpilot` (public; GitHub Actions enabled). |
 | O2 | The existing GitHub App: App id, client id and secret, private key (.pem); callback URLs `https://review.klimek.ws/auth/github/callback` and a LAN development callback; permissions pull requests read/write, contents, checks, issues and metadata read; installed on `dashpay/dash-evo-tool` and `dashpay/platform`. |
 | O3 | Codex device login: the owner runs `codex login --device-auth` in the coordinator-prepared spike container, writing to its `CODEX_HOME` volume. **Never mount or copy the host `~/.codex`** (token rotation would break the owner's own login). |
-| O4 | One real login with the App (device or web flow): the user and refresh tokens are stored for spikes and the M3b smoke in `~/.config/smart-review-dev/github-user-token.json` (0600; never in git or `/data/artifacts`, which is published over HTTP). |
+| O4 | One real login with the App (device or web flow): the user and refresh tokens are stored for spikes and the M3b smoke in `~/.config/diffpilot-dev/github-user-token.json` (0600; never in git or `/data/artifacts`, which is published over HTTP). |
 | O5 | MemCan URL and token (`MEMCAN_API_KEY`) as configuration values (MemCan moves to another host before deployment; only the values change). The owner edits MemCan's `TRAEFIK_IP_ALLOWLIST` himself: he adds the source address the egress-proxy container presents, which S6 determines (compose pins the proxy network's subnet so it stays stable); the coordinator puts that address under "For the owner" and `summon`s. Until it is added, agent jobs use the fake MemCan. |
 | O6 | A reverse-proxy route `review.klimek.ws` → the server's HTTP port on the deployment host, with the owner's free certificate (it may answer 502 until the stack runs). |
 
@@ -591,11 +591,11 @@ At M2 and M3a, `claudius:ux-designer-diziet` (opus, with a browser via the `play
 Playwright screenshots of every screen and fixture state, light and dark, with `docs/mockups/` and brief §4
 and reports deviations (layout, wording, states, tooltips). The coordinator decides per deviation: fix (back
 to the owning UI WP), accept (ADR + "For the owner"), or brief wins over mockup. Screenshots and the report are
-published under `/data/artifacts/smart-review/YYYY-MM-DD/screens/` for the owner's later review.
+published under `/data/artifacts/diffpilot/YYYY-MM-DD/screens/` for the owner's later review.
 
 ### 12.6 GUI tests of the real stack (WP4-GUI)
 Mandatory before the exit of stage 4; scope in §10. Report and screenshots archived under
-`/data/artifacts/smart-review/YYYY-MM-DD/gui-tests/`; every finding is fixed by the owning WP's agent or recorded
+`/data/artifacts/diffpilot/YYYY-MM-DD/gui-tests/`; every finding is fixed by the owning WP's agent or recorded
 with a reason under "For the owner".
 
 ## 13. Definition of done for v1
@@ -679,7 +679,7 @@ WPs), reporting channel. Brief WHAT, not HOW. WPs over ~1,000 lines are split be
 | GitHub auth | GitHub App user tokens for the user's actions via the owner's existing App, installed on `dashpay/dash-evo-tool` and `dashpay/platform`; S4 verifies behaviour | §6.1 O2/O4, S4, WP3-AUTH |
 | GitHub access for the agent | Server mints a read-only installation token per job (pull requests, issues, contents, metadata; PR repository only, ADR-005; 1 h); the runner starts the official `github-mcp-server` read-only with it; no server-side lookup tool; App private key is a server secret | §5.3, §5.4 T3, S4, S5, WP3-APPTOKEN, WP3-RUN |
 | Egress proxy | Squid, chosen because it can later intercept TLS and cache. v1: explicit proxy, allow-all, log of host names (CONNECT host:port, bytes); no TLS interception, no CA, no cache. Later, as configuration of the same Squid (`research/egress-proxy.md`): interception with full-URL logs, splice list (`chatgpt.com`, `openai.com`), CA in the runner image, cache, host allowlist. Open egress is an accepted risk | §5.4 T4/T9, S6, WP3-OPS, §13 |
-| Repository | `lklimek/smart-review` public; GitHub Actions enabled; the owner pushes `main` | §6.1 O1, WP1-C |
+| Repository | `lklimek/diffpilot` public; GitHub Actions enabled; the owner pushes `main` | §6.1 O1, WP1-C |
 | Codex model | Installation-wide model/effort in Settings; `select_model` stays a plain Rust function, default Sol/high; catalog from S1a (ADR-002) | §5.2, S1a, WP2-INGEST |
 | Agent sessions | One analytic Codex session per PR; private working fork per PR/user for Ask; automatic compaction at 400k, no forced turn; generation-aware re-fork and own-history context pack on loss (ADR-004) | §5.3, §5.4 T8, S1b, S7, WP3-RUN, WP3-PIPE, WP3-ASK, WP3-PROMPTS |
 | MemCan | Traefik entrypoint (port 8190) with IP allowlist + shared bearer token; `SR_MEMCAN_URL`/`SR_MEMCAN_TOKEN` as pure configuration (MemCan moves before deployment); the token reaches the agent through the per-job config; analytic jobs search and write, Ask jobs search only (ADR-004); server writes fixed feedback values and public calibration facts, never private notes; scope = analysed repository short name; the owner adds the proxy's source address (from S6) to the allowlist himself | §5.2, §5.4 T6, §6.1 O5, WP3-MEMCAN, WP3-RUN |
@@ -703,7 +703,7 @@ WPs), reporting channel. Brief WHAT, not HOW. WPs over ~1,000 lines are split be
 | GUI tests | Mandatory exploratory + scripted tests of the real deployed stack in a real browser at the end | §10 WP4-GUI, §12.6 |
 | Owner availability | Away during implementation; all owner input collected once before dispatch; coordinator authority in §1 | §1, §6.1 |
 
-## Appendix A. Review dispositions (`/data/artifacts/smart-review/2026-11-16/reviews/plan-review-fable.md`)
+## Appendix A. Review dispositions (`/data/artifacts/diffpilot/2026-11-16/reviews/plan-review-fable.md`)
 
 | Finding | Disposition |
 |---|---|

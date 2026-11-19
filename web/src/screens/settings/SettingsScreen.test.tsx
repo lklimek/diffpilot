@@ -122,9 +122,9 @@ describe("Settings (brief §4.4)", () => {
 });
 
 it("Sign out ends the session, clears this login's drafts and shows the signed-out Home", async () => {
-  window.sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
-  window.sessionStorage.setItem("smart-review.comment-posts.alice.a1", JSON.stringify({}));
-  window.sessionStorage.setItem("smart-review.comment-drafts.bob.a1", JSON.stringify({ k: "bob's" }));
+  window.sessionStorage.setItem("diffpilot.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
+  window.sessionStorage.setItem("diffpilot.comment-posts.alice.a1", JSON.stringify({}));
+  window.sessionStorage.setItem("diffpilot.comment-drafts.bob.a1", JSON.stringify({ k: "bob's" }));
   let body: unknown;
   let csrf: string | null = null;
   server.events.on("request:start", async ({ request }) => {
@@ -139,14 +139,14 @@ it("Sign out ends the session, clears this login's drafts and shows the signed-o
   expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
   expect(body).toEqual({ everywhere: false });
   expect(csrf).not.toBeNull();
-  expect(window.sessionStorage.getItem("smart-review.comment-drafts.alice.a1")).toBeNull();
-  expect(window.sessionStorage.getItem("smart-review.comment-posts.alice.a1")).toBeNull();
-  expect(window.sessionStorage.getItem("smart-review.comment-drafts.bob.a1")).toContain("bob's");
+  expect(window.sessionStorage.getItem("diffpilot.comment-drafts.alice.a1")).toBeNull();
+  expect(window.sessionStorage.getItem("diffpilot.comment-posts.alice.a1")).toBeNull();
+  expect(window.sessionStorage.getItem("diffpilot.comment-drafts.bob.a1")).toContain("bob's");
   window.sessionStorage.clear();
 });
 
 it("Sign out everywhere, once confirmed, ends every session and shows the signed-out Home", async () => {
-  window.sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
+  window.sessionStorage.setItem("diffpilot.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
   const bodies: unknown[] = [];
   server.events.on("request:start", async ({ request }) => {
     if (new URL(request.url).pathname === "/auth/logout") bodies.push(await request.clone().json());
@@ -159,12 +159,12 @@ it("Sign out everywhere, once confirmed, ends every session and shows the signed
   await waitFor(() => expect(router.state.location.pathname).toBe("/"));
   expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
   expect(bodies).toEqual([{ everywhere: true }]);
-  expect(window.sessionStorage.getItem("smart-review.comment-drafts.alice.a1")).toBeNull();
+  expect(window.sessionStorage.getItem("diffpilot.comment-drafts.alice.a1")).toBeNull();
   window.sessionStorage.clear();
 });
 
 it("Sign out of a session that already ended (401) still clears the drafts and shows the signed-out Home", async () => {
-  window.sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
+  window.sessionStorage.setItem("diffpilot.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
   server.use(
     http.post("/auth/logout", () => {
       setScenario("signed-out");
@@ -176,7 +176,7 @@ it("Sign out of a session that already ended (401) still clears the drafts and s
   await waitFor(() => expect(router.state.location.pathname).toBe("/"));
   expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
   expect(screen.queryByText(/Not signed out/)).toBeNull();
-  expect(window.sessionStorage.getItem("smart-review.comment-drafts.alice.a1")).toBeNull();
+  expect(window.sessionStorage.getItem("diffpilot.comment-drafts.alice.a1")).toBeNull();
   window.sessionStorage.clear();
 });
 
@@ -200,7 +200,7 @@ it("Sign out everywhere on an ended session (401) does not pass for success: the
 });
 
 it("Sign out that fails otherwise keeps everything and says so", async () => {
-  window.sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
+  window.sessionStorage.setItem("diffpilot.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
   server.use(
     http.post("/auth/logout", () =>
       HttpResponse.json({ code: "internal", message: "The server failed." }, { status: 500 }),
@@ -210,6 +210,6 @@ it("Sign out that fails otherwise keeps everything and says so", async () => {
   await userEvent.click(within(await region("Account")).getByRole("button", { name: "Sign out" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Not signed out");
   expect(router.state.location.pathname).toBe("/settings");
-  expect(window.sessionStorage.getItem("smart-review.comment-drafts.alice.a1")).toContain("mine");
+  expect(window.sessionStorage.getItem("diffpilot.comment-drafts.alice.a1")).toContain("mine");
   window.sessionStorage.clear();
 });

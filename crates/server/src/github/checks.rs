@@ -16,7 +16,7 @@ use crate::github::rest::GithubError;
 use crate::github::threads::github_web_url;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
-const CLIENT_NAME: &str = "smart-review";
+const CLIENT_NAME: &str = "diffpilot";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 /// Check runs are read in pages of 100; at most this many pages (1000 runs). More runs: CI is not checked.
 const MAX_PAGES: u32 = 10;

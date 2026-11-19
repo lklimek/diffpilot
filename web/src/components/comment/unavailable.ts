@@ -5,4 +5,4 @@ export const COMMENTING_UNAVAILABLE = "Commenting is not available for this repo
 
 /** The possible causes, phrased as possibilities. */
 export const COMMENTING_UNAVAILABLE_WHY =
-  "The smart-review GitHub App may not be installed on it, or its installation could not be checked.";
+  "The diffpilot GitHub App may not be installed on it, or its installation could not be checked.";

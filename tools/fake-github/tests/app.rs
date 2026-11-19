@@ -112,7 +112,7 @@ async fn send(
     let mut request = reqwest::Client::new()
         .request(method, url)
         .header(ACCEPT, "application/vnd.github+json")
-        .header(USER_AGENT, "smart-review")
+        .header(USER_AGENT, "diffpilot")
         .header(AUTHORIZATION, format!("Bearer {bearer}"));
     if let Some(body) = body {
         request = request.json(body);

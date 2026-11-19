@@ -7,7 +7,7 @@ import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 export type AppSection = "my-work" | "review" | "settings";
 
 /** localStorage key of the collapsed navigation. */
-export const NAV_STORAGE_KEY = "smart-review.nav.collapsed";
+export const NAV_STORAGE_KEY = "diffpilot.nav.collapsed";
 
 const ENTRIES: { section: AppSection; name: string; tip: string }[] = [
   { section: "my-work", name: "My work", tip: "Your PRs, issues and TODOs, ranked; throughput charts" },

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Online backup of a smart-review deployment (docs/runbook.md, "Backup and restore"); the services keep running.
+# Online backup of a diffpilot deployment (docs/runbook.md, "Backup and restore"); the services keep running.
 # Parts: the SQLite database as a consistent snapshot (`VACUUM INTO`; the server keeps it in WAL mode, so readers
 # never block its writes), the runner's Codex credential and session archives (runner-state `credentials/`,
 # `sessions/`), the deployment's .env (SR_SECRET_KEY decrypts stored tokens) and secrets directory. Never the
@@ -13,18 +13,18 @@
 #   deploy/backup.sh --restore DIR   restore the database and runner-state parts of DIR (server and runner stopped);
 #                                    the replaced ones are kept in pre-restore-<UTC>/ of each volume
 #   deploy/backup.sh --self-test     back up and restore a throwaway database and state under a temp dir
-# Env: SR_BACKUP_DIR (/srv/smart-review/backup), SR_BACKUP_KEEP (14), SR_COMPOSE_PROJECT (smart-review),
-#      SR_ENV_FILE (/srv/smart-review/.env), SR_SECRETS_DIR (/srv/smart-review/secrets); tests only:
+# Env: SR_BACKUP_DIR (/srv/diffpilot/backup), SR_BACKUP_KEEP (14), SR_COMPOSE_PROJECT (diffpilot),
+#      SR_ENV_FILE (/srv/diffpilot/.env), SR_SECRETS_DIR (/srv/diffpilot/secrets); tests only:
 #      SR_BACKUP_DATA_DIR, SR_BACKUP_RUNNER_STATE (directories instead of the compose volumes), SR_BACKUP_STAMP.
 # Needs sqlite3 3.27 or newer on the host (`apt-get install sqlite3`).
 set -euo pipefail
 
-project="${SR_COMPOSE_PROJECT:-smart-review}"
-backup_root="${SR_BACKUP_DIR:-/srv/smart-review/backup}"
+project="${SR_COMPOSE_PROJECT:-diffpilot}"
+backup_root="${SR_BACKUP_DIR:-/srv/diffpilot/backup}"
 keep="${SR_BACKUP_KEEP:-14}"
-env_file="${SR_ENV_FILE:-/srv/smart-review/.env}"
-secrets_dir="${SR_SECRETS_DIR:-/srv/smart-review/secrets}"
-db_name=smart-review.sqlite
+env_file="${SR_ENV_FILE:-/srv/diffpilot/.env}"
+secrets_dir="${SR_SECRETS_DIR:-/srv/diffpilot/secrets}"
+db_name=diffpilot.sqlite
 state_parts=(credentials sessions)
 
 say() { echo "backup: $*"; }

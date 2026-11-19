@@ -153,14 +153,14 @@ for (const width of [1280, 1440]) {
       .getByRole("button", { name: /^Step 2:/ })
       .click();
     await expect(page.locator("main [data-code-slot] [data-line='43'][data-side=head]")).toBeInViewport();
-    await page.screenshot({ path: `/data/artifacts/smart-review/2026-11-17/wp3-tour-10/step-${width}.png` });
+    await page.screenshot({ path: `/data/artifacts/diffpilot/2026-11-17/wp3-tour-10/step-${width}.png` });
     await page
       .getByRole("navigation")
       .getByRole("button", { name: /Docs & comments/ })
       .click();
     await page.getByRole("button", { name: "Show lines 24–27" }).click();
     await expect(page.getByRole("button", { name: "Comment on line 24" })).toBeVisible();
-    await page.screenshot({ path: `/data/artifacts/smart-review/2026-11-17/wp3-tour-10/docs-${width}.png` });
+    await page.screenshot({ path: `/data/artifacts/diffpilot/2026-11-17/wp3-tour-10/docs-${width}.png` });
   });
 }
 

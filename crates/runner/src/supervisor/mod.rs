@@ -1,5 +1,5 @@
 //! Process isolation (ADR-013, threat model T1a/b/d, R1): the root supervisor binary
-//! (`smart-review-supervisor`, `serve` plus helper modes) and the runner's client of it. Without
+//! (`diffpilot-supervisor`, `serve` plus helper modes) and the runner's client of it. Without
 //! `SR_SUPERVISOR_FD` the runner runs agents as its own uid (development; logged).
 
 pub mod client;
@@ -50,7 +50,7 @@ pub fn helper(args: &[OsString]) -> i32 {
         }
         _ => {
             eprintln!(
-                "usage: smart-review-supervisor serve -- <runner argv> | copy-in|copy-out|list|clear|inspect|lock ..."
+                "usage: diffpilot-supervisor serve -- <runner argv> | copy-in|copy-out|list|clear|inspect|lock ..."
             );
             return 2;
         }

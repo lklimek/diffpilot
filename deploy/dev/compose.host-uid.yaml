@@ -1,5 +1,5 @@
 # Local stack only, on top of deploy/compose.yaml and deploy/compose.local.yaml: runs the server under the host
-# user's uid so it can read a GitHub App key that only that user may read (e.g. ~/.config/smart-review/
+# user's uid so it can read a GitHub App key that only that user may read (e.g. ~/.config/diffpilot/
 # github-app.pem, mode 0400), without copying or re-permissioning the key. The data volume must belong to that
 # uid once (docs/runbook.md, "Local stack"). Never in a deployment: production gives the key to uid 10010.
 #   docker compose --env-file FILE -f deploy/compose.yaml -f deploy/compose.local.yaml \
@@ -10,6 +10,6 @@ services:
     volumes:
       - type: volume
         source: server-data
-        target: /var/lib/smart-review
+        target: /var/lib/diffpilot
         volume:
           nocopy: true

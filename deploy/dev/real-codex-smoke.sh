@@ -9,7 +9,7 @@
 #                   check-runs.json; rest/user.json and oauth/access-token.json copied from fixtures/pr-482/github)
 #   OUT_DIR         archive (absent or empty): timeline, analysis, jobs (outcome, duration, usage), documents,
 #                   tour, logs, screenshots, credential marker counts. Everything is collected in a private stage
-#                   (/data/tmp/smart-review-smoke.XXXXXX/stage) and published only by smoke-publish.sh after a
+#                   (/data/tmp/diffpilot-smoke.XXXXXX/stage) and published only by smoke-publish.sh after a
 #                   complete secret scan; nothing is published when the scan is incomplete or the run fails early.
 #   The terminal shows fixed text and validated values only (ids, states, counts); server answers stay in the
 #   private timeline.
@@ -17,7 +17,7 @@
 # Inputs:
 #   SR_DEV_SERVER_BIN, SR_DEV_FAKE_GITHUB_BIN, SR_DEV_RUNNER_BIN (all required; the runner runs inside the image,
 #                         so it must be built against the image's libc; any build with the Codex provider)
-#   SR_SMOKE_IMAGE        Codex image (default smart-review-spike-codex:0.167.0; Codex at /usr/local/bin/codex,
+#   SR_SMOKE_IMAGE        Codex image (default diffpilot-spike-codex:0.167.0; Codex at /usr/local/bin/codex,
 #                         user 10001, /codex-home owned by it)
 #   SR_SMOKE_CODEX_VOLUME volume holding the Codex login auth.json (default sr-spike-codex-home)
 #   SR_SMOKE_STATE_VOLUME an existing runner state volume that already holds the credential
@@ -28,9 +28,9 @@
 #   SR_SMOKE_PROVIDER     codex (default) or fake: plumbing dry run without an LLM call (runner built with
 #                         feature fake-provider; replays the pr-482 recordings, so validation may fail)
 #   SR_SMOKE_ISOLATION    none (default; described below) or supervisor: the production runner image
-#                         (SR_SMOKE_RUNNER_IMAGE, default smart-review-runner:local) under its root supervisor with
+#                         (SR_SMOKE_RUNNER_IMAGE, default diffpilot-runner:local) under its root supervisor with
 #                         the ADR-013 options of deploy/compose.yaml, behind the egress proxy
-#                         (SR_SMOKE_PROXY_IMAGE, default smart-review-egress-proxy:local) on the internal network
+#                         (SR_SMOKE_PROXY_IMAGE, default diffpilot-egress-proxy:local) on the internal network
 #                         `sr-smoke-int` (172.31.251.0/24, removed at the end); the image's own runner unless
 #                         SR_SMOKE_PROVIDER=fake (then SR_DEV_RUNNER_BIN is mounted over it); per-job CODEX_HOME root,
 #                         /work and /tmp on this run's disposable volumes (as the tmp-* volumes of
@@ -46,7 +46,7 @@
 # afterwards, because a rotated credential would exist only there. The container is stopped and removed when the
 # analysis ends, fails, hits the cap or the script exits. Environment of the runner:
 #   SR_RUNNER_SERVER_URL=http://172.31.250.1:<port>  SR_RUNNER_SECRET (this run's, via the docker CLI environment)
-#   SR_RUNNER_ID=smoke-runner  SR_RUNNER_STATE_DIR=/var/lib/smart-review-runner  SR_RUNNER_PROVIDER=<provider>
+#   SR_RUNNER_ID=smoke-runner  SR_RUNNER_STATE_DIR=/var/lib/diffpilot-runner  SR_RUNNER_PROVIDER=<provider>
 #   SR_RUNNER_CODEX_BIN=/usr/local/bin/codex  RUST_LOG=info  NO_COLOR=1  SR_RUNNER_DEV_NO_ISOLATION=1 (no supervisor)
 set -euo pipefail
 
@@ -57,7 +57,7 @@ recordings="$(cd "${2:?recordings dir}" && pwd)"
 out="$(realpath -m "${3:?out dir}")"
 [[ ! -e "$out" || -z "$(ls -A "$out")" ]] || { echo "real-codex-smoke.sh: $out is not empty" >&2; exit 1; }
 : "${SR_DEV_SERVER_BIN:?}" "${SR_DEV_FAKE_GITHUB_BIN:?}" "${SR_DEV_RUNNER_BIN:?}"
-image="${SR_SMOKE_IMAGE:-smart-review-spike-codex:0.167.0}"
+image="${SR_SMOKE_IMAGE:-diffpilot-spike-codex:0.167.0}"
 codex_volume="${SR_SMOKE_CODEX_VOLUME:-sr-spike-codex-home}"
 cap="${SR_SMOKE_CAP_SECONDS:-2700}"
 provider="${SR_SMOKE_PROVIDER:-codex}"
@@ -74,11 +74,11 @@ container="sr-smoke-runner-$run" volume="${SR_SMOKE_STATE_VOLUME:-sr-smoke-runne
 # Disposable scratch volumes of the runner container: target directory -> volume (nothing in RAM).
 declare -A scratch=(
   [/tmp]="sr-smoke-tmp-runner-$run" [/work]="sr-smoke-tmp-runner-work-$run"
-  [/var/lib/smart-review-runner/codex-homes]="sr-smoke-tmp-runner-codex-homes-$run"
+  [/var/lib/diffpilot-runner/codex-homes]="sr-smoke-tmp-runner-codex-homes-$run"
 )
 
 mkdir -p /data/tmp
-private="$(mktemp -d /data/tmp/smart-review-smoke.XXXXXX)"
+private="$(mktemp -d /data/tmp/diffpilot-smoke.XXXXXX)"
 stage="$private/stage"
 mkdir "$stage"
 # log: private timeline only (published after the scan); say: also the terminal, for fixed text and validated
@@ -174,7 +174,7 @@ if [[ "$isolation" == supervisor ]]; then
   # Egress proxy: the runner network's only way out (no MemCan exception: the dev stack has no MemCan).
   docker run -d --name "$proxy" --init --read-only --cap-drop ALL --security-opt no-new-privileges \
     --memory 256m --pids-limit 128 --tmpfs /run/squid:uid=13,gid=13,mode=0750,size=1m \
-    --network "$network" "${SR_SMOKE_PROXY_IMAGE:-smart-review-egress-proxy:local}" > /dev/null
+    --network "$network" "${SR_SMOKE_PROXY_IMAGE:-diffpilot-egress-proxy:local}" > /dev/null
   docker network connect --ip "$proxy_ip" "$inner" "$proxy"
   for _ in $(seq 60); do
     [[ "$(docker inspect -f '{{.State.Health.Status}}' "$proxy")" == healthy ]] && break
@@ -183,12 +183,12 @@ if [[ "$isolation" == supervisor ]]; then
   [[ "$(docker inspect -f '{{.State.Health.Status}}' "$proxy")" == healthy ]] || fail "the egress proxy is not healthy"
   bin_mount=()
   if [[ "$provider" == fake ]]; then
-    bin_mount=(--mount "type=bind,source=$(realpath "$SR_DEV_RUNNER_BIN"),target=/usr/local/bin/smart-review-runner,readonly")
+    bin_mount=(--mount "type=bind,source=$(realpath "$SR_DEV_RUNNER_BIN"),target=/usr/local/bin/diffpilot-runner,readonly")
   fi
   # ADR-013 options as in deploy/compose.yaml; the image's entrypoint is the supervisor, its CMD the preflight.
   scratch_mounts=()
   for target in "${!scratch[@]}"; do
-    docker volume create --label smart-review.volume=temporary "${scratch[$target]}" > /dev/null
+    docker volume create --label diffpilot.volume=temporary "${scratch[$target]}" > /dev/null
     scratch_mounts+=(--mount "type=volume,source=${scratch[$target]},target=$target")
   done
   docker run -d --name "$container" --init --restart no --ipc none \
@@ -196,26 +196,26 @@ if [[ "$isolation" == supervisor ]]; then
     --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \
     --security-opt no-new-privileges --read-only \
     --network "$inner" "${bin_mount[@]}" \
-    --mount "type=volume,source=$volume,target=/var/lib/smart-review-runner" "${scratch_mounts[@]}" \
+    --mount "type=volume,source=$volume,target=/var/lib/diffpilot-runner" "${scratch_mounts[@]}" \
     -e SR_RUNNER_SERVER_URL="http://$gateway:$runner_port" -e SR_RUNNER_SECRET -e SR_RUNNER_ID=smoke-runner \
     -e SR_RUNNER_PROVIDER="$provider" -e SR_RUNNER_EGRESS_PROXY="http://$proxy_ip:3128" \
     -e HTTPS_PROXY="http://$proxy_ip:3128" -e https_proxy="http://$proxy_ip:3128" \
     -e NO_PROXY="localhost,127.0.0.1,$gateway" -e no_proxy="localhost,127.0.0.1,$gateway" \
     -e SR_RUNNER_DEV_HOST_GATEWAY=1 \
     -e RUST_LOG=info -e NO_COLOR=1 \
-    "${SR_SMOKE_RUNNER_IMAGE:-smart-review-runner:local}" > /dev/null
+    "${SR_SMOKE_RUNNER_IMAGE:-diffpilot-runner:local}" > /dev/null
 else
   docker run -d --name "$container" --init --restart no \
     --memory 4g --memory-swap 4g --pids-limit 1024 \
     --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --read-only \
     --mount "type=volume,source=${scratch[/tmp]},target=/tmp" -e HOME=/tmp \
     --network "$network" \
-    --mount "type=bind,source=$(realpath "$SR_DEV_RUNNER_BIN"),target=/usr/local/bin/smart-review-runner,readonly" \
-    --mount "type=volume,source=$volume,target=/var/lib/smart-review-runner" \
+    --mount "type=bind,source=$(realpath "$SR_DEV_RUNNER_BIN"),target=/usr/local/bin/diffpilot-runner,readonly" \
+    --mount "type=volume,source=$volume,target=/var/lib/diffpilot-runner" \
     -e SR_RUNNER_SERVER_URL="http://$gateway:$runner_port" -e SR_RUNNER_SECRET -e SR_RUNNER_ID=smoke-runner \
-    -e SR_RUNNER_STATE_DIR=/var/lib/smart-review-runner -e SR_RUNNER_PROVIDER="$provider" \
+    -e SR_RUNNER_STATE_DIR=/var/lib/diffpilot-runner -e SR_RUNNER_PROVIDER="$provider" \
     -e SR_RUNNER_CODEX_BIN=/usr/local/bin/codex -e RUST_LOG=info -e NO_COLOR=1 -e SR_RUNNER_DEV_NO_ISOLATION=1 \
-    "$image" smart-review-runner > /dev/null
+    "$image" diffpilot-runner > /dev/null
 fi
 unset SR_RUNNER_SECRET
 say "runner container $container started (provider $provider, isolation $isolation)"
@@ -263,7 +263,7 @@ done
 # --- collect --------------------------------------------------------------------------------------------------
 api "$url/api/v1/analyses/$id" | jq . > "$stage/analysis.json"
 api "$url/api/v1/analyses/$id/tour" | jq . > "$stage/tour.json"
-db="$state/server/smart-review.sqlite"
+db="$state/server/diffpilot.sqlite"
 sqlite3 -json "$db" "SELECT kind, stage, state, attempt, generation, flow_id, created_at, claimed_at, finished_at,
     ROUND((julianday(finished_at) - julianday(claimed_at)) * 86400, 1) AS run_seconds,
     json_remove(json_extract(result, '$.outcome'), '$.output') AS outcome, json_extract(result, '$.usage') AS usage,

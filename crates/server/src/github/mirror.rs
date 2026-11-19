@@ -124,7 +124,7 @@ async fn has_commit(mirror: &Path, commit: &CommitSha) -> Result<bool, MirrorErr
 }
 
 /// Makes sure the mirror of `repo` holds `commits`, fetching them from the clone base when missing; returns the
-/// mirror directory. Fetched commits are kept by refs `refs/smart-review/<sha>`.
+/// mirror directory. Fetched commits are kept by refs `refs/diffpilot/<sha>`.
 pub async fn ensure_commits(
     config: &Config,
     repo: &RepoRef,
@@ -159,7 +159,7 @@ pub async fn ensure_commits(
         .args(
             missing
                 .iter()
-                .map(|commit| format!("+{0}:refs/smart-review/{0}", commit.0)),
+                .map(|commit| format!("+{0}:refs/diffpilot/{0}", commit.0)),
         );
     tracing::info!(repo = %format!("{}/{}", repo.owner, repo.name), commits = missing.len(), "fetching commits into the mirror");
     check(run(fetch, "fetch", FETCH_TIMEOUT).await?, "fetch")?;

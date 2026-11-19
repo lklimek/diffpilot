@@ -1,4 +1,4 @@
-//! smart-review server: HTTP API and SSE, sessions, GitHub integration, pipeline, job queue and runner
+//! diffpilot server: HTTP API and SSE, sessions, GitHub integration, pipeline, job queue and runner
 //! protocol, MemCan client and the embedded web UI.
 
 pub mod api;

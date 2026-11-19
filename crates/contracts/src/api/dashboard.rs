@@ -585,7 +585,7 @@ pub struct WorkItem {
     pub score: ItemScore,
     /// LLM-written text; null before the first judgement.
     pub llm: Option<ItemText>,
-    /// The user's smart-review analysis of this pull request, read at request time; null when none.
+    /// The user's diffpilot analysis of this pull request, read at request time; null when none.
     pub review: Option<ReviewLink>,
 }
 
@@ -785,7 +785,7 @@ pub struct ItemText {
     pub also_keys: Vec<ItemKey>,
 }
 
-/// The user's smart-review analysis of a pull request item.
+/// The user's diffpilot analysis of a pull request item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ReviewLink {
     /// The newest analysis of the pull request.

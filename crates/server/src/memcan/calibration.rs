@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::client::{MemcanClient, MemcanError};
-use super::memory::{CALIBRATION_TYPE, SOURCE, clip};
+use super::memory::{CALIBRATION_TYPE, LEGACY_SOURCE, SOURCE, clip};
 use crate::config::MemcanConfig;
 
 /// Most examples returned.
@@ -85,7 +85,7 @@ fn parse_examples(answer: &str) -> Option<Vec<CalibrationExample>> {
             .filter_map(|memory| serde_json::from_value::<Memory>(memory).ok())
             .filter(|memory| {
                 memory.kind == CALIBRATION_TYPE
-                    && memory.source == SOURCE
+                    && (memory.source == SOURCE || memory.source == LEGACY_SOURCE)
                     && memory.private_text_excluded
             })
             .filter_map(|memory| {

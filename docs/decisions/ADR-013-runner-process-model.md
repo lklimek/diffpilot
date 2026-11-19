@@ -4,7 +4,7 @@
   reviews); R1 holds, the two-container fallback is not needed.
 - Source: threat model R1, T1a–T1d, T4, T8b, T13; ADR-003 (per-job `CODEX_HOME` persistent); plan §5.4.
 - Evidence: `deploy/runner/r1-test/run.sh` (43 named checks, all PASS); ledger
-  `/data/artifacts/smart-review/2026-11-17/wp3-ops/r1-test.log`. Docker 29.9.2, kernel 7.0, default seccomp,
+  `/data/artifacts/diffpilot/2026-11-17/wp3-ops/r1-test.log`. Docker 29.9.2, kernel 7.0, default seccomp,
   AppArmor `docker-default (enforce)`, real Codex CLI 0.167.0 and `github-mcp-server` 2.1.0, fake keys only.
 - Revised 2026-11-18 (owner decision): every scratch area is a disposable Docker volume on disk instead of a
   tmpfs or the bounded codex-homes filesystem ("Scratch volumes" below).
@@ -90,7 +90,7 @@ anyway (`copy_back_as_agent_cannot_reach_runner_files`) — no confused deputy.
 ## Filesystem layout
 | Path | Filesystem | Owner | Mode | Agent |
 |---|---|---|---|---|
-| `/var/lib/smart-review-runner` (`SR_RUNNER_STATE_DIR`) | volume `runner-state` | runner | 0711 | traverse only |
+| `/var/lib/diffpilot-runner` (`SR_RUNNER_STATE_DIR`) | volume `runner-state` | runner | 0711 | traverse only |
 | `…/credentials/`, `…/credentials/<id>/auth.json` | same | runner | 0700 / 0600 | no |
 | `…/sessions/`, `…/sessions/<analysis>/` | same | runner | 0700 | no |
 | `…/mirrors/` (and any claudius checkout) | same | runner | 0700 | no |
@@ -103,7 +103,7 @@ anyway (`copy_back_as_agent_cannot_reach_runner_files`) — no confused deputy.
 | `/dev/mqueue` | IPC namespace view (1777) | — | — | writable; emptied at job end |
 
 **Scratch volumes (owner decision 2026-11-18: nothing in RAM, no size limit for now).** `codex-homes`, `/work`
-and `/tmp` are Docker named volumes (`tmp-*`, label `smart-review.volume=temporary`, never backed up). They are
+and `/tmp` are Docker named volumes (`tmp-*`, label `diffpilot.volume=temporary`, never backed up). They are
 persistent, which `codex-homes` needs: Codex may rotate the single-use refresh token during a job, and until
 copy-back the only valid token is in the per-job `auth.json` (ADR-003, T1c, T13 start-up recovery). Volumes have
 no uid, mode or mount options and survive restarts, so start-up establishes what the tmpfs options gave: the
@@ -164,7 +164,7 @@ first address also trips the check; compose pins every address. `SR_RUNNER_DEV_H
 development smoke only (rejected by `check-production-config.sh` and the image check).
 
 ## Rust implementation (WP3-RUN)
-`smart-review-supervisor` in `crates/runner` (`src/supervisor/`, `src/supervisor_main.rs`); the crate forbids
+`diffpilot-supervisor` in `crates/runner` (`src/supervisor/`, `src/supervisor_main.rs`); the crate forbids
 `unsafe`, which fixes these choices:
 - **Event loop:** a current-thread tokio runtime (safe signal handling for SIGTERM, SIGINT, SIGCHLD); requests
   are handled synchronously in it. The control socket is wrapped as `tokio::net::UnixDatagram` for readiness only

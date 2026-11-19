@@ -334,7 +334,7 @@ test("widths stored on a 21:9 screen leave the centre usable at 1440 px and afte
 }) => {
   await page.addInitScript(() =>
     window.localStorage.setItem(
-      "smart-review.tour.layout",
+      "diffpilot.tour.layout",
       JSON.stringify({ widths: { nav: 1800, inspector: 620 } }),
     ),
   );

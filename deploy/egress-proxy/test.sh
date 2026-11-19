@@ -7,14 +7,14 @@
 # decoy that log every request they get. Two proxies: MemCan configured by name and by IP literal.
 #
 # Usage: deploy/egress-proxy/test.sh [LEDGER_FILE]
-# Env:   PROXY_IMAGE  image under test (default smart-review-egress-proxy:local; built unless PROXY_SKIP_BUILD=1)
+# Env:   PROXY_IMAGE  image under test (default diffpilot-egress-proxy:local; built unless PROXY_SKIP_BUILD=1)
 #        CLIENT_IMAGE client with bash (default: the proxy image's base, ubuntu)
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 run_id="$(date -u +%Y%m%dt%H%M%S)-$$"
 ledger="${1:-/dev/null}"
-image="${PROXY_IMAGE:-smart-review-egress-proxy:local}"
+image="${PROXY_IMAGE:-diffpilot-egress-proxy:local}"
 client_image="${CLIENT_IMAGE:-$(sed -n 's/^FROM \([^ ]*\).*/\1/p' "$here/Dockerfile" | head -n 1)}"
 p="sr-egress-test-$run_id"
 internal="$p-int" egress="$p-ext"

@@ -1,4 +1,4 @@
-# Agent API — reading smart-review with a personal access token
+# Agent API — reading diffpilot with a personal access token
 
 For agents and scripts that read the user's dashboard ("My work"), its priorities and the review module without a
 browser. Decisions: ADR-019 (tokens), plan `docs/v1.1-dashboard-plan.md` §E. Authoritative types:

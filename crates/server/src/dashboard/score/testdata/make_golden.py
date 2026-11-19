@@ -122,7 +122,7 @@ def make_pr(rng, repo, number):
 
 
 def eligibility(pr):
-    """The skill's `pr_eligibility`, with smart-review's one deviation (D19): the ownership policy never drops a
+    """The skill's `pr_eligibility`, with diffpilot's one deviation (D19): the ownership policy never drops a
     pull request directed at the user (authored by a scanned login, assigned to one, or a direct review request)."""
     ok, reason = scoring.pr_eligibility(pr, USERS)
     directed = (

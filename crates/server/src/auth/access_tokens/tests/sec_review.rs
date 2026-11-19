@@ -262,7 +262,7 @@ async fn database_holds_only_the_token_hash() {
     let dir = tempfile::tempdir().expect("temp dir");
     let db_dir = dir.path().join("db");
     std::fs::create_dir(&db_dir).expect("db dir");
-    let db_path = db_dir.join("smart-review.db");
+    let db_path = db_dir.join("diffpilot.db");
     let mut config = crate::config::tests::test_config();
     config.data_dir = dir.path().join("data");
     let state = AppState::with_queue(config, db::repo::Db::open(&db_path).await.expect("db"));
@@ -328,7 +328,7 @@ async fn token_reads_leave_the_database_unchanged() {
     let dir = tempfile::tempdir().expect("temp dir");
     let db_dir = dir.path().join("db");
     std::fs::create_dir(&db_dir).expect("db dir");
-    let db_path = db_dir.join("smart-review.db");
+    let db_path = db_dir.join("diffpilot.db");
     let mut config = crate::config::tests::test_config();
     config.data_dir = dir.path().join("data");
     config.github.api_url = url::Url::parse(&format!("{}/api", github.uri())).expect("url");

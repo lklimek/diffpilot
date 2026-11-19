@@ -118,7 +118,7 @@ impl Fake {
         let mut request = client()
             .get(format!("{}{path}", self.base))
             .query(query)
-            .header(USER_AGENT, "smart-review")
+            .header(USER_AGENT, "diffpilot")
             .header(ACCEPT, "application/vnd.github+json");
         if let Some(token) = token {
             request = request.header(AUTHORIZATION, format!("Bearer {token}"));
@@ -159,7 +159,7 @@ impl Fake {
         client()
             .post(format!("{}/graphql", self.base))
             .header(AUTHORIZATION, format!("Bearer {}", self.token))
-            .header(USER_AGENT, "smart-review")
+            .header(USER_AGENT, "diffpilot")
             .json(&json!({"query": query, "variables": variables}))
             .send()
             .await
@@ -1199,7 +1199,7 @@ async fn credentials_and_user_agent_are_checked() {
     assert_eq!(no_agent.status(), StatusCode::FORBIDDEN);
     let anonymous = client()
         .post(format!("{}/graphql", fake.base))
-        .header(USER_AGENT, "smart-review")
+        .header(USER_AGENT, "diffpilot")
         .json(&json!({"query": pull_batch(1)}))
         .send()
         .await
@@ -1520,7 +1520,7 @@ async fn empty_fragment_fan_out_is_refused_and_tokens_are_checked_first() {
     };
     let anonymous = timed()
         .post(format!("{}/graphql", fake.base))
-        .header(USER_AGENT, "smart-review")
+        .header(USER_AGENT, "diffpilot")
         .json(&json!({"query": fan_out}))
         .send()
         .await
@@ -1532,7 +1532,7 @@ async fn empty_fragment_fan_out_is_refused_and_tokens_are_checked_first() {
     );
     let body: Value = timed()
         .post(format!("{}/graphql", fake.base))
-        .header(USER_AGENT, "smart-review")
+        .header(USER_AGENT, "diffpilot")
         .header(AUTHORIZATION, format!("Bearer {}", fake.token))
         .json(&json!({"query": fan_out}))
         .send()
@@ -1554,7 +1554,7 @@ async fn empty_fragment_fan_out_is_refused_and_tokens_are_checked_first() {
     }
     let body: Value = timed()
         .post(format!("{}/graphql", fake.base))
-        .header(USER_AGENT, "smart-review")
+        .header(USER_AGENT, "diffpilot")
         .header(AUTHORIZATION, format!("Bearer {}", fake.token))
         .json(&json!({"query": spreads_only}))
         .send()

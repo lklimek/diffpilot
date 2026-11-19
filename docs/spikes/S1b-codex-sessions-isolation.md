@@ -1,7 +1,7 @@
 # S1b — Codex sessions and isolation
 
 Date: 2026-11-16. Same image, harness and credential handling as S1a (`docs/spikes/S1a-codex-basics.md`).
-Evidence (sanitised): `/data/artifacts/smart-review/2026-11-16/spikes/S1b/`.
+Evidence (sanitised): `/data/artifacts/diffpilot/2026-11-16/spikes/S1b/`.
 
 ## Question
 Can a session be resumed from a copied archive in a fresh per-job `CODEX_HOME` and work dir? How do we compact

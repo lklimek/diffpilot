@@ -331,7 +331,7 @@ describe("Home (brief §4.1)", () => {
   it("server down: plain error", async () => {
     server.use(http.get("/api/v1/me", () => HttpResponse.error()));
     renderRoute("/review");
-    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot reach the smart-review server.");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot reach the diffpilot server.");
   });
 
   it("an edit of the field while the start is on its way does not lose the started analysis", async () => {

@@ -45,7 +45,7 @@ export const createComment = route(
       return apiError(
         422,
         "app_not_installed",
-        "The smart-review GitHub App is not installed on this repository.",
+        "The diffpilot GitHub App is not installed on this repository.",
       );
     }
     const { path, side, start_line, line } = body.target;

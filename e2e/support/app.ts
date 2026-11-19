@@ -508,7 +508,7 @@ export function sql(stack: Stack, query: string): string[] {
   if (!stack.stateDir) throw new Error("the database of a stack started elsewhere is out of reach");
   return execFileSync(
     "sqlite3",
-    ["-readonly", join(stack.stateDir, "server", "smart-review.sqlite"), query],
+    ["-readonly", join(stack.stateDir, "server", "diffpilot.sqlite"), query],
     {
       encoding: "utf8",
     },

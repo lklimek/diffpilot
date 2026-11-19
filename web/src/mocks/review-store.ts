@@ -32,7 +32,7 @@ let memory: { state: string; store: Store } | null = null;
 /** First response per comment idempotency key. */
 export const commentResponses = new Map<string, CreateCommentResponse>();
 const listeners = new Set<QuestionListener>();
-const storageKey = () => `smart-review.mock.${fixtureState()}`;
+const storageKey = () => `diffpilot.mock.${fixtureState()}`;
 const storage = (): Storage | undefined => globalThis.sessionStorage;
 
 function seed(): Store {
@@ -86,5 +86,5 @@ export function resetStore(): void {
   commentResponses.clear();
   const s = storage();
   if (!s) return;
-  for (const key of Object.keys(s)) if (key.startsWith("smart-review.mock.")) s.removeItem(key);
+  for (const key of Object.keys(s)) if (key.startsWith("diffpilot.mock.")) s.removeItem(key);
 }

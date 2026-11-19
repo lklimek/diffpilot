@@ -29,7 +29,7 @@ export interface HomeState {
 const LOGIN_ERRORS: Record<string, [string, string]> = {
   login_not_allowed: [
     "This GitHub login is not allowed.",
-    "Only the GitHub logins this smart-review instance allows can sign in. Ask its owner to add yours.",
+    "Only the GitHub logins this diffpilot instance allows can sign in. Ask its owner to add yours.",
   ],
   oauth_failed: ["Sign-in with GitHub did not complete.", "GitHub did not confirm the sign-in. Try again."],
   state_mismatch: ["The sign-in expired.", "It took too long or was started in another tab. Sign in again."],

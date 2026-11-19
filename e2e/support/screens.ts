@@ -1,5 +1,5 @@
 // Screens for the visual conformance check (plan §12.5): light and dark at 1440 and 3440 px when SCREENSHOT_DIR is
-// set, e.g. SCREENSHOT_DIR=/data/artifacts/smart-review/<date>/<name>; nothing otherwise.
+// set, e.g. SCREENSHOT_DIR=/data/artifacts/diffpilot/<date>/<name>; nothing otherwise.
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 

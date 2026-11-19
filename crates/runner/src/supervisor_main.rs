@@ -1,4 +1,4 @@
-//! `smart-review-supervisor`: the runner container's root process (ADR-013). `serve -- <runner argv>` runs
+//! `diffpilot-supervisor`: the runner container's root process (ADR-013). `serve -- <runner argv>` runs
 //! the supervisor; other modes are helpers the runner starts as the agent uid.
 
 use std::ffi::OsString;
@@ -102,7 +102,7 @@ fn config() -> Result<ServeConfig, String> {
     let path = |key: &str, default: &str| {
         std::env::var_os(key).map_or_else(|| PathBuf::from(default), PathBuf::from)
     };
-    let state_dir = path("SR_RUNNER_STATE_DIR", "/var/lib/smart-review-runner");
+    let state_dir = path("SR_RUNNER_STATE_DIR", "/var/lib/diffpilot-runner");
     let work_dir = std::env::var_os("SR_RUNNER_WORK_DIR")
         .map_or_else(|| state_dir.join("work"), PathBuf::from);
     Ok(ServeConfig {

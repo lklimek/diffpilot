@@ -1,4 +1,4 @@
-# smart-review runbook
+# diffpilot runbook
 
 Operating the compose stack of `deploy/compose.yaml`: `server` (web UI and API), `runner` (root supervisor, runner
 and agents, ADR-013) and `egress-proxy` (Squid, the runner's only way out: all agent network traffic goes through
@@ -6,16 +6,16 @@ the proxy; Codex's hosted web search is disabled). Variables: `.env.example`.
 Design background: `docs/implementation-plan.md` §5.4 (threat model), ADR-003 (LLM credential), ADR-013 (runner).
 
 Every block below is meant to be pasted as is into a root shell or a shell of a user in the `docker` group
-(marked). Paths assume the checkout in `/srv/smart-review/app` and the configuration in `/srv/smart-review/.env`.
+(marked). Paths assume the checkout in `/srv/diffpilot/app` and the configuration in `/srv/diffpilot/.env`.
 Define the helper once per shell:
 
 ```sh
-sr() { docker compose --env-file /srv/smart-review/.env -f /srv/smart-review/app/deploy/compose.yaml "$@"; }
+sr() { docker compose --env-file /srv/diffpilot/.env -f /srv/diffpilot/app/deploy/compose.yaml "$@"; }
 ```
 
-Volumes (compose project `smart-review`): `smart-review_server-data` (SQLite database `smart-review.sqlite`,
-bare mirrors), `smart-review_runner-state` (Codex credential, agent sessions, mirrors, claudius checkout), and the
-disposable `smart-review_tmp-*` volumes (section "Temporary volumes"). Networks:
+Volumes (compose project `diffpilot`): `diffpilot_server-data` (SQLite database `diffpilot.sqlite`,
+bare mirrors), `diffpilot_runner-state` (Codex credential, agent sessions, mirrors, claudius checkout), and the
+disposable `diffpilot_tmp-*` volumes (section "Temporary volumes"). Networks:
 `public` 172.29.73.0/24 (server), `runner` 172.29.71.0/24 (internal and isolated: no route out and no host
 address, so the runner reaches only the server's runner listener and the proxy), `egress` 172.29.72.0/24 (proxy).
 
@@ -25,11 +25,11 @@ Requirements: Docker Engine 28.0 or newer (bridge gateway mode `isolated` of the
 ignore the option, and the runner's preflight then refuses to start with exit 78), Docker Compose 2.24.4 or newer (`!override` in the local variant), about 15 GB free
 disk for images and build cache, plus the scratch volumes. Check: `docker version -f '{{.Server.Version}}'`.
 
-1. Checkout (any user with access to `/srv/smart-review`):
+1. Checkout (any user with access to `/srv/diffpilot`):
 
    ```sh
-   sudo install -d -m 0755 /srv/smart-review
-   sudo git clone https://github.com/lklimek/smart-review.git /srv/smart-review/app
+   sudo install -d -m 0755 /srv/diffpilot
+   sudo git clone https://github.com/lklimek/diffpilot.git /srv/diffpilot/app
    ```
 
 2. Disk (nothing to prepare): compose creates every volume, and nothing is kept in RAM. The job work area holds
@@ -45,27 +45,27 @@ disk for images and build cache, plus the scratch volumes. Check: `docker versio
    - Generate a private key and place it for the server's uid 10010, read-only:
 
      ```sh
-     sudo install -d -m 0755 /srv/smart-review/secrets
-     sudo install -o 10010 -g 10010 -m 0400 ~/Downloads/*.private-key.pem /srv/smart-review/secrets/github-app.pem
+     sudo install -d -m 0755 /srv/diffpilot/secrets
+     sudo install -o 10010 -g 10010 -m 0400 ~/Downloads/*.private-key.pem /srv/diffpilot/secrets/github-app.pem
      ```
 
 4. Configuration (root; the file holds secrets, mode 0600):
 
    ```sh
-   sudo install -m 0600 /srv/smart-review/app/.env.example /srv/smart-review/.env
+   sudo install -m 0600 /srv/diffpilot/app/.env.example /srv/diffpilot/.env
    sudo sed -i \
      -e "s|^SR_SECRET_KEY=.*|SR_SECRET_KEY=$(openssl rand -base64 32)|" \
      -e "s|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=$(openssl rand -hex 32)|" \
      -e "s|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=https://review.klimek.ws|" \
-     /srv/smart-review/.env
-   sudoedit /srv/smart-review/.env
+     /srv/diffpilot/.env
+   sudoedit /srv/diffpilot/.env
    ```
 
    In the editor set `SR_GITHUB_APP_ID`, `SR_GITHUB_CLIENT_ID`, `SR_GITHUB_CLIENT_SECRET`, `SR_MEMCAN_URL` (the
    full MCP endpoint, e.g. `http://memcan.lan:8190/mcp`), `SR_MEMCAN_TOKEN`, and `SR_RUNNER_CLAUDIUS_REF` (a
    claudius commit SHA pins the agent's skills; recommended); keep the rest unless an address clashes.
    `SR_SECRET_KEY` encrypts stored tokens and cannot be rotated in v1: keep a copy with the backups.
-   `sudo /srv/smart-review/app/deploy/check-production-config.sh --env-file /srv/smart-review/.env` must pass:
+   `sudo /srv/diffpilot/app/deploy/check-production-config.sh --env-file /srv/diffpilot/.env` must pass:
    besides development switches it refuses values left from `.env.example`, empty secrets, a runner secret under
    32 characters, a public URL that is not https, `$` interpolation and local or development overrides, naming the
    variable only; an unpinned skills ref (a branch such as `main`) is a warning.
@@ -114,9 +114,9 @@ disk for images and build cache, plus the scratch volumes. Check: `docker versio
 
    ```sh
    sr stop server
-   docker run --rm -v smart-review_server-data:/data ubuntu:26.04 sh -c \
+   docker run --rm -v diffpilot_server-data:/data ubuntu:26.04 sh -c \
      "apt-get update -qq && apt-get install -y -qq sqlite3 > /dev/null &&
-      sqlite3 /data/smart-review.sqlite \"INSERT OR IGNORE INTO tenant_allowed_logins (tenant_id, login) VALUES ('default', 'NEW-LOGIN');\" &&
+      sqlite3 /data/diffpilot.sqlite \"INSERT OR IGNORE INTO tenant_allowed_logins (tenant_id, login) VALUES ('default', 'NEW-LOGIN');\" &&
       chown -R 10010:10010 /data"
    sr start server
    ```
@@ -124,41 +124,41 @@ disk for images and build cache, plus the scratch volumes. Check: `docker versio
 ## Secrets as files (optional)
 
 `deploy/compose.secrets.yaml` mounts `SR_SECRET_KEY`, `SR_RUNNER_SECRET`, `SR_GITHUB_CLIENT_SECRET` and
-`SR_MEMCAN_TOKEN` read-only from files in `SR_SECRETS_DIR` (default `/srv/smart-review/secrets`) and passes
+`SR_MEMCAN_TOKEN` read-only from files in `SR_SECRETS_DIR` (default `/srv/diffpilot/secrets`) and passes
 `VAR_FILE` instead of `VAR`, so they do not show in `docker inspect` or Portainer (threat model AR-7). Instead of the
 secret lines of First deploy step 4 (root; the runner secret is read by the server's uid 10010 and the runner's
 10001, never by the agent's 10002, else the runner exits 78):
 
 ```sh
-cd /srv/smart-review/secrets
+cd /srv/diffpilot/secrets
 sudo sh -c 'umask 077; openssl rand -base64 32 > sr-secret-key; openssl rand -hex 32 > sr-runner-secret'
 sudo sh -c 'umask 077; cat > sr-github-client-secret'   # paste the value, Enter, Ctrl-D
 sudo sh -c 'umask 077; cat > sr-memcan-token'           # paste the value, Enter, Ctrl-D
 sudo chown 10010:10010 sr-secret-key sr-github-client-secret sr-memcan-token
 sudo chmod 0400 sr-secret-key sr-github-client-secret sr-memcan-token
 sudo chown 10001:10010 sr-runner-secret && sudo chmod 0440 sr-runner-secret
-sudo sed -i -E 's/^(SR_SECRET_KEY|SR_RUNNER_SECRET|SR_GITHUB_CLIENT_SECRET|SR_MEMCAN_TOKEN)=.*/\1=/' /srv/smart-review/.env
+sudo sed -i -E 's/^(SR_SECRET_KEY|SR_RUNNER_SECRET|SR_GITHUB_CLIENT_SECRET|SR_MEMCAN_TOKEN)=.*/\1=/' /srv/diffpilot/.env
 ```
 
 Then add the override to the helper and check with `--secret-files`:
 
 ```sh
-sr() { docker compose --env-file /srv/smart-review/.env -f /srv/smart-review/app/deploy/compose.yaml \
-  -f /srv/smart-review/app/deploy/compose.secrets.yaml "$@"; }
-sudo /srv/smart-review/app/deploy/check-production-config.sh --env-file /srv/smart-review/.env --secret-files
+sr() { docker compose --env-file /srv/diffpilot/.env -f /srv/diffpilot/app/deploy/compose.yaml \
+  -f /srv/diffpilot/app/deploy/compose.secrets.yaml "$@"; }
+sudo /srv/diffpilot/app/deploy/check-production-config.sh --env-file /srv/diffpilot/.env --secret-files
 ```
 
 ## LLM credential (Codex sign-in, "unusable" recovery)
 
-The runner keeps one Codex credential at `/var/lib/smart-review-runner/credentials/default/auth.json` in the
+The runner keeps one Codex credential at `/var/lib/diffpilot-runner/credentials/default/auth.json` in the
 `runner-state` volume (ADR-003). Sign in inside the running runner container as the runner uid; Codex reaches
 the Internet through the egress proxy. Never mount or copy the host's `~/.codex`, and never copy a credential
 that another Codex installation still uses (refresh tokens are single-use; both copies would break).
 
 ```sh
-sr exec -u 10001 runner install -d -m 0700 /var/lib/smart-review-runner/credentials/default
-sr exec -it -u 10001 -e CODEX_HOME=/var/lib/smart-review-runner/credentials/default runner codex login --device-auth
-sr exec -u 10001 runner test -s /var/lib/smart-review-runner/credentials/default/auth.json && echo "credential present"
+sr exec -u 10001 runner install -d -m 0700 /var/lib/diffpilot-runner/credentials/default
+sr exec -it -u 10001 -e CODEX_HOME=/var/lib/diffpilot-runner/credentials/default runner codex login --device-auth
+sr exec -u 10001 runner test -s /var/lib/diffpilot-runner/credentials/default/auth.json && echo "credential present"
 ```
 
 The device login prints a URL and a code: open the URL, enter the code, approve.
@@ -173,7 +173,7 @@ says the state "could not be saved", sign in again before restarting the runner.
 volume, never through the host:
 
 ```sh
-docker run --rm --network none -v OLD-VOLUME:/src:ro -v smart-review_runner-state:/dst ubuntu:26.04 sh -c \
+docker run --rm --network none -v OLD-VOLUME:/src:ro -v diffpilot_runner-state:/dst ubuntu:26.04 sh -c \
   'install -d -o 10001 -g 10001 -m 0700 /dst/credentials/default &&
    install -o 10001 -g 10001 -m 0600 /src/auth.json /dst/credentials/default/auth.json'
 ```
@@ -188,12 +188,12 @@ Never delete the database to upgrade.
 1. Fetch the new version, keep the old commit and images for a rollback, check, build (services keep running):
 
    ```sh
-   cd /srv/smart-review/app
-   git rev-parse HEAD | sudo tee /srv/smart-review/previous-version   # read by the rollback
+   cd /srv/diffpilot/app
+   git rev-parse HEAD | sudo tee /srv/diffpilot/previous-version   # read by the rollback
    sudo git pull --ff-only
    scripts/check-migrations.sh
-   git diff --name-status "$(cat /srv/smart-review/previous-version)" -- crates/db/migrations   # only A lines; M or D: stop
-   for i in server runner egress-proxy; do docker tag "smart-review-$i:local" "smart-review-$i:rollback"; done
+   git diff --name-status "$(cat /srv/diffpilot/previous-version)" -- crates/db/migrations   # only A lines; M or D: stop
+   for i in server runner egress-proxy; do docker tag "diffpilot-$i:local" "diffpilot-$i:rollback"; done
    sr build egress-proxy && sr build runner && sr build server
    ```
 
@@ -217,8 +217,8 @@ backup together with the previous images and commit; everything written since th
 ```sh
 sr stop
 # restore the step-2 backup here (section "Backup and restore")
-for i in server runner egress-proxy; do docker tag "smart-review-$i:rollback" "smart-review-$i:local"; done
-cd /srv/smart-review/app && sudo git checkout --detach "$(cat /srv/smart-review/previous-version)"   # back later: sudo git switch -
+for i in server runner egress-proxy; do docker tag "diffpilot-$i:rollback" "diffpilot-$i:local"; done
+cd /srv/diffpilot/app && sudo git checkout --detach "$(cat /srv/diffpilot/previous-version)"   # back later: sudo git switch -
 sr up -d
 ```
 
@@ -247,7 +247,7 @@ is corrupted. Finished analyses are not converted: their questions show as flags
    analyses in the UI.
 
    ```sh
-   sudo sqlite3 -readonly "$(docker volume inspect -f '{{.Mountpoint}}' smart-review_server-data)/smart-review.sqlite" \
+   sudo sqlite3 -readonly "$(docker volume inspect -f '{{.Mountpoint}}' diffpilot_server-data)/diffpilot.sqlite" \
      "SELECT kind, state, count(*) FROM jobs WHERE state IN ('claimed', 'running') GROUP BY kind, state;"
    ```
 
@@ -256,19 +256,19 @@ is corrupted. Finished analyses are not converted: their questions show as flags
 
    ```sh
    sr stop
-   docker volume create smart-review_server-data-v1
-   docker run --rm --network none -v smart-review_server-data:/src:ro -v smart-review_server-data-v1:/dst ubuntu:26.04 \
+   docker volume create diffpilot_server-data-v1
+   docker run --rm --network none -v diffpilot_server-data:/src:ro -v diffpilot_server-data-v1:/dst ubuntu:26.04 \
      cp -a /src/. /dst/
    ```
 
    `deploy/backup.sh` and the full backup in "Backup and restore" are the file-based alternatives. Keep the copy until
    the new version has run for a few days.
 
-3. Add the new variables of the section "New configuration" to `/srv/smart-review/.env` (only `SR_MEMCAN_UI_URL` is
+3. Add the new variables of the section "New configuration" to `/srv/diffpilot/.env` (only `SR_MEMCAN_UI_URL` is
    new; it is optional), then start and check:
 
    ```sh
-   deploy/check-production-config.sh --env-file /srv/smart-review/.env   # from /srv/smart-review/app
+   deploy/check-production-config.sh --env-file /srv/diffpilot/.env   # from /srv/diffpilot/app
    sr up -d
    sr ps                                    # all three: healthy
    sr logs --since 5m server | grep -E 'server listening|dashboard scheduler started|schema migration failed'
@@ -284,15 +284,15 @@ volume copy, start the previous images and commit:
 
 ```sh
 sr stop
-docker run --rm --network none -v smart-review_server-data-v1:/src:ro -v smart-review_server-data:/dst ubuntu:26.04 \
+docker run --rm --network none -v diffpilot_server-data-v1:/src:ro -v diffpilot_server-data:/dst ubuntu:26.04 \
   sh -c 'find /dst -mindepth 1 -delete && cp -a /src/. /dst/'
-for i in server runner egress-proxy; do docker tag "smart-review-$i:rollback" "smart-review-$i:local"; done
-cd /srv/smart-review/app && sudo git checkout --detach "$(cat /srv/smart-review/previous-version)"
+for i in server runner egress-proxy; do docker tag "diffpilot-$i:rollback" "diffpilot-$i:local"; done
+cd /srv/diffpilot/app && sudo git checkout --detach "$(cat /srv/diffpilot/previous-version)"
 sr up -d
 ```
 
 Everything written since the upgrade (dashboard data, tokens, analyses) is lost. Remove the copy when it is no longer
-needed: `docker volume rm smart-review_server-data-v1`.
+needed: `docker volume rm diffpilot_server-data-v1`.
 
 ### New configuration
 
@@ -378,7 +378,7 @@ them like a password (root only, encrypted off-site).
 ### Online backup (daily)
 
 `deploy/backup.sh` (root; needs `sqlite3` 3.27+ on the host: `apt-get install sqlite3`) writes
-`/srv/smart-review/backup/<UTC stamp>/` (mode 0700, files 0600, `SHA256SUMS`): a consistent snapshot of the
+`/srv/diffpilot/backup/<UTC stamp>/` (mode 0700, files 0600, `SHA256SUMS`): a consistent snapshot of the
 database (`VACUUM INTO` while the server writes; WAL mode), `credentials/` and `sessions/` of `runner-state`, a copy
 of `.env` and the secrets directory. It keeps the newest 14 (`SR_BACKUP_KEEP`), prints sizes only, never contents.
 Mirrors and the claudius checkout are re-created by the runner. The credential is a copy of the moment: a job
@@ -388,16 +388,16 @@ running meanwhile may rotate it, and then the restored one is rejected at its fi
 Schedule (root):
 
 ```sh
-sudo tee /etc/systemd/system/smart-review-backup.service > /dev/null <<'EOF'
+sudo tee /etc/systemd/system/diffpilot-backup.service > /dev/null <<'EOF'
 [Unit]
-Description=smart-review online backup
+Description=diffpilot online backup
 [Service]
 Type=oneshot
-ExecStart=/srv/smart-review/app/deploy/backup.sh
+ExecStart=/srv/diffpilot/app/deploy/backup.sh
 EOF
-sudo tee /etc/systemd/system/smart-review-backup.timer > /dev/null <<'EOF'
+sudo tee /etc/systemd/system/diffpilot-backup.timer > /dev/null <<'EOF'
 [Unit]
-Description=Daily smart-review online backup
+Description=Daily diffpilot online backup
 [Timer]
 OnCalendar=*-*-* 03:30:00
 RandomizedDelaySec=15m
@@ -405,8 +405,8 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-sudo systemctl daemon-reload && sudo systemctl enable --now smart-review-backup.timer
-systemctl list-timers smart-review-backup.timer; journalctl -u smart-review-backup.service -n 20
+sudo systemctl daemon-reload && sudo systemctl enable --now diffpilot-backup.timer
+systemctl list-timers diffpilot-backup.timer; journalctl -u diffpilot-backup.service -n 20
 ```
 
 A failed run exits non-zero, leaves only a `.partial-<stamp>` directory (removed by the next run) and never pushes
@@ -414,8 +414,8 @@ out complete backups. Check daily (or add `OnFailure=` with your own notificatio
 print nothing when all is well:
 
 ```sh
-systemctl is-failed --quiet smart-review-backup.service && echo "the last online backup FAILED (journalctl -u smart-review-backup)"
-sudo find /srv/smart-review/backup -mindepth 2 -maxdepth 2 -name SHA256SUMS -mmin -1560 | grep -q . || echo "no complete backup in the last 26 h"
+systemctl is-failed --quiet diffpilot-backup.service && echo "the last online backup FAILED (journalctl -u diffpilot-backup)"
+sudo find /srv/diffpilot/backup -mindepth 2 -maxdepth 2 -name SHA256SUMS -mmin -1560 | grep -q . || echo "no complete backup in the last 26 h"
 ```
 
 **Off-site, encrypted** (the backup holds the Codex credential, `SR_SECRET_KEY` and the App key): encrypt on this
@@ -423,10 +423,10 @@ host to a key whose private half is not on it, then copy, e.g. with `age` (`apt-
 another machine gives the recipient `age1...`):
 
 ```sh
-B=/srv/smart-review/backup
+B=/srv/diffpilot/backup
 S="$(sudo find "$B" -mindepth 2 -maxdepth 2 -name SHA256SUMS -path "$B/[0-9]*T[0-9]*Z/*" -printf '%h\n' | sort | tail -n 1)"
 if [ -z "$S" ]; then echo "no complete online backup in $B" >&2; else S="$(basename "$S")"
-  sudo tar -C "$B" -cf - "$S" | age -r age1REPLACE_WITH_RECIPIENT | ssh backup-host "cat > smart-review/$S.tar.age"; fi
+  sudo tar -C "$B" -cf - "$S" | age -r age1REPLACE_WITH_RECIPIENT | ssh backup-host "cat > diffpilot/$S.tar.age"; fi
 ```
 
 Restore an online backup (server and runner stopped; the script refuses otherwise). It checks `SHA256SUMS` and the
@@ -437,7 +437,7 @@ new). Test a restore now and then on a spare host or a copy of the volumes.
 
 ```sh
 sr stop server runner
-sudo /srv/smart-review/app/deploy/backup.sh --restore /srv/smart-review/backup/REPLACE_WITH_THE_STAMP
+sudo /srv/diffpilot/app/deploy/backup.sh --restore /srv/diffpilot/backup/REPLACE_WITH_THE_STAMP
 sr up -d
 sr logs runner | grep -i credential
 ```
@@ -451,15 +451,15 @@ credential that a job refreshed into `tmp-runner-codex-homes` (section "Temporar
 the Codex credential: store them like a password (root only, encrypted off-site), together with `.env`.
 
 ```sh
-sudo install -d -m 0700 /srv/smart-review/backup
+sudo install -d -m 0700 /srv/diffpilot/backup
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 sr stop
 for v in server-data runner-state; do
-  docker run --rm --network none -v "smart-review_$v:/v:ro" -v /srv/smart-review/backup:/backup ubuntu:26.04 \
+  docker run --rm --network none -v "diffpilot_$v:/v:ro" -v /srv/diffpilot/backup:/backup ubuntu:26.04 \
     tar -C /v --numeric-owner -czpf "/backup/$v-$STAMP.tar.gz" .
 done
-sudo cp /srv/smart-review/.env "/srv/smart-review/backup/env-$STAMP"
-sudo tar -C /srv/smart-review/secrets --numeric-owner -czpf "/srv/smart-review/backup/secrets-$STAMP.tar.gz" .
+sudo cp /srv/diffpilot/.env "/srv/diffpilot/backup/env-$STAMP"
+sudo tar -C /srv/diffpilot/secrets --numeric-owner -czpf "/srv/diffpilot/backup/secrets-$STAMP.tar.gz" .
 sr start
 ```
 
@@ -472,7 +472,7 @@ STAMP=REPLACE_WITH_THE_BACKUP_STAMP
 sr up --no-start
 sr stop
 for v in server-data runner-state; do
-  docker run --rm --network none -v "smart-review_$v:/v" -v /srv/smart-review/backup:/backup:ro ubuntu:26.04 \
+  docker run --rm --network none -v "diffpilot_$v:/v" -v /srv/diffpilot/backup:/backup:ro ubuntu:26.04 \
     sh -c "find /v -mindepth 1 -delete && tar -C /v --numeric-owner -xzpf /backup/$v-$STAMP.tar.gz"
 done
 sr up -d
@@ -482,14 +482,14 @@ sr logs runner | grep -i credential
 ## Temporary volumes
 
 Owner decision: nothing is kept in RAM, and scratch areas have no size limit for now. The scratch areas are Docker
-volumes whose names start with `tmp-` and that carry the label `smart-review.volume=temporary`:
+volumes whose names start with `tmp-` and that carry the label `diffpilot.volume=temporary`:
 
 | Volume | Mounted at | Holds |
 |---|---|---|
-| `smart-review_tmp-runner-work` | runner `/work` | per-job checkout, the agent's `HOME` and `TMPDIR` |
-| `smart-review_tmp-runner-codex-homes` | runner `/var/lib/smart-review-runner/codex-homes` | per-job agent `CODEX_HOME` (a copy of the credential while a job runs) |
-| `smart-review_tmp-runner` | runner `/tmp` | the runner's own temporary files |
-| `smart-review_tmp-server` | server `/tmp` | the server's temporary files |
+| `diffpilot_tmp-runner-work` | runner `/work` | per-job checkout, the agent's `HOME` and `TMPDIR` |
+| `diffpilot_tmp-runner-codex-homes` | runner `/var/lib/diffpilot-runner/codex-homes` | per-job agent `CODEX_HOME` (a copy of the credential while a job runs) |
+| `diffpilot_tmp-runner` | runner `/tmp` | the runner's own temporary files |
+| `diffpilot_tmp-server` | server `/tmp` | the server's temporary files |
 
 Their content is disposable: never backed up, emptied at every start (the runner: after bringing a credential
 copy of an interrupted job back to the master, before the first job; the server: its entrypoint), and safe to
@@ -499,7 +499,7 @@ only in `tmp-runner-codex-homes` until the runner's next start; deleting it befo
 
 ```sh
 sr stop
-docker volume ls -q --filter label=smart-review.volume=temporary --filter label=com.docker.compose.project=smart-review \
+docker volume ls -q --filter label=diffpilot.volume=temporary --filter label=com.docker.compose.project=diffpilot \
   | xargs -r docker volume rm
 sr up -d
 ```
@@ -507,7 +507,7 @@ sr up -d
 Free-space reserve: the runner takes no job while the filesystem of `/work` (Docker's data root, shared by all
 volumes) has less than `SR_RUNNER_DISK_RESERVE_MIB` free (default 2048). It keeps polling the server, so session
 deletions still happen, but jobs stay queued. What you see:
-- `sr ps` shows the runner `unhealthy` (marker file `/var/lib/smart-review-runner/disk-below-reserve`);
+- `sr ps` shows the runner `unhealthy` (marker file `/var/lib/diffpilot-runner/disk-below-reserve`);
 - the runner log says `the job scratch filesystem is below its free-space reserve` with `free_mib` and
   `required_mib`, at once and then every hour.
 
@@ -527,7 +527,7 @@ error log until removed this way.
 ## Exit codes and restarts
 
 All services use `restart: unless-stopped`; `sr ps -a` and `docker inspect -f '{{.State.ExitCode}}'
-smart-review-runner-1` show the last exit.
+diffpilot-runner-1` show the last exit.
 
 | Exit | Service | Meaning | Action |
 |---|---|---|---|
@@ -546,13 +546,13 @@ connection. Update MemCan's allow-list if the source addresses change (First dep
 ## Rotating the runner secret
 
 ```sh
-sudo sed -i "s|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=$(openssl rand -hex 32)|" /srv/smart-review/.env
+sudo sed -i "s|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=$(openssl rand -hex 32)|" /srv/diffpilot/.env
 sr up -d server runner
 ```
 
 Both services are recreated with the new value; a running job is interrupted and retried. A runner with the old
 value is refused ("the server rejected the runner secret").
-With secrets as files, replace the file instead (`sudo sh -c 'openssl rand -hex 32 > /srv/smart-review/secrets/sr-runner-secret'`
+With secrets as files, replace the file instead (`sudo sh -c 'openssl rand -hex 32 > /srv/diffpilot/secrets/sr-runner-secret'`
 keeps its owner and mode) and run `sr restart server runner`.
 
 ## Logs
@@ -572,8 +572,8 @@ statistics logs"): export them before the server is re-created, and from time to
 lines.
 
 ```sh
-sudo install -d -m 0750 /srv/smart-review/stats
-f=/srv/smart-review/stats/analysis-statistics.log
+sudo install -d -m 0750 /srv/diffpilot/stats
+f=/srv/diffpilot/stats/analysis-statistics.log
 sr logs --no-log-prefix --timestamps server | grep -F 'analysis statistics' | sudo tee -a "$f" > /dev/null
 sudo sort -u -o "$f" "$f"
 ```
@@ -599,7 +599,7 @@ URLs in stdout or stderr) and `deploy/test-stack.sh` (the running stack: no host
 Internet reachable from the runner except through the proxy; limits); CI runs both on every push.
 
 **Later step: interception and allow-list** (owner decision, plan §16). The research
-(`/data/artifacts/smart-review/2026-11-16/research/egress-proxy.md` §3 and `egress-proxy-squid-tested.conf`)
+(`/data/artifacts/diffpilot/2026-11-16/research/egress-proxy.md` §3 and `egress-proxy-squid-tested.conf`)
 describes it as configuration of the same Squid: `ssl_bump` with a splice list (`chatgpt.com`, `openai.com`)
 and bump for the rest, a CA in the proxy (`EGRESS_CA_PEM`) trusted by the runner image, an on-disk cache volume,
 full-URL logs and a host allow-list (`dstdomain` / `ssl::server_name` ACL files). It changes the T4b log contract
@@ -611,16 +611,16 @@ The same images and volumes on one machine, published on loopback only (`deploy/
 sets `SR_PUBLIC_URL=http://localhost:3000`; `deploy/check-production-config.sh --env-file FILE --local` checks it.
 Sign-in needs the GitHub App callback `http://localhost:3000/auth/github/callback` registered on the App.
 
-The development host's instance (compose project `smart-review-local`) takes its generated secrets from
-`~/.config/smart-review-local/stack.env` (mode 0600) and the App and MemCan secrets from
-`~/.config/smart-review/secrets.env`; the App key `~/.config/smart-review/github-app.pem` stays readable by the
+The development host's instance (compose project `diffpilot-local`) takes its generated secrets from
+`~/.config/diffpilot-local/stack.env` (mode 0600) and the App and MemCan secrets from
+`~/.config/diffpilot/secrets.env`; the App key `~/.config/diffpilot/github-app.pem` stays readable by the
 host user only, so `deploy/dev/compose.host-uid.yaml` runs the server under that uid (`SR_SERVER_UID`/`_GID` in
 `stack.env`). Initialize a fresh data volume's ownership before the first server start, as shown below.
 
 ```sh
-cd /data/git-worktrees/home-ubuntu-git-smart-review-wp3-ops   # or any checkout of the same tree
-srl() { docker compose -p smart-review-local --env-file ~/.config/smart-review-local/stack.env \
-  --env-file ~/.config/smart-review/secrets.env -f deploy/compose.yaml -f deploy/compose.local.yaml \
+cd /data/git-worktrees/home-ubuntu-git-diffpilot-wp3-ops   # or any checkout of the same tree
+srl() { docker compose -p diffpilot-local --env-file ~/.config/diffpilot-local/stack.env \
+  --env-file ~/.config/diffpilot/secrets.env -f deploy/compose.yaml -f deploy/compose.local.yaml \
   -f deploy/dev/compose.host-uid.yaml "$@"; }
 srl ps                 # state and health
 srl stop               # stop, keeping containers, networks and volumes
@@ -638,15 +638,15 @@ files (including the host-uid override). This changes only the volume directory'
 
 ```sh
 docker run --rm --network none --user 0:0 \
-  --mount type=volume,source=smart-review-local_server-data,target=/var/lib/smart-review,volume-nocopy \
-  ubuntu:26.04 chown "$(id -u):$(id -g)" /var/lib/smart-review
+  --mount type=volume,source=diffpilot-local_server-data,target=/var/lib/diffpilot,volume-nocopy \
+  ubuntu:26.04 chown "$(id -u):$(id -g)" /var/lib/diffpilot
 ```
 
 Codex login (once per runner-state volume): copy an existing login volume to volume, never from the host
 `~/.codex`; afterwards the source volume is retired (the refresh token is single-use, one live copy only):
 
 ```sh
-docker run --rm --network none -v sr-spike-codex-home:/src:ro -v smart-review-local_runner-state:/dst ubuntu:26.04 \
+docker run --rm --network none -v sr-spike-codex-home:/src:ro -v diffpilot-local_runner-state:/dst ubuntu:26.04 \
   sh -c 'install -d -o 10001 -g 10001 -m 0700 /dst/credentials /dst/credentials/default &&
          install -o 10001 -g 10001 -m 0600 /src/auth.json /dst/credentials/default/auth.json'
 ```
@@ -657,7 +657,7 @@ SSH tunnel `ssh -L 3000:127.0.0.1:3000 agentic`), choose "Sign in with GitHub", 
 
 Development without containers: `deploy/dev/stack.sh` (fake GitHub, fake provider, no isolation).
 `deploy/dev/real-codex-smoke.sh` with `SR_SMOKE_ISOLATION=supervisor` runs one analysis with the production runner
-image under its supervisor behind the egress proxy; `SR_SMOKE_STATE_VOLUME=smart-review-local_runner-state` (local
+image under its supervisor behind the egress proxy; `SR_SMOKE_STATE_VOLUME=diffpilot-local_runner-state` (local
 stack's runner stopped first) reuses the stack's Codex credential instead of a second copy.
 
 

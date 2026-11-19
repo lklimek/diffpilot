@@ -6,7 +6,7 @@ Date: 2026-11-16. Setup as accepted after S1a/S1b/S2:
 - Per-job `CODEX_HOME` with a copy of the credential and compare-and-swap write-back (it never rotated here).
 - Codex cwd `/jobwork` with the checkout at `/jobwork/repo` (read-only). No GitHub MCP.
 
-Evidence (sanitised): `/data/artifacts/smart-review/2026-11-16/spikes/S7/` contains:
+Evidence (sanitised): `/data/artifacts/diffpilot/2026-11-16/spikes/S7/` contains:
 - `inputs/`: schemas and prompts;
 - `outputs/`: agent JSON, `eval-*.json`, `measure-*.txt`, hunks and diffs;
 - `runs/`: JSONL per job;

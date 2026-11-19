@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 /** localStorage key of the open / collapsed state of the inspector sections. */
-export const SECTION_STORAGE_KEY = "smart-review.inspector.sections";
+export const SECTION_STORAGE_KEY = "diffpilot.inspector.sections";
 
 /** Section key → open; keys missing here use their default. */
 export type SectionState = Record<string, boolean>;

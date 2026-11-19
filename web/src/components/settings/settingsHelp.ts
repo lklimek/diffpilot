@@ -134,7 +134,7 @@ const HELP = {
   app_installations: {
     section: "GitHub App",
     title: "GitHub App",
-    what: "The installations of the smart-review GitHub App your GitHub sign-in can see. Comments go into your pending review only where the App is installed.",
+    what: "The installations of the diffpilot GitHub App your GitHub sign-in can see. Comments go into your pending review only where the App is installed.",
     when: "Read when Settings opens. Read-only; install or change the App on GitHub.",
     empty: "No installation: pull requests can be analysed, but comments must be written on GitHub.",
     example: "Install the App on dashpay to comment on dashpay/platform from here.",
@@ -417,7 +417,7 @@ export function settingsHelpMarkdown(): string {
     "<!-- Generated from web/src/components/settings/settingsHelp.ts; the in-app guide at /settings/help shows",
     "the same text. Update: UPDATE_GENERATED=1 npx vitest run src/components/settings/settingsHelp.test.ts -->",
     "",
-    "Every option on the Settings page: what it is, when smart-review uses it, what happens when it is empty, its limits and an example. The `?` next to an option shows the same text.",
+    "Every option on the Settings page: what it is, when diffpilot uses it, what happens when it is empty, its limits and an example. The `?` next to an option shows the same text.",
   ];
   for (const section of HELP_SECTIONS) {
     out.push("", `## ${section}`);

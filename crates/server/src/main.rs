@@ -40,6 +40,11 @@ enum StartError {
         #[source]
         source: DbError,
     },
+    #[error(
+        "the data directory holds {} from before the rename to diffpilot and no {DATABASE_FILE}; stop, rename it together with its -wal and -shm files, and start again",
+        path.display()
+    )]
+    FormerDatabase { path: PathBuf },
     #[error("could not listen on {addr}; check {key} and whether the port is in use")]
     Bind {
         key: &'static str,
@@ -82,7 +87,15 @@ fn main() -> ExitCode {
 }
 
 /// File name of the SQLite database inside `SR_DATA_DIR`.
-const DATABASE_FILE: &str = "smart-review.sqlite";
+const DATABASE_FILE: &str = "diffpilot.sqlite";
+/// The database file's name under the project's former name.
+const FORMER_DATABASE_FILE: &str = "smart-review.sqlite";
+
+/// The former-name database of a data directory that has no current one: starting would silently create an empty one.
+fn former_database(data_dir: &std::path::Path) -> Option<PathBuf> {
+    let former = data_dir.join(FORMER_DATABASE_FILE);
+    (!data_dir.join(DATABASE_FILE).exists() && former.exists()).then_some(former)
+}
 
 async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> {
     dotenv_outcome(dotenv)?;
@@ -94,6 +107,9 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
             path: config.data_dir.clone(),
             source,
         })?;
+    if let Some(path) = former_database(&config.data_dir) {
+        return Err(StartError::FormerDatabase { path });
+    }
     let path = config.data_dir.join(DATABASE_FILE);
     let db = Db::open(&path)
         .await
@@ -204,6 +220,17 @@ fn error_chain(error: &dyn Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_former_database_without_a_current_one_stops_the_start() {
+        let dir = tempfile::tempdir().expect("dir");
+        assert_eq!(former_database(dir.path()), None);
+        let former = dir.path().join("smart-review.sqlite");
+        std::fs::write(&former, b"").expect("write");
+        assert_eq!(former_database(dir.path()), Some(former));
+        std::fs::write(dir.path().join(DATABASE_FILE), b"").expect("write");
+        assert_eq!(former_database(dir.path()), None);
+    }
 
     #[test]
     fn missing_dotenv_file_is_not_an_error() {

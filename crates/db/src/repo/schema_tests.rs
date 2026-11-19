@@ -85,7 +85,7 @@ async fn insert_job(
 #[tokio::test]
 async fn migrations_apply_to_an_empty_file_and_reopen() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let path = dir.path().join("smart-review.sqlite");
+    let path = dir.path().join("diffpilot.sqlite");
     Db::open(&path)
         .await
         .expect("first open creates the schema");

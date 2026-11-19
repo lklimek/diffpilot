@@ -1,5 +1,5 @@
 //! Fake MemCan for development and the full-stack tests: a real MCP server (rmcp, streamable HTTP) with the tools
-//! the smart-review server calls (`_import_records`, `delete_memory`, `search_memories`, `list_todos`), following
+//! the diffpilot server calls (`_import_records`, `delete_memory`, `search_memories`, `list_todos`), following
 //! MemCan's contract (memcan-server `serve.rs`, memcan-core `import.rs` at dd00d97): record validation and the
 //! `imported`/`skipped`/`errors` counters, MemCan's JSON-RPC errors, `has_more` past the limit. Also MemCan's
 //! bearer check and a control endpoint (`/_fake/*`, same bearer) to inspect what was written or deleted and to

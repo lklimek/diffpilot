@@ -182,7 +182,7 @@ function resumedAt(tour: Tour, block: BlockRef): string {
 }
 
 function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
-  const contextKey = `smart-review.hide-context-changes.${login ?? "anonymous"}`;
+  const contextKey = `diffpilot.hide-context-changes.${login ?? "anonymous"}`;
   const [hideContextChanges, setHideContextChanges] = useState(() => {
     try {
       return localStorage.getItem(contextKey) !== "false";

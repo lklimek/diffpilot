@@ -185,7 +185,7 @@ async fn table_sql(pool: &SqlitePool, table: &str) -> String {
 #[tokio::test]
 async fn migration_0010_on_a_seeded_v9_database() {
     let dir = tempfile::tempdir().expect("dir");
-    let path = dir.path().join("smart-review.sqlite");
+    let path = dir.path().join("diffpilot.sqlite");
     let old = pool(&path, 2).await;
     migrate(&old, 9).await.expect("0001..0009");
     sqlx::raw_sql(SEED).execute(&old).await.expect("seed");

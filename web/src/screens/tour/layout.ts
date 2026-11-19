@@ -26,7 +26,7 @@ export interface TourLayout {
 }
 
 /** localStorage key of the layout. */
-export const LAYOUT_STORAGE_KEY = "smart-review.tour.layout";
+export const LAYOUT_STORAGE_KEY = "diffpilot.tour.layout";
 
 /** Default: every column shown, default widths, diagram hidden (brief §4.3). */
 export const DEFAULT_LAYOUT: TourLayout = {

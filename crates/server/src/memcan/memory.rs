@@ -16,7 +16,9 @@ pub(crate) const CALIBRATION_TYPE: &str = "severity-calibration";
 /// Metadata `type` of any other feedback.
 const FEEDBACK_TYPE: &str = "review-feedback";
 /// Metadata `source` of every memory the server writes.
-pub(crate) const SOURCE: &str = "smart-review";
+pub(crate) const SOURCE: &str = "diffpilot";
+/// `source` of memories written under the project's former name; still read.
+pub(crate) const LEGACY_SOURCE: &str = "smart-review";
 
 /// What a step or annotation feedback target names in the analysis.
 #[derive(Clone, Copy, Debug)]
@@ -158,7 +160,7 @@ fn text(entry: &PendingFeedback, pr: &PrSummary, flows: &[FlowAnalysisOutput]) -
         },
     };
     let text = format!(
-        "smart-review feedback on the LLM review of {}/{} pull request #{} \"{}\": {verdict}. {subject}.",
+        "diffpilot feedback on the LLM review of {}/{} pull request #{} \"{}\": {verdict}. {subject}.",
         clip(&pr.repo.owner, MAX_FIELD_CHARS),
         clip(&pr.repo.name, MAX_FIELD_CHARS),
         pr.number,

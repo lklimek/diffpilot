@@ -4,9 +4,9 @@ Date: 2026-11-16. `github/github-mcp-server` **v2.1.0** (released 2026-11-03), s
 `github-mcp-server_Linux_x86_64.tar.gz`, SHA-256 `a442f9db287cea01008bcb55fe6bc0292270301046c3edbd1a8b22d6e4157b2b`
 (release checksums file verified; binary `cdd2dfbf…5324`, static Go). Token: S4 installation token,
 `repositories: [dash-evo-tool]`, `permissions` read (contents, issues, metadata, pull_requests), minted per run and
-revoked after it (every revoke 204). Codex 0.167.0 in `smart-review-spike-codex:0.167.0`, harness as S1a/S1b.
+revoked after it (every revoke 204). Codex 0.167.0 in `diffpilot-spike-codex:0.167.0`, harness as S1a/S1b.
 The proxy item is left to S6 (runs here had direct egress). Evidence:
-`/data/artifacts/smart-review/2026-11-16/spikes/S5/` — `scripts/` (`mcp-drive.py`, `s5-direct.sh`,
+`/data/artifacts/diffpilot/2026-11-16/spikes/S5/` — `scripts/` (`mcp-drive.py`, `s5-direct.sh`,
 `job-s5.sh`, `inner-s5.sh`, `s5-readonly-fs.sh`), `inputs/` (per-job config, prompts), `responses/` (direct MCP
 calls), `runs/` (Codex JSONL, rollouts, env/leak checks), all sanitised.
 

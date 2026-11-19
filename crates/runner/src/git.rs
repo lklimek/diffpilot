@@ -28,7 +28,7 @@ const PROXY_VARS: [&str; 7] = [
     "no_proxy",
 ];
 /// Ref namespace the mirror keeps fetched commits under, so they are never garbage-collected.
-const REF_PREFIX: &str = "refs/smart-review";
+const REF_PREFIX: &str = "refs/diffpilot";
 
 /// A git step failed.
 #[derive(Debug, thiserror::Error)]

@@ -43,7 +43,8 @@ pub struct Aad<'a> {
 
 impl Aad<'_> {
     fn bytes(&self) -> Vec<u8> {
-        // Table and column are fixed identifiers without NUL; the row id comes last.
+        // Table and column are fixed identifiers without NUL; the row id comes last. The prefix is the project's
+        // former name: it is bound into every stored ciphertext, so changing it makes them undecryptable.
         format!(
             "smart-review\0{}\0{}\0{}",
             self.table, self.column, self.row_id
@@ -145,6 +146,11 @@ mod tests {
         column: "access_ct",
         row_id: "u-1",
     };
+
+    #[test]
+    fn associated_data_keeps_the_bytes_stored_ciphertexts_were_sealed_with() {
+        assert_eq!(AAD.bytes(), b"smart-review\0user_tokens\0access_ct\0u-1");
+    }
 
     #[test]
     fn round_trip_with_random_nonce() {

@@ -1,8 +1,8 @@
 # S1a — Codex basics
 
 Date: 2026-11-16. Codex CLI 0.167.0 (`codex-package-x86_64-unknown-linux-musl`, SHA-256 pinned), image
-`smart-review-spike-codex:0.167.0`, ChatGPT Pro subscription login (device auth) on volume `sr-spike-codex-home`.
-Evidence (sanitised): `/data/artifacts/smart-review/2026-11-16/spikes/S1a/`; harness: `../scripts/`.
+`diffpilot-spike-codex:0.167.0`, ChatGPT Pro subscription login (device auth) on volume `sr-spike-codex-home`.
+Evidence (sanitised): `/data/artifacts/diffpilot/2026-11-16/spikes/S1a/`; harness: `../scripts/`.
 
 ## Question
 Can an unprivileged non-root container drive `codex exec --json --output-schema` on the subscription? What is the

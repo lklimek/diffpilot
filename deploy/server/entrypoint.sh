@@ -6,4 +6,4 @@ if ! find /tmp -mindepth 1 -delete; then
   echo "server entrypoint: cannot empty /tmp; stop the server and remove its temporary volume (docs/runbook.md, \"Temporary volumes\")" >&2
   exit 1
 fi
-exec /usr/local/bin/smart-review-server "$@"
+exec /usr/local/bin/diffpilot-server "$@"
