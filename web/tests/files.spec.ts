@@ -47,7 +47,7 @@ test("one ◆ per LLM remark in the gutter, and none on lines without one", asyn
   const pinned = page.getByRole("dialog", { name: /^LLM remark at line 97/ });
   await expect(pinned).toBeVisible();
   await pinned.getByRole("button", { name: /^Show in Inspector/ }).click();
-  await expect(inspectorTitle(page)).toHaveText(/^Step 3 · /);
+  await expect(inspectorTitle(page)).toHaveText(/^Step 3 of flow 1 · /);
   await expect(inspector(page).getByRole("button", { name: "← Back to hunk" })).toBeVisible();
 });
 
@@ -61,7 +61,7 @@ test("a hunk click lists its flows and steps; Details narrows; Esc goes back", a
   await expect(flow).toContainText("☐ not ticked in Flows");
   await expect(inspector(page).getByRole("button", { name: /Mark reviewed/ })).toHaveCount(0);
   await flow.getByRole("button", { name: /^Details: Step 6/ }).click();
-  await expect(inspectorTitle(page)).toHaveText(/^Step 6 · /);
+  await expect(inspectorTitle(page)).toHaveText(/^Step 6 of flow 1 · /);
   await page.keyboard.press("Escape");
   await expect(inspectorTitle(page)).toHaveText(/^client\.rs · hunk/);
   await page.keyboard.press("Escape");
@@ -118,7 +118,7 @@ test("v marks Viewed on GitHub, then the next file opens; the tree and Flows sho
 test("a GitHub refusal is shown plainly and the file stays", async ({ page }) => {
   await openFiles(page, `${link("src/lib.rs")}`.replace("#", "?scenario=viewed-refused#"));
   await page.getByRole("button", { name: "Viewed", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("Not saved on GitHub.");
+  await expect(page.getByRole("alert")).toContainText("Not saved on GitHub: GitHub refused the change.");
   await expect(fileTitle(page)).toHaveText("src/lib.rs");
 });
 
@@ -134,7 +134,7 @@ test("the breadcrumb switches views and keeps the place; s goes back", async ({ 
   );
   await page.keyboard.press("s");
   await expect(page).toHaveURL(/\/files#lines\?file=src%2Frpc%2Fclient\.rs&side=head&line=99&step=f1\.5$/);
-  await expect(inspectorTitle(page)).toHaveText(/^Step 5 · Retry allowed\?/);
+  await expect(inspectorTitle(page)).toHaveText(/^Step 5 of flow 1 · Retry allowed\?/);
 });
 
 test("no serious axe violations in the Files view's states", async ({ page }) => {
@@ -190,6 +190,34 @@ test("the document never scrolls; the code stays inside its column", async ({ pa
   }
 });
 
+test("the flows dropdown and the Why this flow strip are keyboard reachable and accessible", async ({
+  page,
+}) => {
+  await openFiles(page, link("src/rpc/client.rs"));
+  const progress = page.getByRole("button", { name: /^Your progress 0 \/ 5/ });
+  await progress.click();
+  const flows = page.getByRole("region", { name: "Flows: analysis and review" });
+  await expect(flows.getByRole("listitem")).toHaveCount(5);
+  const results = await new AxeBuilder({ page })
+    .include("header")
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(
+    results.violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => v.id),
+  ).toEqual([]);
+  await page.keyboard.press("Escape");
+  await expect(flows).toBeHidden();
+  await expect(progress).toBeFocused();
+  await page.goto(`/analyses/${ANALYSIS_ID}#f1.5`);
+  const strip = page.getByRole("region", { name: "Why this flow" });
+  await expect(strip).toContainText("Problem:");
+  await strip.getByRole("button", { name: /^Why this flow/ }).click();
+  await page.reload();
+  await expect(
+    page.getByRole("region", { name: "Why this flow" }).getByRole("button", { name: /^Why this flow/ }),
+  ).toHaveAttribute("aria-expanded", "false");
+});
+
 // Screenshots for the owner's comparison with the mockup; only with SCREENSHOT_DIR set.
 const dir = process.env.SCREENSHOT_DIR;
 test("screenshots light and dark at 1600×900 and 2560×1080", async ({ page }) => {
@@ -201,6 +229,9 @@ test("screenshots light and dark at 1600×900 and 2560×1080", async ({ page }) 
     ["lines", link("src/rpc/client.rs", "&line=100&end=102")],
     ["unexplained", link("src/rpc/metrics.rs", "&line=40&end=46")],
     ["tests", link("tests/rpc_retry.rs")],
+    ["one-step-hunk", link("src/config.rs", "&line=23")],
+    ["removed-remarks", link("src/rpc/client.rs", "&line=42")],
+    ["removed-selection", `${FILES}#lines?file=src%2Frpc%2Fclient.rs&side=base&line=52&end=55`],
   ];
   for (const [width, height] of [
     [1600, 900],
@@ -215,6 +246,12 @@ test("screenshots light and dark at 1600×900 and 2560×1080", async ({ page }) 
         await page.waitForLoadState("networkidle");
         await page.screenshot({ path: `${dir}/files-${name}-${colorScheme}-${width}x${height}.png` });
       }
+      await page.getByRole("button", { name: /^Your progress/ }).click();
+      await page.screenshot({ path: `${dir}/files-progress-menu-${colorScheme}-${width}x${height}.png` });
+      await page.goto(`/analyses/${ANALYSIS_ID}#f1.5`);
+      await expect(page.getByRole("region", { name: "Why this flow" })).toBeVisible();
+      await page.waitForLoadState("networkidle");
+      await page.screenshot({ path: `${dir}/flows-why-strip-${colorScheme}-${width}x${height}.png` });
     }
   }
 });
