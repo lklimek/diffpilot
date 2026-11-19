@@ -13,7 +13,7 @@ use contracts::api::files::{HunkPart, PartOwner};
 use contracts::api::questions::{AskAnchor, AskState};
 use contracts::api::tour::{Flow, Step};
 use contracts::common::{LineRange, LineSide};
-use contracts::ids::{AnalysisId, JobId, QuestionId, StepId};
+use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId, StepId};
 use contracts::job::access::AgentAccess;
 use contracts::job::result::{JobOutcome, JobResult};
 use contracts::job::spec::{
@@ -43,8 +43,8 @@ use crate::pipeline::prepass::PrepassRunError;
 use crate::pipeline::tour::{self, TourLoadError};
 use crate::pipeline::{self, CREDENTIAL_ID, PrDiffError, files};
 use crate::prompts::{
-    self, AnsweredQuestion, AskContext, AskInput, AskLinesInput, Asked, AskedLines, JobContext,
-    Profile, PromptError, StepSummary, TouchedStep,
+    self, AnsweredQuestion, AskContext, AskFlowInput, AskInput, AskLinesInput, AskPrInput, Asked,
+    AskedLines, JobContext, Profile, PromptError, StepSummary, ThreadQuestion, TouchedStep,
 };
 use crate::state::AppState;
 
@@ -74,6 +74,9 @@ pub(super) enum FollowError {
     /// The asked step is no longer stored.
     #[error("the asked step is not stored")]
     UnknownStep,
+    /// The asked flow's analysis is no longer stored.
+    #[error("the asked flow is not stored")]
+    UnknownFlow,
     /// The pre-pass could not be read or computed.
     #[error("the pre-pass of the analysis is not available")]
     Prepass(#[from] PrepassRunError),
@@ -139,6 +142,20 @@ pub(super) async fn stored_step(
     Ok(flows
         .into_iter()
         .find_map(|(_, flow)| step_of(&flow, step).map(|found| (flow.clone(), found.clone()))))
+}
+
+/// The stored analysis of `flow`, if any.
+pub(super) async fn stored_flow(
+    db: &Db,
+    analysis: AnalysisId,
+    flow: &FlowId,
+) -> Result<Option<FlowAnalysisOutput>, DbError> {
+    let flows: Vec<(String, FlowAnalysisOutput)> =
+        db.documents().list(analysis, DocumentKind::Flow).await?;
+    Ok(flows
+        .into_iter()
+        .map(|(_, stored)| stored)
+        .find(|stored| stored.flow_id == *flow))
 }
 
 fn step_of<'f>(flow: &'f FlowAnalysisOutput, step: &StepId) -> Option<&'f AgentStep> {
@@ -397,7 +414,48 @@ async fn submit(
         file: prepass.profile_file.as_deref(),
         memcan: memcan_profile.text(),
     };
+    // The thread rides in the prompt, so a follow-up keeps it when the session is lost or forked again.
+    let earlier = state
+        .db
+        .questions()
+        .thread_before(question.id, Timestamp::now())
+        .await?;
+    let thread: Vec<ThreadQuestion<'_>> = earlier
+        .iter()
+        .map(|record| ThreadQuestion {
+            question: &record.question.text,
+            state: record.question.state,
+            answer: record
+                .question
+                .answer
+                .as_ref()
+                .map(|answer| answer.answer.as_str()),
+        })
+        .collect();
     let prompt = match &question.anchor {
+        AskAnchor::Flow { flow_id } => {
+            let flow = stored_flow(&state.db, summary.id, flow_id)
+                .await?
+                .ok_or(FollowError::UnknownFlow)?;
+            prompts::ask_flow(&AskFlowInput {
+                job,
+                flow: &flow,
+                question: &question.text,
+                thread: &thread,
+                profile,
+            })?
+        }
+        AskAnchor::Pr => {
+            let results = StoredResults::load(&state.db, summary.id).await?;
+            prompts::ask_pr(&AskPrInput {
+                job,
+                plan: results.plan.as_ref(),
+                pr_context: results.pr_context.as_ref(),
+                question: &question.text,
+                thread: &thread,
+                profile,
+            })?
+        }
         AskAnchor::Step { step_id, lines } => {
             let (_, step) = stored_step(&state.db, summary.id, step_id)
                 .await?
@@ -408,6 +466,7 @@ async fn submit(
                 step: &step,
                 lines: *lines,
                 question: &question.text,
+                thread: &thread,
                 profile,
             })?
         }
@@ -447,6 +506,7 @@ async fn submit(
                 facts: &about.facts,
                 steps: &steps,
                 question: &question.text,
+                thread: &thread,
                 profile,
             })?
         }
@@ -665,6 +725,14 @@ pub async fn context_pack(
         .collect();
     let touched_steps: Vec<(StepId, &AgentStep)>;
     let asked = match &record.question.anchor {
+        AskAnchor::Flow { flow_id } => {
+            let Some(flow) = results.flows.iter().find(|flow| flow.flow_id == *flow_id) else {
+                tracing::warn!(%analysis, %question, "the asked flow is not stored; the context pack holds the analysis only");
+                return Ok(pack(&summary.pr, &results, None)?);
+            };
+            Asked::Flow { flow }
+        }
+        AskAnchor::Pr => Asked::Pr,
         AskAnchor::Step { step_id, .. } => {
             let Some(flow) = results
                 .flows

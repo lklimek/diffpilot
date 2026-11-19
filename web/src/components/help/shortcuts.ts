@@ -30,7 +30,12 @@ export const SHORTCUTS: { key: string; label: string; action: ShortcutAction; te
   { key: "x", label: "x", action: "tick_step", text: "tick the current step as reviewed" },
   { key: "d", label: "d", action: "toggle_old_code", text: "show / hide old code of the current step" },
   { key: "c", label: "c", action: "comment", text: "comment on the current line" },
-  { key: "a", label: "a", action: "ask", text: "ask about the current step" },
+  {
+    key: "a",
+    label: "a",
+    action: "ask",
+    text: "open the Ask chat about the current step, flow or PR context",
+  },
   {
     key: "r",
     label: "r",
@@ -62,7 +67,7 @@ export const FILES_SHORTCUTS: typeof SHORTCUTS = [
     action: "comment",
     text: "comment on the selection's last line or the hunk's first line",
   },
-  { key: "a", label: "a", action: "ask", text: "ask about the selected lines, hunk or file" },
+  { key: "a", label: "a", action: "ask", text: "open the Ask chat about the selected lines, hunk or file" },
   { key: "s", label: "s", action: "switch_view", text: "switch to the Flows view at this place" },
   { key: "?", label: "?", action: "help", text: "this help" },
   {

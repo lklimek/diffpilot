@@ -199,6 +199,7 @@ async fn questions_and_job_completion_run_concurrently() {
                 step_id: StepId("f1.1".to_owned()),
                 lines: None,
             },
+            parent_id: None,
             user_id: "u1".to_owned(),
             text: format!("question {round}?"),
         };

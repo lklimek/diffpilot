@@ -200,22 +200,26 @@ test("deep links survive reload and browser history, and evidence opens the cite
 
 test("Ask evidence opens code on its cited step or in the standalone range", async ({ page }) => {
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=real-small#f1.5`);
-  const answers = page.getByRole("list", { name: "Ask conversation" });
+  await expect(page.locator("main h2:not([data-column-title])").first()).toBeVisible();
+  await page.keyboard.press("a");
+  const answers = page.getByRole("dialog", { name: "Ask" });
   await answers.getByText(/Evidence ·/).click();
   await answers.getByRole("button", { name: "Show internal/statesync/reactor.go:1171" }).click();
   await expect(page).toHaveURL(/#f1\.3\?file=/);
   await expect(page.locator("main [data-code-slot] [data-line='1171']")).toBeInViewport();
+  // The chat stays open across the navigation, its evidence list still unfolded.
   await page.goBack();
-  await answers.getByText(/Evidence ·/).click();
   await answers.getByRole("button", { name: "Show internal/statesync/reactor.go:1286" }).click();
   await expect(page).toHaveURL(/#lines\?file=/);
   await expect(page.getByRole("button", { name: "Comment on line 1286" })).toBeVisible();
 });
 
-test("long Ask prose and fenced code wrap inside the inspector", async ({ page }) => {
+test("long Ask prose and fenced code wrap inside the Ask chat", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=long-answer#f1.5`);
-  const answers = page.getByRole("list", { name: "Ask conversation" });
+  await expect(page.locator("main h2:not([data-column-title])").first()).toBeVisible();
+  await page.keyboard.press("a");
+  const answers = page.getByRole("dialog", { name: "Ask" });
   const prose = answers.getByText("longword".repeat(100));
   await expect(prose).toBeVisible();
   await expect(prose).toHaveCSS("overflow-wrap", "anywhere");

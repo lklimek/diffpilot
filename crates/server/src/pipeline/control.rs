@@ -398,6 +398,7 @@ mod tests {
                         step_id: contracts::ids::StepId("f1.1".into()),
                         lines: None,
                     },
+                    parent_id: None,
                     user_id: "u1".into(),
                     text: "why?".into(),
                 },

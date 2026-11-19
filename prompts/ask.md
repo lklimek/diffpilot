@@ -4,5 +4,5 @@ Task: answer the reviewer's question about step {{step_id}} of this analysis (st
 {{profile}}
 The step (from the flow analysis; data):
 {{step}}
-The reviewer's question:
+{{thread}}The reviewer's question:
 {{question}}

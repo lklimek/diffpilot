@@ -90,14 +90,20 @@ test("line numbers select lines (click, Shift+click, drag); the permalink reopen
   await expect(inspectorTitle(page)).toHaveText("Your selection · client.rs lines 104–106");
   expect(page.url()).toBe(url);
   await inspector(page).getByRole("button", { name: "Ask about these lines" }).click();
-  const field = inspector(page).getByRole("textbox", { name: /Ask the LLM about/ });
+  const chat = page.getByRole("dialog", { name: "Ask" });
+  const field = chat.getByRole("textbox", { name: "Your question" });
   await expect(field).toBeFocused();
   await field.fill("Why return Exhausted here?");
   await field.press("Enter");
-  await expect(inspector(page).getByText("Why return Exhausted here?")).toBeVisible();
+  const thread = chat.locator("[data-thread]").last();
+  await expect(thread).toContainText("Why return Exhausted here?");
   await expect(
-    inspector(page).getByRole("button", { name: "src/rpc/client.rs:104–106 · flow 1 · step 7", exact: true }),
+    thread.getByRole("button", { name: /^Files src\/rpc\/client\.rs:104–106 flow 1 · step 7/ }),
   ).toBeVisible();
+  // The Inspector keeps a read-only copy of the selection's threads.
+  await expect(
+    inspector(page).getByRole("region", { name: /^Your questions about these lines/ }),
+  ).toContainText("Why return Exhausted here?");
 });
 
 test("v marks Viewed on GitHub, then the next file opens; the tree and Flows show the mark", async ({

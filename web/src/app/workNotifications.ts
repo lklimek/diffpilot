@@ -4,6 +4,8 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useNavigate } from "react-router";
 import type { AnalysisId, AnalysisSummary, AskQuestion, Tour } from "../api/generated/types";
+import { filesHash } from "../components/files/model";
+import { rangeText } from "../components/section/format";
 import type { NotificationSupport } from "../components/settings/NotificationsCard";
 import { findStep } from "../screens/tour/sequence";
 import { usePrDisplayId } from "./tabStatus";
@@ -208,11 +210,25 @@ export function questionEvents(
     if (q.mine === false || (was !== "pending" && was !== "answering")) return [];
     if (q.state !== "answered" && q.state !== "failed") return [];
     const found = q.step_id === undefined ? undefined : findStep(tour, q.step_id);
-    const where = found
-      ? `flow ${found.flow.position}, step ${found.step.number}`
-      : q.step_id === undefined
-        ? "lines of a file"
-        : "a step";
+    const anchor = q.anchor as AskQuestion["anchor"] | undefined;
+    const flow = anchor?.kind === "flow" ? tour.flows.find((f) => f.id === anchor.flow_id) : undefined;
+    // Lines of a file open in the Files view; the rest in Flows.
+    const [where, path] = found
+      ? [`flow ${found.flow.position}, step ${found.step.number}`, reviewPath(id, q.step_id)]
+      : anchor?.kind === "flow"
+        ? [flow ? `flow ${flow.position}` : "a flow", reviewPath(id, anchor.flow_id)]
+        : anchor?.kind === "pr"
+          ? ["the whole PR", reviewPath(id, "pr_context")]
+          : anchor?.kind === "lines"
+            ? [
+                anchor.range ? `${anchor.path}:${rangeText(anchor.range)}` : anchor.path,
+                `${reviewPath(id)}/files${filesHash({
+                  file: anchor.path,
+                  side: anchor.side,
+                  ...(anchor.range ? { line: anchor.range.start_line, end: anchor.range.end_line } : {}),
+                })}`,
+              ]
+            : ["a step", reviewPath(id, q.step_id)];
     return [
       {
         key: `${id}:question:${q.id}:${q.state}`,
@@ -221,7 +237,7 @@ export function questionEvents(
           q.state === "answered"
             ? `LLM answer to your question on ${where}.`
             : `No LLM answer to your question on ${where}.`,
-        path: reviewPath(id, q.step_id),
+        path,
       },
     ];
   });

@@ -1,11 +1,10 @@
 import type { UseQueryResult } from "@tanstack/react-query";
-import { useState, type ReactNode, type RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import type {
   AnalysisId,
   Annotation,
-  AskAnchor,
-  AskQuestion,
   AnnotationId,
+  AskQuestion,
   BlockRef,
   CommentTarget,
   Evidence,
@@ -17,23 +16,20 @@ import type {
   Tour,
 } from "../../api/generated/types";
 import {
-  useAskAnchored,
-  useAskQuestion,
   useFeedback,
   useDeleteFeedback,
   usePostFeedback,
   useQuestions,
   type useCommentActions,
 } from "../../api/queries";
-import { AskForm, stepSubject, type AskSubject } from "../../components/ask/AskForm";
-import { AskThread, type AskFilter, type AskScope } from "../../components/ask/AskThread";
+import { questionsAt, subjectOf } from "../../components/ask/chat/model";
+import { QuestionsHere } from "../../components/ask/chat/QuestionsHere";
 import {
   CommentComposer,
   type CommentDrafts,
   type UnresolvedPosts,
 } from "../../components/comment/CommentComposer";
 import { commentPlacement, isChangedLine } from "../../components/comment/placement";
-import type { QuestionPlace } from "../../components/questions/QuestionsBlock";
 import { FeedbackButtons } from "../../components/feedback/FeedbackButtons";
 import { githubLineUrl } from "../../components/github/links";
 import {
@@ -44,6 +40,7 @@ import {
 } from "../../components/inspector/Inspector";
 import type { SectionControl } from "../../components/inspector/sectionState";
 import { StatusMessage } from "../../components/status/StatusMessage";
+import { useAskChat } from "../review/askChat";
 import { DiffCode, errorText } from "./code";
 import { stepQuery } from "./sequence";
 
@@ -54,7 +51,6 @@ export interface CommentLineState {
 }
 
 interface InspectorPaneProps {
-  streamLost?: boolean;
   analysisId: AnalysisId;
   tour: Tour;
   block: BlockRef;
@@ -66,8 +62,6 @@ interface InspectorPaneProps {
   onFlashed?: () => void;
   onBackToStep: () => void;
   onSelectStep: (step: StepId) => void;
-  /** The step of the tour a question was asked on (its link in the Ask conversation). */
-  placeOf: (step: StepId) => QuestionPlace | null;
   onEvidence: (evidence: Evidence) => void;
   codeShown: boolean;
   pending: UseQueryResult<PendingReview>;
@@ -79,27 +73,17 @@ interface InspectorPaneProps {
   drafts: CommentDrafts;
   /** Where the PR can be analysed again (after a head-moved refusal of a comment). */
   reanalyseHref?: string;
-  askRef: RefObject<HTMLTextAreaElement | null>;
-  /** Open / collapsed Inspector sections, Ask included (the `a` shortcut reveals Ask). */
+  /** Open / collapsed Inspector sections. */
   sections: SectionControl;
   commentRef: RefObject<HTMLTextAreaElement | null>;
-  /** Dragged height of the Ask area (remembered with the layout); null = default. */
-  askHeight: number | null;
-  onAskHeight: (height: number | null) => void;
   /** "Ask about this line" from a code line of the step. */
   onAskLine?: (target: CommentTarget) => void;
-  /** Text for the Ask field from "Ask about this line"; `onAskInserted` once it is in. */
-  askInsert: { text: string } | null;
-  onAskInserted: () => void;
-  /** "Use as review comment" on a flag or an Ask answer of the step; absent while commenting is unavailable. */
+  /** "Use as review comment" on a flag of the step; absent while commenting is unavailable. */
   onFlagAsComment?: (flag: Annotation) => void;
-  onAnswerAsComment?: (question: AskQuestion) => void;
   /** Draft text for the comment composer ("Use as review comment"); `onCommentPrefilled` once it is in. */
   commentPrefill: { text: string } | null;
   onCommentPrefilled: () => void;
-  /** Where any question was asked (step or lines), for its link in the conversation. */
-  placeOfQuestion?: (question: AskQuestion) => QuestionPlace | null;
-  /** The Files view: its own panel and Ask subject instead of the block's (the block then names a narrowed step). */
+  /** The Files view: its own panel instead of the block's (the block then names a narrowed step). */
   files?: FilesInspector;
 }
 
@@ -108,11 +92,8 @@ export interface FilesInspector {
   /** The file, hunk or selection panel; none while a step is narrowed (the block's step panel shows). */
   panel?: InspectorPanel;
   back?: InspectorBack;
-  ask: AskSubject | null;
   /** The comment section's text while no line is chosen. */
   commentHint?: string;
-  askFilters: AskFilter[];
-  isCurrent: (question: AskQuestion) => boolean;
   /** The step feedback rates; null with the reason feedback is not offered here. */
   feedback: { target: FeedbackTarget; subject: string } | { none: string };
   /** Classic diff of the hunk or selection (section of the panel). */
@@ -127,24 +108,16 @@ const permalink = (tour: Tour, target: CommentTarget): string =>
     false,
   );
 
-/** The inspector with its data: classic diff and the dock (Ask with its pinned answers, feedback, comment). */
+/** The inspector with its data: classic diff, the copy of the Ask chat here, and the dock (feedback, comment). */
 export function InspectorPane(props: InspectorPaneProps) {
   const { analysisId, tour, block, step, annotationId, pending, comments, commentLine } = props;
   const questions = useQuestions(analysisId);
-  const ask = useAskQuestion(analysisId);
-  const askAnchored = useAskAnchored(analysisId);
+  const chat = useAskChat();
   const files = props.files;
   const feedback = useFeedback(analysisId);
   const postFeedback = usePostFeedback(analysisId);
   const deleteFeedback = useDeleteFeedback(analysisId);
   const annotation = step?.llm.annotations.find((a) => a.id === annotationId);
-  const [askScope, setAskScope] = useState<AskScope>("conversation");
-
-  // A whole step goes to its step route; lines, with or without a step, to the anchored route (R14).
-  const onAsk = (anchor: AskAnchor, text: string) =>
-    anchor.kind === "step" && anchor.lines === null
-      ? ask.mutateAsync({ step: anchor.step_id, text })
-      : askAnchored.mutateAsync({ anchor, text });
   // Feedback on a plain line only where the server takes it: a changed line of the diff on its side.
   const line =
     commentLine && isChangedLine(commentLine.lines, commentLine.target) ? commentLine.target : null;
@@ -180,26 +153,29 @@ export function InspectorPane(props: InspectorPaneProps) {
         }
       />
     ));
-  const answers =
-    (step || files) &&
+  // The read-only copy of the chat's threads about where the reader is (proposal AC11).
+  const place = chat.place;
+  const here =
+    place &&
     (questions.isError ? (
       <StatusMessage kind="error">Cannot read the questions: {errorText(questions.error)}</StatusMessage>
     ) : questions.isPending ? (
       <StatusMessage kind="loading">Loading the questions…</StatusMessage>
-    ) : questions.data.length === 0 ? null : (
-      <AskThread
-        questions={questions.data}
-        stepId={files ? undefined : step?.id}
-        scope={askScope}
-        onScope={setAskScope}
-        placeOf={props.placeOf}
-        placeOfQuestion={props.placeOfQuestion}
-        filters={files?.askFilters}
-        isCurrent={files?.isCurrent}
-        onEvidence={props.onEvidence}
-        currentFile={step?.facts.file}
-        onAskAgain={onAsk}
-        onUseAsComment={props.onAnswerAsComment}
+    ) : (
+      <QuestionsHere
+        threads={questionsAt(
+          (questions.data as AskQuestion[]).filter((q) => q.mine !== false),
+          place,
+          tour,
+        )}
+        what={subjectOf(place, tour).what}
+        onOpenInChat={(thread) => chat.open({ thread })}
+        // Selected lines have their own Ask button in the Files panel.
+        onAsk={
+          (place.kind === "lines" && place.range) || (place.kind === "step" && place.lines)
+            ? undefined
+            : () => chat.open()
+        }
       />
     ));
 
@@ -239,8 +215,7 @@ export function InspectorPane(props: InspectorPaneProps) {
     <Inspector
       sections={props.sections}
       onFlagAsComment={props.onFlagAsComment}
-      dockHeight={props.askHeight}
-      onDockHeight={step || files ? props.onAskHeight : undefined}
+      questions={here}
       tour={tour}
       block={block}
       panel={files?.panel}
@@ -257,33 +232,6 @@ export function InspectorPane(props: InspectorPaneProps) {
         <>
           {/* While a comment is written its composer leads the dock, so its line reference is in view. */}
           {commentLine && comment}
-          <AskForm
-            subject={
-              files
-                ? files.ask
-                : step
-                  ? stepSubject(step.id, `Step ${step.number} · ${step.llm.title}`)
-                  : null
-            }
-            onAsk={onAsk}
-            inputRef={props.askRef}
-            insert={props.askInsert}
-            onInserted={props.onAskInserted}
-            answers={answers}
-            sections={props.sections}
-            notice={
-              props.streamLost
-                ? "The connection that delivers answers was lost. Reconnecting; answers already given are read again."
-                : null
-            }
-            count={
-              files
-                ? questions.data?.filter(files.isCurrent).length
-                : step && questions.data
-                  ? questions.data.filter((q) => q.step_id === step.id).length
-                  : undefined
-            }
-          />
           {files && "none" in files.feedback && !annotation ? (
             <section aria-label="Feedback">
               <h3 className="m-0 text-[10.5px] font-bold tracking-wide text-muted uppercase">Feedback</h3>

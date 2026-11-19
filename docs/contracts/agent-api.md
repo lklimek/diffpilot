@@ -52,7 +52,7 @@ marked `read` in `routes.rs`; every other route answers 403 `token_not_accepted`
 | A9 | `GET /api/v1/analyses/{id}/tour` | `Tour` (`tour`) |
 | A10 | `GET /api/v1/analyses/{id}/lines`, `…/diff` | `LinesResponse`, `DiffResponse` (`lines_response`, `diff_response`); range query of `http-api.md` |
 | A11 | `GET /api/v1/analyses/{id}/review-state` | `ReviewState` (`review_state`) |
-| A12 | `GET /api/v1/analyses/{id}/questions` | `AskQuestion[]` (`ask_question_list`), the user's own |
+| A12 | `GET /api/v1/analyses/{id}/questions` | `AskQuestion[]` (`ask_question_list`), the user's own; `anchor` is a step, lines (or a whole file), a flow or the PR; a follow-up carries `parent_id`, its thread's first question |
 | A13 | `GET /api/v1/analyses/{id}/feedback` | `Feedback[]` (`feedback_list`), the user's own |
 | A14 | `GET /api/v1/analyses/{id}/pending-review` | `PendingReview` (`pending_review`) |
 | A15 | `GET /api/v1/settings`, `GET /api/v1/repos/{owner}/{name}/settings` | `Settings`, `RepoSettings` (`settings`, `repo_settings`) |

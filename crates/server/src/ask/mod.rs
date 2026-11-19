@@ -1,5 +1,5 @@
-//! Ask (brief §5 Ask): a reviewer's question about one accepted step (or about lines of a file, Files view) of a
-//! review-ready analysis becomes an `ask` job on
+//! Ask (brief §5 Ask): a reviewer's question about one accepted step (or about lines or a file, an analysed flow or
+//! the whole PR; a follow-up continues a thread with its anchor) of a review-ready analysis becomes an `ask` job on
 //! `JobExecutor` that resumes the user's private PR working session; a lost session falls back to the context pack built
 //! at claim with the asked step and its earlier answers ([`context_pack`]). The answer is checked like every agent
 //! output and stored as a `Question`; each state change is published on the analysis's event stream.
@@ -16,6 +16,7 @@ use contracts::agent::ask::AskOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::events::AnalysisEvent;
 use contracts::api::questions::{AnchoredAskRequest, AskAnchor, AskQuestion, AskRequest};
+use contracts::api::tour::FlowAnalysisState;
 use contracts::common::LineRange;
 use contracts::ids::{AnalysisId, JobId, QuestionId};
 use db::error::DbError;
@@ -30,6 +31,7 @@ use jiff::SignedDuration;
 pub use job::context_pack;
 
 use crate::github::mirror::{MirrorError, is_tree_path, read_blob};
+use crate::pipeline::tour::{self, TourLoadError};
 use crate::pipeline::{PrDiffError, pr_diff};
 use crate::state::AppState;
 
@@ -63,12 +65,24 @@ pub enum AskError {
     /// The step id is not a canonical step id of the analysis's Tour.
     #[error("the step is not part of the analysis")]
     UnknownStep,
+    /// The flow has no stored analysis.
+    #[error("the flow is not analysed in the analysis")]
+    UnknownFlow,
+    /// The parent is not a question of this user on this analysis.
+    #[error("the question to follow up is not one of the user's on the analysis")]
+    UnknownParent,
+    /// A follow-up's anchor differs from its thread's.
+    #[error("a follow-up is not about its thread's anchor")]
+    FollowUpAnchor,
     /// The anchor's lines are not lines of the step or of a file of the pull request, or too many.
     #[error("the anchor is not lines of the analysis")]
     InvalidAnchor,
     /// The diff of the analysis is not available.
     #[error("the diff of the analysis is not available")]
     Diff(#[from] PrDiffError),
+    /// The Tour (which flows are analysed) could not be built from the stored documents or the pre-pass.
+    #[error("the Tour of the analysis is not available")]
+    Tour(#[source] TourLoadError),
     /// A file could not be read from the mirror.
     #[error("a file could not be read from the mirror")]
     Mirror(#[from] MirrorError),
@@ -83,8 +97,22 @@ pub enum AskError {
     Db(#[from] DbError),
 }
 
-/// Stores the user's question about `request.anchor` (a step of the review-ready `analysis`, or lines of one of its
-/// files) as `pending`, publishes it and starts its follower, which submits the `ask` job.
+/// As on the Tour route: not finished, a missing document or a busy database, and an unprepared diff keep their own
+/// answers; the rest is a server error.
+impl From<TourLoadError> for AskError {
+    fn from(error: TourLoadError) -> Self {
+        match error {
+            TourLoadError::NotFinished => Self::NotFinished,
+            TourLoadError::Db(error) => Self::Db(error),
+            TourLoadError::Diff(error) => Self::Diff(error),
+            other @ (TourLoadError::Prepass(_) | TourLoadError::Tour(_)) => Self::Tour(other),
+        }
+    }
+}
+
+/// Stores the user's question about `request.anchor` (a step of the review-ready `analysis`, lines or a file, an
+/// analysed flow or the whole PR; a follow-up of `request.parent_id`'s thread) as `pending`, publishes it and starts
+/// its follower, which submits the `ask` job.
 pub async fn ask(
     state: &AppState,
     user_id: &str,
@@ -123,11 +151,18 @@ pub async fn ask(
         Some(_) => return Err(AskError::UserLimit),
         None => {}
     }
+    let parent_id = match request.parent_id {
+        Some(parent) => {
+            Some(thread_of(state, user_id, analysis, parent, &request.anchor, now).await?)
+        }
+        None => None,
+    };
     check_anchor(state, analysis, &request.anchor).await?;
     let question = NewQuestion {
         id: QuestionId::new_random(),
         analysis_id: analysis.id,
         anchor: request.anchor,
+        parent_id,
         user_id: user_id.to_owned(),
         text: text.to_owned(),
     };
@@ -155,8 +190,33 @@ pub async fn ask(
     Ok(question)
 }
 
+/// The first question of `parent`'s thread (one level: a follow-up's parent is its thread's first question); not
+/// found unless `parent` is this user's question on `analysis`, and refused unless `anchor` is the thread's.
+async fn thread_of(
+    state: &AppState,
+    user_id: &str,
+    analysis: &AnalysisSummary,
+    parent: QuestionId,
+    anchor: &AskAnchor,
+    now: Timestamp,
+) -> Result<QuestionId, AskError> {
+    let record = match state.db.questions().get(parent, now).await {
+        Ok(record) => record,
+        Err(DbError::NotFound) => return Err(AskError::UnknownParent),
+        Err(error) => return Err(error.into()),
+    };
+    if record.analysis_id != analysis.id || record.user_id != user_id {
+        return Err(AskError::UnknownParent);
+    }
+    if record.question.anchor != *anchor {
+        return Err(AskError::FollowUpAnchor);
+    }
+    Ok(record.question.parent_id.unwrap_or(record.question.id))
+}
+
 /// A step anchor names a stored step (and lines inside it); a lines anchor names a file of the diff on its side and
-/// at most [`AskAnchor::MAX_LINES`] lines of it.
+/// at most [`AskAnchor::MAX_LINES`] lines of it; a flow anchor names a flow the Tour shows analysed; the PR always
+/// exists.
 async fn check_anchor(
     state: &AppState,
     analysis: &AnalysisSummary,
@@ -168,6 +228,21 @@ async fn check_anchor(
             && range.end_line - range.start_line < AskAnchor::MAX_LINES
     };
     match anchor {
+        AskAnchor::Flow { flow_id } => {
+            // As the reviewer sees it: a stored analysis that fails today's checks is shown failed.
+            let tour = tour::load(state, analysis).await?;
+            let analysed = tour.flows.iter().any(|flow| {
+                flow.id == *flow_id
+                    && flow
+                        .analysis_status
+                        .as_ref()
+                        .is_some_and(|status| status.state == FlowAnalysisState::Analysed)
+            });
+            if !analysed {
+                return Err(AskError::UnknownFlow);
+            }
+        }
+        AskAnchor::Pr => {}
         AskAnchor::Step { step_id, lines } => {
             let Some((_, step)) = job::stored_step(&state.db, analysis.id, step_id).await? else {
                 return Err(AskError::UnknownStep);

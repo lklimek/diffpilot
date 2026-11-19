@@ -44,15 +44,22 @@ impl ApiErrorSource for QuestionsApiError {
             Self::Json(rejection) => rejection.code(),
             Self::Path(rejection) => rejection.code(),
             Self::Analysis(error) => error.code(),
-            Self::Ask(AskError::Empty | AskError::TooLong | AskError::InvalidAnchor) => {
-                ApiErrorCode::InvalidRequest
-            }
+            Self::Ask(
+                AskError::Empty
+                | AskError::TooLong
+                | AskError::InvalidAnchor
+                | AskError::FollowUpAnchor,
+            ) => ApiErrorCode::InvalidRequest,
             Self::Ask(AskError::Diff(PrDiffError::NotPrepared)) => {
                 ApiErrorCode::AnalysisNotFinished
             }
-            Self::Ask(AskError::Diff(_) | AskError::Mirror(_)) => ApiErrorCode::Internal,
+            Self::Ask(AskError::Diff(_) | AskError::Mirror(_) | AskError::Tour(_)) => {
+                ApiErrorCode::Internal
+            }
             Self::Ask(AskError::NotFinished) => ApiErrorCode::AnalysisNotFinished,
-            Self::Ask(AskError::UnknownStep) => ApiErrorCode::NotFound,
+            Self::Ask(AskError::UnknownStep | AskError::UnknownFlow | AskError::UnknownParent) => {
+                ApiErrorCode::NotFound
+            }
             Self::Ask(AskError::Superseded | AskError::AnalysisLimit | AskError::UserLimit) => {
                 ApiErrorCode::Conflict
             }
@@ -79,6 +86,15 @@ impl ApiErrorSource for QuestionsApiError {
             Self::Ask(AskError::UnknownStep) => {
                 Cow::Borrowed("The step is not part of this analysis. Reload the review.")
             }
+            Self::Ask(AskError::UnknownFlow) => {
+                Cow::Borrowed("The flow is not analysed in this analysis. Reload the review.")
+            }
+            Self::Ask(AskError::UnknownParent) => {
+                Cow::Borrowed("The question to follow up was not found. Reload the review.")
+            }
+            Self::Ask(AskError::FollowUpAnchor) => Cow::Borrowed(
+                "A follow-up is about the same place as the first question of its thread.",
+            ),
             Self::Ask(AskError::InvalidAnchor) => Cow::Owned(format!(
                 "Ask about lines of the step or of a file of this pull request, at most {} lines.",
                 AskAnchor::MAX_LINES
@@ -86,7 +102,7 @@ impl ApiErrorSource for QuestionsApiError {
             Self::Ask(AskError::Diff(PrDiffError::NotPrepared)) => {
                 Cow::Borrowed("The analysis has not finished yet.")
             }
-            Self::Ask(AskError::Diff(_) | AskError::Mirror(_)) => {
+            Self::Ask(AskError::Diff(_) | AskError::Mirror(_) | AskError::Tour(_)) => {
                 Cow::Borrowed("Something went wrong on the server. Try again later.")
             }
             Self::Ask(AskError::AnalysisLimit) => Cow::Owned(format!(
@@ -150,6 +166,7 @@ async fn create(
             step_id: step,
             lines: None,
         },
+        parent_id: None,
     };
     asked(&state, &session.user_id, &analysis, anchored).await
 }

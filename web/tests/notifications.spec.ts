@@ -80,10 +80,13 @@ test("a tab in the background notifies of an analysed flow and an Ask answer; a 
   await nav.getByRole("button", { name: /^Flow 1:/ }).click();
   await nav.getByRole("button", { name: /^Step 5:/ }).click();
   await page.keyboard.press("a");
-  await page.getByRole("textbox", { name: /^Ask the LLM about / }).fill("Why retry here?");
+  await page
+    .getByRole("dialog", { name: "Ask" })
+    .getByRole("textbox", { name: "Your question" })
+    .fill("Why retry here?");
   await page.keyboard.press("Enter");
   await page.clock.fastForward(1_000);
-  await expect(page.getByText("Asked by you: Why retry here?")).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Ask" }).getByText("Why retry here?")).toBeVisible();
   await page.clock.fastForward(11_000);
   await page.clock.fastForward(5_000);
   await expect
@@ -94,4 +97,29 @@ test("a tab in the background notifies of an analysed flow and an Ask answer; a 
   await page.evaluate(() => window.__notifications.at(-1)!.onclick!(new Event("click")));
   await expect(page).toHaveURL(/#f1\.5$/);
   expect(await shown()).toHaveLength(2);
+});
+
+test("in the Files view an Ask answer notifies too; a click opens its lines there", async ({ page }) => {
+  await recordNotifications(page, { optedIn: true, focused: false });
+  const shown = () => page.evaluate(() => window.__notifications.map((n) => [n.title, n.options.body]));
+  await page.goto(
+    `/analyses/${ANALYSIS_ID}/files?scenario=tab-status#lines?file=src%2Frpc%2Fclient.rs&side=head&line=98&end=101`,
+  );
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await inspector.getByRole("button", { name: "Ask about these lines" }).click();
+  const chat = page.getByRole("dialog", { name: "Ask" });
+  await chat.getByRole("textbox", { name: "Your question" }).fill("Why sleep here?");
+  await page.keyboard.press("Enter");
+  await page.clock.fastForward(1_000);
+  await expect(chat.getByText("Why sleep here?")).toBeVisible();
+  await page.clock.fastForward(16_000);
+  await expect
+    .poll(shown)
+    .toContainEqual(["Answer ready — NC#482", "LLM answer to your question on src/rpc/client.rs:98–101."]);
+  await page
+    .getByRole("navigation", { name: "Files" })
+    .getByRole("button", { name: /lib\.rs/ })
+    .click();
+  await page.evaluate(() => window.__notifications.at(-1)!.onclick!(new Event("click")));
+  await expect(page).toHaveURL(/\/files#lines\?file=src%2Frpc%2Fclient\.rs&side=head&line=98&end=101$/);
 });

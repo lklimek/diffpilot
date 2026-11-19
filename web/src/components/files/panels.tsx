@@ -302,6 +302,7 @@ export function hunkPanel(ctx: FilesPanelContext, hunk: FileHunk): InspectorPane
   const steps = flows.flatMap((f) => f.steps);
   const single = steps.length === 1 && steps[0]!.role === "explained" ? steps[0]! : undefined;
   return {
+    questionsInside: single !== undefined,
     title: `${fileName(ctx.file.path)} · hunk, ${hunkLabel(hunk)}`,
     meta: (
       <>
@@ -422,6 +423,7 @@ export function stepInHunkPanel(
   );
   const threads = threadsAt(ctx.tour, ctx.file, side, first.start_line, last.end_line);
   return {
+    questionsInside: true,
     title: `Step ${step.number} of flow ${flow.position} · ${step.llm.title}`,
     meta: (
       <>

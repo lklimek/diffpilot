@@ -219,6 +219,7 @@ export function Workspace({
   return (
     <div
       ref={grid}
+      data-workspace
       className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] overflow-hidden"
       style={{ gridTemplateColumns: template }}
     >
@@ -247,7 +248,8 @@ export function Workspace({
             ref={mainRef}
             tabIndex={0}
             data-scroll-column
-            className="relative min-h-0 flex-1 overflow-auto overscroll-contain px-5 pt-3 pb-10"
+            // With the Inspector hidden the Ask chat floats over the centre: its code can scroll out from under it.
+            className="relative min-h-0 flex-1 overflow-auto overscroll-contain px-5 pt-3 pb-[calc(2.5rem+var(--ask-chat-pad,0px))]"
           >
             {main}
           </div>,

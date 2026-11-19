@@ -5,7 +5,7 @@ import type {
   AnalysisEvent,
   AnalysisId,
   AnalysisSummary,
-  AskAnchor,
+  AnchoredAskRequest,
   AskQuestion,
   CreateAccessToken,
   CreateCommentRequest,
@@ -20,7 +20,6 @@ import type {
   QuestionId,
   RangeQuery,
   RepoRef,
-  StepId,
   Tour,
 } from "./generated/types";
 import { api } from "./client";
@@ -92,6 +91,8 @@ export const useQuestions = (id: AnalysisId) => {
       const cached = client.getQueryData<AskQuestion[]>(["questions", id]) ?? [];
       return mergeFetchedQuestions(fetched, cached, (q) => (a.at.get(q) ?? -1) > since);
     },
+    // Every view (chat, Inspector copy, menu counts) shows a failed question asked again once.
+    select: withoutRetried,
   });
 };
 
@@ -106,21 +107,34 @@ function arrive(client: QueryClient, id: AnalysisId, question: AskQuestion, repl
   });
 }
 
-/** Asks about a step; the pending question joins the list, its answer arrives on the event stream. */
-export const useAskQuestion = (id: AnalysisId) => {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: ({ step, text }: { step: StepId; text: string }) => api.askQuestion(id, step, { text }),
-    onSuccess: (question) => arrive(client, id, question, false),
-  });
-};
+/**
+ * The questions without failed ones asked again: a failed question gives way to a later one with the same text,
+ * subject and thread ("Ask again"), unless follow-ups hang on it.
+ */
+export function withoutRetried(questions: readonly AskQuestion[]): AskQuestion[] {
+  const key = (q: AskQuestion) => JSON.stringify([q.text, q.anchor, q.parent_id ?? null]);
+  const parents = new Set(questions.flatMap((q) => (q.parent_id ? [q.parent_id] : [])));
+  return questions.filter(
+    (q) =>
+      q.state !== "failed" ||
+      parents.has(q.id) ||
+      !questions.some(
+        (later) =>
+          later.id !== q.id &&
+          key(later) === key(q) &&
+          Date.parse(later.created_at) > Date.parse(q.created_at),
+      ),
+  );
+}
 
-/** Asks about an anchor (a step, lines of it, or lines or a file without a step), like `useAskQuestion`. */
-export const useAskAnchored = (id: AnalysisId) => {
+/**
+ * Asks in the Ask chat: a new thread about `anchor`, or a follow-up (`parent_id`) that keeps its thread's anchor.
+ * The pending question joins the list; its answer arrives on the event stream.
+ */
+export const useAskInChat = (id: AnalysisId) => {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ anchor, text }: { anchor: AskAnchor; text: string }) =>
-      api.askAnchored(id, { anchor, text }),
+    mutationFn: (body: AnchoredAskRequest) => api.askAnchored(id, body),
     onSuccess: (question) => arrive(client, id, question, false),
   });
 };

@@ -15,6 +15,7 @@ import { GithubLink } from "../inspector/text";
 import { rangeText, threadsNote } from "../section/format";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Section } from "../section/Section";
+import { AskButton } from "../ask/chat/AskButton";
 import { Tooltip } from "../tooltip/Tooltip";
 import { ReviewToggle } from "./ReviewToggle";
 import { ViewedChip } from "../files/ViewedChip";
@@ -48,6 +49,8 @@ interface StepBlockProps {
   viewed?: FileViewedState | null;
   /** Opens the Files view at this step; the file path stays plain text without it. */
   onOpenFile?: () => void;
+  /** Opens the Ask chat about this step; no button without it. */
+  onAsk?: () => void;
 }
 
 const HATCH = "bg-[image:repeating-linear-gradient(135deg,transparent_0_6px,rgb(120_130_150/0.16)_6px_7px)]";
@@ -256,6 +259,7 @@ export function StepBlock({
   threadsStatus = "checked",
   viewed,
   onOpenFile,
+  onAsk,
 }: StepBlockProps) {
   const headingId = useId();
   const { facts, llm } = step;
@@ -297,8 +301,9 @@ export function StepBlock({
               <CodeText text={llm.decides} /> <ProvenanceTag source="llm" />
             </div>
           )}
-          {(oldCode || onSetReviewed) && (
+          {(oldCode || onSetReviewed || onAsk) && (
             <div className="ml-auto flex shrink-0 flex-wrap gap-2">
+              {onAsk && <AskButton what="this step" onAsk={onAsk} />}
               {oldCode && (
                 <Tooltip tip="Show or hide the classic diff of this step (d)">
                   <button

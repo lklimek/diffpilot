@@ -1,3 +1,4 @@
+import { AskButton } from "../ask/chat/AskButton";
 import { GithubMark } from "../github/GithubMark";
 import { isGithubUrl } from "../github/links";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -39,6 +40,8 @@ interface PrContextBlockProps {
   onEvidence?: (evidence: Evidence) => void;
   /** The PR's checks page on GitHub; the CI summary links to it (new tab) when given. */
   checksHref?: string;
+  /** Opens the Ask chat about the whole PR; no button without it. */
+  onAsk?: () => void;
 }
 
 const FIT_TOPIC: Record<FitTopic, string> = {
@@ -122,14 +125,18 @@ export function PrContextBlock({
   usage,
   modelsUsed,
   checksHref,
+  onAsk,
 }: PrContextBlockProps) {
   const headingId = useId();
   const { facts, llm } = context;
   return (
     <article aria-labelledby={headingId} className="@container grid gap-3.5">
-      <h2 id={headingId} className="text-xl font-bold">
-        PR context: {pr.repo.owner}/{pr.repo.name} #{pr.number}
-      </h2>
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 id={headingId} className="text-xl font-bold">
+          PR context: {pr.repo.owner}/{pr.repo.name} #{pr.number}
+        </h2>
+        {onAsk && <AskButton what="the whole PR" onAsk={onAsk} />}
+      </div>
       {facts.agent_instruction_files.length > 0 && (
         <p role="note" className="rounded-md border border-l-4 border-med-bd bg-med-bg px-3 py-2">
           <strong>This PR changes files that look like agent instructions:</strong>{" "}

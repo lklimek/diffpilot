@@ -196,6 +196,7 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
         step: &f.flows[0].steps[4],
         lines: None,
         question: QUESTION,
+        thread: &[],
         profile: profile(f),
     };
     let issues = issues();
@@ -242,6 +243,37 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
             format!("repair-analyse_flow-f1.{lang}"),
             repair(&repair_input).expect("repair"),
         ),
+        (
+            format!("ask_flow.{lang}"),
+            ask_flow(&AskFlowInput {
+                job,
+                flow: &f.flows[1],
+                question: QUESTION,
+                thread: &[],
+                profile: profile(f),
+            })
+            .expect("ask_flow"),
+        ),
+        (
+            format!("ask_pr.{lang}"),
+            ask_pr(&AskPrInput {
+                job,
+                plan: Some(&f.plan),
+                pr_context: Some(&f.pr_context),
+                question: QUESTION,
+                thread: &[],
+                profile: profile(f),
+            })
+            .expect("ask_pr"),
+        ),
+        (
+            format!("ask_follow_up.{lang}"),
+            ask(&AskInput {
+                thread: &THREAD,
+                ..ask_input
+            })
+            .expect("ask follow-up"),
+        ),
     ];
     if language == LlmLanguage::En {
         out.push((
@@ -263,9 +295,34 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
             "context_pack-ask_lines".to_owned(),
             context_pack(&lines_pack).expect("pack"),
         ));
+        let flow_pack = ContextPackInput {
+            ask: Some(AskContext {
+                asked: Asked::Flow { flow: &f.flows[1] },
+                earlier: &earlier,
+            }),
+            ..pack_input
+        };
+        out.push((
+            "context_pack-ask_flow".to_owned(),
+            context_pack(&flow_pack).expect("pack"),
+        ));
     }
     out
 }
+
+/// A follow-up's thread: the first question answered, a follow-up still waiting.
+const THREAD: [ThreadQuestion<'static>; 2] = [
+    ThreadQuestion {
+        question: "Which callers reach send?",
+        state: contracts::api::questions::AskState::Answered,
+        answer: Some("mempool::broadcast_tx and wallet::send_payment (src/mempool/mod.rs:41)."),
+    },
+    ThreadQuestion {
+        question: "Does either retry on its own?",
+        state: contracts::api::questions::AskState::Failed,
+        answer: None,
+    },
+];
 
 /// Lines 100–102 of the head of `src/rpc/client.rs`, as the Files view asks about them.
 fn asked_lines() -> AskedLines<'static> {
@@ -329,6 +386,7 @@ fn ask_lines_input<'a>(job: JobContext<'a>, f: &'a Fixture) -> AskLinesInput<'a>
         facts: &FACTS,
         steps: &STEPS,
         question: QUESTION,
+        thread: &[],
         profile: profile(f),
     }
 }
@@ -430,7 +488,7 @@ fn ask_and_flow_analysis_state_suspected_defects_as_risk_scenarios() {
         if name.starts_with("context_pack") {
             continue;
         }
-        let ask = name.starts_with("ask.") || name.starts_with("ask_lines.");
+        let ask = name.starts_with("ask");
         let flow = name.contains("analyse_flow");
         assert_eq!(prompt.contains(statement_form), ask, "{name}");
         assert_eq!(prompt.contains(flag_form), flow, "{name}");
@@ -454,7 +512,7 @@ fn every_prompt_starts_with_its_job_line_and_names_the_pull_request() {
         let expected = match name.split('.').next().unwrap_or_default() {
             "analyse_flow-f1" => "Job: analyse_flow f1.".to_owned(),
             "repair-analyse_flow-f1" => "Job: repair analyse_flow f1.".to_owned(),
-            "ask_lines" => "Job: ask.".to_owned(),
+            "ask_lines" | "ask_flow" | "ask_pr" | "ask_follow_up" => "Job: ask.".to_owned(),
             kind => format!("Job: {kind}."),
         };
         assert_eq!(first, expected, "{name}");
@@ -768,6 +826,7 @@ fn instruction_files_get_the_t14_notice_in_every_prompt() {
         step: &f.flows[0].steps[0],
         lines: None,
         question: QUESTION,
+        thread: &[],
         profile: profile(f),
     };
     let issues = issues();
@@ -1491,6 +1550,7 @@ fn ask_keeps_the_full_asked_step_after_a_lost_session() {
         step: flow.steps.last().expect("step"),
         lines: None,
         question,
+        thread: &[],
         profile: Profile::default(),
     })
     .expect("ask");
@@ -1734,4 +1794,103 @@ fn flow_jobs_write_check_and_edit_a_file_instead_of_returning_json() {
             );
         }
     }
+}
+
+/// A follow-up's thread keeps its first question and the latest follow-ups, oldest first, each answer clipped; the
+/// rest is counted in a note. A first question has no thread block.
+#[test]
+fn a_thread_keeps_its_first_question_and_latest_follow_ups() {
+    assert_eq!(thread_block(&[]).expect("empty"), "");
+    let texts: Vec<String> = (0..10).map(|n| format!("question {n}")).collect();
+    let long = "a".repeat(MAX_THREAD_ANSWER_CHARS + 500);
+    let thread: Vec<ThreadQuestion<'_>> = texts
+        .iter()
+        .map(|text| ThreadQuestion {
+            question: text,
+            state: contracts::api::questions::AskState::Answered,
+            answer: Some(&long),
+        })
+        .collect();
+    let block = thread_block(&thread).expect("thread");
+    let (_, blocks) = split(&block);
+    let content = &blocks[0].content;
+    let kept: Vec<&str> = content
+        .lines()
+        .map(|line| {
+            let entry: serde_json::Value = serde_json::from_str(line).expect("entry");
+            assert_eq!(
+                entry["answer"]
+                    .as_str()
+                    .map(|answer| answer.chars().count()),
+                Some(MAX_THREAD_ANSWER_CHARS),
+                "{line}"
+            );
+            texts
+                .iter()
+                .find(|text| line.contains(&format!("\"{text}\"")))
+                .map(String::as_str)
+                .expect("a question")
+        })
+        .collect();
+    let expected: Vec<&str> = std::iter::once(0)
+        .chain(10 - MAX_THREAD_FOLLOW_UPS..10)
+        .map(|n| texts[n].as_str())
+        .collect();
+    assert_eq!(kept, expected);
+    assert!(
+        block.contains(&omitted_note(9 - MAX_THREAD_FOLLOW_UPS).expect("note")),
+        "{block}"
+    );
+}
+
+/// Long earlier answers: each entry is bounded (the first always fits), a clipped one says how much is missing and
+/// the block carries the usual clipped note; the 32 KiB budget keeps the newest follow-ups and counts the rest.
+#[test]
+fn a_long_thread_stays_within_its_budget_and_says_what_it_clipped() {
+    let texts: Vec<String> = (0..6).map(|n| format!("question {n}")).collect();
+    // Three bytes per character: 6000 characters are about 18 KB.
+    let long = "ж".repeat(MAX_THREAD_ANSWER_CHARS + 2_000);
+    let thread: Vec<ThreadQuestion<'_>> = texts
+        .iter()
+        .map(|text| ThreadQuestion {
+            question: text,
+            state: contracts::api::questions::AskState::Answered,
+            answer: Some(&long),
+        })
+        .collect();
+    let block = thread_block(&thread).expect("thread");
+    let (_, blocks) = split(&block);
+    let content = &blocks[0].content;
+    assert!(content.len() <= MAX_ASK_THREAD_BYTES, "{}", content.len());
+    let entries: Vec<serde_json::Value> = content
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("entry"))
+        .collect();
+    assert_eq!(
+        entries[0]["question"], "question 0",
+        "the first question stays"
+    );
+    assert_eq!(
+        entries.last().map(|entry| entry["question"].clone()),
+        Some(serde_json::json!("question 5")),
+        "the newest follow-up stays"
+    );
+    for entry in &entries {
+        let shown = entry["answer"].as_str().expect("answer").chars().count();
+        assert_eq!(
+            entry["clipped_chars"].as_u64(),
+            Some((long.chars().count() - shown) as u64),
+            "{entry}"
+        );
+    }
+    let omitted = texts.len() - entries.len();
+    assert!(omitted > 0, "the budget, not the count, stops here");
+    assert!(
+        block.contains(&omitted_note(omitted).expect("note")),
+        "{block}"
+    );
+    assert!(
+        block.contains("(The server clipped the block above:"),
+        "{block}"
+    );
 }

@@ -3,9 +3,8 @@ import { FlowWork } from "../../components/progress/FlowWork";
 import { isIdle } from "../../components/progress/idle";
 import { RemarkPill } from "../../components/remark-pills/RemarkPills";
 import { FlagMarker } from "../../components/flag/FlagMarker";
-import { lineReference } from "../../components/ask/AskForm";
 import { REVIEW_START_PATH } from "../shell/paths";
-import { answerComment, flagComment } from "../../components/comment/prefill";
+import { flagComment } from "../../components/comment/prefill";
 import { flagTarget, remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
 import { useSectionState } from "../../components/inspector/sectionState";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -26,8 +25,6 @@ import type {
   Tour,
 } from "../../api/generated/types";
 import {
-  useAskAnchored,
-  useAskQuestion,
   useCommentActions,
   useFiles,
   useLines,
@@ -37,9 +34,10 @@ import {
   useFeedback,
   useFlowWork,
   useForgetReanalysedFlows,
-  useQuestionEvents,
   useQuestions,
+  linesQuery,
 } from "../../api/queries";
+import { useQueryClient } from "@tanstack/react-query";
 import { useReviewStateStore } from "../../api/review-state";
 import { BlockNav } from "../../components/block-nav/BlockNav";
 import type { MarkerTarget } from "../../components/code-view/markers";
@@ -52,9 +50,7 @@ import { shortcutAction } from "../../components/help/shortcuts";
 import { FlowWhy } from "../../components/flow-intro/FlowWhy";
 import { NavList } from "../../components/nav/NavList";
 import { filesHash, stepFilesLink } from "../../components/files/model";
-import { rangeText } from "../../components/section/format";
 import { PrContextBlock } from "../../components/pr-context/PrContextBlock";
-import { QuestionsBlock } from "../../components/questions/QuestionsBlock";
 import { MovesBlock } from "../../components/quiet/MovesBlock";
 import { NotAnalysedBlock } from "../../components/quiet/NotAnalysedBlock";
 import { PendingReviewBlock } from "../../components/quiet/PendingReviewBlock";
@@ -91,9 +87,8 @@ import {
 import { useNow } from "../../app/now";
 import { FlowsMenu } from "./FlowsMenu";
 import { Workspace } from "./Workspace";
+import { useAskChat, useAskPlace, type AnswerDraft } from "../review/askChat";
 import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "./review";
-import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
-import { useTourNotifications } from "../../app/workNotifications";
 
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
 
@@ -184,14 +179,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const { state, change: save, loadError, saveError } = review;
   const work = useFlowWork(analysisId);
   useForgetReanalysedFlows(analysisId, tour);
-  const stream = useQuestionEvents(analysisId);
   const questions = useQuestions(analysisId);
-  useTabActivity("analysis", analysisActivity(tour.analysis.state));
-  useTabActivity("ask", questionsActivity(questions.data ?? []));
-  usePrTabSubject(tour.analysis.pr);
-  useTourNotifications(tour, questions.data);
-  const ask = useAskQuestion(analysisId);
-  const askAnchored = useAskAnchored(analysisId);
+  const chat = useAskChat();
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
   // A finished analysis takes a request for any flow shown failed (a stored flow today's checks reject, or one
@@ -213,20 +202,17 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const sequence = useMemo(() => buildSequence(tour), [tour]);
   const location = useLocation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const navigationType = useNavigationType();
   const [locationKey, setLocationKey] = useState(location.key);
   const known = (last: BlockRef | null | undefined): last is BlockRef =>
     !!last &&
     (sequence.some((b) => sameBlock(b, last)) || last.block === "quiet" || last.block === "pending_review");
   const [resumeBlock] = useState<BlockRef>(() => (known(state.last_viewed) ? state.last_viewed : PR_CONTEXT));
-  // The user's questions page: a view of its own, not a block of the stored review state; the block the user
-  // came from stays current (Inspector, Previous/Next, j/k).
-  const questionsView = location.hash === "#questions";
   const lastViewed = state.last_viewed;
-  const cameFrom = questionsView && known(lastViewed) ? lastViewed : null;
   const current = useMemo(
-    () => blockFromHash(tour, location.hash) ?? cameFrom ?? (location.hash ? PR_CONTEXT : resumeBlock),
-    [tour, location.hash, resumeBlock, cameFrom],
+    () => blockFromHash(tour, location.hash) ?? (location.hash ? PR_CONTEXT : resumeBlock),
+    [tour, location.hash, resumeBlock],
   );
   const evidence = useMemo(() => evidenceFromHash(location.hash), [location.hash]);
   const lineView = location.hash.startsWith("#lines?") ? evidence : undefined;
@@ -246,10 +232,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const drafts = useCommentDrafts(analysisId, login);
   const [helpOpen, setHelpOpen] = useState(false);
   const [layout, setLayoutState] = useState(loadLayout);
-  const [focusNext, setFocusNext] = useState<"ask" | "comment" | null>(null);
+  const [focusNext, setFocusNext] = useState<"comment" | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
-  const askRef = useRef<HTMLTextAreaElement>(null);
-  // Inspector sections (Ask included), remembered per user; scoped reveals close again on another block.
+  // Inspector sections, remembered per user; scoped reveals close again on another block.
   const sections = useSectionState(JSON.stringify(current));
   const commentRef = useRef<HTMLTextAreaElement>(null);
 
@@ -257,8 +242,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     saveLayout(next);
     setLayoutState(next);
   };
-  // "Ask about this line": the line reference goes into the Ask field, which opens and takes the focus.
-  const [askInsert, setAskInsert] = useState<{ text: string } | null>(null);
   const openInspector = () => {
     if (layout.full !== "inspector" && (layout.full !== null || layout.hidden.inspector)) {
       setLayout(showColumn(layout, "inspector"));
@@ -306,7 +289,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   };
 
   // Next / `j`: on a step it first ticks the step (never unticks), then moves on.
-  const tickedOnNext = questionsView || lineView ? undefined : step;
+  const tickedOnNext = lineView ? undefined : step;
   const goNext = () => {
     if (tickedOnNext && !ticked.includes(tickedOnNext.id)) setTicks([tickedOnNext.id], true);
     go(next);
@@ -359,12 +342,11 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
 
   // The last viewed block is part of the stored review state (resume).
   useEffect(() => {
-    if (questionsView) return;
     if (!lastViewed || !sameBlock(lastViewed, current)) save((s) => ({ ...s, last_viewed: current }));
-  }, [current, lastViewed, save, questionsView]);
+  }, [current, lastViewed, save]);
 
   useEffect(() => {
-    const field = focusNext === "ask" ? askRef.current : focusNext === "comment" ? commentRef.current : null;
+    const field = focusNext === "comment" ? commentRef.current : null;
     if (!field) return;
     field.focus();
     setFocusNext(null);
@@ -424,11 +406,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           };
           draftComment(stepLines.data ? { target, lines: stepLines.data } : null, flagComment(flag));
         }
-      : undefined;
-  // Offered only with a line to anchor on (the open comment's, else the step's shown lines), like the flag.
-  const onAnswerAsComment =
-    commenting && step && (commentLine || stepLines.data)
-      ? (question: AskQuestion) => draftComment(currentLine(), answerComment(question.answer?.answer ?? ""))
       : undefined;
   // LLM remark pills and `r`: the remark's code line and its Inspector entry flash.
   // `flag`: the first flag at the strongest level (a flag marker); else the first remark (a rating pill, `r`).
@@ -494,9 +471,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         }
         case "ask":
           event.preventDefault();
-          openInspector();
-          sections.reveal("ask");
-          return setFocusNext("ask");
+          return chat.open();
         case "switch_view":
           return void navigate(filesHref);
         case "help":
@@ -512,6 +487,64 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     return () => document.removeEventListener("keydown", onKey);
   });
 
+  // The Ask chat's subject follows the block: a step, a flow introduction, the PR context (proposal AC8).
+  useAskPlace(
+    lineView
+      ? null
+      : current.block === "step"
+        ? { kind: "step", step_id: current.step_id, lines: null }
+        : // A flow not analysed yet cannot be asked about (the server says 404): the whole PR instead.
+          current.block === "flow_intro" &&
+            (!flow?.analysis_status || flow.analysis_status.state === "analysed")
+          ? { kind: "flow", flow_id: current.flow_id }
+          : current.block === "pr_context" || current.block === "flow_intro"
+            ? { kind: "pr" }
+            : null,
+  );
+  // An answer's evidence opens here; "Use as review comment" drafts on its lines and focuses the composer (AC12).
+  // An answer about another step or lines of a file opens that place first, says so, and drafts there.
+  useEffect(() => {
+    chat.setActions({
+      onEvidence: showEvidence,
+      onUseAsComment: (anchor, text) => {
+        // Lines of a file: Files drafts (and says so) once it has their lines.
+        if (anchor.kind === "lines" && anchor.range) {
+          const { path, side, range } = anchor;
+          const hash = filesHash({ file: path, side, line: range.start_line, end: range.end_line });
+          return void navigate(`${filesPath}${hash}`, {
+            state: { commentDraft: { path, side, range, text } satisfies AnswerDraft },
+          });
+        }
+        if (anchor.kind !== "step") return;
+        const found = findStep(tour, anchor.step_id);
+        if (!found) return;
+        const target = found.step;
+        const draftOn = (lines: LinesResponse, first: number | undefined) => {
+          const at = anchor.lines ?? (first === undefined ? null : { start_line: first, end_line: first });
+          if (!at) return;
+          const where = { path: target.facts.file, side: target.facts.side };
+          const start_line = at.start_line === at.end_line ? null : at.start_line;
+          draftComment({ target: { ...where, start_line, line: at.end_line }, lines }, text);
+          setFocusNext("comment");
+        };
+        if (step && target.id === step.id && stepLines.data) {
+          if (!anchor.lines && commentLine) draftComment(commentLine, text);
+          else draftOn(stepLines.data, currentLine()?.target.line);
+          return setFocusNext("comment");
+        }
+        go({ block: "step", step_id: target.id });
+        queryClient.fetchQuery(linesQuery(analysisId, stepQuery(target))).then(
+          (lines) => {
+            draftOn(lines, lines.changed[0] ?? lines.from);
+            chat.announce(
+              `Opened flow ${found.flow.position} · step ${target.number} to comment on its lines; the draft is in the Comment composer.`,
+            );
+          },
+          (error: unknown) => chat.announce(`The answer's lines could not be read: ${errorText(error)}`),
+        );
+      },
+    });
+  });
   const pendingComments = pending.data?.comments ?? [];
   const pendingCount = pendingCountOf(pending);
   const ctx: CodeContext = {
@@ -521,11 +554,21 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     comments: pendingComments,
     activeLine: commentLine?.target ?? null,
     onComment: comment,
+    // "Ask about this line": the chat opens about the line (or the selected lines); nothing is sent.
+    // A step anchor only for lines inside the step (the server refuses others); else lines of the file.
     onAskLine: step
       ? (target) => {
-          openInspector();
-          sections.reveal("ask");
-          setAskInsert({ text: lineReference(target) });
+          const range = { start_line: target.start_line ?? target.line, end_line: target.line };
+          const inside =
+            target.side === step.facts.side &&
+            target.path === step.facts.file &&
+            step.facts.range.start_line <= range.start_line &&
+            range.end_line <= step.facts.range.end_line;
+          chat.open({
+            anchor: inside
+              ? { kind: "step", step_id: step.id, lines: range }
+              : { kind: "lines", path: target.path, side: target.side, range },
+          });
         }
       : undefined,
     revealComment,
@@ -563,15 +606,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     .sort((a, b) => rank(a.step_id) - rank(b.step_id));
   const questionCounts: Record<StepId, number> = {};
   for (const q of myQuestions) questionCounts[q.step_id] = (questionCounts[q.step_id] ?? 0) + 1;
-  const questionPlace = (id: StepId) => {
-    const at = findStep(tour, id);
-    return at
-      ? {
-          label: `Flow ${at.flow.position} · step ${at.step.number}: ${at.step.llm.title}`,
-          open: () => selectStep(id),
-        }
-      : null;
-  };
 
   let block: ReactNode;
   if (lineView) {
@@ -588,23 +622,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           ranges={[{ start_line: Math.max(1, lineView.line - 3), end_line: lineView.line + 6 }]}
         />
       </section>
-    );
-  } else if (questionsView) {
-    block = questions.isError ? (
-      <StatusMessage kind="error">Cannot read your questions: {errorText(questions.error)}</StatusMessage>
-    ) : questions.isPending ? (
-      <StatusMessage kind="loading">Loading your questions…</StatusMessage>
-    ) : (
-      <QuestionsBlock
-        questions={myQuestions}
-        placeOf={questionPlace}
-        onEvidence={showEvidence}
-        onAskAgain={(anchor, text) =>
-          anchor.kind === "step" && anchor.lines === null
-            ? ask.mutateAsync({ step: anchor.step_id, text })
-            : askAnchored.mutateAsync({ anchor, text })
-        }
-      />
     );
   } else if (current.block === "flow_intro" && flow) {
     block = (
@@ -627,6 +644,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         </div>
         <FlowIntroBlock
           flow={flow}
+          onAsk={() => chat.open()}
           analysis={tour.analysis.state}
           now={now}
           onRequest={
@@ -655,6 +673,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     block = (
       <StepBlock
         key={step.id}
+        onAsk={() => chat.open()}
         step={step}
         pr={tour.analysis.pr}
         stepOf={(id) => findStep(tour, id)?.step}
@@ -771,6 +790,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   } else if (current.block === "pr_context") {
     block = (
       <PrContextBlock
+        onAsk={() => chat.open()}
         usage={tour.analysis.usage}
         modelsUsed={tour.analysis.models_used}
         onEvidence={showEvidence}
@@ -899,7 +919,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         onNext={goNext}
       />
       <p className="sr-only" aria-live="polite">
-        {questionsView ? "Your questions and answers" : blockTitle(tour, current)}
+        {blockTitle(tour, current)}
       </p>
       {remarkNotice && (
         <p key={remarkNotice.nonce} className="sr-only" role="status">
@@ -979,9 +999,12 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
               onSelect={go}
               questionCounts={questionCounts}
               questions={{
-                count: questions.isSuccess ? myQuestions.length : questions.isError ? "error" : "loading",
-                open: questionsView,
-                onOpen: () => openFragment("questions"),
+                count: questions.isSuccess
+                  ? (questions.data ?? []).filter((q) => q.mine !== false).length
+                  : questions.isError
+                    ? "error"
+                    : "loading",
+                onOpen: () => chat.open(),
               }}
             />
           </>
@@ -989,7 +1012,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         main={centre}
         inspector={
           <InspectorPane
-            streamLost={stream.lost}
             analysisId={analysisId}
             tour={tour}
             block={current}
@@ -999,20 +1021,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             onFlashed={() => setInspectorFlash(null)}
             onBackToStep={() => setAnnotationId(null)}
             onSelectStep={selectStep}
-            placeOf={questionPlace}
-            placeOfQuestion={(q) => {
-              if (q.anchor.kind === "step") return questionPlace(q.anchor.step_id);
-              const { path, side, range } = q.anchor;
-              const link = {
-                file: path,
-                side,
-                ...(range ? { line: range.start_line, end: range.end_line } : {}),
-              };
-              return {
-                label: `${path}${range ? `:${rangeText(range)}` : ""} · in Files`,
-                open: () => void navigate(`${filesPath}${filesHash(link)}`),
-              };
-            }}
             onEvidence={showEvidence}
             codeShown={
               !!step || !!lineView || (current.block === "quiet" && current.row.row !== "not_analysed")
@@ -1025,16 +1033,10 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             onUnresolvedChange={setUnresolved}
             drafts={drafts}
             reanalyseHref={`${REVIEW_START_PATH}?pr=${encodeURIComponent(tour.analysis.pr.html_url)}`}
-            askRef={askRef}
             sections={sections}
             commentRef={commentRef}
-            askHeight={layout.askHeight}
-            onAskHeight={(askHeight) => setLayout({ ...layout, askHeight })}
             onAskLine={ctx.onAskLine}
-            askInsert={askInsert}
-            onAskInserted={() => setAskInsert(null)}
             onFlagAsComment={onFlagAsComment}
-            onAnswerAsComment={onAnswerAsComment}
             commentPrefill={commentPrefill}
             onCommentPrefilled={() => setCommentPrefill(null)}
           />

@@ -22,6 +22,8 @@ afterEach(() => {
 
 const user = () => userEvent.setup();
 const inspector = () => screen.getByRole("complementary", { name: "Inspector" });
+const askChat = () => screen.getByRole("dialog", { name: "Ask" });
+const askField = () => within(askChat()).getByRole("textbox", { name: "Your question" });
 const inspectorHeading = () =>
   within(inspector())
     .getAllByRole("heading", { level: 2 })
@@ -55,7 +57,7 @@ describe("Files view review checks", () => {
     const seen = captureAsk();
     await open("#lines?file=src%2Frpc%2Fclient.rs&side=base&line=41");
     await user().click(within(inspector()).getByRole("button", { name: "Ask about these lines" }));
-    await user().type(within(inspector()).getByRole("textbox", { name: /Ask the LLM about/ }), "Q?{Enter}");
+    await user().type(askField(), "Q?{Enter}");
     await waitFor(() => expect(seen.body).not.toBeNull());
     expect(seen.body!.anchor).toEqual({
       kind: "lines",

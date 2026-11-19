@@ -1,40 +1,44 @@
 import { CodeText } from "../section/CodeText";
-import type { AskAnchor, AskQuestion, Evidence } from "../../api/generated/types";
+import type { AskQuestion, Evidence } from "../../api/generated/types";
 import { busyTip } from "../button/button";
 import { clockText } from "../format/time";
+import { useEffect, useState } from "react";
+import { agoText } from "../dashboard/common/format";
 import { useAction } from "../inspector/action";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { UseAsCommentButton } from "../comment/UseAsCommentButton";
 import { Tooltip } from "../tooltip/Tooltip";
 
-/** Props of the questions asked about a step and their LLM answers. */
-export interface AskAnswersProps {
-  /** Questions of the current step, any order (`GET …/questions` and `question` SSE events). */
-  questions: readonly AskQuestion[];
+/** Props of one question's state or answer in the Ask chat. */
+export interface AnswerProps {
+  question: AskQuestion;
   onEvidence?: (evidence: Evidence) => void;
-  /** File of the step asked about; its evidence links are shown in bold. */
+  /** File of the subject; its evidence links are shown in bold. */
   currentFile?: string;
-  /** Asks a failed question again on its anchor; no button without it. One request at a time per question. */
-  onAskAgain?: (anchor: AskAnchor, text: string) => Promise<unknown> | void;
+  /** Asks a failed question again; no button without it. One request at a time. */
+  onAskAgain?: () => Promise<unknown> | void;
+  /** "Use as review comment"; no button without it. */
+  onUseAsComment?: () => void;
+  /** A fixed current time (ms) for the time since asking; it ticks by itself without one. */
+  now?: number;
+  /** An earlier question of the reader still waits: this one is queued behind it. */
+  queued?: boolean;
 }
 
-function AskAgain({
-  question,
-  onAskAgain,
-}: { question: AskQuestion } & Required<Pick<AskAnswersProps, "onAskAgain">>) {
+function AskAgain({ onAskAgain }: Required<Pick<AnswerProps, "onAskAgain">>) {
   const action = useAction();
   return (
     <>
       <Tooltip
         tip={busyTip(
-          "Asks the same question about the same step or lines again; the answer appears here. Nothing is sent to GitHub.",
+          "Asks this question again about the same place; its new answer takes the place of this one. Nothing is sent to GitHub.",
           action.busy,
         )}
       >
         <button
           type="button"
           aria-disabled={action.busy || undefined}
-          onClick={() => !action.busy && void action.run(() => onAskAgain(question.anchor, question.text))}
+          onClick={() => !action.busy && void action.run(() => onAskAgain())}
           className="cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text aria-disabled:cursor-wait aria-disabled:opacity-60"
         >
           {action.busy ? "Asking…" : "Ask again"}
@@ -46,6 +50,50 @@ function AskAgain({
         </span>
       )}
     </>
+  );
+}
+
+// While a question waits, the time since it was asked moves on (10 s steps); nothing ticks otherwise.
+function useTick(fixed: number | undefined): number {
+  const [now, setNow] = useState(() => fixed ?? Date.now());
+  useEffect(() => {
+    if (fixed !== undefined) return;
+    const timer = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(timer);
+  }, [fixed]);
+  return fixed ?? now;
+}
+
+const WRITING =
+  "The LLM writes the answer; it appears whole when it is ready. A first question, or the first after the analysis changed, takes longer: the conversation is prepared first. The time is since you asked; it is no estimate.";
+
+/**
+ * A question still waiting: one line with a spinner, its state and the time since it was asked (AC10); when the
+ * writing started is not known, so the time is said as "asked … ago".
+ */
+function Waiting({
+  text,
+  tip,
+  question,
+  now,
+}: {
+  text: string;
+  tip: string;
+  question: AskQuestion;
+  now?: number;
+}) {
+  const at = useTick(now);
+  return (
+    <Tooltip tip={tip}>
+      <p tabIndex={0} className="m-0 inline-flex items-center gap-1.5 text-muted">
+        <span
+          aria-hidden="true"
+          className="inline-block size-3 flex-none animate-spin rounded-full border-2 border-muted border-t-transparent motion-reduce:animate-none"
+        />
+        <span role="status">{text}</span>
+        <span> · asked {agoText(question.created_at, new Date(at))}</span>
+      </p>
+    </Tooltip>
   );
 }
 
@@ -100,31 +148,34 @@ export function Answer({
   onEvidence,
   currentFile,
   onUseAsComment,
-}: { question: AskQuestion; onUseAsComment?: () => void } & Pick<
-  AskAnswersProps,
-  "onAskAgain" | "onEvidence" | "currentFile"
->) {
+  now,
+  queued,
+}: AnswerProps) {
   switch (question.state) {
     case "pending":
-      return (
-        <p role="status" className="text-muted">
-          {question.resumes_at
-            ? `Waiting for the LLM usage limit to reset; the question resumes automatically at ${clockText(question.resumes_at)}.`
-            : "Waiting for the LLM to start on it."}
-        </p>
+      if (question.resumes_at)
+        return (
+          <p role="status" className="m-0 text-muted">
+            Waiting for the LLM usage limit to reset; resumes at {clockText(question.resumes_at)}.
+          </p>
+        );
+      return queued ? (
+        <Waiting
+          text="Queued behind your earlier question"
+          tip="Your questions are answered one at a time; this one starts when the earlier one is answered."
+          question={question}
+          now={now}
+        />
+      ) : (
+        <Waiting text="Waiting to start" tip={WRITING} question={question} now={now} />
       );
     case "answering":
-      return (
-        <p role="status" className="text-muted">
-          The LLM is working on the answer; it appears here whole when it is ready. A first question, or the
-          first after the analysis changed, takes longer: the conversation is prepared first.
-        </p>
-      );
+      return <Waiting text="Being written" tip={WRITING} question={question} now={now} />;
     case "failed":
       return (
         <p className="flex flex-wrap items-baseline gap-2 text-high">
           No answer: {question.failure ?? "the job failed."}
-          {question.mine === true && onAskAgain && <AskAgain question={question} onAskAgain={onAskAgain} />}
+          {question.mine === true && onAskAgain && <AskAgain onAskAgain={onAskAgain} />}
         </p>
       );
     case "answered": {
@@ -158,23 +209,4 @@ export function Answer({
       );
     }
   }
-}
-
-/** Questions asked about a step, newest first, each with its state or its whole LLM answer (ADR-004). */
-export function AskAnswers({ questions, onAskAgain, onEvidence, currentFile }: AskAnswersProps) {
-  if (questions.length === 0) return null;
-  const newestFirst = [...questions].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-  return (
-    <ol aria-label="Questions asked about this step" className="m-0 grid list-none gap-2.5 p-0">
-      {newestFirst.map((q) => (
-        <li key={q.id} className="grid min-w-0 gap-1 [overflow-wrap:anywhere]">
-          <p className="font-semibold whitespace-pre-wrap">
-            <span className="text-muted">Asked by {q.mine ? "you" : (q.asked_by ?? "unknown author")}: </span>
-            {q.text}
-          </p>
-          <Answer question={q} onAskAgain={onAskAgain} onEvidence={onEvidence} currentFile={currentFile} />
-        </li>
-      ))}
-    </ol>
-  );
 }

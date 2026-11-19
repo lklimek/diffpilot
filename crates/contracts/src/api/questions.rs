@@ -1,5 +1,5 @@
-//! Ask: private questions about a step or about lines of a file, answered in the asker's working session for this
-//! PR.
+//! Ask: private questions about a step, lines or a file, a flow or the whole PR, with follow-ups in threads, answered
+//! in the asker's working session for this PR.
 
 use crate::time::Timestamp;
 use schemars::JsonSchema;
@@ -8,7 +8,7 @@ use ts_rs::TS;
 
 use crate::agent::ask::AskOutput;
 use crate::common::{LineRange, LineSide};
-use crate::ids::{QuestionId, StepId};
+use crate::ids::{FlowId, QuestionId, StepId};
 
 /// Body of `POST /api/v1/analyses/{id}/steps/{step_id}/questions`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -27,8 +27,13 @@ impl AskRequest {
 pub struct AnchoredAskRequest {
     /// The question, at most `AskRequest::MAX_TEXT_CHARS` characters.
     pub text: String,
-    /// What the question is about.
+    /// What the question is about; a follow-up repeats its thread's anchor.
     pub anchor: AskAnchor,
+    /// A follow-up: a question of the thread it continues (the thread's first question is stored); absent for a new
+    /// thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent_id: Option<QuestionId>,
 }
 
 /// What a question is about.
@@ -51,6 +56,13 @@ pub enum AskAnchor {
         /// The lines, at most `AskAnchor::MAX_LINES`; null for the whole file.
         range: Option<LineRange>,
     },
+    /// An analysed flow as a whole.
+    Flow {
+        /// The flow.
+        flow_id: FlowId,
+    },
+    /// The whole pull request.
+    Pr,
 }
 
 impl AskAnchor {
@@ -61,7 +73,7 @@ impl AskAnchor {
     pub fn step_id(&self) -> Option<&StepId> {
         match self {
             Self::Step { step_id, .. } => Some(step_id),
-            Self::Lines { .. } => None,
+            Self::Lines { .. } | Self::Flow { .. } | Self::Pr => None,
         }
     }
 }
@@ -81,10 +93,14 @@ pub struct AskQuestion {
     pub mine: Option<bool>,
     /// What the question is about.
     pub anchor: AskAnchor,
-    /// The step of a step anchor; absent for a lines anchor.
+    /// The step of a step anchor; absent for other anchors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub step_id: Option<StepId>,
+    /// A follow-up: the first question of its thread; absent for a first question.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent_id: Option<QuestionId>,
     /// The question.
     pub text: String,
     /// State.

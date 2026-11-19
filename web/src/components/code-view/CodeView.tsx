@@ -604,7 +604,7 @@ export function AskLineButton({
   tabbable,
   onFocus,
   onAsk,
-  hint = 'Click, then "Ask about this line": puts this line (or the selected lines) into the Ask field. Nothing is sent until you press Ask.',
+  hint = 'Click, then "Ask about this line": opens the Ask chat about this line (or the selected lines). Nothing is sent until you press Ask.',
   className = "",
 }: {
   line: number;

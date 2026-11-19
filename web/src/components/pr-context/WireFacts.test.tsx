@@ -4,7 +4,7 @@ import type { Tour, AskQuestion } from "../../api/generated/types";
 import { seedFor } from "../../mocks/fixtures";
 import { PrContextBlock } from "./PrContextBlock";
 import { TopBar } from "../top-bar/TopBar";
-import { AskAnswers } from "../ask/AskAnswers";
+import { Answer } from "../ask/Answer";
 import { FeedbackButtons } from "../feedback/FeedbackButtons";
 const tour = seedFor("default", "tour") as Tour;
 const counts = { passed: 1, skipped: 4, neutral: 0, pending: 0, failed: 0 };
@@ -38,7 +38,7 @@ describe("current wire facts", () => {
     expect(screen.getByText(/MemCan: not reachable/)).toBeVisible();
     expect(screen.getByText("4 test lines changed or removed, 57 added")).toBeVisible();
   });
-  it("attributes shared questions and only offers ask-again for mine", () => {
+  it("only offers ask-again for my own questions", () => {
     const question: AskQuestion = {
       id: "q1",
       anchor: { kind: "step", step_id: "f1.1", lines: null },
@@ -51,11 +51,9 @@ describe("current wire facts", () => {
       asked_by: "alice",
       mine: false,
     };
-    const view = render(<AskAnswers questions={[question]} onAskAgain={vi.fn()} />);
-    expect(screen.getByText(/asked by alice/i)).toBeVisible();
+    const view = render(<Answer question={question} onAskAgain={vi.fn()} />);
     expect(screen.queryByRole("button", { name: "Ask again" })).toBeNull();
-    view.rerender(<AskAnswers questions={[{ ...question, mine: true }]} onAskAgain={vi.fn()} />);
-    expect(screen.getByText(/asked by you/i)).toBeVisible();
+    view.rerender(<Answer question={{ ...question, mine: true }} onAskAgain={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Ask again" })).toBeVisible();
   });
   it("does not call a correct rating calibration memory", () => {
