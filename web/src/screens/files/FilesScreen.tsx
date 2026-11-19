@@ -7,6 +7,7 @@ import type {
   ApiErrorCode,
   AskAnchor,
   AskQuestion,
+  Annotation,
   CommentTarget,
   Evidence,
   FilesResponse,
@@ -69,6 +70,7 @@ import { rangeText } from "../../components/section/format";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { TopBar } from "../../components/top-bar/TopBar";
 import { DiffCode, errorText, useHideContextChanges, type CodeContext } from "../tour/code";
+import { flagComment } from "../../components/comment/prefill";
 import { useCommentDrafts, useUnresolvedPosts } from "../tour/drafts";
 import { InspectorPane, type CommentLineState, type FilesInspector } from "../tour/InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "../tour/layout";
@@ -185,6 +187,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
   const [commentLine, setCommentLine] = useState<CommentLineState | null>(null);
   // The composer's line came with a line selection (not `c` or a button): Esc closes both at once.
   const [commentWithSelection, setCommentWithSelection] = useState(false);
+  const [commentPrefill, setCommentPrefill] = useState<{ text: string } | null>(null);
   const commentOn = (line: CommentLineState) => {
     setCommentLine(line);
     setCommentWithSelection(false);
@@ -761,6 +764,28 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     const target = fileOf(files.files, { file: e.file, side: e.side });
     if (target) go({ file: target.path, side: e.side, line: e.line });
   };
+  // "Use as review comment" on a flag: the composer opens on the flag's lines with it as a draft; nothing is sent.
+  const onFlagAsComment =
+    pending.data?.commenting_available === true
+      ? (flag: Annotation) => {
+          const owner = ownerOf.get(flag.id)?.step;
+          if (!owner) return;
+          const { start_line, end_line } = flag.range;
+          const data = cachedLines(owner.facts.side, end_line);
+          if (!data) return say("The flag's lines are not shown here; open them in Flows to comment.");
+          commentOn({
+            target: {
+              path: pathOn(file, owner.facts.side),
+              side: owner.facts.side,
+              start_line: start_line === end_line ? null : start_line,
+              line: end_line,
+            },
+            lines: data,
+          });
+          setCommentPrefill({ text: flagComment(flag) });
+          openInspector();
+        }
+      : undefined;
   const panelContext: FilesPanelContext = {
     tour,
     file,
@@ -774,6 +799,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     requestBusy: work.request.isPending,
     diff,
     onEvidence,
+    onFlagAsComment,
   };
   const panel =
     narrowed && hunk
@@ -1014,8 +1040,8 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
             onAskHeight={(askHeight) => setLayout({ ...layout, askHeight })}
             askInsert={null}
             onAskInserted={() => {}}
-            commentPrefill={null}
-            onCommentPrefilled={() => {}}
+            commentPrefill={commentPrefill}
+            onCommentPrefilled={() => setCommentPrefill(null)}
             files={filesInspector}
           />
         }

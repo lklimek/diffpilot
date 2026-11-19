@@ -281,6 +281,19 @@ describe("Files view (brief §4.5)", () => {
 });
 
 describe("Files Inspector panels (proposal §3)", () => {
+  it("a flag offers Use as review comment: the composer opens on the flag's lines with it as a draft", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=96&end=109");
+    const card = await waitFor(() => {
+      const found = inspector().querySelector<HTMLElement>('[data-annotation-id="f1.5.a3"]');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    await userEvent.setup().click(within(card).getByRole("button", { name: "Use as review comment" }));
+    const composer = await within(inspector()).findByRole("textbox", { name: /^Comment on / });
+    expect(composer).toHaveAccessibleName("Comment on src/rpc/client.rs:99");
+    expect((composer as HTMLTextAreaElement).value).toMatch(/^LLM-suggested — review before posting/);
+  });
+
   it("the hunk list names the lines of each part in no flow, so a deletion never reads as whitespace", async () => {
     await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
     const hunks = within(inspector()).getByRole("region", { name: /^Hunks in this file/ });
