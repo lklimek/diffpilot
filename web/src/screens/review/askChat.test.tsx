@@ -125,6 +125,18 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
     expect(launcher()).toHaveAccessibleName(/^Ask: open your private chat about this PR$/);
   });
 
+  it("a flow introduction is the subject once the flow is analysed; before that, the whole PR", async () => {
+    setScenario("lazy-flows");
+    await openTour("#f2");
+    await user().keyboard("a");
+    expect(chat()).toHaveTextContent(/About:\s*Whole PR/);
+    cleanup();
+    setScenario(null);
+    await openTour("#f2");
+    await user().click(within(screen.getByRole("main")).getByRole("button", { name: "Ask about this flow" }));
+    expect(chat()).toHaveTextContent(/About:\s*Flows\s*flow 2 · /);
+  });
+
   it("a send failure keeps the question and says why", async () => {
     server.use(
       http.post("/api/v1/analyses/:id/questions", () =>

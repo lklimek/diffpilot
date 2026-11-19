@@ -243,7 +243,7 @@ test("columns: hide, full screen and widths are remembered; a click anywhere on 
   );
   const box = (await strip.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height - 20);
-  await expect(page.getByRole("group", { name: "Ask, feedback and comment" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Feedback and comment" })).toBeVisible();
   await page.getByRole("button", { name: "Full screen Review column" }).click();
   await expect(page.getByRole("button", { name: "Show Flows column" })).toBeVisible();
   await page.keyboard.press("Escape");
@@ -293,9 +293,11 @@ test("keyboard map: x ticks, d old code, c comment, a ask, ? help, Esc closes", 
   await page.keyboard.press("Escape");
   await expect(inspector.getByRole("textbox", { name: /^Comment on / })).toHaveCount(0);
   await page.keyboard.press("a");
-  const ask = inspector.getByRole("textbox", { name: /^Ask the LLM about / });
+  const ask = page.getByRole("dialog", { name: "Ask" }).getByRole("textbox", { name: "Your question" });
   await expect(ask).toBeFocused();
-  await ask.blur();
+  // Esc hides the chat and gives the keys back to the page.
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Ask" })).toHaveCount(0);
   await page.keyboard.press("?");
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
   await page.keyboard.press("Escape");
@@ -390,7 +392,7 @@ test("1440: while a comment is written its line reference stays in view", async 
     .getByRole("button", { name: /^Step 2:/ })
     .click();
   await page.getByRole("button", { name: "Comment on line 96" }).click();
-  const dock = page.getByRole("group", { name: "Ask, feedback and comment" });
+  const dock = page.getByRole("group", { name: "Feedback and comment" });
   await dock.evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
   await expect(dock.getByText("On src/rpc/client.rs:96")).toBeInViewport({ ratio: 1 });
   await dock.evaluate((el) => el.scrollTo({ top: 0 }));

@@ -131,7 +131,7 @@ function Question({
       </div>
       <p
         data-question
-        className="m-0 max-w-[90%] rounded-[10px_10px_2px_10px] border border-accent bg-accent-bg px-2.5 py-1.5 text-[13px] whitespace-pre-wrap [overflow-wrap:anywhere]"
+        className="m-0 max-w-9/10 rounded-[10px_10px_2px_10px] border border-accent bg-accent-bg px-2.5 py-1.5 text-[13px] whitespace-pre-wrap [overflow-wrap:anywhere]"
       >
         {question.text}
       </p>
@@ -371,7 +371,7 @@ export function AskChat(props: AskChatProps) {
       }
       className="fixed z-40 flex flex-col rounded-[10px] border border-accent bg-surface text-[13px] text-text shadow-lg"
     >
-      <header className="flex min-w-0 flex-none items-center gap-1.5 rounded-t-[10px] border-b border-border bg-surface-2 py-1 pr-2 pl-3">
+      <div className="flex min-w-0 flex-none items-center gap-1.5 rounded-t-[10px] border-b border-border bg-surface-2 py-1 pr-2 pl-3">
         <h2 id={titleId} className="m-0 text-[13.5px] font-bold whitespace-nowrap">
           Ask
         </h2>
@@ -398,7 +398,7 @@ export function AskChat(props: AskChatProps) {
             Hide
           </button>
         </Tooltip>
-      </header>
+      </div>
       {props.notice && (
         <p role="status" className="m-0 flex-none border-b border-border bg-med-bg px-3 py-1 text-[12px]">
           {props.notice}
@@ -620,7 +620,7 @@ function ChatAnswer({
   // `Answer` passes the anchor back only to `onAskAgain`, which asks this question again in its thread.
   const shown = question as unknown as AskQuestion;
   return (
-    <div className="max-w-[96%] min-w-0 text-[13px]">
+    <div className="max-w-24/25 min-w-0 text-[13px]">
       <Answer
         question={shown}
         onAskAgain={() => onAskAgain(question)}

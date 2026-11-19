@@ -144,9 +144,12 @@ test("two readers of a shared analysis keep questions and comment drafts private
     await openTour(a);
     await openStep(a, 1, 2);
     const question = "PRIVATE_READER_A_QUESTION";
-    await a.getByRole("textbox", { name: /^Ask the LLM about / }).fill(question);
-    await a.getByRole("button", { name: "Ask", exact: true }).click();
-    await expect(a.getByRole("list", { name: "Ask conversation" }).getByText(question)).toBeVisible();
+    await a.keyboard.press("a");
+    const chatA = a.getByRole("dialog", { name: "Ask" });
+    await chatA.getByRole("textbox", { name: "Your question" }).fill(question);
+    await chatA.getByRole("button", { name: "Ask", exact: true }).click();
+    await expect(chatA.getByText(question)).toBeVisible();
+    await chatA.getByRole("textbox", { name: "Your question" }).press("Escape");
     await a.getByRole("button", { name: "Comment on line 96" }).click();
     await a
       .getByRole("textbox", { name: /^Comment on src\/rpc\/client\.rs:96/ })

@@ -208,11 +208,17 @@ export function questionEvents(
     if (q.mine === false || (was !== "pending" && was !== "answering")) return [];
     if (q.state !== "answered" && q.state !== "failed") return [];
     const found = q.step_id === undefined ? undefined : findStep(tour, q.step_id);
-    const where = found
-      ? `flow ${found.flow.position}, step ${found.step.number}`
-      : q.step_id === undefined
-        ? "lines of a file"
-        : "a step";
+    const anchor = q.anchor as AskQuestion["anchor"] | undefined;
+    const flow = anchor?.kind === "flow" ? tour.flows.find((f) => f.id === anchor.flow_id) : undefined;
+    const [where, fragment] = found
+      ? [`flow ${found.flow.position}, step ${found.step.number}`, q.step_id]
+      : anchor?.kind === "flow"
+        ? [flow ? `flow ${flow.position}` : "a flow", anchor.flow_id]
+        : anchor?.kind === "pr"
+          ? ["the whole PR", "pr_context"]
+          : q.step_id === undefined
+            ? ["lines of a file", undefined]
+            : ["a step", q.step_id];
     return [
       {
         key: `${id}:question:${q.id}:${q.state}`,
@@ -221,7 +227,7 @@ export function questionEvents(
           q.state === "answered"
             ? `LLM answer to your question on ${where}.`
             : `No LLM answer to your question on ${where}.`,
-        path: reviewPath(id, q.step_id),
+        path: reviewPath(id, fragment),
       },
     ];
   });

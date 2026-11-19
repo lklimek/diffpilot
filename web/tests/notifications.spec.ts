@@ -80,10 +80,13 @@ test("a tab in the background notifies of an analysed flow and an Ask answer; a 
   await nav.getByRole("button", { name: /^Flow 1:/ }).click();
   await nav.getByRole("button", { name: /^Step 5:/ }).click();
   await page.keyboard.press("a");
-  await page.getByRole("textbox", { name: /^Ask the LLM about / }).fill("Why retry here?");
+  await page
+    .getByRole("dialog", { name: "Ask" })
+    .getByRole("textbox", { name: "Your question" })
+    .fill("Why retry here?");
   await page.keyboard.press("Enter");
   await page.clock.fastForward(1_000);
-  await expect(page.getByText("Asked by you: Why retry here?")).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Ask" }).getByText("Why retry here?")).toBeVisible();
   await page.clock.fastForward(11_000);
   await page.clock.fastForward(5_000);
   await expect

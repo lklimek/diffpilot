@@ -496,9 +496,11 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       ? null
       : current.block === "step"
         ? { kind: "step", step_id: current.step_id, lines: null }
-        : current.block === "flow_intro"
+        : // A flow not analysed yet cannot be asked about (the server says 404): the whole PR instead.
+          current.block === "flow_intro" &&
+            (!flow?.analysis_status || flow.analysis_status.state === "analysed")
           ? { kind: "flow", flow_id: current.flow_id }
-          : current.block === "pr_context"
+          : current.block === "pr_context" || current.block === "flow_intro"
             ? { kind: "pr" }
             : null,
   );

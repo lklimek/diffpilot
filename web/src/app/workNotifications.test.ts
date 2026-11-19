@@ -318,6 +318,24 @@ describe("events of the review", () => {
     expect(events.map((e) => e.body).join()).not.toContain("Why retry");
   });
 
+  it("names a question about a flow, the whole PR or lines of a file by its subject", () => {
+    const t = tour(running, [flow("f1", 1, "analysed", [{ id: "s5", number: 5 }])]);
+    const q = (id: string, anchor: AskQuestion["anchor"], state: AskQuestion["state"]) =>
+      ({ id, anchor, state, mine: true, text: "Why?", answer: null }) as unknown as AskQuestion;
+    const anchors: AskQuestion["anchor"][] = [
+      { kind: "flow", flow_id: "f1" },
+      { kind: "pr" },
+      { kind: "lines", path: "src/a.rs", side: "head", range: null },
+    ];
+    const before = anchors.map((a, i) => q(`q${i}`, a, "answering"));
+    const after = anchors.map((a, i) => q(`q${i}`, a, "answered"));
+    expect(questionEvents("a1", before, after, t, PR).map((e) => [e.body, e.path])).toEqual([
+      ["LLM answer to your question on flow 1.", "/analyses/a1#f1"],
+      ["LLM answer to your question on the whole PR.", "/analyses/a1#pr_context"],
+      ["LLM answer to your question on lines of a file.", "/analyses/a1"],
+    ]);
+  });
+
   it("a question first seen already answered (asked before this page) is not new work", () => {
     const t = tour(running, []);
     const q = { id: "q9", step_id: "s1", state: "answered", mine: true } as unknown as AskQuestion;

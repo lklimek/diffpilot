@@ -1,4 +1,4 @@
-import type { AnchoredAskRequest } from "../../api/generated/types";
+import type { AnchoredAskRequest, Tour } from "../../api/generated/types";
 import { HttpResponse } from "msw";
 import { seedFor } from "../fixtures";
 import { readStore } from "../review-store";
@@ -7,15 +7,20 @@ import { answerLater } from "./ask-question";
 
 /**
  * `POST /api/v1/analyses/{id}/questions` (R14): 202 pending; the answer follows on the event stream. Like the
- * server, a follow-up joins its thread's first question and repeats its anchor; an unknown parent or flow is 404.
+ * server, a follow-up joins its thread's first question and repeats its anchor; an unknown parent or a flow not shown analysed is 404.
  */
 export const askAnchored = route(
   "askAnchored",
   forAnalysis(async ({ request }) => {
     const { text, anchor, parent_id } = (await request.json()) as AnchoredAskRequest;
-    const tour = seedFor("default", "tour") as { flows: { id: string }[] };
-    if (anchor.kind === "flow" && !tour.flows.some((f) => f.id === anchor.flow_id))
-      return apiError(404, "not_found", "This flow is not part of the analysis.");
+    // A flow question needs the flow shown analysed.
+    const tour = seedFor("default", "tour") as Tour;
+    const flow = anchor.kind === "flow" ? tour.flows.find((f) => f.id === anchor.flow_id) : undefined;
+    if (
+      anchor.kind === "flow" &&
+      (!flow || (flow.analysis_status && flow.analysis_status.state !== "analysed"))
+    )
+      return apiError(404, "not_found", "This flow is not analysed in this review.");
     let root = undefined;
     if (parent_id) {
       const questions = readStore("questions");

@@ -31,7 +31,8 @@ test("Use as review comment prefills the pending-review composer from a flag and
   await composer.pressSequentially(" My note.");
 
   // An Ask answer on the same step goes after the open draft, after a blank line.
-  const thread = inspector.getByRole("list", { name: "Ask conversation" });
+  await page.getByRole("button", { name: /^Ask.*: open your private chat/ }).click();
+  const thread = page.getByRole("dialog", { name: "Ask" }).locator('[data-thread="t1"]');
   await thread.getByRole("button", { name: "Use as review comment" }).first().click();
   const appended = `${text} My note.\n\nLLM-suggested — review before posting\n\n`;
   await expect.poll(() => composer.inputValue()).toContain(appended);
