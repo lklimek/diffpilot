@@ -167,7 +167,7 @@ async fn github_gate(State(gate): State<Arc<Gate>>, request: Request, next: Next
     next.run(request).await
 }
 
-async fn spawn_github(gate: Arc<Gate>) -> String {
+async fn spawn_github(gate: Arc<Gate>, fixture: PathBuf) -> String {
     let config = fake_github::Config {
         fixture_dir: repo_root().join("fixtures/pr-482/github"),
         app_url: Url::parse("https://review.example.test").expect("url"),
@@ -175,7 +175,7 @@ async fn spawn_github(gate: Arc<Gate>) -> String {
         user_id: None,
         app_id: None,
         app_public_key_file: None,
-        dashboard_fixture_dir: Some(repo_root().join("fixtures/dashboard/github")),
+        dashboard_fixture_dir: Some(fixture),
         dashboard_world_at: None,
     };
     let router = fake_github::router(&config)
@@ -440,12 +440,21 @@ async fn add_user(state: &AppState, user_id: &str, login: &str, github_id: i64, 
 }
 
 async fn world_with(ranker: Arc<dyn Ranker>, scan_limit: Duration) -> World {
+    world_in(
+        ranker,
+        scan_limit,
+        repo_root().join("fixtures/dashboard/github"),
+    )
+    .await
+}
+
+async fn world_in(ranker: Arc<dyn Ranker>, scan_limit: Duration, fixture: PathBuf) -> World {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_env_filter("warn,server=debug")
         .try_init();
     let gate = Arc::new(Gate::default());
-    let github = spawn_github(Arc::clone(&gate)).await;
+    let github = spawn_github(Arc::clone(&gate), fixture).await;
     let todos = FakeTodos::start().await;
     let mut config = test_config();
     config.github.api_url = Url::parse(&github).expect("url");
@@ -504,7 +513,7 @@ impl World {
             .method(method)
             .uri(uri)
             .header("cookie", cookie);
-        if method != "GET" {
+        if method != "GET" && !extra.iter().any(|(name, _)| *name == "x-csrf-token") {
             request = request.header("x-csrf-token", "csrf");
         }
         for (name, value) in extra {
@@ -760,15 +769,15 @@ async fn full_refresh_stores_the_expected_snapshot() {
     assert_eq!(
         meta.item_counts,
         ItemCounts {
-            total: 20,
+            total: 19,
             pr: 12,
-            issue: 6,
+            issue: 5,
             todo: 2,
             p0: 0,
             p1: 7,
             p2: 5,
-            p3: 8,
-            not_judged: 20,
+            p3: 7,
+            not_judged: 19,
         }
     );
     assert_eq!(meta.excluded, 1, "the excluded bot author");
@@ -776,7 +785,7 @@ async fn full_refresh_stores_the_expected_snapshot() {
         meta.checked,
         KindCounts {
             pr: 14,
-            issue: 6,
+            issue: 5,
             todo: 2
         }
     );
@@ -869,7 +878,6 @@ async fn full_refresh_stores_the_expected_snapshot() {
             "CON-1520",
             "CON-1525",
             "PLAT-1215",
-            "WUI-305",
             "TODO-91bd0a44",
         ]
     );
@@ -1190,7 +1198,7 @@ async fn items_page_with_cursor_etag_and_expired_cursor() {
     let w = world().await;
     w.refreshed().await;
     let all = w.items("").await;
-    assert_eq!(all.items.len(), 20, "default limit 100");
+    assert_eq!(all.items.len(), 19, "default limit 100");
     let first = w.items("?limit=5").await;
     assert_eq!(alias_ids(&first.items), alias_ids(&all.items[..5]));
     let cursor = first.next_cursor.clone().expect("next page");
@@ -1280,7 +1288,6 @@ async fn items_filters() {
             "CON-1520",
             "CON-1525",
             "PLAT-1215",
-            "WUI-305",
             "TODO-91bd0a44",
         ],
         "TODO items whatever kind says"
@@ -1289,21 +1296,11 @@ async fn items_filters() {
     assert_eq!(prs.items.len(), 12);
     assert!(prs.items.iter().all(|i| i.kind == ItemKind::Pr));
     let wallet = w.items("?repo=ACME/wallet-ui").await;
-    assert_eq!(
-        alias_ids(&wallet.items),
-        ["WUI-320", "WUI-311", "WUI-298", "WUI-305"]
-    );
+    assert_eq!(alias_ids(&wallet.items), ["WUI-320", "WUI-311", "WUI-298"]);
     let unjudged = w.items("?state=unjudged&tier=p3&todos=false").await;
     assert_eq!(
         alias_ids(&unjudged.items),
-        [
-            "PLAT-1210",
-            "CON-1541",
-            "CON-1520",
-            "CON-1525",
-            "PLAT-1215",
-            "WUI-305"
-        ]
+        ["PLAT-1210", "CON-1541", "CON-1520", "CON-1525", "PLAT-1215",]
     );
     let all = w.items("").await;
     let since = all.items.iter().map(|i| i.updated_at).max().expect("items");
@@ -1803,5 +1800,506 @@ async fn unread_event_feed_is_not_reported_as_reaching_back_to_the_window_start(
     assert!(
         !notes.iter().any(|n| n.contains("which reach back to")),
         "an unread feed is described as read back to a date: {notes:?}"
+    );
+}
+
+#[tokio::test]
+async fn mentions_stay_outside_ranking_and_hide_is_scoped_and_token_readable() {
+    use contracts::api::access_tokens::{AccessTokenId, TokenScope};
+    use db::repo::access_tokens::NewAccessToken;
+    let world = world().await;
+    world.refreshed().await;
+    let before = world.summary(ALICE).await;
+    let github_reads = world.gate.requests();
+    let mention = before
+        .mentions
+        .iter()
+        .find(|m| m.number == 305)
+        .expect("mention-only issue");
+    assert!(!mention.is_bot);
+    assert!(mention.url.ends_with("#issuecomment-1"));
+    assert!(
+        !world
+            .items("")
+            .await
+            .items
+            .iter()
+            .any(|i| i.key == mention.item_key)
+    );
+    assert!(
+        world
+            .items("")
+            .await
+            .items
+            .iter()
+            .any(|i| i.number == Some(1187)),
+        "watched/assigned issue stays ranked"
+    );
+    let secret = format!("srp_ABCDEFGH_{}", "a".repeat(43));
+    world
+        .state
+        .db
+        .access_tokens()
+        .create(
+            DEFAULT_TENANT,
+            "u1",
+            &NewAccessToken {
+                id: AccessTokenId("ABCDEFGH".into()),
+                name: "mentions test".into(),
+                token_hash: sha256(secret.as_bytes()),
+                scopes: vec![TokenScope::Read],
+                expires_at: Timestamp::now() + SignedDuration::from_hours(24),
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let bearer = format!("Bearer {secret}");
+    for uri in ["/api/v1/dashboard", "/api/v1/dashboard/items"] {
+        let read = world
+            .send("GET", uri, "", &[("authorization", &bearer)])
+            .await;
+        assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+        assert_eq!(
+            read.body["mentions"],
+            serde_json::to_value(&before.mentions).unwrap()
+        );
+        assert_eq!(
+            read.body["mention_coverage"],
+            json!({
+                "unchecked_items": 0, "unchecked_logins": ["alice-helper"], "timed_out_logins": []
+            })
+        );
+    }
+    let uri = format!("/api/v1/dashboard/mentions/{}/hide", mention.id);
+    assert_eq!(
+        world
+            .send("POST", &uri, "", &[("authorization", &bearer)])
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        world.send("POST", &uri, COLLEAGUE, &[]).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        world.send("POST", &uri, ALICE, &[]).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        world.send("POST", &uri, ALICE, &[]).await.status,
+        StatusCode::NO_CONTENT
+    );
+    let after = world.summary(ALICE).await;
+    assert_ne!(before.revision, after.revision);
+    assert!(!after.mentions.iter().any(|m| m.id == mention.id));
+    assert_eq!(
+        world.gate.requests(),
+        github_reads,
+        "reads and hides use only stored data"
+    );
+    world.refreshed().await;
+    assert!(
+        !world
+            .summary(ALICE)
+            .await
+            .mentions
+            .iter()
+            .any(|m| m.id == mention.id)
+    );
+}
+
+#[tokio::test]
+async fn mention_only_prs_honor_search_coverage_exclusions_and_hide_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let file = dir.path().join("pull-requests.json");
+    let mut prs: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let template = prs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["number"] == 320)
+        .unwrap()
+        .clone();
+    for (number, author, commenter, text) in [
+        (321, "bob", "carol", "@alice please"),
+        (322, "bob", "carol", "@alice-helper please"),
+        (323, "dependabot", "carol", "@alice please"),
+        (324, "bob", "dependabot", "@alice please"),
+        (325, "bob", "carol", "> @alice quoted"),
+        (326, "bob", "KNOWN", "@alice please"),
+        (327, "bob", "carol", "@alice draft"),
+        (328, "bob", "carol", "@alice answered"),
+        (329, "bob", "carol", "@alice newest window"),
+    ] {
+        let mut pr = template.clone();
+        pr["number"] = json!(number);
+        pr["author"] = json!({"__typename":"User", "login":author});
+        pr["reviewRequests"] = json!({"nodes":[]});
+        pr["assignees"] = json!({"nodes":[]});
+        pr["reviews"] = json!({"nodes":[]});
+        pr["reviewThreads"] = json!({"nodes":[]});
+        pr["body"] = json!("");
+        pr["comments"] = json!({"nodes":[
+            {"author":{"__typename":"User","login":commenter},"body":text,"createdAt":"2026-11-18T08:30:00Z"},
+            {"author":{"__typename":"User","login":commenter},"body":text,"createdAt":"2026-11-18T08:40:00Z"}
+        ]});
+        if number == 327 {
+            pr["isDraft"] = json!(true);
+        }
+        if number == 328 {
+            pr["comments"]["nodes"].as_array_mut().unwrap().push(json!({
+                "author":{"__typename":"User","login":"alice-helper"},"body":"Answered",
+                "createdAt":"2026-11-18T08:50:00Z"
+            }));
+        }
+        if number == 329 {
+            let mut comments = Vec::new();
+            for n in 0..55 {
+                comments.push(json!({"author":{"__typename":"User","login":"carol"},
+                    "body":if n == 54 {"@alice newest window"} else {"Older"},
+                    "createdAt":format!("2026-11-18T08:{n:02}:00Z")}));
+            }
+            pr["comments"] = json!({"nodes":comments});
+        }
+        prs.as_array_mut().unwrap().push(pr);
+    }
+    // Existing files are minor in the ownership policy; a mention is not a directed review request.
+    let owned = prs
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["number"] == 1203)
+        .unwrap();
+    owned["reviewRequests"] = json!({"nodes":[]});
+    owned["body"] = json!("@alice please");
+    std::fs::write(&file, serde_json::to_vec(&prs).unwrap()).unwrap();
+    let w = world_in(
+        Arc::new(NoopRanker),
+        Duration::from_secs(120),
+        dir.path().to_owned(),
+    )
+    .await;
+    let mut configured = settings();
+    configured.known_bots.push("known".into());
+    w.state
+        .db
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, "u1", &configured, now())
+        .await
+        .unwrap();
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let before = w.summary(ALICE).await;
+    for number in [321, 322] {
+        assert_eq!(
+            before
+                .mentions
+                .iter()
+                .filter(|m| m.number == number)
+                .count(),
+            if number == 321 { 2 } else { 0 }
+        );
+        assert!(
+            !w.items("")
+                .await
+                .items
+                .iter()
+                .any(|i| i.number == Some(number))
+        );
+    }
+    assert_eq!(
+        before
+            .mentions
+            .iter()
+            .filter(|m| m.number == 326 && m.is_bot)
+            .count(),
+        2
+    );
+    for number in [323, 324, 325, 327, 328, 1203] {
+        assert!(
+            !before.mentions.iter().any(|m| m.number == number),
+            "excluded {number}"
+        );
+    }
+    let partial = before
+        .mentions
+        .iter()
+        .find(|m| m.number == 329)
+        .expect("truncated conversation kept");
+    assert_eq!(serde_json::to_value(partial).unwrap()["partly_read"], true);
+    let old = before.mentions.iter().find(|m| m.number == 321).unwrap();
+    let newer = before
+        .mentions
+        .iter()
+        .find(|m| m.number == 321 && m.created_at > old.created_at)
+        .unwrap();
+    let uri = format!("/api/v1/dashboard/mentions/{}/hide", old.id);
+    let no_csrf = api::router(w.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&uri)
+                .header("cookie", ALICE)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(no_csrf.status(), StatusCode::FORBIDDEN);
+
+    assert_eq!(
+        w.send("POST", &uri, ALICE, &[("x-csrf-token", "wrong")])
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert!(
+        w.summary(ALICE)
+            .await
+            .mentions
+            .iter()
+            .any(|m| m.id == old.id)
+    );
+    assert_eq!(
+        w.send("POST", &uri, ALICE, &[]).await.status,
+        StatusCode::NO_CONTENT
+    );
+    w.refreshed().await;
+    let after = w.summary(ALICE).await;
+    assert!(!after.mentions.iter().any(|m| m.id == old.id));
+    assert!(after.mentions.iter().any(|m| m.id == newer.id));
+    let first = w.items("?limit=1").await;
+    assert!(!first.mentions.is_empty());
+    let second = w
+        .items(&format!("?limit=1&cursor={}", first.next_cursor.unwrap()))
+        .await;
+    assert!(second.mentions.is_empty());
+}
+
+#[tokio::test]
+async fn mention_unreadable_policy_keeps_the_same_unverified_items_as_ranking() {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let file = dir.path().join("pull-requests.json");
+    let mut prs: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let pr = prs
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["number"] == 1203)
+        .unwrap();
+    pr["reviewRequests"] = json!({"nodes":[]});
+    pr["body"] = json!("@alice please");
+    std::fs::write(&file, serde_json::to_vec(&prs).unwrap()).unwrap();
+    let w = world_in(
+        Arc::new(NoopRanker),
+        Duration::from_secs(120),
+        dir.path().to_owned(),
+    )
+    .await;
+    let mut configured = settings();
+    configured
+        .repositories
+        .iter_mut()
+        .find(|r| r.repo.name == "platform")
+        .unwrap()
+        .ownership_policy
+        .as_mut()
+        .unwrap()
+        .path = "missing.json".into();
+    w.state
+        .db
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, "u1", &configured, now())
+        .await
+        .unwrap();
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    assert!(
+        w.summary(ALICE)
+            .await
+            .mentions
+            .iter()
+            .any(|m| m.number == 1203)
+    );
+}
+
+#[tokio::test]
+async fn mention_only_items_are_not_counted_in_ranking_progress() {
+    let w = world().await;
+    let done = w.refreshed().await;
+    let total = |key| done.steps.iter().find(|s| s.key == key).unwrap().total;
+    let summary = w.summary(ALICE).await;
+    assert_eq!(total(ScanStepKey::SearchPrs), total(ScanStepKey::PrDetails));
+    assert_eq!(
+        total(ScanStepKey::Issues),
+        Some(summary.snapshot.unwrap().checked.issue)
+    );
+}
+
+#[tokio::test]
+async fn unsearchable_mentions_do_not_spend_the_budget_on_unrelated_open_prs() {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let file = dir.path().join("pull-requests.json");
+    let mut prs: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let mut template = prs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["number"] == 311)
+        .unwrap()
+        .clone();
+    template["author"]["login"] = json!("bob");
+    template["assignees"] = json!({"nodes":[]});
+    template["reviewRequests"] = json!({"nodes":[]});
+    template["reviews"] = json!({"nodes":[],"totalCount":0});
+    template["comments"] = json!({"nodes":[],"totalCount":0});
+    template["reviewThreads"] = json!({"nodes":[],"totalCount":0});
+    for number in 400..445 {
+        let mut pr = template.clone();
+        pr["number"] = json!(number);
+        pr["body"] = json!("Unrelated work");
+        pr["updatedAt"] = json!("2026-11-18T08:00:00Z");
+        prs.as_array_mut().unwrap().push(pr);
+    }
+    template["number"] = json!(450);
+    template["body"] = json!("@alice please reply");
+    template["comments"] = json!({"nodes":[{
+        "author":{"__typename":"User","login":"carol"},
+        "body":"@alice-helper please reply", "createdAt":"2026-11-18T08:00:00Z"
+    }]});
+    template["updatedAt"] = json!("2026-11-16T08:00:00Z");
+    prs.as_array_mut().unwrap().push(template.clone());
+    template["comments"] = json!({"nodes":[],"totalCount":0});
+    template["number"] = json!(451);
+    template["body"] = json!("@alice-helper please reply");
+    prs.as_array_mut().unwrap().push(template);
+    std::fs::write(&file, serde_json::to_vec(&prs).unwrap()).unwrap();
+    let file = dir.path().join("issues.json");
+    let mut issues: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let issue = issues
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|i| i["number"] == 305)
+        .unwrap();
+    issue["body"] = json!("@alice-helper please reply");
+    issue["comments"] = json!({"nodes":[],"totalCount":0});
+    let template = issue.clone();
+    for (number, author, commenter, body, text) in [
+        (600, "bob", "carol", "", "@alice-helper please reply"),
+        (601, "bob", "carol", "> @alice-helper quoted", ""),
+        (602, "dependabot", "carol", "@alice-helper please reply", ""),
+        (603, "bob", "dependabot", "", "@alice-helper please reply"),
+        (
+            604,
+            "bob",
+            "alice",
+            "@alice-helper please reply",
+            "Answered",
+        ),
+        (
+            605,
+            "bob",
+            "alice-helper",
+            "@alice-helper please reply",
+            "Answered",
+        ),
+        (
+            606,
+            "bob",
+            "carol",
+            "@alice-helper-extra",
+            "mail@alice-helper.dev",
+        ),
+    ] {
+        let mut extra = template.clone();
+        extra["number"] = json!(number);
+        extra["author"]["login"] = json!(author);
+        extra["body"] = json!(body);
+        extra["comments"] = json!({"nodes":[{
+            "author":{"__typename":"User","login":commenter}, "body":text,
+            "createdAt":"2026-11-18T08:00:00Z"
+        }]});
+        issues.as_array_mut().unwrap().push(extra);
+    }
+    for number in 700..745 {
+        let mut extra = template.clone();
+        extra["number"] = json!(number);
+        extra["body"] = json!("Unrelated issue");
+        extra["updatedAt"] = json!("2026-11-18T08:00:00Z");
+        issues.as_array_mut().unwrap().push(extra);
+    }
+    issues
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|i| i["number"] == 1525)
+        .unwrap()["body"] = json!("@alice-helper please reply");
+    std::fs::write(&file, serde_json::to_vec(&issues).unwrap()).unwrap();
+    let w = world_in(
+        Arc::new(NoopRanker),
+        Duration::from_secs(120),
+        dir.path().to_owned(),
+    )
+    .await;
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let ranked = w.items("").await.items;
+    let issue = ranked
+        .iter()
+        .find(|i| i.kind == ItemKind::Issue && i.number == Some(1525))
+        .unwrap();
+    assert!(issue.tags.iter().any(|tag| tag.text == "mentions you"));
+    let summary = w.summary(ALICE).await;
+    assert!(
+        summary.mentions.iter().any(|m| m.number == 450),
+        "the older real candidate must be read"
+    );
+    assert_eq!(
+        summary.mentions.iter().filter(|m| m.number == 450).count(),
+        1,
+        "a searchable PR must not match the refused login"
+    );
+    for number in [305, 600] {
+        assert!(
+            summary.mentions.iter().any(|m| m.number == number),
+            "fallback issue {number} must not vanish"
+        );
+    }
+    assert!(
+        !ranked
+            .iter()
+            .any(|i| matches!(i.number, Some(305 | 600..=606 | 700..=744)))
+    );
+    for number in [451, 601, 602, 603, 604, 605, 606, 1525] {
+        assert!(
+            !summary.mentions.iter().any(|m| m.number == number),
+            "ineligible fallback {number}"
+        );
+    }
+    let expected =
+        json!({"unchecked_items":0,"unchecked_logins":["alice-helper"],"timed_out_logins":[]});
+    for uri in ["/api/v1/dashboard", "/api/v1/dashboard/items"] {
+        let read = w.send("GET", uri, ALICE, &[]).await;
+        assert_eq!(read.body["mention_coverage"], expected);
+    }
+    assert!(
+        !summary
+            .snapshot
+            .unwrap()
+            .notes
+            .iter()
+            .any(|n| n.text.contains("Mentions not checked"))
     );
 }

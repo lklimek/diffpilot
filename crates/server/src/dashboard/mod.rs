@@ -11,3 +11,5 @@ pub mod snapshot;
 pub mod zone;
 
 pub use hub::DashboardHub;
+
+pub(crate) mod mentions;

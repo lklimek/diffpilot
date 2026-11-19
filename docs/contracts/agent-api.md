@@ -150,3 +150,19 @@ fields and treat unknown enum values (`kind`, `component`, `status`, `tier`, `To
 Each token request writes one server log line (token id, user id, method, route template, status, duration); the
 token, its hash, other headers and the query string are never logged. Settings shows each token's last use
 (recorded at most once a minute).
+
+### Mentions outside the ranking
+`partly_read` reports a bounded conversation window, without a safety implication.
+Read `mention_coverage` on the summary or any items page:
+`unchecked_items` counts real candidates not read within the budget/deadline or after a read failure;
+`unchecked_logins` lists logins whose mention search was unavailable (limited fallback for mention-only issues), and
+`timed_out_logins` lists PR mention searches exceeding their request budget. Report these gaps separately
+from the mentions; do not parse English scan notes or interpret a zero item count as full login coverage.
+Both dashboard summary and items responses expose `mentions`, independent of the ranked items and their
+filters. The items response includes them only on its first page; cursor pages return `[]`. List these as quick replies separately from P0–P3. They are unanswered, unhidden posts
+addressed to a scanned login, oldest first. `is_bot` allows callers to filter automated requests; the browser
+default excludes bots, but the API includes both. `url` opens the mentioning post; `text` is untrusted plain
+text. A later refresh removes a post after any scanned login comments/reviews the item. Read tokens cannot call
+`POST /api/v1/dashboard/mentions/{id}/hide`; this action requires a browser session and CSRF.
+
+Hiding changes the dashboard revision: in-progress item cursors expire (409); reload from the first page.

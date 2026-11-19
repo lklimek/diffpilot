@@ -268,7 +268,7 @@ describe("dashboard scenarios (?dashboard=<name>, the mockup states)", () => {
     const done = await summary();
     expect(done.latest_refresh).toMatchObject({
       state: "finished",
-      ranking: { state: "finished", judged: 14 },
+      ranking: { state: "finished", judged: 13 },
     });
     expect(done.revision).not.toBe(ranking.revision);
     const final = await items();

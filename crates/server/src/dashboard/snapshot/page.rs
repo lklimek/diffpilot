@@ -35,7 +35,7 @@ fn short_hash(bytes: &[u8]) -> String {
 /// attempt and judgement counts; WP11-JUDGE records the counts as judgements land) and when TODOs are hidden.
 pub fn revision(record: &RefreshRecord, snapshot: &Snapshot) -> String {
     let source = format!(
-        "{}|{:?}|{:?}|{}|{}|{}|{}|{:?}|{:?}|{}",
+        "{}|{:?}|{:?}|{}|{}|{}|{}|{:?}|{:?}|{}|{:?}",
         record.id,
         record.state,
         record.ranking_state,
@@ -46,6 +46,7 @@ pub fn revision(record: &RefreshRecord, snapshot: &Snapshot) -> String {
         record.scanned_at,
         record.finished_at,
         snapshot.todos_hidden,
+        snapshot.mentions.iter().map(|m| &m.id).collect::<Vec<_>>(),
     );
     format!("r-{}", short_hash(source.as_bytes()))
 }

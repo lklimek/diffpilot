@@ -14,6 +14,8 @@ interface EmptyWorkProps {
   excluded?: ReactNode;
   /** The user's PRs waiting on others. */
   awaiting: number;
+  /** Quick replies are present outside the ranked list. */
+  hasMentions?: boolean;
   /** In-app href of the review start page. */
   reviewStartHref: string;
   onNavigate?: Navigate;
@@ -26,6 +28,7 @@ export function EmptyWork({
   checked,
   excluded,
   awaiting,
+  hasMentions = false,
   reviewStartHref,
   onNavigate,
   now,
@@ -37,7 +40,7 @@ export function EmptyWork({
       className="grid gap-2 rounded-lg border border-dashed border-border bg-surface px-6 py-7"
     >
       <h2 id={titleId} className="text-lg font-semibold">
-        Nothing needs you right now.
+        {hasMentions ? "No ranked work right now." : "Nothing needs you right now."}
       </h2>
       <p>
         No pull request waits for your review, nothing is assigned to you

@@ -9,13 +9,13 @@ import failedJson from "../../../../fixtures/dashboard/api/refresh-failed.json";
 
 /** `fixtures/dashboard/api/summary.json`: finished refresh at 08:12, ranked 08:15. */
 export const SUMMARY = summaryJson as unknown as DashboardSummary;
-/** The 14 ranked items, every score final. */
+/** The 13 ranked items, every score final. */
 export const ITEMS = (itemsJson as unknown as ItemPage).items;
 /** The same items while a later refresh ranks (WUI-320 new, NC-482, CON-1534, PLAT-1210 changed). */
 export const PROVISIONAL_ITEMS = (provisionalJson as unknown as ItemPage).items;
 /** Scanning PR details 23 of 41. */
 export const SCANNING = scanningJson as unknown as RefreshStatus;
-/** Ranking 10 of 14. */
+/** Ranking 10 of 13. */
 export const RANKING = rankingJson as unknown as RefreshStatus;
 /** Failed on GitHub's rate limit, retry at 10:41. */
 export const FAILED = failedJson as unknown as RefreshStatus;

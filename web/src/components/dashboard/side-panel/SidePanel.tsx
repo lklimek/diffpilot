@@ -89,7 +89,7 @@ export function SidePanel({ main, children, railText }: SidePanelProps) {
 
   return (
     <div
-      className="grid items-start gap-x-3.5"
+      className="grid items-start gap-x-3.5 max-sm:grid-cols-1!"
       style={{
         gridTemplateColumns: open
           ? `minmax(0,1fr) 8px ${state.width ? `${state.width}px` : DEFAULT_WIDTH}`
@@ -146,7 +146,7 @@ export function SidePanel({ main, children, railText }: SidePanelProps) {
               type="button"
               aria-expanded="false"
               onClick={() => update({ open: true })}
-              className="flex min-h-[280px] w-9 cursor-pointer items-center gap-2 rounded-lg border border-border bg-surface py-3 text-[13px] font-semibold text-text [writing-mode:vertical-rl] hover:border-accent hover:bg-accent-bg"
+              className="flex min-h-[280px] w-9 cursor-pointer items-center gap-2 rounded-lg border border-border bg-surface py-3 text-[13px] font-semibold text-text [writing-mode:vertical-rl] max-sm:min-h-7 max-sm:w-full max-sm:py-1 max-sm:[writing-mode:horizontal-tb] hover:border-accent hover:bg-accent-bg"
             >
               « {railText}
             </button>

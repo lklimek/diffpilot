@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use contracts::api::dashboard::{
-    DashboardSettings, KindCounts, PolicyRef, ScanNote, ScanStepKey, StepState, TodosState,
-    TodosStatus,
+    DashboardSettings, KindCounts, MentionCoverage, PolicyRef, ScanNote, ScanStepKey, StepState,
+    TodosState, TodosStatus,
 };
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
@@ -15,9 +15,9 @@ use jiff::tz::TimeZone;
 
 use super::RunError;
 use super::facts::{self, PrContext};
-use super::history;
 use super::owned;
 use super::progress::{Ended, Progress};
+use super::{history, mentions};
 use crate::dashboard::score::{MilestoneContext, OwnedChange, ScoreRules, TodoFacts};
 use crate::dashboard::settings::memcan_projects;
 use crate::dashboard::snapshot::{SNAPSHOT_VERSION, Snapshot, StoredTodo};
@@ -49,7 +49,7 @@ fn note(text: String) -> ScanNote {
     ScanNote { text, item: None }
 }
 
-fn same_repo(a: &RepoRef, b: &RepoRef) -> bool {
+pub(super) fn same_repo(a: &RepoRef, b: &RepoRef) -> bool {
     a.owner.eq_ignore_ascii_case(&b.owner) && a.name.eq_ignore_ascii_case(&b.name)
 }
 
@@ -96,7 +96,13 @@ pub(super) async fn scan<T: TokenSource>(
             candidates.merge(listed.candidates);
         }
     }
-    let prs = count(candidates.pull_requests.len());
+    let prs = count(
+        candidates
+            .pull_requests
+            .values()
+            .filter(|pr| pr.ranked())
+            .count(),
+    );
     progress.log(format!("search PRs: {prs} found ({} logins)", logins.len()));
     progress
         .step(
@@ -123,7 +129,7 @@ pub(super) async fn scan<T: TokenSource>(
     }
     notes.extend(issues.notes);
     candidates.merge(issues.candidates);
-    let issue_count = count(candidates.issues.len());
+    let issue_count = count(candidates.issues.values().filter(|i| i.ranked()).count());
     progress.log(format!("issues: {issue_count} found"));
     progress
         .step(
@@ -134,7 +140,12 @@ pub(super) async fn scan<T: TokenSource>(
         )
         .await?;
 
-    let pulls: Vec<ItemRef> = candidates.pull_requests.keys().cloned().collect();
+    let pulls: Vec<ItemRef> = candidates
+        .pull_requests
+        .iter()
+        .filter(|(_, c)| c.ranked())
+        .map(|(item, _)| item.clone())
+        .collect();
     let total = count(pulls.len());
     progress
         .step(
@@ -194,6 +205,17 @@ pub(super) async fn scan<T: TokenSource>(
         .step(ScanStepKey::Context, StepState::Running, None, None)
         .await?;
     let owned = owned_changes(client, input, &details.found, &mut notes).await?;
+    let (mentions, mention_notes, unchecked_items) = mentions::collect(
+        client,
+        input.rules,
+        &searchable,
+        &candidates,
+        &details.found,
+        &owned,
+    )
+    .await?;
+    notes.extend(mention_notes);
+    candidates.issues.retain(|_, issue| issue.ranked());
     let with_milestone: BTreeSet<RepoRef> = details
         .found
         .iter()
@@ -232,7 +254,7 @@ pub(super) async fn scan<T: TokenSource>(
         .collect();
     progress.log(format!(
         "context: {} ownership verdicts, {} milestone lists, {} not visible",
-        owned.len(),
+        owned.verdicts.len(),
         milestones.len(),
         unreachable.len()
     ));
@@ -288,7 +310,11 @@ pub(super) async fn scan<T: TokenSource>(
                 PrContext {
                     candidate,
                     blockers: listing.blockers(item),
-                    owned: owned.get(item).copied().unwrap_or(OwnedChange::NoPolicy),
+                    owned: owned
+                        .verdicts
+                        .get(item)
+                        .copied()
+                        .unwrap_or(OwnedChange::NoPolicy),
                     milestones: milestones.get(&item.repo).cloned().unwrap_or_default(),
                 },
             ))
@@ -312,6 +338,12 @@ pub(super) async fn scan<T: TokenSource>(
         todo: count(todos.len()),
     };
     Ok(Snapshot {
+        mention_coverage: MentionCoverage {
+            unchecked_items,
+            unchecked_logins: found.unsearchable,
+            timed_out_logins: found.timed_out_mention_logins,
+        },
+        mentions,
         version: SNAPSHOT_VERSION,
         own_login: input.own_login.to_owned(),
         settings: settings.clone(),
@@ -335,8 +367,8 @@ async fn owned_changes<T: TokenSource>(
     input: &ScanInput<'_>,
     details: &BTreeMap<ItemRef, PullDetail>,
     notes: &mut Vec<ScanNote>,
-) -> Result<BTreeMap<ItemRef, OwnedChange>, WorkError> {
-    let mut verdicts = BTreeMap::new();
+) -> Result<owned::Ownership, WorkError> {
+    let mut ownership = owned::Ownership::new(input.settings);
     let rows: Vec<(RepoRef, PolicyRef, Vec<ItemRef>)> = input
         .settings
         .repositories
@@ -353,23 +385,19 @@ async fn owned_changes<T: TokenSource>(
         .collect();
     for (repo, policy, pulls) in rows {
         let where_ = format!("{}:{}", repo_name(&policy.repo), policy.path);
-        let paths = match client.file_contents(&policy.repo, &policy.path).await {
-            Ok(text) => owned::owned_paths(input.rules, &text)
-                .inspect_err(|error| tracing::debug!(%error, "ownership policy did not parse"))
-                .ok(),
-            Err(error) if error.ends_refresh() => return Err(error),
-            Err(error) => {
-                tracing::debug!(%error, policy = %where_, "ownership policy not read");
-                None
-            }
-        };
+        let paths = ownership
+            .paths(client, input.rules, &repo)
+            .await?
+            .map(<[String]>::to_vec);
         let Some(paths) = paths else {
             notes.push(note(format!(
                 "The ownership policy {where_} could not be read; pull requests of {} are ranked with \
                  ownership unverified",
                 repo_name(&repo)
             )));
-            verdicts.extend(pulls.into_iter().map(|pr| (pr, OwnedChange::Unknown)));
+            ownership
+                .verdicts
+                .extend(pulls.into_iter().map(|pr| (pr, OwnedChange::Unknown)));
             continue;
         };
         let mut reads = Vec::with_capacity(pulls.len());
@@ -391,10 +419,10 @@ async fn owned_changes<T: TokenSource>(
                     OwnedChange::Unknown
                 }
             };
-            verdicts.insert(pr, verdict);
+            ownership.verdicts.insert(pr, verdict);
         }
     }
-    Ok(verdicts)
+    Ok(ownership)
 }
 
 /// Release tags and milestone titles of each repository (Q8); a list that cannot be read stays unknown.

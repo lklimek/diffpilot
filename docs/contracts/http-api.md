@@ -551,7 +551,7 @@ The lines response may include `context_only`, the changed line numbers on its r
 ## Dashboard (v1.1)
 
 Plan `docs/v1.1-dashboard-plan.md` §E (ADR-016, ADR-017, ADR-019, ADR-020). Types: `crates/contracts/src/api/dashboard.rs`
-and `api/access_tokens.rs`; routes R1–R10 in `routes.rs`; both generated into `web/src/api/generated/` like every
+and `api/access_tokens.rs`; routes R1–R11 in `routes.rs`; both generated into `web/src/api/generated/` like every
 HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README there).
 
 | ID | Method | Path | Auth | Request | Response |
@@ -569,6 +569,7 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 | R8 | GET | `/api/v1/settings/access-tokens` | session | – | `AccessToken[]` |
 | R9 | POST | `/api/v1/settings/access-tokens` | session_csrf | `CreateAccessToken` | 201 `CreatedAccessToken`; 409 `token_limit_reached` |
 | R10 | DELETE | `/api/v1/settings/access-tokens/{id}` | session_csrf | – | 204 (404 for an unknown, revoked or another user's token) |
+| R11 | POST | `/api/v1/dashboard/mentions/{id}/hide` | session_csrf | – | 204 (idempotent), 404 outside the user’s snapshot/hidden set |
 
 Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and shapes unchanged); only R8 stays
 `session`. How an agent reads with a token: `agent-api.md`.
@@ -685,3 +686,22 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   (server-internal); a late result of an earlier attempt or of a superseded ranking is ignored.
 - **Tolerant readers** (plan §E.5 E5-3): clients ignore unknown fields and treat unknown values of `kind`,
   `component`, `status`, `tier`, `TokenScope` and history `kind` as opaque. Changes stay additive (ADR-011).
+
+### Unanswered mentions
+`GET /api/v1/dashboard` (`DashboardSummary`) and `/api/v1/dashboard/items` (`ItemPage`) include `mentions:
+Mention[]`, oldest first. This is a separate list, unaffected by ranked-item filters, returned only on the first items page
+(without a cursor); cursor pages return `[]`, available equally to sessions and read tokens. Fields: `id`, `item_key`, `kind` (`pr`/`issue`),
+`repo`, `number`, `title`, `author`, `is_bot`, `created_at`, `text`, `url`. Text is untrusted plain text; `url`
+is built by the server. `is_bot` uses the user's known bots plus GitHub Bot type / `[bot]`. An empty list means
+no unanswered, unhidden mentions found in the snapshot. `Mention.partly_read` is true when any bounded
+conversation window was truncated or its count unavailable; older snapshots default it to false.
+Both responses include `mention_coverage`: `unchecked_items` counts real candidates missed by budget, deadline or read failure;
+`unchecked_logins` names logins whose mention search was unavailable (limited fallback for mention-only issues);
+`timed_out_logins` names PR searches that exceeded their request budget. Coverage is independent of filters
+and present on every items page. The browser displays it in the collapsed summary, even without rows,
+without parsing or duplicating scan notes. Older snapshots default to an empty list and zero/empty coverage.
+
+`POST /api/v1/dashboard/mentions/{id}/hide` (R11) has no body. Session + CSRF only, no personal access tokens. Returns
+204 (including repeated hides), 404 for an identity outside the user's snapshot/hidden set. A hide changes the
+summary revision and items ETag, persists per user across devices/refreshes, and leaves ranking/judgement alone.
+New posts on the same item have independent identities. Hides are not an update to GitHub.

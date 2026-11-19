@@ -1,3 +1,4 @@
+import { useMutationState } from "@tanstack/react-query";
 // Data of the dashboard screen (plan §E, docs/contracts/http-api.md "Dashboard", sse-events.md): the summary (R1),
 // every item of its revision (R1b, cursor paging, ETag), live refresh events (R5), Refresh (R2), Cancel (R3),
 // Rank again (R4) and the browser's time zone on the first visit (R6b).
@@ -291,4 +292,30 @@ export function useSaveBrowserTimeZone(summary: DashboardSummary | undefined): {
     );
   }, [client, missing]);
   return { failed };
+}
+
+/** Hide persists server-side; invalidation also refreshes the navigation count. */
+export function useHideMention() {
+  const client = useQueryClient();
+  const [error, setError] = useState<Error | null>(null);
+  const pendingIds = useMutationState({
+    filters: { mutationKey: ["hide-mention"], status: "pending" },
+    select: (m) => m.state.variables as string,
+  });
+  const mutation = useMutation({
+    mutationKey: ["hide-mention"],
+    mutationFn: async (id: string) => {
+      try {
+        await api.hideDashboardMention(id);
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 404)) throw error;
+      }
+    },
+    onError: setError,
+    onSuccess: () => {
+      setError(null);
+      return client.invalidateQueries({ queryKey: SUMMARY_KEY });
+    },
+  });
+  return { ...mutation, pendingIds, error, isError: error !== null, dismissError: () => setError(null) };
 }

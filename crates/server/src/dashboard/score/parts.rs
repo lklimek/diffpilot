@@ -252,7 +252,7 @@ fn milestone_part(milestone: &Milestone, context: &MilestoneContext) -> Part {
 
 /// Whether the item is ranked, with the reason; `confirmed` is false when the LLM should check it (plan Q3).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Eligibility {
+pub(crate) struct Eligibility {
     /// The rule that leaves the item out; `None` when eligible.
     pub excluded_by: Option<ExclusionReason>,
     pub reason: String,
@@ -289,11 +289,30 @@ fn skipped(rules: &ScoreRules, author: Option<&str>) -> Option<Eligibility> {
 
 /// Skill `pr_eligibility` with the excluded authors (K7) and per-repository ownership policies (K4).
 pub(super) fn pr_eligibility(rules: &ScoreRules, pr: &PrFacts) -> Eligibility {
-    let author = pr.author.as_deref().unwrap_or("?");
-    if let Some(no) = skipped(rules, pr.author.as_deref()) {
+    pull_eligibility(
+        rules,
+        pr.author.as_deref(),
+        pr.is_draft,
+        pr.relations.contains(&Relation::Assigned),
+        pr.review_pending_for_us,
+        pr.owned_change,
+    )
+}
+
+/// Shared draft, directed-at-you and ownership decision for ranking and mention discovery.
+pub(crate) fn pull_eligibility(
+    rules: &ScoreRules,
+    author: Option<&str>,
+    is_draft: bool,
+    assigned: bool,
+    review_pending_for_us: bool,
+    owned_change: OwnedChange,
+) -> Eligibility {
+    if let Some(no) = skipped(rules, author) {
         return no;
     }
-    if pr.is_draft && !rules.is_scanned(author) {
+    let author = author.unwrap_or("?");
+    if is_draft && !rules.is_scanned(author) {
         return Eligibility::no(
             ExclusionReason::Draft,
             format!("draft by @{author} (only our own drafts count)"),
@@ -302,12 +321,10 @@ pub(super) fn pr_eligibility(rules: &ScoreRules, pr: &PrFacts) -> Eligibility {
     // The ownership policy filters only what is not directed at the user (D19): authored by, assigned to or a
     // review requested directly from a scanned login. A team-only request stays filtered: like human waiting, the
     // scorer treats it as a hint only.
-    let directed = rules.is_scanned(author)
-        || pr.relations.contains(&Relation::Assigned)
-        || pr.review_pending_for_us;
+    let directed = rules.is_scanned(author) || assigned || review_pending_for_us;
     if directed
         && matches!(
-            pr.owned_change,
+            owned_change,
             OwnedChange::None | OwnedChange::Minor | OwnedChange::Unknown
         )
     {
@@ -315,7 +332,7 @@ pub(super) fn pr_eligibility(rules: &ScoreRules, pr: &PrFacts) -> Eligibility {
             "directed at you (the ownership policy applies only to other pull requests)",
         );
     }
-    match pr.owned_change {
+    match owned_change {
         OwnedChange::Significant => Eligibility::yes("significant change in owned paths"),
         OwnedChange::None => Eligibility::no(
             ExclusionReason::OutsideOwnedAreas,
@@ -330,7 +347,7 @@ pub(super) fn pr_eligibility(rules: &ScoreRules, pr: &PrFacts) -> Eligibility {
             reason: "ownership policy unavailable: change in owned paths unverified".into(),
             confirmed: false,
         },
-        OwnedChange::NoPolicy if pr.is_draft => Eligibility::yes("draft by us"),
+        OwnedChange::NoPolicy if is_draft => Eligibility::yes("draft by us"),
         OwnedChange::NoPolicy => Eligibility::yes("open non-draft PR"),
     }
 }

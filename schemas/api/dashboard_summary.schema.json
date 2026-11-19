@@ -4,6 +4,23 @@
   "description": "Response of `GET /api/v1/dashboard`: the user's dashboard without its items.",
   "type": "object",
   "properties": {
+    "mentions": {
+      "description": "Unanswered, unhidden mentions, oldest first; independent of the ranking.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Mention"
+      },
+      "default": []
+    },
+    "mention_coverage": {
+      "description": "Mention reads omitted in this snapshot, independent of item filters and pagination.",
+      "$ref": "#/$defs/MentionCoverage",
+      "default": {
+        "unchecked_items": 0,
+        "unchecked_logins": [],
+        "timed_out_logins": []
+      }
+    },
     "revision": {
       "description": "Opaque; changes whenever the stored snapshot or its ranking changes (poll this, then fetch the items).",
       "type": "string"
@@ -47,6 +64,145 @@
     "older_prompt_judgements"
   ],
   "$defs": {
+    "Mention": {
+      "description": "A request addressed to a scanned login, outside the ranked list.",
+      "type": "object",
+      "properties": {
+        "partly_read": {
+          "description": "Only a bounded part of this conversation was read.",
+          "type": "boolean",
+          "default": false
+        },
+        "id": {
+          "description": "Stable opaque identity of this post on this item (used by Hide).",
+          "type": "string"
+        },
+        "item_key": {
+          "description": "The containing item.",
+          "$ref": "#/$defs/ItemKey"
+        },
+        "kind": {
+          "description": "Pull request or issue.",
+          "$ref": "#/$defs/GithubKind"
+        },
+        "repo": {
+          "description": "Repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "Item number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "title": {
+          "description": "Item title, plain text.",
+          "type": "string"
+        },
+        "author": {
+          "description": "Mentioning author; a deleted account is shown as `ghost`.",
+          "type": "string"
+        },
+        "is_bot": {
+          "description": "GitHub Bot type, [bot] suffix or the user's known bots.",
+          "type": "boolean"
+        },
+        "created_at": {
+          "description": "When the mentioning post was created.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "text": {
+          "description": "One line of the mentioning text, plain text only.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Server-built GitHub link to the mentioning post.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "item_key",
+        "kind",
+        "repo",
+        "number",
+        "title",
+        "author",
+        "is_bot",
+        "created_at",
+        "text",
+        "url"
+      ]
+    },
+    "ItemKey": {
+      "type": "string",
+      "pattern": "^(memcan~[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Za-z0-9_-]{1,39}~([A-Za-z0-9_-][A-Za-z0-9._-]{0,99}|\\.[A-Za-z0-9_-][A-Za-z0-9._-]{0,98}|\\.\\.[A-Za-z0-9._-]{1,98})~(pr|issue)~([1-9][0-9]{0,8}|[1-3][0-9]{9}|4[01][0-9]{8}|42[0-8][0-9]{7}|429[0-3][0-9]{6}|4294[0-8][0-9]{5}|42949[0-5][0-9]{4}|429496[0-6][0-9]{3}|4294967[01][0-9]{2}|42949672[0-8][0-9]|429496729[0-5]))$"
+    },
+    "GithubKind": {
+      "description": "GitHub item kinds of the list filter `kind`.",
+      "oneOf": [
+        {
+          "description": "Pull requests.",
+          "type": "string",
+          "const": "pr"
+        },
+        {
+          "description": "Issues.",
+          "type": "string",
+          "const": "issue"
+        }
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "MentionCoverage": {
+      "description": "Missing mention reads; zero items does not imply that every login was searched.",
+      "type": "object",
+      "properties": {
+        "unchecked_items": {
+          "description": "Real candidates not checked because of the read budget, deadline or read failure.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unchecked_logins": {
+          "description": "Logins whose mention search was unavailable; fallback covers only mention-only issues.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timed_out_logins": {
+          "description": "Logins whose PR mention search exceeded its request budget.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "unchecked_items",
+        "unchecked_logins",
+        "timed_out_logins"
+      ]
+    },
     "RefreshStatus": {
       "description": "One refresh: scan progress, ranking and outcome (`GET /api/v1/dashboard/refreshes/{id}`, SSE `refresh`).",
       "type": "object",
@@ -695,24 +851,6 @@
         "tags"
       ]
     },
-    "RepoRef": {
-      "description": "A GitHub repository.",
-      "type": "object",
-      "properties": {
-        "owner": {
-          "description": "Owner (user or organisation) login.",
-          "type": "string"
-        },
-        "name": {
-          "description": "Repository name.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "owner",
-        "name"
-      ]
-    },
     "FactTag": {
       "description": "A deterministic tag from scan facts.",
       "type": "object",
@@ -914,10 +1052,6 @@
       "required": [
         "text"
       ]
-    },
-    "ItemKey": {
-      "type": "string",
-      "pattern": "^(memcan~[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Za-z0-9_-]{1,39}~([A-Za-z0-9_-][A-Za-z0-9._-]{0,99}|\\.[A-Za-z0-9_-][A-Za-z0-9._-]{0,98}|\\.\\.[A-Za-z0-9._-]{1,98})~(pr|issue)~([1-9][0-9]{0,8}|[1-3][0-9]{9}|4[01][0-9]{8}|42[0-8][0-9]{7}|429[0-3][0-9]{6}|4294[0-8][0-9]{5}|42949[0-5][0-9]{4}|429496[0-6][0-9]{3}|4294967[01][0-9]{2}|42949672[0-8][0-9]|429496729[0-5]))$"
     },
     "KindCounts": {
       "description": "Counts by item kind.",
