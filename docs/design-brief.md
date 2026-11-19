@@ -46,7 +46,7 @@ can judge the PR at project scale, not only line by line.
   not evidence of no defects."
 - **Verdict after evidence.** Evidence (behaviour, why, consequences, call hierarchy) comes before
   assessment; assessment is collapsed until clicked. LLM suspicions are phrased as questions to check, not
-  verdicts. The remark marker's popover (opens on hover or focus of the marker; a click pins it) states the was → is fact of a behaviour remark: no risk, no verdict; a highlight has no hover tooltip.
+  verdicts. The ◆ icon popup of a remark (opens on hover or focus of the icon; a click pins it) states only the was → is fact of a behaviour remark (Was and Is as separate blocks): no risk, no verdict; a highlight has no hover tooltip.
 - **No numeric confidence** anywhere (no decimals, no percentages). Observed facts carry a line reference;
   inferences are marked as inferences; hedges survive shortening.
   Review ticks must not become points or a percentage score.
@@ -88,14 +88,14 @@ can judge the PR at project scale, not only line by line.
 ### v1
 | Area | Decision |
 |---|---|
-| Screens | Four: Home, Analysis progress, Tour, Settings. The Tour is the whole review screen. |
+| Screens | Four: Home, Analysis progress, Review, Settings. Review has two views of the same analysis: Flows (the former Tour) and Files (§4.5, v1.2). |
 | Input | One field: GitHub PR URL. Public repositories only. No dashboard, no recent-reviews list. |
 | Users | GitHub login (GitHub App, user access tokens). The GitHub logins allowed to sign in are a tenant setting; v1 has no UI or configuration file for it: the seeded tenant `default` allows exactly `lklimek`. Single tenant `default`, hardcoded. |
 | Analysis | The review opens only when the analysis has finished. No partial review. |
 | PR context | Problem and why, related work, fit questions, CI, deterministic counters, project profile status. |
 | GitHub context | Existing review threads at their steps, with an LLM status; CI status. |
 | Ask | Free-text question about the current step, answered by an on-demand agent run with repo access that resumes the analysis's agent session, pinned and labelled as an LLM answer. In the MVP. No one-click deepen actions. |
-| Progress | Tick off steps; a flow is reviewed when all its steps are ticked; top-bar counter "flows reviewed k / n"; persisted per analysis, together with the last viewed block. |
+| Progress | Tick off steps (Flows view only); a flow is reviewed when all its steps are ticked; top-bar "Your progress k / n"; persisted per analysis, together with the last viewed block. Per-file GitHub "Viewed" is synced in the Files view (v1.2); ticks stay local. |
 | Comments | On any displayed line; written straight into the user's GitHub pending review (a line outside the PR diff becomes a file-level comment that links to the line). No local drafts. |
 | Feedback | correct / wrong / irrelevant / overrated / underrated + note; "missed by the LLM" recorded automatically. Stored locally and written to MemCan. |
 | Resume | Opening a PR with an existing analysis resumes it (ticks, answers, last viewed block kept). If the head moved: banner and "Re-analyze" (fresh analysis, ticks not carried over). |
@@ -110,15 +110,16 @@ can judge the PR at project scale, not only line by line.
 
 ### Later
 - Later versions (not yet assigned to a number): Groups workspace (flows as a navigable list with a
-  per-flow code view), overview screen, files tree, partial review while the analysis is running.
+  per-flow code view), overview screen, partial review while the analysis is running. (The files tree is in
+  v1.2: the Files view, §4.5.)
 - v2: re-review (semantic delta since the reviewed head, ticks carried over); recent-reviews list; LLM
   "auto-comment" (drafts an English PR comment); Claude provider; Rust and Go tech plugins (tree-sitter
   test/comment ranges, LSP call hierarchy, deterministic rename / syntax-level confirmation of refactors);
   PR-description-vs-code check.
 - v3+: LLM-curated dashboard of PRs to review; per-job containers (tenant tokens, private repositories,
   later build/test).
-- Later, unscheduled: static-analysis actions (find callers, test coverage, verify suspicion); sync of ticks
-  with GitHub "Viewed"; custom "not analysed" rules.
+- Later, unscheduled: static-analysis actions (find callers, test coverage, verify suspicion); custom "not
+  analysed" rules. (Per-file GitHub "Viewed" sync is in v1.2; ticks stay local and are not synced.)
 - v5+: real tenants (tenant = organisation, own LLM keys, users ↔ tenants many-to-many), billing.
 
 ### Non-goals
@@ -229,8 +230,10 @@ Rules for every screen:
    explaining it, except the code-view highlight label, whose explanation is the remark popover.
 4. The legend (how code is drawn, §4.3) is not on the page; it is in the `?` help together with the
    keyboard shortcuts.
-5. Review-screen top bar: repo, PR number and title, head SHA, CI status (failing checks in the tooltip),
-   counter "flows reviewed k / n" (no percentage, no risk weighting), pending-review count, help, user menu.
+5. Review-screen top bar: breadcrumb "diffpilot › owner/repo #N [↗ GitHub] › view menu (Flows / Files)", PR
+   title, head SHA, CI status (failing checks in the tooltip), "Your progress k / n ▾" (k = flows with every step
+   ticked; no percentage, no risk weighting; opens the flows list with analysis state, steps ticked and the
+   analyse/pause actions), pending-review count, help, user menu.
 
 States every screen needs: loading, empty, error.
 
@@ -262,7 +265,7 @@ is independent of a provider limit and never resumes automatically. Resume check
 not moved. Home also offers Resume. Cancel has an inline confirmation explaining that it discards the
 plan and completed flows while retaining both PR sessions; Pause keeps everything. Confirmed cancellation returns to Home.
 
-Owner-approved amendment (2026-11-17): once planning and PR context are accepted, the Tour opens while
+Owner-approved amendment (2026-11-17): once planning and PR context are accepted, the Flows view opens while
 flows continue serially. Pending flows show their planned intent/ranges and explicit work state, never
 an implied assessment. Opening a pending flow requests it ahead of background work; the current job is
 not interrupted. The per-analysis background switch defaults on and survives restart; off means on demand.
@@ -274,7 +277,7 @@ Owner-approved assessment amendment (2026-11-17): the lowest band needs only its
 reason; higher bands retain the full assessment. Detailed fields are optional in the data model and omitted
 for concise low assessments. Assessments remain collapsed by default; no step-count cap or per-kind effort.
 
-### 4.3 Tour (the review screen)
+### 4.3 Flows view (the review screen; formerly the Tour)
 
 **Sequence.** PR context → for each flow in order: flow introduction → its steps, one at a time → next flow.
 Previous / Next walk this sequence; after the last step of a flow comes the next flow's introduction. The
@@ -311,9 +314,15 @@ clicking anywhere on the strip restores it.
     analysed reads "Recognised by file path, no LLM: Tests (4 files), Docs & comments (3 files), Cargo.lock"
     plus the deterministic counters.
 - A moved block with identical text reads "Body text identical; call site changed in flow 1".
+- On every step a collapsible "Why this flow" strip above the diagram shows FlowIntroduction problem → change
+  (LLM tag) and links to the introduction; its collapsed state is remembered.
 
 **Code view.** Own line renderer. Gutter: neutral mark on every changed line; LLM colouring only on annotated
-ranges; markers for LLM remark, deleted site, GitHub thread, own comment. A highlight has no hover tooltip; clicking its remark marker opens a popover with Was and Is as separate blocks.
+ranges; markers for LLM remark, deleted site, GitHub thread, own comment. No hover popups over code text. One ◆
+per LLM remark in the gutter (overlapping remarks keep one bar and one label). Every icon in the code (◆, ?, ❝,
+▣, Show rows) has a popup: hover or focus shows it, moving away hides it, a click pins it until the next click,
+Esc closes it; its action is a button inside. The ◆ popup shows Was and Is as separate blocks. Selecting line
+numbers writes a permalink (`#lines?file&side&line[&end]`) into the URL.
 Legend (shown in `?`):
 
 | Drawing | Meaning |
@@ -352,7 +361,9 @@ Legend (shown in `?`):
     user's pending review on GitHub. GitHub accepts line threads only inside the diff, so a comment on a line
     outside the PR diff is added as a file-level comment whose body links to the line.
 
-**Progress.** Tick per step; a flow is reviewed when all its steps are ticked; top bar "flows reviewed k / n".
+**Progress.** Tick per step, in the Flows view only; a flow is reviewed when all its steps are ticked; top bar
+"Your progress k / n". Analysis state is shown per flow inside its dropdown, never as a top-bar count. Each step
+header shows the file's GitHub Viewed state as a read-only chip.
 
 **Keyboard**: `j` / `k` next / previous block (introduction or step), `n` / `p` next / previous flow, `x`
 tick the current step, `d` show / hide old code, `c` comment on the current line, `a` ask, `?` help, `Esc`
@@ -378,6 +389,18 @@ returning to an interrupted review.
   latest analysis first then name, with per-user browser memory and a `repo=owner/name` URL parameter.
   Cards take their content height; the built-in rules are collapsed by default. Format MemCan call times
   like LLM call times, separately from the project-profile line.
+
+### 4.5 Files view (v1.2)
+
+File tree by path classification, with step ticks per file; one file in the centre with the shared code view
+(no owner column; one ◆ per LLM remark in the gutter); the diff hunk is the selectable unit; any line or range can
+be selected (click, Shift+click, drag, Enter/Shift+Enter on line numbers) as its own block. Inspector: file
+summary, a hunk (every flow and step in it, Explained in / Also shown in / In no flow, tick state read-only,
+Details per step), a step inside a hunk, or the user's line selection with Ask about these lines; dock with Ask
+(anchored to lines, a step or the file), Feedback, Comment. Per-file Viewed synced with GitHub (read on open,
+written on toggle, then the next file opens; DISMISSED shown as changed since viewed; disabled when the head
+moved). No ticking in Files. Keys `j k n p v r d c a s ? Esc`. Who explains each changed line comes from the
+server, from the same coverage as Unexplained (`GET …/files`, http-api.md).
 
 ## 5. Architecture
 
@@ -593,7 +616,8 @@ dash-evo-tool 45% of recent changes touch a file over 1000 lines (8% over 5000);
 files of 14–16k lines and generated gRPC clients of 135–140k lines.
 
 Rules:
-1. The UI never renders a whole file; the Tour shows steps. The API serves file content by line range.
+1. The UI never renders a whole file at once; the Flows view shows steps, the Files view one file's hunks and
+   requested ranges. The API serves file content by line range.
 2. Shiki colours only the displayed lines; occasional wrong colours (a step starting inside a multi-line
    comment or string) are accepted.
 3. Generated files are Not analysed by path rule before any agent run; never rendered, never given to the
@@ -625,7 +649,7 @@ Outside the repository, in `/data/artifacts/diffpilot/2026-11-16/`:
 - `mockups`, `mockups-v2`, `mockups-v3`, `mockups-v4` — archived earlier mockup sets, including the dropped
   Groups workspace, overview and files screens. Superseded by `docs/mockups/`.
 
-### Owner-approved amendment — 2026-11-17: show less in the Tour
+### Owner-approved amendment — 2026-11-17: show less in the Flows view
 
 Empty explanatory sections are hidden, without implying safety. Unavailable deterministic checks retain one factual line. The navigation owns the step list and kind icons; the Inspector owns step facts, caller/next descriptions and the collapsed assessment. The decision sentence belongs under the step title and in the diagram node's accessible description. Evidence remains attached to each statement, collapsed beneath it behind “Evidence · N places”; opening it exposes short in-app line links. The code occupies the full centre width. The diagram uses the persisted step order from top to bottom, independent of viewport width, so navigation, diagram, Previous/Next and deep links agree. Replacements pair old and new lines under one label; pure deletions remain distinct.
 
@@ -684,12 +708,12 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   After a cancel Home says "Analysis cancelled. Check the PR to start again.". Supersedes the start on "Analyze"
   and "Re-analyze", and "Analysis cancelled — analyze again", in §4.1 and the separate "Analyze anyway" step.
 - **Language of an analysis.** Wherever an analysis is offered or shown (Home's check card, the progress screen
-  and Tour top bar) a small tag names the language of its LLM texts ("EN" / "PL" / "RU"). An existing analysis in
+  and review top bar) a small tag names the language of its LLM texts ("EN" / "PL" / "RU"). An existing analysis in
   another language than the user's setting is still offered first ("Open"); a secondary
   "Analyse again in <language>" starts one in the user's language.
 - **Flows on request.** Flows are analysed only when the user asks: "Analyse this flow" on a flow not analysed
   yet (opening it requests nothing), or "Analyse all remaining flows", the one opt-in for everything (the
-  analysis's background switch; shown as "Analysing all remaining flows — Stop" while on), in the Tour's left
+  analysis's background switch; shown as "Analysing all remaining flows — Stop" while on), in the Flows view's left
   panel and on the progress screen (which shows the number of remaining flows only, no changed lines). The web
   reads the switch from the analysis and assumes no default. With
   nothing queued or running: "Nothing is being analysed. Choose a flow to analyse, or analyse all remaining
@@ -746,7 +770,8 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   and newest at the bottom, the field below it. Each entry is the question with the step it was asked on (a small
   link that opens that step) and its answer; questions asked on other steps belong to the same thread: it is the
   user's conversation about this pull request's analysis. "Whole conversation" (default) and
-  "This step" filter it. The thread follows the newest entry unless the reader scrolled up; a new question always
+  "This step" filter it in Flows; "This file" and "This block" in Files. A question is anchored to a step
+  (optionally a line range) or to lines or a file without a step. The thread follows the newest entry unless the reader scrolled up; a new question always
   shows. Pending answers keep their progress line, failed ones Ask again. Answers keep their line breaks; list
   lines are shown as typed with a hanging indent. Supersedes "Answers render below the question field, newest
   first" above.
