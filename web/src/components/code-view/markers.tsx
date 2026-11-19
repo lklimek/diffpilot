@@ -71,10 +71,13 @@ const linesWord = (a: Annotation) =>
 export function RemarkMarker({
   annotations,
   line,
+  unrated = false,
   onShowInInspector,
 }: {
   annotations: readonly Annotation[];
   line: number;
+  /** The highlight carries no risk rating; the popover says so. */
+  unrated?: boolean;
   onShowInInspector?: (target: MarkerTarget) => void;
 }) {
   const n = annotations.length;
@@ -82,8 +85,13 @@ export function RemarkMarker({
     <Popover
       label={`LLM remarks at line ${line}`}
       tag="llm"
-      content={(pinned) =>
-        annotations.map((a) => {
+      content={(pinned) => [
+        unrated && (
+          <span key="unrated" className="block text-muted">
+            Risk not rated by the LLM.
+          </span>
+        ),
+        ...annotations.map((a) => {
           const title = `${annotationName(a)} · ${linesWord(a)}`;
           const level = flagLevel(a);
           return (
@@ -94,7 +102,12 @@ export function RemarkMarker({
               </span>
               {a.type === "behaviour" ? (
                 <>
-                  <span className="block">Was: {a.was}</span> <span className="block">Is: {a.is}</span>
+                  <span className="block">
+                    <span className="font-semibold">Was:</span> {a.was}
+                  </span>
+                  <span className="mt-1 block">
+                    <span className="font-semibold">Is:</span> {a.is}
+                  </span>
                 </>
               ) : (
                 <span className="block whitespace-pre-wrap">
@@ -121,8 +134,8 @@ export function RemarkMarker({
               )}
             </span>
           );
-        })
-      }
+        }),
+      ]}
     >
       <button
         type="button"

@@ -94,9 +94,9 @@ describe("CodeView", () => {
     );
     const label = screen.getByText(/LOW · LLM remark: note/);
     act(() => label.focus());
-    const tooltip = screen.getByRole("tooltip");
-    expect(tooltip).not.toHaveTextContent("Was:");
-    expect(tooltip).toHaveTextContent("No behaviour annotation on these lines.");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(label).not.toHaveAccessibleDescription(/Was:/);
+    expect(label).toHaveAccessibleDescription("No behaviour annotation on these lines.");
   });
 
   it("renders numbered lines of the range in a labelled, keyboard-scrollable region", () => {
@@ -188,7 +188,7 @@ describe("CodeView", () => {
     },
   );
 
-  it("draws an unrated remark with a thin neutral line, not the LOW pattern, and says so in the tooltip", () => {
+  it("draws an unrated remark with a thin neutral line, not the LOW pattern, and says so in its description and popover", () => {
     render(<CodeView lines={plain(1, ["a", "b"])} annotations={[note("x.a1", 2, 2)]} band={null} />);
     const highlight = document.querySelector("[data-highlight]")!;
     expect(highlight).toHaveAttribute("data-band", "none");
@@ -198,6 +198,10 @@ describe("CodeView", () => {
     expect(label).toHaveTextContent(/^LLM remark: note$/);
     expect(highlight).not.toHaveTextContent("◇");
     expect(label).toHaveAccessibleDescription(/Risk not rated by the LLM/);
+    act(() => screen.getByRole("button", { name: "LLM remark at line 2" }).focus());
+    expect(screen.getByRole("dialog", { name: "LLM remarks at line 2" })).toHaveTextContent(
+      "Risk not rated by the LLM.",
+    );
   });
 
   it("keeps line numbers and code in the same columns inside and outside a highlight", () => {
@@ -216,26 +220,28 @@ describe("CodeView", () => {
     expect(marks[0]).toHaveAccessibleDescription(/Was: /);
   });
 
-  it("states only was → is in the hover tooltip of a highlight", async () => {
+  it("shows no tooltip on hovering or focusing a highlight; its was → is stays in the description", async () => {
     const props = stepProps("f1.5");
     render(<CodeView {...props} />);
     await userEvent.hover(document.querySelector("[data-highlight]")!);
-    const tip = screen.getByRole("tooltip");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    const label = screen.getByText(/HIGH · LLM remark/);
+    act(() => label.focus());
+    expect(screen.queryByRole("tooltip")).toBeNull();
     for (const a of props.annotations.filter((annotation) => annotation.type === "behaviour")) {
-      expect(tip).toHaveTextContent(`Was: ${a.was}`);
-      expect(tip).toHaveTextContent(`Is: ${a.is}`);
-      if (a.text) expect(tip).not.toHaveTextContent(a.text);
+      expect(label.getAttribute("aria-describedby")).toBeTruthy();
+      expect(label).toHaveAccessibleDescription(expect.stringContaining(`Was: ${a.was}`));
+      expect(label).toHaveAccessibleDescription(expect.stringContaining(`Is: ${a.is}`));
     }
-    expect(tip).not.toHaveTextContent(/HIGH|risk/i);
   });
 
-  it("reaches a highlight by keyboard, shows its tooltip and selects its annotations", async () => {
+  it("reaches a highlight by keyboard and selects its annotations", async () => {
     const onSelectAnnotation = vi.fn();
     const props = stepProps("f1.5");
     const { rerender } = render(<CodeView {...props} onSelectAnnotation={onSelectAnnotation} />);
     const label = screen.getByRole("button", { name: /HIGH · LLM remark/ });
     act(() => label.focus());
-    expect(screen.getByRole("tooltip")).toBeVisible();
+    expect(screen.queryByRole("tooltip")).toBeNull();
     await userEvent.keyboard("{Enter}");
     expect(onSelectAnnotation).toHaveBeenCalledWith(["f1.5.a1", "f1.5.a2", "f1.5.a3"]);
     rerender(<CodeView {...props} onSelectAnnotation={onSelectAnnotation} selectedAnnotation="f1.5.a2" />);
@@ -424,7 +430,7 @@ describe("CodeView", () => {
     await userEvent.hover(document.querySelector("[data-highlight]")!);
     expect(document.querySelector("img")).toBeNull();
     expect(document.querySelector("a")).toBeNull();
-    expect(screen.getByRole("tooltip")).toHaveTextContent(evil);
+    expect(document.querySelector("[data-highlight] [hidden]")).toHaveTextContent(evil);
   });
 
   describe("syntax highlighting", () => {
@@ -770,7 +776,7 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     body: "Is the retry bounded?",
   };
 
-  it("an LLM remark marker is a 24 px button whose hover shows the full remark with an LLM tag, before was → is", async () => {
+  it("an LLM remark marker is a 24 px button whose popover shows the full remark with an LLM tag and was and is as separate blocks", async () => {
     const user = userEvent.setup();
     render(
       <CodeView
@@ -793,12 +799,23 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     const marker = screen.getByRole("button", { name: "2 LLM remarks at line 1" });
     expect(marker.className).toMatch(/(^|\s)size-6(\s|$)/);
     await user.hover(document.querySelector("[data-highlight] [data-line='2']")!);
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Was: retries once → Is: retries all");
+    expect(screen.queryByRole("tooltip")).toBeNull();
     await user.hover(marker);
     const popover = screen.getByRole("dialog", { name: "LLM remarks at line 1" });
     expect(popover).toHaveTextContent("Behaviour · lines 1–2");
-    expect(popover).toHaveTextContent("Was: retries once");
-    expect(popover).toHaveTextContent("Is: retries all");
+    const wasLabel = within(popover).getByText("Was:");
+    const isLabel = within(popover).getByText("Is:");
+    const was = wasLabel.parentElement!;
+    const is = isLabel.parentElement!;
+    expect(was).toHaveTextContent("Was: retries once");
+    expect(is).toHaveTextContent("Is: retries all");
+    expect(was).not.toBe(is);
+    expect(was.parentElement).toBe(is.parentElement);
+    expect(was.className).toMatch(/(^|\s)block(\s|$)/);
+    expect(is.className).toMatch(/(^|\s)block(\s|$)/);
+    expect(is.className).toMatch(/(^|\s)mt-/);
+    expect(wasLabel).toHaveClass("font-semibold");
+    expect(isLabel).toHaveClass("font-semibold");
     expect(popover).toHaveTextContent("Red flag · line 1");
     expect(popover).toHaveTextContent("Potential double broadcast:");
     expect(
@@ -810,7 +827,6 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     expect(within(popover).getByText("LLM")).toHaveAccessibleDescription(
       "This text was written by the LLM; it was not checked.",
     );
-    // The marker's own popover wins over the row's was → is tooltip while the pointer is on the marker.
     expect(screen.queryByRole("tooltip")).toBeNull();
     expect(within(popover).queryByRole("button", { name: /Show in Inspector/ })).toBeNull();
     expectTrustWording(popover.textContent ?? "");

@@ -35,7 +35,7 @@ Flow transport is superseded by [ADR-014](ADR-014-flow-file-output.md); the cano
     `left | right` (the server maps base = LEFT, head = RIGHT).
   - Annotation types `behaviour | consequence | question | note`; every annotation carries `basis` and
     evidence. **Every annotation also carries `was` and `is`**: the behaviour of its highlighted
-    range before and after, the only content of the hover tooltip (facts, no risk, no verdict) and of the
+    range before and after, the content of the remark marker's popover for behaviour remarks (facts, no risk, no verdict) and of the
     inspector's "Behaviour (was → is)" section for that highlight. `text` holds the consequence, question or
     note and is null exactly for `behaviour` annotations (verify: `BehaviourMissing`, `RemarkMismatch`).
     The API `Annotation` is a field-for-field projection (`Annotation::from_agent`). `fact` ⇒ at least one evidence reference is enforced by the server's verify step (the strict
