@@ -2212,6 +2212,30 @@ async fn the_pack_of_a_lines_question_takes_the_steps_chosen_at_submit() {
     assert!(!none.contains(r#"{"step_id":"#), "{none}");
 }
 
+/// Stores the fixture's GitHub snapshot, so the Tour can be built (flow anchors are checked against it).
+async fn store_snapshot(f: &Fixture) {
+    let golden = fixture_json("api/default/tour.json");
+    let mut threads = golden["threads"].clone();
+    for thread in threads.as_array_mut().expect("threads") {
+        for key in ["step_id", "llm_status", "llm_reason"] {
+            thread[key] = Value::Null;
+        }
+    }
+    let snapshot = json!({ "ci": golden["pr_context"]["facts"]["ci"], "threads": threads, "threads_status": "checked" });
+    f.state
+        .db
+        .documents()
+        .put(
+            f.analysis,
+            DocumentKind::GithubSnapshot,
+            "",
+            &snapshot,
+            Timestamp::now(),
+        )
+        .await
+        .expect("snapshot");
+}
+
 fn id_of(body: &Value) -> QuestionId {
     serde_json::from_value(body["id"].clone()).expect("id")
 }
@@ -2221,6 +2245,7 @@ fn id_of(body: &Value) -> QuestionId {
 #[tokio::test]
 async fn a_follow_up_carries_its_thread_in_the_prompt() {
     let f = fixture(false).await;
+    store_snapshot(&f).await;
     let flow = json!({ "kind": "flow", "flow_id": "f1" });
     let (status, body) = f
         .ask_body(json!({ "text": "Why retry here at all?", "anchor": flow }))
@@ -2275,6 +2300,7 @@ async fn a_follow_up_carries_its_thread_in_the_prompt() {
 #[tokio::test]
 async fn a_follow_up_needs_the_users_own_parent_and_its_anchor() {
     let f = fixture(false).await;
+    store_snapshot(&f).await;
     let flow = json!({ "kind": "flow", "flow_id": "f1" });
     let (_, body) = f.ask_body(json!({ "text": "Root?", "anchor": flow })).await;
     let root = id_of(&body);
@@ -2344,6 +2370,7 @@ async fn a_follow_up_needs_the_users_own_parent_and_its_anchor() {
 #[tokio::test]
 async fn flow_and_pr_questions_get_their_context() {
     let f = fixture(false).await;
+    store_snapshot(&f).await;
     let (status, body) = f
         .ask_body(json!({ "text": "Why 5 s?", "anchor": { "kind": "flow", "flow_id": "f2" } }))
         .await;
@@ -2380,6 +2407,7 @@ async fn flow_and_pr_questions_get_their_context() {
 #[tokio::test]
 async fn the_pack_of_a_flow_question_holds_the_flow() {
     let f = fixture(false).await;
+    store_snapshot(&f).await;
     let (_, body) = f
         .ask_body(json!({ "text": "Why 5 s?", "anchor": { "kind": "flow", "flow_id": "f2" } }))
         .await;
@@ -2392,4 +2420,78 @@ async fn the_pack_of_a_flow_question_holds_the_flow() {
         pack.contains("Every RPC call built from RpcConfig::default()"),
         "{pack}"
     );
+}
+
+/// A flow whose stored analysis fails today's checks is shown failed in the Tour: it cannot be asked about.
+#[tokio::test]
+async fn a_flow_the_tour_shows_failed_cannot_be_asked_about() {
+    let f = fixture(false).await;
+    store_snapshot(&f).await;
+    let mut rejected = fixture_json("agent/flow-2.json");
+    for key in [
+        "steps",
+        "edges",
+        "impact_refs",
+        "pattern_repetitions",
+        "thread_statuses",
+    ] {
+        rejected[key] = json!([]);
+    }
+    f.state
+        .db
+        .documents()
+        .put(
+            f.analysis,
+            DocumentKind::Flow,
+            "f2",
+            &rejected,
+            Timestamp::now(),
+        )
+        .await
+        .expect("rejected flow");
+    let (status, body) = f
+        .ask_body(json!({ "text": "Why 5 s?", "anchor": { "kind": "flow", "flow_id": "f2" } }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = f
+        .ask_body(json!({ "text": "And f1?", "anchor": { "kind": "flow", "flow_id": "f1" } }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+}
+
+/// The asker's own question on another analysis is no parent here: not found, nothing stored or submitted.
+#[tokio::test]
+async fn a_follow_up_of_the_users_question_on_another_analysis_is_not_found() {
+    let f = fixture(false).await;
+    let limits = db::repo::questions::QuestionLimits {
+        per_analysis: 1000,
+        per_user: 1000,
+        user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+    };
+    let elsewhere = QuestionId::new_random();
+    f.state
+        .db
+        .questions()
+        .create(
+            NewQuestion {
+                id: elsewhere,
+                analysis_id: f.other,
+                anchor: AskAnchor::Pr,
+                parent_id: None,
+                user_id: "u1".to_owned(),
+                text: "on the other analysis".to_owned(),
+            },
+            limits,
+            Timestamp::now(),
+        )
+        .await
+        .expect("question on the other analysis");
+    let (status, body) = f
+        .ask_body(json!({ "text": "Follow?", "anchor": { "kind": "pr" }, "parent_id": elsewhere }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(f.scripted.requests().is_empty(), "no job submitted");
+    let (_, listed) = f.list().await;
+    assert_eq!(listed, json!([]), "nothing stored on this analysis");
 }

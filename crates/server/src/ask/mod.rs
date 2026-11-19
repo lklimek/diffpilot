@@ -16,6 +16,7 @@ use contracts::agent::ask::AskOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::events::AnalysisEvent;
 use contracts::api::questions::{AnchoredAskRequest, AskAnchor, AskQuestion, AskRequest};
+use contracts::api::tour::FlowAnalysisState;
 use contracts::common::LineRange;
 use contracts::ids::{AnalysisId, JobId, QuestionId};
 use db::error::DbError;
@@ -30,6 +31,7 @@ use jiff::SignedDuration;
 pub use job::context_pack;
 
 use crate::github::mirror::{MirrorError, is_tree_path, read_blob};
+use crate::pipeline::tour::{self, TourLoadError};
 use crate::pipeline::{PrDiffError, pr_diff};
 use crate::state::AppState;
 
@@ -78,6 +80,9 @@ pub enum AskError {
     /// The diff of the analysis is not available.
     #[error("the diff of the analysis is not available")]
     Diff(#[from] PrDiffError),
+    /// The Tour (which flows are analysed) could not be built.
+    #[error("the Tour of the analysis is not available")]
+    Tour(#[from] TourLoadError),
     /// A file could not be read from the mirror.
     #[error("a file could not be read from the mirror")]
     Mirror(#[from] MirrorError),
@@ -197,7 +202,7 @@ async fn thread_of(
 }
 
 /// A step anchor names a stored step (and lines inside it); a lines anchor names a file of the diff on its side and
-/// at most [`AskAnchor::MAX_LINES`] lines of it; a flow anchor names a flow with a stored analysis; the PR always
+/// at most [`AskAnchor::MAX_LINES`] lines of it; a flow anchor names a flow the Tour shows analysed; the PR always
 /// exists.
 async fn check_anchor(
     state: &AppState,
@@ -211,10 +216,16 @@ async fn check_anchor(
     };
     match anchor {
         AskAnchor::Flow { flow_id } => {
-            if job::stored_flow(&state.db, analysis.id, flow_id)
-                .await?
-                .is_none()
-            {
+            // As the reviewer sees it: a stored analysis that fails today's checks is shown failed.
+            let tour = tour::load(state, analysis).await?;
+            let analysed = tour.flows.iter().any(|flow| {
+                flow.id == *flow_id
+                    && flow
+                        .analysis_status
+                        .as_ref()
+                        .is_some_and(|status| status.state == FlowAnalysisState::Analysed)
+            });
+            if !analysed {
                 return Err(AskError::UnknownFlow);
             }
         }
