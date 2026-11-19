@@ -320,7 +320,7 @@ clicking anywhere on the strip restores it.
 - A moved block with identical text reads "Body text identical; call site changed in flow 1".
 
 **Code view.** Own line renderer. Gutter: neutral mark on every changed line; LLM colouring only on annotated
-ranges; markers for LLM remark, deleted site, GitHub thread, own comment. A highlight has no hover tooltip; clicking its remark marker opens a popover with Was and Is as separate blocks.
+ranges; markers for LLM remark, deleted site, GitHub thread, own comment. A highlight has no hover tooltip; clicking its remark marker opens a popover with Was and Is as separate blocks. The "?" (ask) and own-comment icons work the same way: hover or focus shows a popup, moving away hides it unless it was clicked, a click pins it until the next click; the action (ask, open the comment) is a labelled button in the pinned popup. A folded row ("N more deleted lines", the comment/import fold) acts on one click, Enter or Space; hover or focus only shows its explaining popup, with no pin step and no second button.
 Legend (shown in `?`):
 
 | Drawing | Meaning |
@@ -667,8 +667,7 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   carried to another step. Supersedes "impact outside the diff inline under the step as real code" (§4.3 Step
   block).
 - **Open.** The link that goes to an existing review reads "Open", whether or not the user has started it, on
-  Home, the progress screen and the dashboard. It only navigates: its tooltip says it starts nothing (no
-  analysis, no LLM use) and, for a started review, that ticks and answers are kept. On the progress screen it
+  Home, the progress screen and the dashboard. It only navigates: its tooltip is one or two short sentences: it starts nothing and, for a started review, that ticks and answers are kept. On the progress screen it
   sits apart from the action buttons, as a navigation link with an arrow. "Resume" is only the button that
   continues a paused analysis. Supersedes "Resume review" and "Open review" of §4.1 and §4.2.
 - **Comment drafts.** An unsent comment text is kept per line in the browser tab (sessionStorage, per user login
@@ -764,7 +763,7 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
 - **Ask about a line.** Each line of the step's code view and of the classic diff has a small "?" action (shown on
   hover and on keyboard focus; Tab from the line's comment action reaches it, arrow keys move between lines). It
   puts `path:line` (`path:start-end` when the line is inside a selection of several lines; " (old code)" for a
-  removed line) into the Ask field at the cursor, opens Ask and focuses the field; nothing is sent.
+  removed line) into the Ask field at the cursor, opens Ask and focuses the field; nothing is sent. The "?" shows a popup (hover, focus; a click pins it) whose button "Ask about this line" does this.
 - **Use as review comment.** A flag card and an Ask answer asked on the open step offer "Use as review comment"
   (only while commenting is available). It opens the existing comment composer: a flag on its line range, an
   answer on the open comment's line, else the step's first changed line; placement falls back as for any

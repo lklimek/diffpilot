@@ -23,6 +23,7 @@ import type {
 } from "../../api/generated/types";
 import { CommentMarker, CommentPanel, commentsByLine, lineName } from "../comment/LineComments";
 import { useFlashTarget } from "../flash/useFlashTarget";
+import { Popover } from "../popover/Popover";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { Highlight, Token } from "./highlight";
 import { Mark, RemarkMarker, ThreadMarker, type MarkerTarget } from "./markers";
@@ -367,19 +368,27 @@ function DeletedRun({ block, rows, anchor, nested = false, onLoadDeleted, paired
       </span>
       {rows}
       {block.lines.length < block.total_lines && (
-        <span className={`${STRIP} py-0.5 text-[11.5px]`}>
-          {onLoadDeleted ? (
-            <Tooltip tip="Shows the rest of the deleted lines of this block, from the base commit.">
+        <span className={`${STRIP} flex items-center gap-1.5 py-0.5 text-[11.5px]`}>
+          <span className="text-muted">{more}</span>
+          {onLoadDeleted && (
+            <Popover
+              label={more}
+              hint="Shows the rest of the deleted lines of this block, from the base commit."
+              onActivate={() => onLoadDeleted(block)}
+              content={() => (
+                <span className="block">
+                  Click to show the rest of the deleted lines of this block, from the base commit.
+                </span>
+              )}
+            >
               <button
                 type="button"
-                onClick={() => onLoadDeleted(block)}
-                className="cursor-pointer rounded border border-border bg-surface px-2 text-text hover:border-accent"
+                aria-label={`Show ${more}`}
+                className="inline-flex size-6 cursor-pointer items-center justify-center rounded border border-border bg-surface text-text hover:border-accent"
               >
-                {more}
+                <span aria-hidden>⋯</span>
               </button>
-            </Tooltip>
-          ) : (
-            <span className="text-muted">{more}</span>
+            </Popover>
           )}
         </span>
       )}
@@ -482,21 +491,45 @@ export function AskLineButton({
 }) {
   const name = `Ask the LLM about ${removed ? "removed line" : "line"} ${line}`;
   return (
-    <button
-      type="button"
-      data-ask-line
-      aria-label={name}
-      title={`Ask the LLM about ${removed ? "removed line" : "line"} ${line}: puts its file and line into the Ask field; nothing is sent. With several lines selected, about those lines.`}
-      tabIndex={tabbable ? 0 : -1}
-      onFocus={onFocus}
-      // Keeps a selection of several lines for the click.
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={(event) => {
-        event.stopPropagation();
-        onAsk(event.currentTarget);
-      }}
-      className={`inline-flex h-[1.35em] w-5 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 font-sans text-[11px] font-bold text-muted opacity-0 group-hover/line:opacity-100 group-focus-within/line:opacity-100 hover:bg-accent-bg hover:text-accent focus-visible:opacity-100 before:content-['?'] ${className}`}
-    />
+    <Popover
+      label={name}
+      hint="Hover or click for how to ask the LLM about this line."
+      className={className}
+      content={(pinned, close) => (
+        <>
+          <span className="block">
+            Click, then "Ask about this line": puts this line (or the selected lines) into the Ask field.
+            Nothing is sent until you press Ask.
+          </span>
+          {pinned && (
+            <button
+              type="button"
+              // Keeps a selection of several lines for the click.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onAsk(event.currentTarget);
+                close();
+              }}
+              className="min-h-6 cursor-pointer justify-self-start rounded border border-border bg-surface px-2 text-text hover:border-accent"
+            >
+              Ask about this line
+            </button>
+          )}
+        </>
+      )}
+    >
+      <button
+        type="button"
+        data-ask-line
+        aria-label={name}
+        tabIndex={tabbable ? 0 : -1}
+        onFocus={onFocus}
+        // Keeps a selection of several lines for the click.
+        onMouseDown={(event) => event.preventDefault()}
+        className="inline-flex h-[1.35em] w-5 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 font-sans text-[11px] font-bold text-muted opacity-0 group-hover/line:opacity-100 group-focus-within/line:opacity-100 hover:bg-accent-bg hover:text-accent focus-visible:opacity-100 aria-expanded:opacity-100 before:content-['?']"
+      />
+    </Popover>
   );
 }
 

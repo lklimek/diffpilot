@@ -18,8 +18,8 @@ interface PopoverProps {
   label: string;
   /** Source of the content, shown as a provenance tag in the popover's top row. */
   tag?: ProvenanceSource;
-  /** The text; `pinned` adds what only a pinned popover offers (links). Also the trigger's description. */
-  content: (pinned: boolean) => ReactNode;
+  /** The text; `pinned` adds what only a pinned popover offers (links, actions); `close` unpins it. Also the trigger's description while open. */
+  content: (pinned: boolean, close: () => void) => ReactNode;
   /** The trigger: one button without an `onClick`; it gets the ARIA state and the click. */
   children: ReactElement<{
     onClick?: () => void;
@@ -28,6 +28,10 @@ interface PopoverProps {
     "aria-controls"?: string;
     "aria-describedby"?: string;
   }>;
+  /** Short plain text that describes the trigger while the popover is closed (the content is not mounted then). */
+  hint?: string;
+  /** A click acts at once (a folded row): the popup only explains on hover or focus, and is never pinned. */
+  onActivate?: () => void;
   /** Classes of the wrapper (layout of the trigger). */
   className?: string;
 }
@@ -43,6 +47,28 @@ const setPinned = (id: string | null) => {
   pinnedId = id;
   for (const listener of listeners) listener();
 };
+
+// Whether the last input was the keyboard (what `:focus-visible` decides in browsers; jsdom cannot tell). Starts
+// true: focus set by a script follows the keyboard.
+let keyboard = true;
+const keyboardModality = () => keyboard;
+
+/** Test-only: forgets the last pointer input, as at page load. */
+export const resetKeyboardModality = () => {
+  keyboard = true;
+};
+if (typeof document !== "undefined") {
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (!["Shift", "Control", "Alt", "Meta"].includes(event.key)) keyboard = true;
+    },
+    true,
+  );
+  for (const type of ["pointerdown", "mousedown", "touchstart"]) {
+    document.addEventListener(type, () => (keyboard = false), true);
+  }
+}
 
 const WIDTH = 360;
 // Distance kept from the viewport edges; the popover's gap and border.
@@ -67,7 +93,7 @@ function clippedOut(element: HTMLElement, rect: DOMRect): boolean {
  * onto it); a click, Enter or Space pins it with selectable text until its close button, Escape, a click
  * outside, or another pinned popover closes it. Closing by button or Escape returns the focus to the trigger.
  */
-export function Popover({ label, tag, content, children, className = "" }: PopoverProps) {
+export function Popover({ label, tag, content, hint, onActivate, children, className = "" }: PopoverProps) {
   const id = useId();
   const wrapper = useRef<HTMLSpanElement>(null);
   const pinned = useSyncExternalStore(subscribe, () => pinnedId === id);
@@ -94,6 +120,18 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
     setDismissed(true);
     const active = document.activeElement;
     if (active === document.body || wrapper.current?.contains(active)) trigger()?.focus();
+  };
+
+  // Unpins after an action in the popover; the focus stays where the action put it, unless it is still in the
+  // popover that closes (then it returns to the trigger).
+  const unpin = () => {
+    if (pinnedId === id) setPinned(null);
+    setDismissed(true);
+    // The pointer was on the popup that is gone: it re-enters the wrapper to show the popup again.
+    setHovered(false);
+    const popup = document.getElementById(id);
+    if (popup?.contains(document.activeElement))
+      (popup.parentElement?.firstElementChild as HTMLElement).focus();
   };
 
   // Fixed position so scroll containers do not clip it; it follows its trigger while the page scrolls, below it
@@ -154,12 +192,18 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
     <span
       ref={wrapper}
       className={className}
-      onPointerEnter={() => setHovered(true)}
+      onPointerEnter={() => {
+        setHovered(true);
+        // Dismissed popups come back when the pointer re-enters.
+        setDismissed(false);
+      }}
       onPointerLeave={() => {
         setHovered(false);
         if (!focused) setDismissed(false);
       }}
-      onFocus={() => setFocused(true)}
+      // Only keyboard focus shows the popup: the focus a click or tap gives the trigger must not keep it open
+      // after the closing click.
+      onFocus={() => setFocused(keyboardModality())}
       onBlur={(event) => {
         if (wrapper.current?.contains(event.relatedTarget as Node | null)) return;
         setFocused(false);
@@ -176,52 +220,65 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
       {cloneElement(children, {
         "aria-expanded": open && !outside,
         "aria-haspopup": "dialog",
-        "aria-controls": id,
-        "aria-describedby": `${id}-body`,
+        // The dialog exists only while open, so the references are given only then.
+        "aria-controls": open ? id : undefined,
+        "aria-describedby": open ? `${id}-body` : hint ? `${id}-hint` : undefined,
         onClick: () => {
+          if (onActivate) {
+            setDismissed(true);
+            onActivate();
+            return;
+          }
           setDismissed(false);
           setPinned(pinned ? null : id);
         },
       })}
-      <span
-        ref={dialog}
-        id={id}
-        role="dialog"
-        aria-label={label}
-        tabIndex={-1}
-        hidden={!open || outside}
-        style={position}
-        className={`fixed z-50 flex w-max max-w-[min(360px,calc(100vw-16px))] cursor-auto flex-col pt-1 font-sans text-xs font-normal whitespace-normal normal-case outline-none select-text ${
-          position.bottom !== undefined ? "pt-0 pb-1" : ""
-        }`}
-      >
+      {!open && hint && (
+        <span id={`${id}-hint`} className="sr-only">
+          {hint}
+        </span>
+      )}
+      {open && (
         <span
-          ref={box}
-          data-popover-box
-          className={`block min-h-0 overflow-y-auto overscroll-contain rounded-md border bg-surface px-2.5 py-1.5 text-left text-text shadow-tip [overflow-wrap:anywhere] ${
-            pinned ? "border-accent" : "border-border"
+          ref={dialog}
+          id={id}
+          role="dialog"
+          aria-label={label}
+          tabIndex={-1}
+          hidden={outside}
+          style={position}
+          className={`fixed z-50 flex w-max max-w-[min(360px,calc(100vw-16px))] cursor-auto flex-col pt-1 font-sans text-xs font-normal whitespace-normal normal-case outline-none select-text ${
+            position.bottom !== undefined ? "pt-0 pb-1" : ""
           }`}
         >
-          <span className="mb-1 flex min-h-6 items-center gap-2">
-            {tag && <ProvenanceTag source={tag} focusable={pinned} />}
-            {pinned && (
-              <Tooltip tip="Closes this popover (Esc)." className="ml-auto">
-                <button
-                  type="button"
-                  aria-label="Close"
-                  onClick={close}
-                  className="inline-flex size-6 cursor-pointer items-center justify-center rounded border-0 bg-transparent text-[14px] text-muted hover:bg-surface-2 hover:text-text"
-                >
-                  <span aria-hidden>×</span>
-                </button>
-              </Tooltip>
-            )}
-          </span>
-          <span id={`${id}-body`} className="grid gap-1.5">
-            {content(pinned)}
+          <span
+            ref={box}
+            data-popover-box
+            className={`block min-h-0 overflow-y-auto overscroll-contain rounded-md border bg-surface px-2.5 py-1.5 text-left text-text shadow-tip [overflow-wrap:anywhere] ${
+              pinned ? "border-accent" : "border-border"
+            }`}
+          >
+            <span className="mb-1 flex min-h-6 items-center gap-2">
+              {tag && <ProvenanceTag source={tag} focusable={pinned} />}
+              {pinned && (
+                <Tooltip tip="Closes this popover (Esc)." className="ml-auto">
+                  <button
+                    type="button"
+                    aria-label="Close"
+                    onClick={close}
+                    className="inline-flex size-6 cursor-pointer items-center justify-center rounded border-0 bg-transparent text-[14px] text-muted hover:bg-surface-2 hover:text-text"
+                  >
+                    <span aria-hidden>×</span>
+                  </button>
+                </Tooltip>
+              )}
+            </span>
+            <span id={`${id}-body`} className="grid gap-1.5">
+              {content(pinned, unpin)}
+            </span>
           </span>
         </span>
-      </span>
+      )}
     </span>
   );
 }
