@@ -1,4 +1,4 @@
-import type { AskQuestion, Evidence, StepId } from "../../api/generated/types";
+import type { AskQuestion, Evidence, StepId, AskAnchor } from "../../api/generated/types";
 import { AskAnswers } from "../ask/AskAnswers";
 import { Note, QuietCard } from "../quiet/QuietCard";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -16,7 +16,7 @@ interface QuestionsBlockProps {
   placeOf: (step: StepId) => QuestionPlace | null;
   onEvidence?: (evidence: Evidence) => void;
   /** Asks a failed question again on its step. */
-  onAskAgain?: (step: StepId, text: string) => Promise<unknown> | void;
+  onAskAgain?: (anchor: AskAnchor, text: string) => Promise<unknown> | void;
 }
 
 const LINK =
@@ -25,7 +25,7 @@ const LINK =
 /** Every question the user asked in this review, grouped by step, each with its state or LLM answer. */
 export function QuestionsBlock({ questions, placeOf, onEvidence, onAskAgain }: QuestionsBlockProps) {
   const mine = questions.filter((q) => q.mine !== false);
-  const steps = [...new Set(mine.map((q) => q.step_id))];
+  const steps = [...new Set(mine.flatMap((q) => (q.step_id === undefined ? [] : [q.step_id])))];
   return (
     <QuietCard title={`Your questions and answers (${mine.length})`}>
       <Note>Only you see these questions. Answers are LLM analysis; the agent was told not to run code.</Note>

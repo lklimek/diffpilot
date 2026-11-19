@@ -17,9 +17,10 @@ use contracts::agent::analyse_flow::{
 };
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
+use contracts::api::files::HunkPart;
 use contracts::api::pr::PrSummary;
 use contracts::api::tour::GithubThread;
-use contracts::common::{Classification, FragmentKind, LineSide, LlmLanguage};
+use contracts::common::{Classification, FragmentKind, LineRange, LineSide, LlmLanguage};
 use contracts::ids::{FlowId, HunkId, StepId};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -31,6 +32,7 @@ const PLAN: &str = include_str!("../../../prompts/plan.md");
 const PR_CONTEXT: &str = include_str!("../../../prompts/pr_context.md");
 const ANALYSE_FLOW: &str = include_str!("../../../prompts/analyse_flow.md");
 const ASK: &str = include_str!("../../../prompts/ask.md");
+const ASK_LINES: &str = include_str!("../../../prompts/ask_lines.md");
 const REPAIR: &str = include_str!("../../../prompts/repair.md");
 const CONTEXT_PACK: &str = include_str!("../../../prompts/context_pack.md");
 
@@ -64,6 +66,10 @@ const MAX_DESCRIPTION_CHARS: usize = 16_000;
 const MAX_PROFILE_CHARS: usize = 16_000;
 const MAX_EXCERPT_CHARS: usize = 2_000;
 const MAX_QUESTION_CHARS: usize = 4_000;
+/// Classic diff quoted in an `ask` prompt about lines, at most.
+const MAX_ASK_DIFF_BYTES: usize = 32 * 1024;
+/// Line owners and overlapping steps quoted in an `ask` prompt about lines, at most (each).
+const MAX_ASK_FACTS_BYTES: usize = 16 * 1024;
 const MAX_ISSUE_CHARS: usize = 1_000;
 const MAX_LISTED_PATHS: usize = 50;
 const MAX_LISTED_MOVES: usize = 100;
@@ -222,6 +228,83 @@ pub struct AskInput<'a> {
     pub step_id: &'a StepId,
     /// The step from its flow analysis.
     pub step: &'a AgentStep,
+    /// Lines of the step the question is about; `None` for the whole step.
+    pub lines: Option<LineRange>,
+    /// The reviewer's question.
+    pub question: &'a str,
+    /// Project profile.
+    pub profile: Profile<'a>,
+}
+
+/// Lines a question is about without a single step (Files view): a range of a file, or the whole file.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct AskedLines<'a> {
+    /// Repository-relative path on `side`.
+    pub path: &'a str,
+    /// Commit the lines refer to.
+    pub side: LineSide,
+    /// The lines; `None` for the whole file.
+    #[serde(flatten)]
+    pub range: Option<LineRange>,
+}
+
+/// A step in summary, as every prompt lists steps (title, place, kind).
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct StepSummary<'a> {
+    /// The step's title.
+    pub title: &'a str,
+    /// Repository-relative path on `side`.
+    pub file: &'a str,
+    /// Side of the step's lines.
+    pub side: LineSide,
+    /// First line.
+    pub start_line: u32,
+    /// Last line.
+    pub end_line: u32,
+    /// Step kind.
+    pub kind: FragmentKind,
+}
+
+impl<'a> StepSummary<'a> {
+    fn of(step: &'a AgentStep) -> Self {
+        Self {
+            title: &step.title,
+            file: &step.file,
+            side: step.side,
+            start_line: step.start_line,
+            end_line: step.end_line,
+            kind: step.kind,
+        }
+    }
+}
+
+/// A step of the analysis the asked lines touch, in summary, with its server id and flow.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct TouchedStep<'a> {
+    /// Server id of the step.
+    pub step_id: &'a StepId,
+    /// Its flow.
+    pub flow_id: &'a FlowId,
+    /// The flow's title.
+    pub flow_title: &'a str,
+    /// The step.
+    #[serde(flatten)]
+    pub step: StepSummary<'a>,
+}
+
+/// Input of the `ask` prompt about lines without a single step.
+#[derive(Clone, Copy, Debug)]
+pub struct AskLinesInput<'a> {
+    /// Common context.
+    pub job: JobContext<'a>,
+    /// The lines.
+    pub lines: AskedLines<'a>,
+    /// Their classic diff as text, or why it is not included.
+    pub diff: &'a str,
+    /// Owners of their changed lines (server facts).
+    pub facts: &'a [HunkPart],
+    /// Steps overlapping them.
+    pub steps: &'a [TouchedStep<'a>],
     /// The reviewer's question.
     pub question: &'a str,
     /// Project profile.
@@ -264,12 +347,29 @@ pub struct AnsweredQuestion<'a> {
 /// What an `ask` job's context pack adds.
 #[derive(Clone, Copy, Debug)]
 pub struct AskContext<'a> {
-    /// The step asked about.
-    pub step_id: &'a StepId,
-    /// The flow analysis containing the step.
-    pub flow: &'a FlowAnalysisOutput,
-    /// Earlier questions of the step, oldest first.
+    /// What the question is about.
+    pub asked: Asked<'a>,
+    /// Earlier questions of this pull request, oldest first.
     pub earlier: &'a [AnsweredQuestion<'a>],
+}
+
+/// What an asked question is about, for its context pack.
+#[derive(Clone, Copy, Debug)]
+pub enum Asked<'a> {
+    /// A step, given in full with the rest of its flow analysis.
+    Step {
+        /// The step asked about.
+        step_id: &'a StepId,
+        /// The flow analysis containing the step.
+        flow: &'a FlowAnalysisOutput,
+    },
+    /// Lines without a single step, given with the steps overlapping them in full.
+    Lines {
+        /// The lines.
+        lines: AskedLines<'a>,
+        /// The overlapping steps with their server ids.
+        steps: &'a [(StepId, &'a AgentStep)],
+    },
 }
 
 /// Input of the context pack that seeds a new session after a lost one (brief §5 Agent sessions).
@@ -313,24 +413,15 @@ impl<'a> FlowEntry<'a> {
 #[derive(Serialize)]
 struct StepEntry<'a> {
     id: &'a str,
-    title: &'a str,
-    file: &'a str,
-    side: LineSide,
-    start_line: u32,
-    end_line: u32,
-    kind: FragmentKind,
+    #[serde(flatten)]
+    step: StepSummary<'a>,
 }
 
 impl<'a> StepEntry<'a> {
     fn of(id: &'a str, step: &'a AgentStep) -> Self {
         Self {
             id,
-            title: &step.title,
-            file: &step.file,
-            side: step.side,
-            start_line: step.start_line,
-            end_line: step.end_line,
-            kind: step.kind,
+            step: StepSummary::of(step),
         }
     }
 }
@@ -406,10 +497,18 @@ pub fn ask(input: &AskInput<'_>) -> Result<String, PromptError> {
         step: input.step,
     })?;
     let question = clipped_data("question", input.question, MAX_QUESTION_CHARS)?;
+    let mut about = plain(&input.step_id.0);
+    if let Some(lines) = input.lines {
+        about.push_str(&format!(
+            " (its lines {}-{})",
+            lines.start_line, lines.end_line
+        ));
+    }
     let task = fill(
         ASK,
         &[
-            ("step_id", &plain(&input.step_id.0)),
+            ("step_id", &about),
+            ("ask_rules", part("ask_rules")?),
             ("lenses", part("lenses")?),
             ("profile", &profile(input.profile)?),
             ("step", &data("step", &step)),
@@ -418,6 +517,69 @@ pub fn ask(input: &AskInput<'_>) -> Result<String, PromptError> {
     )?;
     let prompt = frame("ask", input.job, &task)?;
     within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+/// The `ask` prompt about lines without a single step (Files view): the lines, their classic diff, the server's
+/// owners of their changed lines and the overlapping steps in summary; no other flow analysis.
+pub fn ask_lines(input: &AskLinesInput<'_>) -> Result<String, PromptError> {
+    let lines = &input.lines;
+    let place = match lines.range {
+        Some(range) => format!(
+            "lines {}-{} of the file named in the lines block, on {}",
+            range.start_line,
+            range.end_line,
+            side_label(lines.side)
+        ),
+        None => format!(
+            "the whole file named in the lines block, on {}",
+            side_label(lines.side)
+        ),
+    };
+    let question = clipped_data("question", input.question, MAX_QUESTION_CHARS)?;
+    let task = fill(
+        ASK_LINES,
+        &[
+            ("place", &place),
+            ("ask_rules", part("ask_rules")?),
+            ("lenses", part("lenses")?),
+            ("profile", &profile(input.profile)?),
+            ("lines", &data("lines", &serde_json::to_string(lines)?)),
+            (
+                "diff",
+                &json_block("classic diff", input.diff, MAX_ASK_DIFF_BYTES)?,
+            ),
+            (
+                "facts",
+                &json_block(
+                    "owners of the changed lines",
+                    &serde_json::to_string(input.facts)?,
+                    MAX_ASK_FACTS_BYTES,
+                )?,
+            ),
+            (
+                "steps",
+                &lines_block(
+                    "overlapping steps",
+                    input
+                        .steps
+                        .iter()
+                        .map(serde_json::to_string)
+                        .collect::<Result<_, _>>()?,
+                    MAX_ASK_FACTS_BYTES,
+                )?,
+            ),
+            ("question", &question),
+        ],
+    )?;
+    let prompt = frame("ask", input.job, &task)?;
+    within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+fn side_label(side: LineSide) -> &'static str {
+    match side {
+        LineSide::Head => "the head commit",
+        LineSide::Base => "the base commit (removed code)",
+    }
 }
 
 /// The repair prompt: exactly the verify issues, the whole rejected output and the original task. A rejected
@@ -512,7 +674,10 @@ pub fn context_pack(input: &ContextPackInput<'_>) -> Result<String, PromptError>
     let mut blocks = String::new();
     let mut sections: Vec<(String, Vec<String>, usize, bool)> = Vec::new();
     if let Some(ask) = &input.ask {
-        let (asked, label, rest) = asked_flow(ask)?;
+        let (asked, label, rest) = match ask.asked {
+            Asked::Step { step_id, flow } => asked_flow(step_id, flow)?,
+            Asked::Lines { lines, steps } => asked_lines(lines, steps)?,
+        };
         blocks.push_str(&asked);
         sections.push((label, rest, PACK_ASK_FLOW_BYTES, true));
         let earlier = ask
@@ -592,25 +757,46 @@ pub fn context_pack(input: &ContextPackInput<'_>) -> Result<String, PromptError>
     within_budget("context pack", pack(&blocks)?, CONTEXT_PACK_BUDGET_BYTES)
 }
 
+/// The asked lines (a data block), and the label and entries of the steps overlapping them, in full.
+fn asked_lines(
+    lines: AskedLines<'_>,
+    steps: &[(StepId, &AgentStep)],
+) -> Result<(String, String, Vec<String>), PromptError> {
+    let asked = data("asked lines", &serde_json::to_string(&lines)?);
+    let entries = steps
+        .iter()
+        .map(|(step_id, step)| {
+            serde_json::to_string(&AskedStep {
+                step_id: &step_id.0,
+                step,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let label = "steps overlapping the asked lines (full analysis)".to_owned();
+    Ok((asked, label, entries))
+}
+
 /// The asked step in full (a data block), and the label and entries of the rest of its flow analysis: introduction,
 /// the other steps in full, then edges, impact references, pattern repetitions and thread statuses.
-fn asked_flow(ask: &AskContext<'_>) -> Result<(String, String, Vec<String>), PromptError> {
-    let flow = ask.flow;
+fn asked_flow(
+    step_id: &StepId,
+    flow: &FlowAnalysisOutput,
+) -> Result<(String, String, Vec<String>), PromptError> {
     let unknown = || PromptError::UnknownStep {
-        step_id: ask.step_id.0.clone(),
+        step_id: step_id.0.clone(),
     };
-    let (flow_id, number) = ask.step_id.0.rsplit_once('.').ok_or_else(unknown)?;
+    let (flow_id, number) = step_id.0.rsplit_once('.').ok_or_else(unknown)?;
     let index = number
         .parse::<usize>()
         .ok()
         .and_then(|number| number.checked_sub(1))
         .filter(|index| flow_id == flow.flow_id.0 && *index < flow.steps.len())
         .ok_or_else(unknown)?;
-    let step_id = plain(&ask.step_id.0);
     let asked = serde_json::to_string(&AskedStep {
-        step_id: &ask.step_id.0,
+        step_id: &step_id.0,
         step: &flow.steps[index],
     })?;
+    let step_id = plain(&step_id.0);
     let asked = data(&format!("asked step {step_id} (full analysis)"), &asked);
     let mut entries = vec![serde_json::to_string(&AnalysedFlowEntry {
         flow_id: &flow.flow_id,

@@ -207,8 +207,12 @@ export function questionEvents(
     const was = before.find((b) => b.id === q.id)?.state;
     if (q.mine === false || (was !== "pending" && was !== "answering")) return [];
     if (q.state !== "answered" && q.state !== "failed") return [];
-    const found = findStep(tour, q.step_id);
-    const where = found ? `flow ${found.flow.position}, step ${found.step.number}` : "a step";
+    const found = q.step_id === undefined ? undefined : findStep(tour, q.step_id);
+    const where = found
+      ? `flow ${found.flow.position}, step ${found.step.number}`
+      : q.step_id === undefined
+        ? "lines of a file"
+        : "a step";
     return [
       {
         key: `${id}:question:${q.id}:${q.state}`,

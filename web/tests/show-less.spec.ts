@@ -26,7 +26,10 @@ for (const width of [1280, 2560]) {
     await page.screenshot({ path: info.outputPath("step-code.png") });
     await hide.uncheck();
     await expect(page.getByText("2 comment/import lines hidden — in the classic diff")).toHaveCount(0);
-    await page.getByRole("navigation").getByRole("button", { name: "Step 5: Retry allowed?" }).click();
+    await page
+      .getByRole("navigation", { name: "Flows and steps" })
+      .getByRole("button", { name: "Step 5: Retry allowed?" })
+      .click();
     const evidence = inspector.getByText(/Evidence ·/).first();
     await evidence.click();
     await expect(inspector.getByRole("button", { name: /Show .*:/ }).first()).toBeVisible();
@@ -40,7 +43,9 @@ for (const width of [1280, 2560]) {
     await page
       .getByRole("region", { name: "Flow diagram", exact: true })
       .screenshot({ path: info.outputPath("diagram.png") });
-    await page.getByRole("navigation").screenshot({ path: info.outputPath("navigation.png") });
+    await page
+      .getByRole("navigation", { name: "Flows and steps" })
+      .screenshot({ path: info.outputPath("navigation.png") });
     await page
       .getByRole("navigation")
       .getByRole("button", { name: /^Flow 2:/ })

@@ -25,13 +25,24 @@ const covers = (a: Annotation, line: number) => a.range.start_line <= line && li
  * Splits the displayed lines into segments: annotations that overlap form one highlight, adjacent disjoint ones
  * stay apart; deleted blocks sit after their anchor line (0 = before the first) and split a highlight.
  */
-export function buildSegments(lines: LinesResponse, annotations: readonly Annotation[]): Segment[] {
+export function buildSegments(
+  lines: LinesResponse,
+  annotations: readonly Annotation[],
+  /** Remarks on removed code, by base line: they mark the removed blocks they cover. */
+  removed: readonly Annotation[] = [],
+): Segment[] {
   const changed = new Set(lines.changed);
   const segments: Segment[] = [];
+  const onBlock = (block: DeletedBlock) =>
+    removed.filter(
+      (a) =>
+        a.range.start_line <= block.base_start + block.lines.length - 1 &&
+        a.range.end_line >= block.base_start,
+    );
   const deletedAfter = (line: number) =>
     lines.deleted
       .filter((d) => d.after_line === line)
-      .forEach((block) => segments.push({ kind: "deleted", block, paired: [], annotations: [] }));
+      .forEach((block) => segments.push({ kind: "deleted", block, paired: [], annotations: onBlock(block) }));
 
   deletedAfter(lines.from - 1);
   lines.lines.forEach((text, index) => {
@@ -47,11 +58,16 @@ export function buildSegments(lines: LinesResponse, annotations: readonly Annota
     };
     const covering = annotations.filter((a) => covers(a, line));
     const last = segments.at(-1);
+    // A replacing line stays with its removed block unless its remarks share none with the block's (its first
+    // line may bring them): only a line of other remarks, e.g. another step's, starts its own run.
     if (
       last?.kind === "deleted" &&
       last.block.replacement &&
       line >= last.block.replacement.start_line &&
-      line <= last.block.replacement.end_line
+      line <= last.block.replacement.end_line &&
+      (last.paired.length === 0 ||
+        covering.length === 0 ||
+        covering.some((a) => last.annotations.includes(a)))
     ) {
       last.paired.push(row);
       for (const a of covering) if (!last.annotations.includes(a)) last.annotations.push(a);

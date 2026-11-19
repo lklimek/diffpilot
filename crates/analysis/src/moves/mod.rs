@@ -560,11 +560,7 @@ fn in_place(files: &[FileDiff], old: &Run, new_file: usize, first_head_line: u32
     else {
         return false;
     };
-    let marker = if hunk.head.len == 0 {
-        hunk.head.start
-    } else {
-        hunk.head.start.saturating_sub(1)
-    };
+    let marker = hunk.deletion_marker();
     new_file == old.file && (marker + 1).abs_diff(first_head_line) <= IN_PLACE_LINES
 }
 

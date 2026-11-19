@@ -155,6 +155,11 @@
           "description": "Too many requests; retry after `Retry-After`.",
           "type": "string",
           "const": "rate_limited"
+        },
+        {
+          "description": "GitHub refused a change made as the user (e.g. the Viewed mark); nothing was changed.",
+          "type": "string",
+          "const": "github_refused"
         }
       ]
     }

@@ -5,6 +5,7 @@ import type {
   AnalysisEvent,
   AnalysisId,
   AnalysisSummary,
+  AnchoredAskRequest,
   MyAnalyses,
   MyAnalysesQuery,
   ApiErrorCode,
@@ -23,6 +24,7 @@ import type {
   Feedback,
   FeedbackId,
   FeedbackRequest,
+  FilesResponse,
   ItemPage,
   ItemQuery,
   LinesResponse,
@@ -41,6 +43,7 @@ import type {
   ReviewState,
   SetLanguageRequest,
   SetTimeZoneRequest,
+  SetViewedRequest,
   Settings,
   StepId,
   Tour,
@@ -248,6 +251,11 @@ export function createApiClient(baseUrl = "") {
     listQuestions: (id: AnalysisId) => call<AskQuestion[]>("listQuestions", { params: { id } }),
     askQuestion: (id: AnalysisId, stepId: StepId, body: AskRequest) =>
       call<AskQuestion>("askQuestion", { params: { id, step_id: stepId }, body }),
+    askAnchored: (id: AnalysisId, body: AnchoredAskRequest) =>
+      call<AskQuestion>("askAnchored", { params: { id }, body }),
+    getFiles: (id: AnalysisId) => call<FilesResponse>("getFiles", { params: { id } }),
+    setFileViewed: (id: AnalysisId, body: SetViewedRequest) =>
+      call<void>("setFileViewed", { params: { id }, body }),
     listFeedback: (id: AnalysisId) => call<Feedback[]>("listFeedback", { params: { id } }),
     postFeedback: (id: AnalysisId, body: FeedbackRequest) =>
       call<Feedback>("postFeedback", { params: { id }, body }),

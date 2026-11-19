@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import type { Tour } from "../../api/generated/types";
 import { expectTrustWording } from "../../__tests__/wording";
 import { seedFor } from "../../mocks/fixtures";
@@ -58,5 +59,44 @@ describe("TopBar", () => {
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(link).toHaveAccessibleDescription(/^Open the checks on GitHub \(new tab\)/);
+  });
+
+  it("review views: breadcrumb diffpilot › repo #n (PR context) with its own GitHub link › view menu", async () => {
+    const onNavigate = vi.fn();
+    const view = {
+      current: "files" as const,
+      flowsHref: "/analyses/a",
+      filesHref: "/analyses/a/files",
+      prContextHref: "/analyses/a#pr_context",
+      onNavigate,
+    };
+    render(<TopBar pr={tour.analysis.pr} login="alice" view={view} progress={{ reviewed: 1, total: 5 }} />);
+    const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(within(crumbs).getByRole("link", { name: "diffpilot" })).toHaveAttribute("href", "/");
+    const repo = within(crumbs).getByRole("link", { name: "acme/node-client #482" });
+    expect(repo).toHaveAttribute("href", "/analyses/a#pr_context");
+    expect(repo).toHaveAccessibleDescription(/PR context/);
+    const github = within(crumbs).getByRole("link", {
+      name: "Pull request #482 on GitHub (opens on GitHub in a new tab)",
+    });
+    expect(github).toHaveAttribute("href", "https://github.com/acme/node-client/pull/482");
+    expect(github).toHaveAttribute("target", "_blank");
+    await userEvent.click(repo);
+    expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a#pr_context");
+    const menu = within(crumbs).getByRole("button", { name: "View: Files" });
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    expect(within(crumbs).getByRole("link", { name: "Files" })).toHaveAttribute("aria-current", "page");
+    const flows = within(crumbs).getByRole("link", { name: "Flows" });
+    expect(flows).not.toHaveAttribute("aria-current");
+    await userEvent.click(flows);
+    expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a");
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(menu);
+    await userEvent.keyboard("{Escape}");
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(menu).toHaveFocus();
+    expect(screen.getByRole("banner")).toHaveTextContent("Your progress 1 / 5");
   });
 });

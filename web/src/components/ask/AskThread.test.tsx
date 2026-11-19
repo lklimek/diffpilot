@@ -10,6 +10,7 @@ const question = (over: Partial<AskQuestion>): AskQuestion => ({
   id: "q1",
   mine: true,
   asked_by: "alice",
+  anchor: { kind: "step", step_id: "f1.5", lines: null },
   step_id: "f1.5",
   text: "Is the reply deduplicated?",
   state: "answered",
@@ -104,7 +105,34 @@ describe("AskThread: the analysis's Ask conversation as one thread", () => {
 
   it("names a question whose step is not part of the tour instead of a link", () => {
     render(<Harness questions={[question({ step_id: "f9.9" })]} />);
-    expect(screen.getByText("On a step that is not part of this tour")).toBeInTheDocument();
+    expect(screen.getByText("On a step that is not part of these flows")).toBeInTheDocument();
+  });
+
+  it("names the file and lines of a question asked about lines, not a missing step", () => {
+    const lines = (anchor: AskQuestion["anchor"]): AskQuestion => {
+      const asked = question({ anchor });
+      delete asked.step_id;
+      return asked;
+    };
+    render(
+      <Harness
+        questions={[
+          {
+            ...lines({
+              kind: "lines",
+              path: "src/a.rs",
+              side: "head",
+              range: { start_line: 3, end_line: 9 },
+            }),
+            id: "a",
+          },
+          { ...lines({ kind: "lines", path: "src/b.rs", side: "base", range: null }), id: "b" },
+        ]}
+      />,
+    );
+    expect(screen.getByText("On src/a.rs:3–9")).toBeInTheDocument();
+    expect(screen.getByText("On src/b.rs (old code)")).toBeInTheDocument();
+    expect(screen.queryByText("On a step that is not part of these flows")).toBeNull();
   });
 
   it("scrolls to the newest entry, but not while the user reads further up", () => {
@@ -177,5 +205,49 @@ describe("AskThread: the analysis's Ask conversation as one thread", () => {
   it("keeps the wording rules", () => {
     const { container } = render(<Harness />);
     expectTrustWording(container.textContent ?? "");
+  });
+
+  it("takes the Files view's filters and links a question about lines to those lines", async () => {
+    const onOpen = vi.fn();
+    const lines = question({
+      id: "l",
+      text: "On lines?",
+      anchor: { kind: "lines", path: "src/a.rs", side: "head", range: { start_line: 3, end_line: 4 } },
+      step_id: undefined,
+      created_at: "2026-11-16T13:00:00Z",
+    });
+    function Files() {
+      const [scope, setScope] = useState<AskScope>("conversation");
+      return (
+        <AskThread
+          questions={[...thread, lines]}
+          scope={scope}
+          onScope={setScope}
+          placeOf={placeOf(() => {})}
+          placeOfQuestion={(q) =>
+            q.anchor.kind === "lines" ? { label: "src/a.rs:3–4", open: () => onOpen(q.id) } : null
+          }
+          filters={[
+            {
+              key: "file",
+              label: "This file",
+              tip: "Only questions on this file.",
+              empty: "No question on this file yet.",
+              match: (q) => q.anchor.kind === "lines",
+            },
+          ]}
+          isCurrent={(q) => q.id === "l"}
+        />
+      );
+    }
+    render(<Files />);
+    expect(screen.queryByRole("button", { name: "This step" })).toBeNull();
+    const link = screen.getByRole("button", { name: "src/a.rs:3–4" });
+    expect(link).toHaveAccessibleDescription(/Opens the lines this question was asked about/);
+    expect(link).toHaveAttribute("aria-current", "step");
+    await userEvent.click(link);
+    expect(onOpen).toHaveBeenCalledWith("l");
+    await userEvent.click(screen.getByRole("button", { name: "This file" }));
+    expect(items()).toEqual(["Asked by you: On lines?"]);
   });
 });

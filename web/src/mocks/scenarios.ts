@@ -11,6 +11,7 @@ import type {
   FeedbackMemory,
   PendingReview,
   AskQuestion,
+  FilesResponse,
   LinesResponse,
   MeResponse,
   MyAnalyses,
@@ -103,6 +104,16 @@ interface Scenario {
   pendingReview?: (seed: PendingReview) => PendingReview;
   /** Comment writes answer 409 `comment_published` (the review was published meanwhile). */
   commentPublished?: true;
+  /** Changes to the `files` answer. */
+  files?: (seed: FilesResponse) => FilesResponse;
+  /** Viewed writes fail like this (GitHub refused, the head moved or was not read, GitHub did not answer, busy, signed out). */
+  viewedError?:
+    | "github_refused"
+    | "pr_head_changed"
+    | "github_unavailable"
+    | "conflict"
+    | "unauthenticated"
+    | "head_unread";
 }
 
 /** Step f1.2 with one behaviour remark over lines 90–95 (see `remarkLayoutLines`), rated LOW. */
@@ -247,6 +258,7 @@ const xssQuestions = (seed: AskQuestion[]): AskQuestion[] => [
   ...seed,
   {
     id: "3f1c5a7e-0482-4d2b-9e6f-0000000000x5",
+    anchor: { kind: "step", step_id: "f1.1", lines: null },
     step_id: "f1.1",
     text: XSS.markup,
     state: "answered",
@@ -340,6 +352,7 @@ const SCENARIOS = {
         id,
         mine: true,
         asked_by: base?.asked_by ?? "alice",
+        anchor: { kind: "step", step_id, lines: null },
         step_id,
         text,
         state: answer === null ? "answering" : "answered",
@@ -509,6 +522,25 @@ const SCENARIOS = {
   },
   "signed-out": { me: () => ({ user: null, csrf_token: null }) },
   "no-reviews": { myAnalyses: () => ({ analyses: [] }) },
+  "viewed-refused": { viewedError: "github_refused" },
+  // Another Viewed change of this user and analysis is still being saved.
+  "viewed-busy": { viewedError: "conflict" },
+  // The user's GitHub sign-in ended.
+  "viewed-signed-out": { viewedError: "unauthenticated" },
+  // GitHub did not answer the read of the pull request before the write; nothing was sent.
+  "viewed-head-unread": { viewedError: "head_unread" },
+  "viewed-not-read": {
+    files: (seed) => ({
+      ...seed,
+      viewed_status: "not_checked",
+      current_head: null,
+      files: seed.files.map((f) => ({ ...f, viewed: null })),
+    }),
+  },
+  "viewed-head-moved": {
+    files: (seed) => ({ ...seed, current_head: MOVED_HEAD }),
+    viewedError: "pr_head_changed",
+  },
   "head-moved": {
     resolve: (seed: ResolvePrResponse) => ({
       ...seed,
@@ -599,6 +631,23 @@ const SCENARIOS = {
     progress: (state) => waitingProgress(null, state),
   },
   finished: { analysis: { state: "finished", total: 5 } },
+  // A finished analysis whose flow 3 failed: its introduction and the flows dropdown offer to analyse it again.
+  "flow-failed": {
+    tour: (seed) => {
+      const tour = structuredClone(seed);
+      const flow = tour.flows[2]!;
+      flow.analysis_status = {
+        state: "failed",
+        started_at: null,
+        message: "The agent's answer did not have the expected structure.",
+      };
+      flow.steps = [];
+      flow.graph = { nodes: [], edges: [] };
+      flow.llm.risk = null;
+      flow.facts.step_count = 0;
+      return tour;
+    },
+  },
   "llm-error": {
     settings: {
       ...SETTINGS,

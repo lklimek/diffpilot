@@ -1,6 +1,11 @@
 [
   {
     "id": "f915f473-cf25-4e1f-846f-e4afa22df4ac",
+    "anchor": {
+      "kind": "step",
+      "step_id": "f1.5",
+      "lines": null
+    },
     "step_id": "f1.5",
     "text": "When a surplus reply makes Respond return errUnsolicitedResponse, at what log level does the reactor log it, and is the sending peer penalised or disconnected?",
     "state": "answered",

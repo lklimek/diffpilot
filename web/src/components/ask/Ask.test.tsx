@@ -6,13 +6,14 @@ import type { AskQuestion } from "../../api/generated/types";
 import { expectTrustWording } from "../../__tests__/wording";
 import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
 import { AskAnswers } from "./AskAnswers";
-import { AskForm } from "./AskForm";
+import { AskForm, stepSubject } from "./AskForm";
 import { AskThread } from "./AskThread";
 
 const question = (over: Partial<AskQuestion>): AskQuestion => ({
   id: "q1",
   mine: true,
   asked_by: "alice",
+  anchor: { kind: "step", step_id: "f1.5", lines: null },
   step_id: "f1.5",
   text: "Is the reply deduplicated?",
   state: "pending",
@@ -32,14 +33,14 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
-const step5 = { id: "f1.5", label: "Step 5" };
-const step6 = { id: "f1.6", label: "Step 6" };
+const step5 = stepSubject("f1.5", "Step 5");
+const step6 = stepSubject("f1.6", "Step 6");
 
 describe("AskForm", () => {
   it("keeps the field read-only while sending and clears only what was sent", async () => {
     const user = userEvent.setup();
     const pending = deferred();
-    render(<AskForm step={step5} onAsk={() => pending.promise} />);
+    render(<AskForm subject={step5} onAsk={() => pending.promise} />);
     const field = screen.getByRole("textbox");
     await user.type(field, "A{Enter}");
     expect(field).toHaveAttribute("readonly");
@@ -53,9 +54,9 @@ describe("AskForm", () => {
   it("ignores the outcome of a question sent from a step that is no longer current", async () => {
     const user = userEvent.setup();
     const pending = deferred();
-    const { rerender } = render(<AskForm step={step5} onAsk={() => pending.promise} />);
+    const { rerender } = render(<AskForm subject={step5} onAsk={() => pending.promise} />);
     await user.type(screen.getByRole("textbox"), "A{Enter}");
-    rerender(<AskForm step={step6} onAsk={() => pending.promise} />);
+    rerender(<AskForm subject={step6} onAsk={() => pending.promise} />);
     const field = screen.getByRole("textbox", { name: /Step 6/ });
     await user.type(field, "B");
     pending.reject(new Error("failed"));
@@ -67,34 +68,34 @@ describe("AskForm", () => {
   it("drops the draft and the error on a step change, also through null", async () => {
     const user = userEvent.setup();
     const onAsk = vi.fn().mockRejectedValue(new Error("failed"));
-    const { rerender } = render(<AskForm step={step5} onAsk={onAsk} />);
+    const { rerender } = render(<AskForm subject={step5} onAsk={onAsk} />);
     await user.type(screen.getByRole("textbox"), "A{Enter}");
     await screen.findByRole("alert");
-    rerender(<AskForm step={step6} onAsk={onAsk} />);
+    rerender(<AskForm subject={step6} onAsk={onAsk} />);
     expect(screen.getByRole("textbox")).toHaveValue("");
     expect(screen.queryByRole("alert")).toBeNull();
     await user.type(screen.getByRole("textbox"), "for 6");
-    rerender(<AskForm step={null} onAsk={onAsk} />);
-    rerender(<AskForm step={step6} onAsk={onAsk} />);
+    rerender(<AskForm subject={null} onAsk={onAsk} />);
+    rerender(<AskForm subject={step6} onAsk={onAsk} />);
     expect(screen.getByRole("textbox")).toHaveValue("");
     await user.type(screen.getByRole("textbox"), "Q{Enter}");
-    expect(onAsk).toHaveBeenLastCalledWith("f1.6", "Q");
+    expect(onAsk).toHaveBeenLastCalledWith(stepSubject("f1.6", "").anchor, "Q");
   });
 
   it("sends the trimmed question on Enter and clears the field when it was accepted", async () => {
     const user = userEvent.setup();
     const onAsk = vi.fn().mockResolvedValue(undefined);
-    render(<AskForm step={{ id: "f1.5", label: "Step 5 · Retry allowed?" }} onAsk={onAsk} />);
+    render(<AskForm subject={stepSubject("f1.5", "Step 5 · Retry allowed?")} onAsk={onAsk} />);
     const field = screen.getByRole("textbox", { name: /Ask the LLM about Step 5 · Retry allowed\?/ });
     await user.type(field, "  Is it idempotent?  {Enter}");
-    expect(onAsk).toHaveBeenCalledWith("f1.5", "Is it idempotent?");
+    expect(onAsk).toHaveBeenCalledWith(stepSubject("f1.5", "").anchor, "Is it idempotent?");
     expect(field).toHaveValue("");
   });
 
   it("adds a line on Shift+Enter instead of sending", async () => {
     const user = userEvent.setup();
     const onAsk = vi.fn();
-    render(<AskForm step={step5} onAsk={onAsk} />);
+    render(<AskForm subject={step5} onAsk={onAsk} />);
     const field = screen.getByRole("textbox");
     await user.type(field, "one{Shift>}{Enter}{/Shift}two");
     expect(onAsk).not.toHaveBeenCalled();
@@ -103,7 +104,7 @@ describe("AskForm", () => {
 
   it("asks for text instead of sending an empty question", async () => {
     const onAsk = vi.fn();
-    render(<AskForm step={step5} onAsk={onAsk} />);
+    render(<AskForm subject={step5} onAsk={onAsk} />);
     await userEvent.click(screen.getByRole("button", { name: /^Ask/ }));
     expect(onAsk).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent("Write a question first.");
@@ -114,7 +115,7 @@ describe("AskForm", () => {
     const user = userEvent.setup();
     const pending = deferred();
     const onAsk = vi.fn().mockReturnValue(pending.promise);
-    render(<AskForm step={step5} onAsk={onAsk} />);
+    render(<AskForm subject={step5} onAsk={onAsk} />);
     const field = screen.getByRole("textbox");
     await user.type(field, "Why?");
     await user.click(screen.getByRole("button", { name: /^Ask/ }));
@@ -132,7 +133,7 @@ describe("AskForm", () => {
   });
 
   it("grows the one-line field while typing", async () => {
-    render(<AskForm step={step5} onAsk={() => {}} />);
+    render(<AskForm subject={step5} onAsk={() => {}} />);
     const field = screen.getByRole("textbox");
     expect(field).toHaveAttribute("rows", "1");
     Object.defineProperty(field, "scrollHeight", { configurable: true, value: 64 });
@@ -142,13 +143,13 @@ describe("AskForm", () => {
 
   it("exposes the field for the `a` shortcut", () => {
     const ref = createRef<HTMLTextAreaElement>();
-    render(<AskForm step={step5} onAsk={() => {}} inputRef={ref} />);
+    render(<AskForm subject={step5} onAsk={() => {}} inputRef={ref} />);
     ref.current!.focus();
     expect(screen.getByRole("textbox")).toHaveFocus();
   });
 
   it("explains that Ask needs a step when none is open, without a field", () => {
-    render(<AskForm step={null} onAsk={() => {}} />);
+    render(<AskForm subject={null} onAsk={() => {}} />);
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByText(/Ask works on a step/)).toBeInTheDocument();
   });
@@ -160,7 +161,7 @@ describe("AskForm", () => {
     ];
     render(
       <AskForm
-        step={step5}
+        subject={step5}
         onAsk={() => {}}
         answers={
           <AskThread
@@ -196,14 +197,14 @@ describe("AskForm: a collapsible Inspector section", () => {
 
   it("opens and closes with the chevron like the other sections; the header keeps the step's question count", async () => {
     const sections = control(false);
-    const { rerender } = render(<AskForm step={step5} onAsk={() => {}} sections={sections} count={2} />);
+    const { rerender } = render(<AskForm subject={step5} onAsk={() => {}} sections={sections} count={2} />);
     const header = screen.getByRole("button", { name: /^Ask about/ });
     expect(header).toHaveAttribute("aria-expanded", "false");
     expect(header).toHaveTextContent("2 questions on this step");
     expect(screen.queryByRole("textbox")).toBeNull();
     await userEvent.click(header);
     expect(sections.toggle).toHaveBeenCalledWith("ask");
-    rerender(<AskForm step={step5} onAsk={() => {}} sections={control(true)} count={2} />);
+    rerender(<AskForm subject={step5} onAsk={() => {}} sections={control(true)} count={2} />);
     expect(screen.getByRole("button", { name: /^Ask about/ })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("textbox", { name: "Ask the LLM about Step 5" })).toBeVisible();
   });
@@ -212,28 +213,32 @@ describe("AskForm: a collapsible Inspector section", () => {
     let fail: (e: Error) => void = () => {};
     const onAsk = () => new Promise((_, reject) => (fail = reject));
     const closed = control(false);
-    const { rerender } = render(<AskForm step={step5} onAsk={onAsk} sections={control(true)} count={0} />);
+    const { rerender } = render(<AskForm subject={step5} onAsk={onAsk} sections={control(true)} count={0} />);
     await userEvent.type(screen.getByRole("textbox"), "Why?{Enter}");
     // The reader collapses Ask while the question is on its way.
-    rerender(<AskForm step={step5} onAsk={onAsk} sections={closed} count={0} />);
+    rerender(<AskForm subject={step5} onAsk={onAsk} sections={closed} count={0} />);
     await act(async () => fail(new Error("server gone")));
     expect(closed.reveal).toHaveBeenCalledWith("ask");
-    rerender(<AskForm step={step5} onAsk={onAsk} sections={control(true)} count={0} />);
+    rerender(<AskForm subject={step5} onAsk={onAsk} sections={control(true)} count={0} />);
     expect(screen.getByRole("alert")).toHaveTextContent("The question was not sent: server gone");
   });
 
   it("opens itself for a notice such as a lost answer stream, and announces it", async () => {
     const closed = control(false);
     const opened = control(true);
-    const { rerender } = render(<AskForm step={step5} onAsk={() => {}} sections={closed} count={0} />);
-    rerender(<AskForm step={step5} onAsk={() => {}} sections={closed} count={0} notice="Connection lost." />);
+    const { rerender } = render(<AskForm subject={step5} onAsk={() => {}} sections={closed} count={0} />);
+    rerender(
+      <AskForm subject={step5} onAsk={() => {}} sections={closed} count={0} notice="Connection lost." />,
+    );
     expect(closed.reveal).toHaveBeenCalledWith("ask");
-    rerender(<AskForm step={step5} onAsk={() => {}} sections={opened} count={0} notice="Connection lost." />);
+    rerender(
+      <AskForm subject={step5} onAsk={() => {}} sections={opened} count={0} notice="Connection lost." />,
+    );
     expect(screen.getByRole("alert")).toHaveTextContent("Connection lost.");
   });
 
   it("says where answers appear: one conversation, newest at the bottom", () => {
-    render(<AskForm step={step5} onAsk={() => {}} sections={control(true)} count={0} />);
+    render(<AskForm subject={step5} onAsk={() => {}} sections={control(true)} count={0} />);
     const ask = screen.getByRole("region", { name: /^Ask/ });
     expect(ask).toHaveTextContent("one conversation per analysis, newest at the bottom");
     expect(ask).not.toHaveTextContent(/pinned/);
@@ -324,7 +329,36 @@ describe("AskAnswers", () => {
     );
     expect(screen.getByRole("listitem")).toHaveTextContent("No answer: The LLM usage limit was reached.");
     await userEvent.click(screen.getByRole("button", { name: "Ask again" }));
-    expect(onAskAgain).toHaveBeenCalledWith("f1.5", "Is the reply deduplicated?");
+    expect(onAskAgain).toHaveBeenCalledWith(
+      { kind: "step", step_id: "f1.5", lines: null },
+      "Is the reply deduplicated?",
+    );
+  });
+
+  it("asks a failed question about lines again on the same lines, with or without a step", async () => {
+    const onAskAgain = vi.fn();
+    const lines = {
+      kind: "lines" as const,
+      path: "src/a.rs",
+      side: "base" as const,
+      range: { start_line: 4, end_line: 6 },
+    };
+    const stepLines = { kind: "step" as const, step_id: "f1.5", lines: { start_line: 99, end_line: 99 } };
+    render(
+      <AskAnswers
+        questions={[
+          question({ id: "a", state: "failed", failure: "x", anchor: lines, step_id: undefined }),
+          question({ id: "b", state: "failed", failure: "x", anchor: stepLines }),
+        ]}
+        onAskAgain={onAskAgain}
+      />,
+    );
+    const again = screen.getAllByRole("button", { name: "Ask again" });
+    expect(again).toHaveLength(2);
+    await userEvent.click(again[0]!);
+    expect(onAskAgain).toHaveBeenLastCalledWith(lines, "Is the reply deduplicated?");
+    await userEvent.click(again[1]!);
+    expect(onAskAgain).toHaveBeenLastCalledWith(stepLines, "Is the reply deduplicated?");
   });
 
   it("asks again once while pending and shows a rejection", async () => {
@@ -374,7 +408,7 @@ describe("AskAnswers", () => {
     const { container } = render(
       <>
         <AskAnswers questions={[...questions, question({ state: "failed", failure: "x" })]} />
-        <AskForm step={step5} onAsk={() => {}} />
+        <AskForm subject={step5} onAsk={() => {}} />
       </>,
     );
     expectTrustWording(container.textContent ?? "");

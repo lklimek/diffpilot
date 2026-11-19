@@ -394,7 +394,10 @@ mod tests {
                 db::repo::questions::NewQuestion {
                     id: q,
                     analysis_id: id,
-                    step_id: contracts::ids::StepId("f1.1".into()),
+                    anchor: contracts::api::questions::AskAnchor::Step {
+                        step_id: contracts::ids::StepId("f1.1".into()),
+                        lines: None,
+                    },
                     user_id: "u1".into(),
                     text: "why?".into(),
                 },

@@ -50,15 +50,18 @@ for (const colorScheme of ["light", "dark"] as const) {
 
     // The changed sign is read with its line (no tooltip trigger); the remark marker explains itself.
     await expect(line(page, "head", 90).locator("[data-mark=changed]")).toContainText("added line");
-    await line(page, "head", 90).getByRole("button", { name: "LLM remark at line 90" }).hover();
-    await expect(page.getByRole("dialog", { name: "LLM remarks at line 90" })).toContainText(
+    await line(page, "head", 90)
+      .getByRole("button", { name: /^LLM remark at line 90: Behaviour/ })
+      .first()
+      .hover();
+    await expect(page.getByRole("dialog", { name: /^LLM remark at line 90: Behaviour/ })).toContainText(
       "Was: checks the wallet",
     );
     await expectAccessible(page);
     // Screen-wide: every tooltip trigger on the Tour with changed lines takes keyboard focus (pointer away, so no
     // hover popover is open).
     await page.mouse.move(0, 0);
-    await expect(page.getByRole("dialog", { name: "LLM remarks at line 90" })).toBeHidden();
+    await expect(page.getByRole("dialog", { name: /^LLM remark at line 90/ })).toBeHidden();
     await expectKeyboardTooltips(page);
   });
 }

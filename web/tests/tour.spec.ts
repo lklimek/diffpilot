@@ -303,7 +303,7 @@ test("keyboard map: x ticks, d old code, c comment, a ask, ? help, Esc closes", 
   await page.keyboard.press("j");
   await expect(main.getByRole("region", { name: /^src\/sync\/mod\.rs, lines 61 to 67/ })).toBeVisible();
   await page.keyboard.press("x");
-  await expect(banner).toContainText("flows reviewed 1 / 5");
+  await expect(banner).toContainText("Your progress 1 / 5");
 });
 
 test("21:9: the three columns use the full width", async ({ browser }) => {
@@ -321,9 +321,15 @@ test("21:9: the three columns use the full width", async ({ browser }) => {
 test("every top-bar control explains itself in a tooltip", async ({ page }) => {
   await openTour(page);
   const banner = page.getByRole("banner").first();
-  await expect(banner.getByRole("link", { name: /#482/ })).toHaveAccessibleDescription(/GitHub/);
+  await expect(
+    banner.getByRole("link", { name: /^Pull request #482 on GitHub/ }),
+  ).toHaveAccessibleDescription(/GitHub/);
+  await expect(banner.getByRole("link", { name: "acme/node-client #482" })).toHaveAccessibleDescription(
+    /PR context/,
+  );
+  await expect(banner.getByRole("button", { name: "View: Flows" })).toHaveAccessibleDescription(/Files/);
   await expect(banner.getByText(/^Check runs:/).first()).toHaveAccessibleDescription(/Failing checks/);
-  await expect(banner.getByText(/^flows reviewed/)).toHaveAccessibleDescription(/No percentage/);
+  await expect(banner.getByText(/^Your progress/)).toHaveAccessibleDescription(/No percentage/);
   await expect(banner.getByRole("button", { name: /^Pending review/ })).toHaveAccessibleDescription(
     /pending review/,
   );

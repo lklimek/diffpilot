@@ -26,8 +26,10 @@ import type {
   Tour,
 } from "../../api/generated/types";
 import {
+  useAskAnchored,
   useAskQuestion,
   useCommentActions,
+  useFiles,
   useLines,
   useMe,
   usePendingReview,
@@ -47,7 +49,10 @@ import { isFlowReviewed } from "../../components/flow-intro/progress";
 import { HelpDialog } from "../../components/help/HelpDialog";
 import { quietTitle } from "../../components/inspector/summaries";
 import { shortcutAction } from "../../components/help/shortcuts";
+import { FlowWhy } from "../../components/flow-intro/FlowWhy";
 import { NavList } from "../../components/nav/NavList";
+import { filesHash, stepFilesLink } from "../../components/files/model";
+import { rangeText } from "../../components/section/format";
 import { PrContextBlock } from "../../components/pr-context/PrContextBlock";
 import { QuestionsBlock } from "../../components/questions/QuestionsBlock";
 import { MovesBlock } from "../../components/quiet/MovesBlock";
@@ -59,7 +64,15 @@ import { StepBlock } from "../../components/step/StepBlock";
 import { TopBar } from "../../components/top-bar/TopBar";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { busyTip } from "../../components/button/button";
-import { ChunkedCode, DiffCode, FileDiffCode, LinesCode, errorText, type CodeContext } from "./code";
+import {
+  ChunkedCode,
+  DiffCode,
+  FileDiffCode,
+  LinesCode,
+  errorText,
+  useHideContextChanges,
+  type CodeContext,
+} from "./code";
 import { DiagramPane } from "./DiagramPane";
 import { useCommentDrafts, useUnresolvedPosts } from "./drafts";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
@@ -76,30 +89,13 @@ import {
   evidenceFromHash,
 } from "./sequence";
 import { useNow } from "../../app/now";
+import { FlowsMenu } from "./FlowsMenu";
 import { Workspace } from "./Workspace";
+import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "./review";
 import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
 import { useTourNotifications } from "../../app/workNotifications";
 
-/** The PR's checks page on GitHub, which the CI summary links to. */
-const checksHref = (pr: { html_url: string }) => `${pr.html_url.replace(/\/+$/, "")}/checks`;
-
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
-
-// Ignore shortcuts while the user types or uses modifier keys.
-function isTyping(event: KeyboardEvent): boolean {
-  const target = event.target as HTMLElement | null;
-  return (
-    event.altKey ||
-    event.ctrlKey ||
-    event.metaKey ||
-    target?.isContentEditable === true ||
-    ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName ?? "")
-  );
-}
-
-// A failure the next try may not have: the server or the network, not an answer about this request.
-const transient = (error: unknown) =>
-  !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
 
 const onStep = (c: PendingComment, step: Step) =>
   c.path === step.facts.file &&
@@ -184,22 +180,7 @@ function resumedAt(tour: Tour, block: BlockRef): string {
 }
 
 function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
-  const contextKey = `diffpilot.hide-context-changes.${login ?? "anonymous"}`;
-  const [hideContextChanges, setHideContextChanges] = useState(() => {
-    try {
-      return localStorage.getItem(contextKey) !== "false";
-    } catch {
-      return true;
-    }
-  });
-  const changeContextVisibility = (hide: boolean) => {
-    setHideContextChanges(hide);
-    try {
-      localStorage.setItem(contextKey, String(hide));
-    } catch {
-      /* Storage unavailable; keep this view's preference. */
-    }
-  };
+  const [hideContextChanges, changeContextVisibility] = useHideContextChanges(login);
   const { state, change: save, loadError, saveError } = review;
   const work = useFlowWork(analysisId);
   useForgetReanalysedFlows(analysisId, tour);
@@ -210,12 +191,15 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   usePrTabSubject(tour.analysis.pr);
   useTourNotifications(tour, questions.data);
   const ask = useAskQuestion(analysisId);
+  const askAnchored = useAskAnchored(analysisId);
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
   // A finished analysis takes a request for any flow shown failed (a stored flow today's checks reject, or one
   // that failed for good); the request analyses it again from scratch.
   const finished = tour.analysis.state.state === "finished";
   const pending = usePendingReview(analysisId);
+  // The GitHub Viewed marks shown in step headers (read-only here).
+  const files = useFiles(analysisId);
   // Remarks the user gave feedback on dim their pills; nothing else is per-user state of a remark.
   const feedback = useFeedback(analysisId);
   const handledRemarks = new Set(
@@ -290,6 +274,10 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     found?.flow ??
     (current.block === "flow_intro" ? tour.flows.find((f) => f.id === current.flow_id) : undefined);
   const stepLines = useLines(analysisId, step && stepQuery(step));
+  // The Files view at the current place: a step's lines, a flow's first step, else its first file.
+  const filesPath = `/analyses/${analysisId}/files`;
+  const filesStep = step ?? (current.block === "flow_intro" ? flow?.steps[0] : undefined);
+  const filesHref = filesStep ? `${filesPath}${filesHash(stepFilesLink(filesStep))}` : filesPath;
   // Lines of the step the code view hides ("hide comment and import changes"); `c` and the reveal skip them.
   const stepHidden =
     step && stepLines.data
@@ -362,15 +350,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     }
   }
 
-  // The review screen never scrolls the page: no reserved scrollbar gutter, the columns get the full width.
-  useEffect(() => {
-    const style = document.documentElement.style;
-    const before = style.scrollbarGutter;
-    style.scrollbarGutter = "auto";
-    return () => {
-      style.scrollbarGutter = before;
-    };
-  }, []);
+  useNoPageScroll();
 
   // Make a resumed position immediately shareable; the server remains the fallback without a fragment.
   useEffect(() => {
@@ -517,6 +497,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           openInspector();
           sections.reveal("ask");
           return setFocusNext("ask");
+        case "switch_view":
+          return void navigate(filesHref);
         case "help":
           return setHelpOpen(true);
         case "close":
@@ -531,15 +513,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   });
 
   const pendingComments = pending.data?.comments ?? [];
-  const pendingCount = pending.isSuccess
-    ? pending.data.commenting_available
-      ? pending.data.incomplete
-        ? (`${pending.data.comments.length}+` as const)
-        : pending.data.comments.length
-      : ("unavailable" as const)
-    : pending.isPending
-      ? ("loading" as const)
-      : undefined;
+  const pendingCount = pendingCountOf(pending);
   const ctx: CodeContext = {
     hideContextChanges,
     analysisId,
@@ -584,7 +558,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const stepOrder = tour.flows.flatMap((f) => f.steps.map((s) => s.id));
   const rank = (id: StepId) => (stepOrder.includes(id) ? stepOrder.indexOf(id) : stepOrder.length);
   const myQuestions = (questions.data ?? [])
-    .filter((q) => q.mine !== false)
+    // Questions about lines (Files view) have no step and are not part of the tour.
+    .filter((q): q is AskQuestion & { step_id: StepId } => q.mine !== false && q.step_id !== undefined)
     .sort((a, b) => rank(a.step_id) - rank(b.step_id));
   const questionCounts: Record<StepId, number> = {};
   for (const q of myQuestions) questionCounts[q.step_id] = (questionCounts[q.step_id] ?? 0) + 1;
@@ -624,7 +599,11 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         questions={myQuestions}
         placeOf={questionPlace}
         onEvidence={showEvidence}
-        onAskAgain={(step, text) => ask.mutateAsync({ step, text })}
+        onAskAgain={(anchor, text) =>
+          anchor.kind === "step" && anchor.lines === null
+            ? ask.mutateAsync({ step: anchor.step_id, text })
+            : askAnchored.mutateAsync({ anchor, text })
+        }
       />
     );
   } else if (current.block === "flow_intro" && flow) {
@@ -727,6 +706,11 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         ownComments={pendingComments.filter((c) => onStep(c, step)).length}
         oldCode={offersOldCode ? { shown: oldCode, onToggle: () => setOldCode((s) => !s) } : undefined}
         onSelectStep={selectStep}
+        viewed={
+          // null: GitHub's mark was not read (said so); undefined: the file list is not known (no chip).
+          files.data?.files.find((f) => f.path === step.facts.file || f.old_path === step.facts.file)?.viewed
+        }
+        onOpenFile={() => void navigate(filesHref)}
       />
     );
   } else if (current.block === "quiet") {
@@ -886,6 +870,14 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           {progressAlert}
         </p>
       )}
+      {step && flow && (
+        <FlowWhy
+          flow={flow}
+          open={sections.isOpen("whyflow")}
+          onToggle={() => sections.toggle("whyflow")}
+          onOpenIntro={() => go({ block: "flow_intro", flow_id: flow.id })}
+        />
+      )}
       {flow && flow.steps.length > 0 && (
         <DiagramPane
           key={flow.id}
@@ -942,9 +934,24 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           reviewed: tour.flows.filter((f) => isFlowReviewed(f, ticked)).length,
           total: tour.flows.length,
         }}
+        progressMenu={
+          <FlowsMenu
+            tour={tour}
+            ticked={ticked}
+            work={work}
+            onOpenFlow={(flowId) => go({ block: "flow_intro", flow_id: flowId })}
+          />
+        }
         pendingCount={pendingCount}
         onOpenPending={() => go({ block: "pending_review" })}
         onHelp={() => setHelpOpen(true)}
+        view={{
+          current: "flows",
+          flowsHref: `${location.pathname}${location.hash}`,
+          filesHref,
+          prContextHref: `/analyses/${analysisId}#${blockFragment(PR_CONTEXT)}`,
+          onNavigate: (href) => void navigate(href),
+        }}
       />
       <Workspace
         layout={layout}
@@ -993,6 +1000,19 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             onBackToStep={() => setAnnotationId(null)}
             onSelectStep={selectStep}
             placeOf={questionPlace}
+            placeOfQuestion={(q) => {
+              if (q.anchor.kind === "step") return questionPlace(q.anchor.step_id);
+              const { path, side, range } = q.anchor;
+              const link = {
+                file: path,
+                side,
+                ...(range ? { line: range.start_line, end: range.end_line } : {}),
+              };
+              return {
+                label: `${path}${range ? `:${rangeText(range)}` : ""} · in Files`,
+                open: () => void navigate(`${filesPath}${filesHash(link)}`),
+              };
+            }}
             onEvidence={showEvidence}
             codeShown={
               !!step || !!lineView || (current.block === "quiet" && current.row.row !== "not_analysed")

@@ -72,6 +72,10 @@ export function sha256Hex(text: string): string {
 
 const repoUrl = (pr: PrLinkBase) => `https://github.com/${pr.repo.owner}/${pr.repo.name}`;
 
+/** The file in the PR's changes view on GitHub (`#diff-<sha256 of path>`). */
+export const fileDiffUrl = (pr: PrLinkBase, path: string) =>
+  `${repoUrl(pr)}/pull/${pr.number}/changes#diff-${sha256Hex(path)}`;
+
 /**
  * GitHub link to `span`: in the PR's changes view (`#diff-<sha256 of path>R<a>-R<b>`, `L` for base) when the
  * lines are in the diff, else the file at the analysed commit of their side (`blob/<sha>/<path>#L<a>-L<b>`).

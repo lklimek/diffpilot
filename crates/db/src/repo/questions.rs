@@ -1,7 +1,8 @@
-//! Repository for `questions`: Ask questions on steps of an analysis and their LLM answers.
+//! Repository for `questions`: Ask questions on steps or lines of an analysis and their LLM answers.
 
 use contracts::agent::ask::AskOutput;
-use contracts::api::questions::{AskQuestion, AskState};
+use contracts::api::questions::{AskAnchor, AskQuestion, AskState};
+use contracts::common::LineRange;
 use contracts::ids::{AnalysisId, JobId, QuestionId, StepId};
 use contracts::time::Timestamp;
 use sqlx::sqlite::SqliteRow;
@@ -31,8 +32,8 @@ pub struct NewQuestion {
     pub id: QuestionId,
     /// The analysis.
     pub analysis_id: AnalysisId,
-    /// The step asked about (canonical Tour id).
-    pub step_id: StepId,
+    /// What the question is about (a step: its canonical Tour id).
+    pub anchor: AskAnchor,
     /// Who asked.
     pub user_id: String,
     /// The question text (user input, stored as given).
@@ -74,6 +75,8 @@ pub struct QuestionRecord {
     pub job_id: Option<JobId>,
     /// When the job's result confirmed the answer; `None` while an `answered` question shows a ready output.
     pub answered_at: Option<Timestamp>,
+    /// Tour steps the asked lines touch, chosen when the job was submitted; `None` until then (or for a step).
+    pub touched_steps: Option<Vec<StepId>>,
 }
 
 /// A state change of a question.
@@ -95,8 +98,8 @@ pub enum QuestionUpdate {
 /// job's paused credential, if still ahead (`?1` = now).
 macro_rules! question_select {
     () => {
-        "SELECT q.id, q.analysis_id, q.step_id, q.user_id, q.text, q.state, q.answer, q.failure, q.job_id,
-             q.created_at, q.answered_at, u.login AS asked_by,
+        "SELECT q.id, q.analysis_id, q.step_id, q.path, q.side, q.start_line, q.end_line, q.user_id, q.text, q.state, q.answer, q.failure, q.job_id,
+             q.created_at, q.answered_at, q.touched_steps, u.login AS asked_by,
              CASE WHEN q.state = 'pending' THEN
                  CASE WHEN j.state = 'paused' AND j.resumes_at > ?1 THEN j.resumes_at
                       WHEN j.state = 'queued' AND c.paused_until > ?1 THEN c.paused_until END
@@ -121,12 +124,15 @@ fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
     let created_at: String = row.try_get("created_at")?;
     let answer: Option<String> = row.try_get("answer")?;
     let job: Option<String> = row.try_get("job_id")?;
+    let touched: Option<String> = row.try_get("touched_steps")?;
+    let anchor = anchor_from_row(row)?;
     Ok(QuestionRecord {
         question: AskQuestion {
             asked_by: Some(row.try_get("asked_by")?),
             mine: None,
             id: parse_wire(&id, "questions.id")?,
-            step_id: StepId(row.try_get("step_id")?),
+            step_id: anchor.step_id().cloned(),
+            anchor,
             text: row.try_get("text")?,
             state: parse_wire(&state, "questions.state")?,
             answer: answer.map(|text| serde_json::from_str(&text)).transpose()?,
@@ -140,6 +146,73 @@ fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
             .map(|job| parse_wire(&job, "questions.job_id"))
             .transpose()?,
         answered_at: optional_ts(row, "answered_at")?,
+        touched_steps: touched
+            .map(|ids| serde_json::from_str::<Vec<String>>(&ids))
+            .transpose()?
+            .map(|ids| ids.into_iter().map(StepId).collect()),
+    })
+}
+
+/// The anchor columns of a question row (`CHECK`ed: exactly one of step and path; both line ends or none).
+fn anchor_from_row(row: &SqliteRow) -> Result<AskAnchor, DbError> {
+    let start: Option<u32> = row.try_get("start_line")?;
+    let end: Option<u32> = row.try_get("end_line")?;
+    let lines = start.zip(end).map(|(start_line, end_line)| LineRange {
+        start_line,
+        end_line,
+    });
+    let step: Option<String> = row.try_get("step_id")?;
+    if let Some(step) = step {
+        return Ok(AskAnchor::Step {
+            step_id: StepId(step),
+            lines,
+        });
+    }
+    let path: Option<String> = row.try_get("path")?;
+    let side: Option<String> = row.try_get("side")?;
+    match (path, side) {
+        (Some(path), Some(side)) => Ok(AskAnchor::Lines {
+            path,
+            side: parse_wire(&side, "questions.side")?,
+            range: lines,
+        }),
+        _ => Err(DbError::Corrupt {
+            column: "questions.path",
+        }),
+    }
+}
+
+/// Anchor columns (step, path, side, start line, end line) of `anchor`.
+type AnchorColumns<'a> = (
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<String>,
+    Option<u32>,
+    Option<u32>,
+);
+
+fn anchor_columns(anchor: &AskAnchor) -> Result<AnchorColumns<'_>, DbError> {
+    let ends = |lines: &Option<LineRange>| {
+        (
+            lines.map(|lines| lines.start_line),
+            lines.map(|lines| lines.end_line),
+        )
+    };
+    Ok(match anchor {
+        AskAnchor::Step { step_id, lines } => {
+            let (start, end) = ends(lines);
+            (Some(step_id.0.as_str()), None, None, start, end)
+        }
+        AskAnchor::Lines { path, side, range } => {
+            let (start, end) = ends(range);
+            (
+                None,
+                Some(path.as_str()),
+                Some(wire_name(side)?),
+                start,
+                end,
+            )
+        }
     })
 }
 
@@ -151,14 +224,16 @@ impl Questions<'_> {
         limits: QuestionLimits,
         now: Timestamp,
     ) -> Result<Asked, DbError> {
+        let (step, path, side, start, end) = anchor_columns(&question.anchor)?;
         let inserted = sqlx::query(
-            "INSERT INTO questions (id, tenant_id, analysis_id, step_id, user_id, text, state, created_at)
-             SELECT ?1, a.tenant_id, a.id, ?2, ?3, ?4, 'pending', ?5 FROM analyses a WHERE a.id = ?6
+            "INSERT INTO questions (id, tenant_id, analysis_id, step_id, path, side, start_line, end_line, user_id,
+                 text, state, created_at)
+             SELECT ?1, a.tenant_id, a.id, ?2, ?10, ?11, ?12, ?13, ?3, ?4, 'pending', ?5 FROM analyses a WHERE a.id = ?6
                  AND (SELECT COUNT(*) FROM questions WHERE analysis_id = a.id AND user_id = ?3) < ?7
                  AND (SELECT COUNT(*) FROM questions WHERE user_id = ?3 AND created_at >= ?8) < ?9",
         )
         .bind(question.id.to_string())
-        .bind(&question.step_id.0)
+        .bind(step)
         .bind(&question.user_id)
         .bind(&question.text)
         .bind(ts(now))
@@ -166,6 +241,10 @@ impl Questions<'_> {
         .bind(limits.per_analysis)
         .bind(ts(limits.user_window_start))
         .bind(limits.per_user)
+        .bind(path)
+        .bind(side)
+        .bind(start)
+        .bind(end)
         .execute(self.pool)
         .await?;
         if inserted.rows_affected() == 1 {
@@ -182,6 +261,32 @@ impl Questions<'_> {
             None => Err(DbError::NotFound),
             Some(held) if held >= limits.per_analysis => Ok(Asked::AnalysisLimit),
             Some(_) => Ok(Asked::UserLimit),
+        }
+    }
+
+    /// The limit `user_id` has reached for a new question on `analysis` (`Asked::AnalysisLimit` or
+    /// `Asked::UserLimit`), if any: a cheap check before costly validation; [`Self::create`] checks again.
+    pub async fn limit_reached(
+        &self,
+        analysis: AnalysisId,
+        user_id: &str,
+        limits: QuestionLimits,
+    ) -> Result<Option<Asked>, DbError> {
+        let counts: Option<(u32, u32)> = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM questions WHERE analysis_id = a.id AND user_id = ?2),
+                    (SELECT COUNT(*) FROM questions WHERE user_id = ?2 AND created_at >= ?3)
+             FROM analyses a WHERE a.id = ?1",
+        )
+        .bind(analysis.to_string())
+        .bind(user_id)
+        .bind(ts(limits.user_window_start))
+        .fetch_optional(self.pool)
+        .await?;
+        match counts {
+            None => Err(DbError::NotFound),
+            Some((held, _)) if held >= limits.per_analysis => Ok(Some(Asked::AnalysisLimit)),
+            Some((_, recent)) if recent >= limits.per_user => Ok(Some(Asked::UserLimit)),
+            Some(_) => Ok(None),
         }
     }
 
@@ -310,6 +415,20 @@ impl Questions<'_> {
         Ok(())
     }
 
+    /// Stores the Tour steps the asked lines touch (before the job is submitted, so its claim finds them).
+    pub async fn set_touched_steps(&self, id: QuestionId, steps: &[StepId]) -> Result<(), DbError> {
+        let ids: Vec<&str> = steps.iter().map(|step| step.0.as_str()).collect();
+        let updated = sqlx::query("UPDATE questions SET touched_steps = ? WHERE id = ?")
+            .bind(serde_json::to_string(&ids)?)
+            .bind(id.to_string())
+            .execute(self.pool)
+            .await?;
+        if updated.rows_affected() == 0 {
+            return Err(DbError::NotFound);
+        }
+        Ok(())
+    }
+
     /// Stores a state change; an answer replaces the failure and vice versa.
     pub async fn update(
         &self,
@@ -383,7 +502,10 @@ mod tests {
         NewQuestion {
             id: QuestionId::new_random(),
             analysis_id: analysis,
-            step_id: StepId(step.to_owned()),
+            anchor: AskAnchor::Step {
+                step_id: StepId(step.to_owned()),
+                lines: None,
+            },
             user_id: "u1".to_owned(),
             text: text.to_owned(),
         }
@@ -483,7 +605,7 @@ mod tests {
         let record = db.questions().get(id, at(0)).await.expect("get");
         assert_eq!(record.question.state, AskState::Pending);
         assert_eq!(record.question.text, text);
-        assert_eq!(record.question.step_id, StepId("f1.2".to_owned()));
+        assert_eq!(record.question.step_id, Some(StepId("f1.2".to_owned())));
         assert_eq!(record.question.created_at, at(0));
         assert_eq!(record.user_id, "u1");
         assert_eq!(record.job_id, None);
@@ -502,6 +624,72 @@ mod tests {
             )
             .await;
         assert!(matches!(unknown, Err(DbError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn anchors_round_trip_and_the_schema_refuses_mixed_ones() {
+        let db = Db::in_memory().await.expect("db");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let range = Some(LineRange {
+            start_line: 100,
+            end_line: 102,
+        });
+        let anchors = [
+            AskAnchor::Step {
+                step_id: StepId("f1.6".to_owned()),
+                lines: range,
+            },
+            AskAnchor::Lines {
+                path: "src/rpc/client.rs".to_owned(),
+                side: LineSide::Base,
+                range,
+            },
+            AskAnchor::Lines {
+                path: "src/rpc/client.rs".to_owned(),
+                side: LineSide::Head,
+                range: None,
+            },
+        ];
+        let roomy = QuestionLimits {
+            per_analysis: 10,
+            per_user: 10,
+            ..LIMITS
+        };
+        for anchor in anchors {
+            let mut question = new_question(analysis, "unused", "q");
+            question.anchor = anchor.clone();
+            let Asked::Stored(record) = db
+                .questions()
+                .create(question, roomy, at(0))
+                .await
+                .expect("create")
+            else {
+                panic!("not stored")
+            };
+            assert_eq!(record.question.anchor, anchor);
+            assert_eq!(record.question.step_id, anchor.step_id().cloned());
+        }
+        for (columns, case) in [
+            ("'f1.1', 'a.rs', 'head', NULL, NULL", "step and path"),
+            ("NULL, NULL, NULL, NULL, NULL", "neither step nor path"),
+            ("NULL, 'a.rs', NULL, NULL, NULL", "path without side"),
+            ("'f1.1', NULL, NULL, 3, NULL", "one line end"),
+            ("NULL, 'a.rs', 'head', 5, 4", "inverted range"),
+        ] {
+            let insert = format!(
+                "INSERT INTO questions (id, tenant_id, analysis_id, step_id, path, side, start_line, end_line, user_id,
+                     text, state, created_at)
+                 VALUES ('{}', 'default', '{analysis}', {columns}, 'u1', 'q', 'pending', 't')",
+                QuestionId::new_random()
+            );
+            assert!(
+                sqlx::query(sqlx::AssertSqlSafe(insert))
+                    .execute(&db.pool)
+                    .await
+                    .is_err(),
+                "{case} is refused"
+            );
+        }
     }
 
     #[tokio::test]
@@ -536,6 +724,63 @@ mod tests {
             .await
             .expect("create");
         assert_eq!(fourth, Asked::AnalysisLimit);
+    }
+
+    #[tokio::test]
+    async fn touched_steps_are_stored_with_the_question() {
+        let db = Db::in_memory().await.expect("db");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let id = ask(&db, analysis, "f1.1", "a", at(0)).await;
+        let questions = db.questions();
+        let read = || async { questions.get(id, at(1)).await.expect("get").touched_steps };
+        assert_eq!(read().await, None);
+        let steps = [StepId("f1.2".to_owned()), StepId("f2.1".to_owned())];
+        questions
+            .set_touched_steps(id, &steps)
+            .await
+            .expect("store");
+        assert_eq!(read().await, Some(steps.to_vec()));
+        questions
+            .set_touched_steps(id, &[])
+            .await
+            .expect("store none");
+        assert_eq!(read().await, Some(Vec::new()));
+        assert!(matches!(
+            questions
+                .set_touched_steps(QuestionId::new_random(), &steps)
+                .await,
+            Err(DbError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn limit_reached_tells_the_limit_before_any_insert() {
+        let db = Db::in_memory().await.expect("db");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let questions = db.questions();
+        let reached = |limits| questions.limit_reached(analysis, "u1", limits);
+        assert_eq!(reached(LIMITS).await.expect("check"), None);
+        ask(&db, analysis, "f1.1", "a", at(0)).await;
+        ask(&db, analysis, "f1.1", "b", at(1)).await;
+        assert_eq!(
+            reached(LIMITS).await.expect("check"),
+            Some(Asked::UserLimit)
+        );
+        let full = QuestionLimits {
+            per_analysis: 2,
+            user_window_start: at(100),
+            ..LIMITS
+        };
+        assert_eq!(
+            reached(full).await.expect("check"),
+            Some(Asked::AnalysisLimit)
+        );
+        assert!(matches!(
+            questions
+                .limit_reached(AnalysisId::new_random(), "u1", LIMITS)
+                .await,
+            Err(DbError::NotFound)
+        ));
     }
 
     #[tokio::test]

@@ -24,11 +24,16 @@ import { BasisNote, Empty, GithubLink } from "./text";
 type Sections = { currentFile?: string; sections: SectionControl; onEvidence?: (e: Evidence) => void };
 
 /** Section 1: classic diff of the step or of the selected range (the screen supplies the diff view). */
-export function DiffSection({ diff, ofRange, sections }: { diff?: ReactNode; ofRange: boolean } & Sections) {
+export function DiffSection({
+  diff,
+  ofRange,
+  title,
+  sections,
+}: { diff?: ReactNode; ofRange: boolean; title?: string } & Sections) {
   return (
     <Collapsible
       sectionKey="diff"
-      title={ofRange ? "Classic diff of the selected range" : "Classic diff of this step"}
+      title={title ?? (ofRange ? "Classic diff of the selected range" : "Classic diff of this step")}
       tone="facts"
       source="From the diff; no LLM."
       sections={sections}

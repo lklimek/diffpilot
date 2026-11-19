@@ -1,5 +1,6 @@
 //! Helpers shared by the server's unit tests.
 
+pub(crate) mod github;
 pub(crate) mod logs;
 
 use contracts::time::Timestamp;

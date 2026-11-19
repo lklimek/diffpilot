@@ -19,6 +19,7 @@ import {
 const ID = (seedFor("default", "analysis") as AnalysisSummary).id;
 const q = (id: string, state: AskQuestion["state"]): AskQuestion => ({
   id,
+  anchor: { kind: "step", step_id: "f1.5", lines: null },
   step_id: "f1.5",
   text: "Twice?",
   state,

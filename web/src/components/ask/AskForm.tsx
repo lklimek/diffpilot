@@ -1,23 +1,41 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type Ref } from "react";
-import type { CommentTarget, StepId } from "../../api/generated/types";
+import type { AskAnchor, CommentTarget, StepId } from "../../api/generated/types";
 import { busyTip } from "../button/button";
 import { assignRef, growField, useAction } from "../inspector/action";
 import type { SectionControl } from "../inspector/sectionState";
 import { Tooltip } from "../tooltip/Tooltip";
 
+/** What a question is about: its anchor, a label ("Step 5 · Retry allowed?") and a noun ("this step"). */
+export interface AskSubject {
+  anchor: AskAnchor;
+  label: string;
+  /** "this step", "these lines", "this hunk", "this file": the field's placeholder and the button's tip. */
+  noun: string;
+}
+
+/** The subject of a step (the Flows view): its whole range. */
+export const stepSubject = (id: StepId, label: string): AskSubject => ({
+  anchor: { kind: "step", step_id: id, lines: null },
+  label,
+  noun: "this step",
+});
+
+// Draft and outcome belong to one subject: another anchor starts afresh.
+const subjectKey = (anchor: AskAnchor) => JSON.stringify(anchor);
+
 /** Props of the Ask field in the inspector dock. */
 export interface AskFormProps {
-  /** The step asked about (`label` e.g. "Step 5 · Retry allowed?"); null when no step is open (Ask needs one). */
-  step: { id: StepId; label: string } | null;
-  /** Sends the question (POST …/steps/{step}/questions); a rejection keeps the text and shows its message. */
-  onAsk: (step: StepId, text: string) => Promise<unknown> | void;
+  /** What is asked about; null when there is nothing to ask about (the Flows view outside a step). */
+  subject: AskSubject | null;
+  /** Sends the question; a rejection keeps the text and shows its message. */
+  onAsk: (anchor: AskAnchor, text: string) => Promise<unknown> | void;
   /** The text field, for the `a` shortcut. */
   inputRef?: Ref<HTMLTextAreaElement>;
   /** The conversation (e.g. `AskThread`), shown above the field, which stays at the bottom. */
   answers?: ReactNode;
   /** The Inspector's section state: with it, Ask collapses like the other sections (key `ask`). */
   sections?: SectionControl;
-  /** Questions asked about this step, shown in the header (also collapsed). */
+  /** Questions asked about the subject, shown in the header (also collapsed). */
   count?: number;
   /** A problem with the answers (e.g. the lost answer stream), announced above them; opens a collapsed Ask. */
   notice?: string | null;
@@ -35,7 +53,7 @@ export function lineReference(target: CommentTarget): string {
 
 /** One-line question field that grows while typing; Enter sends, Shift+Enter adds a line. */
 export function AskForm({
-  step,
+  subject,
   onAsk,
   inputRef,
   answers,
@@ -45,7 +63,7 @@ export function AskForm({
   insert,
   onInserted,
 }: AskFormProps) {
-  if (step === null) {
+  if (subject === null) {
     return (
       <section aria-label="Ask">
         <h3 className="text-[10.5px] font-bold tracking-wide text-muted uppercase">Ask</h3>
@@ -53,11 +71,11 @@ export function AskForm({
       </section>
     );
   }
-  // Draft, error and pending state belong to one step: another step starts afresh, an old outcome is dropped.
+  // Draft, error and pending state belong to one subject: another starts afresh, an old outcome is dropped.
   return (
     <AskDraft
-      key={step.id}
-      step={step}
+      key={subjectKey(subject.anchor)}
+      subject={subject}
       onAsk={onAsk}
       inputRef={inputRef}
       answers={answers}
@@ -71,7 +89,7 @@ export function AskForm({
 }
 
 function AskDraft({
-  step,
+  subject: about,
   onAsk,
   inputRef,
   answers,
@@ -80,9 +98,9 @@ function AskDraft({
   notice,
   insert,
   onInserted,
-}: AskFormProps & { step: { id: StepId; label: string } }) {
+}: AskFormProps & { subject: AskSubject }) {
   const open = sections ? sections.isOpen("ask") : true;
-  const subject = step.label;
+  const subject = about.label;
   const id = useId();
   const field = useRef<HTMLTextAreaElement | null>(null);
   const [text, setText] = useState("");
@@ -97,7 +115,7 @@ function AskDraft({
       return;
     }
     setEmpty(false);
-    if (await action.run(() => onAsk(step.id, question))) {
+    if (await action.run(() => onAsk(about.anchor, question))) {
       // Only the sent text goes: a line reference inserted meanwhile (appended, see below) stays.
       setText((now) => (now.startsWith(text) ? now.slice(text.length).trimStart() : now));
       requestAnimationFrame(() => growField(field.current));
@@ -153,10 +171,10 @@ function AskDraft({
             onClick={() => sections.toggle("ask")}
             className={`flex min-h-6 w-full cursor-pointer items-baseline gap-1.5 rounded py-0.5 text-left font-bold uppercase before:inline-block before:w-3 before:text-muted ${open ? "before:content-['▾']" : "before:content-['▸']"}`}
           >
-            <AskCaption subject={subject} count={count} />
+            <AskCaption subject={subject} count={count} noun={about.noun} />
           </button>
         ) : (
-          <AskCaption subject={subject} count={count} />
+          <AskCaption subject={subject} count={count} noun={about.noun} />
         )}
       </h3>
       <div id={`${id}-b`} hidden={!open} className="flex flex-1 flex-col">
@@ -179,7 +197,7 @@ function AskDraft({
             aria-label={`Ask the LLM about ${subject}`}
             aria-invalid={empty || undefined}
             aria-describedby={error ? `${id}-e` : undefined}
-            placeholder="Ask about this step…"
+            placeholder={`Ask about ${about.noun}…`}
             onChange={(event) => {
               setText(event.target.value);
               setEmpty(false);
@@ -195,7 +213,7 @@ function AskDraft({
           />
           <Tooltip
             tip={busyTip(
-              "Asks the LLM about this step (a). The answer arrives whole, above the field.",
+              `Asks the LLM about ${about.noun} (a). The answer arrives whole, above the field.`,
               action.busy,
             )}
           >
@@ -223,7 +241,7 @@ function AskDraft({
   );
 }
 
-function AskCaption({ subject, count }: { subject: string; count?: number }) {
+function AskCaption({ subject, count, noun }: { subject: string; count?: number; noun: string }) {
   return (
     <span>
       Ask{" "}
@@ -231,7 +249,7 @@ function AskCaption({ subject, count }: { subject: string; count?: number }) {
         about {subject}; one conversation per analysis, newest at the bottom
         {count !== undefined &&
           count > 0 &&
-          ` · ${count} ${count === 1 ? "question" : "questions"} on this step`}
+          ` · ${count} ${count === 1 ? "question" : "questions"} on ${noun}`}
       </span>
     </span>
   );

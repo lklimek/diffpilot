@@ -52,6 +52,7 @@ describe("useAnalysisLive (sse-events.md)", () => {
         event: "question",
         question: {
           id: "q",
+          anchor: { kind: "step", step_id: "f1.1", lines: null },
           step_id: "f1.1",
           text: "?",
           state: "pending",

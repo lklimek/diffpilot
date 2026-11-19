@@ -409,7 +409,10 @@ mod tests {
                     NewQuestion {
                         id,
                         analysis_id: analysis,
-                        step_id: StepId("f1.1".to_owned()),
+                        anchor: contracts::api::questions::AskAnchor::Step {
+                            step_id: StepId("f1.1".to_owned()),
+                            lines: None,
+                        },
                         user_id: user.to_owned(),
                         text: format!("PRIVATE_{user}"),
                     },
@@ -471,7 +474,10 @@ mod tests {
                 NewQuestion {
                     id,
                     analysis_id: analysis,
-                    step_id: StepId("f1.1".to_owned()),
+                    anchor: contracts::api::questions::AskAnchor::Step {
+                        step_id: StepId("f1.1".to_owned()),
+                        lines: None,
+                    },
                     user_id: "u1".to_owned(),
                     text: "Question".to_owned(),
                 },

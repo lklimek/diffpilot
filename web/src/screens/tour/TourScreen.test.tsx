@@ -51,6 +51,77 @@ async function openStep(flow: string, step: string) {
 }
 
 describe("Tour screen (brief §4.3)", () => {
+  it("each step shows a collapsible Why this flow strip; collapsed it keeps one line and is remembered", async () => {
+    await open();
+    await openStep("1", "5");
+    const strip = within(main()).getByRole("region", { name: "Why this flow" });
+    const toggle = within(strip).getByRole("button", { name: /^Why this flow/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(strip).toHaveTextContent("Problem:");
+    await user().click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(strip).not.toHaveTextContent("→ Change:");
+    // Collapsed, the LLM's text still carries its tag.
+    expect(strip.querySelector("[data-provenance=llm]")).toHaveTextContent("LLM");
+    await openStep("1", "6");
+    expect(
+      within(within(main()).getByRole("region", { name: "Why this flow" })).getByRole("button", {
+        name: /^Why this flow/,
+      }),
+    ).toHaveAttribute("aria-expanded", "false");
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
+    expect(within(main()).queryByRole("region", { name: "Why this flow" })).toBeNull();
+  });
+
+  it("Your progress opens the flows with their analysis and review state; a flow opens its introduction", async () => {
+    await open();
+    await user().click(within(topBar()).getByRole("button", { name: /^Your progress 0 \/ 5/ }));
+    const flows = screen.getByRole("region", { name: "Flows: analysis and review" });
+    expect(within(flows).getAllByRole("listitem")).toHaveLength(5);
+    await user().click(within(flows).getByRole("link", { name: /^2 / }));
+    expect(blockHeading()).toHaveTextContent("Default timeout 30 s → 5 s");
+  });
+
+  it("the flows dropdown names a refused action; the next action that succeeds clears it", async () => {
+    setScenario("lazy-flows");
+    server.use(
+      http.post("/api/v1/analyses/:id/flows/:flow/request", () =>
+        HttpResponse.json({ code: "internal", message: "Down." }, { status: 500 }),
+      ),
+    );
+    await open();
+    await user().click(within(topBar()).getByRole("button", { name: /^Your progress/ }));
+    const flows = screen.getByRole("region", { name: "Flows: analysis and review" });
+    const play = within(flows).getAllByRole("button", { name: /^Analyse flow \d+$/ })[0]!;
+    const name = play.getAttribute("aria-label")!;
+    await user().click(play);
+    await waitFor(() => expect(flows).toHaveTextContent(`${name} not done: Down.`));
+    await user().click(within(flows).getByRole("button", { name: "Analyse all remaining flows" }));
+    await waitFor(() => expect(flows).not.toHaveTextContent("not done"));
+  });
+
+  it("the step header says when the file's Viewed mark was not read from GitHub", async () => {
+    setScenario("viewed-not-read");
+    await open();
+    await openStep("2", "1");
+    await waitFor(() =>
+      expect(within(main()).getByText(/Viewed not read/, { selector: "[data-viewed]" })).toBeVisible(),
+    );
+  });
+
+  it("s opens the Files view at the step's lines; the step header shows the file's GitHub Viewed mark", async () => {
+    const router = await open();
+    await openStep("2", "1");
+    await waitFor(() =>
+      expect(within(main()).getByText(/viewed/, { selector: "[data-viewed]" })).toHaveTextContent("☑ viewed"),
+    );
+    await user().keyboard("s");
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}/files`));
+    expect(decodeURIComponent(router.state.location.hash)).toBe(
+      "#lines?file=src/config.rs&side=head&line=23&step=f2.1",
+    );
+  });
+
   it("does not reveal a hidden comment just because it is the step's first changed line", async () => {
     server.use(
       http.get("/api/v1/analyses/:id/lines", () =>
@@ -108,7 +179,7 @@ describe("Tour screen (brief §4.3)", () => {
     await open();
     await openStep("1", "5");
     const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
-    await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
+    await user().click(within(code).getByRole("button", { name: "LLM remark at line 99: Red flag" }));
     await user().click(screen.getByRole("button", { name: /^Show in Inspector: Red flag/ }));
     const flags = within(inspector()).getByRole("region", { name: /^Flags/ });
     const item = flags.querySelector('[data-annotation-id="f1.5.a3"]');
@@ -131,7 +202,7 @@ describe("Tour screen (brief §4.3)", () => {
       await open();
       await openStep("1", "5");
       const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
-      await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
+      await user().click(within(code).getByRole("button", { name: "LLM remark at line 99: Red flag" }));
       await user().click(screen.getByRole("button", { name: /^Show in Inspector: Red flag/ }));
       const flashed = () => inspector().querySelector('[data-annotation-id="f1.5.a3"]');
       await waitFor(() => expect(flashed()).toHaveAttribute("data-flash"));
@@ -253,18 +324,18 @@ describe("Tour screen (brief §4.3)", () => {
   it("returns to the last viewed block with the stored ticks (interrupted review)", async () => {
     await open("resume");
     expect(blockHeading()).toHaveTextContent("5 Retry allowed?");
-    expect(topBar()).toHaveTextContent("flows reviewed 0 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 0 / 5");
   });
 
   it("x ticks the current step; a flow with every step ticked counts in the top bar", async () => {
     await open("resume");
     await openStep("2", "2");
     await act(() => user().keyboard("x"));
-    expect(topBar()).toHaveTextContent("flows reviewed 1 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 1 / 5");
     expect(within(nav()).getByRole("button", { name: /^Flow 2: .*, reviewed$/ })).toBeInTheDocument();
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f2.1", "f2.2"]));
     await user().click(within(main()).getByRole("button", { name: /Mark reviewed/ }));
-    expect(topBar()).toHaveTextContent("flows reviewed 0 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 0 / 5");
   });
 
   it("Next and j tick the current step and move on; Previous and the flow introduction never tick", async () => {
@@ -327,7 +398,7 @@ describe("Tour screen (brief §4.3)", () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 3:/ }));
     await user().click(within(main()).getByRole("button", { name: /Mark flow reviewed/ }));
-    expect(topBar()).toHaveTextContent("flows reviewed 1 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 1 / 5");
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f3.1", "f3.2"]));
   });
 
@@ -335,11 +406,11 @@ describe("Tour screen (brief §4.3)", () => {
     await open();
     const toggle = () => within(nav()).getByRole("button", { name: "Mark flow 3 reviewed" });
     await user().click(toggle());
-    expect(topBar()).toHaveTextContent("flows reviewed 1 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 1 / 5");
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f3.1", "f3.2"]));
     expect(toggle()).toHaveAttribute("aria-pressed", "true");
     await user().click(toggle());
-    expect(topBar()).toHaveTextContent("flows reviewed 0 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 0 / 5");
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual([]));
   });
 

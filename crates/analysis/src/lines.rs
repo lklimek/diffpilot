@@ -64,11 +64,7 @@ pub fn deletion_markers(file: &FileDiff, from: u32, to: u32) -> Vec<DeletionMark
         .iter()
         .filter(|hunk| hunk.base.len > 0)
         .map(|hunk| DeletionMarker {
-            after_line: if hunk.head.len == 0 {
-                hunk.head.start
-            } else {
-                hunk.head.start.saturating_sub(1)
-            },
+            after_line: hunk.deletion_marker(),
             base: hunk.base,
             replacement: (hunk.head.len > 0).then_some(LineRange {
                 start_line: hunk.head.start,
@@ -236,6 +232,11 @@ pub fn changed_line_count(files: &[FileDiff]) -> u32 {
         .flat_map(|file| &file.hunks)
         .map(|hunk| hunk.base.len.saturating_add(hunk.head.len))
         .fold(0, u32::saturating_add)
+}
+
+/// Whether `a` and `b` share a line.
+pub fn ranges_overlap(a: &LineRange, b: &LineRange) -> bool {
+    a.start_line <= b.end_line && b.start_line <= a.end_line
 }
 
 /// `inner` lies within `outer`.

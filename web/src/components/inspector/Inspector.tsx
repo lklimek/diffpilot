@@ -81,6 +81,19 @@ export interface InspectorProps {
   onDockHeight?: (height: number | null) => void;
   /** "Use as review comment" on a flag of the step; no button without it. */
   onFlagAsComment?: (flag: Annotation) => void;
+  /** What to show instead of the block's own panel (the Files view's file, hunk or selected lines). */
+  panel?: InspectorPanel;
+  /** A way back above the heading ("← Back to hunk"), e.g. from a step narrowed in the Files view. */
+  back?: InspectorBack;
+}
+
+/** A way back to a wider subject. */
+export interface InspectorBack {
+  label: string;
+  tip: string;
+  /** What it goes back to, beside the link. */
+  context?: string;
+  onBack: () => void;
 }
 
 /** Smallest height in px of a resized dock: the Ask field and a few lines of the conversation. */
@@ -185,7 +198,8 @@ const overlaps = (t: GithubThread, step: Step, a: Annotation) =>
   (t.start_line ?? t.line) <= a.range.end_line &&
   t.line >= a.range.start_line;
 
-interface Panel {
+/** One Inspector panel: heading, its labels, provenance and sections. */
+export interface InspectorPanel {
   title: string;
   /** Under the title: labels and links. */
   meta?: ReactNode;
@@ -195,6 +209,7 @@ interface Panel {
   /** Set when an annotation is selected: context line for Back to step. */
   backTo?: string;
 }
+type Panel = InspectorPanel;
 
 function stepPanel(
   tour: Tour,
@@ -205,9 +220,6 @@ function stepPanel(
   onEvidence?: (evidence: Evidence) => void,
   onFlagAsComment?: (flag: Annotation) => void,
 ): Panel {
-  const anns = annotation ? [annotation] : step.llm.annotations;
-  const byType = (type: AnnotationType) => anns.filter((a) => a.type === type);
-  const stepThreads = tour.threads.filter((t) => step.facts.thread_ids.includes(t.id));
   const stepTitle = `Step ${step.number} · ${step.llm.title}`;
   const github = stepGithubLink(tour.analysis.pr, step.facts);
   return {
@@ -222,78 +234,121 @@ function stepPanel(
       </>
     ),
     body: (
-      <>
-        {step.facts.moved && (
-          <Collapsible
-            sectionKey="moved"
-            title="Moved code"
-            tone="facts"
-            source="From the diff; no LLM."
-            sections={sections}
-          >
-            <p>Moved from the base commit.</p>
-            {step.facts.moved.badge ? (
-              <ProvenanceBadge badge={step.facts.moved.badge} />
-            ) : (
-              <DifferingLinesBadge count={step.facts.moved.differing_lines} />
-            )}
-            <EvidenceLinks
-              currentFile={step.facts.file}
-              onEvidence={onEvidence}
-              evidence={[
-                ...new Set([step.facts.moved.from.range.start_line, step.facts.moved.from.range.end_line]),
-              ].map((line) => ({ file: step.facts.moved!.from.file, side: "base", line }))}
-            />
+      <StepDetails
+        tour={tour}
+        step={step}
+        annotation={annotation}
+        diff={diff}
+        sections={sections}
+        onEvidence={onEvidence}
+        onFlagAsComment={onFlagAsComment}
+      />
+    ),
+  };
+}
+
+/** What a step's sections show: the whole step or one remark; the Files view leaves out the Flows-only parts. */
+export interface StepDetailsProps {
+  tour: Tour;
+  step: Step;
+  annotation?: Annotation;
+  /** The classic diff section; none in the Files view, whose panel places its own diff. */
+  diff?: ReactNode;
+  sections: SectionControl;
+  onEvidence?: (evidence: Evidence) => void;
+  onFlagAsComment?: (flag: Annotation) => void;
+  /** The Files view: no Called by / Goes next, no diff, no threads (its panel shows those of the lines). */
+  files?: boolean;
+}
+
+/** A step's sections in Flows order: behaviour, why, consequences, call hierarchy, flags, assessment, threads. */
+export function StepDetails({
+  tour,
+  step,
+  annotation,
+  diff,
+  sections,
+  onEvidence,
+  onFlagAsComment,
+  files = false,
+}: StepDetailsProps) {
+  const anns = annotation ? [annotation] : step.llm.annotations;
+  const byType = (type: AnnotationType) => anns.filter((a) => a.type === type);
+  const stepThreads = tour.threads.filter((t) => step.facts.thread_ids.includes(t.id));
+  return (
+    <>
+      {step.facts.moved && (
+        <Collapsible
+          sectionKey="moved"
+          title="Moved code"
+          tone="facts"
+          source="From the diff; no LLM."
+          sections={sections}
+        >
+          <p>Moved from the base commit.</p>
+          {step.facts.moved.badge ? (
+            <ProvenanceBadge badge={step.facts.moved.badge} />
+          ) : (
+            <DifferingLinesBadge count={step.facts.moved.differing_lines} />
+          )}
+          <EvidenceLinks
+            currentFile={step.facts.file}
+            onEvidence={onEvidence}
+            evidence={[
+              ...new Set([step.facts.moved.from.range.start_line, step.facts.moved.from.range.end_line]),
+            ].map((line) => ({ file: step.facts.moved!.from.file, side: "base", line }))}
+          />
+        </Collapsible>
+      )}
+      {[
+        ["Called by", step.llm.called_by],
+        ["Goes next", step.llm.next],
+      ]
+        .filter(([, text]) => !files && text?.trim())
+        .map(([title, text]) => (
+          <Collapsible key={title} sectionKey={title!} title={title!} tone="llm" sections={sections}>
+            <p>{text}</p>
           </Collapsible>
-        )}
-        {[
-          ["Called by", step.llm.called_by],
-          ["Goes next", step.llm.next],
-        ]
-          .filter(([, text]) => text?.trim())
-          .map(([title, text]) => (
-            <Collapsible key={title} sectionKey={title!} title={title!} tone="llm" sections={sections}>
-              <p>{text}</p>
-            </Collapsible>
-          ))}
-        <DiffSection diff={diff} ofRange={annotation !== undefined} sections={sections} />
-        <BehaviourSection
-          currentFile={step.facts.file}
-          onEvidence={onEvidence}
-          annotations={annotation ? anns : byType("behaviour")}
-          sections={sections}
-        />
-        <WhySection
-          currentFile={step.facts.file}
-          onEvidence={onEvidence}
-          why={step.llm.why}
-          notes={byType("note")}
-          sections={sections}
-        />
-        <ConsequencesSection
-          currentFile={step.facts.file}
-          onEvidence={onEvidence}
-          annotations={byType("consequence")}
-          sections={sections}
-        />
-        <CallHierarchySection hierarchy={step.facts.call_hierarchy} sections={sections} />
-        <FlagsSection
-          currentFile={step.facts.file}
-          step={step}
-          onEvidence={onEvidence}
-          annotations={byType("flag")}
-          sections={sections}
-          onUseAsComment={onFlagAsComment}
-        />
-        <AssessmentSection assessment={step.llm.assessment} sections={sections} />
+        ))}
+      {!files && <DiffSection diff={diff} ofRange={annotation !== undefined} sections={sections} />}
+      <BehaviourSection
+        currentFile={step.facts.file}
+        onEvidence={onEvidence}
+        annotations={annotation ? anns : byType("behaviour")}
+        sections={sections}
+      />
+      <WhySection
+        currentFile={step.facts.file}
+        onEvidence={onEvidence}
+        why={step.llm.why}
+        notes={byType("note")}
+        sections={sections}
+      />
+      <ConsequencesSection
+        currentFile={step.facts.file}
+        onEvidence={onEvidence}
+        annotations={byType("consequence")}
+        sections={sections}
+      />
+      <CallHierarchySection hierarchy={step.facts.call_hierarchy} sections={sections} />
+      <FlagsSection
+        currentFile={step.facts.file}
+        step={step}
+        onEvidence={onEvidence}
+        annotations={byType("flag")}
+        sections={sections}
+        onUseAsComment={onFlagAsComment}
+      />
+      <AssessmentSection assessment={step.llm.assessment} sections={sections} />
+      {!files && (
         <ThreadsSection
           threads={annotation ? stepThreads.filter((t) => overlaps(t, step, annotation)) : stepThreads}
           status={tour.pr_context.facts.threads_status}
           sections={sections}
         />
-      </>
-    ),
-  };
+      )}
+    </>
+  );
 }
 
 function panelFor(props: InspectorProps, sections: SectionControl): Panel {
@@ -376,7 +431,7 @@ export function Inspector(props: InspectorProps) {
   const { dock, onBackToStep, flash, onFlashed, onDockHeight } = props;
   const own = useSectionState(JSON.stringify(props.block));
   const sections = props.sections ?? own;
-  const panel = panelFor(props, sections);
+  const panel = props.panel ?? panelFor(props, sections);
   const heading = useRef<HTMLHeadingElement>(null);
   const focusHeading = useRef(false);
   const scroller = useRef<HTMLDivElement>(null);
@@ -403,9 +458,23 @@ export function Inspector(props: InspectorProps) {
     if (key && !sections.isOpen(key)) sections.reveal(key);
   });
 
-  // After "Back to step" the button is gone; the heading takes the focus.
+  const back: InspectorBack | undefined =
+    props.back ??
+    (panel.backTo && onBackToStep
+      ? {
+          label: "← Back to step",
+          tip: "Shows the whole step again: all its LLM remarks, not only this one.",
+          context: panel.backTo,
+          onBack: onBackToStep,
+        }
+      : undefined);
+  const backKey = back ? back.label + (back.context ?? "") : null;
+  const lastBack = useRef(backKey);
+  // After going back the button is gone or changed; the heading takes the focus.
   useEffect(() => {
-    if (focusHeading.current && !panel.backTo) {
+    if (lastBack.current === backKey) return;
+    lastBack.current = backKey;
+    if (focusHeading.current) {
       focusHeading.current = false;
       heading.current?.focus();
     }
@@ -420,21 +489,21 @@ export function Inspector(props: InspectorProps) {
         className={`${dockHeight === null ? "min-h-0" : "min-h-30"} flex-1 overflow-auto overscroll-contain`}
       >
         <div className="px-3 pt-2.5 pb-1.5">
-          {panel.backTo && onBackToStep && (
+          {back && (
             <p className="mb-1 flex flex-wrap items-baseline gap-2 text-[12px]">
-              <Tooltip tip="Shows the whole step again: all its LLM remarks, not only this one.">
+              <Tooltip tip={back.tip}>
                 <button
                   type="button"
                   onClick={() => {
                     focusHeading.current = true;
-                    onBackToStep();
+                    back.onBack();
                   }}
                   className="cursor-pointer text-accent underline"
                 >
-                  ← Back to step
+                  {back.label}
                 </button>
               </Tooltip>
-              <span className="text-muted">{panel.backTo}</span>
+              {back.context && <span className="text-muted">{back.context}</span>}
             </p>
           )}
           <h2 ref={heading} tabIndex={-1} className="m-0 text-[15px] font-bold">
