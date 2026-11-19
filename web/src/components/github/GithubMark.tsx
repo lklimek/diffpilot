@@ -18,7 +18,7 @@ export const GithubIcon = ({ className = "h-3.5 w-3.5" }: { className?: string }
 export const GithubMark = () => (
   <>
     {" "}
-    <GithubIcon className="inline-block h-[1em] w-[1em] align-[-0.125em]" />
+    <GithubIcon className="inline-block h-[0.8em] w-[0.8em] align-baseline" />
     <span className="sr-only">(opens on GitHub in a new tab)</span>
   </>
 );

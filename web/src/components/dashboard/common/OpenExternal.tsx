@@ -35,9 +35,10 @@ export function OpenExternal({ href, label }: { href: string | null | undefined;
         aria-label={name}
         // The row's own handlers stay out of it.
         onClick={(event) => event.stopPropagation()}
-        className="inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center rounded border border-border text-accent hover:border-accent hover:bg-accent-bg"
+        // The visible mark is glyph height; the 24 px target stays (WCAG 2.5.8) without growing the line.
+        className="-my-1 inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center rounded text-accent hover:bg-accent-bg"
       >
-        {isGithubUrl(url) ? <GithubIcon /> : <ExternalIcon />}
+        {isGithubUrl(url) ? <GithubIcon className="h-[0.8em] w-[0.8em]" /> : <ExternalIcon />}
       </a>
     </Tooltip>
   );
