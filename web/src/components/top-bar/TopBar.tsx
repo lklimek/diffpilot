@@ -227,7 +227,7 @@ export function TopBar({
                 href={checksHref}
                 target="_blank"
                 rel="noopener noreferrer"
-                className={`rounded border px-1.5 text-[11px] leading-[18px] font-semibold no-underline ${
+                className={`inline-flex min-h-6 items-center rounded border px-1.5 text-[11px] leading-[18px] font-semibold no-underline ${
                   ci.state === "failing" ? "border-high-bd bg-high-bg text-high" : "border-border text-text"
                 }`}
               >
