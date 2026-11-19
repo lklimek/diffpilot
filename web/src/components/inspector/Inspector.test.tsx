@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlockRef, PendingReview, Step, Tour } from "../../api/generated/types";
 import { expectTrustWording, toursByState } from "../../__tests__/wording";
 import { seedFor } from "../../mocks/fixtures";
+import { sha256Hex } from "../github/links";
 import { Inspector } from "./Inspector";
 import { SECTION_STORAGE_KEY } from "./sectionState";
 
@@ -51,7 +52,14 @@ describe("Inspector at a step", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Step 5 · Retry allowed?");
     const link = screen.getByRole("link", { name: /src\/rpc\/client\.rs:99/ });
-    expect(link).toHaveAttribute("href", step(tour, "f1.5").facts.github_url);
+    expect(link).toHaveAttribute(
+      "href",
+      `https://github.com/acme/node-client/pull/482/changes#diff-${sha256Hex("src/rpc/client.rs")}R99`,
+    );
+    expect(link).toHaveAccessibleName("src/rpc/client.rs:99 (opens on GitHub in a new tab)");
+    expect(link).toHaveAccessibleDescription(
+      /pull request diff on GitHub \(new tab\)\. GitHub shows the latest commits, which may differ from the analysed ones\./,
+    );
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.queryByText(/unless marked otherwise/)).toBeNull();

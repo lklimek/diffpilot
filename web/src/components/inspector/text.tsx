@@ -1,10 +1,11 @@
 import type { ReactNode } from "react";
 import type { Basis, Evidence } from "../../api/generated/types";
+import { GithubMark } from "../github/GithubMark";
+import { isGithubUrl } from "../github/links";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { Tooltip } from "../tooltip/Tooltip";
 
-// Only server-built GitHub links become links (threat model T12); anything else stays text.
-export const isGithubUrl = (url: string) => url.startsWith("https://github.com/");
+export { isGithubUrl };
 
 /** Link to GitHub in a new tab; plain text when the URL is not a GitHub URL. */
 export function GithubLink({ url, tip, children }: { url: string; tip: string; children: ReactNode }) {
@@ -12,7 +13,8 @@ export function GithubLink({ url, tip, children }: { url: string; tip: string; c
   return (
     <Tooltip tip={tip}>
       <a href={url} target="_blank" rel="noopener noreferrer" className="font-mono text-xs">
-        {children} ↗
+        {children}
+        <GithubMark />
       </a>
     </Tooltip>
   );

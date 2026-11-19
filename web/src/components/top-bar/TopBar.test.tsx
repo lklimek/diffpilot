@@ -11,7 +11,10 @@ describe("TopBar", () => {
   it("shows repo, PR number (new tab), title, head SHA and CI with failing checks in the tooltip", () => {
     render(<TopBar pr={tour.analysis.pr} ci={tour.pr_context.facts.ci} login="alice" />);
     const banner = screen.getByRole("banner");
-    const prLink = within(banner).getByRole("link", { name: /#482/ });
+    const prLink = within(banner).getByRole("link", { name: "#482 (opens on GitHub in a new tab)" });
+    expect(
+      within(banner).getByRole("link", { name: "acme/node-client (opens on GitHub in a new tab)" }),
+    ).toHaveAttribute("href", "https://github.com/acme/node-client");
     expect(prLink).toHaveAttribute("href", "https://github.com/acme/node-client/pull/482");
     expect(prLink).toHaveAttribute("target", "_blank");
     expect(prLink).toHaveAttribute("rel", expect.stringContaining("noopener"));
@@ -49,7 +52,8 @@ describe("TopBar", () => {
   it("links the CI summary to the checks page it is given, in a new tab, with its tooltip", () => {
     const href = "https://github.com/acme/node-client/pull/482/checks";
     render(<TopBar pr={tour.analysis.pr} ci={tour.pr_context.facts.ci} checksHref={href} login="alice" />);
-    const link = screen.getByRole("link", { name: /^Check runs: .*↗$/ });
+    const link = screen.getByRole("link", { name: /^Check runs: .* \(opens on GitHub in a new tab\)$/ });
+    expect(link.querySelector('svg[data-icon="github"]')).not.toBeNull();
     expect(link).toHaveAttribute("href", href);
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");

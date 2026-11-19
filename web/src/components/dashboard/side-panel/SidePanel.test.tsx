@@ -77,10 +77,10 @@ describe("side panel sections", () => {
     expect(items[2]).not.toHaveTextContent("—");
     expect(screen.queryByText(/Not ranked/)).toBeNull();
     const first = SUMMARY.snapshot!.awaiting.find((item) => item.id === "PLAT-1176")!;
-    const link = within(items[0]!).getByRole("link", { name: "Open PLAT-1176 on GitHub" });
+    const link = within(items[0]!).getByRole("link", { name: "Open PLAT-1176 on GitHub (new tab)" });
     expect(link).toHaveAttribute("href", first.url);
     expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAccessibleDescription("Open PLAT-1176 on GitHub");
+    expect(link).toHaveAccessibleDescription("Open PLAT-1176 on GitHub (new tab)");
   });
 
   it("shows yesterday's PRs and reviews only", async () => {

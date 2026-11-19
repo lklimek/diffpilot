@@ -1,4 +1,6 @@
 import { Fragment } from "react";
+import { GithubMark } from "../github/GithubMark";
+import { isGithubUrl } from "../github/links";
 import { HELP_SECTIONS, HELP_TOPICS, SETTINGS_HELP, helpLines } from "./settingsHelp";
 
 const URL_TEXT = /(https:\/\/\S+[^\s.,;:)])/;
@@ -11,6 +13,7 @@ function Linked({ text }: { text: string }) {
         i % 2 === 1 ? (
           <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-accent underline">
             {part}
+            {isGithubUrl(part) && <GithubMark />}
           </a>
         ) : (
           <Fragment key={i}>{part}</Fragment>

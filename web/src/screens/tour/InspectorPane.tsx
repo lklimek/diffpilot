@@ -33,6 +33,7 @@ import {
 import { commentPlacement, isChangedLine } from "../../components/comment/placement";
 import type { QuestionPlace } from "../../components/questions/QuestionsBlock";
 import { FeedbackButtons } from "../../components/feedback/FeedbackButtons";
+import { githubLineUrl } from "../../components/github/links";
 import { Inspector, type InspectorProps } from "../../components/inspector/Inspector";
 import type { SectionControl } from "../../components/inspector/sectionState";
 import { StatusMessage } from "../../components/status/StatusMessage";
@@ -91,13 +92,13 @@ interface InspectorPaneProps {
   onCommentPrefilled: () => void;
 }
 
-/** GitHub link to a line at the analysed commit of its side. */
-function permalink(tour: Tour, target: CommentTarget): string {
-  const { repo, head_sha, base_sha } = tour.analysis.pr;
-  const sha = target.side === "base" ? base_sha : head_sha;
-  const path = target.path.split("/").map(encodeURIComponent).join("/");
-  return `https://github.com/${repo.owner}/${repo.name}/blob/${sha}/${path}#L${target.line}`;
-}
+/** GitHub link to a line at the analysed commit of its side (offered only outside the PR diff). */
+const permalink = (tour: Tour, target: CommentTarget): string =>
+  githubLineUrl(
+    tour.analysis.pr,
+    { path: target.path, side: target.side, start: target.line, end: target.line },
+    false,
+  );
 
 /** The inspector with its data: classic diff and the dock (Ask with its pinned answers, feedback, comment). */
 export function InspectorPane(props: InspectorPaneProps) {

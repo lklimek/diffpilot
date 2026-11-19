@@ -47,6 +47,7 @@ import {
   flowTitle,
   quietTitle,
 } from "./summaries";
+import { stepGithubLink } from "../github/links";
 import { GithubLink } from "./text";
 
 /** Props of the inspector panel. */
@@ -208,16 +209,14 @@ function stepPanel(
   const byType = (type: AnnotationType) => anns.filter((a) => a.type === type);
   const stepThreads = tour.threads.filter((t) => step.facts.thread_ids.includes(t.id));
   const stepTitle = `Step ${step.number} · ${step.llm.title}`;
+  const github = stepGithubLink(tour.analysis.pr, step.facts);
   return {
     title: annotation ? `${annotationName(annotation)} · ${linesWord(annotation.range)}` : stepTitle,
     backTo: annotation ? stepTitle : undefined,
     meta: (
       <>
         <KindLabel kind={step.llm.kind} />
-        <GithubLink
-          url={step.facts.github_url}
-          tip={`Open these lines on GitHub at the ${step.facts.side} commit (new tab)`}
-        >
+        <GithubLink url={github.url} tip={github.tip}>
           {step.facts.file}:{rangeText(step.facts.range)}
         </GithubLink>
       </>

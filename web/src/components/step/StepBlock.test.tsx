@@ -5,6 +5,7 @@ import type { ImpactRef, ReviewState, Step, Tour } from "../../api/generated/typ
 import { expectTrustWording } from "../../__tests__/wording";
 import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
 import { findStep } from "../../screens/tour/sequence";
+import { sha256Hex } from "../github/links";
 import { Inspector } from "../inspector/Inspector";
 import { StepBlock } from "./StepBlock";
 
@@ -12,7 +13,36 @@ const stepOf = (tour: Tour, id: string): Step => findStep(tour, id)!.step;
 const tour = seedFor("default", "tour") as Tour;
 
 describe("StepBlock", () => {
-  it("shows the header with a GitHub line link at the head SHA in a new tab", () => {
+  it("shows the header with a GitHub link to the step's changed lines in the PR diff, in a new tab", () => {
+    const step = stepOf(tour, "f1.2");
+    render(<StepBlock step={step} pr={tour.analysis.pr} code={<p>code slot</p>} />);
+    const link = screen.getByRole("link", { name: "L88–96 (opens on GitHub in a new tab)" });
+    expect(link).toHaveAttribute(
+      "href",
+      `https://github.com/acme/node-client/pull/482/changes#diff-${sha256Hex("src/rpc/client.rs")}R89-R96`,
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAccessibleDescription(
+      "Open the changed lines in the pull request diff on GitHub (new tab). GitHub shows the latest commits, which may differ from the analysed ones.",
+    );
+  });
+
+  it("links a step without changed lines, or without the PR, to its lines at the analysed commit", () => {
+    const moved = stepOf(tour, "f1.1");
+    const { unmount } = render(<StepBlock step={moved} pr={tour.analysis.pr} code={null} />);
+    expect(screen.getByRole("link", { name: /^L126–132/ })).toHaveAttribute("href", moved.facts.github_url);
+    expect(screen.getByRole("link", { name: /^L126–132/ })).toHaveAccessibleDescription(
+      "Open these lines on GitHub at the head commit (new tab)",
+    );
+    unmount();
+    render(<StepBlock step={stepOf(tour, "f1.5")} code={null} />);
+    expect(screen.getByRole("link", { name: /^L99/ })).toHaveAttribute(
+      "href",
+      stepOf(tour, "f1.5").facts.github_url,
+    );
+  });
+
+  it("shows the header with the step facts and the code slot", () => {
     const step = stepOf(tour, "f1.5");
     render(<StepBlock step={step} code={<p>code slot</p>} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("5 Retry allowed?");
@@ -20,9 +50,6 @@ describe("StepBlock", () => {
     expect(header).toHaveTextContent("src/rpc/client.rs");
     expect(header).toHaveTextContent("RpcClient::send");
     expect(within(header).getByText("added")).toHaveAttribute("data-llm-label");
-    const link = screen.getByRole("link", { name: /L99/ });
-    expect(link).toHaveAttribute("href", step.facts.github_url);
-    expect(link).toHaveAttribute("target", "_blank");
     expect(screen.getByText("code slot")).toBeInTheDocument();
   });
 
@@ -191,6 +218,40 @@ describe("StepBlock", () => {
     expect(open[0]).toHaveAccessibleName("Open step for src/sync/peers.rs:7");
     await userEvent.click(open[0]!);
     expect(onSelectStep).toHaveBeenCalledWith("f1.8");
+  });
+
+  it("links a pattern site inside its step's changed lines to the PR diff, other sites at the commit", async () => {
+    const f3 = tour.flows[2]!;
+    const patterns = structuredClone(f3.llm.pattern_repetitions);
+    // f1.2 changes src/rpc/client.rs lines 89, 91-94 and 96.
+    patterns[0]!.sites.push({
+      ...patterns[0]!.sites[0]!,
+      file: "src/rpc/client.rs",
+      step_id: "f1.2",
+      range: { start_line: 90, end_line: 95 },
+    });
+    render(
+      <StepBlock
+        step={stepOf(tour, "f3.2")}
+        pr={tour.analysis.pr}
+        stepOf={(id) => stepOf(tour, id)}
+        code={null}
+        patterns={patterns}
+      />,
+    );
+    await userEvent.click(screen.getByText("Same pattern × 2"));
+    // The text keeps the site's range; the tip says the diff marks its changed lines.
+    const inDiff = screen.getByRole("link", { name: /src\/rpc\/client.rs:90–95/ });
+    expect(inDiff).toHaveAttribute(
+      "href",
+      `https://github.com/acme/node-client/pull/482/changes#diff-${sha256Hex("src/rpc/client.rs")}R91-R94`,
+    );
+    expect(inDiff).toHaveAccessibleDescription(
+      "Open the changed lines in the pull request diff on GitHub (new tab). GitHub shows the latest commits, which may differ from the analysed ones.",
+    );
+    const atCommit = screen.getByRole("link", { name: /src\/sync\/peers.rs:201–205/ });
+    expect(atCommit).toHaveAttribute("href", patterns[0]!.sites[0]!.github_url);
+    expect(atCommit).toHaveAccessibleDescription("Open these lines on GitHub at the head commit (new tab)");
   });
 
   it("ignores pattern repetitions explained in other steps", () => {

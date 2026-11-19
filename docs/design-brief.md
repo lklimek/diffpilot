@@ -311,8 +311,9 @@ clicking anywhere on the strip restores it.
   - *PR context block*: contents as in §3, plus what the change gives and why it is needed.
   - *Flow introduction block*: title, flow risk, Problem (before this PR), Change (what this PR does),
     Before / After example, "LLM analysis unless marked otherwise".
-  - *Step block*: header (number, title, kind, file, symbol, GitHub line link at head SHA, new tab); four
-    facts always visible — called by, decides or changes, goes next, **Why**; the code; impact outside the
+  - *Step block*: header (number, title, kind, file, symbol, GitHub line link, new tab: the step's changed lines
+    in the PR's changes view, else its lines at the analysed SHA; GitHub links carry the GitHub mark, not ↗);
+    four facts always visible — called by, decides or changes, goes next, **Why**; the code; impact outside the
     diff inline under the step as real code; "Same pattern × N" collapsed rows; collapsed Assessment; "Show
     old code" (inline classic diff); "Mark reviewed" tick. Final code only, except deleted code (shown at the
     deletion marker with the removed capability named).
