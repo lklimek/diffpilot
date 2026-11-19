@@ -1077,3 +1077,58 @@ async fn files_wait_for_the_analysis_and_viewed_refuses_other_paths() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
+
+/// C1 contract: a `step` owner is a step of the named flow that holds the lines in the Tour, and head lines it owns
+/// are among that step's changed lines; a `flow` owner names a flow of the Tour.
+#[tokio::test]
+async fn files_step_owners_agree_with_the_tour_steps() {
+    let h = Harness::new().await;
+    let id = h.analysis(true).await;
+    let tour = h.tour(id).await;
+    let (status, body) = h.get(&files(id)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let response: FilesResponse = serde_json::from_value(body).expect("files");
+    let mut step_parts = 0;
+    for file in &response.files {
+        for part in file.hunks.iter().flat_map(|hunk| &hunk.parts) {
+            match &part.owner {
+                PartOwner::Step { flow_id, step_id } => {
+                    step_parts += 1;
+                    let flow = tour
+                        .flows
+                        .iter()
+                        .find(|flow| &flow.id == flow_id)
+                        .expect("owner flow in the Tour");
+                    let step = flow
+                        .steps
+                        .iter()
+                        .find(|step| &step.id == step_id)
+                        .expect("owner step in its flow");
+                    assert!(!part.also_in.contains(step_id), "{part:?}");
+                    if part.side == LineSide::Head {
+                        assert_eq!(step.facts.file, file.path, "{part:?}");
+                        assert_eq!(step.facts.side, LineSide::Head, "{part:?}");
+                        for line in part.range.start_line..=part.range.end_line {
+                            assert!(
+                                step.facts
+                                    .changed_lines
+                                    .iter()
+                                    .any(|r| r.start_line <= line && line <= r.end_line),
+                                "{}:{line} owned by {step_id} but not among its changed lines",
+                                file.path
+                            );
+                        }
+                    }
+                }
+                PartOwner::Flow { flow_id } => {
+                    assert!(
+                        tour.flows.iter().any(|flow| &flow.id == flow_id),
+                        "{part:?}"
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(step_parts > 5, "{step_parts}");
+}

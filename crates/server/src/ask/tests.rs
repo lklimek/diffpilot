@@ -2008,3 +2008,64 @@ async fn anchors_outside_the_pull_request_or_the_step_are_refused() {
     let about = format!("f1.5 (its lines {0}-{0})", step.start_line);
     assert!(prompt.contains(&about), "{about} not in the prompt");
 }
+
+/// C4 contract: the steps that own asked lines are given to the job. Removed lines of a moved block are owned by
+/// the moved step (its `moved.from`), which sits on another file and side; the prompt quotes that owner in the
+/// facts, so its summary must be among the steps, and the context pack must hold it in full.
+#[tokio::test]
+async fn a_question_about_moved_away_lines_gets_their_owning_step() {
+    let f = fixture(false).await;
+    let golden = fixture_json("api/default/tour.json");
+    let mut threads = golden["threads"].clone();
+    for thread in threads.as_array_mut().expect("threads") {
+        for key in ["step_id", "llm_status", "llm_reason"] {
+            thread[key] = Value::Null;
+        }
+    }
+    let snapshot = json!({ "ci": golden["pr_context"]["facts"]["ci"], "threads": threads, "threads_status": "checked" });
+    f.state
+        .db
+        .documents()
+        .put(
+            f.analysis,
+            DocumentKind::GithubSnapshot,
+            "",
+            &snapshot,
+            Timestamp::now(),
+        )
+        .await
+        .expect("snapshot");
+    // src/util/backoff.rs is renamed to src/rpc/retry.rs; its removed base lines 5-6 and 23 are owned by steps on
+    // the head side (the head step at the deletion marker, the moved step whose original holds the line).
+    let anchor = json!({ "kind": "lines", "path": "src/util/backoff.rs", "side": "base", "range": { "start_line": 5, "end_line": 23 } });
+    let (status, body) = f.ask_anchored(anchor, QUESTION).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id: QuestionId = serde_json::from_value(body["id"].clone()).expect("id");
+    let prompt = f.scripted_job(id).await.spec.prompt;
+    let marker = r#""owner":{"kind":"step","flow_id":""#;
+    let owners: Vec<String> = prompt
+        .match_indices(marker)
+        .filter_map(|(at, _)| {
+            let rest = &prompt[at + marker.len()..];
+            let rest = &rest[rest.find(r#""step_id":""#)? + 11..];
+            Some(rest[..rest.find('"')?].to_owned())
+        })
+        .collect();
+    assert!(!owners.is_empty(), "the facts name owning steps: {prompt}");
+    for owner in &owners {
+        assert!(
+            prompt.contains(&format!(r#"{{"step_id":"{owner}","flow_id""#)),
+            "owner {owner} of asked lines is not among the steps given to the job: {prompt}"
+        );
+    }
+    let pack = job::context_pack(&f.state.db, f.analysis, id)
+        .await
+        .expect("pack")
+        .expect("some pack");
+    for owner in &owners {
+        assert!(
+            pack.contains(&format!(r#"{{"step_id":"{owner}""#)),
+            "the context pack holds owner {owner}: {pack}"
+        );
+    }
+}
