@@ -41,28 +41,36 @@ export function FlowWhy({
       aria-label="Why this flow"
       className="mb-2 rounded-md border border-l-4 border-border border-l-llm bg-surface px-3 py-1 text-[12.5px]"
     >
-      <Tooltip
-        tip={
-          open ? "Collapses this to one line; remembered." : "Shows the problem and the change; remembered."
-        }
-      >
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={onToggle}
-          className="flex w-full min-w-0 cursor-pointer items-baseline gap-1.5 border-0 bg-transparent p-0 text-left text-text"
+      <div className="flex min-w-0 items-baseline gap-1.5">
+        <Tooltip
+          tip={
+            open ? "Collapses this to one line; remembered." : "Shows the problem and the change; remembered."
+          }
         >
-          <span aria-hidden className="w-3 text-muted">
-            {open ? "▾" : "▸"}
-          </span>
-          <b className="shrink-0 text-llm">Why this flow</b>
-          {!open && (
-            <span className="truncate text-muted">
-              — <CodeText text={flow.llm.introduction.problem_before} />
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={onToggle}
+            className="flex min-w-0 flex-1 cursor-pointer items-baseline gap-1.5 border-0 bg-transparent p-0 text-left text-text"
+          >
+            <span aria-hidden className="w-3 text-muted">
+              {open ? "▾" : "▸"}
             </span>
-          )}
-        </button>
-      </Tooltip>
+            <b className="shrink-0 text-llm">Why this flow</b>
+            {!open && (
+              <span className="truncate text-muted">
+                — <CodeText text={flow.llm.introduction.problem_before} />
+              </span>
+            )}
+          </button>
+        </Tooltip>
+        {/* Collapsed, the LLM's one line keeps its tag outside the truncation. */}
+        {!open && (
+          <span className="shrink-0">
+            <ProvenanceTag source="llm" />
+          </span>
+        )}
+      </div>
       {open && (
         <div className="grid gap-1 pt-1 pl-[18px]">
           <p className="m-0">

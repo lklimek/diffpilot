@@ -61,6 +61,8 @@ describe("Tour screen (brief §4.3)", () => {
     await user().click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(strip).not.toHaveTextContent("→ Change:");
+    // Collapsed, the LLM's text still carries its tag.
+    expect(strip.querySelector("[data-provenance=llm]")).toHaveTextContent("LLM");
     await openStep("1", "6");
     expect(
       within(within(main()).getByRole("region", { name: "Why this flow" })).getByRole("button", {
