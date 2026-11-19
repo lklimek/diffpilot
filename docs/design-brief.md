@@ -352,9 +352,9 @@ Legend (shown in `?`):
     user's pending review on GitHub. GitHub accepts line threads only inside the diff, so a comment on a line
     outside the PR diff is added as a file-level comment whose body links to the line.
 
-**Progress.** Tick per step; a flow is reviewed when all its steps are ticked; top bar "flows reviewed k / n".
+**Progress.** Tick per step; a flow is reviewed when all its steps are ticked; top bar "flows reviewed k / n". Next ticks the current step as it leaves it.
 
-**Keyboard**: `j` / `k` next / previous block (introduction or step), `n` / `p` next / previous flow, `x`
+**Keyboard**: `j` / `k` next / previous block (introduction or step; `j` and the Next button also tick the current step, never untick, `k` never ticks), `n` / `p` next / previous flow, `x`
 tick the current step, `d` show / hide old code, `c` comment on the current line, `a` ask, `?` help, `Esc`
 close.
 

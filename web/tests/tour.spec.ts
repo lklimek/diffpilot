@@ -496,3 +496,32 @@ test("at the first block, Previous is reachable by keyboard and its tip says why
     "PR context: acme/node-client #482",
   );
 });
+
+test("Next and j tick the current step; Previous and the flow introduction do not", async ({ page }) => {
+  await openTour(page);
+  const nav = page.getByRole("navigation");
+  const putWith = (id: string) =>
+    page.waitForResponse(
+      (r) =>
+        r.url().endsWith("/review-state") &&
+        r.request().method() === "PUT" &&
+        r.status() === 204 &&
+        r.request().postDataJSON().ticked_steps.includes(id),
+    );
+  await nav.getByRole("button", { name: "Flow 1: Send an RPC request with retry" }).click();
+  await page.keyboard.press("j"); // from the introduction: no tick
+  await expect(heading(page)).toHaveText("1 Trigger: callers of send");
+  await expect(nav.getByRole("button", { name: "Step 1: Trigger: callers of send" })).toBeVisible();
+  const first = putWith("f1.1");
+  await page.getByRole("button", { name: /^Next: / }).click();
+  await first;
+  await expect(nav.getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeVisible();
+  const second = putWith("f1.2");
+  await page.keyboard.press("j");
+  await second;
+  await expect(nav.getByRole("button", { name: /^Step 2: .*, reviewed$/ })).toBeVisible();
+  await page.keyboard.press("k");
+  await page.keyboard.press("k");
+  await expect(nav.getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeVisible();
+  await expect(nav.getByRole("button", { name: /^Step 3: .*, reviewed$/ })).toHaveCount(0);
+});

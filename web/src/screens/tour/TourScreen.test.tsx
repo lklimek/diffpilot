@@ -267,6 +267,62 @@ describe("Tour screen (brief §4.3)", () => {
     expect(topBar()).toHaveTextContent("flows reviewed 0 / 5");
   });
 
+  it("Next and j tick the current step and move on; Previous and the flow introduction never tick", async () => {
+    await open();
+    await openStep("1", "1");
+    await user().click(within(main()).getByRole("button", { name: /^Next: / }));
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1"]));
+    expect(blockHeading()).not.toHaveTextContent("Trigger: callers of send");
+    await user().keyboard("j");
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1", "f1.2"]));
+    const reviewedSteps = () => within(nav()).queryAllByRole("button", { name: /^Step \d+: .*, reviewed$/ });
+    expect(reviewedSteps()).toHaveLength(2);
+    await user().click(within(main()).getByRole("button", { name: /^← Previous/ }));
+    await user().keyboard("k");
+    expect(reviewedSteps()).toHaveLength(2);
+    expect(within(nav()).queryByRole("button", { name: /^Step 3: .*, reviewed$/ })).toBeNull();
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 3:/ }));
+    await user().keyboard("j");
+    expect(reviewedSteps()).toHaveLength(0);
+  });
+
+  it("Next and j on the questions page tick nothing and the tip does not name a step", async () => {
+    await open();
+    await openStep("1", "1");
+    await user().click(within(nav()).getByRole("button", { name: /^Your questions and answers/ }));
+    expect(screen.getByRole("button", { name: /^Next: / })).toHaveAccessibleDescription("Next block (j)");
+    await user().keyboard("j");
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
+    expect(within(nav()).queryByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeNull();
+  });
+
+  it("a failed save on Next still moves on, keeps the tick on the page and says it is not saved", async () => {
+    server.use(
+      http.put("/api/v1/analyses/:id/review-state", () =>
+        HttpResponse.json({ code: "internal", message: "Down." }, { status: 500 }),
+      ),
+    );
+    await open();
+    await openStep("1", "1");
+    await user().click(within(main()).getByRole("button", { name: /^Next: / }));
+    expect(blockHeading()).not.toHaveTextContent("Trigger: callers of send");
+    expect(await within(main()).findByRole("alert")).toHaveTextContent(
+      "Your ticks and last viewed block are not saved",
+    );
+    expect(within(nav()).getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeInTheDocument();
+  });
+
+  it("Next keeps an already ticked step ticked", async () => {
+    await open();
+    await openStep("1", "1");
+    await act(() => user().keyboard("x"));
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1"]));
+    await user().keyboard("j");
+    await user().keyboard("k");
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1"]));
+    expect(within(nav()).getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeInTheDocument();
+  });
+
   it("Mark flow reviewed ticks every step of the flow", async () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 3:/ }));
