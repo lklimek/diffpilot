@@ -273,14 +273,15 @@ describe("events of the review", () => {
     expect(tourEvents(first, again, PR).map((e) => e.title)).toEqual(["Analysis finished — NC#482"]);
   });
 
-  it("a flow analysed again gets a key per attempt", () => {
-    const attempt = (started: string) =>
-      tourEvents(
-        tour(running, [flow("f1", 1, "analysing", [], started)]),
-        tour(running, [flow("f1", 1, "analysed")]),
-        PR,
-      )[0]!.key;
-    expect(attempt("2026-11-19T10:00:00Z")).not.toBe(attempt("2026-11-19T10:04:00Z"));
+  it("one key for a flow's completion whether a tab saw it queued or analysing (one notification across tabs)", () => {
+    const after = tour(running, [flow("f1", 1, "analysed")]);
+    const fromAnalysing = tourEvents(
+      tour(running, [flow("f1", 1, "analysing", [], "2026-11-19T10:00:00Z")]),
+      after,
+      PR,
+    );
+    const fromQueued = tourEvents(tour(running, [flow("f1", 1, "queued")]), after, PR);
+    expect(fromQueued[0]!.key).toBe(fromAnalysing[0]!.key);
   });
 
   it("texts never promise what the server may not do: review ready is neutral, a failed flow asks nothing", () => {

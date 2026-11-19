@@ -175,19 +175,17 @@ export function tourEvents(before: Tour, after: Tour, pr: string): WorkEvent[] {
     const now = flow.analysis_status?.state;
     const was = before.flows.find((f) => f.id === flow.id)?.analysis_status;
     if (!was || was.state === now || (now !== "analysed" && now !== "failed")) return [];
-    // The attempt: its start, which the analysing status carried (an ended one has none).
-    const attempt = was.started_at ?? flow.analysis_status?.started_at ?? "";
     const n = flow.position;
     return [
       now === "analysed"
         ? {
-            key: `${id}:flow:${flow.id}:analysed:${attempt}`,
+            key: `${id}:flow:${flow.id}:analysed`,
             title: `Flow ${n} analysed — ${pr}`,
             body: `The LLM analysis of flow ${n} is ready.`,
             path: reviewPath(id, flow.id),
           }
         : {
-            key: `${id}:flow:${flow.id}:failed:${attempt}`,
+            key: `${id}:flow:${flow.id}:failed`,
             title: `Flow ${n} failed — ${pr}`,
             body: `The LLM analysis of flow ${n} failed. Open it for details.`,
             path: reviewPath(id, flow.id),
