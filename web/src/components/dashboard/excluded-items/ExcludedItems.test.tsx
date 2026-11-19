@@ -46,7 +46,7 @@ describe("ExcludedItems", () => {
 
   it("the disclosure lists the items by reason with links to GitHub; titles stay plain text", async () => {
     const onNavigate = vi.fn();
-    render(<ExcludedItems exclusions={EXCLUSIONS} settingsHref="/settings" onNavigate={onNavigate} />);
+    render(<ExcludedItems exclusions={EXCLUSIONS} onNavigate={onNavigate} />);
     const toggle = screen.getByRole("button", { name: /Excluded: 14/ });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     await userEvent.click(toggle);
@@ -63,10 +63,12 @@ describe("ExcludedItems", () => {
     expect(link.getAttribute("target")).toBe("_blank");
     expect(authors.getByText("<b>bump</b> serde")).toBeTruthy();
     expect(groups[1]!.querySelector("b")).toBeNull();
-    await userEvent.click(authors.getByRole("link", { name: "Settings → Excluded authors" }));
-    expect(onNavigate).toHaveBeenCalledWith("/settings");
-    expect(within(groups[0]!).getByRole("link", { name: "Settings → Ownership policy" })).toBeTruthy();
-    expect(within(groups[2]!).queryByRole("link", { name: /Settings/ })).toBeNull();
+    await userEvent.click(authors.getByRole("link", { name: "Excluded authors in the settings guide" }));
+    expect(onNavigate).toHaveBeenCalledWith("/settings/help#skip_authors");
+    expect(
+      within(groups[0]!).getByRole("link", { name: "Ownership policy in the settings guide" }),
+    ).toHaveAttribute("href", "/settings/help#ownership_policy");
+    expect(within(groups[2]!).queryByRole("link", { name: /settings guide/ })).toBeNull();
   });
 
   it("names the item a merged one went into, says when the list is capped, and survives an unknown reason", async () => {
@@ -83,7 +85,7 @@ describe("ExcludedItems", () => {
     };
     render(<ExcludedItems exclusions={exclusions} />);
     expect(screen.getByText(/^Excluded: 250/).textContent).toBe(
-      "Excluded: 250 — 249 by another rule · 1 merged into another item",
+      "Excluded: 250 — 249 by another rule · 1 merged into another item by the LLM",
     );
     await userEvent.click(screen.getByRole("button", { name: /Excluded: 250/ }));
     expect(screen.getByText("merged into PLAT-6")).toBeTruthy();

@@ -7,7 +7,7 @@ import { KIND_LABEL, KindIcon } from "../common/icons";
 import { LlmLine } from "../common/LlmLine";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 import type { Navigate } from "../common/navigate";
-import { FactTags, ProvisionalPill } from "../common/Tags";
+import { FactTags, ProvisionalPill, SizePill } from "../common/Tags";
 import { ScoreBreakdown } from "../score-breakdown/ScoreBreakdown";
 import { ScoreTip } from "../score-breakdown/ScoreTip";
 import { ItemAction } from "./ItemAction";
@@ -113,6 +113,9 @@ export function WorkItemRow({
           <span className="flex items-center gap-1 font-sans text-[10.5px] tracking-wide text-muted uppercase">
             <KindIcon kind={item.kind} />
             {KIND_LABEL[item.kind] ?? item.kind}
+            <span className="font-sans tracking-normal normal-case">
+              <SizePill mark={item.change_size} />
+            </span>
           </span>
           <span className="flex items-start gap-1.5">
             <span className="min-w-0 break-all">{item.id}</span>

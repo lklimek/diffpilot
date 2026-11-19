@@ -2,13 +2,12 @@ import { useId, useState } from "react";
 import type { ExcludedItem, ExclusionCount, ExclusionReason, Exclusions } from "../../../api/generated/types";
 import { navigateOnClick, type Navigate } from "../common/navigate";
 import { Tooltip } from "../../tooltip/Tooltip";
+import { helpHref, type HelpTopic } from "../../settings/settingsHelp";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 
 interface ExcludedItemsProps {
   /** The snapshot's exclusions; absent when the snapshot did not record them. */
   exclusions: Exclusions | null | undefined;
-  /** In-app href of Settings, linked from the rules that have a setting. */
-  settingsHref?: string;
   onNavigate?: Navigate;
 }
 
@@ -18,8 +17,8 @@ interface ReasonText {
   title: string;
   /** The rule as a fact. */
   rule: string;
-  /** The setting that holds the rule, if one. */
-  setting?: string;
+  /** The setting that holds the rule, if one: its settings-guide entry and name. */
+  setting?: { topic: HelpTopic; name: string };
 }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -29,13 +28,13 @@ const REASONS: Record<ExclusionReason, ReasonText> = {
     count: (n) => plural(n, "excluded author", "excluded authors"),
     title: "Excluded authors",
     rule: "Pull requests and issues written by an excluded author.",
-    setting: "Settings → Excluded authors",
+    setting: { topic: "skip_authors", name: "Excluded authors" },
   },
   outside_owned_areas: {
     count: (n) => `${n} outside your areas`,
     title: "Outside your areas",
     rule: "Pull requests of others not directed at you, with no or only a minor change in your owned paths.",
-    setting: "Settings → Ownership policy",
+    setting: { topic: "ownership_policy", name: "Ownership policy" },
   },
   draft: {
     count: (n) => plural(n, "draft", "drafts"),
@@ -48,7 +47,7 @@ const REASONS: Record<ExclusionReason, ReasonText> = {
     rule: "The ownership policy file could not be read; the LLM judged these outside your areas.",
   },
   merged_into_another: {
-    count: (n) => plural(n, "merged into another item", "merged into other items"),
+    count: (n) => `${plural(n, "merged into another item", "merged into other items")} by the LLM`,
     title: "Merged into another item",
     rule: "The LLM merged each into another item covering the same work.",
   },
@@ -69,9 +68,10 @@ const byCount = (counts: ExclusionCount[]) => [...counts].sort((a, b) => b.count
 
 /**
  * What the ranking rules left out of Needs you (B4): one quiet line with the counts per reason, and a disclosure
- * listing the items by reason with links out. Facts only; titles are plain text.
+ * listing the items by reason with links out. No LLM text; titles are plain text. Two reasons
+ * (judged not eligible, merged into another item) are LLM decisions and say so.
  */
-export function ExcludedItems({ exclusions, settingsHref, onNavigate }: ExcludedItemsProps) {
+export function ExcludedItems({ exclusions, onNavigate }: ExcludedItemsProps) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
   const quiet = "text-xs text-muted";
@@ -109,7 +109,6 @@ export function ExcludedItems({ exclusions, settingsHref, onNavigate }: Excluded
               text={textOf(reason)}
               count={count}
               items={items.filter((item) => item.reason === reason)}
-              settingsHref={settingsHref}
               onNavigate={onNavigate}
             />
           ))}
@@ -128,13 +127,11 @@ function Group({
   text,
   count,
   items,
-  settingsHref,
   onNavigate,
 }: {
   text: ReasonText;
   count: number;
   items: ExcludedItem[];
-  settingsHref?: string;
   onNavigate?: Navigate;
 }) {
   const label = `${text.title}: ${count}`;
@@ -143,15 +140,15 @@ function Group({
       <p className="font-semibold text-text">{label}</p>
       <p className="text-muted">
         {text.rule}
-        {text.setting && settingsHref && (
+        {text.setting && (
           <>
             {" "}
             <a
-              href={settingsHref}
-              onClick={navigateOnClick(settingsHref, onNavigate)}
+              href={helpHref(text.setting.topic)}
+              onClick={navigateOnClick(helpHref(text.setting.topic), onNavigate)}
               className="text-accent underline"
             >
-              {text.setting}
+              {text.setting.name} in the settings guide
             </a>
           </>
         )}

@@ -37,7 +37,7 @@ describe("EmptyWork", () => {
       />,
     );
     expect(screen.getByRole("heading", { name: "Nothing needs you right now." })).toBeInTheDocument();
-    expect(screen.getByText(/Checked at/)).toHaveTextContent("41 PRs, 23 issues and 31 open TODOs");
+    expect(screen.getByText(/Checked at/)).toHaveTextContent("14 PRs, 4 issues and 2 open TODOs");
     fireEvent.click(screen.getByRole("link", { name: "Review a PR by URL" }));
     expect(onNavigate).toHaveBeenCalledWith("/");
   });

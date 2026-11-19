@@ -29,7 +29,10 @@ pub use facts::{
     Milestone, MilestoneContext, OwnedChange, PrFacts, Relation, ReviewDecision, TodoFacts,
     TodoStatus,
 };
-pub use parts::{ESTIMATE, change_size_points, recency_points, unblocks_points, waiting_points};
+pub use parts::{
+    ESTIMATE, SIZE_MARKS, change_size_points, recency_points, size_mark, unblocks_points,
+    waiting_points,
+};
 pub use rules::{BUILTIN_BRANCH_PATTERNS, ScoreRules, todo_display_ids};
 
 use parts::{Eligibility, Part};
@@ -378,7 +381,13 @@ fn apply(
             ..part.clone()
         };
     }
-    if let Some(flip) = &judgement.eligibility {
+    // An eligibility answer counts only while the scorer asks (ownership policy unreadable, the PR not directed at
+    // the user); a stored one may predate the facts or rules that settle eligibility now.
+    if let Some(flip) = judgement
+        .eligibility
+        .as_ref()
+        .filter(|_| !eligibility.confirmed)
+    {
         let given = flip.reason.trim();
         if flip.eligible != eligibility.excluded_by.is_none() && given.is_empty() {
             return Err(ScoreError::EligibilityWithoutReason);
@@ -521,7 +530,7 @@ pub fn waits_on_others(rules: &ScoreRules, pr: &PrFacts) -> bool {
         None => pr
             .approved_by
             .iter()
-            .any(|l| !rules.is_scanned(l) && !rules.is_bot(l, false)),
+            .any(|l| !rules.is_scanned(l) && !rules.is_bot(l, pr.approved_by_bots.contains(l))),
     };
     pr.author
         .as_deref()

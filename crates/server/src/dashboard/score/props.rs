@@ -138,6 +138,7 @@ prop_compose! {
             last_comment_at: comment.map(ago),
             owned_change,
             approved_by: vec![],
+            approved_by_bots: vec![],
             review_requested_from_others: vec!["bob".into()],
             others_review_requested_at: others.map(ago),
         }

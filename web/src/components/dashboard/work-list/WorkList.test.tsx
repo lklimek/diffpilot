@@ -2,7 +2,8 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { TodosState, WorkItem } from "../../../api/generated/types";
+import type { SizeMark, TodosState, WorkItem } from "../../../api/generated/types";
+import { ALL_SIZES } from "../common/size";
 import { ITEMS, NOW, PROVISIONAL_ITEMS } from "../test-fixtures";
 import { ALL_KINDS, WorkList, type ItemKind } from "./WorkList";
 
@@ -16,6 +17,7 @@ function List(props: {
   todos?: TodosState;
 }) {
   const [kinds, setKinds] = useState<ItemKind[]>(props.initial ?? ALL_KINDS);
+  const [sizes, setSizes] = useState<SizeMark[]>(ALL_SIZES);
   return (
     <>
       <input aria-label="search" />
@@ -23,6 +25,8 @@ function List(props: {
         items={props.items ?? ITEMS}
         kinds={kinds}
         onKindsChange={setKinds}
+        sizes={sizes}
+        onSizesChange={setSizes}
         reviewHref={reviewHref}
         onNavigate={props.onNavigate}
         onHelp={props.onHelp}
@@ -62,6 +66,38 @@ describe("WorkList", () => {
     expect(rowIds()).not.toContain("acme~platform~pr~1203");
   });
 
+  it("size toggles filter pull requests only; issues and TODOs stay; the last size on stays on", async () => {
+    render(<List />);
+    const group = screen.getByRole("group", { name: "Sizes shown" });
+    const tiny = within(group).getByRole("button", { name: /tiny 2/ });
+    const small = within(group).getByRole("button", { name: /small 2/ });
+    const medium = within(group).getByRole("button", { name: /medium 4/ });
+    const large = within(group).getByRole("button", { name: /large 0/ });
+    const huge = within(group).getByRole("button", { name: /huge 0/ });
+    for (const button of [tiny, small, medium, large, huge])
+      expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(medium).toHaveAccessibleDescription(/issues and TODOs have no size/);
+    await userEvent.click(medium);
+    expect(rowIds()).not.toContain("acme~platform~pr~1203");
+    expect(rowIds()).toContain("acme~wallet-ui~pr~320");
+    expect(rowIds()).toContain("acme~platform~issue~1210");
+    expect(rowIds()).toContain("memcan~3fa91c2e-0000-4000-8000-000000000000");
+    for (const button of [tiny, large, huge]) await userEvent.click(button);
+    expect(small).toHaveAttribute("aria-disabled", "true");
+    expect(small).toHaveAccessibleDescription(/At least one size stays shown/);
+  });
+
+  it("each PR row shows its size pill; issues have none", () => {
+    render(<List />);
+    const row = (key: string) => document.querySelector(`li[data-item="${key}"]`)!;
+    expect(
+      within(row("acme~platform~pr~1203") as HTMLElement).getByRole("img", {
+        name: "Change size: medium, 500 changed lines",
+      }),
+    ).toBeInTheDocument();
+    expect(row("acme~platform~issue~1210").querySelector("[data-size-pill]")).toBeNull();
+  });
+
   it("the last kind on stays on and says why; keyboard toggles", async () => {
     render(<List initial={["pr", "issue"]} />);
     const prs = screen.getByRole("button", { name: /PRs 8/ });
@@ -87,7 +123,9 @@ describe("WorkList", () => {
       <List items={noTodos} todos={{ status: "off", read_at: null, failed_at: null }} />,
     );
     expect(screen.queryByRole("button", { name: /TODOs/ })).toBeNull();
-    expect(screen.getAllByRole("button", { pressed: true })).toHaveLength(2);
+    expect(
+      within(screen.getByRole("group", { name: "Kinds shown" })).getAllByRole("button", { pressed: true }),
+    ).toHaveLength(2);
     unmount();
     // Stored as TODOs only while TODOs are off: the other kinds show instead of nothing.
     const again = render(

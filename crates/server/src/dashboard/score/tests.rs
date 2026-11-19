@@ -73,6 +73,7 @@ fn pr() -> PrFacts {
         last_comment_at: None,
         owned_change: OwnedChange::NoPolicy,
         approved_by: vec![],
+        approved_by_bots: vec![],
         review_requested_from_others: vec![],
         others_review_requested_at: None,
     }
@@ -947,6 +948,44 @@ fn ci_classification_matches_skill_vectors() {
     assert_eq!((none.effective, none.red.len()), (CiEffective::None, 0));
 }
 
+/// F39: the display size mark of a pull request from the fixed table (tiny < 150, small < 500, medium < 3000,
+/// large < 10 000, huge from 10 000 changed lines); unknown totals have none.
+#[test]
+fn size_mark_follows_the_fixed_table() {
+    use contracts::api::dashboard::{ChangeSizeMark, SizeMark};
+    let mark = |additions: Option<u32>, deletions: Option<u32>| {
+        size_mark(&PrFacts {
+            additions,
+            deletions,
+            ..pr()
+        })
+        .map(|m| m.size)
+    };
+    assert_eq!(mark(Some(0), Some(0)), Some(SizeMark::Tiny));
+    assert_eq!(mark(Some(100), Some(49)), Some(SizeMark::Tiny));
+    assert_eq!(mark(Some(100), Some(50)), Some(SizeMark::Small));
+    assert_eq!(mark(Some(400), Some(99)), Some(SizeMark::Small));
+    assert_eq!(mark(Some(400), Some(100)), Some(SizeMark::Medium));
+    assert_eq!(mark(Some(2000), Some(999)), Some(SizeMark::Medium));
+    assert_eq!(mark(Some(2000), Some(1000)), Some(SizeMark::Large));
+    assert_eq!(mark(Some(9000), Some(999)), Some(SizeMark::Large));
+    assert_eq!(mark(Some(9000), Some(1000)), Some(SizeMark::Huge));
+    assert_eq!(mark(None, Some(5)), None);
+    assert_eq!(mark(Some(5), None), None);
+    assert_eq!(
+        size_mark(&PrFacts {
+            additions: Some(30),
+            deletions: Some(5),
+            ..pr()
+        }),
+        Some(ChangeSizeMark {
+            size: SizeMark::Tiny,
+            additions: 30,
+            deletions: 5
+        })
+    );
+}
+
 // --- eligibility --------------------------------------------------------------------------------------------
 
 /// D19: the ownership policy never drops a pull request directed at the user (authored by a scanned login,
@@ -1386,21 +1425,28 @@ fn overrides_need_a_basis_and_values_are_closed() {
 
 #[test]
 fn eligibility_flip_needs_a_reason() {
+    let asked = PrFacts {
+        owned_change: OwnedChange::Unknown,
+        ..undirected()
+    };
     let mut j = judged(&JUDGED);
     j.eligibility = Some(EligibilityJudgement {
         eligible: false,
         reason: String::new(),
     });
     assert_eq!(
-        score_pr(&rules(), &pr(), Some(&j), now()),
+        score_pr(&rules(), &asked, Some(&j), now()),
         Err(ScoreError::EligibilityWithoutReason)
     );
     j.eligibility = Some(EligibilityJudgement {
         eligible: false,
         reason: "only test renames".into(),
     });
-    let item = score_pr(&rules(), &pr(), Some(&j), now()).expect("scores");
+    let item = score_pr(&rules(), &asked, Some(&j), now()).expect("scores");
     assert_eq!(item.excluded.as_deref(), Some("only test renames"));
+    // Not asked (eligibility settled by the facts): the answer is ignored.
+    let item = score_pr(&rules(), &pr(), Some(&j), now()).expect("scores");
+    assert_eq!(item.excluded, None);
 }
 
 #[test]
@@ -1970,6 +2016,16 @@ fn waits_on_others_only_when_nothing_is_the_users_move() {
                 ..platform.clone()
             },
             false,
+        ),
+        (
+            "no decision, only a GitHub App approved (Bot type, no [bot] suffix)",
+            PrFacts {
+                review_decision: None,
+                approved_by: vec!["review-helper".into()],
+                approved_by_bots: vec!["review-helper".into()],
+                ..platform.clone()
+            },
+            true,
         ),
         (
             "a comment awaits our reply",

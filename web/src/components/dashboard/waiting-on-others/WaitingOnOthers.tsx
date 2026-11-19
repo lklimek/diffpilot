@@ -1,8 +1,7 @@
 import type { AwaitingItem } from "../../../api/generated/types";
-import { Tooltip } from "../../tooltip/Tooltip";
 import { daysSince } from "../common/format";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
-import { FactTags } from "../common/Tags";
+import { FactTags, SizePill } from "../common/Tags";
 import { AsideSection } from "../side-panel/AsideSection";
 
 const who = (login: string) => (login.startsWith("team:") ? login : `@${login}`);
@@ -36,23 +35,6 @@ export function WaitingOnOthers({ items, now }: { items: AwaitingItem[]; now: Da
               <div className="flex items-baseline gap-2">
                 <span className="font-mono text-[12.5px] font-semibold">{item.id}</span>
                 <OpenExternal href={item.url} label={openLabel(item)} />
-                <span className="flex-1" />
-                {item.total_tenths === null ? (
-                  <Tooltip tip="Not ranked: it waits on others, nothing is your move">
-                    <span tabIndex={0} className="cursor-help text-xs text-muted">
-                      —
-                    </span>
-                  </Tooltip>
-                ) : (
-                  <Tooltip tip="Score of your PR in the full ranking">
-                    <span
-                      tabIndex={0}
-                      className="cursor-help rounded border border-border px-1.5 font-mono text-[11px] leading-[18px] font-semibold"
-                    >
-                      {Math.round(item.total_tenths / 10)}
-                    </span>
-                  </Tooltip>
-                )}
               </div>
               <div className="[overflow-wrap:anywhere]">{item.title}</div>
               <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
@@ -60,6 +42,7 @@ export function WaitingOnOthers({ items, now }: { items: AwaitingItem[]; now: Da
                   waits on {item.waiting_on.map(who).join(", ")} for{" "}
                   <b className="text-text">{daysSince(item.waiting_since, now)} d</b>
                 </span>
+                <SizePill mark={item.change_size} />
                 <FactTags tags={item.tags} />
               </div>
             </li>

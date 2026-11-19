@@ -39,9 +39,9 @@ pub(super) fn agent_limitation(text: &str) -> bool {
             r"\bjako (?:ai|sztuczna inteligencja|model językowy)\b|",
             r"\b(?:skill severity|narzędzia agenta|wymagane instrukcje)[^.!?\n]{0,60}\b(?:niedostępn\w*|brak\w*)|",
             r"\bnie mog(?:ę|łem|łam|liśmy|łyśmy) (?:wczytać|załadować|odczytać)[^.!?\n]{0,60}(?:skill|narzędzi|instrukcj)|",
-            r"\bкак (?:ии|ai|искусственный интеллект|языковая модель)\b|",
+            r"\bкак (?:ии|ai|искусственный интеллект|языковая модель)(?:[\s,.!?:;]|$)|",
             r"\b(?:навык severity|skill severity|инструменты агента|требуемые инструкции)[^.!?\n]{0,60}(?:недоступ\w*|отсутству\w*)|",
-            r"\bне (?:могу|смог|смогла|смогли) (?:загрузить|прочитать|открыть)[^.!?\n]{0,60}(?:навык|skill|инструмент|инструкц)"
+            r"(?:\bне могу|\b(?:я|мы) не (?:смог|смогла|смогли))\s+(?:загрузить|прочитать|открыть)[^.!?\n]{0,60}(?:навык|skill|инструменты агента|инструкции агента|требуемые (?:навыки|инструменты|инструкции))"
         )).ok()
     });
     PATTERN
@@ -246,6 +246,25 @@ mod tests {
         ] {
             assert!(!agent_limitation(text), "{text}");
         }
+    }
+
+    /// Review repro: ordinary Russian review text (a component failing, an AI feature) is no capability excuse,
+    /// as its English equivalents are not.
+    #[test]
+    fn ordinary_russian_technical_text_is_no_capability_excuse() {
+        let rejected: Vec<&str> = [
+            "Парсер не смог открыть файл, и инструмент завершился с ошибкой.",
+            "Функция не смогла прочитать конфигурацию инструмента, если путь пустой.",
+            "После обновления клиенты не смогли загрузить инструкции по установке.",
+            "Сервис работает как AI-прокси между клиентом и моделью.",
+            "Модуль кэширует ответы так же, как ИИ-ассистент в редакторе.",
+            "Тест проверяет, что CLI не смог прочитать файл без прав.",
+            "The parser could not open the file and the tool crashed.",
+        ]
+        .into_iter()
+        .filter(|text| agent_limitation(text))
+        .collect();
+        assert!(rejected.is_empty(), "{rejected:#?}");
     }
 
     #[test]

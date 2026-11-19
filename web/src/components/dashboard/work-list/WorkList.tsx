@@ -1,9 +1,10 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import type { Tier, TodosState, WorkItem } from "../../../api/generated/types";
+import type { SizeMark, Tier, TodosState, WorkItem } from "../../../api/generated/types";
 import { AlarmRow } from "../alarm-row/AlarmRow";
 import { TIER_RULE, tierName } from "../common/format";
 import type { Navigate } from "../common/navigate";
 import { httpUrl } from "../common/OpenExternal";
+import { ALL_SIZES, SIZE_CLASSES, sizeRange, sizeShown } from "../common/size";
 import { ToggleGroup } from "../common/ToggleGroup";
 import { WorkItemRow } from "../work-item/WorkItemRow";
 import { dashboardShortcut, isTyping } from "./shortcuts";
@@ -20,6 +21,9 @@ interface WorkListProps {
   /** Kinds shown (independent toggles; all on by default). */
   kinds: ItemKind[];
   onKindsChange: (kinds: ItemKind[]) => void;
+  /** Size classes shown (pull requests only; all on by default); without `onSizesChange` no size toggles. */
+  sizes?: SizeMark[];
+  onSizesChange?: (sizes: SizeMark[]) => void;
   /** In-app href of a pull request's review (plan §F.1); built by the screen. */
   reviewHref: (item: WorkItem) => string;
   /** In-app navigation (links and `v`); without it links load the page. */
@@ -75,6 +79,8 @@ export function WorkList({
   items,
   kinds,
   onKindsChange,
+  sizes = ALL_SIZES,
+  onSizesChange,
   reviewHref,
   onNavigate,
   onHelp,
@@ -95,7 +101,10 @@ export function WorkList({
   // Kinds on among those offered; none (TODOs only, now hidden) shows every offered kind.
   const chosen = offered.filter((kind) => kinds.includes(kind));
   const active = chosen.length > 0 ? chosen : offered;
-  const shows = (item: WorkItem) => active.includes(item.kind);
+  // Unknown stored sizes or none on show every size, as for kinds.
+  const chosenSizes = ALL_SIZES.filter((size) => sizes.includes(size));
+  const activeSizes = chosenSizes.length > 0 ? chosenSizes : ALL_SIZES;
+  const shows = (item: WorkItem) => active.includes(item.kind) && sizeShown(item, activeSizes);
   const shown = items.filter(shows);
   // P0 alarms stay visible whatever the kind toggles say.
   const alarms = groupItems(items).alarms;
@@ -103,6 +112,8 @@ export function WorkList({
   const rows = [...alarms, ...tiers.flatMap((group) => group.items), ...notJudged];
   const listed = shown.length + alarms.filter((alarm) => !shows(alarm)).length;
   const count = (kind: ItemKind) => items.filter((item) => item.kind === kind).length;
+  const sized = (size: SizeMark) =>
+    items.filter((item) => item.kind === "pr" && item.change_size?.size === size).length;
 
   const toggle = (key: string) =>
     setExpanded((open) => {
@@ -210,6 +221,23 @@ export function WorkList({
             tip: `Show or hide ${kind === "todo" ? "your MemCan TODOs" : KIND_TEXT[kind]}`,
           }))}
         />
+        {onSizesChange && (
+          <ToggleGroup
+            label="Sizes shown"
+            values={activeSizes}
+            onChange={onSizesChange}
+            lastOnTip="At least one size stays shown; turn another on first."
+            options={SIZE_CLASSES.map(({ size }, i) => ({
+              value: size,
+              label: (
+                <>
+                  {size} <b>{sized(size)}</b>
+                </>
+              ),
+              tip: `Show or hide ${size} pull requests (${sizeRange(i)} changed lines); issues and TODOs have no size and follow the kind toggles`,
+            }))}
+          />
+        )}
       </div>
       {notice}
       {/* A stale list keeps full text contrast: a tinted dashed frame and its chip mark it. */}

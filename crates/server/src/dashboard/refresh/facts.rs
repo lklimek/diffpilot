@@ -298,6 +298,15 @@ pub(super) fn pr(
         last_comment_at: last_comment.map(|c| c.created_at),
         owned_change: context.owned,
         approved_by: with_state("APPROVED"),
+        approved_by_bots: {
+            let mut bots: Vec<String> = latest
+                .iter()
+                .filter(|(_, state, _, bot)| state == "APPROVED" && *bot)
+                .map(|(l, ..)| name(l))
+                .collect();
+            bots.sort();
+            bots
+        },
         review_requested_from_others: others,
         others_review_requested_at,
     };
@@ -374,5 +383,77 @@ pub(super) fn issue(
         private,
         comments: candidate.comments,
         opened_at: Some(candidate.created_at),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use contracts::api::dashboard::DashboardSettings;
+    use contracts::common::RepoRef;
+
+    use super::*;
+
+    /// A GitHub App approver without the `[bot]` suffix keeps its Bot type in the facts, so its approval is not a
+    /// human's (B10 "a merge the user can make").
+    #[test]
+    fn a_bot_typed_approver_is_recorded_as_a_bot() {
+        let node = serde_json::json!({
+            "number": 1199, "title": "feat(api): paginate identity lookups",
+            "url": "https://github.com/acme/platform/pull/1199", "state": "OPEN", "isDraft": false,
+            "isCrossRepository": false, "additions": 10, "deletions": 2,
+            "createdAt": "2026-11-08T10:00:00Z", "updatedAt": "2026-11-17T11:00:00Z",
+            "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "reviewDecision": null,
+            "baseRefName": "main", "headRefName": "feat/pages", "headRefOid": "8c8acb6a35253739c2cb54e178ffa230638e9dfc",
+            "milestone": null, "baseRepository": null,
+            "author": {"__typename": "User", "login": "alice"},
+            "labels": {"nodes": []}, "participants": {"totalCount": 3},
+            "closingIssuesReferences": {"nodes": []}, "assignees": {"nodes": []},
+            "reviewRequests": {"nodes": []},
+            "reviews": {"totalCount": 2, "nodes": [
+                {"author": {"__typename": "Bot", "login": "review-helper"}, "state": "APPROVED",
+                 "submittedAt": "2026-11-17T10:00:00Z"},
+                {"author": {"__typename": "User", "login": "ana"}, "state": "APPROVED",
+                 "submittedAt": "2026-11-17T11:00:00Z"}
+            ]},
+            "comments": {"nodes": []}, "reviewThreads": {"nodes": []},
+            "timelineItems": {"nodes": []}, "commits": {"nodes": []}
+        });
+        let detail: PullDetail = serde_json::from_value(node).expect("detail");
+        let rules = ScoreRules::new("alice", &DashboardSettings::default());
+        let candidate = PrCandidate {
+            title: detail.title.clone(),
+            url: detail.url.clone(),
+            relations: BTreeMap::new(),
+        };
+        let item = ItemRef {
+            repo: RepoRef {
+                owner: "acme".into(),
+                name: "platform".into(),
+            },
+            number: 1199,
+        };
+        let stored = pr(
+            &rules,
+            &item,
+            &detail,
+            PrContext {
+                candidate: &candidate,
+                blockers: None,
+                owned: OwnedChange::NoPolicy,
+                milestones: MilestoneContext::default(),
+            },
+        );
+        assert_eq!(
+            (
+                stored.facts.approved_by.as_slice(),
+                stored.facts.approved_by_bots.as_slice()
+            ),
+            (
+                ["ana".to_owned(), "review-helper".to_owned()].as_slice(),
+                ["review-helper".to_owned()].as_slice()
+            )
+        );
     }
 }

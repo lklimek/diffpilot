@@ -4,7 +4,7 @@ import { Tooltip } from "../../tooltip/Tooltip";
 import { LlmLine } from "../common/LlmLine";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 import type { Navigate } from "../common/navigate";
-import { FactTags } from "../common/Tags";
+import { FactTags, SizePill } from "../common/Tags";
 import { ItemAction } from "../work-item/ItemAction";
 import { itemPlace, provisionalPill } from "../work-item/WorkItemRow";
 
@@ -52,6 +52,7 @@ export function AlarmRow({ item, reviewHref, onNavigate, current = false, focusR
             {itemPlace(item)}
             {item.author ? ` · @${item.author}` : ""}
           </span>
+          <SizePill mark={item.change_size} />
           <FactTags tags={item.tags} />
           {provisionalPill(item)}
         </div>

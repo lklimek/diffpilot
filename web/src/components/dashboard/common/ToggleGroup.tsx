@@ -16,12 +16,20 @@ interface ToggleGroupProps<T extends string> {
   values: T[];
   /** The toggles on, in option order. */
   onChange: (values: T[]) => void;
+  /** Why the last toggle on cannot be turned off. */
+  lastOnTip?: string;
 }
 
 const LAST_ON_TIP = "At least one kind stays shown; turn another on first.";
 
 /** Independent toggle buttons (`aria-pressed`); the last one on cannot be turned off. */
-export function ToggleGroup<T extends string>({ label, options, values, onChange }: ToggleGroupProps<T>) {
+export function ToggleGroup<T extends string>({
+  label,
+  options,
+  values,
+  onChange,
+  lastOnTip = LAST_ON_TIP,
+}: ToggleGroupProps<T>) {
   const on = options.filter((option) => values.includes(option.value));
   return (
     <div
@@ -35,7 +43,7 @@ export function ToggleGroup<T extends string>({ label, options, values, onChange
         return (
           <Tooltip
             key={option.value}
-            tip={last ? `${option.tip}. ${LAST_ON_TIP}` : option.tip}
+            tip={last ? `${option.tip}. ${lastOnTip}` : option.tip}
             className="flex"
           >
             <button

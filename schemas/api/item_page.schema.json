@@ -98,6 +98,17 @@
             "$ref": "#/$defs/FactTag"
           }
         },
+        "change_size": {
+          "description": "Size mark of a pull request's full diff (display only); absent for issues, TODOs and unknown totals.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChangeSizeMark"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "facts": {
           "description": "Deterministic facts from the scan.",
           "type": "array",
@@ -202,6 +213,63 @@
       "required": [
         "text",
         "tip"
+      ]
+    },
+    "ChangeSizeMark": {
+      "description": "A pull request's size mark with its evidence (a scan fact, not a score input).",
+      "type": "object",
+      "properties": {
+        "size": {
+          "description": "The mark.",
+          "$ref": "#/$defs/SizeMark"
+        },
+        "additions": {
+          "description": "Added lines of the full diff.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "deletions": {
+          "description": "Removed lines of the full diff.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "size",
+        "additions",
+        "deletions"
+      ]
+    },
+    "SizeMark": {
+      "description": "Size mark of a pull request: a fixed table of changed lines (additions + deletions), plan §C.2 K16.",
+      "oneOf": [
+        {
+          "description": "Fewer than 150 changed lines.",
+          "type": "string",
+          "const": "tiny"
+        },
+        {
+          "description": "150 to 499 changed lines.",
+          "type": "string",
+          "const": "small"
+        },
+        {
+          "description": "500 to 2999 changed lines.",
+          "type": "string",
+          "const": "medium"
+        },
+        {
+          "description": "3000 to 9999 changed lines.",
+          "type": "string",
+          "const": "large"
+        },
+        {
+          "description": "10 000 changed lines or more.",
+          "type": "string",
+          "const": "huge"
+        }
       ]
     },
     "Fact": {
