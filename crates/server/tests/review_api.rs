@@ -3,7 +3,7 @@
 //! served from a `file://` clone base.
 #![expect(clippy::expect_used, reason = "test helpers outside #[test] functions")]
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -12,10 +12,11 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use contracts::api::analyses::AnalysisState;
+use contracts::api::files::{FilesResponse, PartOwner, ViewedStatus};
 use contracts::api::pr::PrSummary;
 use contracts::api::review::{BlockRef, QuietRowRef, ReviewState};
 use contracts::api::tour::Tour;
-use contracts::common::{LlmLanguage, NotAnalysedCategory};
+use contracts::common::{LineSide, LlmLanguage, NotAnalysedCategory};
 use contracts::ids::{AnalysisId, CommitSha, FlowId, StepId};
 use contracts::time::Timestamp;
 use db::repo::analyses::NewAnalysis;
@@ -322,6 +323,14 @@ fn cookie_token(tenant: &str, user: &str) -> String {
 
 fn review_state(id: AnalysisId) -> String {
     format!("/api/v1/analyses/{id}/review-state")
+}
+
+fn files(id: AnalysisId) -> String {
+    format!("/api/v1/analyses/{id}/files")
+}
+
+fn files_viewed(id: AnalysisId) -> String {
+    format!("/api/v1/analyses/{id}/files/viewed")
 }
 
 fn diff(id: AnalysisId, path: &str, side: &str, from: u32, to: u32) -> String {
@@ -749,10 +758,13 @@ async fn analysis_routes_check_session_csrf_and_tenant() {
         .expect("tenant");
     h.sign_in("other", "u-carol", 3003).await;
     let get_diff = diff(id, "src/lib.rs", "head", 1, 5);
+    let viewed = || Some(json!({ "path": "src/lib.rs", "viewed": true }));
     for (method, uri, csrf, body) in [
         ("GET", review_state(id), false, None),
         ("PUT", review_state(id), true, body()),
         ("GET", get_diff.clone(), false, None),
+        ("GET", files(id), false, None),
+        ("PUT", files_viewed(id), true, viewed()),
     ] {
         let (status, error) = h.send(method, &uri, None, csrf, body.clone()).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
@@ -765,11 +777,11 @@ async fn analysis_routes_check_session_csrf_and_tenant() {
         );
         assert_eq!(error["code"], json!("not_found"));
     }
-    let (status, error) = h
-        .send("PUT", &review_state(id), Some(ALICE), false, body())
-        .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(error["code"], json!("csrf_rejected"));
+    for (uri, body) in [(review_state(id), body()), (files_viewed(id), viewed())] {
+        let (status, error) = h.send("PUT", &uri, Some(ALICE), false, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(error["code"], json!("csrf_rejected"));
+    }
     let unknown = AnalysisId::new_random();
     for uri in [
         review_state(unknown),
@@ -932,4 +944,136 @@ async fn diff_keeps_line_endings_refuses_binary_files_and_waits_for_the_merge_ba
     let (status, body) = h.get(&diff(unprepared, "a.txt", "head", 1, 1)).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["code"], json!("analysis_not_finished"));
+}
+
+/// Lines of `side` in `range`, as a set of (path, line).
+fn line_set(path: &str, start: u32, end: u32) -> impl Iterator<Item = (String, u32)> + '_ {
+    (start..=end).map(move |line| (path.to_owned(), line))
+}
+
+/// C1 on fixture PR 482: every changed line is in exactly one part of its hunk, and the Unexplained parts are
+/// exactly the Tour's Unexplained rows (one source of truth). No user token: the Viewed marks are not read and no
+/// GitHub call is made.
+#[tokio::test]
+async fn files_own_every_changed_line_once_and_agree_with_the_tour() {
+    let h = Harness::new().await;
+    let id = h.analysis(true).await;
+    let tour = h.tour(id).await;
+    // Last request of the test: a session without GitHub tokens ends at its first GitHub-backed read.
+    let (status, body) = h.get(&files(id)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let response: FilesResponse = serde_json::from_value(body).expect("files");
+    assert_eq!(response.viewed_status, ViewedStatus::NotChecked);
+    assert_eq!(response.current_head, None);
+    assert!(response.files.iter().all(|file| file.viewed.is_none()));
+    let mut unexplained: [BTreeSet<(String, u32)>; 2] = Default::default();
+    let mut changed_lines = 0;
+    for file in &response.files {
+        let base_path = file.old_path.as_deref().unwrap_or(&file.path);
+        let (mut added, mut removed) = (0, 0);
+        for hunk in &file.hunks {
+            for (side, range, path) in [
+                (LineSide::Base, hunk.base, base_path),
+                (LineSide::Head, hunk.head, file.path.as_str()),
+            ] {
+                let parts: Vec<_> = hunk.parts.iter().filter(|part| part.side == side).collect();
+                let Some(range) = range else {
+                    assert!(parts.is_empty(), "{}: {hunk:?}", file.path);
+                    continue;
+                };
+                let mut next = range.start_line;
+                for part in &parts {
+                    assert_eq!(
+                        part.range.start_line, next,
+                        "{}: gap or overlap in {hunk:?}",
+                        file.path
+                    );
+                    next = part.range.end_line + 1;
+                    if let PartOwner::Unexplained { .. } = part.owner {
+                        let set = &mut unexplained[usize::from(side == LineSide::Head)];
+                        set.extend(line_set(path, part.range.start_line, part.range.end_line));
+                    }
+                }
+                assert_eq!(
+                    next,
+                    range.end_line + 1,
+                    "{}: parts end early in {hunk:?}",
+                    file.path
+                );
+                let count = range.end_line - range.start_line + 1;
+                match side {
+                    LineSide::Base => removed += count,
+                    LineSide::Head => added += count,
+                }
+            }
+        }
+        if file.not_rendered.is_none() {
+            assert_eq!(
+                (file.added, file.removed),
+                (added, removed),
+                "{}",
+                file.path
+            );
+        }
+        changed_lines += added + removed;
+    }
+    assert!(changed_lines > 100, "{changed_lines}");
+    let mut expected: [BTreeSet<(String, u32)>; 2] = Default::default();
+    for row in &tour.quiet.unexplained {
+        let set = &mut expected[usize::from(row.side == LineSide::Head)];
+        for range in &row.ranges {
+            set.extend(line_set(&row.file, range.start_line, range.end_line));
+        }
+    }
+    assert_eq!(unexplained, expected);
+    // Every step with changed lines owns or shares at least one, so the Files view can open each one.
+    let owners: BTreeSet<&StepId> = response
+        .files
+        .iter()
+        .flat_map(|file| &file.hunks)
+        .flat_map(|hunk| &hunk.parts)
+        .flat_map(|part| {
+            let owner = match &part.owner {
+                PartOwner::Step { step_id, .. } => Some(step_id),
+                _ => None,
+            };
+            owner.into_iter().chain(&part.also_in)
+        })
+        .collect();
+    for step in tour.flows.iter().flat_map(|flow| &flow.steps) {
+        if !step.facts.changed_lines.is_empty() {
+            assert!(owners.contains(&step.id), "{} owns no line", step.id);
+        }
+    }
+}
+
+#[tokio::test]
+async fn files_wait_for_the_analysis_and_viewed_refuses_other_paths() {
+    let h = Harness::new().await;
+    let running = h.analysis(false).await;
+    let (status, body) = h.get(&files(running)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], json!("analysis_not_finished"));
+    let id = h.analysis(true).await;
+    let (status, body) = h
+        .send(
+            "PUT",
+            &files_viewed(id),
+            Some(ALICE),
+            true,
+            Some(json!({ "path": "src/not-in-the-pr.rs", "viewed": true })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], json!("invalid_request"));
+    let (status, body) = h
+        .send(
+            "PUT",
+            &files_viewed(id),
+            Some(ALICE),
+            true,
+            Some(json!({ "path": "src/rpc/client.rs" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
