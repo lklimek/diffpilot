@@ -852,6 +852,12 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
         headingRef={headingRef}
         oldCode={file.not_rendered ? undefined : { shown: oldCode, onToggle: () => setOldCode((s) => !s) }}
       />
+      {!file.not_rendered && (
+        <p className="mt-1.5 mb-0 text-[12px] text-muted">
+          Click a hunk for its flows. Click, Shift+click or drag line numbers to select lines as your own
+          block; the link is in the address bar.
+        </p>
+      )}
       <div className="mt-2">
         {file.not_rendered ? (
           <StatusMessage kind="empty">
@@ -904,6 +910,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
         next={next && hunkTitle(next)}
         onPrevious={() => goHunk(previous)}
         onNext={() => goHunk(next)}
+        keys
       />
       {notice && (
         <p key={notice.nonce} role="status" className="sr-only">

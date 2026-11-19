@@ -16,6 +16,7 @@ import { NOT_ANALYSED_LABEL, fileCount, lineCount, plural } from "../quiet/label
 import { RemarkPill } from "../remark-pills/RemarkPills";
 import { summariseRemarks } from "../remark-pills/remarks";
 import { Tooltip } from "../tooltip/Tooltip";
+import { Kbd } from "../help/Kbd";
 
 interface NavListProps {
   /** Flows in tour order. */
@@ -337,8 +338,4 @@ export function NavList({
       </p>
     </div>
   );
-}
-
-function Kbd({ children }: { children: ReactNode }) {
-  return <kbd className="rounded border border-b-2 border-border px-1">{children}</kbd>;
 }

@@ -1,6 +1,7 @@
 import { useId } from "react";
 import type { FileViewedState, PrFile, StepId, Tour, ViewedStatus } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
+import { Kbd } from "../help/Kbd";
 import { NOT_ANALYSED_LABEL } from "../quiet/labels";
 import { Tooltip } from "../tooltip/Tooltip";
 import { fileName, fileTicks, treeGroups, unexplainedLines, viewedCount } from "./model";
@@ -189,6 +190,10 @@ export function FileTree({
           </section>
         );
       })}
+      <p className="mt-3 text-xs text-muted">
+        <Kbd>j</Kbd> <Kbd>k</Kbd> hunk · <Kbd>n</Kbd> <Kbd>p</Kbd> file · <Kbd>v</Kbd> viewed · <Kbd>s</Kbd>{" "}
+        Flows · <Kbd>?</Kbd> help
+      </p>
     </div>
   );
 }

@@ -380,6 +380,22 @@ describe("Files code view", () => {
   });
 });
 
+describe("Files affordances (mockup)", () => {
+  it("shows the keys on the controls, how to select, and a key strip under the tree", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
+    const main = screen.getByRole("main");
+    expect(main).toHaveTextContent("Click a hunk for its flows. Click, Shift+click or drag line numbers");
+    expect(screen.getByRole("button", { name: "Viewed" }).querySelector("kbd")).toHaveTextContent("v");
+    expect(screen.getByRole("button", { name: "Show old code" }).querySelector("kbd")).toHaveTextContent("d");
+    expect(
+      within(main)
+        .getByRole("button", { name: /^Next:/ })
+        .querySelector("kbd"),
+    ).toHaveTextContent("j");
+    expect(tree()).toHaveTextContent("j k hunk · n p file · v viewed · s Flows · ? help");
+  });
+});
+
 describe("Files links and selection edge cases", () => {
   it("a link past the end of the file says so and opens the file", async () => {
     const router = await open("#lines?file=src%2Flib.rs&side=head&line=999");

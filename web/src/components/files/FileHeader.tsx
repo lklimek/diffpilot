@@ -1,6 +1,7 @@
 import type { Ref } from "react";
 import type { FileViewedState, PrFile } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
+import { Kbd } from "../help/Kbd";
 import { busyTip } from "../button/button";
 import { fileDiffUrl, type PrLinkBase } from "../github/links";
 import { GithubLink } from "../inspector/text";
@@ -82,7 +83,7 @@ export function FileHeader({ file, pr, viewed, oldCode, headingRef }: FileHeader
                 onClick={oldCode.onToggle}
                 className={BUTTON}
               >
-                Show old code
+                Show old code <Kbd decorative>d</Kbd>
               </button>
             </Tooltip>
           )}
@@ -98,7 +99,7 @@ export function FileHeader({ file, pr, viewed, oldCode, headingRef }: FileHeader
                 "Saving to GitHub…"
               ) : (
                 <>
-                  <span aria-hidden>{on ? "☑" : "☐"} </span>Viewed
+                  <span aria-hidden>{on ? "☑" : "☐"} </span>Viewed <Kbd decorative>v</Kbd>
                 </>
               )}
             </button>
