@@ -1325,3 +1325,27 @@ async fn russian_migration_reaches_other_open_connections() {
         .await
         .expect("ru accepted on the older connection");
 }
+
+/// Every in-memory connection is its own empty database, so the test pool must never replace its one connection.
+/// A caller cancelled while acquiring it (a `tokio::time::timeout`, an aborted task) must leave the schema in place.
+#[tokio::test]
+async fn cancelled_acquire_keeps_the_in_memory_database() {
+    let db = Db::in_memory().await.expect("db");
+    for _ in 0..50 {
+        // The previous query's connection is back in the pool (its return runs as a spawned task).
+        while db.pool.num_idle() == 0 {
+            tokio::task::yield_now().await;
+        }
+        {
+            // Polled once, then dropped: cancelled at its first await, typically while acquiring the connection.
+            let users = db.users();
+            let mut query = std::pin::pin!(users.get("nobody"));
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            let _ = query.as_mut().poll(&mut cx);
+        }
+        assert!(
+            matches!(db.users().get("nobody").await, Err(DbError::NotFound)),
+            "the schema is still there"
+        );
+    }
+}
