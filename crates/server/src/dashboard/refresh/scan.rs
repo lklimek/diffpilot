@@ -15,14 +15,15 @@ use jiff::tz::TimeZone;
 
 use super::RunError;
 use super::facts::{self, PrContext};
-use super::history;
 use super::owned;
 use super::progress::{Ended, Progress};
+use super::{history, mentions};
 use crate::dashboard::score::{MilestoneContext, OwnedChange, ScoreRules, TodoFacts};
 use crate::dashboard::settings::memcan_projects;
 use crate::dashboard::snapshot::{SNAPSHOT_VERSION, Snapshot, StoredTodo};
 use crate::github::work::{
-    Fetched, ItemRef, PR_BATCH, PullDetail, TokenSource, WorkClient, WorkError, repo_name,
+    Fetched, IssueRelation, ItemRef, PR_BATCH, PullDetail, TokenSource, WorkClient, WorkError,
+    repo_name,
 };
 use crate::memcan::todos::{self, TodosRead};
 
@@ -134,7 +135,12 @@ pub(super) async fn scan<T: TokenSource>(
         )
         .await?;
 
-    let pulls: Vec<ItemRef> = candidates.pull_requests.keys().cloned().collect();
+    let pulls: Vec<ItemRef> = candidates
+        .pull_requests
+        .iter()
+        .filter(|(_, c)| c.ranked())
+        .map(|(item, _)| item.clone())
+        .collect();
     let total = count(pulls.len());
     progress
         .step(
@@ -146,14 +152,6 @@ pub(super) async fn scan<T: TokenSource>(
         .await?;
     let repos: Vec<RepoRef> = pulls
         .iter()
-        .filter(|item| {
-            candidates.pull_requests.get(item).is_some_and(|c| {
-                c.relations
-                    .values()
-                    .flatten()
-                    .any(|r| *r != crate::github::work::PrRelation::Mentioned)
-            })
-        })
         .map(|pr| pr.repo.clone())
         .collect::<BTreeSet<_>>()
         .into_iter()
@@ -201,31 +199,24 @@ pub(super) async fn scan<T: TokenSource>(
     progress
         .step(ScanStepKey::Context, StepState::Running, None, None)
         .await?;
-    let (mentions, mention_notes) = crate::dashboard::mentions::collect(
+    let owned = owned_changes(client, input, &details.found, &mut notes).await?;
+    let (mentions, mention_notes) = mentions::collect(
         client,
         input.rules,
         &logins,
         &candidates,
         &details.found,
+        settings,
+        &owned,
     )
     .await?;
     notes.extend(mention_notes);
-    // Mention-only candidates never reach scoring, ownership reads or the judge.
-    details.found.retain(|item, _| {
-        candidates.pull_requests.get(item).is_some_and(|c| {
-            c.relations
-                .values()
-                .flatten()
-                .any(|r| *r != crate::github::work::PrRelation::Mentioned)
-        })
-    });
     candidates.issues.retain(|_, issue| {
         issue
             .relations
             .iter()
-            .any(|r| *r != crate::github::work::IssueRelation::Mentioned)
+            .any(|r| *r != IssueRelation::Mentioned)
     });
-    let owned = owned_changes(client, input, &details.found, &mut notes).await?;
     let with_milestone: BTreeSet<RepoRef> = details
         .found
         .iter()

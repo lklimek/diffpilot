@@ -22,7 +22,9 @@ const props = {
   withBots: false,
   onWithBotsChange: vi.fn(),
   onHide: vi.fn(),
-  hiding: false,
+  hidingIds: [],
+  expanded: true,
+  onExpandedChange: vi.fn(),
 };
 
 describe("Mentions", () => {
@@ -41,29 +43,46 @@ describe("Mentions", () => {
     expect(screen.getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(
       ["1", "2", "3"].map((id) => mention(id).url),
     );
-    expect(screen.getAllByText("<script>alert(1)</script> @alice")).toHaveLength(3);
+    expect(screen.getAllByText(/<script>alert\(1\)<\/script> @alice/)).toHaveLength(3);
     await user.click(screen.getByText("+1 more"));
     expect(screen.getAllByRole("link")).toHaveLength(4);
     await user.click(screen.getAllByRole("button", { name: /Hide mention/ })[0]!);
     expect(props.onHide).toHaveBeenCalledWith("1");
-    await user.click(screen.getByRole("checkbox", { name: "with bots" }));
+    await user.click(screen.getByRole("button", { name: "with bots" }));
     expect(props.onWithBotsChange).toHaveBeenCalledWith(true);
   });
   it("keeps the toggle reachable with only bots and labels bots when shown", () => {
     const { rerender } = render(<Mentions {...props} items={[mention("1", true)]} />);
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(screen.getByText("without bots")).toBeInTheDocument();
+    expect(screen.getByText(/Only bot mentions are waiting/)).toBeInTheDocument();
     rerender(<Mentions {...props} withBots items={[mention("1", true)]} />);
-    expect(screen.getByText("bot")).toBeInTheDocument();
+    expect(screen.getByText(/· bot/)).toBeInTheDocument();
   });
 });
 
 it("keeps a pending Hide focusable without sending another hide", async () => {
   const hide = vi.fn();
-  render(<Mentions {...props} items={[mention("1")]} hiding onHide={hide} />);
+  render(<Mentions {...props} items={[mention("1")]} hidingIds={["1"]} onHide={hide} />);
   const button = screen.getByRole("button", { name: /Hide mention/ });
   expect(button).toHaveAttribute("aria-disabled", "true");
   expect(button).not.toBeDisabled();
   await userEvent.click(button);
   expect(hide).not.toHaveBeenCalled();
+});
+
+it("starts collapsed with a one-line count", () => {
+  render(<Mentions {...props} expanded={false} items={[mention("1")]} />);
+  expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Mentions (1)" })).toHaveAttribute("aria-expanded", "false");
+});
+
+it("keeps other Hide buttons active while one request is pending", async () => {
+  const hide = vi.fn();
+  render(<Mentions {...props} items={[mention("1"), mention("2")]} hidingIds={["1"]} onHide={hide} />);
+  const buttons = screen.getAllByRole("button", { name: /Hide mention/ });
+  expect(buttons[0]).toHaveAttribute("aria-disabled", "true");
+  expect(buttons[1]).toHaveAttribute("aria-disabled", "false");
+  await userEvent.click(buttons[1]!);
+  expect(hide).toHaveBeenCalledWith("2");
 });

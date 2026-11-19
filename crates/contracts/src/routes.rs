@@ -290,7 +290,7 @@ pub const GET_DASHBOARD: Route = route("getDashboard", Get, "/api/v1/dashboard",
 /// R1b: ranked items of the latest snapshot (`ItemQuery`).
 pub const LIST_DASHBOARD_ITEMS: Route =
     route("listDashboardItems", Get, "/api/v1/dashboard/items", READ);
-/// Hides one mention for the signed-in browser user.
+/// R11: hides one mention for the signed-in browser user.
 pub const HIDE_DASHBOARD_MENTION: Route = route(
     "hideDashboardMention",
     Post,

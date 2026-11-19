@@ -1,5 +1,22 @@
 {
-  "mentions": [],
+  "mentions": [
+    {
+      "id": "f7da86982a7e447e0245d5fb6b0885357d517df0c6736aae75eaa33c357cec34",
+      "item_key": "acme~wallet-ui~issue~305",
+      "repo": {
+        "owner": "acme",
+        "name": "wallet-ui"
+      },
+      "number": 305,
+      "kind": "issue",
+      "title": "Dark theme: low contrast on disabled buttons",
+      "author": "jun-park",
+      "is_bot": false,
+      "created_at": "2026-11-06T09:30:00Z",
+      "text": "@alice which contrast token should we use here?",
+      "url": "https://github.com/acme/wallet-ui/issues/305#issuecomment-1"
+    }
+  ],
   "revision": "r-0812-ranked",
   "items": [
     {
@@ -177,7 +194,7 @@
       "facts": [
         {
           "label": "Head",
-          "value": "9c41e7a, +412 −88 in 14 files"
+          "value": "9c41e7a, +412 \u221288 in 14 files"
         },
         {
           "label": "Reviews",
@@ -486,7 +503,7 @@
       "facts": [
         {
           "label": "Head",
-          "value": "5d2a0f3, +301 −79 in 9 files"
+          "value": "5d2a0f3, +301 \u221279 in 9 files"
         },
         {
           "label": "Reviews",
@@ -634,7 +651,7 @@
       "facts": [
         {
           "label": "Head",
-          "value": "1e07b2d, +31 −9 in 2 files"
+          "value": "1e07b2d, +31 \u22129 in 2 files"
         },
         {
           "label": "Reviews",
@@ -778,7 +795,7 @@
       "facts": [
         {
           "label": "Head",
-          "value": "ab90e11, +198 −12 in 3 files"
+          "value": "ab90e11, +198 \u221212 in 3 files"
         },
         {
           "label": "Base",
@@ -918,7 +935,7 @@
       "facts": [
         {
           "label": "Head",
-          "value": "77c3d0e, +980 −470 in 21 files"
+          "value": "77c3d0e, +980 \u2212470 in 21 files"
         },
         {
           "label": "Threads",
@@ -1193,7 +1210,7 @@
       "facts": [
         {
           "label": "Head",
-          "value": "0b51f9c, +1,512 −328 in 26 files"
+          "value": "0b51f9c, +1,512 \u2212328 in 26 files"
         },
         {
           "label": "Base",
@@ -1469,7 +1486,7 @@
       "facts": [
         {
           "label": "Head",
-          "value": "c2f4410, +64 −56 in 2 files"
+          "value": "c2f4410, +64 \u221256 in 2 files"
         },
         {
           "label": "Base",
@@ -1705,133 +1722,6 @@
       "llm": {
         "why": "Slow memory growth seen on one test node; the refactor in CON-1534 changes the code involved.",
         "next": "Wait for CON-1534 to merge, then profile again.",
-        "alarm": null,
-        "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false,
-        "also_keys": []
-      },
-      "review": null
-    },
-    {
-      "id": "WUI-305",
-      "key": "acme~wallet-ui~issue~305",
-      "kind": "issue",
-      "repo": {
-        "owner": "acme",
-        "name": "wallet-ui"
-      },
-      "number": 305,
-      "title": "Dark theme: low contrast on disabled buttons",
-      "url": "https://github.com/acme/wallet-ui/issues/305",
-      "author": "jun-park",
-      "private": false,
-      "updated_at": "2026-11-06T07:14:00Z",
-      "tags": [
-        {
-          "text": "mentions you",
-          "tip": "@alice mentioned in a comment 12 d ago"
-        }
-      ],
-      "facts": [
-        {
-          "label": "State",
-          "value": "open, 3 comments"
-        }
-      ],
-      "score": {
-        "total_tenths": 151,
-        "state": "final",
-        "tier": "p3",
-        "parts": [
-          {
-            "component": "advancement",
-            "points_tenths": 0,
-            "source": "computed",
-            "status": "computed",
-            "basis": "not started"
-          },
-          {
-            "component": "defect_severity",
-            "points_tenths": 40,
-            "source": "llm",
-            "status": "judged",
-            "basis": "no pre-existing defect"
-          },
-          {
-            "component": "unblocks",
-            "points_tenths": 0,
-            "source": "computed",
-            "status": "computed",
-            "basis": "no open dependents"
-          },
-          {
-            "component": "human_waiting",
-            "points_tenths": 50,
-            "source": "computed",
-            "status": "computed",
-            "basis": "mention 12 d ago"
-          },
-          {
-            "component": "recency",
-            "points_tenths": 11,
-            "source": "computed",
-            "status": "computed",
-            "basis": "last change 12 d ago"
-          },
-          {
-            "component": "change_impact",
-            "points_tenths": 50,
-            "source": "llm",
-            "status": "judged",
-            "basis": "concrete internal benefit"
-          },
-          {
-            "component": "completion",
-            "points_tenths": 0,
-            "source": "llm",
-            "status": "judged",
-            "basis": "several steps left"
-          },
-          {
-            "component": "change_size",
-            "points_tenths": 0,
-            "source": "not_applicable",
-            "status": "computed",
-            "basis": "no diff"
-          },
-          {
-            "component": "urgency_bonus",
-            "points_tenths": 0,
-            "source": "llm",
-            "status": "judged",
-            "basis": "no confirmed production defect or release blocker"
-          },
-          {
-            "component": "blocked_penalty",
-            "points_tenths": 0,
-            "source": "llm",
-            "status": "judged",
-            "basis": "nothing blocks the next action"
-          },
-          {
-            "component": "default_branch_bonus",
-            "points_tenths": 0,
-            "source": "not_applicable",
-            "status": "computed",
-            "basis": "not a pull request"
-          },
-          {
-            "component": "milestone_bonus",
-            "points_tenths": 0,
-            "source": "computed",
-            "status": "computed",
-            "basis": "no milestone"
-          }
-        ]
-      },
-      "llm": {
-        "why": "Cosmetic contrast issue; you were asked for an opinion only.",
-        "next": "Reply with the contrast token to use; no code needed from you.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
         "inherited": false,

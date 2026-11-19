@@ -72,3 +72,33 @@ fn description_is_a_mention_source_but_not_an_answer() {
     assert_eq!(found[0].url, "https://github.com/acme/app/pull/1");
     assert!(collect(&[description, post("alice", "answered", 2, false)]).is_empty());
 }
+
+#[test]
+fn excluded_authors_and_quoted_lines_are_not_mentions() {
+    assert!(
+        collect(&[
+            post("dependabot", "@alice please", 1, false),
+            post("bob", "  > @alice quoted\nNothing requested", 2, false),
+        ])
+        .is_empty()
+    );
+}
+
+#[test]
+fn newest_own_review_wins_over_earlier_own_comment() {
+    let mut review = post("alice-helper", "reviewed", 4, false);
+    review.url = "https://github.com/acme/app/pull/1#pullrequestreview-4".into();
+    assert!(
+        collect(&[
+            post("alice", "comment", 2, false),
+            post("bob", "@alice please", 3, false),
+            review.clone(),
+        ])
+        .is_empty()
+    );
+    let later = post("bob", "@alice again", 5, false);
+    assert_eq!(
+        collect(&[review, later.clone()])[0].created_at,
+        later.created_at
+    );
+}

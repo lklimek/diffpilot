@@ -153,8 +153,10 @@ token, its hash, other headers and the query string are never logged. Settings s
 
 ### Mentions outside the ranking
 Both dashboard summary and items responses expose `mentions`, independent of the ranked items and their
-filters/pagination. List these as quick replies separately from P0–P3. They are unanswered, unhidden posts
+filters. The items response includes them only on its first page; cursor pages return `[]`. List these as quick replies separately from P0–P3. They are unanswered, unhidden posts
 addressed to a scanned login, oldest first. `is_bot` allows callers to filter automated requests; the browser
 default excludes bots, but the API includes both. `url` opens the mentioning post; `text` is untrusted plain
 text. A later refresh removes a post after any scanned login comments/reviews the item. Read tokens cannot call
 `POST /api/v1/dashboard/mentions/{id}/hide`; this action requires a browser session and CSRF.
+
+Hiding changes the dashboard revision: in-progress item cursors expire (409); reload from the first page.

@@ -66,7 +66,7 @@ export function Headline({ figures, days, weeks, unit, onUnitChange, staleNote }
   return (
     <section
       aria-labelledby={titleId}
-      className="@container grid gap-x-7 gap-y-1 rounded-lg border border-border bg-surface px-5 py-4"
+      className="@container grid gap-x-7 gap-y-1 rounded-lg border border-border bg-surface px-5 py-2"
     >
       <div className="grid gap-x-7 gap-y-3 @min-[820px]:grid-cols-[minmax(250px,320px)_minmax(0,1fr)]">
         <div>

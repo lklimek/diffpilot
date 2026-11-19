@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "mentions": {
-      "description": "All unanswered, unhidden mentions, independent of item filters and pagination.",
+      "description": "Unanswered, unhidden mentions on the first page only; empty on cursor pages.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/Mention"

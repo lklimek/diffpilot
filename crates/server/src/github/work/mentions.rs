@@ -1,8 +1,9 @@
-//! Discussion reads for mentions; PRs reuse their detail query, issues use alias batches.
+//! Bounded conversation windows, isolated from the large ranking detail query.
 
-use super::batch::{PR_BATCH, literal};
+use super::batch::literal;
 use super::{
-    Actor, Comment, Fetched, ItemRef, Nodes, PullDetail, TokenSource, WorkClient, WorkError,
+    Actor, Comment, Fetched, ItemRef, Nodes, ReviewNode, ReviewThread, TokenSource, WorkClient,
+    WorkError,
 };
 use contracts::time::Timestamp;
 use serde::Deserialize;
@@ -23,59 +24,91 @@ pub struct IssueDiscussion {
     pub comments: Nodes<Comment>,
 }
 
+/// Conversation-only PR projection; no checks, timeline, labels or ranking context.
 #[derive(Deserialize)]
-struct RestPost {
-    id: u64,
-    user: Option<RestActor>,
-    #[serde(default)]
-    body: Option<String>,
-    created_at: Option<Timestamp>,
-    submitted_at: Option<Timestamp>,
-}
-#[derive(Deserialize)]
-struct RestActor {
-    login: String,
-    #[serde(rename = "type")]
-    kind: String,
+#[serde(rename_all = "camelCase")]
+pub struct PullDiscussion {
+    /// Drafts by others remain excluded.
+    pub is_draft: bool,
+    /// Description and ordinary comments.
+    #[serde(flatten)]
+    pub issue: IssueDiscussion,
+    /// Submitted reviews.
+    pub reviews: Nodes<ReviewNode>,
+    /// Inline review discussions.
+    pub review_threads: Nodes<ReviewThread>,
 }
 
-fn incomplete<N>(nodes: &Nodes<N>) -> bool {
+/// Missing counts also mean completeness cannot be established.
+pub(crate) fn incomplete<N>(nodes: &Nodes<N>) -> bool {
     nodes
         .total_count
-        .is_some_and(|n| n as usize > nodes.nodes.len())
+        .is_none_or(|n| n as usize != nodes.nodes.len())
 }
 
+impl PullDiscussion {
+    /// All comments and submitted reviews, only when every window is complete.
+    pub fn posts(&self) -> Option<Vec<Comment>> {
+        if incomplete(&self.issue.comments)
+            || incomplete(&self.reviews)
+            || incomplete(&self.review_threads)
+            || self
+                .review_threads
+                .nodes
+                .iter()
+                .any(|t| incomplete(&t.comments))
+        {
+            return None;
+        }
+        let mut posts = self.issue.comments.nodes.clone();
+        posts.extend(self.reviews.nodes.iter().filter_map(|r| {
+            Some(Comment {
+                author: r.author.clone(),
+                body: r.body.clone(),
+                created_at: r.submitted_at?,
+                url: r.url.clone(),
+            })
+        }));
+        posts.extend(
+            self.review_threads
+                .nodes
+                .iter()
+                .flat_map(|t| t.comments.nodes.iter().cloned()),
+        );
+        Some(posts)
+    }
+}
+
+const DISCUSSION: &str = "state body createdAt author { __typename login } \
+comments(last: 50) { totalCount nodes { author { __typename login } body createdAt url } }";
+const REVIEWS: &str = "reviews(last: 20) { totalCount nodes { author { __typename login } state submittedAt body url } } \
+reviewThreads(first: 20) { totalCount nodes { isResolved isOutdated \
+comments(first: 5) { totalCount nodes { author { __typename login } body createdAt url } } } }";
+
 impl<T: TokenSource> WorkClient<T> {
-    /// Issues with their last 50 comments; any older comments are read only when needed.
+    /// One bounded query per issue; no REST refills or batch-split amplification.
     pub async fn issue_discussions(
         &self,
         items: &[ItemRef],
     ) -> Result<Fetched<IssueDiscussion>, WorkError> {
-        let answers = self.batched(items, PR_BATCH, "", |item| format!(
-            "repository(owner: {}, name: {}) {{ issue(number: {}) {{ state body createdAt author {{ __typename login }} comments(last: 50) {{ totalCount nodes {{ author {{ __typename login }} body createdAt url }} }} }} }}",
-            literal(&item.repo.owner), literal(&item.repo.name), item.number
-        )).await?;
+        let answers = self
+            .batched(items, 1, "", |item| {
+                format!(
+                    "repository(owner: {}, name: {}) {{ issue(number: {}) {{ {DISCUSSION} }} }}",
+                    literal(&item.repo.owner),
+                    literal(&item.repo.name),
+                    item.number
+                )
+            })
+            .await?;
         let mut result = Fetched::default();
         for (item, value) in answers.resolved {
             match serde_json::from_value::<IssueDiscussion>(value["issue"].clone()) {
-                Ok(mut discussion) => {
-                    if incomplete(&discussion.comments) {
-                        match self
-                            .discussion_posts(&item, "issues", "comments", "issuecomment")
-                            .await
-                        {
-                            Ok(posts) => discussion.comments.nodes = posts,
-                            Err(e) if e.ends_refresh() => return Err(e),
-                            Err(_) => {
-                                result.notes.push(super::note(format!("The complete discussion of {item} could not be read; its mentions are omitted"), item.issue_key()));
-                                continue;
-                            }
-                        }
-                    }
+                Ok(discussion) if !incomplete(&discussion.comments) => {
                     result.found.insert(item, discussion);
                 }
-                Err(_) => result.notes.push(super::note(
-                    format!("The discussion of {item} could not be read; its mentions are omitted"),
+                _ => result.notes.push(super::note(
+                    format!("The discussion of {item} is incomplete; its mentions are omitted"),
                     item.issue_key(),
                 )),
             }
@@ -89,92 +122,46 @@ impl<T: TokenSource> WorkClient<T> {
         Ok(result)
     }
 
-    /// All posts of a PR, refilling only truncated connections; leaves ranking facts untouched.
-    pub async fn pull_discussion(
+    /// One bounded query per mentioned PR, independently of Q2.
+    pub async fn pull_discussions(
         &self,
-        item: &ItemRef,
-        detail: &PullDetail,
-    ) -> Result<Vec<Comment>, WorkError> {
-        let mut posts = if incomplete(&detail.comments) {
-            self.discussion_posts(item, "issues", "comments", "issuecomment")
-                .await?
-        } else {
-            detail.comments.nodes.clone()
-        };
-        if incomplete(&detail.reviews) {
-            posts.extend(
-                self.discussion_posts(item, "pulls", "reviews", "pullrequestreview")
-                    .await?,
-            );
-        } else {
-            posts.extend(detail.reviews.nodes.iter().filter_map(|r| {
-                Some(Comment {
-                    author: r.author.clone(),
-                    body: r.body.clone(),
-                    created_at: r.submitted_at?,
-                    url: r.url.clone(),
-                })
-            }));
+        items: &[ItemRef],
+    ) -> Result<Fetched<PullDiscussion>, WorkError> {
+        let answers = self.batched(items, 1, "", |item| format!(
+            "repository(owner: {}, name: {}) {{ pullRequest(number: {}) {{ isDraft {DISCUSSION} {REVIEWS} }} }}",
+            literal(&item.repo.owner), literal(&item.repo.name), item.number
+        )).await?;
+        let mut result = Fetched::default();
+        for (item, value) in answers.resolved {
+            match serde_json::from_value::<PullDiscussion>(value["pullRequest"].clone()) {
+                Ok(discussion) => {
+                    result.found.insert(item, discussion);
+                }
+                Err(_) => result.notes.push(super::note(
+                    format!("The discussion of {item} could not be read; its mentions are omitted"),
+                    item.pr_key(),
+                )),
+            }
         }
-        if incomplete(&detail.review_threads)
-            || detail
-                .review_threads
-                .nodes
-                .iter()
-                .any(|t| incomplete(&t.comments))
-        {
-            posts.extend(
-                self.discussion_posts(item, "pulls", "comments", "discussion_r")
-                    .await?,
-            );
-        } else {
-            posts.extend(
-                detail
-                    .review_threads
-                    .nodes
-                    .iter()
-                    .flat_map(|t| t.comments.nodes.iter().cloned()),
-            );
+        for item in answers.failed {
+            result.notes.push(super::note(
+                format!("The discussion of {item} could not be read; its mentions are omitted"),
+                item.pr_key(),
+            ));
         }
-        Ok(posts)
+        Ok(result)
     }
 
-    async fn discussion_posts(
-        &self,
-        item: &ItemRef,
-        group: &str,
-        connection: &str,
-        anchor: &str,
-    ) -> Result<Vec<Comment>, WorkError> {
-        let path = format!(
-            "repos/{}/{}/{group}/{}/{connection}",
-            item.repo.owner, item.repo.name, item.number
-        );
-        let posts: Vec<RestPost> = self.rest_pages(&path, &[], usize::MAX).await?;
-        Ok(posts
-            .into_iter()
-            .filter_map(|p| {
-                Some(Comment {
-                    author: p.user.map(|u| Actor {
-                        login: Some(u.login),
-                        typename: u.kind,
-                    }),
-                    body: p.body.unwrap_or_default(),
-                    created_at: if connection == "reviews" {
-                        p.submitted_at?
-                    } else {
-                        p.created_at?
-                    },
-                    url: format!(
-                        "https://github.com/{}/{}/pull/{}#{anchor}{}{}",
-                        item.repo.owner,
-                        item.repo.name,
-                        item.number,
-                        if anchor == "discussion_r" { "" } else { "-" },
-                        p.id
-                    ),
-                })
-            })
-            .collect())
+    /// A bounded ownership read for a mention-only PR (100 files, one page).
+    pub async fn mention_files(&self, item: &ItemRef) -> Result<Vec<super::PullFile>, WorkError> {
+        self.rest_pages(
+            &format!(
+                "repos/{}/{}/pulls/{}/files",
+                item.repo.owner, item.repo.name, item.number
+            ),
+            &[],
+            100,
+        )
+        .await
     }
 }

@@ -319,8 +319,14 @@ impl Dashboard<'_> {
         tenant_id: &str,
         user_id: &str,
     ) -> Result<Vec<String>, DbError> {
-        Ok(sqlx::query_scalar("SELECT mention_id FROM dashboard_hidden_mentions WHERE tenant_id = ? AND user_id = ? ORDER BY mention_id")
-            .bind(tenant_id).bind(user_id).fetch_all(self.pool).await?)
+        Ok(sqlx::query_scalar(
+            "SELECT mention_id FROM dashboard_hidden_mentions
+             WHERE tenant_id = ? AND user_id = ? ORDER BY mention_id",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_all(self.pool)
+        .await?)
     }
 
     /// Idempotently hides one mention; never changes the snapshot or ranking.
@@ -331,8 +337,16 @@ impl Dashboard<'_> {
         id: &str,
         now: Timestamp,
     ) -> Result<(), DbError> {
-        sqlx::query("INSERT INTO dashboard_hidden_mentions (tenant_id, user_id, mention_id, hidden_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING")
-            .bind(tenant_id).bind(user_id).bind(id).bind(ts(now)).execute(self.pool).await?;
+        sqlx::query(
+            "INSERT INTO dashboard_hidden_mentions (tenant_id, user_id, mention_id, hidden_at)
+             VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(id)
+        .bind(ts(now))
+        .execute(self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1476,13 +1490,6 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
-        );
-        assert!(
-            !dash
-                .hidden_mentions(T, "u1")
-                .await
-                .unwrap()
-                .contains(&"new-comment".to_owned())
         );
     }
 

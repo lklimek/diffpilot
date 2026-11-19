@@ -1218,69 +1218,127 @@ async fn pr_mention_search_and_enumeration_find_comment_only_candidates() {
 }
 
 #[tokio::test]
-async fn truncated_pr_discussion_reads_all_comments_and_submitted_reviews() {
+async fn truncated_pr_discussion_is_omitted_without_rest_refills() {
     let fake = Fake::start().await;
-    let item = item("acme/platform#1203");
-    let mut detail = fake
+    let key = item("acme/platform#1203");
+    let mut discussion = fake
         .client()
-        .pull_requests(std::slice::from_ref(&item))
+        .pull_discussions(std::slice::from_ref(&key))
         .await
         .unwrap()
         .found
-        .remove(&item)
+        .remove(&key)
         .unwrap();
-    detail.comments.total_count = Some(100);
-    detail.reviews.total_count = Some(100);
-    detail.review_threads.total_count = Some(100);
-    let mock = MockServer::start().await;
-    for (group, connection, extra) in [
-        (
-            "issues",
-            "comments",
-            json!({"created_at": "2026-11-18T08:00:00Z"}),
-        ),
-        (
-            "pulls",
-            "reviews",
-            json!({"submitted_at": "2026-11-18T08:30:00Z"}),
-        ),
-        (
-            "pulls",
-            "comments",
-            json!({"created_at": "2026-11-18T08:40:00Z"}),
-        ),
-    ] {
-        let mut post = json!({"id": 123, "user": {"login": "alice-helper", "type": "User"}, "body": "answered"});
-        post.as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        Mock::given(method("GET"))
-            .and(path(format!(
-                "/repos/acme/platform/{group}/1203/{connection}"
-            )))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!([post])))
-            .expect(1)
-            .mount(&mock)
-            .await;
-    }
-    let posts = mock_client(&mock)
-        .pull_discussion(&item, &detail)
+    assert!(discussion.posts().is_some());
+    discussion.issue.comments.total_count = Some(100);
+    assert!(discussion.posts().is_none());
+    assert!(fake.requests_on("issue_comments").await.is_empty());
+}
+
+#[tokio::test]
+async fn mention_query_is_light_and_q2_excludes_review_bodies() {
+    let fake = Fake::start().await;
+    let key = item("acme/platform#1203");
+    let details = fake
+        .client()
+        .pull_requests(std::slice::from_ref(&key))
         .await
         .unwrap();
-    assert_eq!(posts.len(), 3);
-    assert_eq!(
-        posts
-            .iter()
-            .map(|p| p.created_at)
-            .max()
-            .unwrap()
-            .to_string(),
-        "2026-11-18T08:40:00Z"
-    );
     assert!(
-        posts
+        details.found[&key]
+            .reviews
+            .nodes
             .iter()
-            .any(|p| p.url.ends_with("#pullrequestreview-123"))
+            .all(|r| r.body.is_empty())
+    );
+    let discussion = fake.client().pull_discussions(&[key]).await.unwrap();
+    assert_eq!(discussion.found.len(), 1);
+}
+
+#[tokio::test]
+async fn mention_conversation_budget_never_reads_more_than_forty_items() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"data":{"a0":{"pullRequest":null}}})),
+        )
+        .expect(40)
+        .mount(&mock)
+        .await;
+    let mut candidates = Candidates::default();
+    for n in 1..=45 {
+        candidates.add_pr(
+            ItemRef::new("acme", "app", n).unwrap(),
+            "Mention",
+            "",
+            "alice",
+            PrRelation::Mentioned,
+        );
+    }
+    let settings = contracts::api::dashboard::DashboardSettings::default();
+    let (mentions, notes) = crate::dashboard::refresh::mentions::collect(
+        &mock_client(&mock),
+        &crate::dashboard::score::ScoreRules::new("alice", &settings),
+        &["alice".into()],
+        &candidates,
+        &Default::default(),
+        &settings,
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert!(mentions.is_empty());
+    assert!(notes.iter().any(|n| n.text.contains("limited to 40")));
+    mock.verify().await;
+}
+
+#[tokio::test]
+async fn mention_search_cap_has_a_note_and_never_fetches_the_next_page() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"total_count":0,"items":[]})))
+        .with_priority(10)
+        .expect(3)
+        .mount(&mock)
+        .await;
+    let items: Vec<_> = (1..=100)
+        .map(|number| {
+            json!({
+                "number":number,"title":"Mention","html_url":"https://github.com/acme/app/pull/1",
+                "repository_url":"https://api.github.com/repos/acme/app",
+                "created_at":"2026-11-18T08:00:00Z","updated_at":"2026-11-18T08:00:00Z"
+            })
+        })
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/search/issues"))
+        .and(query_param_contains("q", "mentions:alice"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header(
+                    "link",
+                    "<https://api.github.com/search/issues?page=2>; rel=\"next\"",
+                )
+                .set_body_json(json!({"total_count":101,"items":items})),
+        )
+        .with_priority(1)
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let mut client = mock_client(&mock);
+    client.search_interval = Duration::ZERO;
+    let result = client
+        .search_pull_requests(&["alice".into()])
+        .await
+        .unwrap();
+    assert_eq!(result.candidates.pull_requests.len(), 100);
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|n| n.text.contains("100") && n.text.contains("mention"))
     );
     mock.verify().await;
 }

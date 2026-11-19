@@ -48,7 +48,7 @@ pub(crate) fn unanswered(
                 .as_ref()
                 .and_then(|a| a.login.as_deref())
                 .unwrap_or("ghost");
-            if rules.is_scanned(author) {
+            if rules.is_scanned(author) || rules.is_skipped_author(author) {
                 return None;
             }
             let anchor = safe_anchor(&post.url)?;
@@ -122,81 +122,4 @@ pub(crate) fn body(
         created_at,
         url: "#body".to_owned(),
     }
-}
-
-/// Collects mentions before mention-only candidates are removed from the ranked snapshot.
-pub(crate) async fn collect<T: crate::github::work::TokenSource>(
-    client: &crate::github::work::WorkClient<T>,
-    rules: &ScoreRules,
-    logins: &[String],
-    candidates: &crate::github::work::Candidates,
-    details: &std::collections::BTreeMap<ItemRef, crate::github::work::PullDetail>,
-) -> Result<(Vec<Mention>, Vec<contracts::api::dashboard::ScanNote>), crate::github::work::WorkError>
-{
-    let mut found = Vec::new();
-    let mut notes = Vec::new();
-    for (item, detail) in details {
-        let mut posts = match client.pull_discussion(item, detail).await {
-            Ok(posts) => posts,
-            Err(e) if e.ends_refresh() => return Err(e),
-            Err(_) => {
-                notes.push(contracts::api::dashboard::ScanNote { text: format!("The complete discussion of {item} could not be read; its mentions are omitted"), item: item.pr_key() });
-                continue;
-            }
-        };
-        posts.push(body(detail.author.clone(), &detail.body, detail.created_at));
-        found.extend(unanswered(
-            rules,
-            logins,
-            item,
-            GithubKind::Pr,
-            &detail.title,
-            &posts,
-        ));
-    }
-    let missing: Vec<_> = candidates
-        .issues
-        .iter()
-        .filter(|(_, issue)| issue.discussion.is_none())
-        .map(|(item, _)| item.clone())
-        .collect();
-    let issues = client.issue_discussions(&missing).await?;
-    notes.extend(issues.notes);
-    let discussions = candidates
-        .issues
-        .iter()
-        .filter_map(|(item, issue)| {
-            issue
-                .discussion
-                .clone()
-                .map(|discussion| (item.clone(), discussion))
-        })
-        .chain(issues.found);
-    for (item, mut discussion) in discussions {
-        if discussion.state != "OPEN" {
-            continue;
-        }
-        discussion.comments.nodes.push(body(
-            discussion.author,
-            &discussion.body,
-            discussion.created_at,
-        ));
-        if let Some(candidate) = candidates.issues.get(&item) {
-            found.extend(unanswered(
-                rules,
-                logins,
-                &item,
-                GithubKind::Issue,
-                &candidate.title,
-                &discussion.comments.nodes,
-            ));
-        }
-    }
-    found.sort_by(|a, b| {
-        a.created_at
-            .cmp(&b.created_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    found.dedup_by(|a, b| a.id == b.id);
-    Ok((found, notes))
 }

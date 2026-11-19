@@ -13,27 +13,38 @@ test.describe("My work (msw)", () => {
   test("mentions: three rows, bot preference, hide, count, keyboard and narrow themes", async ({ page }) => {
     await page.goto("/?dashboard=mentions");
     const strip = page.getByRole("region", { name: "Mentions" });
+    await expect(strip.getByRole("link")).toHaveCount(0);
+    await strip.getByRole("button", { name: "Mentions (4)" }).click();
     await expect(strip.getByRole("link")).toHaveCount(3);
     await expect(page.locator("[data-nav-count]")).toHaveText("4");
     await strip.getByRole("button", { name: "+1 more" }).click();
     await expect(strip.getByRole("link")).toHaveCount(4);
-    await strip.getByRole("checkbox", { name: "with bots" }).check();
-    await expect(strip.getByText("bot", { exact: true })).toBeVisible();
+    await strip.getByRole("button", { name: "with bots", exact: true }).click();
+    await expect(strip.getByText(/· bot/)).toBeVisible();
     await expect(page.locator("[data-nav-count]")).toHaveText("4");
     await page.reload();
-    await expect(strip.getByRole("checkbox", { name: "with bots" })).toBeChecked();
+    await expect(strip.getByRole("button", { name: "with bots", exact: true })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     await strip
       .getByRole("button", { name: /Hide mention/ })
       .first()
       .focus();
     await page.keyboard.press("Enter");
     await expect(page.locator("[data-nav-count]")).toHaveText("3");
+    await expect(
+      page.getByRole("link", { name: "My work, 3 unanswered mentions from people" }),
+    ).toBeVisible();
+    await page.getByRole("link", { name: "My work, 3 unanswered mentions from people" }).hover();
+    await expect(page.getByRole("tooltip", { name: "3 unanswered mentions from people" })).toBeVisible();
     for (const colorScheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme });
       await page.setViewportSize({ width: 390, height: 844 });
       await expect(strip).toBeVisible();
       const width = await strip.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
       expect(width.scroll).toBeLessThanOrEqual(width.client);
+      expect((await strip.getByRole("listitem").first().boundingBox())!.height).toBeLessThanOrEqual(48);
       await expectAccessible(page);
     }
   });
@@ -49,7 +60,7 @@ test.describe("My work (msw)", () => {
     await expect(
       page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /My work/ }),
     ).toHaveAttribute("aria-current", "page");
-    await expect(page.locator("[data-nav-count]")).toHaveText("0");
+    await expect(page.locator("[data-nav-count]")).toHaveText("1");
     await expect(main(page).getByText("fix(sync): retry header fetch after peer timeout")).toBeVisible();
     // Every kind on at first: pull requests, issues and TODOs.
     await expect(main(page).getByText("Wallet balance shows a stale value after a reorg")).toBeVisible();
@@ -177,19 +188,19 @@ test.describe("My work (msw)", () => {
     // Into the scripted ranking (steps 5–6); time stands still there until the next jump.
     await page.clock.runFor(5.5 * SCRIPT_STEP_MS);
     await settle(page, async (quick) => {
-      await quick(page.getByText(/Ranking with the LLM: \d+ of 14 items judged\./)).toBeVisible();
+      await quick(page.getByText(/Ranking with the LLM: \d+ of 13 items judged\./)).toBeVisible();
       await quick(main(page).getByText("Not judged yet", { exact: true })).toBeVisible();
     });
     await page.clock.runFor(2 * SCRIPT_STEP_MS);
     await settle(page, async (quick) => {
-      await quick(page.getByText("Ranking finished: 14 items judged.")).toBeVisible();
+      await quick(page.getByText("Ranking finished: 13 items judged.")).toBeVisible();
       await quick(page.getByText(/Ranking with the LLM/)).toHaveCount(0);
     });
   });
 
   test("provisional and waiting for the review analysis", async ({ page }) => {
     await open(page, "provisional");
-    await expect(page.getByText("Ranking with the LLM: 10 of 14 items judged.")).toBeVisible();
+    await expect(page.getByText("Ranking with the LLM: 10 of 13 items judged.")).toBeVisible();
     await expect(main(page).getByText("fix(ui): restore the focus ring on tabs")).toBeVisible();
     await open(page, "waiting");
     await expect(page.getByText("Waiting for the review analysis to finish.")).toBeVisible();
@@ -204,7 +215,7 @@ test.describe("My work (msw)", () => {
     await page.getByRole("button", { name: "Retry ranking" }).click();
     await settle(page, (quick) => quick(page.getByText(/Ranking with the LLM/)).toBeVisible());
     await page.clock.runFor(2.5 * SCRIPT_STEP_MS);
-    await settle(page, (quick) => quick(page.getByText("Ranking finished: 14 items judged.")).toBeVisible());
+    await settle(page, (quick) => quick(page.getByText("Ranking finished: 13 items judged.")).toBeVisible());
   });
 
   test("MemCan unreachable: each kept TODO row says it was not refreshed, with a tooltip", async ({
@@ -381,4 +392,17 @@ test.describe("review start from a PR row (msw)", () => {
     await expect(page.getByLabel(/pull request URL/i)).toHaveValue(PR_URL);
     await expect(page.getByText("The PR has moved.")).toBeVisible();
   });
+});
+
+test("failed mention hide keeps the row and count and shows a retry message", async ({ page }) => {
+  await page.goto("/?dashboard=mention-hide-fails");
+  const strip = page.getByRole("region", { name: "Mentions" });
+  await strip.getByRole("button", { name: "Mentions (4)" }).click();
+  await strip
+    .getByRole("button", { name: /Hide mention/ })
+    .first()
+    .click();
+  await expect(page.getByText(/Could not hide this mention. Try again./)).toBeVisible();
+  await expect(strip.getByRole("link")).toHaveCount(3);
+  await expect(page.locator("[data-nav-count]")).toHaveText("4");
 });

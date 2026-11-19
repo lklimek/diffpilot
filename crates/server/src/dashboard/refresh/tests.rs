@@ -167,7 +167,7 @@ async fn github_gate(State(gate): State<Arc<Gate>>, request: Request, next: Next
     next.run(request).await
 }
 
-async fn spawn_github(gate: Arc<Gate>) -> String {
+async fn spawn_github(gate: Arc<Gate>, fixture: PathBuf) -> String {
     let config = fake_github::Config {
         fixture_dir: repo_root().join("fixtures/pr-482/github"),
         app_url: Url::parse("https://review.example.test").expect("url"),
@@ -175,7 +175,7 @@ async fn spawn_github(gate: Arc<Gate>) -> String {
         user_id: None,
         app_id: None,
         app_public_key_file: None,
-        dashboard_fixture_dir: Some(repo_root().join("fixtures/dashboard/github")),
+        dashboard_fixture_dir: Some(fixture),
         dashboard_world_at: None,
     };
     let router = fake_github::router(&config)
@@ -440,12 +440,21 @@ async fn add_user(state: &AppState, user_id: &str, login: &str, github_id: i64, 
 }
 
 async fn world_with(ranker: Arc<dyn Ranker>, scan_limit: Duration) -> World {
+    world_in(
+        ranker,
+        scan_limit,
+        repo_root().join("fixtures/dashboard/github"),
+    )
+    .await
+}
+
+async fn world_in(ranker: Arc<dyn Ranker>, scan_limit: Duration, fixture: PathBuf) -> World {
     let _ = tracing_subscriber::fmt()
         .with_test_writer()
         .with_env_filter("warn,server=debug")
         .try_init();
     let gate = Arc::new(Gate::default());
-    let github = spawn_github(Arc::clone(&gate)).await;
+    let github = spawn_github(Arc::clone(&gate), fixture).await;
     let todos = FakeTodos::start().await;
     let mut config = test_config();
     config.github.api_url = Url::parse(&github).expect("url");
@@ -504,7 +513,7 @@ impl World {
             .method(method)
             .uri(uri)
             .header("cookie", cookie);
-        if method != "GET" {
+        if method != "GET" && !extra.iter().any(|(name, _)| *name == "x-csrf-token") {
             request = request.header("x-csrf-token", "csrf");
         }
         for (name, value) in extra {
@@ -1893,4 +1902,148 @@ async fn mentions_stay_outside_ranking_and_hide_is_scoped_and_token_readable() {
             .iter()
             .any(|m| m.id == mention.id)
     );
+}
+
+#[tokio::test]
+async fn mention_only_prs_search_and_enumeration_honor_exclusions_and_hide_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let file = dir.path().join("pull-requests.json");
+    let mut prs: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let template = prs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["number"] == 320)
+        .unwrap()
+        .clone();
+    for (number, author, commenter, text) in [
+        (321, "bob", "carol", "@alice please"),
+        (322, "bob", "carol", "@alice-helper please"),
+        (323, "dependabot", "carol", "@alice please"),
+        (324, "bob", "dependabot", "@alice please"),
+        (325, "bob", "carol", "> @alice quoted"),
+        (326, "bob", "KNOWN", "@alice please"),
+    ] {
+        let mut pr = template.clone();
+        pr["number"] = json!(number);
+        pr["author"] = json!({"__typename":"User", "login":author});
+        pr["reviewRequests"] = json!({"nodes":[]});
+        pr["assignees"] = json!({"nodes":[]});
+        pr["reviews"] = json!({"nodes":[]});
+        pr["reviewThreads"] = json!({"nodes":[]});
+        pr["body"] = json!("");
+        pr["comments"] = json!({"nodes":[
+            {"author":{"__typename":"User","login":commenter},"body":text,"createdAt":"2026-11-18T08:30:00Z"},
+            {"author":{"__typename":"User","login":commenter},"body":text,"createdAt":"2026-11-18T08:40:00Z"}
+        ]});
+        prs.as_array_mut().unwrap().push(pr);
+    }
+    // Existing files are minor in the ownership policy; a mention is not a directed review request.
+    let owned = prs
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|p| p["number"] == 1203)
+        .unwrap();
+    owned["reviewRequests"] = json!({"nodes":[]});
+    owned["body"] = json!("@alice please");
+    std::fs::write(&file, serde_json::to_vec(&prs).unwrap()).unwrap();
+    let w = world_in(
+        Arc::new(NoopRanker),
+        Duration::from_secs(120),
+        dir.path().to_owned(),
+    )
+    .await;
+    let mut configured = settings();
+    configured.known_bots.push("known".into());
+    w.state
+        .db
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, "u1", &configured, now())
+        .await
+        .unwrap();
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let before = w.summary(ALICE).await;
+    for number in [321, 322] {
+        assert_eq!(
+            before
+                .mentions
+                .iter()
+                .filter(|m| m.number == number)
+                .count(),
+            2
+        );
+        assert!(
+            !w.items("")
+                .await
+                .items
+                .iter()
+                .any(|i| i.number == Some(number))
+        );
+    }
+    assert_eq!(
+        before
+            .mentions
+            .iter()
+            .filter(|m| m.number == 326 && m.is_bot)
+            .count(),
+        2
+    );
+    for number in [323, 324, 325, 1203] {
+        assert!(
+            !before.mentions.iter().any(|m| m.number == number),
+            "excluded {number}"
+        );
+    }
+    let old = before.mentions.iter().find(|m| m.number == 321).unwrap();
+    let newer = before
+        .mentions
+        .iter()
+        .find(|m| m.number == 321 && m.created_at > old.created_at)
+        .unwrap();
+    let uri = format!("/api/v1/dashboard/mentions/{}/hide", old.id);
+    let no_csrf = api::router(w.state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(&uri)
+                .header("cookie", ALICE)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(no_csrf.status(), StatusCode::FORBIDDEN);
+
+    assert_eq!(
+        w.send("POST", &uri, ALICE, &[("x-csrf-token", "wrong")])
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert!(
+        w.summary(ALICE)
+            .await
+            .mentions
+            .iter()
+            .any(|m| m.id == old.id)
+    );
+    assert_eq!(
+        w.send("POST", &uri, ALICE, &[]).await.status,
+        StatusCode::NO_CONTENT
+    );
+    w.refreshed().await;
+    let after = w.summary(ALICE).await;
+    assert!(!after.mentions.iter().any(|m| m.id == old.id));
+    assert!(after.mentions.iter().any(|m| m.id == newer.id));
+    let first = w.items("?limit=1").await;
+    assert!(!first.mentions.is_empty());
+    let second = w
+        .items(&format!("?limit=1&cursor={}", first.next_cursor.unwrap()))
+        .await;
+    assert!(second.mentions.is_empty());
 }

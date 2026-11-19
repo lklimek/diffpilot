@@ -141,7 +141,12 @@ struct RepoAuthored {
 /// `@login` in `text`, not part of a longer login or an e-mail address (case-insensitive).
 pub(crate) fn mentions(text: &str, login: &str) -> bool {
     let word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
-    let lower = text.to_ascii_lowercase();
+    let lower = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('>'))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_ascii_lowercase();
     let wanted = format!("@{}", login.to_ascii_lowercase());
     lower.match_indices(&wanted).any(|(at, _)| {
         let before = lower[..at].chars().next_back();

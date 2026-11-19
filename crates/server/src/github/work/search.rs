@@ -2,6 +2,8 @@
 //! login GitHub search refuses is reported as unsearchable (enumeration fallback, Q11).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
+use tokio::time::{Instant, timeout};
 
 use contracts::api::dashboard::ScanNote;
 use contracts::time::Timestamp;
@@ -64,6 +66,23 @@ pub struct PrCandidate {
     pub url: String,
     /// Relations per scanned login.
     pub relations: BTreeMap<String, BTreeSet<PrRelation>>,
+}
+
+impl PrCandidate {
+    /// Has a ranking relation beyond mention discovery.
+    pub fn ranked(&self) -> bool {
+        self.relations
+            .values()
+            .flatten()
+            .any(|r| *r != PrRelation::Mentioned)
+    }
+
+    /// At least one scanned login was mentioned.
+    pub fn mentioned(&self) -> bool {
+        self.relations
+            .values()
+            .any(|r| r.contains(&PrRelation::Mentioned))
+    }
 }
 
 /// An open issue found by search or enumeration.
@@ -302,6 +321,7 @@ impl<T: TokenSource> WorkClient<T> {
     /// with a note (it never reaches `q`).
     pub async fn search_pull_requests(&self, logins: &[String]) -> Result<PrSearch, WorkError> {
         let mut found = PrSearch::default();
+        let mut mention_budget = Duration::from_secs(15);
         for login in logins {
             if !valid_login(login) {
                 found.notes.push(invalid_login(login));
@@ -313,7 +333,27 @@ impl<T: TokenSource> WorkClient<T> {
                     relation.qualifier()
                 );
                 let what = format!("pull requests of {login}");
-                let page = match self.search::<SearchItem>(&q).await {
+                let read = if relation == PrRelation::Mentioned {
+                    let started = Instant::now();
+                    let read =
+                        timeout(mention_budget, self.search_capped::<SearchItem>(&q, 100)).await;
+                    mention_budget = mention_budget.saturating_sub(started.elapsed());
+                    match read {
+                        Ok(read) => read,
+                        Err(_) => {
+                            found.notes.push(note(
+                                "PR mention search exceeded its 15-second budget; \
+                                 some mentions may be missing"
+                                    .into(),
+                                None,
+                            ));
+                            continue;
+                        }
+                    }
+                } else {
+                    self.search::<SearchItem>(&q).await
+                };
+                let page = match read {
                     Ok(page) => page,
                     Err(WorkError::Unsearchable) => {
                         tracing::info!(
@@ -330,6 +370,15 @@ impl<T: TokenSource> WorkClient<T> {
                     }
                 };
                 found.answered += 1;
+                if relation == PrRelation::Mentioned && page.total_count > 100 {
+                    found.notes.push(note(
+                        format!(
+                            "Only the first 100 PR mention matches for {login} were read; \
+                                 remaining matches are omitted"
+                        ),
+                        None,
+                    ));
+                }
                 found.notes.extend(cut_short(&what, &page));
                 for item in page.items {
                     if let Some(key) = item.item() {

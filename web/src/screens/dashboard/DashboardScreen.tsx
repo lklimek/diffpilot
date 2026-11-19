@@ -81,7 +81,7 @@ export function DashboardScreen() {
   );
 
   const main = view && summary && (
-    <div className="grid content-start gap-3.5">
+    <div className="grid content-start gap-2">
       <div>
         <h1 className="text-[22px] font-bold">My work</h1>
         <p className="text-muted">
@@ -144,11 +144,15 @@ export function DashboardScreen() {
         withBots={page.withBots}
         onWithBotsChange={page.setWithBots}
         onHide={(id) => page.hideMention.mutate(id)}
-        hiding={page.hideMention.isPending}
+        hidingIds={page.hideMention.pendingIds}
+        expanded={page.mentionsExpanded}
+        onExpandedChange={page.setMentionsExpanded}
         now={now}
       />
       {page.hideMention.isError && (
-        <StatusMessage kind="error">{errorText(page.hideMention.error)}</StatusMessage>
+        <StatusMessage kind="error">
+          Could not hide this mention. Try again. {errorText(page.hideMention.error)}
+        </StatusMessage>
       )}
       {snapshot && view.empty && (
         <EmptyWork

@@ -80,16 +80,20 @@ Owner-approved. My work has a compact Mentions strip above Needs you, outside P0
 Discovery adds `mentions:<login>` to open-PR searches and body/comment matching to PR enumeration. Mention-only
 PRs and issues never enter the ranked snapshot; issues also assigned or in watched repositories remain ranked.
 A post counts while newer than every scanned login's latest comment or submitted review on that item. The
-scan reuses PR details and complete enumerated issue discussions, batching the remaining issues; truncated PR/issue connections are refilled only for
-mention detection. Failed complete reads omit that item's mentions with a scan note rather than inventing an
+scan uses a separate lightweight PR conversation query and reuses complete enumerated issue discussions.
+Q2's selection and batch size are unchanged. Only Mentioned candidates get conversation reads; the explicit
+request/time/window budgets are in plan §K. Truncated conversations are omitted with a scan note. Failed complete reads omit that item's mentions with a scan note rather than inventing an
 unanswered state. Enumeration retains the documented body + last 50 conversation comments discovery window.
 
 Each post has a stable identity derived from item key and GitHub anchor. Migration 0011 stores hides per tenant,
 user and identity, independently of refresh history. A later post has a different identity. Session + CSRF is
 required to hide; read tokens receive the same unanswered, unhidden posts with bot classification. Both read
-responses expose `mentions`; they are independent of item filters, cursor pagination and ranking.
+responses expose `mentions`; they are independent of item filters and ranking; items cursor pages return an empty list.
 
 The browser initially excludes bots (GitHub Bot type, `[bot]` suffix or the user's known bots), remembers its
-choice in `sr.dashboard.mentions.with-bots`, shows three oldest posts and expands the rest with “+N more”. The
+choice in `sr.dashboard.mentions.with-bots`. The strip starts collapsed to a one-line count and remembers
+expansion in `sr.dashboard.mentions.expanded`; expanded, it shows three oldest posts (two lines each) and
+expands the rest with “+N more”. Excluded authors and ownership rules also apply to mentions; quoted lines
+do not count. Bots-only lists explain the active filter. The
 navigation count counts only unhidden human mentions. All external text stays plain text;
 GitHub links are rebuilt from validated repository/number and a fixed post-anchor grammar.

@@ -106,7 +106,7 @@ const SCENARIOS = {
     const started_at = new Date(LOADED - 47_000).toISOString();
     return { summary: { ...SUMMARY, latest_refresh: { ...SCANNING, started_at } }, items: ITEMS };
   },
-  /** The scan finished at 09:24; the LLM ranks (10 of 14); changed and new items are provisional. */
+  /** The scan finished at 09:24; the LLM ranks (10 of 13); changed and new items are provisional. */
   provisional: () => ranking("running"),
   /** As provisional, but the ranking waits for a review analysis holding the LLM credential. */
   waiting: () => ranking("waiting_for_analysis"),
@@ -119,6 +119,7 @@ const SCENARIOS = {
     return {
       summary: {
         ...SUMMARY,
+        mentions: [],
         revision: "r-1029-empty",
         snapshot: { ...SUMMARY.snapshot!, item_counts: zero, checked: { pr: 38, issue: 21, todo: 29 } },
       },
@@ -157,9 +158,13 @@ const SCENARIOS = {
     summary: { ...SUMMARY, mentions: MENTIONS },
     items: { ...ITEMS, mentions: MENTIONS },
   }),
+  "mention-hide-fails": (): Base => ({
+    summary: { ...SUMMARY, mentions: MENTIONS },
+    items: { ...ITEMS, mentions: MENTIONS },
+  }),
   /** No refresh yet: no snapshot, no items. */
   "first-run": (): Base => ({
-    summary: { ...SUMMARY, revision: "r-none", latest_refresh: null, snapshot: null },
+    summary: { ...SUMMARY, mentions: [], revision: "r-none", latest_refresh: null, snapshot: null },
     items: { mentions: [], revision: "r-none", items: [], next_cursor: null },
   }),
   /** First dashboard visit: no time zone stored, so the schedule cannot run yet (R6b stores it). */
@@ -277,11 +282,17 @@ function scripted(r: Run, now: number): RefreshStatus {
     ...b,
     state: done ? "finished" : "ranking",
     percent: 100,
-    steps: stepsAt(done ? 7 : 6, null, judged, 14),
+    steps: stepsAt(done ? 7 : 6, null, judged, ITEMS.items.length),
     scanned_at: scannedAt,
     judged,
     reused: 23,
-    ranking: { state: done ? "finished" : "running", judged, total: 14, resumes_at: null, message: null },
+    ranking: {
+      state: done ? "finished" : "running",
+      judged,
+      total: ITEMS.items.length,
+      resumes_at: null,
+      message: null,
+    },
   });
   switch (at) {
     case 0:
@@ -299,7 +310,7 @@ function scripted(r: Run, now: number): RefreshStatus {
     case 6:
       return rank(false, 7);
     default:
-      return rank(true, 14);
+      return rank(true, ITEMS.items.length);
   }
 }
 
@@ -397,7 +408,7 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
   const matching = page.items.filter(keep);
   const next = offset + limit < matching.length ? `${page.revision}:${offset + limit}` : null;
   const body: ItemPage = {
-    mentions: (page.mentions ?? []).filter((m) => !hiddenMentions.has(m.id)),
+    mentions: cursor ? [] : (page.mentions ?? []).filter((m) => !hiddenMentions.has(m.id)),
     revision: page.revision,
     items: matching.slice(offset, offset + limit),
     next_cursor: next,
@@ -535,6 +546,7 @@ export const dashboardRefreshEvents = route("dashboardRefreshEvents", ({ params,
 
 /** Session-only hide, persisted for the mock session. */
 export const hideDashboardMention = route("hideDashboardMention", ({ params }) => {
+  if (scenarioName === "mention-hide-fails") return apiError(500, "internal", "Could not hide this mention");
   hiddenMentions.add(String(params.id));
   return new HttpResponse(null, { status: 204 });
 });

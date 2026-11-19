@@ -1715,7 +1715,7 @@ export type ItemKind = "pr" | "issue" | "todo";
  */
 export type ItemPage = {
 /**
- * All unanswered, unhidden mentions, independent of item filters and pagination.
+ * Unanswered, unhidden mentions on the first page only; empty on cursor pages.
  */
 mentions: Array<Mention>,
 /**

@@ -19,7 +19,7 @@ import {
   useSnapshotRefresh,
   useStartRefresh,
 } from "./queries";
-import { useMentionBots } from "./mentions";
+import { useMentionBots, useMentionsExpanded } from "./mentions";
 import { dashboardView } from "./state";
 
 /** localStorage key of the kinds shown (a JSON array such as `["pr","todo"]`). */
@@ -153,6 +153,7 @@ function actionError(error: unknown, action: "refresh" | "cancel" | "rank"): str
 export function useDashboardPage() {
   const hideMention = useHideMention();
   const [withBots, setWithBots] = useMentionBots();
+  const [mentionsExpanded, setMentionsExpanded] = useMentionsExpanded();
   const client = useQueryClient();
   const me = useMe();
   const user = me.data?.user ?? null;
@@ -198,6 +199,8 @@ export function useDashboardPage() {
 
   return {
     hideMention,
+    mentionsExpanded,
+    setMentionsExpanded,
     withBots,
     setWithBots,
     me,

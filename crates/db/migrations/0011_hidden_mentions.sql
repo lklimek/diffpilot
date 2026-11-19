@@ -5,4 +5,4 @@ CREATE TABLE dashboard_hidden_mentions (
     mention_id TEXT NOT NULL,
     hidden_at TEXT NOT NULL,
     PRIMARY KEY (tenant_id, user_id, mention_id)
-);
+) STRICT;

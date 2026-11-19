@@ -288,7 +288,16 @@ async fn items(
     let (revision, page, next_cursor, mentions) = match current_view(&state, &scope).await? {
         Some((revision, snapshot, view, _, _)) => {
             let (page, next) = snapshot::page(&view.items, &query, &revision)?;
-            (revision, page, next, snapshot.mentions)
+            (
+                revision,
+                page,
+                next,
+                if query.cursor.is_none() {
+                    snapshot.mentions
+                } else {
+                    Vec::new()
+                },
+            )
         }
         None => {
             let revision = snapshot::NO_SNAPSHOT.to_owned();
@@ -556,7 +565,19 @@ async fn hide_mention(
     SessionCsrf(session): SessionCsrf,
     Path(id): Path<String>,
 ) -> DashboardResult<StatusCode> {
-    let Some((_, snapshot)) = snapshot::load(&state, &session.tenant_id, &session.user_id).await?
+    hide_mention_inner(&state, &session, &id)
+        .await
+        .inspect_err(|error| {
+            tracing::warn!(%error, user_id = %session.user_id, "dashboard mention hide failed");
+        })
+}
+
+async fn hide_mention_inner(
+    state: &AppState,
+    session: &Session,
+    id: &str,
+) -> DashboardResult<StatusCode> {
+    let Some((_, snapshot)) = snapshot::load(state, &session.tenant_id, &session.user_id).await?
     else {
         return Err(DbError::NotFound.into());
     };
@@ -566,7 +587,8 @@ async fn hide_mention(
             .dashboard()
             .hidden_mentions(&session.tenant_id, &session.user_id)
             .await?
-            .contains(&id)
+            .iter()
+            .any(|hidden| hidden == id)
         {
             return Ok(StatusCode::NO_CONTENT);
         }
@@ -578,7 +600,7 @@ async fn hide_mention(
         .hide_mention(
             &session.tenant_id,
             &session.user_id,
-            &id,
+            id,
             state.dashboard.now(),
         )
         .await?;

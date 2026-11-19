@@ -522,7 +522,7 @@ impl ItemQuery {
 /// Response of `GET /api/v1/dashboard/items`: ranked items of the latest snapshot, in rank order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ItemPage {
-    /// All unanswered, unhidden mentions, independent of item filters and pagination.
+    /// Unanswered, unhidden mentions on the first page only; empty on cursor pages.
     #[serde(default)]
     pub mentions: Vec<Mention>,
     /// The summary's `revision` the page belongs to.
