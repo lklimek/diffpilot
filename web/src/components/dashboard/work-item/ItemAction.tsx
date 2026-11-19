@@ -7,26 +7,28 @@ import { httpUrl } from "../common/OpenExternal";
 
 const WIDTH = "min-w-[118px] justify-center";
 
-/** Label and tooltip of a pull request's review link (plan §F.1, v1 `reviewLabel`). */
+/** Label and tooltip of a pull request's review link (plan §F.1). */
 export function reviewAction(item: WorkItem): { label: string; tip: string; primary: boolean } {
   const review = item.review;
   if (!review) {
     return {
       label: "Review",
-      tip: "Opens the review start page with this PR's URL filled in. Nothing starts until you click Start analysis.",
+      tip: "Opens the review start page with this PR's URL filled in. Starts nothing until you click Start analysis.",
       primary: false,
     };
   }
   if (review.head_moved) {
     return {
-      label: "Open review",
-      tip: `Your analysis is of head ${review.analysed_head.slice(0, 7)}; the PR has moved since. The review start page offers to re-analyse or to open the earlier review.`,
+      label: "Open",
+      tip: `Your analysis is of head ${review.analysed_head.slice(0, 7)}; the PR has moved since. Opens the review start page, which offers to re-analyse or to open the earlier review. Starts nothing: no analysis, no LLM use.`,
       primary: true,
     };
   }
   return {
-    label: review.has_my_state ? "Resume review" : "Open review",
-    tip: "Opens your review of the current head; ticks and answers are kept.",
+    label: "Open",
+    tip: review.has_my_state
+      ? "Opens your review of the current head; ticks and answers are kept. Starts nothing: no analysis, no LLM use."
+      : "Opens your review of the current head. Starts nothing: no analysis, no LLM use.",
     primary: true,
   };
 }
@@ -42,10 +44,14 @@ interface ItemActionProps {
 export function ItemAction({ item, reviewHref, onNavigate }: ItemActionProps) {
   if (item.kind === "pr" && reviewHref) {
     const { label, tip, primary } = reviewAction(item);
+    // Unique per row and starting with the visible label (WCAG 2.5.3); aria-describedby is taken by the tooltip.
+    const subject = `#${item.number ?? ""} ${item.title}`;
+    const name = label === "Open" ? `Open review of ${subject}` : `Review pull request ${subject}`;
     return (
       <Tooltip tip={tip}>
         <a
           href={reviewHref}
+          aria-label={name}
           data-review-link
           onClick={navigateOnClick(reviewHref, onNavigate)}
           className={`${buttonClass(primary ? "primary" : "plain", true)} ${WIDTH}`}

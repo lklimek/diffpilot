@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SizeMark, TodosState, WorkItem } from "../../../api/generated/types";
 import { ALL_SIZES } from "../common/size";
 import { ITEMS, NOW, PROVISIONAL_ITEMS } from "../test-fixtures";
+import { reviewAction } from "../work-item/ItemAction";
 import { ALL_KINDS, WorkList, type ItemKind } from "./WorkList";
 
 const reviewHref = (item: WorkItem) => `/review?pr=${encodeURIComponent(item.url ?? "")}`;
@@ -254,16 +255,49 @@ describe("WorkList", () => {
     expect(onHelp).not.toHaveBeenCalled();
   });
 
-  it("links a PR to its review: Review without an analysis, Open review when the head moved", () => {
+  it("links a PR to its review: Review without an analysis, Open when the head moved", () => {
     render(<List items={PROVISIONAL_ITEMS} />);
     const plain = document.querySelector('[data-item="acme~platform~pr~1203"] a[data-review-link]');
     expect(plain).toHaveTextContent("Review");
     const moved = document.querySelector('[data-item="acme~node-client~pr~482"] a[data-review-link]');
-    expect(moved).toHaveTextContent("Open review");
+    expect(moved).toHaveTextContent("Open");
+    expect(moved).not.toHaveTextContent("review");
     expect(moved).toHaveAttribute(
       "href",
       `/review?pr=${encodeURIComponent("https://github.com/acme/node-client/pull/482")}`,
     );
+  });
+
+  it("review links have unique accessible names that start with the visible label", () => {
+    render(<List items={PROVISIONAL_ITEMS} />);
+    const links = [...document.querySelectorAll<HTMLAnchorElement>("a[data-review-link]")];
+    expect(links.length).toBeGreaterThan(1);
+    const names = links.map((a) => a.getAttribute("aria-label") ?? "");
+    for (const a of links) {
+      const name = a.getAttribute("aria-label") ?? "";
+      expect(name.startsWith(a.textContent ?? "?")).toBe(true);
+      expect(name).toMatch(/#\d+ /);
+    }
+    expect(new Set(names).size).toBe(names.length);
+    expect(screen.getByRole("link", { name: /^Open review of #482 / })).toBeVisible();
+    expect(screen.getByRole("link", { name: /^Review pull request #1203 / })).toBeVisible();
+  });
+
+  it.each([
+    [{ head_moved: false, has_my_state: true }, /ticks and answers are kept/, true],
+    [{ head_moved: false, has_my_state: false }, /^Opens your review of the current head\./, false],
+    [{ head_moved: true, has_my_state: true }, /the PR has moved/, false],
+  ])("every Open link says it starts nothing (%j)", (review, extra, kept) => {
+    const item = PROVISIONAL_ITEMS.find((i) => i.kind === "pr" && i.review);
+    expect(item).toBeDefined();
+    const { tip, label } = reviewAction({
+      ...item!,
+      review: { ...item!.review!, ...review, analysed_head: "0123456789abcdef" },
+    });
+    expect(label).toBe("Open");
+    expect(tip).toMatch(/Starts nothing: no analysis, no LLM use\./);
+    expect(tip).toMatch(extra);
+    expect(tip.includes("ticks and answers are kept")).toBe(kept);
   });
 
   it("a plain click on a review link navigates in the app; a modified click keeps the browser's", () => {

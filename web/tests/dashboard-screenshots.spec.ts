@@ -84,9 +84,9 @@ for (const [width, height] of [
         // Where the NC-482 row leads: review start at /review (new, moved; checked on arrival) or the review
         // itself (found).
         for (const [scenario, link] of [
-          ["review-new", "Review"],
-          ["review-moved", "Open review"],
-          ["review-found", "Resume review"],
+          ["review-new", /^Review pull request /],
+          ["review-moved", /^Open review of /],
+          ["review-found", /^Open review of /],
         ] as const) {
           await openDashboard(page, scenario);
           await page

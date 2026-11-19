@@ -104,7 +104,7 @@ test("TODO rows: hidden when MemCan TODOs are switched off, back when on", async
 test("a PR row's Review opens /review with the PR checked; /?pr= moves there", async ({ page }) => {
   await signIn(page);
   const row = workList(page).locator('li[data-item="acme~node-client~pr~482"]');
-  await row.getByRole("link", { name: "Review", exact: true }).click();
+  await row.getByRole("link", { name: /^Review pull request /, exact: false }).click();
   await expect(page).toHaveURL(`/review?pr=${encodeURIComponent(PR_URL)}`);
   await expect(page.getByLabel("GitHub pull request URL")).toHaveValue(PR_URL);
   await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();

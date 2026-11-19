@@ -135,16 +135,19 @@ describe("AnalysisProgress (brief §4.2)", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
   });
 
-  it("finished: n of n flows analysed and Open review for a review not started yet", () => {
+  it("finished: n of n flows analysed and Open for a review not started yet", () => {
     show({ state: "finished", total: 5 });
     expect(screen.getByText("5 of 5 flows analysed")).toBeVisible();
     expect(bar()).toHaveAttribute("aria-valuenow", "5");
-    expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", "/analyses/a1");
-    expect(screen.queryByRole("link", { name: "Resume review" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute("href", "/analyses/a1");
+    expect(screen.queryByRole("link", { name: /review/i })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open" })).toHaveAccessibleDescription(
+      /^Opens the review of this analysis\. Starts nothing: no analysis, no LLM use\.$/,
+    );
     expect(buttons()).toEqual([]);
   });
 
-  it("finished: Resume review for a review the user started", () => {
+  it("finished: the same Open for a review the user started; the tooltip keeps ticks and answers", () => {
     render(
       <AnalysisProgress
         state={{ state: "finished", total: 5 }}
@@ -155,7 +158,31 @@ describe("AnalysisProgress (brief §4.2)", () => {
         onRetry={vi.fn()}
       />,
     );
-    expect(screen.getByRole("link", { name: "Resume review" })).toHaveAttribute("href", "/analyses/a1");
+    expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute("href", "/analyses/a1");
+    expect(screen.queryByRole("link", { name: /resume/i })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open" })).toHaveAccessibleDescription(
+      /ticks and answers are kept.*Starts nothing/,
+    );
+  });
+
+  it("Open is a navigation link outside the group of action buttons, marked with an arrow", () => {
+    render(
+      <AnalysisProgress
+        state={{ state: "running", done: 1, total: 3 }}
+        reviewReady
+        reviewHref="/analyses/a1"
+        backgroundAnalysis={false}
+        busy={false}
+        onCancel={vi.fn()}
+        onRetry={vi.fn()}
+        onBackground={vi.fn()}
+      />,
+    );
+    const open = screen.getByRole("link", { name: "Open" });
+    const actions = screen.getByRole("group", { name: "Analysis actions" });
+    expect(actions).toContainElement(screen.getByRole("button", { name: "Cancel analysis" }));
+    expect(actions).not.toContainElement(open);
+    expect(open).toHaveTextContent("→");
   });
 
   it("disables the actions while a request runs", async () => {
@@ -500,30 +527,30 @@ it("opens the review as soon as context is ready while flows are still running",
   );
   expect(screen.getByText("1 of 5 flows analysed. The review is open.")).toBeVisible();
   expect(screen.queryByText("Between two jobs: the server starts the next one.")).not.toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", "/analyses/a1");
+  expect(screen.getByRole("link", { name: "Open" })).toHaveAttribute("href", "/analyses/a1");
   expect(screen.getByRole("button", { name: "Cancel analysis" })).toBeVisible();
 });
 
-it.each([
-  [false, "Open"],
-  [true, "Resume"],
-])("parked while the review is open (started: %s): the line names the button, %s review", (started, verb) => {
-  render(
-    <AnalysisProgress
-      state={{ state: "running", done: 1, total: 5, idle: true }}
-      reviewReady
-      reviewStarted={started}
-      busy={false}
-      reviewHref="/analyses/a1"
-      onCancel={() => {}}
-      onRetry={() => {}}
-    />,
-  );
-  expect(screen.getByText(`No flow job is running. ${verb} the review to choose a flow.`)).toBeVisible();
-  expect(screen.getByRole("link", { name: `${verb} review` })).toBeVisible();
-});
+it.each([false, true])(
+  "parked while the review is open (started: %s): the line names the Open button",
+  (started) => {
+    render(
+      <AnalysisProgress
+        state={{ state: "running", done: 1, total: 5, idle: true }}
+        reviewReady
+        reviewStarted={started}
+        busy={false}
+        reviewHref="/analyses/a1"
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />,
+    );
+    expect(screen.getByText("No flow job is running. Open the review to choose a flow.")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Open" })).toBeVisible();
+  },
+);
 
-it("plan ready with background off: not stuck; says so and offers Open review and Analyse all remaining flows", async () => {
+it("plan ready with background off: not stuck; says so and offers Open and Analyse all remaining flows", async () => {
   const onBackground = vi.fn();
   render(
     <AnalysisProgress
@@ -542,7 +569,7 @@ it("plan ready with background off: not stuck; says so and offers Open review an
       "The plan is ready. Nothing is being analysed. Choose a flow to analyse, or analyse all remaining flows.",
     ),
   ).toBeVisible();
-  expect(screen.getByRole("link", { name: "Open review" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "Open" })).toBeVisible();
   // The remaining count is visible next to the button, not only in its tooltip.
   expect(screen.getByText("4 not analysed")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Analyse all remaining flows" }));

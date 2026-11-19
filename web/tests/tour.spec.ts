@@ -10,7 +10,7 @@ test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ 
   await page.getByRole("button", { name: "Check" }).click();
   await page.getByRole("button", { name: "Start analysis", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}/progress$`));
-  await page.getByRole("link", { name: "Open review" }).click();
+  await page.getByRole("link", { name: "Open", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#pr_context$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
 

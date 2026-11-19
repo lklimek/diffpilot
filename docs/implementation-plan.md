@@ -406,7 +406,7 @@ Acceptance (named tests):
 
 **M2 merge point**: merge all; dispatch **WP2-E2E** (developer-bilby, opus, ~250; owns `e2e/**`,
 `deploy/dev/**`): full-stack Playwright — server (`embed-ui`) + runner (fake provider) + fake GitHub + fixture
-remote: sign in, paste URL, progress reaches finished, Open review, flow 1 step 1 shows the fixture code. Then:
+remote: sign in, paste URL, progress reaches finished, Open, flow 1 step 1 shows the fixture code. Then:
 - **Real-Codex smoke** (WP2-E2E agent, coordinator grants the slot): the slice with the Codex provider on
   P-CAP; analysis finishes or fails visibly; outputs archived; prompt or schema problems become stage-3 inputs.
 - **Visual conformance check 1** (§12.5): screenshots of the slice against the mockups.
@@ -500,7 +500,7 @@ is opened; the owner decides about merging after deployment.
 | §2 Four screens; loading/empty/error states | SCREENS, TOUR, GUI | Playwright per screen and state; WP4-GUI |
 | §2 Input: PR URL, public repos only; errors | INGEST, SCREENS | `resolve_rejects_non_pr_url`, `resolve_rejects_private_repo`, Home error Playwright |
 | §2 GitHub login; single tenant `default`; allowed logins as tenant setting (seeded `lklimek`) | AUTH (2+3), WP1-A | login e2e; `tenant_default_seeded`; `allowlist_rejects_unlisted_login` |
-| §2 Review opens only when finished | PIPE, SCREENS | Playwright: no Open review before finished |
+| §2 Review opens only when finished | PIPE, SCREENS | Playwright: no Open before finished |
 | §2/§3 PR context (problem, related work, fit questions, CI, counters, profile status) | PIPE, PROMPTS, PREPASS, BLOCKS | pipeline fixture test; PR-context component test |
 | §2 GitHub threads at steps with LLM status (from `analyse_flow`; others none); CI status | REVIEW, PIPE, INSPECTOR | thread placement and status tests; top-bar CI test |
 | §2/§5 Ask (resumes the analysis session, pinned LLM answer, priority at claim) | ASK, RUN, INSPECTOR, E2E | `ask_resumes_analysis_session`, `ask_claimed_before_batch`, `ask_answer_stored_and_streamed`; Playwright Ask |

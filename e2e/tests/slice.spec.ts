@@ -37,7 +37,7 @@ test("sign in, analyse the fixture PR, open flow 1 step 1", async ({ page, conte
   await analyseAllRemainingFlows(page);
   await waitForState(page, id, "finished");
   await checkScreen(page);
-  const openReview = page.getByRole("link", { name: "Open review" });
+  const openReview = page.getByRole("link", { name: "Open", exact: true });
   await expect(openReview).toBeVisible();
   await openReview.click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${id}$`));
