@@ -9,6 +9,7 @@ use analysis::diff::{FileDiff, FileStatus, Hunk};
 use analysis::lines::ranges;
 use analysis::prepass::{Disposition, NotRenderedReason as PrepassNotRendered, Prepass};
 use analysis::tech::is_line_rule_name;
+use analysis::verify::spans::{Span, covered_twice, from_ranges as spans, marker_inside, touches};
 use contracts::api::files::{
     FileChangeStatus, FileGroup, FileHunk, HunkPart, NotRenderedReason, PartOwner, PrFile,
 };
@@ -19,9 +20,6 @@ use contracts::common::{FileRanges, LineRange, LineSide, NotAnalysedCategory};
 use contracts::ids::{FlowId, HunkId, StepId};
 
 use crate::pipeline::tour::Projection;
-
-/// Lines `first..=last`.
-type Span = (u32, u32);
 
 /// Everything the file list is built from.
 #[derive(Clone, Copy, Debug)]
@@ -282,6 +280,21 @@ impl<'a> SideOwners<'a> {
             layers.push((spans(&lines), Layer::Fixed(owner)));
         }
         layers.retain(|(spans, _)| !spans.is_empty());
+        let covered: Vec<Vec<Span>> = layers
+            .iter()
+            .filter(|(_, layer)| matches!(layer, Layer::Covered(_)))
+            .map(|(spans, _)| spans.clone())
+            .collect();
+        let twice = covered_twice(&covered);
+        if !twice.is_empty() {
+            // Verification normally keeps flows apart; the first flow in Tour order owns such lines.
+            tracing::debug!(
+                path,
+                ?side,
+                spans = twice.len(),
+                "changed lines covered by two accepted flows"
+            );
+        }
         let steps_on = |side: LineSide, path: Option<&str>| -> Vec<StepAt<'a>> {
             input
                 .flows
@@ -458,10 +471,7 @@ impl<'a> SideOwners<'a> {
         self.head_steps
             .iter()
             .filter(|at| at.flow == flow)
-            .find(|at| {
-                let (first, last) = at.span();
-                first <= marker.saturating_add(1) && marker <= last
-            })
+            .find(|at| marker_inside(marker, at.span()))
             .map(|at| &at.step.id)
     }
 }
@@ -514,30 +524,9 @@ fn contains((first, last): Span, line: u32) -> bool {
     first <= line && line <= last
 }
 
-/// Sorted, merged spans of `ranges` (inverted ranges dropped).
-fn spans(ranges: &[LineRange]) -> Vec<Span> {
-    let mut spans: Vec<Span> = ranges
-        .iter()
-        .map(|range| span_of(*range))
-        .filter(|(first, last)| first <= last)
-        .collect();
-    spans.sort_unstable();
-    let mut out: Vec<Span> = Vec::with_capacity(spans.len());
-    for (first, last) in spans {
-        match out.last_mut() {
-            Some(previous) if u64::from(first) <= u64::from(previous.1) + 1 => {
-                previous.1 = previous.1.max(last);
-            }
-            _ => out.push((first, last)),
-        }
-    }
-    out
-}
-
 /// Whether the sorted, merged `spans` hold `line`: a binary search.
 fn covers(spans: &[Span], line: u32) -> bool {
-    let at = spans.partition_point(|&(_, last)| last < line);
-    spans.get(at).is_some_and(|&(first, _)| first <= line)
+    touches(spans, (line, line))
 }
 
 fn file_hunk(
@@ -549,14 +538,7 @@ fn file_hunk(
     let base = run(&hunk.removed);
     let head = run(&hunk.added);
     let has_head = file.path_on(LineSide::Head).is_some();
-    // Head line after which removed lines are shown (`DiffIndex::deletion_marker`).
-    let marker = has_head.then(|| {
-        if hunk.head.len == 0 {
-            hunk.head.start
-        } else {
-            hunk.head.start.saturating_sub(1)
-        }
-    });
+    let marker = has_head.then(|| hunk.deletion_marker());
     let mut parts = Vec::new();
     for (lines, owners) in [(&hunk.removed, &sides[0]), (&hunk.added, &sides[1])] {
         let Some(owners) = owners else {

@@ -6,7 +6,7 @@ mod check_flow;
 mod check_plan;
 mod facts;
 mod plain;
-pub(crate) mod spans;
+pub mod spans;
 pub mod wording;
 
 #[cfg(test)]

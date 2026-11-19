@@ -594,3 +594,136 @@ fn a_huge_hunk_with_many_steps_is_not_quadratic() {
         started.elapsed()
     );
 }
+
+/// Fixture PR 482 through the real verification: every line an accepted flow covers is owned by a step of a flow
+/// covering it (the verifier's step rule, shared through `analysis::verify::spans`), or by the flow without a step
+/// only where the verifier needs none (a blank line).
+#[tokio::test]
+async fn owners_of_covered_lines_follow_the_verification_on_fixture_pr_482() {
+    use std::collections::HashMap;
+
+    use crate::pipeline::context::StoredResults;
+    use crate::pipeline::tour;
+    use crate::test_support::github::pr482;
+    use db::repo::documents::DocumentKind;
+
+    let f = pr482().await;
+    let fixture = |path: &str| -> serde_json::Value {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/pr-482");
+        serde_json::from_str(&std::fs::read_to_string(dir.join(path)).expect("fixture"))
+            .expect("JSON")
+    };
+    let documents = f.state.db.documents();
+    let now = contracts::time::Timestamp::now();
+    for (kind, path) in [
+        (DocumentKind::Plan, "agent/plan.json"),
+        (DocumentKind::PrContext, "agent/pr_context.json"),
+    ] {
+        documents
+            .put(f.summary.id, kind, "", &fixture(path), now)
+            .await
+            .expect("document");
+    }
+    let golden = fixture("api/default/tour.json");
+    let mut threads = golden["threads"].clone();
+    for thread in threads.as_array_mut().expect("threads") {
+        for key in ["step_id", "llm_status", "llm_reason"] {
+            thread[key] = serde_json::Value::Null;
+        }
+    }
+    let snapshot = json!({ "ci": golden["pr_context"]["facts"]["ci"], "threads": threads, "threads_status": "checked" });
+    documents
+        .put(
+            f.summary.id,
+            DocumentKind::GithubSnapshot,
+            "",
+            &snapshot,
+            now,
+        )
+        .await
+        .expect("snapshot");
+    let results = StoredResults::load(&f.state.db, f.summary.id)
+        .await
+        .expect("results");
+    let (stepless, checked) =
+        tour::with_projection(&f.state, &f.summary, results, |projection, tour| {
+            let listed = from_tour(projection, &tour);
+            let mut owners: HashMap<(LineSide, String, u32), PartOwner> = HashMap::new();
+            for (file, listed) in projection.files.iter().zip(&listed) {
+                for part in listed.hunks.iter().flat_map(|hunk| &hunk.parts) {
+                    let Some(path) = file.path_on(part.side) else {
+                        continue;
+                    };
+                    for line in part.range.start_line..=part.range.end_line {
+                        owners.insert((part.side, path.to_owned(), line), part.owner.clone());
+                    }
+                }
+            }
+            let covering = |side: LineSide, path: &str, line: u32| -> Vec<&FlowId> {
+                projection
+                    .skeleton
+                    .flows
+                    .iter()
+                    .filter(|flow| {
+                        flow.covered.iter().any(|lines| {
+                            lines.side == side
+                                && lines.file == path
+                                && lines
+                                    .ranges
+                                    .iter()
+                                    .any(|range| range.start_line <= line && line <= range.end_line)
+                        })
+                    })
+                    .map(|flow| &flow.flow_id)
+                    .collect()
+            };
+            let mut stepless = Vec::new();
+            let mut checked = 0;
+            for flow in &projection.skeleton.flows {
+                for lines in &flow.covered {
+                    for range in &lines.ranges {
+                        for line in range.start_line..=range.end_line {
+                            let key = (lines.side, lines.file.clone(), line);
+                            let owner = owners.get(&key).expect("a covered line is a changed line");
+                            checked += 1;
+                            match owner {
+                                PartOwner::Step { flow_id, .. } => assert!(
+                                    covering(lines.side, &lines.file, line).contains(&flow_id),
+                                    "{key:?}: owned by a step of {flow_id}, which does not cover it"
+                                ),
+                                PartOwner::Flow { flow_id } => {
+                                    assert_eq!(flow_id, &flow.flow_id, "{key:?}");
+                                    stepless.push(key);
+                                }
+                                // Quiet kinds and Unexplained rows come first by priority.
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            (stepless, checked)
+        })
+        .await
+        .expect("tour");
+    assert!(checked > 50, "{checked} covered lines");
+    let (mirror, _) = crate::pipeline::pr_diff(&f.state, &f.summary)
+        .await
+        .expect("diff");
+    for (side, path, line) in stepless {
+        let commit = match side {
+            LineSide::Head => &f.summary.pr.head_sha,
+            LineSide::Base => &f.summary.pr.base_sha,
+        };
+        let bytes = crate::github::mirror::read_blob(&mirror, commit, &path)
+            .await
+            .expect("read")
+            .expect("file");
+        let text = String::from_utf8_lossy(&bytes);
+        let at = text.lines().nth(line as usize - 1).unwrap_or_default();
+        assert!(
+            at.trim().is_empty(),
+            "{side:?} {path}:{line} has no step but is not blank: {at:?}"
+        );
+    }
+}

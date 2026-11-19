@@ -68,12 +68,12 @@ impl<'a> Changes<'a> {
                     changes.lines.entry(head).or_default()[0].extend(&added);
                     if !removed.is_empty() {
                         let markers = changes.markers.entry(head).or_default();
-                        markers.push(spans::marker_of(hunk));
+                        markers.push(hunk.deletion_marker());
                     }
                 }
                 if let Some(base) = file.path_on(LineSide::Base) {
                     changes.lines.entry(base).or_default()[1].extend(&removed);
-                    let marker = spans::marker_of(hunk);
+                    let marker = hunk.deletion_marker();
                     let entries = changes.removed.entry(base).or_default();
                     entries.extend(removed.iter().map(|&span| (span, marker, head)));
                 }
@@ -652,9 +652,9 @@ fn uncovered(
                     .iter()
                     .take_while(|&&((start, _), _, _)| start <= last);
                 at_markers.extend(near.filter_map(|&(span, marker, head)| {
-                    let marker_gap = (marker, marker.saturating_add(1));
                     let head = head?;
-                    spans::touches(steps_of(LineSide::Head, head), marker_gap).then_some(span)
+                    spans::touches(steps_of(LineSide::Head, head), spans::marker_gap(marker))
+                        .then_some(span)
                 }));
             }
             rest = spans::subtract(&rest, &spans::merge(at_markers));
