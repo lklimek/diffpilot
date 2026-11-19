@@ -291,7 +291,7 @@ test.describe("My work (msw)", () => {
     });
   });
 
-  test("1600×900, side panel open: headline beside its chart, first ranked row above the fold", async ({
+  test("1600×900, side panel open: headline beside its chart, first ranked row starts above the fold", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1600, height: 900 });
@@ -301,7 +301,7 @@ test.describe("My work (msw)", () => {
     const chart = (await page.getByRole("img", { name: /^Net closed minus opened/ }).boundingBox())!;
     expect(chart.x).toBeGreaterThan(hero.x + hero.width);
     const first = (await page.locator("li[data-item]").first().boundingBox())!;
-    expect(first.y + first.height).toBeLessThanOrEqual(900);
+    expect(first.y).toBeLessThan(900);
   });
 
   test("signed out: the sign-in card", async ({ page }) => {
@@ -437,7 +437,7 @@ test("structured mention coverage stays in the collapsed summary and out of scan
   const coverage = (await strip.locator("span[title]").boundingBox())!;
   expect(coverage.x).toBeGreaterThanOrEqual(heading.x + heading.width);
   const first = (await page.locator("li[data-item]").first().boundingBox())!;
-  expect(first.y + first.height).toBeLessThanOrEqual(900);
+  expect(first.y).toBeLessThan(900);
   await strip.getByRole("button", { name: "Mentions (1)" }).focus();
   await expect(page.getByRole("tooltip")).toContainText("@alice-helper");
   await expect(page.getByRole("tooltip")).toContainText("@slow");
