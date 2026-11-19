@@ -143,6 +143,14 @@ describe("notifyWorkDone", () => {
     expect(FakeNotification.shown).toHaveLength(1);
   });
 
+  it("the same event again after the cross-tab window (a re-run within minutes) notifies again", async () => {
+    visible = false;
+    await settle(notifyWorkDone(EVENT, vi.fn()));
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+    await settle(notifyWorkDone(EVENT, vi.fn()));
+    expect(FakeNotification.shown).toHaveLength(2);
+  });
+
   it("one notification per event across tabs (shared browser storage)", async () => {
     visible = false;
     await settle(
@@ -187,15 +195,21 @@ describe("notifyWorkDone", () => {
 });
 
 const PR = "NC#482";
-const flow = (id: string, position: number, state?: string, steps: { id: string; number: number }[] = []) =>
+const flow = (
+  id: string,
+  position: number,
+  state?: string,
+  steps: { id: string; number: number }[] = [],
+  started_at: string | null = null,
+) =>
   ({
     id,
     position,
-    analysis_status: state && { state, started_at: null, message: null },
+    analysis_status: state && { state, started_at, message: null },
     steps,
   }) as unknown as Flow;
-const tour = (state: AnalysisState, flows: Flow[]) =>
-  ({ analysis: { id: "a1", state }, flows }) as unknown as Tour;
+const tour = (state: AnalysisState, flows: Flow[], finished_at: string | null = null) =>
+  ({ analysis: { id: "a1", state, finished_at }, flows }) as unknown as Tour;
 const running: AnalysisState = { state: "running", done: 1, total: 3, idle: false };
 
 describe("events of the review", () => {
@@ -219,20 +233,63 @@ describe("events of the review", () => {
     expect(new Set(events.map((e) => e.key)).size).toBe(2);
   });
 
-  it("an analysis that finishes or fails says so once, instead of its last flow", () => {
+  it("an analysis that finishes or fails in the same refetch as its last flow says both", () => {
     const before = tour(running, [flow("f1", 1, "analysed"), flow("f2", 2, "analysing")]);
-    const finished = tour({ state: "finished", total: 2 }, [
-      flow("f1", 1, "analysed"),
-      flow("f2", 2, "analysed"),
+    const finished = tour(
+      { state: "finished", total: 2 },
+      [flow("f1", 1, "analysed"), flow("f2", 2, "analysed")],
+      "2026-11-19T10:00:00Z",
+    );
+    expect(tourEvents(before, finished, PR).map((e) => e.title)).toEqual([
+      "Flow 2 analysed — NC#482",
+      "Analysis finished — NC#482",
     ]);
-    expect(tourEvents(before, finished, PR).map((e) => e.title)).toEqual(["Analysis finished — NC#482"]);
-    const failed = tour({ state: "failed", flow: null, message: "x" }, [
-      flow("f1", 1, "analysed"),
-      flow("f2", 2, "failed"),
-    ]);
+    const failed = tour(
+      { state: "failed", flow: null, message: "x" },
+      [flow("f1", 1, "analysed"), flow("f2", 2, "failed")],
+      "2026-11-19T10:00:00Z",
+    );
     const events = tourEvents(before, failed, PR);
-    expect(events.map((e) => [e.title, e.path])).toEqual([["Analysis failed — NC#482", "/analyses/a1"]]);
-    expect(events[0]!.body).not.toContain("x");
+    expect(events.map((e) => [e.title, e.path])).toEqual([
+      ["Flow 2 failed — NC#482", "/analyses/a1#f2"],
+      ["Analysis failed — NC#482", "/analyses/a1"],
+    ]);
+    expect(events[1]!.body).not.toContain("x");
+  });
+
+  it("an analysis reopened by a flow request and finished again says so again, under a new key", () => {
+    const flows = [flow("f1", 1, "analysed")];
+    const first = tour({ state: "finished", total: 1 }, flows, "2026-11-19T10:00:00Z");
+    const reopened = tour(running, [flow("f1", 1, "analysing", [], "2026-11-19T10:05:00Z")]);
+    const again = tour({ state: "finished", total: 1 }, flows, "2026-11-19T10:09:00Z");
+    const finishedFirst = tourEvents(tour(running, [flow("f1", 1, "analysing")]), first, PR);
+    const finishedAgain = tourEvents(reopened, again, PR);
+    expect(finishedAgain.map((e) => e.title)).toEqual([
+      "Flow 1 analysed — NC#482",
+      "Analysis finished — NC#482",
+    ]);
+    expect(finishedAgain.at(-1)!.key).not.toBe(finishedFirst.at(-1)!.key);
+    // A refetch that missed the reopening still sees a new finish.
+    expect(tourEvents(first, again, PR).map((e) => e.title)).toEqual(["Analysis finished — NC#482"]);
+  });
+
+  it("a flow analysed again gets a key per attempt", () => {
+    const attempt = (started: string) =>
+      tourEvents(
+        tour(running, [flow("f1", 1, "analysing", [], started)]),
+        tour(running, [flow("f1", 1, "analysed")]),
+        PR,
+      )[0]!.key;
+    expect(attempt("2026-11-19T10:00:00Z")).not.toBe(attempt("2026-11-19T10:04:00Z"));
+  });
+
+  it("texts never promise what the server may not do: review ready is neutral, a failed flow asks nothing", () => {
+    const failed = tourEvents(
+      tour(running, [flow("f1", 1, "analysing")]),
+      tour(running, [flow("f1", 1, "failed")]),
+      PR,
+    );
+    expect(failed[0]!.body).toBe("The LLM analysis of flow 1 failed. Open it for details.");
   });
 
   it("nothing for an unchanged tour, flows without work status or a flow analysed again from the start", () => {
@@ -277,6 +334,7 @@ describe("events of the progress page", () => {
     expect(progressEvents(planning, ready, PR).map((e) => [e.title, e.path])).toEqual([
       ["Review ready — NC#482", "/analyses/a1"],
     ]);
+    expect(progressEvents(planning, ready, PR)[0]!.body).toBe("Plan and PR context are ready.");
     expect(
       progressEvents(ready, summary({ state: "finished", total: 3 }, true), PR).map((e) => e.title),
     ).toEqual(["Analysis finished — NC#482"]);

@@ -3,7 +3,7 @@
 // and the browser's permission, and an open diffpilot tab (no service worker). Screens feed their data.
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useNavigate } from "react-router";
-import type { AnalysisId, AnalysisState, AnalysisSummary, AskQuestion, Tour } from "../api/generated/types";
+import type { AnalysisId, AnalysisSummary, AskQuestion, Tour } from "../api/generated/types";
 import type { NotificationSupport } from "../components/settings/NotificationsCard";
 import { findStep } from "../screens/tour/sequence";
 import { usePrDisplayId } from "./tabStatus";
@@ -13,7 +13,8 @@ export const NOTIFY_KEY = "diffpilot.notify-when-done";
 const SEEN_KEY = "diffpilot.notified";
 /** A tab not watched waits this long, so a tab watching the same work can claim the event first. */
 export const NOTIFY_HANDOVER_MS = 1_500;
-const SEEN_TTL_MS = 10 * 60_000;
+/** How long a tab's claim of an event holds: longer than the skew between tabs, shorter than any re-run. */
+const SEEN_TTL_MS = 90_000;
 
 /** Finished work worth a notification; `key` is the same in every tab. */
 export interface WorkEvent {
@@ -135,62 +136,65 @@ export async function notifyWorkDone(event: WorkEvent, open: (path: string) => v
 const reviewPath = (id: AnalysisId, fragment?: string) =>
   `/analyses/${encodeURIComponent(id)}${fragment ? `#${encodeURIComponent(fragment)}` : ""}`;
 
-/** The analysis finished or failed between `before` and `after`. */
+/**
+ * The analysis finished or failed between `before` and `after`; a finish after a reopening counts again. Its
+ * `finished_at` (the last finish) tells attempts apart in every tab.
+ */
 function analysisEnded(
-  id: AnalysisId,
-  before: AnalysisState,
-  after: AnalysisState,
+  before: AnalysisSummary,
+  after: AnalysisSummary,
   pr: string,
   failedPath: string,
 ): WorkEvent[] {
-  if (before.state === after.state) return [];
-  if (after.state === "finished")
-    return [
-      {
-        key: `${id}:finished`,
-        title: `Analysis finished — ${pr}`,
-        body: "The LLM analysis of this pull request finished.",
-        path: reviewPath(id),
-      },
-    ];
-  if (after.state === "failed")
-    return [
-      {
-        key: `${id}:failed`,
-        title: `Analysis failed — ${pr}`,
-        body: "Open diffpilot to see what failed and try again.",
-        path: failedPath,
-      },
-    ];
-  return [];
+  const id = after.id;
+  const state = after.state.state;
+  if (state !== "finished" && state !== "failed") return [];
+  if (before.state.state === state && before.finished_at === after.finished_at) return [];
+  const key = `${id}:${state}:${after.finished_at ?? ""}`;
+  return [
+    state === "finished"
+      ? {
+          key,
+          title: `Analysis finished — ${pr}`,
+          body: "The LLM analysis of this pull request finished.",
+          path: reviewPath(id),
+        }
+      : {
+          key,
+          title: `Analysis failed — ${pr}`,
+          body: "Open diffpilot to see what failed and try again.",
+          path: failedPath,
+        },
+  ];
 }
 
-/** Flows analysed or failed, or the analysis finished or failed (which then stands for its last flow). */
+/** Flows analysed or failed, then the analysis finished or failed. */
 export function tourEvents(before: Tour, after: Tour, pr: string): WorkEvent[] {
   const id = after.analysis.id;
-  const ended = analysisEnded(id, before.analysis.state, after.analysis.state, pr, reviewPath(id));
-  if (ended.length) return ended;
-  return after.flows.flatMap((flow): WorkEvent[] => {
+  const flows = after.flows.flatMap((flow): WorkEvent[] => {
     const now = flow.analysis_status?.state;
-    const was = before.flows.find((f) => f.id === flow.id)?.analysis_status?.state;
-    if (!was || was === now || (now !== "analysed" && now !== "failed")) return [];
+    const was = before.flows.find((f) => f.id === flow.id)?.analysis_status;
+    if (!was || was.state === now || (now !== "analysed" && now !== "failed")) return [];
+    // The attempt: its start, which the analysing status carried (an ended one has none).
+    const attempt = was.started_at ?? flow.analysis_status?.started_at ?? "";
     const n = flow.position;
     return [
       now === "analysed"
         ? {
-            key: `${id}:flow:${flow.id}:analysed:${flow.analysis_status?.started_at ?? ""}`,
+            key: `${id}:flow:${flow.id}:analysed:${attempt}`,
             title: `Flow ${n} analysed — ${pr}`,
             body: `The LLM analysis of flow ${n} is ready.`,
             path: reviewPath(id, flow.id),
           }
         : {
-            key: `${id}:flow:${flow.id}:failed:${flow.analysis_status?.started_at ?? ""}`,
+            key: `${id}:flow:${flow.id}:failed:${attempt}`,
             title: `Flow ${n} failed — ${pr}`,
-            body: `The LLM analysis of flow ${n} failed. Open it to try again.`,
+            body: `The LLM analysis of flow ${n} failed. Open it for details.`,
             path: reviewPath(id, flow.id),
           },
     ];
   });
+  return [...flows, ...analysisEnded(before.analysis, after.analysis, pr, reviewPath(id))];
 }
 
 /** The user's own questions answered or failed since `before`; never the question or answer text. */
@@ -225,14 +229,14 @@ export function questionEvents(
 export function progressEvents(before: AnalysisSummary, after: AnalysisSummary, pr: string): WorkEvent[] {
   if (before.id !== after.id) return [];
   const id = after.id;
-  const ended = analysisEnded(id, before.state, after.state, pr, `${reviewPath(id)}/progress`);
+  const ended = analysisEnded(before, after, pr, `${reviewPath(id)}/progress`);
   if (ended.length) return ended;
   if (!before.review_ready && after.review_ready)
     return [
       {
         key: `${id}:review-ready`,
         title: `Review ready — ${pr}`,
-        body: "Plan and PR context are ready; flows are analysed while you review.",
+        body: "Plan and PR context are ready.",
         path: reviewPath(id),
       },
     ];
