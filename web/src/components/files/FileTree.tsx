@@ -3,7 +3,7 @@ import type { FileViewedState, PrFile, StepId, Tour, ViewedStatus } from "../../
 import { ProvenanceBadge } from "../badge/Badge";
 import { NOT_ANALYSED_LABEL } from "../quiet/labels";
 import { Tooltip } from "../tooltip/Tooltip";
-import { fileTicks, treeGroups, unexplainedLines, viewedCount } from "./model";
+import { fileName, fileTicks, treeGroups, unexplainedLines, viewedCount } from "./model";
 import { VIEWED_LOOK } from "./ViewedChip";
 
 /** Props of the Files view's file tree. */
@@ -28,7 +28,6 @@ const SMALL = "block text-[11px] font-normal text-muted";
 
 const STATUS_NOTE: Partial<Record<PrFile["status"], string>> = { added: "new file", deleted: "deleted" };
 
-const name = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 const dir = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "/");
 
 function Glyph({ state }: { state: FileViewedState | null }) {
@@ -72,7 +71,7 @@ function Row({
           <Glyph state={file.viewed} />
           <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">
             <span className="sr-only">{dir(file.path)}</span>
-            {name(file.path)}
+            {fileName(file.path)}
           </span>
           <span className="shrink-0 font-mono text-[11px] font-normal">
             {file.added > 0 && <span className="text-add">+{file.added}</span>}

@@ -36,6 +36,7 @@ import { FileHeader, type ViewedControl } from "../../components/files/FileHeade
 import { FileTree } from "../../components/files/FileTree";
 import {
   displaySide,
+  fileName,
   flowsAt,
   hunkAt,
   hunkLabel,
@@ -71,27 +72,12 @@ import { DiffCode, errorText, useHideContextChanges, type CodeContext } from "..
 import { useCommentDrafts, useUnresolvedPosts } from "../tour/drafts";
 import { InspectorPane, type CommentLineState, type FilesInspector } from "../tour/InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "../tour/layout";
+import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "../tour/review";
 import { Workspace } from "../tour/Workspace";
 import { FileCode } from "./FileCode";
 
-const checksHref = (pr: { html_url: string }) => `${pr.html_url.replace(/\/+$/, "")}/checks`;
-const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 const short = (sha: string) => sha.slice(0, 7);
 const lastKey = (id: AnalysisId) => `diffpilot.files.last.${id}`;
-const transient = (error: unknown) =>
-  !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
-
-// Shortcuts are ignored while the user types or holds a modifier.
-function isTyping(event: KeyboardEvent): boolean {
-  const target = event.target as HTMLElement | null;
-  return (
-    event.altKey ||
-    event.ctrlKey ||
-    event.metaKey ||
-    target?.isContentEditable === true ||
-    ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName ?? "")
-  );
-}
 
 /** `/analyses/{id}/files` (brief §4.5): file tree, one file, Inspector; the same analysis as the Flows view. */
 export function FilesScreen() {
@@ -306,15 +292,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
       void navigate({ ...location, hash: filesHash(link) }, { replace: true });
     }
   }, [total, subject, file, location, navigate]);
-  // The review screen never scrolls the page; only the columns do.
-  useEffect(() => {
-    const style = document.documentElement.style;
-    const before = style.scrollbarGutter;
-    style.scrollbarGutter = "auto";
-    return () => {
-      style.scrollbarGutter = before;
-    };
-  }, []);
+  useNoPageScroll();
   useEffect(() => {
     const field =
       focusNext === "ask"
@@ -959,15 +937,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
           reviewed: tour.flows.filter((f) => isFlowReviewed(f, [...ticked])).length,
           total: tour.flows.length,
         }}
-        pendingCount={
-          pending.isSuccess
-            ? pending.data.commenting_available
-              ? pending.data.comments.length
-              : "unavailable"
-            : pending.isPending
-              ? "loading"
-              : undefined
-        }
+        pendingCount={pendingCountOf(pending)}
         onOpenPending={() => void navigate(`${flowsHref}#pending_review`)}
         onHelp={() => setHelpOpen(true)}
         view={{

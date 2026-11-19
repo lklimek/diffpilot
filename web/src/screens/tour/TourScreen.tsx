@@ -88,29 +88,11 @@ import {
 } from "./sequence";
 import { useNow } from "../../app/now";
 import { Workspace } from "./Workspace";
+import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "./review";
 import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
 import { useTourNotifications } from "../../app/workNotifications";
 
-/** The PR's checks page on GitHub, which the CI summary links to. */
-const checksHref = (pr: { html_url: string }) => `${pr.html_url.replace(/\/+$/, "")}/checks`;
-
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
-
-// Ignore shortcuts while the user types or uses modifier keys.
-function isTyping(event: KeyboardEvent): boolean {
-  const target = event.target as HTMLElement | null;
-  return (
-    event.altKey ||
-    event.ctrlKey ||
-    event.metaKey ||
-    target?.isContentEditable === true ||
-    ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName ?? "")
-  );
-}
-
-// A failure the next try may not have: the server or the network, not an answer about this request.
-const transient = (error: unknown) =>
-  !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
 
 const onStep = (c: PendingComment, step: Step) =>
   c.path === step.facts.file &&
@@ -365,15 +347,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     }
   }
 
-  // The review screen never scrolls the page: no reserved scrollbar gutter, the columns get the full width.
-  useEffect(() => {
-    const style = document.documentElement.style;
-    const before = style.scrollbarGutter;
-    style.scrollbarGutter = "auto";
-    return () => {
-      style.scrollbarGutter = before;
-    };
-  }, []);
+  useNoPageScroll();
 
   // Make a resumed position immediately shareable; the server remains the fallback without a fragment.
   useEffect(() => {
@@ -535,15 +509,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   });
 
   const pendingComments = pending.data?.comments ?? [];
-  const pendingCount = pending.isSuccess
-    ? pending.data.commenting_available
-      ? pending.data.incomplete
-        ? (`${pending.data.comments.length}+` as const)
-        : pending.data.comments.length
-      : ("unavailable" as const)
-    : pending.isPending
-      ? ("loading" as const)
-      : undefined;
+  const pendingCount = pendingCountOf(pending);
   const ctx: CodeContext = {
     hideContextChanges,
     analysisId,

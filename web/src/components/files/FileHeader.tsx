@@ -2,7 +2,7 @@ import type { Ref } from "react";
 import type { FileViewedState, PrFile } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
 import { busyTip } from "../button/button";
-import { sha256Hex, type PrLinkBase } from "../github/links";
+import { fileDiffUrl, type PrLinkBase } from "../github/links";
 import { GithubLink } from "../inspector/text";
 import { Tooltip } from "../tooltip/Tooltip";
 
@@ -42,10 +42,6 @@ const STATUS: Record<PrFile["status"], string> = {
 
 const VIEWED_TIP =
   "Your GitHub 'Viewed' mark for this file in this pull request (v). Read from GitHub when the review opens, saved to GitHub when you change it; marking it opens the next file. Separate from step ticks.";
-
-/** The file in the PR's changes view on GitHub. */
-export const fileDiffUrl = (pr: PrLinkBase, path: string) =>
-  `https://github.com/${pr.repo.owner}/${pr.repo.name}/pull/${pr.number}/changes#diff-${sha256Hex(path)}`;
 
 /** Header of the open file (brief §4.5): path, change, counts, GitHub link, Show old code, Viewed. */
 export function FileHeader({ file, pr, viewed, oldCode, headingRef }: FileHeaderProps) {

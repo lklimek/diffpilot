@@ -16,7 +16,7 @@ import { ProvenanceBadge } from "../badge/Badge";
 import { KindLabel } from "../badge/LlmLabel";
 import { FlagCard } from "../flag/FlagCard";
 import { sortedFlags } from "../flag/flags";
-import { githubLineUrl, type PrLinkBase } from "../github/links";
+import { fileDiffUrl, githubLineUrl, type PrLinkBase } from "../github/links";
 import { Collapsible } from "../inspector/Collapsible";
 import { StepDetails, type InspectorPanel } from "../inspector/Inspector";
 import type { SectionControl } from "../inspector/sectionState";
@@ -24,9 +24,9 @@ import { DiffSection, ThreadsSection } from "../inspector/StepSections";
 import { GithubLink } from "../inspector/text";
 import { rangeText } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
-import { fileDiffUrl } from "./FileHeader";
 import { FlowsAtLines, FlowsInFile, NoFlowPart } from "./FlowsAtLines";
 import {
+  fileName,
   fileParts,
   flowsAt,
   hunkLabel,
@@ -63,8 +63,6 @@ const WHERE =
   "Where these lines are explained: from the analysis plan, which places every changed line exactly once. A step may also show lines another flow explains.";
 const PER_STEP =
   "Behaviour, why, consequences, flags and assessment are per step: pick Details on a step above, or a ◆ in the code. A changed line without a ◆ has no LLM remark.";
-
-const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 /** A deterministic label of what the reader is looking at ("hunk", "your selection"). */
 function Kind({ text, tip }: { text: string; tip: string }) {

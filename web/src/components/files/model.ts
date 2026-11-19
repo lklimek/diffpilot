@@ -20,6 +20,9 @@ const count = (r: LineRange) => r.end_line - r.start_line + 1;
 const overlap = (r: LineRange, from: number, to: number) => r.start_line <= to && r.end_line >= from;
 
 /** The side the file is read on: the base commit for a deleted file, else the head. */
+/** The file name of a path (its last segment). */
+export const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+
 export const displaySide = (file: PrFile): LineSide => (file.status === "deleted" ? "base" : "head");
 
 /** The file's path on `side` (the old path of a renamed file at the base commit). */

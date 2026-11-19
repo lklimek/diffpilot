@@ -388,7 +388,9 @@ describe("Files links and selection edge cases", () => {
     ).toHaveAttribute("role", "status");
     await waitFor(() => expect(hashOf(router)).toBe("#lines?file=src/lib.rs&side=head"));
     expect(inspectorHeading()).toHaveTextContent("src/lib.rs");
-    await user().click(await within(screen.getByRole("main")).findByRole("button", { name: "Select line 13" }));
+    await user().click(
+      await within(screen.getByRole("main")).findByRole("button", { name: "Select line 13" }),
+    );
     expect(screen.queryByText(/is outside src\/lib\.rs/)).toBeNull();
   });
 
