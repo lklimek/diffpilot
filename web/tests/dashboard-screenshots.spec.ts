@@ -85,14 +85,14 @@ for (const [width, height] of [
         // itself (found).
         for (const [scenario, link] of [
           ["review-new", "Review"],
-          ["review-moved", "Open review"],
-          ["review-found", "Resume review"],
+          ["review-moved", "Open"],
+          ["review-found", "Open"],
         ] as const) {
           await openDashboard(page, scenario);
           await page
             .getByRole("listitem")
             .filter({ hasText: NC482 })
-            .getByRole("link", { name: link })
+            .getByRole("link", { name: link, exact: true })
             .click();
           if (scenario !== "review-found")
             await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();

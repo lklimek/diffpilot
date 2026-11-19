@@ -6,9 +6,9 @@ import { ANALYSIS_ID, expectTrustWording } from "./support";
 const open = (page: Page, scenario: string) =>
   page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=${scenario}`);
 const bar = (page: Page) => page.getByRole("progressbar", { name: "Analysis progress" });
-const openReview = (page: Page) => page.getByRole("link", { name: "Open review" });
+const openReview = (page: Page) => page.getByRole("link", { name: "Open", exact: true });
 
-test("planning: indeterminate bar, Planning flows…, Cancel analysis, no Open review", async ({ page }) => {
+test("planning: indeterminate bar, Planning flows…, Cancel analysis, no Open", async ({ page }) => {
   await open(page, "planning");
   await expect(page.getByText("Planning flows…")).toBeVisible();
   await expect(bar(page)).not.toHaveAttribute("aria-valuenow", /.*/);
@@ -20,7 +20,7 @@ test("planning: indeterminate bar, Planning flows…, Cancel analysis, no Open r
   await expectAccessible(page);
 });
 
-test("running: k of n, no Open review", async ({ page }) => {
+test("running: k of n, no Open", async ({ page }) => {
   await open(page, "running");
   await expect(page.getByText("2 of 5 flows analysed")).toBeVisible();
   await expect(bar(page)).toHaveAttribute("aria-valuenow", "2");
@@ -61,11 +61,13 @@ test("failed before any flow: plain description and Retry", async ({ page }) => 
   await expectTrustWording(page);
 });
 
-test("finished: n of n and Open review", async ({ page }) => {
+test("finished: n of n and Open", async ({ page }) => {
   await open(page, "finished");
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible();
   await expect(page.getByRole("button", { name: "Cancel analysis" })).toHaveCount(0);
   await expect(openReview(page)).toHaveAttribute("href", `/analyses/${ANALYSIS_ID}`);
+  await expect(openReview(page)).toHaveAccessibleDescription(/Starts nothing: no analysis, no LLM use/);
+  await expect(page.getByRole("group", { name: "Analysis actions" }).getByRole("link")).toHaveCount(0);
   await expectTooltips(page);
   await expectAccessible(page);
 });
@@ -206,7 +208,7 @@ test("paused run shows the resume time instead of an ETA", async ({ page }) => {
   await expect(page.getByRole("list", { name: "Analysis stages" })).toBeVisible();
 });
 
-test("plan ready, nothing analysed by itself: says so, Open review and Analyse all remaining flows", async ({
+test("plan ready, nothing analysed by itself: says so, Open and Analyse all remaining flows", async ({
   page,
 }) => {
   await open(page, "lazy-flows");

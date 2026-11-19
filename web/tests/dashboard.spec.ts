@@ -343,13 +343,13 @@ test.describe("review start from a PR row (msw)", () => {
 
   test("found: the row opens the review of the current head", async ({ page }) => {
     await page.goto("/?dashboard=review-found");
-    await row(page).getByRole("link", { name: "Resume review" }).click();
+    await row(page).getByRole("link", { name: "Open", exact: true }).click();
     await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}`));
   });
 
   test("moved: the review start page says the PR has moved", async ({ page }) => {
     await page.goto("/?dashboard=review-moved");
-    await row(page).getByRole("link", { name: "Open review" }).click();
+    await row(page).getByRole("link", { name: "Open", exact: true }).click();
     await expect(page.getByLabel(/pull request URL/i)).toHaveValue(PR_URL);
     await expect(page.getByText("The PR has moved.")).toBeVisible();
   });

@@ -33,12 +33,12 @@ interface AnalysisProgressProps {
   /** State of the analysis (brief §4.2). */
   state: AnalysisState;
   reviewReady?: boolean;
-  /** The user has started this review (`has_my_state`): "Resume review", else "Open review". */
+  /** The user has started this review (`has_my_state`): only the tooltip differs. */
   reviewStarted?: boolean;
   /** Whole-run facts; absent on older servers. */
   progress?: RunProgress;
   usage?: UsageTotals | null;
-  /** Where "Resume review" / "Open review" leads once planning and PR context are accepted. */
+  /** Where "Open" leads once planning and PR context are accepted. */
   reviewHref: string;
   /** A cancel or retry request is running: the actions are disabled. */
   busy: boolean;
@@ -236,7 +236,7 @@ export function AnalysisProgress({
   const stage = parked
     ? backgroundAnalysis === false
       ? "The plan is ready. Nothing is being analysed. Choose a flow to analyse, or analyse all remaining flows."
-      : `No flow job is running. ${reviewStarted ? "Resume" : "Open"} the review to choose a flow.`
+      : "No flow job is running. Open the review to choose a flow."
     : stageText(state);
   const started =
     (state.state === "planning" || state.state === "running") && state.stage ? state.stage.started_at : null;
@@ -274,73 +274,78 @@ export function AnalysisProgress({
         <div className="min-w-0 flex-1">
           {!uncounted && <Bar state={state} working={working} progress={progress} planned={planned} />}
         </div>
-        <span className="flex flex-none flex-wrap gap-2">
-          {live && state.state !== "failed" && (userPaused ? onResume : onPause) && (
-            <Tooltip
-              tip={busyTip(
-                userPaused
-                  ? "Continues with the next job; saved results are kept."
-                  : "The step that is running finishes first. Pause keeps the plan, analysed flows and agent session.",
-                busy,
-              )}
-            >
-              <button
-                type="button"
-                aria-disabled={busy || undefined}
-                className={buttonClass("plain")}
-                onClick={() => !busy && (userPaused ? onResume?.() : onPause?.())}
+        <span className="flex flex-none flex-wrap items-center gap-x-4 gap-y-2">
+          <span role="group" aria-label="Analysis actions" className="flex flex-wrap gap-2">
+            {live && state.state !== "failed" && (userPaused ? onResume : onPause) && (
+              <Tooltip
+                tip={busyTip(
+                  userPaused
+                    ? "Continues with the next job; saved results are kept."
+                    : "The step that is running finishes first. Pause keeps the plan, analysed flows and agent session.",
+                  busy,
+                )}
               >
-                {userPaused ? "Resume" : "Pause analysis"}
-              </button>
-            </Tooltip>
-          )}
-          {live && (
-            <Tooltip tip={busyTip(cancelText, busy)}>
-              <button
-                type="button"
-                aria-disabled={busy || undefined}
-                onClick={() => !busy && setConfirmCancel(true)}
-                className={buttonClass("danger")}
-              >
-                Cancel analysis
-              </button>
-            </Tooltip>
-          )}
-          {state.state === "failed" && state.reason !== "configuration" && (
-            <Tooltip tip={busyTip("Runs the failed analysis again.", busy)}>
-              <button
-                type="button"
-                aria-disabled={busy || undefined}
-                onClick={() => !busy && onRetry()}
-                className={buttonClass("primary")}
-              >
-                Retry
-              </button>
-            </Tooltip>
-          )}
+                <button
+                  type="button"
+                  aria-disabled={busy || undefined}
+                  className={buttonClass("plain")}
+                  onClick={() => !busy && (userPaused ? onResume?.() : onPause?.())}
+                >
+                  {userPaused ? "Resume" : "Pause analysis"}
+                </button>
+              </Tooltip>
+            )}
+            {live && (
+              <Tooltip tip={busyTip(cancelText, busy)}>
+                <button
+                  type="button"
+                  aria-disabled={busy || undefined}
+                  onClick={() => !busy && setConfirmCancel(true)}
+                  className={buttonClass("danger")}
+                >
+                  Cancel analysis
+                </button>
+              </Tooltip>
+            )}
+            {state.state === "failed" && state.reason !== "configuration" && (
+              <Tooltip tip={busyTip("Runs the failed analysis again.", busy)}>
+                <button
+                  type="button"
+                  aria-disabled={busy || undefined}
+                  onClick={() => !busy && onRetry()}
+                  className={buttonClass("primary")}
+                >
+                  Retry
+                </button>
+              </Tooltip>
+            )}
+            {reviewReady && state.state === "running" && onBackground && backgroundAnalysis !== undefined && (
+              <span className="flex items-center gap-2">
+                <AnalyseAllButton
+                  enabled={backgroundAnalysis}
+                  busy={busy}
+                  hint={`${state.total - state.done} ${state.total - state.done === 1 ? "flow" : "flows"} not analysed yet.`}
+                  onChange={onBackground}
+                />
+                <span className="text-xs text-muted">{state.total - state.done} not analysed</span>
+              </span>
+            )}
+          </span>
           {(state.state === "finished" || reviewReady) && (
             <Tooltip
               tip={
                 reviewStarted
-                  ? "Returns to your review of this analysis where you left it."
-                  : "Opens the review of this analysis."
+                  ? "Opens your review of this analysis where you left it; ticks and answers are kept. Starts nothing: no analysis, no LLM use."
+                  : "Opens the review of this analysis. Starts nothing: no analysis, no LLM use."
               }
             >
-              <a href={reviewHref} className={buttonClass("primary")}>
-                {reviewStarted ? "Resume review" : "Open review"}
+              <a
+                href={reviewHref}
+                className="border-l border-border py-1.5 pl-4 font-semibold whitespace-nowrap text-accent no-underline hover:underline"
+              >
+                Open <span aria-hidden="true">→</span>
               </a>
             </Tooltip>
-          )}
-          {reviewReady && state.state === "running" && onBackground && backgroundAnalysis !== undefined && (
-            <span className="flex items-center gap-2">
-              <AnalyseAllButton
-                enabled={backgroundAnalysis}
-                busy={busy}
-                hint={`${state.total - state.done} ${state.total - state.done === 1 ? "flow" : "flows"} not analysed yet.`}
-                onChange={onBackground}
-              />
-              <span className="text-xs text-muted">{state.total - state.done} not analysed</span>
-            </span>
           )}
         </span>
       </div>

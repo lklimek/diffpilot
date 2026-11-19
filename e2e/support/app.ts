@@ -120,7 +120,7 @@ export async function finishedReview(page: Page): Promise<string> {
     const id = await startAnalysis(page);
     await analyseAllRemainingFlows(page);
     await waitForState(page, id, "finished");
-    await page.getByRole("link", { name: "Open review" }).click();
+    await page.getByRole("link", { name: "Open", exact: true }).click();
   }
   await expect(page).toHaveURL(/\/analyses\/[0-9a-f-]+$/);
   await navTo(page, /^PR context$/);
@@ -295,7 +295,7 @@ export const REQUIRED_TIPS: RequiredTip[] = [
   // Progress (AnalysisProgress.tsx) and Home (PrUrlForm.tsx).
   {
     screen: PROGRESS,
-    what: "progress action (Cancel, Retry, Resume review)",
+    what: "progress action (Cancel, Retry, Open)",
     selector: `${PROGRESS} button, ${PROGRESS} a[href]`,
     min: 1,
   },
@@ -506,13 +506,9 @@ export function expectRetriedOnlyAfter(stack: Stack, resumesAt: number, kind: st
 /** Runs a read-only query on the server database of a local stack; rows as `|`-separated lines. */
 export function sql(stack: Stack, query: string): string[] {
   if (!stack.stateDir) throw new Error("the database of a stack started elsewhere is out of reach");
-  return execFileSync(
-    "sqlite3",
-    ["-readonly", join(stack.stateDir, "server", "diffpilot.sqlite"), query],
-    {
-      encoding: "utf8",
-    },
-  )
+  return execFileSync("sqlite3", ["-readonly", join(stack.stateDir, "server", "diffpilot.sqlite"), query], {
+    encoding: "utf8",
+  })
     .split("\n")
     .filter(Boolean);
 }

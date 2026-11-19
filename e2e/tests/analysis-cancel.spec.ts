@@ -64,7 +64,7 @@ test("failure before any flow: plain description; Retry runs a new round to the 
   await checkScreen(page);
   await waitForState(page, id, "finished");
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open review" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Cancel analysis" })).toHaveCount(0);
   await checkScreen(page);
 });

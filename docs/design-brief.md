@@ -238,7 +238,7 @@ States every screen needs: loading, empty, error.
 One field (PR URL) and "Analyze"; signed-out state "Sign in with GitHub"; error states for a URL that is not
 a PR, a repository without the GitHub App installed, and a GitHub login the tenant does not allow. After a
 cancelled analysis Home shows "Analysis cancelled — analyze again". A PR with an existing analysis is
-resumed ("Resume review": ticks, answers and last viewed block kept, nothing re-analysed). If the head
+opened ("Open": ticks, answers and last viewed block kept, nothing re-analysed). If the head
 moved: banner "This analysis is for `abc123`; the PR is now at `def456`" with "Re-analyze" (fresh analysis,
 ticks not carried over) and a link to open the old analysis.
 
@@ -254,7 +254,7 @@ otherwise "No estimate yet"; a pause shows its resume time instead. No agent act
 | Running | bar, "k of n flows analysed", Cancel analysis |
 | Paused | Usage limit: resume time; user pause: who paused and when, Resume |
 | Failed | which flow failed, or a plain description of what failed before any flow existed; Retry |
-| Finished | "n of n flows analysed", Open review |
+| Finished | "n of n flows analysed", Open |
 
 The review opens only when the analysis has finished. Pause analysis lets the running job finish, keeps
 its result and session, and submits no further job until Resume, including after restarts. A user pause
@@ -659,9 +659,11 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   behind a one-line header naming its file and lines; its explanation stays visible. The expanded state is not
   carried to another step. Supersedes "impact outside the diff inline under the step as real code" (§4.3 Step
   block).
-- **Resume.** The button that returns to a review the user has already started (saved review state) reads
-  "Resume review" (as §4.1), on Home and on the progress screen; "Open review" remains for a review the user has
-  not started. Supersedes "Open review" for a started review in §4.2.
+- **Open.** The link that goes to an existing review reads "Open", whether or not the user has started it, on
+  Home, the progress screen and the dashboard. It only navigates: its tooltip says it starts nothing (no
+  analysis, no LLM use) and, for a started review, that ticks and answers are kept. On the progress screen it
+  sits apart from the action buttons, as a navigation link with an arrow. "Resume" is only the button that
+  continues a paused analysis. Supersedes "Resume review" and "Open review" of §4.1 and §4.2.
 - **Comment drafts.** An unsent comment text is kept per line in the browser tab (sessionStorage, per user login
   and analysis) so navigation and a reload do not lose it. It is dropped only when the comment is added, when its
   text is cleared, or on an explicit sign-out by that user (that login's drafts). An expired session or a 401
@@ -674,7 +676,7 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
 
 - **Start analysis.** On Home, Enter or "Check" only looks the PR up (busy state on the field). The result
   appears as its own card under the field, announced and scrolled into view: PR title and number, the size
-  warning with its estimate when it applies, an existing analysis with "Open review" / "Resume review", or the
+  warning with its estimate when it applies, an existing analysis with "Open", or the
   lookup error. Nothing starts without the card's primary button "Start analysis" (it takes the focus, so a
   second, deliberate Enter starts it; a held key or one in the moment the card appears does not); with a size
   warning or without commenting it reads "Start analysis anyway" below the warning, and the card's findings
@@ -683,7 +685,7 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   and "Re-analyze", and "Analysis cancelled — analyze again", in §4.1 and the separate "Analyze anyway" step.
 - **Language of an analysis.** Wherever an analysis is offered or shown (Home's check card, the progress screen
   and Tour top bar) a small tag names the language of its LLM texts ("EN" / "PL" / "RU"). An existing analysis in
-  another language than the user's setting is still offered first ("Open review"); a secondary
+  another language than the user's setting is still offered first ("Open"); a secondary
   "Analyse again in <language>" starts one in the user's language.
 - **Flows on request.** Flows are analysed only when the user asks: "Analyse this flow" on a flow not analysed
   yet (opening it requests nothing), or "Analyse all remaining flows", the one opt-in for everything (the
@@ -691,7 +693,7 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   panel and on the progress screen (which shows the number of remaining flows only, no changed lines). The web
   reads the switch from the analysis and assumes no default. With
   nothing queued or running: "Nothing is being analysed. Choose a flow to analyse, or analyse all remaining
-  flows."; the progress screen says the plan is ready and offers "Open review". Supersedes "Opening a pending
+  flows."; the progress screen says the plan is ready and offers "Open". Supersedes "Opening a pending
   flow requests it" and "the background switch defaults on" in the 2026-11-17 amendment of §4.2.
 - **Sign-out.** Settings has "Sign out": it ends the session in this browser (`POST /auth/logout`; a session
   that had already ended counts as signed out), removes that login's comment drafts and unconfirmed posts from

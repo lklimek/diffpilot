@@ -68,7 +68,7 @@ test("head moved: comment refused with pr_head_changed, Start analysis, the supe
   expect(fresh).not.toBe(old);
   await analyseAllRemainingFlows(page);
   await waitForState(page, fresh, "finished");
-  await page.getByRole("link", { name: "Open review" }).click();
+  await page.getByRole("link", { name: "Open", exact: true }).click();
   await expect(page.getByRole("banner")).toContainText(moved.slice(0, 7));
   await openStep(page, 1, 2);
   await expect(nav(page).getByRole("button", { name: /^Step 2: .*, reviewed$/ })).toHaveCount(0);

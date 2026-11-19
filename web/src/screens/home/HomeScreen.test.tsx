@@ -125,7 +125,7 @@ describe("Home (brief §4.1)", () => {
     expect(screen.queryByRole("region", { name: "Pull request check" })).toBeNull();
   });
 
-  it("an existing analysis in another language: tagged, Open review first, Analyse again in English", async () => {
+  it("an existing analysis in another language: tagged, Open first, Analyse again in English", async () => {
     setScenario("existing-other-language");
     let created = 0;
     server.events.on("request:start", ({ request }) => {
@@ -137,7 +137,7 @@ describe("Home (brief §4.1)", () => {
     expect(within(result).getByText("PL")).toHaveAccessibleDescription(
       "LLM texts of this analysis are in Polish.",
     );
-    const open = within(result).getByRole("link", { name: "Open review" });
+    const open = within(result).getByRole("link", { name: "Open" });
     await waitFor(() => expect(open).toHaveFocus());
     const again = within(result).getByRole("button", { name: "Analyse again in English" });
     expect(again).toHaveAccessibleDescription(/English/);
@@ -225,9 +225,8 @@ describe("Home (brief §4.1)", () => {
     await analyze();
     const found = await banner("Analysis found.", "status");
     expect(found).toHaveTextContent("This PR head is already analysed.");
-    // Not started by this user: nothing to resume.
-    expect(within(found).queryByRole("link", { name: "Resume review" })).toBeNull();
-    expect(within(found).getByRole("link", { name: "Open review" })).toHaveAttribute(
+    expect(within(found).queryByRole("link", { name: /resume/i })).toBeNull();
+    expect(within(found).getByRole("link", { name: "Open" })).toHaveAttribute(
       "href",
       `/analyses/${analysis.id}`,
     );
@@ -382,15 +381,15 @@ it("only promises personal state when the server confirms it exists", async () =
   await analyze();
   const found = await banner("Analysis found.", "status");
   expect(found).toHaveTextContent("Your ticks, answers and last viewed block are kept");
-  expect(within(found).getByRole("link", { name: "Resume review" })).toHaveAttribute(
+  expect(within(found).getByRole("link", { name: "Open" })).toHaveAttribute(
     "href",
     `/analyses/${analysis.id}`,
   );
 });
 
 it.each([
-  [true, "Resume review"],
-  [false, "Open review"],
+  [true, "Open"],
+  [false, "Open"],
 ])("a review-ready analysis in progress (started: %s) offers %s", async (started, label) => {
   server.use(
     http.post("/api/v1/pr/resolve", () =>
