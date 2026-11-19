@@ -4,6 +4,7 @@ description = "Development and test only: fake GitHub serving the recorded fixtu
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 contracts.workspace = true

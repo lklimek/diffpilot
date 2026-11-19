@@ -4,6 +4,7 @@ description = "diffpilot job runner: executes agent jobs claimed from the server
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "diffpilot-runner"

@@ -4,6 +4,7 @@ description = "Development and test only: fake MemCan (MCP over streamable HTTP)
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 axum.workspace = true
