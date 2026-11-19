@@ -270,6 +270,13 @@ Accepted flows support review state, comments and private Ask immediately. Pause
 retain their existing semantics. This supersedes the completion barrier above because the measured large-PR
 run produced about 184k output tokens in over 80 minutes before any review was readable.
 
+Owner request (2026-11-19): with "Notify me when work finishes" on (Settings, per browser, off by default; the
+browser's permission is asked when it is turned on), an open diffpilot tab that is hidden or unfocused shows a browser
+notification when the user's Ask answer arrives or fails, a flow is analysed or fails, the review becomes ready, or
+the analysis finishes or fails: PR and flow or step only, never answer text; LLM answers are labelled as such; one
+per event across tabs; a click focuses the tab and opens the step or flow. No service worker: closed tabs, http
+outside localhost and mobile browsers get none.
+
 Owner-approved assessment amendment (2026-11-17): the lowest band needs only its band and one sentence
 reason; higher bands retain the full assessment. Detailed fields are optional in the data model and omitted
 for concise low assessments. Assessments remain collapsed by default; no step-count cap or per-kind effort.

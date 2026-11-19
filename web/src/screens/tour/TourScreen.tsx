@@ -77,6 +77,7 @@ import {
 import { useNow } from "../../app/now";
 import { Workspace } from "./Workspace";
 import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
+import { useTourNotifications } from "../../app/workNotifications";
 
 /** The PR's checks page on GitHub, which the CI summary links to. */
 const checksHref = (pr: { html_url: string }) => `${pr.html_url.replace(/\/+$/, "")}/checks`;
@@ -206,6 +207,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   useTabActivity("analysis", analysisActivity(tour.analysis.state));
   useTabActivity("ask", questionsActivity(questions.data ?? []));
   usePrTabSubject(tour.analysis.pr);
+  useTourNotifications(tour, questions.data);
   const ask = useAskQuestion(analysisId);
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
