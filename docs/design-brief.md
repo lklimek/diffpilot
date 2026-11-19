@@ -46,7 +46,7 @@ can judge the PR at project scale, not only line by line.
   not evidence of no defects."
 - **Verdict after evidence.** Evidence (behaviour, why, consequences, call hierarchy) comes before
   assessment; assessment is collapsed until clicked. LLM suspicions are phrased as questions to check, not
-  verdicts. The hover tooltip on a highlight states only the was → is fact: no risk, no verdict.
+  verdicts. The remark marker's popover (opened by click) states the was → is fact of a behaviour remark: no risk, no verdict; a highlight has no hover tooltip.
 - **No numeric confidence** anywhere (no decimals, no percentages). Observed facts carry a line reference;
   inferences are marked as inferences; hedges survive shortening.
   Review ticks must not become points or a percentage score.
@@ -313,7 +313,7 @@ clicking anywhere on the strip restores it.
 - A moved block with identical text reads "Body text identical; call site changed in flow 1".
 
 **Code view.** Own line renderer. Gutter: neutral mark on every changed line; LLM colouring only on annotated
-ranges; markers for LLM remark, deleted site, GitHub thread, own comment. Hover on a highlight: was → is only.
+ranges; markers for LLM remark, deleted site, GitHub thread, own comment. A highlight has no hover tooltip; clicking its remark marker opens a popover with Was and Is as separate blocks.
 Legend (shown in `?`):
 
 | Drawing | Meaning |

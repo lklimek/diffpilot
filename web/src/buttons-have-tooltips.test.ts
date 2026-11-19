@@ -13,6 +13,12 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
       "Line numbers: one per displayed line (hundreds); each has an aria-label and a native title naming the action.",
   },
   {
+    file: "components/code-view/CodeView.tsx",
+    match: "aria-describedby={descriptionId}",
+    reason:
+      "Highlight label: a hover tooltip would cover the code; its was → is is its accessible description and the remark marker's popover.",
+  },
+  {
     file: "components/code-view/markers.tsx",
     match: 'data-mark="remark"',
     reason:

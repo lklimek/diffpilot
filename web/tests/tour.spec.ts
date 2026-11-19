@@ -67,7 +67,9 @@ test("step block: gutter marks, one highlight with was → is, collapsed assessm
   const mark = page.locator("[role=mark]");
   await expect(mark).toHaveCount(1);
   await mark.hover();
-  await expect(page.getByRole("tooltip").filter({ visible: true })).toContainText("Was: ");
+  await expect(page.getByRole("tooltip").filter({ visible: true })).toHaveCount(0);
+  await page.locator('[data-mark="remark"]').first().hover();
+  await expect(page.getByRole("dialog", { name: /^LLM remarks? at line/ })).toContainText("Was: ");
   const summary = page.getByRole("button", { name: /Assessment$/ });
   await expect(summary).toHaveAttribute("aria-expanded", "false");
   await summary.click();
@@ -202,11 +204,13 @@ test("agent_output_xss_renders_as_text", async ({ page }) => {
   await expect(inspector.getByText(`${markup} answer`)).toBeVisible();
   await expectInert();
 
-  // Step 5: highlight tooltip (was → is) and the thread marker's popover.
+  // Step 5: the highlight has no tooltip (was → is is in the remark popover) and the thread marker's popover.
   await nav.getByRole("button", { name: /^Step 5:/ }).click();
   const mark = page.locator("[role=mark]").first();
   await mark.hover();
-  await expect(page.getByRole("tooltip").filter({ visible: true })).toContainText(`Was: ${markup}`);
+  await expect(page.getByRole("tooltip").filter({ visible: true })).toHaveCount(0);
+  await page.locator('[data-mark="remark"]').first().hover();
+  await expect(page.getByRole("dialog", { name: /^LLM remarks? at line/ })).toContainText(`Was: ${markup}`);
   await page.locator('[data-mark="thread"]').first().hover();
   await expect(page.getByRole("dialog", { name: /^GitHub threads? at line/ })).toContainText(
     markup.slice(0, 10),

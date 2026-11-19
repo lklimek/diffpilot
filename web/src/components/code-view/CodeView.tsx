@@ -112,6 +112,7 @@ interface LineContext {
   onAskLine?: (target: CommentTarget) => void;
   onFocusLine: (key: string) => void;
   onShowInInspector?: (target: MarkerTarget) => void;
+  unrated: boolean;
   otherThreadStep?: (thread: GithubThread) => string | null;
 }
 
@@ -207,7 +208,12 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
             />
           )}
           {remarks && remarks.length > 0 && (
-            <RemarkMarker annotations={remarks} line={line} onShowInInspector={ctx.onShowInInspector} />
+            <RemarkMarker
+              annotations={remarks}
+              line={line}
+              unrated={ctx.unrated}
+              onShowInInspector={ctx.onShowInInspector}
+            />
           )}
           {threads && (
             <ThreadMarker
@@ -297,41 +303,40 @@ function HighlightRun({ annotations, band, selected, onSelect, children }: Highl
     selected ? "rounded-sm outline-2 -outline-offset-2 outline-accent" : ""
   }`;
   return (
-    <Tooltip tip={description} className="block">
-      <div
-        role="mark"
-        data-segment
-        data-highlight
-        data-band={band ?? "none"}
-        data-bar={look.pattern}
-        data-flag={flag ?? undefined}
-        data-selected={selected || undefined}
-        onClick={onSelect && (() => onSelect(ids))}
-        className={`${SEGMENT} ${flag ? flagBar(flag, band) : look.bar} ${onSelect ? "cursor-pointer" : "cursor-help"}`}
-      >
-        <span id={descriptionId} hidden>
-          {description}
+    <div
+      role="mark"
+      aria-describedby={descriptionId}
+      data-segment
+      data-highlight
+      data-band={band ?? "none"}
+      data-bar={look.pattern}
+      data-flag={flag ?? undefined}
+      data-selected={selected || undefined}
+      onClick={onSelect && (() => onSelect(ids))}
+      className={`${SEGMENT} ${flag ? flagBar(flag, band) : look.bar} ${onSelect ? "cursor-pointer" : ""}`}
+    >
+      <span id={descriptionId} hidden>
+        {description}
+      </span>
+      {onSelect ? (
+        <button
+          type="button"
+          aria-describedby={descriptionId}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelect(ids);
+          }}
+          className={`${labelClass} cursor-pointer`}
+        >
+          {text}
+        </button>
+      ) : (
+        <span tabIndex={0} aria-describedby={descriptionId} className={labelClass}>
+          {text}
         </span>
-        {onSelect ? (
-          <button
-            type="button"
-            aria-describedby={descriptionId}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelect(ids);
-            }}
-            className={`${labelClass} cursor-pointer`}
-          >
-            {text}
-          </button>
-        ) : (
-          <span tabIndex={0} aria-describedby={descriptionId} className={labelClass}>
-            {text}
-          </span>
-        )}
-        {children}
-      </div>
-    </Tooltip>
+      )}
+      {children}
+    </div>
   );
 }
 
@@ -518,7 +523,7 @@ export function moveLineFocus(event: KeyboardEvent<HTMLElement>) {
 
 /**
  * Line renderer of one range (brief §4.3 Code view): green/red fill and +/− on changed lines (`CHANGE_LOOK`), a
- * remark bar in its own column (`REMARK_LOOK`; hover: was → is only), `≠` on differing moved lines, markers,
+ * remark bar in its own column (`REMARK_LOOK`; no hover tooltip: was → is is in the marker's popover), `≠` on differing moved lines, markers,
  * removed code inline, hidden comment/import lines folded in place.
  */
 export function CodeView({
@@ -668,6 +673,7 @@ export function CodeView({
     onAskLine,
     onFocusLine: setFocusKey,
     onShowInInspector,
+    unrated: band === null,
     otherThreadStep,
   };
   for (const t of threads) {
