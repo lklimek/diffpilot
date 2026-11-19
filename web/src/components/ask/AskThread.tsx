@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef } from "react";
 import type { AskAnchor, AskQuestion, Evidence, StepId } from "../../api/generated/types";
 import type { QuestionPlace } from "../questions/QuestionsBlock";
+import { rangeText } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Answer } from "./AskAnswers";
 
@@ -131,7 +132,7 @@ export function AskThread({
                     : placeOf(q.step_id);
               return (
                 <li key={q.id} className="grid min-w-0 gap-1 [overflow-wrap:anywhere]">
-                  {!place && scope === "conversation" && q.anchor.kind === "lines" ? (
+                  {!place && !filter && q.anchor.kind === "lines" ? (
                     <span className="text-[11.5px] text-muted">On {linesLabel(q.anchor)}</span>
                   ) : place === null ? (
                     <span className="text-[11.5px] text-muted">
@@ -183,8 +184,8 @@ export function AskThread({
   );
 }
 
-/** `path:start-end` (or the path for a whole file) of a question asked about lines, as Ask references lines. */
+/** `path:start–end` (or the path for a whole file) of a question asked about lines. */
 function linesLabel(anchor: Extract<AskAnchor, { kind: "lines" }>): string {
-  const lines = anchor.range ? `:${anchor.range.start_line}-${anchor.range.end_line}` : "";
+  const lines = anchor.range ? `:${rangeText(anchor.range)}` : "";
   return `${anchor.path}${lines}${anchor.side === "base" ? " (old code)" : ""}`;
 }

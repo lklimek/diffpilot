@@ -130,7 +130,7 @@ describe("AskThread: the analysis's Ask conversation as one thread", () => {
         ]}
       />,
     );
-    expect(screen.getByText("On src/a.rs:3-9")).toBeInTheDocument();
+    expect(screen.getByText("On src/a.rs:3–9")).toBeInTheDocument();
     expect(screen.getByText("On src/b.rs (old code)")).toBeInTheDocument();
     expect(screen.queryByText("On a step that is not part of these flows")).toBeNull();
   });

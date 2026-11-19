@@ -353,7 +353,7 @@ describe("Files Inspector panels (proposal §3)", () => {
       expect(found).not.toBeNull();
       return found!;
     });
-    await userEvent.setup().click(within(card).getByRole("button", { name: "Use as review comment" }));
+    await userEvent.setup().click(await within(card).findByRole("button", { name: "Use as review comment" }));
     const composer = await within(inspector()).findByRole("textbox", { name: /^Comment on / });
     expect(composer).toHaveAccessibleName("Comment on src/rpc/client.rs:99");
     expect((composer as HTMLTextAreaElement).value).toMatch(/^LLM-suggested — review before posting/);
@@ -373,7 +373,7 @@ describe("Files Inspector panels (proposal §3)", () => {
       return found!;
     });
     expect(document.querySelector('[data-line="170"][data-side="head"]')).toBeNull();
-    await userEvent.setup().click(within(card).getByRole("button", { name: "Use as review comment" }));
+    await userEvent.setup().click(await within(card).findByRole("button", { name: "Use as review comment" }));
     const composer = await within(inspector()).findByRole("textbox", { name: /^Comment on / });
     expect(composer).toHaveAccessibleName("Comment on src/rpc/client.rs:99–170");
   });

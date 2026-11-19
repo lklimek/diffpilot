@@ -30,6 +30,6 @@ describe("AskThread with a filter key no longer offered", () => {
         isCurrent={() => false}
       />,
     );
-    expect(screen.getByText("On src/a.rs:3-9")).toBeInTheDocument();
+    expect(screen.getByText("On src/a.rs:3–9")).toBeInTheDocument();
   });
 });
