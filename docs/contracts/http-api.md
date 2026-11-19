@@ -205,10 +205,19 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   step of the Tour, `not_found` otherwise; optional `lines` inside the step's range) or `lines` (`path` of a file
   of the pull request on `side`; `range` within the file, or none for the whole file). Lines are 1-based,
   `start_line ≤ end_line`, at most `AskAnchor::MAX_LINES` (2000); anything else is `invalid_request`. The step
-  route stores a `step` anchor without lines. `AskQuestion.anchor` is always set; `step_id` only for a step anchor.
+  route stores a `step` anchor without lines. Also `flow` (`flow_id` of a flow with a stored analysis, `not_found`
+  otherwise) and `pr` (the whole pull request). `AskQuestion.anchor` is always set; `step_id` only for a step anchor.
   A lines question's job gets the lines, their classic diff (three lines of context, clipped), the owners of their
-  changed lines from R12 and the overlapping steps in summary; its context pack those steps in full. Sessions as
-  ADR-004.
+  changed lines from R12 and the overlapping steps in summary (chosen at submit and stored with the question); its
+  context pack those steps in full. A flow question's job gets the flow's introduction and steps in summary, its
+  pack the flow in full; a PR question's job gets the plan's flows and the PR context (each clipped), its pack the
+  usual stored results. Packs are built at claim from stored documents only. Sessions as ADR-004.
+  **Follow-ups** (v1.2): `parent_id` names a question of the same user on the same analysis (else `not_found`, as
+  for a foreign question); the follow-up joins the thread of that question's first question (one level:
+  `AskQuestion.parent_id` is always the first question) and must repeat its `anchor` (else `invalid_request`).
+  Limits count follow-ups like any question. The job's prompt carries the thread's earlier questions of this user
+  with their answers, oldest first: the first question and the latest follow-ups (at most 6), each answer clipped to
+  4000 characters, at most 32 KiB, with a note on omitted ones (ADR-004 addendum 2026-11-19).
 - **Files** (R12, v1.2). Every file of the pull request in diff order: `path`, `old_path` (renames), `status`,
   `binary`, `added`/`removed`, `group` (`code`, or `not_analysed` with the path rule's category, badge and rule),
   `not_rendered` (`too_large`, `generated`, `binary`: the code of that file is never shown), `viewed`, and `hunks` (the diff

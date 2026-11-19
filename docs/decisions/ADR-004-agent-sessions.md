@@ -101,3 +101,17 @@ rewritable migration); old analytic references must not be reused because they m
   PR context + 2 flows) every model request re-read about 300k tokens, and answers took 70–115 s against about
   30 s on a 100k-token session. The removal of forced compaction above stays valid for analytic jobs (35–147 s per
   job); one compaction per working fork is paid once per user and analytic generation.
+
+## Addendum 2026-11-19: Ask threads carry their context in the job (owner decision)
+
+- **Decision.** A follow-up under an Ask question (one level: every follow-up names its thread's first question)
+  carries its thread in the `ask` job's prompt: the asker's earlier questions of that thread with their answers,
+  oldest first. The first question always stays; then the latest follow-ups (at most 6) that fit 32 KiB, each answer
+  clipped to 4000 characters, with a note on omitted ones.
+- **Reason.** The working session holds the thread only while it lives. A re-fork after the analytic generation
+  advanced, a lost working archive or a context pack would drop it; the owner requires that a follow-up remembers
+  the earlier questions and answers of its thread. Putting the thread in the job makes it independent of the
+  session; the cost is bounded by the limits above.
+- **Context packs stay bounded and built from stored documents only** (no Tour or diff work at claim): a lines
+  question's touched steps are chosen at submit and stored with the question; a flow question's pack holds that flow
+  in full within the asked-flow budget; a PR question's pack holds the usual stored results.
