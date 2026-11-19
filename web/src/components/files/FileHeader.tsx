@@ -1,5 +1,6 @@
 import type { Ref } from "react";
 import type { FileViewedState, PrFile } from "../../api/generated/types";
+import { ProvenanceBadge } from "../badge/Badge";
 import { busyTip } from "../button/button";
 import { sha256Hex, type PrLinkBase } from "../github/links";
 import { GithubLink } from "../inspector/text";
@@ -65,6 +66,7 @@ export function FileHeader({ file, pr, viewed, oldCode, headingRef }: FileHeader
             {STATUS[file.status]}
           </span>
         </Tooltip>
+        {file.group.kind === "not_analysed" && <ProvenanceBadge badge={file.group.badge} />}
         {file.old_path && <span className="text-[12px] text-muted">from {file.old_path}</span>}
         <span className="font-mono text-[12px]">
           <span className="text-add">+{file.added}</span> <span className="text-high">−{file.removed}</span>

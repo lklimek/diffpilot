@@ -79,6 +79,14 @@ describe("Files view model", () => {
       id: "h19",
       step: "f1.5",
     });
+    // A step that has no lines in the hunk at the line does not narrow it.
+    for (const step of ["f9.9", "f2.1"])
+      expect(subjectOf(client, { file: client.path, side: "head", line: 99, step })).toEqual({
+        kind: "lines",
+        side: "head",
+        from: 99,
+        to: 99,
+      });
   });
 
   it("lists every flow and step of a hunk: explained in, also shown in, in tour order", () => {

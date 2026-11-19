@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from "react";
-import type { AnalysisState, FlowId, HunkPart, LineRange, StepId } from "../../api/generated/types";
+import type { AnalysisState, Flow, FlowId, HunkPart, LineRange, StepId } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
 import { RiskLabel } from "../badge/LlmLabel";
 import { FlowWorkLabel } from "../flow-intro/status";
@@ -107,6 +107,56 @@ function StepRow({
   );
 }
 
+/** "Why this flow: problem → change" of an analysed flow (LLM); nothing without an introduction. */
+function WhyLine({ flow }: { flow: Flow }) {
+  const intro = flow.llm.introduction;
+  if (!intro.problem_before.trim() && !intro.change.trim()) return null;
+  return (
+    <span className="text-[12.5px]">
+      <span className="text-muted">Why this flow: </span>
+      <CodeText text={intro.problem_before} /> → <CodeText text={intro.change} />{" "}
+      <ProvenanceTag source="llm" />
+    </span>
+  );
+}
+
+/** A flow whose plan holds these lines but which is not analysed yet: its intent and ▶ Analyse this flow. */
+function PendingFlow({
+  flow,
+  onRequestFlow,
+  requestBusy,
+}: { flow: Flow } & Pick<FlowsAtLinesProps, "onRequestFlow" | "requestBusy">) {
+  return (
+    <>
+      <span className="text-[12.5px]">
+        <b>not analysed yet</b>
+        {flow.planned?.intent && (
+          <>
+            {" · "}
+            <CodeText text={flow.planned.intent} /> <ProvenanceTag source="llm" />
+          </>
+        )}
+      </span>
+      <span className="text-[12px] text-muted">
+        Its steps, remarks and flags appear here when the flow is analysed. Until then the code shows the
+        changed lines only.
+      </span>
+      {onRequestFlow && flow.analysis_status?.state === "not_analysed" && (
+        <Tooltip tip="Analyse this flow: starts LLM work (one agent run) for this flow.">
+          <button
+            type="button"
+            aria-disabled={requestBusy || undefined}
+            onClick={() => !requestBusy && onRequestFlow(flow.id)}
+            className={`${BUTTON} justify-self-start`}
+          >
+            ▶ Analyse this flow
+          </button>
+        </Tooltip>
+      )}
+    </>
+  );
+}
+
 /**
  * Every flow at some lines with its steps there: Explained in / Also shown in, LLM rating, decision, the tick
  * state of the Flows view (read-only), Details and Open in Flows. A flow not analysed yet says so and offers its
@@ -126,7 +176,6 @@ export function FlowsAtLines({
     <div className="grid gap-2">
       {flows.map(({ flow, planned, steps }) => {
         const pending = flow.analysis_status !== undefined && flow.analysis_status.state !== "analysed";
-        const intro = flow.llm.introduction;
         return (
           <div
             key={flow.id}
@@ -142,41 +191,9 @@ export function FlowsAtLines({
                 <RiskLabel risk={flow.llm.risk} />
               )}
             </span>
-            {!pending && (intro.problem_before.trim() || intro.change.trim()) && (
-              <span className="text-[12.5px]">
-                <span className="text-muted">Why this flow: </span>
-                <CodeText text={intro.problem_before} /> → <CodeText text={intro.change} />{" "}
-                <ProvenanceTag source="llm" />
-              </span>
-            )}
+            {!pending && <WhyLine flow={flow} />}
             {pending && planned && (
-              <>
-                <span className="text-[12.5px]">
-                  <b>not analysed yet</b>
-                  {flow.planned?.intent && (
-                    <>
-                      {" · "}
-                      <CodeText text={flow.planned.intent} /> <ProvenanceTag source="llm" />
-                    </>
-                  )}
-                </span>
-                <span className="text-[12px] text-muted">
-                  Its steps, remarks and flags appear here when the flow is analysed. Until then the code
-                  shows the changed lines only.
-                </span>
-                {onRequestFlow && flow.analysis_status?.state === "not_analysed" && (
-                  <Tooltip tip="Analyse this flow: starts LLM work (one agent run) for this flow.">
-                    <button
-                      type="button"
-                      aria-disabled={requestBusy || undefined}
-                      onClick={() => !requestBusy && onRequestFlow(flow.id)}
-                      className={`${BUTTON} justify-self-start`}
-                    >
-                      ▶ Analyse this flow
-                    </button>
-                  </Tooltip>
-                )}
-              </>
+              <PendingFlow flow={flow} onRequestFlow={onRequestFlow} requestBusy={requestBusy} />
             )}
             {steps.length > 0 && (
               <ul className="m-0 grid list-none gap-1.5 p-0">
@@ -247,7 +264,12 @@ export function NoFlowPart({ part }: { part: HunkPart }) {
       );
       break;
     case "whitespace_only":
-      text = <>In no flow. Only whitespace changed; the code view shows these lines as unchanged.</>;
+      text = (
+        <>
+          In no flow. Only whitespace changed on {n === 1 ? "this line" : "these lines"}; no LLM text for{" "}
+          {n === 1 ? "it" : "them"}.
+        </>
+      );
       break;
     default:
       return null;
@@ -257,5 +279,89 @@ export function NoFlowPart({ part }: { part: HunkPart }) {
       <span className="text-muted">{linesOf(part)}: </span>
       {text}
     </p>
+  );
+}
+
+/**
+ * The file summary's flows, one compact block each: title, rating, why, the steps here with their ticks, a
+ * counter and Open in Flows (proposal §3, no selection).
+ */
+export function FlowsInFile({
+  flows,
+  ticked,
+  analysis,
+  onOpenInFlows,
+  onRequestFlow,
+  requestBusy = false,
+}: Omit<FlowsAtLinesProps, "onDetails">) {
+  const id = useId();
+  return (
+    <div className="grid gap-2">
+      {flows.map(({ flow, planned, steps }) => {
+        const pending = flow.analysis_status !== undefined && flow.analysis_status.state !== "analysed";
+        const done = steps.filter((s) => ticked.includes(s.step.id)).length;
+        return (
+          <div
+            key={flow.id}
+            role="group"
+            aria-labelledby={`${id}-${flow.id}`}
+            className="grid gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5"
+          >
+            <span id={`${id}-${flow.id}`} className="flex flex-wrap items-center gap-1.5">
+              <b>Flow {flow.position}</b> {flow.llm.title}
+              {pending && flow.analysis_status ? (
+                <FlowWorkLabel status={flow.analysis_status} analysis={analysis} />
+              ) : (
+                <RiskLabel risk={flow.llm.risk} />
+              )}
+            </span>
+            {!pending && <WhyLine flow={flow} />}
+            {pending && planned && (
+              <PendingFlow flow={flow} onRequestFlow={onRequestFlow} requestBusy={requestBusy} />
+            )}
+            {steps.length > 0 && (
+              <>
+                <span className="text-[12px]">
+                  Steps here:{" "}
+                  {steps.map((s) => {
+                    const on = ticked.includes(s.step.id);
+                    return (
+                      <span
+                        key={s.step.id}
+                        className={`mr-1.5 ${on ? "font-semibold text-ok" : "text-muted"}`}
+                      >
+                        <span aria-hidden>{on ? "☑" : "☐"} </span>
+                        <span className="sr-only">{on ? "ticked: " : "not ticked: "}</span>
+                        {s.step.number}
+                      </span>
+                    );
+                  })}
+                </span>
+                <span className="flex flex-wrap items-center gap-2">
+                  <Tooltip tip="Your ticks of these steps in the Flows view; steps are ticked only there.">
+                    <span
+                      tabIndex={0}
+                      className={`cursor-help text-[12px] ${done === steps.length ? "font-semibold text-ok" : "text-muted"}`}
+                    >
+                      {done} of {steps.length} ticked in Flows
+                    </span>
+                  </Tooltip>
+                  <Tooltip tip="Opens the first of these steps in the Flows view.">
+                    <button
+                      type="button"
+                      aria-label={`Open in Flows: flow ${flow.position}, step ${steps[0]!.step.number}`}
+                      onClick={() => onOpenInFlows(steps[0]!.step.id)}
+                      className={BUTTON}
+                    >
+                      Open in Flows →
+                    </button>
+                  </Tooltip>
+                </span>
+              </>
+            )}
+          </div>
+        );
+      })}
+    </div>
   );
 }

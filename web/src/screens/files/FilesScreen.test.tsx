@@ -51,7 +51,7 @@ describe("Files view (brief §4.5)", () => {
     );
     expect(inspectorHeading()).toHaveTextContent("src/config.rs");
     expect(within(inspector()).getByRole("region", { name: /Flows in this file \(1\)/ })).toHaveTextContent(
-      "☐ not ticked in Flows",
+      "0 of 1 ticked in Flows",
     );
     await waitFor(() => expect(hashOf(router)).toBe("#lines?file=src/config.rs&side=head"));
     expect(screen.getAllByRole("banner")[0]).toHaveTextContent("Your progress");
@@ -124,7 +124,7 @@ describe("Files view (brief §4.5)", () => {
     const flow = within(inspector()).getByRole("group", { name: /^Flow 1/ });
     expect(within(flow).getAllByRole("listitem")).toHaveLength(7);
     await user().click(within(flow).getByRole("button", { name: /^Details: Step 5/ }));
-    expect(inspectorHeading()).toHaveTextContent("Step 5 · Retry allowed?");
+    expect(inspectorHeading()).toHaveTextContent("Step 5 of flow 1 · Retry allowed?");
     expect(within(inspector()).getByRole("button", { name: "← Back to hunk" })).toBeVisible();
     expect(hashOf(router)).toContain("step=f1.5");
     await user().keyboard("{Escape}");
@@ -219,5 +219,71 @@ describe("Files view (brief §4.5)", () => {
     await user().keyboard("s");
     await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}`));
     expect(router.state.location.hash).toBe("#f1.5");
+  });
+});
+
+describe("Files Inspector panels (proposal §3)", () => {
+  it("a hunk with one step shows that step's sections and flags, without Details or the per-step hint", async () => {
+    await open("#lines?file=src%2Fconfig.rs&side=head&line=23");
+    expect(inspectorHeading()).toHaveTextContent("config.rs · hunk, line 23");
+    const flags = within(inspector()).getByRole("region", { name: /^Flags \(1\)/ });
+    expect(flags.querySelector("[data-flag=red]")).not.toBeNull();
+    expect(within(inspector()).getByRole("region", { name: /^Behaviour/ })).toBeDefined();
+    expect(within(inspector()).queryByRole("button", { name: /^Details:/ })).toBeNull();
+    expect(within(inspector()).queryByRole("region", { name: /^Called by/ })).toBeNull();
+    expect(inspector()).not.toHaveTextContent("pick Details on a step");
+  });
+
+  it("a hunk with several steps lists every step's flags, each naming its step, and the per-step hint", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=96&end=109");
+    const flags = within(inspector()).getByRole("region", { name: /^Flags \(3\)/ });
+    expect(flags).toHaveTextContent("step 5 of flow 1");
+    expect(flags).toHaveTextContent("step 6 of flow 1");
+    expect(flags).toHaveTextContent("step 7 of flow 1");
+    expect(within(inspector()).queryByRole("region", { name: /^Behaviour/ })).toBeNull();
+    expect(inspector()).toHaveTextContent("pick Details on a step");
+  });
+
+  it("a step narrowed from a hunk keeps its flow, tick and the lines it explains here, and marks them", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=99&step=f1.5");
+    expect(inspectorHeading()).toHaveTextContent("Step 5 of flow 1 · Retry allowed?");
+    expect(inspector()).toHaveTextContent("Explains in this hunk: line 99");
+    const flow = within(inspector()).getByRole("group", { name: /^Flow 1/ });
+    expect(within(flow).getAllByRole("listitem")).toHaveLength(1);
+    expect(flow).toHaveTextContent("☐ not ticked in Flows");
+    expect(within(flow).getByRole("button", { name: /^Open in Flows: Step 5/ })).toBeDefined();
+    expect(within(inspector()).getByRole("region", { name: /^Classic diff of these lines/ })).toBeDefined();
+    expect(within(inspector()).queryByRole("region", { name: /^Called by/ })).toBeNull();
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll("[data-line][data-selected-line]")].map((r) =>
+          r.getAttribute("data-line"),
+        ),
+      ).toEqual(["99"]),
+    );
+  });
+
+  it("the file summary is compact: per flow its steps here with ticks, a counter, and the hunks", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
+    const flows = within(inspector()).getByRole("region", { name: /^Flows in this file \(2\)/ });
+    expect(flows).toHaveTextContent("Steps here:");
+    expect(flows).toHaveTextContent("0 of 8 ticked in Flows");
+    expect(within(flows).queryByRole("button", { name: /^Details:/ })).toBeNull();
+    expect(flows).not.toHaveTextContent("Where these lines are explained");
+    expect(within(inspector()).getByRole("region", { name: /^Hunks in this file/ })).toBeDefined();
+  });
+
+  it("a hunk in no flow titles its section without a count and gives no per-step hint", async () => {
+    await open("#lines?file=src%2Frpc%2Fmetrics.rs&side=head&line=40&end=46");
+    expect(within(inspector()).getByRole("region", { name: /^Flows$/ })).toBeDefined();
+    expect(inspector()).not.toHaveTextContent("Flows (0)");
+    expect(inspector()).not.toHaveTextContent("pick Details on a step");
+    expect(inspector()).not.toHaveTextContent("the code view shows these lines as unchanged");
+  });
+
+  it("a file recognised by its path carries the classified-by-path badge in its header and the Inspector", async () => {
+    await open("#lines?file=tests%2Frpc_retry.rs&side=head");
+    expect(fileHeading().closest("header")).toHaveTextContent(/classified by path/i);
+    expect(inspector()).toHaveTextContent(/classified by path/i);
   });
 });

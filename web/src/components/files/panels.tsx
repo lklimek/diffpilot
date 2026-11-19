@@ -1,25 +1,41 @@
 // The Files view's Inspector panels (brief §4.5): the file, a hunk, or the reader's selected lines.
 import type { ReactNode } from "react";
 import type {
+  Annotation,
+  Evidence,
   FileHunk,
   FlowId,
   GithubThread,
+  LineRange,
   LineSide,
   PrFile,
   StepId,
   Tour,
 } from "../../api/generated/types";
+import { ProvenanceBadge } from "../badge/Badge";
+import { KindLabel } from "../badge/LlmLabel";
+import { FlagCard } from "../flag/FlagCard";
+import { sortedFlags } from "../flag/flags";
 import { githubLineUrl, type PrLinkBase } from "../github/links";
 import { Collapsible } from "../inspector/Collapsible";
-import type { InspectorPanel } from "../inspector/Inspector";
+import { StepDetails, type InspectorPanel } from "../inspector/Inspector";
 import type { SectionControl } from "../inspector/sectionState";
 import { DiffSection, ThreadsSection } from "../inspector/StepSections";
 import { GithubLink } from "../inspector/text";
 import { rangeText } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 import { fileDiffUrl } from "./FileHeader";
-import { FlowsAtLines, NoFlowPart } from "./FlowsAtLines";
-import { fileParts, flowsAt, hunkLabel, hunksIn, noFlowParts, partsIn, pathOn } from "./model";
+import { FlowsAtLines, FlowsInFile, NoFlowPart } from "./FlowsAtLines";
+import {
+  fileParts,
+  flowsAt,
+  hunkLabel,
+  hunksIn,
+  noFlowParts,
+  partsIn,
+  pathOn,
+  type StepAtLines,
+} from "./model";
 import { VIEWED_LOOK } from "./ViewedChip";
 
 /** What every Files panel is built from, and its callbacks. */
@@ -35,8 +51,10 @@ export interface FilesPanelContext {
   onOpenInFlows: (step: StepId) => void;
   onRequestFlow?: (flow: FlowId) => void;
   requestBusy?: boolean;
-  /** Classic diff of the hunk or selection. */
+  /** Classic diff of the hunk, the narrowed step's lines or the selection. */
   diff?: ReactNode;
+  onEvidence?: (evidence: Evidence) => void;
+  onFlagAsComment?: (flag: Annotation) => void;
 }
 
 const BUTTON =
@@ -98,23 +116,35 @@ function hunkOwners(ctx: FilesPanelContext, hunk: FileHunk): string {
   return [...flows, ...quiet].join("; ");
 }
 
+/** Steps listed at some parts, over all their flows. */
+const stepCount = (flows: ReturnType<typeof flowsAt>) => flows.reduce((n, f) => n + f.steps.length, 0);
+
 function FlowsSection({
   ctx,
   title,
   parts,
+  only,
 }: {
   ctx: FilesPanelContext;
   title: string;
   parts: FileHunk["parts"];
+  /** The narrowed step: only its row, no other flow and no parts in no flow. */
+  only?: StepId;
 }) {
-  const flows = flowsAt(ctx.tour, parts);
-  const quiet = noFlowParts(parts);
+  const all = flowsAt(ctx.tour, parts);
+  const flows = only
+    ? all.flatMap((f) => {
+        const steps = f.steps.filter((s) => s.step.id === only);
+        return steps.length > 0 ? [{ ...f, planned: false, steps }] : [];
+      })
+    : all;
+  const quiet = only ? [] : noFlowParts(parts);
   return (
     <Collapsible
       sectionKey="files-flows"
-      title={`${title} (${flows.length})`}
+      title={flows.length > 0 ? `${title} (${flows.length})` : title}
       tone="facts"
-      source={WHERE}
+      source={flows.length > 0 ? WHERE : undefined}
       sections={ctx.sections}
     >
       <div className="grid gap-2">
@@ -123,7 +153,7 @@ function FlowsSection({
             flows={flows}
             ticked={ctx.ticked}
             analysis={ctx.tour.analysis.state}
-            onDetails={ctx.onDetails}
+            onDetails={stepCount(flows) > 1 ? ctx.onDetails : undefined}
             onOpenInFlows={ctx.onOpenInFlows}
             onRequestFlow={ctx.onRequestFlow}
             requestBusy={ctx.requestBusy}
@@ -210,8 +240,9 @@ export function filePanel(ctx: FilesPanelContext): InspectorPanel {
         )}
         {file.group.kind === "not_analysed" && flows.length === 0 && (
           <p className="px-3 py-1 text-[12.5px]">
-            In no flow. Recognised by file path (rule <code>{file.group.rule}</code>), no LLM. The agent may
-            read it as evidence; it does not explain it.
+            In no flow. Recognised by file path (rule <code>{file.group.rule}</code>){" "}
+            <ProvenanceBadge badge={file.group.badge} />, no LLM. The agent may read it as evidence; it does
+            not explain it.
           </p>
         )}
         {flows.length > 0 && (
@@ -219,14 +250,12 @@ export function filePanel(ctx: FilesPanelContext): InspectorPanel {
             sectionKey="files-flows"
             title={`Flows in this file (${flows.length})`}
             tone="facts"
-            source={WHERE}
             sections={ctx.sections}
           >
-            <FlowsAtLines
+            <FlowsInFile
               flows={flows}
               ticked={ctx.ticked}
               analysis={tour.analysis.state}
-              onDetails={ctx.onDetails}
               onOpenInFlows={ctx.onOpenInFlows}
               onRequestFlow={ctx.onRequestFlow}
               requestBusy={ctx.requestBusy}
@@ -267,6 +296,9 @@ export function hunkPanel(ctx: FilesPanelContext, hunk: FileHunk): InspectorPane
     ...(hunk.head ? threadsAt(ctx.tour, ctx.file, "head", hunk.head.start_line, hunk.head.end_line) : []),
     ...(hunk.base ? threadsAt(ctx.tour, ctx.file, "base", hunk.base.start_line, hunk.base.end_line) : []),
   ];
+  const flows = flowsAt(ctx.tour, hunk.parts);
+  const steps = flows.flatMap((f) => f.steps);
+  const single = steps.length === 1 && steps[0]!.role === "explained" ? steps[0]! : undefined;
   return {
     title: `${fileName(ctx.file.path)} · hunk, ${hunkLabel(hunk)}`,
     meta: (
@@ -283,13 +315,142 @@ export function hunkPanel(ctx: FilesPanelContext, hunk: FileHunk): InspectorPane
     body: (
       <>
         <FlowsSection ctx={ctx} title="Flows" parts={hunk.parts} />
-        <DiffSection diff={ctx.diff} ofRange sections={ctx.sections} />
+        <DiffSection diff={ctx.diff} ofRange title="Classic diff of this hunk" sections={ctx.sections} />
+        {single ? (
+          <StepDetails
+            files
+            tour={ctx.tour}
+            step={single.step}
+            sections={ctx.sections}
+            onEvidence={ctx.onEvidence}
+            onFlagAsComment={ctx.onFlagAsComment}
+          />
+        ) : (
+          <HunkFlags ctx={ctx} hunk={hunk} steps={steps} />
+        )}
         <ThreadsSection
           threads={threads}
           status={ctx.tour.pr_context.facts.threads_status}
           sections={ctx.sections}
         />
-        <p className="px-3 py-1.5 text-[12px] text-muted">{PER_STEP}</p>
+        {steps.length > 1 && <p className="px-3 py-1.5 text-[12px] text-muted">{PER_STEP}</p>}
+      </>
+    ),
+  };
+}
+
+/** The flags of every step explained in a hunk, strongest first, each naming its step. */
+function HunkFlags({
+  ctx,
+  hunk,
+  steps,
+}: {
+  ctx: FilesPanelContext;
+  hunk: FileHunk;
+  steps: readonly StepAtLines[];
+}) {
+  const flags = steps
+    .filter((s) => s.role === "explained")
+    .flatMap(({ flow, step }) => {
+      const range = step.facts.side === "head" ? hunk.head : hunk.base;
+      const here = step.llm.annotations.filter(
+        (a) =>
+          a.type === "flag" &&
+          a.text?.trim() &&
+          range &&
+          a.range.start_line <= range.end_line &&
+          a.range.end_line >= range.start_line,
+      );
+      return sortedFlags(here).map((a) => ({
+        a,
+        step,
+        owner: `step ${step.number} of flow ${flow.position}`,
+      }));
+    });
+  if (flags.length === 0) return null;
+  return (
+    <Collapsible sectionKey="flags" title={`Flags (${flags.length})`} tone="llm" sections={ctx.sections}>
+      <ul className="m-0 grid list-none gap-2 p-0">
+        {flags.map(({ a, step, owner }) => (
+          <FlagCard
+            key={a.id}
+            annotation={a}
+            owner={owner}
+            currentFile={step.facts.file}
+            onEvidence={ctx.onEvidence}
+            onOpen={
+              ctx.onEvidence &&
+              (() =>
+                ctx.onEvidence!({ file: step.facts.file, side: step.facts.side, line: a.range.start_line }))
+            }
+            onUseAsComment={ctx.onFlagAsComment && (() => ctx.onFlagAsComment!(a))}
+          />
+        ))}
+      </ul>
+    </Collapsible>
+  );
+}
+
+const rangesWord = (ranges: readonly LineRange[], prefix: string) =>
+  ranges.length === 0
+    ? []
+    : [
+        `${prefix}${ranges.length === 1 && ranges[0]!.start_line === ranges[0]!.end_line ? "line" : "lines"} ${ranges.map(rangeText).join(", ")}`,
+      ];
+
+/** A step narrowed from a hunk: its flow row and tick, the lines it explains here, its sections. */
+export function stepInHunkPanel(
+  ctx: FilesPanelContext,
+  hunk: FileHunk,
+  id: StepId,
+): InspectorPanel | undefined {
+  const at = flowsAt(ctx.tour, hunk.parts)
+    .flatMap((f) => f.steps)
+    .find((s) => s.step.id === id);
+  if (!at) return undefined;
+  const { step, flow } = at;
+  const where = [...rangesWord(at.lines, ""), ...rangesWord(at.removed, "removed ")].join(" · ");
+  const first = at.lines[0] ?? at.removed[0]!;
+  const side: LineSide = at.lines.length > 0 ? "head" : "base";
+  const last = (at.lines.length > 0 ? at.lines : at.removed).at(-1)!;
+  const url = githubLineUrl(
+    ctx.pr,
+    { path: pathOn(ctx.file, side), side, start: first.start_line, end: last.end_line },
+    true,
+  );
+  const threads = threadsAt(ctx.tour, ctx.file, side, first.start_line, last.end_line);
+  return {
+    title: `Step ${step.number} of flow ${flow.position} · ${step.llm.title}`,
+    meta: (
+      <>
+        <KindLabel kind={step.llm.kind} />
+        <GithubLink url={url} tip="Open these changed lines in the pull request diff on GitHub (new tab).">
+          {pathOn(ctx.file, side)}:{rangeText({ start_line: first.start_line, end_line: last.end_line })}
+        </GithubLink>
+        <span className="basis-full text-[12px] text-muted">
+          {at.role === "explained"
+            ? `Explains in this hunk: ${where}`
+            : `Shows these lines of another flow as context: ${where}`}
+        </span>
+      </>
+    ),
+    body: (
+      <>
+        <FlowsSection ctx={ctx} title="Flows" parts={hunk.parts} only={id} />
+        <DiffSection diff={ctx.diff} ofRange title="Classic diff of these lines" sections={ctx.sections} />
+        <StepDetails
+          files
+          tour={ctx.tour}
+          step={step}
+          sections={ctx.sections}
+          onEvidence={ctx.onEvidence}
+          onFlagAsComment={ctx.onFlagAsComment}
+        />
+        <ThreadsSection
+          threads={threads}
+          status={ctx.tour.pr_context.facts.threads_status}
+          sections={ctx.sections}
+        />
       </>
     ),
   };

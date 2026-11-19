@@ -220,9 +220,6 @@ function stepPanel(
   onEvidence?: (evidence: Evidence) => void,
   onFlagAsComment?: (flag: Annotation) => void,
 ): Panel {
-  const anns = annotation ? [annotation] : step.llm.annotations;
-  const byType = (type: AnnotationType) => anns.filter((a) => a.type === type);
-  const stepThreads = tour.threads.filter((t) => step.facts.thread_ids.includes(t.id));
   const stepTitle = `Step ${step.number} · ${step.llm.title}`;
   const github = stepGithubLink(tour.analysis.pr, step.facts);
   return {
@@ -237,78 +234,121 @@ function stepPanel(
       </>
     ),
     body: (
-      <>
-        {step.facts.moved && (
-          <Collapsible
-            sectionKey="moved"
-            title="Moved code"
-            tone="facts"
-            source="From the diff; no LLM."
-            sections={sections}
-          >
-            <p>Moved from the base commit.</p>
-            {step.facts.moved.badge ? (
-              <ProvenanceBadge badge={step.facts.moved.badge} />
-            ) : (
-              <DifferingLinesBadge count={step.facts.moved.differing_lines} />
-            )}
-            <EvidenceLinks
-              currentFile={step.facts.file}
-              onEvidence={onEvidence}
-              evidence={[
-                ...new Set([step.facts.moved.from.range.start_line, step.facts.moved.from.range.end_line]),
-              ].map((line) => ({ file: step.facts.moved!.from.file, side: "base", line }))}
-            />
+      <StepDetails
+        tour={tour}
+        step={step}
+        annotation={annotation}
+        diff={diff}
+        sections={sections}
+        onEvidence={onEvidence}
+        onFlagAsComment={onFlagAsComment}
+      />
+    ),
+  };
+}
+
+/** What a step's sections show: the whole step or one remark; the Files view leaves out the Flows-only parts. */
+export interface StepDetailsProps {
+  tour: Tour;
+  step: Step;
+  annotation?: Annotation;
+  /** The classic diff section; none in the Files view, whose panel places its own diff. */
+  diff?: ReactNode;
+  sections: SectionControl;
+  onEvidence?: (evidence: Evidence) => void;
+  onFlagAsComment?: (flag: Annotation) => void;
+  /** The Files view: no Called by / Goes next, no diff, no threads (its panel shows those of the lines). */
+  files?: boolean;
+}
+
+/** A step's sections in Flows order: behaviour, why, consequences, call hierarchy, flags, assessment, threads. */
+export function StepDetails({
+  tour,
+  step,
+  annotation,
+  diff,
+  sections,
+  onEvidence,
+  onFlagAsComment,
+  files = false,
+}: StepDetailsProps) {
+  const anns = annotation ? [annotation] : step.llm.annotations;
+  const byType = (type: AnnotationType) => anns.filter((a) => a.type === type);
+  const stepThreads = tour.threads.filter((t) => step.facts.thread_ids.includes(t.id));
+  return (
+    <>
+      {step.facts.moved && (
+        <Collapsible
+          sectionKey="moved"
+          title="Moved code"
+          tone="facts"
+          source="From the diff; no LLM."
+          sections={sections}
+        >
+          <p>Moved from the base commit.</p>
+          {step.facts.moved.badge ? (
+            <ProvenanceBadge badge={step.facts.moved.badge} />
+          ) : (
+            <DifferingLinesBadge count={step.facts.moved.differing_lines} />
+          )}
+          <EvidenceLinks
+            currentFile={step.facts.file}
+            onEvidence={onEvidence}
+            evidence={[
+              ...new Set([step.facts.moved.from.range.start_line, step.facts.moved.from.range.end_line]),
+            ].map((line) => ({ file: step.facts.moved!.from.file, side: "base", line }))}
+          />
+        </Collapsible>
+      )}
+      {[
+        ["Called by", step.llm.called_by],
+        ["Goes next", step.llm.next],
+      ]
+        .filter(([, text]) => !files && text?.trim())
+        .map(([title, text]) => (
+          <Collapsible key={title} sectionKey={title!} title={title!} tone="llm" sections={sections}>
+            <p>{text}</p>
           </Collapsible>
-        )}
-        {[
-          ["Called by", step.llm.called_by],
-          ["Goes next", step.llm.next],
-        ]
-          .filter(([, text]) => text?.trim())
-          .map(([title, text]) => (
-            <Collapsible key={title} sectionKey={title!} title={title!} tone="llm" sections={sections}>
-              <p>{text}</p>
-            </Collapsible>
-          ))}
-        <DiffSection diff={diff} ofRange={annotation !== undefined} sections={sections} />
-        <BehaviourSection
-          currentFile={step.facts.file}
-          onEvidence={onEvidence}
-          annotations={annotation ? anns : byType("behaviour")}
-          sections={sections}
-        />
-        <WhySection
-          currentFile={step.facts.file}
-          onEvidence={onEvidence}
-          why={step.llm.why}
-          notes={byType("note")}
-          sections={sections}
-        />
-        <ConsequencesSection
-          currentFile={step.facts.file}
-          onEvidence={onEvidence}
-          annotations={byType("consequence")}
-          sections={sections}
-        />
-        <CallHierarchySection hierarchy={step.facts.call_hierarchy} sections={sections} />
-        <FlagsSection
-          currentFile={step.facts.file}
-          step={step}
-          onEvidence={onEvidence}
-          annotations={byType("flag")}
-          sections={sections}
-          onUseAsComment={onFlagAsComment}
-        />
-        <AssessmentSection assessment={step.llm.assessment} sections={sections} />
+        ))}
+      {!files && <DiffSection diff={diff} ofRange={annotation !== undefined} sections={sections} />}
+      <BehaviourSection
+        currentFile={step.facts.file}
+        onEvidence={onEvidence}
+        annotations={annotation ? anns : byType("behaviour")}
+        sections={sections}
+      />
+      <WhySection
+        currentFile={step.facts.file}
+        onEvidence={onEvidence}
+        why={step.llm.why}
+        notes={byType("note")}
+        sections={sections}
+      />
+      <ConsequencesSection
+        currentFile={step.facts.file}
+        onEvidence={onEvidence}
+        annotations={byType("consequence")}
+        sections={sections}
+      />
+      <CallHierarchySection hierarchy={step.facts.call_hierarchy} sections={sections} />
+      <FlagsSection
+        currentFile={step.facts.file}
+        step={step}
+        onEvidence={onEvidence}
+        annotations={byType("flag")}
+        sections={sections}
+        onUseAsComment={onFlagAsComment}
+      />
+      <AssessmentSection assessment={step.llm.assessment} sections={sections} />
+      {!files && (
         <ThreadsSection
           threads={annotation ? stepThreads.filter((t) => overlaps(t, step, annotation)) : stepThreads}
           status={tour.pr_context.facts.threads_status}
           sections={sections}
         />
-      </>
-    ),
-  };
+      )}
+    </>
+  );
 }
 
 function panelFor(props: InspectorProps, sections: SectionControl): Panel {

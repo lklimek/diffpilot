@@ -277,10 +277,15 @@ export function subjectOf(file: PrFile, link: FilesLink): FilesSubject {
   if (link.line === undefined) return { kind: "file" };
   const end = link.end ?? link.line;
   const [from, to] = [Math.min(link.line, end), Math.max(link.line, end)];
-  if (link.step) {
-    const at = hunkAt(file, link.side, from);
-    if (at) return { kind: "hunk", id: at.id, step: link.step };
-  }
+  // A step narrows the hunk at the line only when it explains or shows lines of that hunk.
+  const at = link.step ? hunkAt(file, link.side, from) : undefined;
+  const step = link.step;
+  if (
+    at &&
+    step &&
+    at.parts.some((p) => (p.owner.kind === "step" && p.owner.step_id === step) || p.also_in.includes(step))
+  )
+    return { kind: "hunk", id: at.id, step };
   const exact = file.hunks.find((h) => {
     const l = hunkLink(h);
     return l.side === link.side && l.start_line === from && l.end_line === to;

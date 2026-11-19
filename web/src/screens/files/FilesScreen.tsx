@@ -8,6 +8,7 @@ import type {
   AskAnchor,
   AskQuestion,
   CommentTarget,
+  Evidence,
   FilesResponse,
   FileHunk,
   LineSide,
@@ -52,7 +53,13 @@ import {
   type FilesLink,
   type FilesSubject,
 } from "../../components/files/model";
-import { filePanel, hunkPanel, linesPanel, type FilesPanelContext } from "../../components/files/panels";
+import {
+  filePanel,
+  hunkPanel,
+  linesPanel,
+  stepInHunkPanel,
+  type FilesPanelContext,
+} from "../../components/files/panels";
 import { isFlowReviewed } from "../../components/flow-intro/progress";
 import { HelpDialog } from "../../components/help/HelpDialog";
 import { FILES_SHORTCUTS, shortcutAction } from "../../components/help/shortcuts";
@@ -186,6 +193,12 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
   const [oldCode, setOldCode] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [commentLine, setCommentLine] = useState<CommentLineState | null>(null);
+  // The composer's line came with a line selection (not `c` or a button): Esc closes both at once.
+  const [commentWithSelection, setCommentWithSelection] = useState(false);
+  const commentOn = (line: CommentLineState) => {
+    setCommentLine(line);
+    setCommentWithSelection(false);
+  };
   const [focusNext, setFocusNext] = useState<"ask" | "comment" | { heading: string } | null>(null);
   const [notice, setNotice] = useState<{ text: string; nonce: number } | null>(null);
   const [viewedError, setViewedError] = useState<{ path: string; message: string } | null>(null);
@@ -306,7 +319,22 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
   const path = pathOn(file, side);
   const hunk = subject.kind === "hunk" ? file.hunks.find((h) => h.id === subject.id) : undefined;
   const narrowed = subject.kind === "hunk" && subject.step ? stepPlace(tour, subject.step) : undefined;
-  const lines = subjectLines(file, subject);
+  // A narrowed step's own lines in the hunk (head, else removed): its diff, its marks in the code.
+  const stepHere =
+    narrowed && hunk
+      ? flowsAt(tour, hunk.parts)
+          .flatMap((f) => f.steps)
+          .find((s) => s.step.id === narrowed.step.id)
+      : undefined;
+  const stepRanges = stepHere && (stepHere.lines.length > 0 ? stepHere.lines : stepHere.removed);
+  const lines =
+    stepHere && stepRanges && stepRanges.length > 0
+      ? {
+          side: (stepHere.lines.length > 0 ? "head" : "base") as LineSide,
+          from: stepRanges[0]!.start_line,
+          to: stepRanges.at(-1)!.end_line,
+        }
+      : subjectLines(file, subject);
 
   // Remarks of every analysed step on this file's side: one ◆ each, named with their step.
   const steps = tour.flows.flatMap((f) =>
@@ -332,6 +360,7 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
     go({ file: file.path, side: target.side, line: a, end: b });
     // The composer targets the last line without taking the focus (Q16).
     setCommentLine({ target: { ...target, start_line: null, line: b }, lines: data });
+    setCommentWithSelection(true);
   };
   const openAsk = () => {
     openInspector();
@@ -442,7 +471,7 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
     const line = subject.kind === "lines" ? lines.to : lines.from;
     const data = cachedLines(lines.side, line);
     if (!data) return;
-    setCommentLine({
+    commentOn({
       target: { path: pathOn(file, lines.side), side: lines.side, start_line: null, line },
       lines: data,
     });
@@ -494,8 +523,11 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
         case "help":
           return setHelpOpen(true);
         case "close":
-          if (commentLine) setCommentLine(null);
-          else if (subject.kind !== "file") back();
+          if (commentLine && !commentWithSelection) setCommentLine(null);
+          else if (subject.kind !== "file") {
+            if (commentWithSelection) setCommentLine(null);
+            back();
+          } else if (commentLine) setCommentLine(null);
           else if (layout.full) setLayout({ ...layout, full: null });
           return;
       }
@@ -511,7 +543,7 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
     comments: pending.data?.comments ?? [],
     activeLine: commentLine?.target ?? null,
     onComment: (target, data) => {
-      setCommentLine({ target, lines: data });
+      commentOn({ target, lines: data });
       openInspector();
     },
     onLineSelect: selectLines,
@@ -534,7 +566,12 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
   const linesSubject = (at: { side: LineSide; from: number; to: number }, noun: string): AskSubject => {
     const owner = selectionStep(file, at.side, at.from, at.to);
     const step = owner ? stepPlace(tour, owner)?.step : undefined;
-    const inside = step && step.facts.range.start_line <= at.from && at.to <= step.facts.range.end_line;
+    // R14 reads a step anchor's lines on the step's side: removed lines of a head step stay a lines anchor.
+    const inside =
+      step &&
+      step.facts.side === at.side &&
+      step.facts.range.start_line <= at.from &&
+      at.to <= step.facts.range.end_line;
     const range = { start_line: at.from, end_line: at.to };
     const anchor: AskAnchor =
       step && inside
@@ -542,7 +579,7 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
         : { kind: "lines", path: pathOn(file, at.side), side: at.side, range };
     return {
       anchor,
-      label: `${pathOn(file, at.side)}:${rangeText(range)}${inside && owner ? stepLabel(owner) : ""}`,
+      label: `${pathOn(file, at.side)}:${rangeText(range)}${at.side === "base" ? " (removed)" : ""}${inside && owner ? stepLabel(owner) : ""}`,
       noun,
     };
   };
@@ -675,6 +712,10 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
     />
   );
   const workAllowed = ["planning", "running", "paused", "finished"].includes(tour.analysis.state.state);
+  const onEvidence = (e: Evidence) => {
+    const target = fileOf(files.files, { file: e.file, side: e.side });
+    if (target) go({ file: target.path, side: e.side, line: e.line });
+  };
   const panelContext: FilesPanelContext = {
     tour,
     file,
@@ -687,31 +728,33 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
     onRequestFlow: workAllowed ? (flow) => work.request.mutate(flow) : undefined,
     requestBusy: work.request.isPending,
     diff,
+    onEvidence,
   };
-  const panel = narrowed
-    ? undefined
-    : hunk
-      ? hunkPanel(panelContext, hunk)
-      : subject.kind === "lines"
-        ? linesPanel(panelContext, subject, {
-            onAsk: openAsk,
-            onComment: () => {
-              const data = cachedLines(subject.side, subject.to);
-              if (data)
-                setCommentLine({
-                  target: {
-                    path: pathOn(file, subject.side),
-                    side: subject.side,
-                    start_line: null,
-                    line: subject.to,
-                  },
-                  lines: data,
-                });
-              openInspector();
-              setFocusNext("comment");
-            },
-          })
-        : filePanel(panelContext);
+  const panel =
+    narrowed && hunk
+      ? stepInHunkPanel(panelContext, hunk, narrowed.step.id)
+      : hunk
+        ? hunkPanel(panelContext, hunk)
+        : subject.kind === "lines"
+          ? linesPanel(panelContext, subject, {
+              onAsk: openAsk,
+              onComment: () => {
+                const data = cachedLines(subject.side, subject.to);
+                if (data)
+                  commentOn({
+                    target: {
+                      path: pathOn(file, subject.side),
+                      side: subject.side,
+                      start_line: null,
+                      line: subject.to,
+                    },
+                    lines: data,
+                  });
+                openInspector();
+                setFocusNext("comment");
+              },
+            })
+          : filePanel(panelContext);
   const filesInspector: FilesInspector = {
     panel,
     back:
@@ -783,8 +826,8 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
             selectedHunk={hunk?.id ?? null}
             onSelectHunk={(id) => select({ kind: "hunk", id })}
             selection={
-              subject.kind === "lines" && subject.side === side
-                ? { from: subject.from, to: subject.to }
+              (subject.kind === "lines" || stepHere) && lines && lines.side === side
+                ? { from: lines.from, to: lines.to }
                 : null
             }
             show={
@@ -887,10 +930,7 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
             onSelectStep={openInFlows}
             placeOf={() => null}
             placeOfQuestion={placeOfQuestion}
-            onEvidence={(e) => {
-              const target = fileOf(files.files, { file: e.file, side: e.side });
-              if (target) go({ file: target.path, side: e.side, line: e.line });
-            }}
+            onEvidence={onEvidence}
             codeShown
             pending={pending}
             comments={comments}
