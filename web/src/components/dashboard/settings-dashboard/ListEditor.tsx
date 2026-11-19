@@ -78,7 +78,7 @@ export function ListEditor({
                 <button
                   type="button"
                   aria-label={`Remove ${item}`}
-                  className="cursor-pointer rounded px-1 text-muted hover:text-text"
+                  className="inline-flex min-h-6 min-w-6 cursor-pointer items-center justify-center rounded text-muted hover:text-text"
                   onClick={() => onChange(items.filter((i) => i !== item))}
                 >
                   ×
