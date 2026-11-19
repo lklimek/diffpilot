@@ -23,7 +23,7 @@ describe("StepBlock", () => {
     );
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAccessibleDescription(
-      "Open the changed lines in the pull request diff on GitHub (new tab). GitHub shows its latest version.",
+      "Open the changed lines in the pull request diff on GitHub (new tab). GitHub shows the latest commits, which may differ from the analysed ones.",
     );
   });
 
@@ -240,14 +240,18 @@ describe("StepBlock", () => {
       />,
     );
     await userEvent.click(screen.getByText("Same pattern × 2"));
-    expect(screen.getByRole("link", { name: /src\/rpc\/client.rs:90–95/ })).toHaveAttribute(
+    // The text keeps the site's range; the tip says the diff marks its changed lines.
+    const inDiff = screen.getByRole("link", { name: /src\/rpc\/client.rs:90–95/ });
+    expect(inDiff).toHaveAttribute(
       "href",
       `https://github.com/acme/node-client/pull/482/changes#diff-${sha256Hex("src/rpc/client.rs")}R91-R94`,
     );
-    expect(screen.getByRole("link", { name: /src\/sync\/peers.rs:201–205/ })).toHaveAttribute(
-      "href",
-      patterns[0]!.sites[0]!.github_url,
+    expect(inDiff).toHaveAccessibleDescription(
+      "Open the changed lines in the pull request diff on GitHub (new tab). GitHub shows the latest commits, which may differ from the analysed ones.",
     );
+    const atCommit = screen.getByRole("link", { name: /src\/sync\/peers.rs:201–205/ });
+    expect(atCommit).toHaveAttribute("href", patterns[0]!.sites[0]!.github_url);
+    expect(atCommit).toHaveAccessibleDescription("Open these lines on GitHub at the head commit (new tab)");
   });
 
   it("ignores pattern repetitions explained in other steps", () => {

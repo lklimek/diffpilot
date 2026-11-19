@@ -9,7 +9,7 @@ import type {
   ThreadsStatus,
 } from "../../api/generated/types";
 import { KindLabel } from "../badge/LlmLabel";
-import { siteDiffUrl, stepGithubLink, type PrLinkBase } from "../github/links";
+import { siteGithubLink, stepGithubLink, type GithubLineLink, type PrLinkBase } from "../github/links";
 import { GithubLink } from "../inspector/text";
 import { rangeText, threadsNote } from "../section/format";
 import { ProvenanceTag } from "../section/ProvenanceTag";
@@ -192,11 +192,11 @@ function Impact({
 function Pattern({
   pattern,
   onSelectStep,
-  diffUrl,
+  linkOf,
 }: {
   pattern: PatternRepetition;
   onSelectStep?: (s: StepId) => void;
-  diffUrl: (site: PatternSite) => string | null;
+  linkOf: (site: PatternSite) => GithubLineLink;
 }) {
   return (
     <details className="rounded-lg border border-border bg-surface px-4 py-2 text-[12.5px]">
@@ -207,9 +207,10 @@ function Pattern({
       <ul className="m-0 mt-1 list-disc pl-5">
         {pattern.sites.map((site) => {
           const where = `${site.file}:${rangeText(site.range)}`;
+          const link = linkOf(site);
           return (
             <li key={`${where}:${site.side}`}>
-              <GithubLink url={diffUrl(site) ?? site.github_url} tip="Open these lines on GitHub (new tab)">
+              <GithubLink url={link.url} tip={link.tip}>
                 {where}
                 {site.side === "base" && " (base)"}
               </GithubLink>
@@ -313,8 +314,8 @@ export function StepBlock({
                 key={p.description}
                 pattern={p}
                 onSelectStep={onSelectStep}
-                diffUrl={(site) =>
-                  pr && site.step_id ? siteDiffUrl(pr, site, stepOf?.(site.step_id)?.facts) : null
+                linkOf={(site) =>
+                  siteGithubLink(pr, site, site.step_id ? stepOf?.(site.step_id)?.facts : undefined)
                 }
               />
             ))}

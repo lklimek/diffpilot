@@ -58,7 +58,7 @@ describe("Inspector at a step", () => {
     );
     expect(link).toHaveAccessibleName("src/rpc/client.rs:99 (opens on GitHub in a new tab)");
     expect(link).toHaveAccessibleDescription(
-      /pull request diff on GitHub \(new tab\)\. GitHub shows its latest version\./,
+      /pull request diff on GitHub \(new tab\)\. GitHub shows the latest commits, which may differ from the analysed ones\./,
     );
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");

@@ -115,13 +115,28 @@ export function siteDiffUrl(
   return githubLineUrl(pr, { path: site.file, side: site.side, start, end }, true);
 }
 
-/** Link and tip of a step's lines: its changed lines in the PR diff, else the server's link at the analysed commit. */
-export function stepGithubLink(pr: PrLinkBase | undefined, facts: StepFacts): { url: string; tip: string } {
-  const diff = pr ? stepDiffUrl(pr, facts) : null;
-  return diff
+/** A GitHub line link with its tip. */
+export interface GithubLineLink {
+  url: string;
+  tip: string;
+}
+
+/** The PR diff link when there is one, else the server's link at the analysed commit of `side`. */
+const lineLink = (diff: string | null, commitUrl: string, side: LineSide): GithubLineLink =>
+  diff
     ? {
         url: diff,
-        tip: "Open the changed lines in the pull request diff on GitHub (new tab). GitHub shows its latest version.",
+        tip: "Open the changed lines in the pull request diff on GitHub (new tab). GitHub shows the latest commits, which may differ from the analysed ones.",
       }
-    : { url: facts.github_url, tip: `Open these lines on GitHub at the ${facts.side} commit (new tab)` };
-}
+    : { url: commitUrl, tip: `Open these lines on GitHub at the ${side} commit (new tab)` };
+
+/** Link of a step's lines: its changed lines in the PR diff, else its lines at the analysed commit. */
+export const stepGithubLink = (pr: PrLinkBase | undefined, facts: StepFacts): GithubLineLink =>
+  lineLink(pr ? stepDiffUrl(pr, facts) : null, facts.github_url, facts.side);
+
+/** Link of a pattern site: its changed lines in its step's PR diff, else its lines at the analysed commit. */
+export const siteGithubLink = (
+  pr: PrLinkBase | undefined,
+  site: PatternSite,
+  step: Pick<StepFacts, "file" | "side" | "changed_lines"> | undefined,
+): GithubLineLink => lineLink(pr ? siteDiffUrl(pr, site, step) : null, site.github_url, site.side);
