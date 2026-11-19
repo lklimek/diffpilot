@@ -2495,3 +2495,23 @@ async fn a_follow_up_of_the_users_question_on_another_analysis_is_not_found() {
     let (_, listed) = f.list().await;
     assert_eq!(listed, json!([]), "nothing stored on this analysis");
 }
+
+/// A Tour that cannot be built for a flow question answers as the Tour route does: a missing stored document is
+/// not found, not a server error.
+#[tokio::test]
+async fn a_flow_question_without_a_buildable_tour_answers_like_the_tour_route() {
+    let f = fixture(false).await;
+    store_snapshot(&f).await;
+    // The PR context is gone: the Tour lacks a stored document.
+    f.state
+        .db
+        .documents()
+        .delete(f.analysis, DocumentKind::PrContext, "")
+        .await
+        .expect("delete");
+    let (status, body) = f
+        .ask_body(json!({ "text": "Why?", "anchor": { "kind": "flow", "flow_id": "f1" } }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["code"], "not_found");
+}

@@ -80,9 +80,9 @@ pub enum AskError {
     /// The diff of the analysis is not available.
     #[error("the diff of the analysis is not available")]
     Diff(#[from] PrDiffError),
-    /// The Tour (which flows are analysed) could not be built.
+    /// The Tour (which flows are analysed) could not be built from the stored documents or the pre-pass.
     #[error("the Tour of the analysis is not available")]
-    Tour(#[from] TourLoadError),
+    Tour(#[source] TourLoadError),
     /// A file could not be read from the mirror.
     #[error("a file could not be read from the mirror")]
     Mirror(#[from] MirrorError),
@@ -95,6 +95,19 @@ pub enum AskError {
     /// The database failed.
     #[error("the question could not be stored")]
     Db(#[from] DbError),
+}
+
+/// As on the Tour route: not finished, a missing document or a busy database, and an unprepared diff keep their own
+/// answers; the rest is a server error.
+impl From<TourLoadError> for AskError {
+    fn from(error: TourLoadError) -> Self {
+        match error {
+            TourLoadError::NotFinished => Self::NotFinished,
+            TourLoadError::Db(error) => Self::Db(error),
+            TourLoadError::Diff(error) => Self::Diff(error),
+            other @ (TourLoadError::Prepass(_) | TourLoadError::Tour(_)) => Self::Tour(other),
+        }
+    }
 }
 
 /// Stores the user's question about `request.anchor` (a step of the review-ready `analysis`, lines or a file, an
