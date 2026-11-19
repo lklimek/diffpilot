@@ -219,12 +219,14 @@ impl Db {
         let options = SqliteConnectOptions::new()
             .in_memory(true)
             .foreign_keys(true);
-        // One connection that never idles out: every in-memory connection is its own database.
+        // One connection that is never replaced: every in-memory connection is its own database. No ping before
+        // acquire: a caller cancelled during that ping makes sqlx drop the connection (and the database with it).
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .min_connections(1)
             .idle_timeout(None)
             .max_lifetime(None)
+            .test_before_acquire(false)
             .connect_with(options)
             .await?;
         Self::migrated(pool).await
