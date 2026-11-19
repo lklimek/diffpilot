@@ -178,7 +178,7 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   such as `f1.05` and unknown steps are `not_found`); `text` is trimmed, 1 to `AskRequest::MAX_TEXT_CHARS` (2000)
   characters, else `invalid_request`, and stored and shown as text. No idempotency key: each request is a new
   question. Limits (`conflict` with a plain message): 100 questions per user per analysis, 30 per user per hour. The
-  question runs as an `ask` job claimed before batch jobs; one job runs per PR and credential, so a second question waits
+  question runs as an `ask` job claimed before every other queued job (dashboard ranking, then batch; no pre-emption); one job runs per PR and credential, so a second question waits
   `pending` until the first ends. States: `pending` (queued; `resumes_at` set while it waits for the LLM usage
   limit), `answering`, `answered`, `failed` with a plain `failure` sentence (job failure by typed cause, an answer
   that did not pass the checks, a cancellation naming its cause: the analysis was cancelled, the PR session was

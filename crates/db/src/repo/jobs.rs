@@ -1014,6 +1014,16 @@ impl Jobs<'_> {
         job_from_row(&row)
     }
 
+    /// Whether a claimed or running job holds `credential`.
+    pub async fn credential_busy(&self, credential: &str) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE credential_id = ? AND state IN ('claimed', 'running'))",
+        )
+        .bind(credential)
+        .fetch_one(self.pool)
+        .await?)
+    }
+
     /// Jobs of an analysis, oldest first; only those in `states` unless `states` is empty.
     pub async fn list_for_analysis(
         &self,
@@ -2592,6 +2602,41 @@ mod tests {
             .await
             .expect("complete");
         assert_eq!(claim(&db, 6).await.map(|job| job.id), Some(ask));
+    }
+
+    #[tokio::test]
+    async fn credential_busy_only_while_a_job_is_claimed_or_running() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let jobs = db.jobs();
+        let ask = enqueue_new(&db, ask_job(analysis), 0).await;
+        assert!(
+            !jobs.credential_busy(CREDENTIAL).await.expect("busy"),
+            "queued only"
+        );
+        assert_eq!(claim(&db, 1).await.map(|job| job.id), Some(ask));
+        assert!(
+            jobs.credential_busy(CREDENTIAL).await.expect("busy"),
+            "claimed"
+        );
+        assert!(
+            !jobs.credential_busy("other").await.expect("busy"),
+            "per credential"
+        );
+        jobs.record_events(ask, 1, &[event(1)], at(61))
+            .await
+            .expect("running");
+        assert!(
+            jobs.credential_busy(CREDENTIAL).await.expect("busy"),
+            "running"
+        );
+        jobs.complete(&succeeded(ask, 1), at(2))
+            .await
+            .expect("complete");
+        assert!(
+            !jobs.credential_busy(CREDENTIAL).await.expect("busy"),
+            "finished"
+        );
     }
 
     /// Judge jobs leave the analysis-job rules as they were: per-PR, per-analysis and cancelled-analysis
