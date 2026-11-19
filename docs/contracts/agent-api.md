@@ -62,12 +62,12 @@ marked `read` in `routes.rs`; every other route answers 403 `token_not_accepted`
 Never with a token: refreshing, cancelling or ranking the dashboard, any settings change, starting or steering an
 analysis, asking, feedback, pending comments, listing or creating tokens (`/api/v1/settings/access-tokens`), and
 the runner listener (it answers 401 to an `srp_` token). Reaching an analysis: v1 has no analysis list; follow the `review.analysis_id` of a pull
-request item (A3). Reads backed by the user's GitHub token (A14, installations in A15) answer as for a browser
+request item (A3). Reads backed by the user's GitHub token (A14, installations in A15, Viewed marks in A17) answer as for a browser
 without a GitHub sign-in when the server holds none: 401 `unauthenticated` with the message "Your GitHub sign-in
 has ended. Sign in again." and **no** `WWW-Authenticate` header (the access token itself is fine).
 
-A17 reads the Viewed marks with the user's GitHub token; without an answer it still serves the files, with
-`viewed_status: not_checked`.
+A17 reads the Viewed marks with the user's GitHub token; without a GitHub sign-in it answers 401 as above, and
+when GitHub does not answer it still serves the files, with `viewed_status: not_checked`.
 
 **Do not poll faster than once a minute.** Reads backed by the user's GitHub token (A9 related-link checks, A14,
 installations in A15, Viewed marks in A17) spend the user's own GitHub budget (5000 requests an hour, shared with the browser and the

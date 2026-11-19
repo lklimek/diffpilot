@@ -54,9 +54,9 @@ impl ApiErrorSource for ViewedApiError {
             Self::Viewed(ViewedError::Refused(_) | ViewedError::MissingPullRequest) => {
                 ApiErrorCode::GithubRefused
             }
-            Self::Viewed(ViewedError::Github(_) | ViewedError::NoPayload) => {
-                ApiErrorCode::GithubUnavailable
-            }
+            Self::Viewed(
+                ViewedError::Github(_) | ViewedError::NoPayload | ViewedError::HeadUnread(_),
+            ) => ApiErrorCode::GithubUnavailable,
             Self::Viewed(ViewedError::Token(error)) => error.code(),
             Self::Viewed(ViewedError::Diff(PrDiffError::NotPrepared)) => {
                 ApiErrorCode::AnalysisNotFinished
@@ -86,6 +86,9 @@ impl ApiErrorSource for ViewedApiError {
             }
             Self::Viewed(ViewedError::Github(_) | ViewedError::NoPayload) => {
                 "GitHub did not confirm the change. Reload to see your mark, then try again."
+            }
+            Self::Viewed(ViewedError::HeadUnread(_)) => {
+                "Could not read the pull request from GitHub, so nothing was sent. Your mark is unchanged; try again."
             }
             Self::Viewed(ViewedError::Diff(PrDiffError::NotPrepared)) => {
                 "The analysis has not finished yet."
