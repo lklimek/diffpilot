@@ -226,3 +226,61 @@ test("long Ask prose and fenced code wrap inside the inspector", async ({ page }
     expect(size.scroll).toBeLessThanOrEqual(size.width + 1);
   }
 });
+
+// Owner review: the flow rows' tick toggle and markers must not squeeze the titles into mid-word breaks.
+// Room of a flow title (button content width) at each menu width: what the risk label beside it leaves.
+const TITLE_ROOM = { 240: 105, 200: 70 } as const;
+for (const navWidth of [240, 200] as const) {
+  test(`menu at ${navWidth} px: flow titles keep their room and break only between words (unless one word is wider)`, async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      ([key, width]) =>
+        window.localStorage.setItem(
+          key,
+          JSON.stringify({
+            hidden: { nav: false, main: false, inspector: false },
+            full: null,
+            widths: { nav: width, inspector: null },
+            diagram: false,
+            diagramHeight: null,
+            askHeight: null,
+          }),
+        ),
+      ["diffpilot.tour.layout", navWidth] as const,
+    );
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/analyses/${ANALYSIS_ID}`);
+    const nav = page.getByRole("navigation", { name: "Flows and steps" });
+    await expect(nav.getByRole("button", { name: /^Flow 1:/ })).toBeVisible();
+    const broken = await nav.evaluate((root, least) => {
+      const found: string[] = [];
+      for (const button of root.querySelectorAll<HTMLElement>("button[data-row='menu']")) {
+        if (!button.getAttribute("aria-label")?.startsWith("Flow ")) continue;
+        const style = getComputedStyle(button);
+        const room = button.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        if (room < least) found.push(`${button.getAttribute("aria-label")}: ${Math.round(room)} px of room`);
+        const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          for (const word of node.textContent!.matchAll(/\S+/g)) {
+            const range = document.createRange();
+            range.setStart(node, word.index);
+            range.setEnd(node, word.index + word[0].length);
+            const lines = new Set([...range.getClientRects()].map((r) => Math.round(r.top)));
+            if (lines.size < 2) continue;
+            const probe = document.createElement("span");
+            probe.style.cssText = `position:absolute;white-space:nowrap;font:${getComputedStyle(node.parentElement!).font}`;
+            probe.textContent = word[0];
+            document.body.append(probe);
+            const natural = probe.getBoundingClientRect().width;
+            probe.remove();
+            if (natural <= room)
+              found.push(`${word[0]} (${Math.round(natural)} px in ${Math.round(room)} px)`);
+          }
+        }
+      }
+      return found;
+    }, TITLE_ROOM[navWidth]);
+    expect(broken).toEqual([]);
+  });
+}

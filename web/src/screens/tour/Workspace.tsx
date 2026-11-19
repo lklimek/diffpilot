@@ -7,6 +7,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { HEAD_BUTTON } from "../../components/button/button";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import {
   MIN_WIDTH_PX,
@@ -56,8 +57,6 @@ function useWidth(ref: RefObject<HTMLElement | null>): number {
   return width;
 }
 const KEY_STEP_PX = 24;
-const SMALL_BUTTON =
-  "cursor-pointer rounded border border-border bg-surface px-1.5 text-[11.5px] text-text hover:border-accent aria-pressed:border-accent aria-pressed:bg-accent-bg";
 
 function ColumnHead({
   column,
@@ -83,7 +82,7 @@ function ColumnHead({
           aria-label={`Hide ${TITLE[column]} column`}
           aria-disabled={!hideable || undefined}
           onClick={() => hideable && onChange(hideColumn(layout, column))}
-          className={`${SMALL_BUTTON} aria-disabled:cursor-not-allowed aria-disabled:opacity-60`}
+          className={`${HEAD_BUTTON} aria-disabled:cursor-not-allowed aria-disabled:opacity-60`}
         >
           Hide
         </button>
@@ -94,7 +93,7 @@ function ColumnHead({
           aria-pressed={full}
           aria-label={`Full screen ${TITLE[column]} column`}
           onClick={() => onChange(toggleFull(layout, column))}
-          className={SMALL_BUTTON}
+          className={HEAD_BUTTON}
         >
           {full ? "Exit full screen" : "Full screen"}
         </button>

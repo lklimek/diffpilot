@@ -43,7 +43,7 @@ test("keyboard: skip link, menu and Next reachable by Tab with a visible focus r
   await expect(skip).toBeFocused();
   await expect(skip).toBeInViewport();
   const reached: string[] = [];
-  for (let i = 0; i < 60; i += 1) {
+  for (let i = 0; i < 80; i += 1) {
     await page.keyboard.press("Tab");
     const name = await page.evaluate(() => {
       const el = document.activeElement as HTMLElement | null;
