@@ -314,6 +314,12 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     openFragment(blockFragment(block));
   };
 
+  // Next / `j`: on a step it first ticks the step (never unticks), then moves on.
+  const goNext = () => {
+    if (step && !ticked.includes(step.id)) setTicks([step.id], true);
+    go(next);
+  };
+
   // `owner`: the step the line belongs to, when known (a remark); else the first step covering the line.
   const showEvidence = (item: Pick<Evidence, "file" | "side" | "line">, owner?: StepId) => {
     const found = tour.flows
@@ -468,7 +474,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       if (event.defaultPrevented || helpOpen || isTyping(event)) return;
       switch (shortcutAction(event.key)) {
         case "next_block":
-          return go(next);
+          return goNext();
         case "previous_block":
           return go(previous);
         case "next_flow":
@@ -876,7 +882,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         previous={previous && blockTitle(tour, previous)}
         next={next && blockTitle(tour, next)}
         onPrevious={() => go(previous)}
-        onNext={() => go(next)}
+        marksReviewed={Boolean(step)}
+        onNext={goNext}
       />
       <p className="sr-only" aria-live="polite">
         {questionsView ? "Your questions and answers" : blockTitle(tour, current)}

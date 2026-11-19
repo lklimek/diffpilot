@@ -21,7 +21,7 @@ describe("HelpDialog", () => {
       .getAllByRole("row")
       .map((row) => row.textContent);
     expect(keys).toEqual([
-      "jnext block (including Not analysed and pending review)",
+      "jnext block (including Not analysed and pending review); on a step it also ticks it as reviewed",
       "kprevious block",
       "nnext flow; after the last flow, next quiet block",
       "pprevious flow",

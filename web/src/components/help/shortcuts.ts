@@ -20,7 +20,7 @@ export const SHORTCUTS: { key: string; label: string; action: ShortcutAction; te
     key: "j",
     label: "j",
     action: "next_block",
-    text: "next block (including Not analysed and pending review)",
+    text: "next block (including Not analysed and pending review); on a step it also ticks it as reviewed",
   },
   { key: "k", label: "k", action: "previous_block", text: "previous block" },
   { key: "n", label: "n", action: "next_flow", text: "next flow; after the last flow, next quiet block" },

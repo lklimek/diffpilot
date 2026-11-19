@@ -267,6 +267,34 @@ describe("Tour screen (brief §4.3)", () => {
     expect(topBar()).toHaveTextContent("flows reviewed 0 / 5");
   });
 
+  it("Next and j tick the current step and move on; Previous and the flow introduction never tick", async () => {
+    await open();
+    await openStep("1", "1");
+    await user().click(within(main()).getByRole("button", { name: /^Next: / }));
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1"]));
+    expect(blockHeading()).not.toHaveTextContent("Trigger: callers of send");
+    await user().keyboard("j");
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1", "f1.2"]));
+    await user().keyboard("k");
+    await user().keyboard("k");
+    expect(readStore("reviewState").ticked_steps).toEqual(["f1.1", "f1.2"]);
+    await user().keyboard("k");
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 3:/ }));
+    await user().keyboard("j");
+    expect(readStore("reviewState").ticked_steps).toEqual(["f1.1", "f1.2"]);
+  });
+
+  it("Next keeps an already ticked step ticked", async () => {
+    await open();
+    await openStep("1", "1");
+    await act(() => user().keyboard("x"));
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1"]));
+    await user().keyboard("j");
+    await user().keyboard("k");
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1"]));
+    expect(within(nav()).getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeInTheDocument();
+  });
+
   it("Mark flow reviewed ticks every step of the flow", async () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 3:/ }));
