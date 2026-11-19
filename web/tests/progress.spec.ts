@@ -72,6 +72,17 @@ test("finished: n of n and Open", async ({ page }) => {
   await expectAccessible(page);
 });
 
+test("finished: Open stays on screen at narrow widths", async ({ page }) => {
+  for (const width of [600, 800, 1024]) {
+    await page.setViewportSize({ width, height: 800 });
+    await open(page, "finished");
+    const box = await openReview(page).boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+  }
+});
+
 test("unknown analysis: plain error and a way back", async ({ page }) => {
   await page.goto("/analyses/00000000-0000-0000-0000-000000000000/progress");
   await expect(page.getByRole("alert")).toContainText("This analysis does not exist.");

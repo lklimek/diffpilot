@@ -270,11 +270,11 @@ export function AnalysisProgress({
         )}
       </div>
       {progress && <StageList progress={progress} />}
-      <div className="flex items-center gap-4">
-        <div className="min-w-0 flex-1">
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="min-w-[10rem] flex-1">
           {!uncounted && <Bar state={state} working={working} progress={progress} planned={planned} />}
         </div>
-        <span className="flex flex-none flex-wrap items-center gap-x-4 gap-y-2">
+        <span className="flex max-w-full flex-none flex-wrap items-center gap-x-4 gap-y-2">
           <span role="group" aria-label="Analysis actions" className="flex flex-wrap gap-2">
             {live && state.state !== "failed" && (userPaused ? onResume : onPause) && (
               <Tooltip

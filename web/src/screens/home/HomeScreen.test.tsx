@@ -241,6 +241,9 @@ describe("Home (brief §4.1)", () => {
     expect(moved).toHaveTextContent(
       `This analysis is for ${analysis.pr.head_sha.slice(0, 7)}; the PR is now at ${MOVED_HEAD.slice(0, 7)}.`,
     );
+    expect(within(moved).getByRole("link", { name: "Open the old analysis" })).toHaveAccessibleDescription(
+      "Opens the analysis of the older head. Starts nothing: no analysis, no LLM use.",
+    );
     expect(within(moved).getByRole("link", { name: "Open the old analysis" })).toHaveAttribute(
       "href",
       `/analyses/${analysis.id}`,
@@ -388,32 +391,39 @@ it("only promises personal state when the server confirms it exists", async () =
 });
 
 it.each([
-  [true, "Open"],
-  [false, "Open"],
-])("a review-ready analysis in progress (started: %s) offers %s", async (started, label) => {
-  server.use(
-    http.post("/api/v1/pr/resolve", () =>
-      HttpResponse.json({
-        pr: analysis.pr,
-        commenting_available: true,
-        head_moved: false,
-        analysis: {
-          ...analysis,
-          state: { state: "running", done: 2, total: 5 },
-          review_ready: true,
-          has_my_state: started,
-        },
-      }),
-    ),
-  );
-  renderRoute("/review");
-  await analyze();
-  const found = await banner("An analysis of this PR is in progress.", "status");
-  expect(within(found).getByRole("link", { name: label })).toHaveAttribute(
-    "href",
-    `/analyses/${analysis.id}`,
-  );
-});
+  [true, true],
+  [false, false],
+])(
+  "a review-ready analysis in progress (started: %s): Open, tooltip keeps ticks only if started",
+  async (started, kept) => {
+    server.use(
+      http.post("/api/v1/pr/resolve", () =>
+        HttpResponse.json({
+          pr: analysis.pr,
+          commenting_available: true,
+          head_moved: false,
+          analysis: {
+            ...analysis,
+            state: { state: "running", done: 2, total: 5 },
+            review_ready: true,
+            has_my_state: started,
+          },
+        }),
+      ),
+    );
+    renderRoute("/review");
+    await analyze();
+    const found = await banner("An analysis of this PR is in progress.", "status");
+    const open = within(found).getByRole("link", { name: "Open" });
+    expect(open).toHaveAttribute("href", `/analyses/${analysis.id}`);
+    expect(open).toHaveAccessibleDescription(/Starts nothing: no analysis, no LLM use\.$/);
+    const description = open.getAttribute("aria-describedby") ?? "";
+    expect(document.getElementById(description)?.textContent?.includes("ticks and answers are kept")).toBe(
+      kept,
+    );
+    expect(document.getElementById(description)?.textContent).not.toMatch(/continues/);
+  },
+);
 
 describe("Recent reviews", () => {
   it("lists the user's own analyses under the form; a row opens its analysis", async () => {

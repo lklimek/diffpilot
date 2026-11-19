@@ -258,7 +258,7 @@ export function HomeScreen() {
                           <Tooltip
                             tip={
                               outcome.analysis.review_ready
-                                ? `${openTip(outcome.analysis)} The running analysis continues on its own.`
+                                ? openTip(outcome.analysis)
                                 : "Opens the progress of the running analysis."
                             }
                           >
@@ -305,7 +305,7 @@ export function HomeScreen() {
                       tone="warn"
                       title="The PR has moved."
                       actions={
-                        <Tooltip tip="Opens the analysis of the older head.">
+                        <Tooltip tip="Opens the analysis of the older head. Starts nothing: no analysis, no LLM use.">
                           <Link to={analysisHref(outcome.analysis)} className={buttonClass("plain", true)}>
                             Open the old analysis
                           </Link>
