@@ -284,6 +284,22 @@ describe("Tour screen (brief §4.3)", () => {
     expect(readStore("reviewState").ticked_steps).toEqual(["f1.1", "f1.2"]);
   });
 
+  it("a failed save on Next still moves on, keeps the tick on the page and says it is not saved", async () => {
+    server.use(
+      http.put("/api/v1/analyses/:id/review-state", () =>
+        HttpResponse.json({ code: "internal", message: "Down." }, { status: 500 }),
+      ),
+    );
+    await open();
+    await openStep("1", "1");
+    await user().click(within(main()).getByRole("button", { name: /^Next: / }));
+    expect(blockHeading()).not.toHaveTextContent("Trigger: callers of send");
+    expect(await within(main()).findByRole("alert")).toHaveTextContent(
+      "Your ticks and last viewed block are not saved",
+    );
+    expect(within(nav()).getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeInTheDocument();
+  });
+
   it("Next keeps an already ticked step ticked", async () => {
     await open();
     await openStep("1", "1");
