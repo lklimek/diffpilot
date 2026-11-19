@@ -168,6 +168,11 @@
           "tip": "Linked with \"Fixes #1187\" in the description"
         }
       ],
+      "change_size": {
+        "size": "medium",
+        "additions": 350,
+        "deletions": 150
+      },
       "facts": [
         {
           "label": "Head",
@@ -311,6 +316,11 @@
           "tip": "4 checks passed"
         }
       ],
+      "change_size": {
+        "size": "tiny",
+        "additions": 28,
+        "deletions": 12
+      },
       "facts": [
         {
           "label": "Head",
@@ -447,6 +457,11 @@
           "tip": "A smart-review analysis exists for head 52d2da1; the PR has moved to d41b7a0 since"
         }
       ],
+      "change_size": {
+        "size": "medium",
+        "additions": 448,
+        "deletions": 192
+      },
       "facts": [
         {
           "label": "Head",
@@ -599,6 +614,11 @@
           "tip": "You are the author"
         }
       ],
+      "change_size": {
+        "size": "small",
+        "additions": 266,
+        "deletions": 114
+      },
       "facts": [
         {
           "label": "Head",
@@ -742,6 +762,11 @@
           "tip": "2 checks passed"
         }
       ],
+      "change_size": {
+        "size": "small",
+        "additions": 147,
+        "deletions": 63
+      },
       "facts": [
         {
           "label": "Head",
@@ -877,6 +902,11 @@
           "tip": "Threads from @olek-d are still open"
         }
       ],
+      "change_size": {
+        "size": "medium",
+        "additions": 1015,
+        "deletions": 435
+      },
       "facts": [
         {
           "label": "Head",
@@ -1147,6 +1177,11 @@
           "tip": "6 checks passed"
         }
       ],
+      "change_size": {
+        "size": "medium",
+        "additions": 1288,
+        "deletions": 552
+      },
       "facts": [
         {
           "label": "Head",
@@ -1418,6 +1453,11 @@
           "tip": "You are the author"
         }
       ],
+      "change_size": {
+        "size": "tiny",
+        "additions": 84,
+        "deletions": 36
+      },
       "facts": [
         {
           "label": "Head",

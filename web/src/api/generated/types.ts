@@ -497,6 +497,10 @@ waiting_since: string,
  */
 tags: Array<FactTag>,
 /**
+ * Size mark of its full diff (display only); absent when the totals are unknown.
+ */
+change_size?: ChangeSizeMark,
+/**
  * Always null: a pull request waiting only on others is not ranked (kept for compatibility).
  */
 total_tenths: number | null, };
@@ -570,6 +574,23 @@ line: number,
  * GitHub link.
  */
 github_url: string, };
+
+/**
+ * A pull request's size mark with its evidence (a scan fact, not a score input).
+ */
+export type ChangeSizeMark = {
+/**
+ * The mark.
+ */
+size: SizeMark,
+/**
+ * Added lines of the full diff.
+ */
+additions: number,
+/**
+ * Removed lines of the full diff.
+ */
+deletions: number, };
 
 /**
  * A failing check.
@@ -3131,6 +3152,11 @@ app_installations: Array<AppInstallation> | null,
 repos: Array<RepoRef>, };
 
 /**
+ * Size mark of a pull request: a fixed table of changed lines (additions + deletions), plan §C.2 K16.
+ */
+export type SizeMark = "tiny" | "small" | "medium" | "large" | "huge";
+
+/**
  * Large-PR facts and a rough estimate, never a prerequisite for starting.
  */
 export type SizeWarning = {
@@ -3546,6 +3572,10 @@ updated_at: string,
  * Deterministic tags from scan facts.
  */
 tags: Array<FactTag>,
+/**
+ * Size mark of a pull request's full diff (display only); absent for issues, TODOs and unknown totals.
+ */
+change_size?: ChangeSizeMark,
 /**
  * Deterministic facts from the scan.
  */

@@ -122,6 +122,11 @@
             "tip": "The author marked it self-reviewed"
           }
         ],
+        "change_size": {
+          "size": "large",
+          "additions": 3200,
+          "deletions": 400
+        },
         "total_tenths": null
       },
       {

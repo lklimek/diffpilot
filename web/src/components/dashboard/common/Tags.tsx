@@ -1,5 +1,6 @@
-import type { FactTag } from "../../../api/generated/types";
+import type { ChangeSizeMark, FactTag } from "../../../api/generated/types";
 import { Tooltip } from "../../tooltip/Tooltip";
+import { changedLines, SIZE_RULE } from "./size";
 
 const PILL =
   "inline-block cursor-help rounded border px-1.5 text-[11px] leading-[18px] font-semibold whitespace-nowrap";
@@ -29,6 +30,25 @@ export function ProvisionalPill({ text, tip }: { text: string; tip: string }) {
         className={`${PILL} border-dashed border-med-bd bg-transparent text-med`}
       >
         ~ {text}
+      </span>
+    </Tooltip>
+  );
+}
+
+/** A pull request's size mark as a neutral pill (a fact with its evidence); nothing without a mark. */
+export function SizePill({ mark }: { mark: ChangeSizeMark | null | undefined }) {
+  if (!mark) return null;
+  const lines = changedLines(mark);
+  return (
+    <Tooltip tip={`${lines} changed lines (+${mark.additions} −${mark.deletions}); ${SIZE_RULE}`}>
+      <span
+        data-size-pill={mark.size}
+        role="img"
+        aria-label={`Change size: ${mark.size}, ${lines} changed lines`}
+        tabIndex={0}
+        className="inline-block cursor-help rounded-full border border-mv-bd bg-surface px-2 text-[11px] leading-[18px] font-semibold whitespace-nowrap text-text"
+      >
+        {mark.size}
       </span>
     </Tooltip>
   );

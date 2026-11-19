@@ -162,6 +162,8 @@ export function DashboardScreen() {
           items={page.allItems}
           kinds={page.filter}
           onKindsChange={page.setFilter}
+          sizes={page.sizes}
+          onSizesChange={page.setSizes}
           reviewHref={reviewHref}
           onNavigate={go}
           onHelp={() => setHelpOpen(true)}

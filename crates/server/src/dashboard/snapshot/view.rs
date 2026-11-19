@@ -418,6 +418,10 @@ fn work_item(
             private,
             updated_at,
             tags,
+            change_size: match source {
+                Source::Pr(pr) => score::size_mark(&pr.facts),
+                Source::Issue(_) | Source::Todo(_) => None,
+            },
             facts,
             score: scored.score,
             llm,
@@ -611,6 +615,7 @@ fn awaiting(rules: &ScoreRules, snapshot: &Snapshot) -> Vec<AwaitingItem> {
                 waiting_on: f.review_requested_from_others.clone(),
                 waiting_since: waiting_since(f.others_review_requested_at, stored.created_at),
                 tags: ci_tag(stored).into_iter().collect(),
+                change_size: score::size_mark(f),
                 // Never ranked (B10).
                 total_tenths: None,
             })

@@ -29,7 +29,10 @@ pub use facts::{
     Milestone, MilestoneContext, OwnedChange, PrFacts, Relation, ReviewDecision, TodoFacts,
     TodoStatus,
 };
-pub use parts::{ESTIMATE, change_size_points, recency_points, unblocks_points, waiting_points};
+pub use parts::{
+    ESTIMATE, SIZE_MARKS, change_size_points, recency_points, size_mark, unblocks_points,
+    waiting_points,
+};
 pub use rules::{BUILTIN_BRANCH_PATTERNS, ScoreRules, todo_display_ids};
 
 use parts::{Eligibility, Part};

@@ -1466,6 +1466,46 @@ fn a_pull_request_waiting_only_on_others_is_not_in_needs_you() {
     assert_eq!(judged, ["wallet-ui#2"]);
 }
 
+/// F39: pull request items and Waiting on others carry the size mark; issues and TODOs do not.
+#[test]
+fn pull_requests_carry_their_size_mark() {
+    use contracts::api::dashboard::SizeMark;
+    let mut waiting = pr(7, "feat: waits");
+    waiting.facts.labels = vec!["ready-for-human".to_owned()];
+    waiting.facts.review_requested_from_others = vec!["ana".to_owned()];
+    waiting.facts.additions = Some(9500);
+    waiting.facts.deletions = Some(500);
+    let mut unknown = pr(8, "fix: totals unknown");
+    unknown.facts.additions = None;
+    let snap = snapshot(
+        vec![pr(1, "fix: small"), unknown, waiting],
+        vec![issue(3, "Bug")],
+        vec![todo("Write docs")],
+    );
+    let view = snapshot::build(&snap, &HashMap::new(), None);
+    let mut marks: Vec<_> = view
+        .items
+        .iter()
+        .map(|i| (i.item.id.as_str(), i.item.change_size.map(|m| m.size)))
+        .collect();
+    marks.sort_by_key(|(id, _)| *id);
+    assert_eq!(
+        marks,
+        [
+            ("TODO-5a5a0000", None),
+            ("wallet-ui#1", Some(SizeMark::Tiny)),
+            ("wallet-ui#3", None),
+            ("wallet-ui#8", None),
+        ]
+    );
+    let awaiting: Vec<_> = view
+        .awaiting
+        .iter()
+        .map(|a| (a.id.as_str(), a.change_size.map(|m| m.size)))
+        .collect();
+    assert_eq!(awaiting, [("wallet-ui#7", Some(SizeMark::Huge))]);
+}
+
 #[tokio::test]
 async fn usage_limit_pauses_ranking() {
     let h = harness().await;

@@ -76,6 +76,31 @@ test.describe("My work (msw)", () => {
     await expect(page).toHaveURL(/\/settings$/);
   });
 
+  test("size pills on PR rows and Waiting on others; Sizes shown filters pull requests only", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await open(page);
+    const pill = main(page).getByRole("img", { name: "Change size: medium, 500 changed lines" });
+    await expect(pill).toBeVisible();
+    await pill.focus();
+    await expect(page.getByRole("tooltip")).toContainText("500 changed lines (+350 −150); tiny < 150");
+    await expect(page.getByRole("img", { name: "Change size: large, 3600 changed lines" })).toBeVisible();
+    const sizes = main(page).getByRole("group", { name: "Sizes shown" });
+    const medium = sizes.getByRole("button", { name: /medium 4/ });
+    await medium.focus();
+    await page.keyboard.press("Enter");
+    await expect(medium).toHaveAttribute("aria-pressed", "false");
+    await expect(main(page).getByText("fix(sync): retry header fetch after peer timeout")).toHaveCount(0);
+    await expect(main(page).getByText("Wallet balance shows a stale value after a reorg")).toBeVisible();
+    await page.reload();
+    await expect(
+      main(page)
+        .getByRole("group", { name: "Sizes shown" })
+        .getByRole("button", { name: /medium 4/ }),
+    ).toHaveAttribute("aria-pressed", "false");
+  });
+
   test("kind toggles combine by keyboard, the last one on stays on, and the choice is remembered", async ({
     page,
   }) => {

@@ -947,6 +947,44 @@ fn ci_classification_matches_skill_vectors() {
     assert_eq!((none.effective, none.red.len()), (CiEffective::None, 0));
 }
 
+/// F39: the display size mark of a pull request from the fixed table (tiny < 150, small < 500, medium < 3000,
+/// large < 10 000, huge from 10 000 changed lines); unknown totals have none.
+#[test]
+fn size_mark_follows_the_fixed_table() {
+    use contracts::api::dashboard::{ChangeSizeMark, SizeMark};
+    let mark = |additions: Option<u32>, deletions: Option<u32>| {
+        size_mark(&PrFacts {
+            additions,
+            deletions,
+            ..pr()
+        })
+        .map(|m| m.size)
+    };
+    assert_eq!(mark(Some(0), Some(0)), Some(SizeMark::Tiny));
+    assert_eq!(mark(Some(100), Some(49)), Some(SizeMark::Tiny));
+    assert_eq!(mark(Some(100), Some(50)), Some(SizeMark::Small));
+    assert_eq!(mark(Some(400), Some(99)), Some(SizeMark::Small));
+    assert_eq!(mark(Some(400), Some(100)), Some(SizeMark::Medium));
+    assert_eq!(mark(Some(2000), Some(999)), Some(SizeMark::Medium));
+    assert_eq!(mark(Some(2000), Some(1000)), Some(SizeMark::Large));
+    assert_eq!(mark(Some(9000), Some(999)), Some(SizeMark::Large));
+    assert_eq!(mark(Some(9000), Some(1000)), Some(SizeMark::Huge));
+    assert_eq!(mark(None, Some(5)), None);
+    assert_eq!(mark(Some(5), None), None);
+    assert_eq!(
+        size_mark(&PrFacts {
+            additions: Some(30),
+            deletions: Some(5),
+            ..pr()
+        }),
+        Some(ChangeSizeMark {
+            size: SizeMark::Tiny,
+            additions: 30,
+            deletions: 5
+        })
+    );
+}
+
 // --- eligibility --------------------------------------------------------------------------------------------
 
 /// D19: the ownership policy never drops a pull request directed at the user (authored by a scanned login,

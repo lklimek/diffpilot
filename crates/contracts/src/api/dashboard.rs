@@ -403,6 +403,10 @@ pub struct AwaitingItem {
     pub waiting_since: Timestamp,
     /// Deterministic tags from scan facts (e.g. CI passing).
     pub tags: Vec<FactTag>,
+    /// Size mark of its full diff (display only); absent when the totals are unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub change_size: Option<ChangeSizeMark>,
     /// Always null: a pull request waiting only on others is not ranked (kept for compatibility).
     pub total_tenths: Option<i32>,
 }
@@ -570,6 +574,10 @@ pub struct WorkItem {
     pub updated_at: Timestamp,
     /// Deterministic tags from scan facts.
     pub tags: Vec<FactTag>,
+    /// Size mark of a pull request's full diff (display only); absent for issues, TODOs and unknown totals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub change_size: Option<ChangeSizeMark>,
     /// Deterministic facts from the scan.
     pub facts: Vec<Fact>,
     /// Score with its parts.
@@ -578,6 +586,33 @@ pub struct WorkItem {
     pub llm: Option<ItemText>,
     /// The user's smart-review analysis of this pull request, read at request time; null when none.
     pub review: Option<ReviewLink>,
+}
+
+/// Size mark of a pull request: a fixed table of changed lines (additions + deletions), plan §C.2 K16.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SizeMark {
+    /// Fewer than 150 changed lines.
+    Tiny,
+    /// 150 to 499 changed lines.
+    Small,
+    /// 500 to 2999 changed lines.
+    Medium,
+    /// 3000 to 9999 changed lines.
+    Large,
+    /// 10 000 changed lines or more.
+    Huge,
+}
+
+/// A pull request's size mark with its evidence (a scan fact, not a score input).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ChangeSizeMark {
+    /// The mark.
+    pub size: SizeMark,
+    /// Added lines of the full diff.
+    pub additions: u32,
+    /// Removed lines of the full diff.
+    pub deletions: u32,
 }
 
 /// A deterministic tag from scan facts.

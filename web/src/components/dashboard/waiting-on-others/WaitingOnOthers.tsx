@@ -2,7 +2,7 @@ import type { AwaitingItem } from "../../../api/generated/types";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { daysSince } from "../common/format";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
-import { FactTags } from "../common/Tags";
+import { FactTags, SizePill } from "../common/Tags";
 import { AsideSection } from "../side-panel/AsideSection";
 
 const who = (login: string) => (login.startsWith("team:") ? login : `@${login}`);
@@ -60,6 +60,7 @@ export function WaitingOnOthers({ items, now }: { items: AwaitingItem[]; now: Da
                   waits on {item.waiting_on.map(who).join(", ")} for{" "}
                   <b className="text-text">{daysSince(item.waiting_since, now)} d</b>
                 </span>
+                <SizePill mark={item.change_size} />
                 <FactTags tags={item.tags} />
               </div>
             </li>

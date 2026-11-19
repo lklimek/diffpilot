@@ -1,7 +1,9 @@
 //! Score components of pull requests, issues and TODOs from scan facts (skill `scoring.py`, `todos.py`
 //! `score_row`, `score.py` `heuristic_part`).
 
-use contracts::api::dashboard::{ExclusionReason, PartSource, PartStatus, ScoreComponent as C};
+use contracts::api::dashboard::{
+    ChangeSizeMark, ExclusionReason, PartSource, PartStatus, ScoreComponent as C, SizeMark,
+};
 use contracts::time::Timestamp;
 
 use super::facts::{
@@ -110,6 +112,32 @@ pub fn recency_points(days: f64) -> f64 {
 /// `12.5·0.8^(lines/1000)` of the full diff.
 pub fn change_size_points(lines: u64) -> f64 {
     12.5 * 0.8_f64.powf(lines as f64 / 1000.0)
+}
+
+/// Display size marks by changed lines (additions + deletions), the lower bound of each mark (plan §C.2 K16): a
+/// fixed table set by the owner, 2026-11-18. Display only: not a score part, not the judge's size class.
+pub const SIZE_MARKS: [(u64, SizeMark); 5] = [
+    (0, SizeMark::Tiny),
+    (150, SizeMark::Small),
+    (500, SizeMark::Medium),
+    (3000, SizeMark::Large),
+    (10_000, SizeMark::Huge),
+];
+
+/// The size mark of a pull request with its evidence; `None` when the diff totals are unknown.
+pub fn size_mark(pr: &PrFacts) -> Option<ChangeSizeMark> {
+    let (additions, deletions) = (pr.additions?, pr.deletions?);
+    let lines = u64::from(additions) + u64::from(deletions);
+    let size = SIZE_MARKS
+        .iter()
+        .rev()
+        .find(|(from, _)| lines >= *from)
+        .map_or(SizeMark::Tiny, |(_, mark)| *mark);
+    Some(ChangeSizeMark {
+        size,
+        additions,
+        deletions,
+    })
 }
 
 /// Age of an outstanding request: ≤2 d 15, ≤7 d 10, older 5.

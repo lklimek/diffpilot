@@ -11,7 +11,7 @@ import { resetDashboard, setDashboardScenario } from "../../mocks/handlers/dashb
 import { resetDashboardSettings } from "../../mocks/handlers/dashboard-settings";
 import { setScenario } from "../../mocks/scenarios";
 import { resetSentTimeZones } from "./queries";
-import { FILTER_KEY, LEGACY_FILTER_KEY, useDashboardPage } from "./useDashboardPage";
+import { FILTER_KEY, LEGACY_FILTER_KEY, SIZE_FILTER_KEY, useDashboardPage } from "./useDashboardPage";
 
 const server = setupServer(...handlers);
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
@@ -89,6 +89,19 @@ describe("useDashboardPage", () => {
       act(() => result.current.setFilter([...only]));
       expect(renderPage().result.current.filter).toEqual(only);
     }
+  });
+
+  it("remembers the size filter under its own key; unknown or no stored sizes fall back to every size", () => {
+    const { result } = renderPage();
+    expect(result.current.sizes).toEqual(["tiny", "small", "medium", "large", "huge"]);
+    act(() => result.current.setSizes(["small", "huge"]));
+    expect(JSON.parse(localStorage.getItem(SIZE_FILTER_KEY) ?? "null")).toEqual(["small", "huge"]);
+    expect(renderPage().result.current.sizes).toEqual(["small", "huge"]);
+    for (const value of ['["gigantic"]', "[]", "nonsense", "constructor"]) {
+      localStorage.setItem(SIZE_FILTER_KEY, value);
+      expect(renderPage().result.current.sizes).toEqual(["tiny", "small", "medium", "large", "huge"]);
+    }
+    localStorage.removeItem(SIZE_FILTER_KEY);
   });
 
   it("a corrupt stored value naming an Object.prototype key falls back to every kind", () => {

@@ -3,8 +3,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
 import { useMe } from "../../api/queries";
-import type { RefreshStatus } from "../../api/generated/types";
+import type { RefreshStatus, SizeMark } from "../../api/generated/types";
 import { useNow } from "../../app/now";
+import { ALL_SIZES } from "../../components/dashboard/common/size";
 import { ALL_KINDS, type ItemKind } from "../../components/dashboard/work-list/WorkList";
 import {
   SUMMARY_KEY,
@@ -21,6 +22,8 @@ import { dashboardView } from "./state";
 
 /** localStorage key of the kinds shown (a JSON array such as `["pr","todo"]`). */
 export const FILTER_KEY = "sr.dashboard.kinds";
+/** localStorage key of the size classes shown (a JSON array such as `["small","medium"]`). */
+export const SIZE_FILTER_KEY = "sr.dashboard.sizes";
 /** localStorage key of the earlier single-choice switch, read once when `FILTER_KEY` is absent. */
 export const LEGACY_FILTER_KEY = "sr.dashboard.kind";
 /** How long the "Ranking finished" notice stays. */
@@ -33,13 +36,13 @@ const LEGACY = new Map<string, ItemKind[]>([
   ["both", ALL_KINDS],
 ]);
 
-/** The known kinds of a stored JSON array, or null when it is not one or names none. */
-function parseKinds(value: string): ItemKind[] | null {
+/** The known values of a stored JSON array, or null when it is not one or names none. */
+function parseChoice<T extends string>(value: string, all: T[]): T[] | null {
   try {
     const parsed: unknown = JSON.parse(value);
     if (!Array.isArray(parsed)) return null;
-    const kinds = ALL_KINDS.filter((kind) => parsed.includes(kind));
-    return kinds.length > 0 ? kinds : null;
+    const chosen = all.filter((one) => parsed.includes(one));
+    return chosen.length > 0 ? chosen : null;
   } catch {
     return null;
   }
@@ -49,7 +52,7 @@ function parseKinds(value: string): ItemKind[] | null {
 function storedFilter(): ItemKind[] {
   try {
     const value = localStorage.getItem(FILTER_KEY);
-    if (value !== null) return parseKinds(value) ?? ALL_KINDS;
+    if (value !== null) return parseChoice(value, ALL_KINDS) ?? ALL_KINDS;
     return LEGACY.get(localStorage.getItem(LEGACY_FILTER_KEY) ?? "") ?? ALL_KINDS;
   } catch {
     return ALL_KINDS;
@@ -69,6 +72,26 @@ function useKindFilter(): [ItemKind[], (filter: ItemKind[]) => void] {
     }
   }, []);
   return [filter, set];
+}
+
+/** The size classes shown (pull requests only), remembered across visits; every size at first. */
+function useSizeFilter(): [SizeMark[], (sizes: SizeMark[]) => void] {
+  const [sizes, setSizes] = useState<SizeMark[]>(() => {
+    try {
+      return parseChoice(localStorage.getItem(SIZE_FILTER_KEY) ?? "", ALL_SIZES) ?? ALL_SIZES;
+    } catch {
+      return ALL_SIZES;
+    }
+  });
+  const set = useCallback((next: SizeMark[]) => {
+    setSizes(next);
+    try {
+      localStorage.setItem(SIZE_FILTER_KEY, JSON.stringify(next));
+    } catch {
+      // Not remembered without storage; the choice still applies.
+    }
+  }, []);
+  return [sizes, set];
 }
 
 const LIVE_RANKING = ["running", "waiting_for_analysis", "paused"];
@@ -138,6 +161,7 @@ export function useDashboardPage() {
   const timeZoneSave = useSaveBrowserTimeZone(data);
   const now = useNow();
   const [filter, setFilter] = useKindFilter();
+  const [sizes, setSizes] = useSizeFilter();
   const start = useStartRefresh();
   const cancel = useCancelRefresh();
   const rank = useRankAgain();
@@ -178,6 +202,9 @@ export function useDashboardPage() {
     allItems: items.data?.items,
     filter,
     setFilter,
+    /** Size classes shown in Needs you (pull requests only). */
+    sizes,
+    setSizes,
     now: nowDate,
     notice,
     refresh: {
