@@ -385,7 +385,11 @@ describe("msw handlers of the screens", () => {
     const root = (await ask({ text: "Why?", anchor: { kind: "pr" } })) as ChatQuestion;
     expect(root).toMatchObject({ state: "pending", anchor: { kind: "pr" } });
     expect(root.parent_id).toBeUndefined();
-    const follow = (await ask({ text: "And then?", anchor: { kind: "pr" }, parent_id: root.id })) as ChatQuestion;
+    const follow = (await ask({
+      text: "And then?",
+      anchor: { kind: "pr" },
+      parent_id: root.id,
+    })) as ChatQuestion;
     expect(follow.parent_id).toBe(root.id);
     const flow = (await ask({ text: "What?", anchor: { kind: "flow", flow_id: "f2" } })) as ChatQuestion;
     expect(flow.anchor).toEqual({ kind: "flow", flow_id: "f2" });

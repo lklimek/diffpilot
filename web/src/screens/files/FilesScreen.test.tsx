@@ -24,6 +24,8 @@ afterEach(() => {
 
 const user = () => userEvent.setup();
 const inspector = () => screen.getByRole("complementary", { name: "Inspector" });
+const askChat = () => screen.getByRole("dialog", { name: "Ask" });
+const askField = () => within(askChat()).getByRole("textbox", { name: "Your question" });
 const tree = () => screen.getByRole("navigation", { name: "Files" });
 const inspectorHeading = () =>
   within(inspector())
@@ -86,7 +88,7 @@ describe("Files view (brief §4.5)", () => {
     expect(within(inspector()).getByRole("group", { name: /^Flow 1/ })).toHaveTextContent("Step 6");
     await waitFor(() => expect(document.querySelectorAll("[data-line][data-selected-line]")).toHaveLength(3));
     await user().click(within(inspector()).getByRole("button", { name: "Ask about these lines" }));
-    const field = within(inspector()).getByRole("textbox", { name: /Ask the LLM about/ });
+    const field = askField();
     await waitFor(() => expect(field).toHaveFocus());
     expect(field).toHaveAttribute("placeholder", "Ask about these lines…");
     await user().type(field, "Why sleep here?{Enter}");
@@ -108,7 +110,7 @@ describe("Files view (brief §4.5)", () => {
     );
     await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=98&end=101");
     await user().click(within(inspector()).getByRole("button", { name: "Ask about these lines" }));
-    await user().type(within(inspector()).getByRole("textbox", { name: /Ask the LLM about/ }), "Q?{Enter}");
+    await user().type(askField(), "Q?{Enter}");
     await waitFor(() => expect(asked).not.toBeNull());
     expect(asked!.anchor).toEqual({
       kind: "lines",
@@ -234,9 +236,9 @@ describe("Files view (brief §4.5)", () => {
     );
     await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=100&end=102");
     await user().click(within(inspector()).getByRole("button", { name: "Ask about these lines" }));
-    const field = within(inspector()).getByRole("textbox", { name: /Ask the LLM about/ });
+    const field = askField();
     await user().type(field, "Why?{Enter}");
-    expect(await within(inspector()).findByText(`The question was not sent: ${limit}`)).toBeVisible();
+    expect(await within(askChat()).findByRole("alert")).toHaveTextContent(`Not sent: ${limit} Try again.`);
   });
 
   it("the toggle is disabled with the reason when the PR head moved", async () => {

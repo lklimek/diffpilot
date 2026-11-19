@@ -77,6 +77,8 @@ export interface AskChatProps {
   /** A thread to scroll to and focus ("Open in chat"); `nonce` repeats it. */
   focusThread: { id: QuestionId; nonce: number } | null;
   inputRef?: Ref<HTMLTextAreaElement>;
+  /** A problem with the answers (e.g. the lost answer stream), said above the conversation. */
+  notice?: string | null;
 }
 
 const BUTTON =
@@ -398,6 +400,11 @@ export function AskChat(props: AskChatProps) {
           </button>
         </Tooltip>
       </header>
+      {props.notice && (
+        <p role="status" className="m-0 flex-none border-b border-border bg-med-bg px-3 py-1 text-[12px]">
+          {props.notice}
+        </p>
+      )}
       <div
         ref={list}
         role="region"

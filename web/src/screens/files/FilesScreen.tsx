@@ -7,7 +7,6 @@ import type {
   AnalysisId,
   ApiErrorCode,
   AskAnchor,
-  AskQuestion,
   Annotation,
   CommentTarget,
   Evidence,
@@ -26,13 +25,10 @@ import {
   useFlowWork,
   useMe,
   usePendingReview,
-  useQuestionEvents,
   useSetFileViewed,
   useTour,
 } from "../../api/queries";
 import { useReviewStateStore } from "../../api/review-state";
-import type { AskSubject } from "../../components/ask/AskForm";
-import type { AskFilter } from "../../components/ask/AskThread";
 import { BlockNav } from "../../components/block-nav/BlockNav";
 import type { MarkerTarget } from "../../components/code-view/markers";
 import { FileHeader, type ViewedControl } from "../../components/files/FileHeader";
@@ -48,7 +44,6 @@ import {
   parseFilesHash,
   pathOn,
   selectionStep,
-  stepFilesLink,
   stepPlace,
   subjectLink,
   subjectOf,
@@ -68,7 +63,6 @@ import { isFlowReviewed } from "../../components/flow-intro/progress";
 import { HelpDialog } from "../../components/help/HelpDialog";
 import { FILES_SHORTCUTS, shortcutAction } from "../../components/help/shortcuts";
 import { useSectionState } from "../../components/inspector/sectionState";
-import { rangeText } from "../../components/section/format";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { TopBar } from "../../components/top-bar/TopBar";
 import { DiffCode, errorText, MAX_RANGE_LINES, useHideContextChanges, type CodeContext } from "../tour/code";
@@ -79,6 +73,7 @@ import { loadLayout, saveLayout, showColumn, type TourLayout } from "../tour/lay
 import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "../tour/review";
 import { FlowsMenu } from "../tour/FlowsMenu";
 import { Workspace } from "../tour/Workspace";
+import { useAskChat, useAskPlace } from "../review/askChat";
 import { FileCode } from "./FileCode";
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -179,7 +174,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [hideContextChanges, changeContextVisibility] = useHideContextChanges(login);
-  const stream = useQuestionEvents(analysisId);
+  const chat = useAskChat();
   const pending = usePendingReview(analysisId);
   const comments = useCommentActions(analysisId);
   const work = useFlowWork(analysisId);
@@ -198,7 +193,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     setCommentLine(line);
     setCommentWithSelection(false);
   };
-  const [focusNext, setFocusNext] = useState<"ask" | "comment" | { heading: string } | null>(null);
+  const [focusNext, setFocusNext] = useState<"comment" | { heading: string } | null>(null);
   const [notice, setNotice] = useState<{ text: string; nonce: number } | null>(null);
   const [viewedError, setViewedError] = useState<{
     path: string;
@@ -212,7 +207,6 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
   // Lines of the open file by side, once a range of it was read (for links past its end).
   const [totals, setTotals] = useState<Record<string, number>>({});
   const mainRef = useRef<HTMLDivElement>(null);
-  const askRef = useRef<HTMLTextAreaElement>(null);
   const commentRef = useRef<HTMLTextAreaElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const say = (text: string) => setNotice((n) => ({ text, nonce: (n?.nonce ?? 0) + 1 }));
@@ -308,13 +302,11 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
   useNoPageScroll();
   useEffect(() => {
     const field =
-      focusNext === "ask"
-        ? askRef.current
-        : focusNext === "comment"
-          ? commentRef.current
-          : focusNext && typeof focusNext === "object" && focusNext.heading === file.path
-            ? headingRef.current
-            : null;
+      focusNext === "comment"
+        ? commentRef.current
+        : focusNext && typeof focusNext === "object" && focusNext.heading === file.path
+          ? headingRef.current
+          : null;
     if (!field) return;
     field.focus();
     setFocusNext(null);
@@ -340,7 +332,6 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
   const openInFlows = (step: StepId) => void navigate(`${flowsHref}#${encodeURIComponent(step)}`);
 
   const side = displaySide(file);
-  const path = pathOn(file, side);
   const hunk = subject.kind === "hunk" ? file.hunks.find((h) => h.id === subject.id) : undefined;
   const narrowed = subject.kind === "hunk" && subject.step ? stepPlace(tour, subject.step) : undefined;
   // A narrowed step's own lines in the hunk (head, else removed): its diff, its marks in the code.
@@ -413,11 +404,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     setCommentLine({ target: { ...target, start_line: null, line: b }, lines: data });
     setCommentWithSelection(true);
   };
-  const openAsk = () => {
-    openInspector();
-    sections.reveal("ask");
-    setFocusNext("ask");
-  };
+  const openAsk = () => chat.open();
   const hunkOfStep = (id: StepId) =>
     file.hunks.find((h) =>
       h.parts.some((p) => (p.owner.kind === "step" && p.owner.step_id === id) || p.also_in.includes(id)),
@@ -610,7 +597,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
       openInspector();
     },
     onLineSelect: selectLines,
-    // "?" on a line selects it and opens Ask about it (A5).
+    // "?" on a line selects it and opens the Ask chat about it (A5); the chat's subject follows the selection.
     onAskLine: (target) => {
       go({ file: file.path, side: target.side, line: target.start_line ?? target.line, end: target.line });
       openAsk();
@@ -622,11 +609,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
   };
 
   // Ask: the subject's lines, with their step when every changed line lies in one step (A4).
-  const stepLabel = (id: StepId) => {
-    const at = stepPlace(tour, id);
-    return at ? ` · flow ${at.flow.position} · step ${at.step.number}` : "";
-  };
-  const linesSubject = (at: { side: LineSide; from: number; to: number }, noun: string): AskSubject => {
+  const linesAnchor = (at: { side: LineSide; from: number; to: number }): AskAnchor => {
     const owner = selectionStep(file, at.side, at.from, at.to);
     const step = owner ? stepPlace(tour, owner)?.step : undefined;
     // R14 reads a step anchor's lines on the step's side: removed lines of a head step stay a lines anchor.
@@ -636,112 +619,17 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
       step.facts.range.start_line <= at.from &&
       at.to <= step.facts.range.end_line;
     const range = { start_line: at.from, end_line: at.to };
-    const anchor: AskAnchor =
-      step && inside
-        ? { kind: "step", step_id: step.id, lines: range }
-        : { kind: "lines", path: pathOn(file, at.side), side: at.side, range };
-    return {
-      anchor,
-      label: `${pathOn(file, at.side)}:${rangeText(range)}${at.side === "base" ? " (removed)" : ""}${inside && owner ? stepLabel(owner) : ""}`,
-      noun,
-    };
+    return step && inside
+      ? { kind: "step", step_id: step.id, lines: range }
+      : { kind: "lines", path: pathOn(file, at.side), side: at.side, range };
   };
-  const ask: AskSubject = narrowed
-    ? {
-        anchor: { kind: "step", step_id: narrowed.step.id, lines: null },
-        label: `Step ${narrowed.step.number} · ${narrowed.step.llm.title}`,
-        noun: "this step",
-      }
+  // The Ask chat's subject follows the selection: a narrowed step, the hunk's or selected lines, else the file.
+  const askPlace: AskAnchor = narrowed
+    ? { kind: "step", step_id: narrowed.step.id, lines: null }
     : lines
-      ? linesSubject(lines, subject.kind === "hunk" ? "this hunk" : "these lines")
-      : {
-          anchor: { kind: "lines", path: file.path, side, range: null },
-          label: file.path,
-          noun: "this file",
-        };
-
-  const onFile = (q: AskQuestion) =>
-    q.anchor.kind === "lines"
-      ? q.anchor.path === file.path || q.anchor.path === file.old_path
-      : stepPlace(tour, q.anchor.step_id)?.step.facts.file === path;
-  const blockSteps = new Set(
-    (hunk
-      ? flowsAt(tour, hunk.parts)
-      : lines
-        ? flowsAt(
-            tour,
-            file.hunks
-              .flatMap((h) => h.parts)
-              .filter(
-                (p) =>
-                  p.side === lines.side && p.range.start_line <= lines.to && p.range.end_line >= lines.from,
-              ),
-          )
-        : []
-    ).flatMap((f) => f.steps.map((s) => s.step.id)),
-  );
-  const inBlock = (q: AskQuestion) => {
-    if (narrowed) return q.anchor.kind === "step" && q.anchor.step_id === narrowed.step.id;
-    if (!lines) return false;
-    if (q.anchor.kind === "step") return blockSteps.has(q.anchor.step_id);
-    const r = q.anchor.range;
-    return (
-      onFile(q) &&
-      q.anchor.side === lines.side &&
-      (r === null || (r.start_line <= lines.to && r.end_line >= lines.from))
-    );
-  };
-  const askFilters: AskFilter[] = [
-    {
-      key: "file",
-      label: "This file",
-      tip: "Shows only the questions about this file: its lines, or a step on it.",
-      empty: "No question about this file yet. Whole conversation shows the others.",
-      match: onFile,
-    },
-    ...(subject.kind !== "file"
-      ? [
-          {
-            key: "block",
-            label: "This block",
-            tip: "Shows only the questions about the selected hunk, step or lines.",
-            empty: "No question about this block yet. Whole conversation shows the others.",
-            match: inBlock,
-          },
-        ]
-      : []),
-  ];
-  const placeOfQuestion = (q: AskQuestion) => {
-    if (q.anchor.kind === "lines") {
-      const anchorFile = files.files.find(
-        (f) =>
-          f.path === (q.anchor as { path: string }).path ||
-          f.old_path === (q.anchor as { path: string }).path,
-      );
-      if (!anchorFile) return null;
-      const a = q.anchor;
-      return {
-        label: `${a.path}${a.range ? `:${rangeText(a.range)}` : ""} · in Files`,
-        open: () =>
-          go({
-            file: anchorFile.path,
-            side: a.side,
-            ...(a.range ? { line: a.range.start_line, end: a.range.end_line } : {}),
-          }),
-      };
-    }
-    const at = stepPlace(tour, q.anchor.step_id);
-    if (!at) return null;
-    const lines = q.anchor.lines;
-    return {
-      label: `${at.step.facts.file}${lines ? `:${rangeText(lines)}` : ""} · flow ${at.flow.position} · step ${at.step.number}`,
-      open: () => {
-        const target = stepFilesLink(at.step);
-        if (fileOf(files.files, target)) go(target);
-        else openInFlows(at.step.id);
-      },
-    };
-  };
+      ? linesAnchor(lines)
+      : { kind: "lines", path: file.path, side, range: null };
+  useAskPlace(askPlace);
 
   // Feedback rates one step's LLM analysis.
   const explained = hunk
@@ -781,41 +669,79 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
   };
   // "Use as review comment" on a flag: the composer opens on the flag's lines with it as a draft; nothing is sent.
   // Lines folded away are read first.
+  // "Use as review comment": the composer opens on the lines with `text` as a draft; nothing is sent. Lines folded
+  // away are read first.
+  const draftOn = (side: LineSide, start_line: number, end_line: number, text: string, what: string) => {
+    const draft = (data: LinesResponse) => {
+      commentOn({
+        target: {
+          path: pathOn(file, side),
+          side,
+          start_line: start_line === end_line ? null : start_line,
+          line: end_line,
+        },
+        lines: data,
+      });
+      setCommentPrefill({ text });
+      openInspector();
+    };
+    const cached = cachedLines(side, end_line);
+    if (cached) return draft(cached);
+    const query = {
+      path: pathOn(file, side),
+      side,
+      from: Math.max(start_line, end_line - MAX_RANGE_LINES + 1),
+      to: end_line,
+    };
+    queryClient
+      .fetchQuery(linesQuery(analysisId, query))
+      .then(draft, (error: unknown) => setLinkNotice(`${what} could not be read: ${errorText(error)}`));
+  };
   const onFlagAsComment =
     pending.data?.commenting_available === true
       ? (flag: Annotation) => {
           const owner = ownerOf.get(flag.id)?.step;
           if (!owner) return;
-          const side = owner.facts.side;
-          const { start_line, end_line } = flag.range;
-          const draft = (data: LinesResponse) => {
-            commentOn({
-              target: {
-                path: pathOn(file, side),
-                side,
-                start_line: start_line === end_line ? null : start_line,
-                line: end_line,
-              },
-              lines: data,
-            });
-            setCommentPrefill({ text: flagComment(flag) });
-            openInspector();
-          };
-          const cached = cachedLines(side, end_line);
-          if (cached) return draft(cached);
-          const query = {
-            path: pathOn(file, side),
-            side,
-            from: Math.max(start_line, end_line - MAX_RANGE_LINES + 1),
-            to: end_line,
-          };
-          queryClient
-            .fetchQuery(linesQuery(analysisId, query))
-            .then(draft, (error: unknown) =>
-              setLinkNotice(`The flag's lines could not be read: ${errorText(error)}`),
-            );
+          draftOn(
+            owner.facts.side,
+            flag.range.start_line,
+            flag.range.end_line,
+            flagComment(flag),
+            "The flag's lines",
+          );
         }
       : undefined;
+  // An answer's evidence opens here; its draft goes on the lines it was asked about, in this file (AC12).
+  useEffect(() => {
+    chat.setActions({
+      onEvidence,
+      onUseAsComment: (anchor, text) => {
+        const at =
+          anchor.kind === "lines" && anchor.range
+            ? { path: anchor.path, side: anchor.side, range: anchor.range }
+            : anchor.kind === "step"
+              ? (() => {
+                  const step = stepPlace(tour, anchor.step_id)?.step;
+                  return (
+                    step && {
+                      path: step.facts.file,
+                      side: step.facts.side,
+                      range: anchor.lines ?? step.facts.range,
+                    }
+                  );
+                })()
+              : undefined;
+        if (!at) return;
+        if (at.path !== pathOn(file, at.side)) {
+          const other = fileOf(files.files, { file: at.path, side: at.side });
+          if (other)
+            go({ file: other.path, side: at.side, line: at.range.start_line, end: at.range.end_line });
+          return;
+        }
+        draftOn(at.side, at.range.start_line, at.range.end_line, text, "The answer's lines");
+      },
+    });
+  });
   const panelContext: FilesPanelContext = {
     tour,
     file,
@@ -875,11 +801,8 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
               context: file.path,
               onBack: back,
             },
-    ask,
-    askFilters,
     commentHint:
       "Select lines by their numbers in the code (Shift+click or drag extends); the comment goes on the last selected line (c). Any displayed line can take a comment, with or without an LLM remark.",
-    isCurrent: subject.kind === "file" ? onFile : inBlock,
     feedback,
     diff,
   };
@@ -934,7 +857,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
             ctx={ctx}
             annotations={annotations}
             removedAnnotations={removedAnnotations}
-            askLineHint="Selects the line and opens Ask in the Inspector; the answer is LLM output."
+            askLineHint="Selects the line and opens the Ask chat about it; the answer is LLM output."
             bandOf={(a) => ownerOf.get(a.id)?.step.llm.assessment?.risk ?? null}
             remarkOwner={(a) => {
               const owner = ownerOf.get(a.id);
@@ -1042,7 +965,6 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
         main={centre}
         inspector={
           <InspectorPane
-            streamLost={stream.lost}
             analysisId={analysisId}
             tour={tour}
             block={narrowed ? { block: "step", step_id: narrowed.step.id } : { block: "pr_context" }}
@@ -1052,8 +974,6 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
             onFlashed={() => setInspectorFlash(null)}
             onBackToStep={back}
             onSelectStep={openInFlows}
-            placeOf={() => null}
-            placeOfQuestion={placeOfQuestion}
             onEvidence={onEvidence}
             codeShown
             pending={pending}
@@ -1064,13 +984,8 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
             onUnresolvedChange={setUnresolved}
             drafts={drafts}
             reanalyseHref={`/review?pr=${encodeURIComponent(tour.analysis.pr.html_url)}`}
-            askRef={askRef}
             sections={sections}
             commentRef={commentRef}
-            askHeight={layout.askHeight}
-            onAskHeight={(askHeight) => setLayout({ ...layout, askHeight })}
-            askInsert={null}
-            onAskInserted={() => {}}
             commentPrefill={commentPrefill}
             onCommentPrefilled={() => setCommentPrefill(null)}
             files={filesInspector}

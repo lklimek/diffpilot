@@ -30,6 +30,10 @@ export function startMockServer() {
     resetSignOut();
     resetStore();
     reviewStates.reset();
+    // Every test starts with the Ask chat hidden and empty, as on a first visit.
+    for (const storage of [window.localStorage, window.sessionStorage])
+      for (const key of Object.keys(storage))
+        if (key.startsWith("diffpilot.askChat.")) storage.removeItem(key);
   });
   afterAll(() => server.close());
   return server;

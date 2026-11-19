@@ -30,12 +30,6 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
       "Action inside the comment marker's popover: labelled Open or Hide the comment, which it explains.",
   },
   {
-    file: "components/ask/AskForm.tsx",
-    match: "aria-expanded",
-    reason:
-      "Ask's section disclosure header, like the other Inspector sections: named by its caption, state announced.",
-  },
-  {
     file: "components/inspector/Collapsible.tsx",
     match: "aria-expanded",
     reason: "Section disclosure header: named by its section title, its expanded state is announced.",

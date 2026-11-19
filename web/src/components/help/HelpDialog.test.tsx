@@ -28,7 +28,7 @@ describe("HelpDialog", () => {
       "xtick the current step as reviewed",
       "dshow / hide old code of the current step",
       "ccomment on the current line",
-      "aask about the current step",
+      "aopen the Ask chat about the current step, flow or PR context",
       "rnext step with LLM remarks (its first remark flashes)",
       "sswitch to the Files view at this step's lines",
       "?this help",

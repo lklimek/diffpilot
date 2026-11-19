@@ -1,12 +1,4 @@
-import {
-  useEffect,
-  useRef,
-  useState,
-  type KeyboardEvent,
-  type PointerEvent,
-  type ReactNode,
-  type RefObject,
-} from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type {
   Annotation,
   AnnotationId,
@@ -60,8 +52,10 @@ export interface InspectorProps {
   annotationId?: AnnotationId | null;
   /** Classic diff of the step or of the selected annotation's range (section 1), e.g. code-view `ClassicDiff`. */
   diff?: ReactNode;
-  /** Dock under the sections: Ask, feedback, comment (e.g. `AskForm`, `FeedbackButtons`, `CommentComposer`). */
+  /** Dock under the sections: feedback and comment (e.g. `FeedbackButtons`, `CommentComposer`). */
   dock?: ReactNode;
+  /** The Ask chat's questions about this place (a read-only copy), after the panel's sections. */
+  questions?: ReactNode;
   /** The user's pending review, for the pending-review summary. */
   pendingReview?: PendingReview | null;
   /** Leaves the selected annotation ("Back to step"). */
@@ -73,12 +67,8 @@ export interface InspectorProps {
   flash?: { kind: "annotation" | "thread"; id: string; nonce: number } | null;
   /** The `flash` request was handled (its highlight ended); it is not to be shown again. */
   onFlashed?: () => void;
-  /** Section state shared with the dock (Ask); the panel keeps its own without it. */
+  /** Section state shared with the screen; the panel keeps its own without it. */
   sections?: SectionControl;
-  /** Dragged height in px of the dock (the Ask area); null = its natural height. */
-  dockHeight?: number | null;
-  /** A new dock height from the handle above it; null resets. Without it there is no handle. */
-  onDockHeight?: (height: number | null) => void;
   /** "Use as review comment" on a flag of the step; no button without it. */
   onFlagAsComment?: (flag: Annotation) => void;
   /** What to show instead of the block's own panel (the Files view's file, hunk or selected lines). */
@@ -94,90 +84,6 @@ export interface InspectorBack {
   /** What it goes back to, beside the link. */
   context?: string;
   onBack: () => void;
-}
-
-/** Smallest height in px of a resized dock: the Ask field and a few lines of the conversation. */
-export const ASK_MIN_PX = 160;
-/** Height change of one arrow key press on the dock's handle. */
-export const DOCK_KEY_STEP_PX = 40;
-// Room in px the Inspector keeps above a resized dock for its heading (its scroller's `min-h-30`).
-const PANEL_KEEP_PX = 120;
-
-/** The handle on the dock's top edge: drag, arrow keys, Home / End, Enter or double-click to reset. */
-function DockHandle({
-  inspector,
-  dock,
-  height,
-  onHeight,
-}: {
-  inspector: RefObject<HTMLDivElement | null>;
-  dock: RefObject<HTMLDivElement | null>;
-  height: number | null;
-  onHeight: (height: number | null) => void;
-}) {
-  const drag = useRef<{ y: number; from: number } | null>(null);
-  // Drawn heights of the dock and the whole Inspector, for the separator's value and limits.
-  const [drawn, setDrawn] = useState({ dock: 0, inspector: 0 });
-  // After layout: the dock comes after this handle, so its ref is not set yet in a layout effect here.
-  useEffect(() => {
-    const measure = () =>
-      setDrawn({
-        dock: Math.round(dock.current?.getBoundingClientRect().height ?? 0),
-        inspector: Math.round(inspector.current?.getBoundingClientRect().height ?? 0),
-      });
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    for (const element of [dock.current, inspector.current]) if (element) observer.observe(element);
-    return () => observer.disconnect();
-  }, [dock, inspector]);
-  const max = Math.max(ASK_MIN_PX, drawn.inspector - PANEL_KEEP_PX);
-  const clamp = (px: number) => Math.round(Math.min(max, Math.max(ASK_MIN_PX, px)));
-  // The drawn height (a stored one may no longer fit the window), within the limits.
-  const current = () => clamp(drawn.dock || height || ASK_MIN_PX);
-  const resize = (px: number | null) => onHeight(px === null ? null : clamp(px));
-  const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
-    const next = {
-      ArrowUp: current() + DOCK_KEY_STEP_PX,
-      ArrowDown: current() - DOCK_KEY_STEP_PX,
-      Home: ASK_MIN_PX,
-      End: max,
-    }[event.key];
-    if (event.key === "Enter") resize(null);
-    else if (next !== undefined) resize(next);
-    else return;
-    event.preventDefault();
-  };
-  return (
-    <Tooltip
-      tip="Drag to make Ask taller or shorter (the sections above make room); arrow keys too, Home and End for the limits; double-click or Enter resets."
-      className="block"
-    >
-      {/* A 24 px hit area over the dock's top border; only a thin line shows. */}
-      <div
-        role="separator"
-        aria-orientation="horizontal"
-        aria-label="Resize the Ask area"
-        tabIndex={0}
-        aria-valuenow={drawn.dock || height ? current() : undefined}
-        aria-valuemin={ASK_MIN_PX}
-        aria-valuemax={max}
-        onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
-          drag.current = { y: event.clientY, from: current() };
-          event.currentTarget.setPointerCapture?.(event.pointerId);
-          event.preventDefault();
-        }}
-        onPointerMove={(event: PointerEvent<HTMLDivElement>) => {
-          if (drag.current) resize(drag.current.from + drag.current.y - event.clientY);
-        }}
-        onPointerUp={() => (drag.current = null)}
-        onPointerCancel={() => (drag.current = null)}
-        onDoubleClick={() => resize(null)}
-        onKeyDown={onKey}
-        className="relative z-10 -mb-3 -mt-3 h-6 shrink-0 cursor-row-resize touch-none after:absolute after:inset-x-0 after:top-1/2 after:h-0.5 after:-translate-y-1/2 after:bg-transparent hover:after:bg-accent focus-visible:outline-none focus-visible:after:bg-accent"
-      />
-    </Tooltip>
-  );
 }
 
 // The section listing each annotation type.
@@ -428,7 +334,7 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
 
 /** Right-hand inspector (brief §4.3): never empty; the current block, or the selected annotation of a step. */
 export function Inspector(props: InspectorProps) {
-  const { dock, onBackToStep, flash, onFlashed, onDockHeight } = props;
+  const { dock, onBackToStep, flash, onFlashed } = props;
   const own = useSectionState(JSON.stringify(props.block));
   const sections = props.sections ?? own;
   const panel = props.panel ?? panelFor(props, sections);
@@ -436,10 +342,6 @@ export function Inspector(props: InspectorProps) {
   const focusHeading = useRef(false);
   const scroller = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLDivElement>(null);
-  const dockBox = useRef<HTMLDivElement>(null);
-  // A collapsed Ask keeps the dock at its natural height (no empty room, no handle).
-  const resizable = Boolean(dock && onDockHeight && sections.isOpen("ask"));
-  const dockHeight = resizable ? (props.dockHeight ?? null) : null;
   const opened = useRef<number | null>(null);
   const attribute = flash?.kind === "thread" ? "data-thread-id" : "data-annotation-id";
   useFlashTarget(
@@ -482,12 +384,7 @@ export function Inspector(props: InspectorProps) {
 
   return (
     <div ref={root} data-inspector className="flex h-full min-h-0 flex-col bg-surface">
-      {/* A resized dock taller than the window allows shrinks; the panel keeps room for its heading. */}
-      <div
-        ref={scroller}
-        tabIndex={0}
-        className={`${dockHeight === null ? "min-h-0" : "min-h-30"} flex-1 overflow-auto overscroll-contain`}
-      >
+      <div ref={scroller} tabIndex={0} className="min-h-0 flex-1 overflow-auto overscroll-contain">
         <div className="px-3 pt-2.5 pb-1.5">
           {back && (
             <p className="mb-1 flex flex-wrap items-baseline gap-2 text-[12px]">
@@ -516,20 +413,14 @@ export function Inspector(props: InspectorProps) {
           </p>
         </div>
         {panel.body}
+        {props.questions}
       </div>
-      {resizable && onDockHeight && (
-        <DockHandle inspector={root} dock={dockBox} height={dockHeight} onHeight={onDockHeight} />
-      )}
       {dock && (
-        // The Ask section (`data-dock-grow`) takes the room of a resized dock; the rest keep their height.
         <div
-          ref={dockBox}
           role="group"
-          aria-label="Ask, feedback and comment"
+          aria-label="Feedback and comment"
           data-dock
-          data-sized={dockHeight === null ? undefined : true}
-          style={dockHeight === null ? undefined : { height: `${dockHeight}px` }}
-          className={`flex flex-col gap-2.5 overflow-auto border-t-2 border-border bg-surface-2 px-3 py-2.5 [&>*:not([data-dock-grow])]:shrink-0 ${dockHeight === null ? "max-h-[42vh] shrink-0" : "min-h-0 shrink"}`}
+          className="flex max-h-[42vh] shrink-0 flex-col gap-2.5 overflow-auto border-t-2 border-border bg-surface-2 px-3 py-2.5 [&>*]:shrink-0"
         >
           {dock}
         </div>

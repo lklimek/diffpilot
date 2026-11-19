@@ -1,13 +1,10 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { AskQuestion } from "../../api/generated/types";
 import { expectTrustWording } from "../../__tests__/wording";
 import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
 import { AskAnswers } from "./AskAnswers";
-import { AskForm, stepSubject } from "./AskForm";
-import { AskThread } from "./AskThread";
 
 const question = (over: Partial<AskQuestion>): AskQuestion => ({
   id: "q1",
@@ -32,219 +29,6 @@ const deferred = () => {
   });
   return { promise, resolve, reject };
 };
-
-const step5 = stepSubject("f1.5", "Step 5");
-const step6 = stepSubject("f1.6", "Step 6");
-
-describe("AskForm", () => {
-  it("keeps the field read-only while sending and clears only what was sent", async () => {
-    const user = userEvent.setup();
-    const pending = deferred();
-    render(<AskForm subject={step5} onAsk={() => pending.promise} />);
-    const field = screen.getByRole("textbox");
-    await user.type(field, "A{Enter}");
-    expect(field).toHaveAttribute("readonly");
-    await user.type(field, "B");
-    expect(field).toHaveValue("A");
-    pending.resolve();
-    await vi.waitFor(() => expect(field).toHaveValue(""));
-    expect(field).not.toHaveAttribute("readonly");
-  });
-
-  it("ignores the outcome of a question sent from a step that is no longer current", async () => {
-    const user = userEvent.setup();
-    const pending = deferred();
-    const { rerender } = render(<AskForm subject={step5} onAsk={() => pending.promise} />);
-    await user.type(screen.getByRole("textbox"), "A{Enter}");
-    rerender(<AskForm subject={step6} onAsk={() => pending.promise} />);
-    const field = screen.getByRole("textbox", { name: /Step 6/ });
-    await user.type(field, "B");
-    pending.reject(new Error("failed"));
-    await Promise.resolve();
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(field).toHaveValue("B");
-  });
-
-  it("drops the draft and the error on a step change, also through null", async () => {
-    const user = userEvent.setup();
-    const onAsk = vi.fn().mockRejectedValue(new Error("failed"));
-    const { rerender } = render(<AskForm subject={step5} onAsk={onAsk} />);
-    await user.type(screen.getByRole("textbox"), "A{Enter}");
-    await screen.findByRole("alert");
-    rerender(<AskForm subject={step6} onAsk={onAsk} />);
-    expect(screen.getByRole("textbox")).toHaveValue("");
-    expect(screen.queryByRole("alert")).toBeNull();
-    await user.type(screen.getByRole("textbox"), "for 6");
-    rerender(<AskForm subject={null} onAsk={onAsk} />);
-    rerender(<AskForm subject={step6} onAsk={onAsk} />);
-    expect(screen.getByRole("textbox")).toHaveValue("");
-    await user.type(screen.getByRole("textbox"), "Q{Enter}");
-    expect(onAsk).toHaveBeenLastCalledWith(stepSubject("f1.6", "").anchor, "Q");
-  });
-
-  it("sends the trimmed question on Enter and clears the field when it was accepted", async () => {
-    const user = userEvent.setup();
-    const onAsk = vi.fn().mockResolvedValue(undefined);
-    render(<AskForm subject={stepSubject("f1.5", "Step 5 · Retry allowed?")} onAsk={onAsk} />);
-    const field = screen.getByRole("textbox", { name: /Ask the LLM about Step 5 · Retry allowed\?/ });
-    await user.type(field, "  Is it idempotent?  {Enter}");
-    expect(onAsk).toHaveBeenCalledWith(stepSubject("f1.5", "").anchor, "Is it idempotent?");
-    expect(field).toHaveValue("");
-  });
-
-  it("adds a line on Shift+Enter instead of sending", async () => {
-    const user = userEvent.setup();
-    const onAsk = vi.fn();
-    render(<AskForm subject={step5} onAsk={onAsk} />);
-    const field = screen.getByRole("textbox");
-    await user.type(field, "one{Shift>}{Enter}{/Shift}two");
-    expect(onAsk).not.toHaveBeenCalled();
-    expect(field).toHaveValue("one\ntwo");
-  });
-
-  it("asks for text instead of sending an empty question", async () => {
-    const onAsk = vi.fn();
-    render(<AskForm subject={step5} onAsk={onAsk} />);
-    await userEvent.click(screen.getByRole("button", { name: /^Ask/ }));
-    expect(onAsk).not.toHaveBeenCalled();
-    expect(screen.getByRole("alert")).toHaveTextContent("Write a question first.");
-    expect(screen.getByRole("textbox")).toHaveAttribute("aria-invalid", "true");
-  });
-
-  it("sends once while the question is being sent, and keeps the text when sending failed", async () => {
-    const user = userEvent.setup();
-    const pending = deferred();
-    const onAsk = vi.fn().mockReturnValue(pending.promise);
-    render(<AskForm subject={step5} onAsk={onAsk} />);
-    const field = screen.getByRole("textbox");
-    await user.type(field, "Why?");
-    await user.click(screen.getByRole("button", { name: /^Ask/ }));
-    const sending = screen.getByRole("button", { name: /Sending/ });
-    expect(sending).toHaveAttribute("aria-disabled", "true");
-    expect(sending).toHaveAccessibleDescription(/Not available while the current request runs\./);
-    await user.click(sending);
-    await user.type(field, "{Enter}");
-    expect(onAsk).toHaveBeenCalledOnce();
-    pending.reject(new Error("The analysis is not finished."));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The question was not sent: The analysis is not finished.",
-    );
-    expect(field).toHaveValue("Why?");
-  });
-
-  it("grows the one-line field while typing", async () => {
-    render(<AskForm subject={step5} onAsk={() => {}} />);
-    const field = screen.getByRole("textbox");
-    expect(field).toHaveAttribute("rows", "1");
-    Object.defineProperty(field, "scrollHeight", { configurable: true, value: 64 });
-    await userEvent.type(field, "x");
-    expect(field.style.height).toBe("66px");
-  });
-
-  it("exposes the field for the `a` shortcut", () => {
-    const ref = createRef<HTMLTextAreaElement>();
-    render(<AskForm subject={step5} onAsk={() => {}} inputRef={ref} />);
-    ref.current!.focus();
-    expect(screen.getByRole("textbox")).toHaveFocus();
-  });
-
-  it("explains that Ask needs a step when none is open, without a field", () => {
-    render(<AskForm subject={null} onAsk={() => {}} />);
-    expect(screen.queryByRole("textbox")).toBeNull();
-    expect(screen.getByText(/Ask works on a step/)).toBeInTheDocument();
-  });
-
-  it("shows the conversation above the question field: the field stays at the bottom, like a chat", () => {
-    const questions = [
-      question({ id: "old", text: "Old question?", state: "failed", failure: "the job failed." }),
-      question({ id: "new", text: "New question?", created_at: "2026-11-16T10:30:00Z" }),
-    ];
-    render(
-      <AskForm
-        subject={step5}
-        onAsk={() => {}}
-        answers={
-          <AskThread
-            questions={questions}
-            stepId="f1.5"
-            scope="conversation"
-            onScope={() => {}}
-            placeOf={() => null}
-          />
-        }
-      />,
-    );
-    const field = screen.getByRole("textbox");
-    const items = within(screen.getByRole("list", { name: "Ask conversation" })).getAllByRole("listitem");
-    expect(items.map((i) => i.textContent)).toEqual([
-      expect.stringContaining("Asked by you: Old question?"),
-      expect.stringContaining("Asked by you: New question?"),
-    ]);
-    for (const item of items)
-      expect(field.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
-    expect(items[0]).toHaveTextContent("No answer: the job failed.");
-    expect(items[1]).toHaveTextContent("Waiting for the LLM");
-    expect(screen.getByRole("heading", { name: /Ask/ })).toHaveTextContent(/newest at the bottom/);
-  });
-});
-
-describe("AskForm: a collapsible Inspector section", () => {
-  const control = (open: boolean) => ({
-    isOpen: vi.fn(() => open),
-    toggle: vi.fn(),
-    reveal: vi.fn(),
-  });
-
-  it("opens and closes with the chevron like the other sections; the header keeps the step's question count", async () => {
-    const sections = control(false);
-    const { rerender } = render(<AskForm subject={step5} onAsk={() => {}} sections={sections} count={2} />);
-    const header = screen.getByRole("button", { name: /^Ask about/ });
-    expect(header).toHaveAttribute("aria-expanded", "false");
-    expect(header).toHaveTextContent("2 questions on this step");
-    expect(screen.queryByRole("textbox")).toBeNull();
-    await userEvent.click(header);
-    expect(sections.toggle).toHaveBeenCalledWith("ask");
-    rerender(<AskForm subject={step5} onAsk={() => {}} sections={control(true)} count={2} />);
-    expect(screen.getByRole("button", { name: /^Ask about/ })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("textbox", { name: "Ask the LLM about Step 5" })).toBeVisible();
-  });
-
-  it("opens itself when sending fails while collapsed, and announces the error", async () => {
-    let fail: (e: Error) => void = () => {};
-    const onAsk = () => new Promise((_, reject) => (fail = reject));
-    const closed = control(false);
-    const { rerender } = render(<AskForm subject={step5} onAsk={onAsk} sections={control(true)} count={0} />);
-    await userEvent.type(screen.getByRole("textbox"), "Why?{Enter}");
-    // The reader collapses Ask while the question is on its way.
-    rerender(<AskForm subject={step5} onAsk={onAsk} sections={closed} count={0} />);
-    await act(async () => fail(new Error("server gone")));
-    expect(closed.reveal).toHaveBeenCalledWith("ask");
-    rerender(<AskForm subject={step5} onAsk={onAsk} sections={control(true)} count={0} />);
-    expect(screen.getByRole("alert")).toHaveTextContent("The question was not sent: server gone");
-  });
-
-  it("opens itself for a notice such as a lost answer stream, and announces it", async () => {
-    const closed = control(false);
-    const opened = control(true);
-    const { rerender } = render(<AskForm subject={step5} onAsk={() => {}} sections={closed} count={0} />);
-    rerender(
-      <AskForm subject={step5} onAsk={() => {}} sections={closed} count={0} notice="Connection lost." />,
-    );
-    expect(closed.reveal).toHaveBeenCalledWith("ask");
-    rerender(
-      <AskForm subject={step5} onAsk={() => {}} sections={opened} count={0} notice="Connection lost." />,
-    );
-    expect(screen.getByRole("alert")).toHaveTextContent("Connection lost.");
-  });
-
-  it("says where answers appear: one conversation, newest at the bottom", () => {
-    render(<AskForm subject={step5} onAsk={() => {}} sections={control(true)} count={0} />);
-    const ask = screen.getByRole("region", { name: /^Ask/ });
-    expect(ask).toHaveTextContent("one conversation per analysis, newest at the bottom");
-    expect(ask).not.toHaveTextContent(/pinned/);
-    expect(screen.getByRole("button", { name: "Ask" })).not.toHaveAccessibleDescription(/pinned/);
-  });
-});
 
 describe("AskAnswers", () => {
   it("shows the current file's name in bold in an answer's evidence", async () => {
@@ -408,7 +192,6 @@ describe("AskAnswers", () => {
     const { container } = render(
       <>
         <AskAnswers questions={[...questions, question({ state: "failed", failure: "x" })]} />
-        <AskForm subject={step5} onAsk={() => {}} />
       </>,
     );
     expectTrustWording(container.textContent ?? "");

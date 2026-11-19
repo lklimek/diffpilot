@@ -5,6 +5,7 @@ import type {
   AnalysisEvent,
   AnalysisId,
   AnalysisSummary,
+  AnchoredAskRequest,
   AskAnchor,
   AskQuestion,
   CreateAccessToken,
@@ -23,6 +24,7 @@ import type {
   StepId,
   Tour,
 } from "./generated/types";
+import type { ChatAskRequest } from "./askChat";
 import { api } from "./client";
 import { reviewStates } from "./review-state";
 
@@ -121,6 +123,19 @@ export const useAskAnchored = (id: AnalysisId) => {
   return useMutation({
     mutationFn: ({ anchor, text }: { anchor: AskAnchor; text: string }) =>
       api.askAnchored(id, { anchor, text }),
+    onSuccess: (question) => arrive(client, id, question, false),
+  });
+};
+
+/**
+ * Asks in the Ask chat: a new thread about `anchor`, or a follow-up (`parent_id`) that keeps its thread's anchor.
+ * The pending question joins the list; its answer arrives on the event stream.
+ */
+export const useAskInChat = (id: AnalysisId) => {
+  const client = useQueryClient();
+  return useMutation({
+    // The planned contract (ChatAskRequest) is a superset of the generated request type.
+    mutationFn: (body: ChatAskRequest) => api.askAnchored(id, body as unknown as AnchoredAskRequest),
     onSuccess: (question) => arrive(client, id, question, false),
   });
 };

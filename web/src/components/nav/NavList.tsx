@@ -357,8 +357,8 @@ export function NavList({
           <Tooltip
             tip={
               questions.count === "error"
-                ? "Your questions could not be read; the page says why. Only you see them."
-                : "Every question you asked in this review, with its state and the LLM answer. Only you see them."
+                ? "Your questions could not be read; the Ask chat says why. Only you see them."
+                : "Opens your Ask chat: every question you asked in this review, with its state and the LLM answer. Only you see them."
             }
             className="block"
             placement="right"

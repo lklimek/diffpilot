@@ -1,9 +1,9 @@
 import { useId } from "react";
 import type { ChatQuestion } from "../../../api/askChat";
 import type { QuestionId } from "../../../api/generated/types";
-import { Kbd } from "../../help/Kbd";
 import { CodeText } from "../../section/CodeText";
 import { Tooltip } from "../../tooltip/Tooltip";
+import { AskButton } from "./AskButton";
 import type { ChatThread } from "./model";
 
 /** Props of the Inspector's read-only copy of the chat. */
@@ -14,8 +14,8 @@ export interface QuestionsHereProps {
   what: string;
   /** Opens the chat at a thread. */
   onOpenInChat: (id: QuestionId) => void;
-  /** Opens the chat about this place; nothing is sent. */
-  onAsk: () => void;
+  /** Opens the chat about this place; nothing is sent. No button without it (the panel has its own). */
+  onAsk?: () => void;
 }
 
 const BUTTON =
@@ -62,13 +62,11 @@ export function QuestionsHere({ threads, what, onOpenInChat, onAsk }: QuestionsH
       <p className="m-0 text-[11.5px] text-muted">
         A copy from your Ask chat; read the whole thread and reply there.
       </p>
-      <p className="m-0">
-        <Tooltip tip={`Opens your Ask chat about ${what}. Nothing is sent until you press Ask.`}>
-          <button type="button" onClick={onAsk} className={BUTTON}>
-            Ask about {what} <Kbd decorative>a</Kbd>
-          </button>
-        </Tooltip>
-      </p>
+      {onAsk && (
+        <p className="m-0">
+          <AskButton what={what} onAsk={onAsk} />
+        </p>
+      )}
       {threads.length === 0 ? (
         <p className="m-0 text-muted">No questions about {what} yet.</p>
       ) : (

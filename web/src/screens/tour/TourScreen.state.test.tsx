@@ -271,20 +271,6 @@ describe("Tour: a flow analysed again", () => {
 });
 
 describe("Tour: the user's questions", () => {
-  it("the questions page keeps the block the user came from as current, and announces itself", async () => {
-    setFixtureState("resume");
-    await open(null, "#f1.5");
-    const inspector = screen.getByRole("complementary", { name: "Inspector" });
-    const before = within(inspector).getAllByRole("heading", { level: 2 }).at(-1)!.textContent;
-    await user().click(within(nav()).getByRole("button", { name: "Your questions and answers: 1" }));
-    await within(main()).findByRole("article", { name: /Your questions and answers/ });
-    expect(within(inspector).getAllByRole("heading", { level: 2 }).at(-1)).toHaveTextContent(before!);
-    expect(within(main()).getByRole("button", { name: /^Next/ })).toHaveTextContent(/6/);
-    expect(document.querySelector('[aria-live="polite"].sr-only')).toHaveTextContent(
-      "Your questions and answers",
-    );
-  });
-
   it("the questions entry says while the questions load", async () => {
     server.use(
       http.get("/api/v1/analyses/:id/questions", async () => {
@@ -311,21 +297,25 @@ describe("Tour: the user's questions", () => {
     ).toBeVisible();
   });
 
-  it("steps with questions are marked in the menu; one entry opens every question with its answer and step", async () => {
+  it("steps with questions are marked in the menu; the entry opens the chat, whose subject chip opens the step", async () => {
     setFixtureState("resume");
-    await open(null, "#f1.5");
+    await open(null, "#f1.2");
     const marker = await within(nav()).findByText("?1");
     expect(marker).toHaveAccessibleDescription("1 question asked on this step");
     await user().click(within(nav()).getByRole("button", { name: "Your questions and answers: 1" }));
-    const page = await within(main()).findByRole("article", { name: "Your questions and answers (1)" });
-    expect(page).toHaveTextContent("Does the node deduplicate broadcast_tx by transaction id?");
-    expect(page).toHaveTextContent("LLM answer");
-    await user().click(within(page).getByRole("button", { name: /^Flow 1 · step 5/ }));
-    expect(within(main()).queryByRole("article", { name: /Your questions/ })).toBeNull();
-    expect(within(nav()).getByRole("button", { name: /^Step 5: .*1 question asked/ })).toHaveAttribute(
-      "aria-current",
-      "step",
+    const chat = screen.getByRole("dialog", { name: "Ask" });
+    expect(chat).toHaveTextContent("Does the node deduplicate broadcast_tx by transaction id?");
+    expect(chat).toHaveTextContent("LLM answer");
+    await user().click(
+      within(chat).getByRole("button", { name: /^Flows src\/rpc\/client\.rs:99 flow 1 · step 5/ }),
     );
+    await waitFor(() =>
+      expect(within(nav()).getByRole("button", { name: /^Step 5: .*1 question asked/ })).toHaveAttribute(
+        "aria-current",
+        "step",
+      ),
+    );
+    expect(screen.getByRole("dialog", { name: "Ask" })).toBe(chat);
   });
 });
 

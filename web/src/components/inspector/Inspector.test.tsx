@@ -234,7 +234,7 @@ describe("Inspector at a step", () => {
 
   it("renders the dock slot", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} dock={<p>dock slot</p>} />);
-    expect(screen.getByRole("group", { name: "Ask, feedback and comment" })).toHaveTextContent("dock slot");
+    expect(screen.getByRole("group", { name: "Feedback and comment" })).toHaveTextContent("dock slot");
   });
 });
 
