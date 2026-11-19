@@ -12,6 +12,7 @@ import {
 } from "react";
 import type { Flow, StepId } from "../../api/generated/types";
 import type { FlowDiagram } from "../../components/flow-diagram/FlowDiagram";
+import { HideButton } from "../../components/button/HideButton";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { DIAGRAM_MIN_PX } from "./layout";
@@ -22,6 +23,8 @@ export const DIAGRAM_KEY_STEP_PX = 40;
 /** Largest height: the viewport less room for the block below. */
 export const diagramMaxPx = () => Math.max(DIAGRAM_MIN_PX, window.innerHeight - 160);
 const clampHeight = (px: number) => Math.round(Math.min(diagramMaxPx(), Math.max(DIAGRAM_MIN_PX, px)));
+
+const HIDE_TIP = "Hides the diagram; it stays hidden for the other flows until you show it again.";
 
 type DiagramComponent = ComponentType<Parameters<typeof FlowDiagram>[0]>;
 
@@ -94,6 +97,7 @@ export function DiagramPane({
   onHeight,
 }: DiagramPaneProps) {
   const body = useRef<HTMLDivElement>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
   const drag = useRef<{ y: number; from: number } | null>(null);
   // A height stored on a taller screen fits this window.
   const shown = height === null ? null : clampHeight(height);
@@ -144,27 +148,38 @@ export function DiagramPane({
   );
   return (
     <section aria-label="Flow diagram" className="mb-3 rounded-lg border border-border bg-surface">
-      <Tooltip
-        tip={
-          open
-            ? "Hides the diagram; it stays hidden for the other flows until you show it again."
-            : "Shows this flow's steps and branches as a diagram; click a step to open it."
-        }
-        className="block"
-      >
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={onToggle}
-          className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-3 py-1.5 text-left text-[12.5px] font-semibold text-text"
+      <div className="flex items-center gap-2">
+        <Tooltip
+          tip={
+            open ? HIDE_TIP : "Shows this flow's steps and branches as a diagram; click a step to open it."
+          }
+          className="block min-w-0 flex-1"
         >
-          <span aria-hidden>{open ? "▾" : "▸"}</span>
-          {open ? "Hide flow diagram" : "Show flow diagram"}
-          <span className="font-normal text-muted">
-            Flow {flow.position}: {flow.llm.title}
+          <button
+            ref={toggle}
+            type="button"
+            aria-expanded={open}
+            onClick={onToggle}
+            className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-3 py-1.5 text-left text-[12.5px] font-semibold text-text"
+          >
+            <span aria-hidden>{open ? "▾" : "▸"}</span>
+            {open ? "Hide flow diagram" : "Show flow diagram"}
+            <span className="font-normal text-muted">
+              Flow {flow.position}: {flow.llm.title}
+            </span>
+          </button>
+        </Tooltip>
+        {open && (
+          <span className="pr-2">
+            <HideButton
+              name="Hide flow diagram"
+              tip={HIDE_TIP}
+              onHide={onToggle}
+              focusAfter={() => toggle.current}
+            />
           </span>
-        </button>
-      </Tooltip>
+        )}
+      </div>
       {open && (
         <div
           ref={body}

@@ -667,6 +667,20 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     expect(screen.queryByRole("list", { name: /^Your pending comments/ })).toBeNull();
   });
 
+  it("an opened comment has Hide in its top-right corner; it closes the text and returns the focus to the marker", async () => {
+    const user = userEvent.setup();
+    view([mine()]);
+    const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
+    await user.click(marker);
+    await user.click(screen.getByRole("button", { name: "Open the comment here" }));
+    const hide = screen.getByRole("button", { name: "Hide your pending comment" });
+    expect(hide).toHaveTextContent(/^Hide$/);
+    expect(hide).toHaveAccessibleDescription(/marker/);
+    await user.click(hide);
+    expect(screen.queryByRole("list", { name: /^Your pending comments/ })).toBeNull();
+    expect(marker).toHaveFocus();
+  });
+
   it("opens by keyboard: Enter and Space", async () => {
     const user = userEvent.setup();
     view([mine()]);

@@ -38,6 +38,37 @@ describe("DiagramPane", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
+  it("an open diagram has Hide in its top-right corner, besides its own toggle; focus returns to the toggle", async () => {
+    const onToggle = vi.fn();
+    const { rerender } = render(
+      <DiagramPane
+        flow={flow}
+        currentStepId={null}
+        onSelectStep={() => {}}
+        open
+        onToggle={onToggle}
+        load={() => new Promise(() => {})}
+      />,
+    );
+    const hide = screen.getByRole("button", { name: "Hide flow diagram" });
+    expect(hide).toHaveTextContent(/^Hide$/);
+    expect(hide).toHaveAccessibleDescription(/Hides the diagram/);
+    await userEvent.click(hide);
+    expect(onToggle).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: /^Hide flow diagram\s*Flow 1/ })).toHaveFocus();
+    rerender(
+      <DiagramPane
+        flow={flow}
+        currentStepId={null}
+        onSelectStep={() => {}}
+        open={false}
+        onToggle={onToggle}
+        load={() => new Promise(() => {})}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Hide flow diagram" })).toBeNull();
+  });
+
   it("loads nothing while hidden", () => {
     const load = vi.fn();
     render(
