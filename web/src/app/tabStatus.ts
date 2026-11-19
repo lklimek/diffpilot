@@ -149,10 +149,15 @@ export function prDisplayId(pr: { repo: RepoRef; number: number }, settings?: Da
   return `${rule?.alias || pr.repo.name}#${pr.number}`;
 }
 
-/** The PR as the title's subject; the short names come from the dashboard settings when they can be read. */
-export function usePrTabSubject(pr: { repo: RepoRef; number: number } | null | undefined): void {
+/** The PR's display id; the short names come from the dashboard settings when they can be read. */
+export function usePrDisplayId(pr: { repo: RepoRef; number: number } | null | undefined): string | null {
   const settings = useDashboardSettings();
-  useTabSubject(pr ? prDisplayId(pr, settings.data?.settings) : null);
+  return pr ? prDisplayId(pr, settings.data?.settings) : null;
+}
+
+/** The PR as the title's subject. */
+export function usePrTabSubject(pr: { repo: RepoRef; number: number } | null | undefined): void {
+  useTabSubject(usePrDisplayId(pr));
 }
 
 /** The analysis's activity: busy while planning or analysing flows, then ready (idle or finished) or attention. */

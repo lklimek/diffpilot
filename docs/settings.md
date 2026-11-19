@@ -85,6 +85,16 @@ Personal access tokens keep working after Sign out.
 - **Limits:** English, Polski or Русский.
 - **Example:** Polski, then analyse the pull request again to get its texts in Polish.
 
+## Notifications
+
+### Notify me when work finishes
+
+- **What:** A browser notification when an Ask answer of yours arrives, a flow is analysed, or an analysis is ready to review, finishes or fails. It names the pull request and the flow or step, never the answer text; a click opens it.
+- **When used:** While a diffpilot tab showing that review or its progress is open and you are in another tab or window. A tab you are looking at does not notify. Several open tabs notify once.
+- **Empty or default:** Off. Turning it on asks the browser's permission; the choice is kept in this browser only.
+- **Limits:** Needs https (or localhost) and the browser's permission. Closed tabs do not notify. Mobile browsers show none.
+- **Example:** Ask a question, switch to your editor, and get a notification when the answer is ready.
+
 ## GitHub App
 
 ### GitHub App

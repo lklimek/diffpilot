@@ -13,6 +13,7 @@ import {
 } from "../../api/queries";
 import { useNow } from "../../app/now";
 import { analysisActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
+import { useProgressNotifications } from "../../app/workNotifications";
 import { AnalysisProgress } from "../../components/progress/AnalysisProgress";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { TopBar } from "../../components/top-bar/TopBar";
@@ -35,6 +36,7 @@ export function ProgressScreen() {
   const summary = live.summary;
   useTabActivity("analysis", summary ? analysisActivity(summary.state) : null);
   usePrTabSubject(summary?.pr);
+  useProgressNotifications(summary);
   const now = useNow();
 
   const cancelledPrUrl = summary?.state.state === "cancelled" ? summary.pr.html_url : null;
