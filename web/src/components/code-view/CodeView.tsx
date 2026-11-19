@@ -169,7 +169,8 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
       : changed
         ? CHANGE_LOOK.added.fill
         : "";
-  const label = `Comment on ${removedLine ? "removed line" : "line"} ${line}`;
+  const selecting = ctx.selection !== undefined;
+  const label = `${selecting ? "Select" : "Comment on"} ${removedLine ? "removed line" : "line"} ${line}`;
   const mine = ctx.comments.get(key);
   const open = mine !== undefined && ctx.isOpen(key);
   const threads = ctx.threads.get(key);
@@ -179,7 +180,6 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
   const hunk = ctx.hunkOf?.(side, line) ?? null;
   const hunkSelected = hunk !== null && hunk === ctx.selectedHunk;
   const target: CommentTarget = { path: ctx.path, side, start_line: null, line };
-  const selecting = ctx.selection !== undefined;
   return (
     <>
       <div
@@ -216,7 +216,11 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
             data-line-action
             aria-label={label}
             aria-pressed={selecting ? selected : undefined}
-            title={label}
+            title={
+              selecting
+                ? `${label}: Shift+click or drag extends; a comment goes on the last selected line`
+                : label
+            }
             tabIndex={ctx.tabKey === key ? 0 : -1}
             onFocus={() => ctx.onFocusLine(key)}
             onPointerDown={

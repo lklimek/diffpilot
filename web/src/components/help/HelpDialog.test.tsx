@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { expectTrustWording } from "../../__tests__/wording";
 import { CHANGE_LOOK } from "../code-view/changeLook";
 import { HelpDialog } from "./HelpDialog";
-import { SHORTCUTS, shortcutAction } from "./shortcuts";
+import { FILES_SHORTCUTS, SHORTCUTS, shortcutAction } from "./shortcuts";
 
 describe("HelpDialog", () => {
   it("renders nothing while closed", () => {
@@ -30,9 +30,18 @@ describe("HelpDialog", () => {
       "ccomment on the current line",
       "aask about the current step",
       "rnext step with LLM remarks (its first remark flashes)",
+      "sswitch to the Files view at this step's lines",
       "?this help",
       "Escclose",
     ]);
+  });
+
+  it("shows the Files view's keys when given: no x, since steps are ticked only in Flows", () => {
+    render(<HelpDialog open onClose={() => {}} shortcuts={FILES_SHORTCUTS} />);
+    const keys = within(screen.getByRole("table", { name: "Keyboard shortcuts" }))
+      .getAllByRole("row")
+      .map((row) => row.querySelector("kbd")?.textContent);
+    expect(keys).toEqual(["j", "k", "n", "p", "v", "r", "d", "c", "a", "s", "?", "Esc"]);
   });
 
   it("has the legend of how code is drawn (brief §4.3)", () => {

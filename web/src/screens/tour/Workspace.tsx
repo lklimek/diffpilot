@@ -32,9 +32,14 @@ interface WorkspaceProps {
   inspector: ReactNode;
   /** The scrolling centre (scrolled to the top on a new block). */
   mainRef: RefObject<HTMLDivElement | null>;
+  /** Column titles and the left column's landmark name (the Files view's "Files", "File"). */
+  titles?: Partial<Record<Column, string>>;
+  navLabel?: string;
 }
 
 const TITLE: Record<Column, string> = { nav: "Flows", main: "Review", inspector: "Inspector" };
+type Titles = Record<Column, string>;
+const DEFAULT_TITLES = TITLE;
 const DEFAULT_WIDTH = { nav: "clamp(240px, 17vw, 400px)", inspector: "clamp(400px, 27vw, 620px)" } as const;
 
 /** Width of the element in px, kept current on resize; 0 until measured. */
@@ -63,7 +68,8 @@ function ColumnHead({
   column,
   layout,
   onChange,
-}: { column: Column } & Pick<WorkspaceProps, "layout" | "onChange">) {
+  TITLE,
+}: { column: Column; TITLE: Titles } & Pick<WorkspaceProps, "layout" | "onChange">) {
   const full = layout.full === column;
   const hideable = canHide(layout, column);
   return (
@@ -107,7 +113,8 @@ function Strip({
   column,
   layout,
   onChange,
-}: { column: Column } & Pick<WorkspaceProps, "layout" | "onChange">) {
+  TITLE,
+}: { column: Column; TITLE: Titles } & Pick<WorkspaceProps, "layout" | "onChange">) {
   return (
     <Tooltip tip={`Click to show the ${TITLE[column]} column`} className="absolute inset-0">
       <button
@@ -124,7 +131,17 @@ function Strip({
 }
 
 /** The three columns of the review screen: hide, full screen, strips that restore, draggable widths. */
-export function Workspace({ layout, onChange, nav, main, inspector, mainRef }: WorkspaceProps) {
+export function Workspace({
+  layout,
+  onChange,
+  nav,
+  main,
+  inspector,
+  mainRef,
+  titles,
+  navLabel = "Flows and steps",
+}: WorkspaceProps) {
+  const TITLE: Titles = { ...DEFAULT_TITLES, ...titles };
   const grid = useRef<HTMLDivElement>(null);
   const dragging = useRef<"nav" | "inspector" | null>(null);
   const total = useWidth(grid);
@@ -194,11 +211,11 @@ export function Workspace({ layout, onChange, nav, main, inspector, mainRef }: W
   const body = (column: Column, content: ReactNode) =>
     shown[column] ? (
       <>
-        <ColumnHead column={column} layout={layout} onChange={onChange} />
+        <ColumnHead column={column} layout={layout} onChange={onChange} TITLE={TITLE} />
         {content}
       </>
     ) : (
-      <Strip column={column} layout={layout} onChange={onChange} />
+      <Strip column={column} layout={layout} onChange={onChange} TITLE={TITLE} />
     );
   return (
     <div
@@ -208,7 +225,7 @@ export function Workspace({ layout, onChange, nav, main, inspector, mainRef }: W
     >
       <nav
         data-column="nav"
-        aria-label="Flows and steps"
+        aria-label={navLabel}
         className="relative flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border bg-surface"
       >
         {body(

@@ -56,6 +56,12 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
     reason: "Step row named by its destination; a tip would cover the rows below.",
   },
   {
+    file: "components/files/FileTree.tsx",
+    match: "data-file={file.path}",
+    reason:
+      "File row named by its path and Viewed state; a tip would cover the rows below, like the flow rows.",
+  },
+  {
     file: "components/help/HelpDialog.tsx",
     match: "onClick={onClose}",
     reason: "Close of the modal help dialog: takes the focus on open, where a tip would cover the dialog.",

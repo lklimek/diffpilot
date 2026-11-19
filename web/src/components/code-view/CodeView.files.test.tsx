@@ -83,13 +83,13 @@ describe("CodeView in the Files view (brief §4.5)", () => {
       11, 12,
     ]);
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Comment on line 10" }));
+    await user.click(screen.getByRole("button", { name: "Select line 10" }));
     expect(onLineAction).toHaveBeenLastCalledWith(
       { path: "src/a.rs", side: "head", start_line: null, line: 10 },
       { extend: false },
     );
     await user.keyboard("{Shift>}");
-    await user.click(screen.getByRole("button", { name: "Comment on line 13" }));
+    await user.click(screen.getByRole("button", { name: "Select line 13" }));
     await user.keyboard("{/Shift}");
     expect(onLineAction).toHaveBeenLastCalledWith(
       { path: "src/a.rs", side: "head", start_line: null, line: 13 },
@@ -100,7 +100,7 @@ describe("CodeView in the Files view (brief §4.5)", () => {
   it("dragging over line numbers extends the selection", () => {
     const onLineAction = vi.fn();
     render(<CodeView lines={plain(1, ["a", "b", "c"])} selection={null} onLineAction={onLineAction} />);
-    const number = (n: number) => screen.getByRole("button", { name: `Comment on line ${n}` });
+    const number = (n: number) => screen.getByRole("button", { name: `Select line ${n}` });
     fireEvent.pointerOver(number(2), { buttons: 0 });
     expect(onLineAction).not.toHaveBeenCalled();
     fireEvent.pointerOver(number(3), { buttons: 1 });
