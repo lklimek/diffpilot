@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -275,5 +275,101 @@ describe("NavList: LLM rating and remark pills", () => {
     flows[0]!.steps[2]!.llm.annotations = [];
     render(<NavList {...props} flows={flows} current={{ block: "step", step_id: "f1.3" }} />);
     expect(screen.queryByRole("button", { name: /step 3 / })).toBeNull();
+  });
+});
+
+describe("NavList: LLM flag markers", () => {
+  it("a step with flags shows its strongest level beside the step, apart from its rating pill; it jumps to the flag", async () => {
+    const onFlag = vi.fn();
+    const onSelect = vi.fn();
+    renderNav({ current: { block: "step", step_id: "f1.5" }, onRemark: () => {}, onFlag, onSelect });
+    const row = screen.getByRole("button", { name: /^Step 5:/ }).closest("li")!;
+    const flag = within(row).getByRole("button", { name: "Go to the first red flag on step 5" });
+    expect(flag).toHaveTextContent("⚑ red");
+    expect(flag).toHaveAccessibleDescription(/^LLM flags on step 5: 1 red flag\./);
+    expect(
+      within(row).getByRole("button", { name: "LLM rated step 5 HIGH (not checked)" }),
+    ).not.toContainElement(flag);
+    const yellow = screen.getByRole("button", { name: /^Step 7:/ }).closest("li")!;
+    expect(
+      within(yellow).getByRole("button", { name: "Go to the first yellow flag on step 7" }),
+    ).toHaveTextContent("⚑ yellow");
+    const none = screen.getByRole("button", { name: /^Step 2:/ }).closest("li")!;
+    expect(within(none).queryByRole("button", { name: /flag/ })).toBeNull();
+    await userEvent.click(flag);
+    expect(onFlag).toHaveBeenCalledWith([tour.flows[0]!.steps[4]]);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("each flow row shows its strongest flag, also while its steps are collapsed; it jumps into the flow", async () => {
+    const onFlag = vi.fn();
+    renderNav({ onFlag });
+    const row = (n: number) => screen.getByRole("button", { name: new RegExp(`^Flow ${n}:`) }).closest("li")!;
+    const four = within(row(4)).getByRole("button", { name: "Go to the first red flag in flow 4" });
+    expect(four).toHaveTextContent("⚑ red");
+    expect(four).toHaveAccessibleDescription(/^LLM flags in flow 4: 1 red flag, 1 yellow flag\./);
+    expect(
+      within(row(3)).getByRole("button", { name: "Go to the first yellow flag in flow 3" }),
+    ).toHaveTextContent("⚑ yellow");
+    // The marker (go to the flag) and the remark pill are different stops with different names.
+    const flagged = render(
+      <NavList
+        flows={tour.flows}
+        quiet={tour.quiet}
+        ticked={[]}
+        current={{ block: "pr_context" }}
+        onSelect={() => {}}
+        onFlag={onFlag}
+        onRemark={() => {}}
+        onSetFlowReviewed={() => {}}
+      />,
+    );
+    const names = within(flagged.container)
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("aria-label") ?? b.textContent);
+    expect(new Set(names).size).toBe(names.length);
+    flagged.unmount();
+    await userEvent.click(four);
+    expect(onFlag).toHaveBeenCalledWith(tour.flows[3]!.steps);
+  });
+
+  it("shows no flag markers without the callback", () => {
+    renderNav({ current: { block: "step", step_id: "f1.5" } });
+    expect(screen.queryByRole("button", { name: /^Go to the first .*flag/ })).toBeNull();
+  });
+});
+
+describe("NavList: tick a whole flow", () => {
+  const toggle = (n: number) => screen.getByRole("button", { name: `Mark flow ${n} reviewed` });
+
+  it("ticks every step of a flow that is not all ticked", async () => {
+    const onSetFlowReviewed = vi.fn();
+    renderNav({ ticked: ["f1.1"], onSetFlowReviewed });
+    expect(toggle(1)).toHaveAttribute("aria-pressed", "false");
+    expect(toggle(1)).toHaveAccessibleDescription(/ticks all 10 steps of flow 1/i);
+    await userEvent.click(toggle(1));
+    expect(onSetFlowReviewed).toHaveBeenCalledWith(tour.flows[0], true);
+  });
+
+  it("unticks every step of a flow whose steps are all ticked; works from the keyboard", async () => {
+    const onSetFlowReviewed = vi.fn();
+    renderNav({ ticked: ["f2.1", "f2.2"], onSetFlowReviewed });
+    expect(toggle(2)).toHaveAttribute("aria-pressed", "true");
+    expect(toggle(2)).toHaveAccessibleDescription(/unticks/i);
+    toggle(2).focus();
+    await userEvent.keyboard("{Enter}");
+    expect(onSetFlowReviewed).toHaveBeenCalledWith(tour.flows[1], false);
+  });
+
+  it("offers no toggle without the callback or for a flow without steps", () => {
+    renderNav();
+    expect(screen.queryByRole("button", { name: /^Mark flow/ })).toBeNull();
+    const flows = structuredClone(tour.flows);
+    flows[0]!.steps = [];
+    flows[0]!.analysis_status = { state: "queued", started_at: null, message: null };
+    cleanup();
+    renderNav({ flows, onSetFlowReviewed: () => {} });
+    expect(screen.queryByRole("button", { name: "Mark flow 1 reviewed" })).toBeNull();
+    expect(toggle(2)).toBeInTheDocument();
   });
 });

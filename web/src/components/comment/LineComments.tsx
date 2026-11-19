@@ -1,4 +1,6 @@
+import { useRef } from "react";
 import type { LineSide, PendingComment } from "../../api/generated/types";
+import { HideButton } from "../button/HideButton";
 import { Popover } from "../popover/Popover";
 import { PendingCommentItem, type PendingCommentItemProps } from "./PendingCommentItem";
 
@@ -127,21 +129,37 @@ interface CommentPanelProps extends Pick<PendingCommentItemProps, "onEdit" | "on
   comments: readonly PendingComment[];
   /** Accessible name of the list. */
   label: string;
+  /** Hides the panel (Hide in its top-right corner); no Hide without it. */
+  onHide?: () => void;
 }
 
 /** The text of the user's pending comments where they are, with Edit and Delete as in the pending-review block. */
-export function CommentPanel({ id, comments, label, onEdit, onDelete }: CommentPanelProps) {
+export function CommentPanel({ id, comments, label, onEdit, onDelete, onHide }: CommentPanelProps) {
+  const panel = useRef<HTMLDivElement>(null);
+  const n = comments.length;
   return (
-    <ul
-      id={id}
-      aria-label={label}
+    <div
+      ref={panel}
       // Clicks and typing here belong to the comments, not to an LLM highlight around them.
       onClick={(event) => event.stopPropagation()}
-      className="sticky left-0 m-0 my-1 ml-[var(--ln)] grid w-[min(70ch,80vw)] list-none gap-1 p-0 font-sans text-[12.5px] whitespace-normal"
+      className="sticky left-0 my-1 ml-[var(--ln)] flex w-[min(70ch,80vw)] items-start gap-2 font-sans whitespace-normal"
     >
-      {comments.map((c) => (
-        <PendingCommentItem key={c.id} comment={c} onEdit={onEdit} onDelete={onDelete} />
-      ))}
-    </ul>
+      <ul id={id} aria-label={label} className="m-0 grid min-w-0 flex-1 list-none gap-1 p-0 text-[12.5px]">
+        {comments.map((c) => (
+          <PendingCommentItem key={c.id} comment={c} onEdit={onEdit} onDelete={onDelete} />
+        ))}
+      </ul>
+      {onHide && (
+        <HideButton
+          name={`Hide your pending ${n === 1 ? "comment" : "comments"}`}
+          tip={`Hides the text of your pending ${n === 1 ? "comment" : "comments"} here; the speech-bubble marker on the line shows it again.`}
+          onHide={onHide}
+          // The marker sits in the row just before the panel (the line, or the file comments strip).
+          focusAfter={() =>
+            panel.current?.previousElementSibling?.querySelector<HTMLElement>('[data-mark="comment"]')
+          }
+        />
+      )}
+    </div>
   );
 }

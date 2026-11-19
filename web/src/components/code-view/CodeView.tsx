@@ -376,6 +376,7 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
           label={`Your pending comments at ${lineName(mine, removedLine)}`}
           onEdit={ctx.onEditComment}
           onDelete={ctx.onDeleteComment}
+          onHide={() => ctx.toggle(key)}
         />
       )}
     </>
@@ -1014,6 +1015,7 @@ export function CodeView({
           label={`Your pending file comments on ${lines.path}`}
           onEdit={onEditComment}
           onDelete={onDeleteComment}
+          onHide={() => ctx.toggle("file")}
         />
       )}
       {hiddenCount > 0 && (

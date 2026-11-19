@@ -158,6 +158,7 @@ function Hunk({
                 label={`Your pending comments at ${lineName(mine[1], mine[2])}`}
                 onEdit={comments.onEdit}
                 onDelete={comments.onDelete}
+                onHide={() => comments.toggle(mine[0])}
               />
             )}
           </Fragment>
