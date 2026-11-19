@@ -315,8 +315,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   };
 
   // Next / `j`: on a step it first ticks the step (never unticks), then moves on.
+  const tickedOnNext = questionsView || lineView ? undefined : step;
   const goNext = () => {
-    if (step && !ticked.includes(step.id)) setTicks([step.id], true);
+    if (tickedOnNext && !ticked.includes(tickedOnNext.id)) setTicks([tickedOnNext.id], true);
     go(next);
   };
 
@@ -882,7 +883,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         previous={previous && blockTitle(tour, previous)}
         next={next && blockTitle(tour, next)}
         onPrevious={() => go(previous)}
-        marksReviewed={Boolean(step)}
+        marksReviewed={Boolean(tickedOnNext)}
         onNext={goNext}
       />
       <p className="sr-only" aria-live="polite">

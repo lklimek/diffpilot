@@ -275,13 +275,25 @@ describe("Tour screen (brief §4.3)", () => {
     expect(blockHeading()).not.toHaveTextContent("Trigger: callers of send");
     await user().keyboard("j");
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1", "f1.2"]));
+    const reviewedSteps = () => within(nav()).queryAllByRole("button", { name: /^Step \d+: .*, reviewed$/ });
+    expect(reviewedSteps()).toHaveLength(2);
+    await user().click(within(main()).getByRole("button", { name: /^← Previous/ }));
     await user().keyboard("k");
-    await user().keyboard("k");
-    expect(readStore("reviewState").ticked_steps).toEqual(["f1.1", "f1.2"]);
-    await user().keyboard("k");
+    expect(reviewedSteps()).toHaveLength(2);
+    expect(within(nav()).queryByRole("button", { name: /^Step 3: .*, reviewed$/ })).toBeNull();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 3:/ }));
     await user().keyboard("j");
-    expect(readStore("reviewState").ticked_steps).toEqual(["f1.1", "f1.2"]);
+    expect(reviewedSteps()).toHaveLength(0);
+  });
+
+  it("Next and j on the questions page tick nothing and the tip does not name a step", async () => {
+    await open();
+    await openStep("1", "1");
+    await user().click(within(nav()).getByRole("button", { name: /^Your questions and answers/ }));
+    expect(screen.getByRole("button", { name: /^Next: / })).toHaveAccessibleDescription("Next block (j)");
+    await user().keyboard("j");
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
+    expect(within(nav()).queryByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeNull();
   });
 
   it("a failed save on Next still moves on, keeps the tick on the page and says it is not saved", async () => {
