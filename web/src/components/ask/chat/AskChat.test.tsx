@@ -115,6 +115,32 @@ describe("AskChat (proposal AC3–AC10)", () => {
     expect(field()).toHaveValue("Why?");
   });
 
+  it.each([
+    [
+      409,
+      "analysis_not_finished",
+      "The analysis is not finished yet.",
+      "Not sent: The analysis is not finished yet.",
+    ],
+    [
+      404,
+      "not_found",
+      "This flow is not analysed in this review.",
+      "Not sent: This flow is not analysed in this review.",
+    ],
+    [503, "unavailable", "The server is busy.", "Not sent: The server is busy. Try again in a moment."],
+  ])(
+    "says a refusal (%s %s) plainly, and Try again only when it can help",
+    async (status, code, message, said) => {
+      const onSend = vi.fn(() => Promise.reject(Object.assign(new Error(message), { status, code })));
+      render(<Harness onSend={onSend} />);
+      await userEvent.setup().type(field(), "Why?{Enter}");
+      expect(await within(chat()).findByRole("alert")).toHaveTextContent(
+        new RegExp(`^${said.replace(/[.?]/g, "\\$&")}$`),
+      );
+    },
+  );
+
   it("names the subject next to the field; × asks about the whole PR, and the place can come back", async () => {
     const onUnanchor = vi.fn();
     const { unmount } = render(<Harness onUnanchor={onUnanchor} />);

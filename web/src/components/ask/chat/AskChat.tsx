@@ -17,6 +17,14 @@ import { Tooltip } from "../../tooltip/Tooltip";
 import { Answer } from "../AskAnswers";
 import { hasLines, subjectOf, type ChatThread } from "./model";
 
+// A refusal that waiting will not change (limit, unfinished analysis, unknown flow) is said as it is; a busy
+// server or a lost connection adds when to try again.
+const RETRY_LATER = new Set(["unavailable", "rate_limited"]);
+function notSent(message: string, code: string | null): string {
+  if (code !== null && RETRY_LATER.has(code)) return `Not sent: ${message} Try again in a moment.`;
+  return code === null || code === "internal" ? `Not sent: ${message} Try again.` : `Not sent: ${message}`;
+}
+
 /** The chat's remembered size: null = the default; `full` = the whole height above the dock. */
 export interface ChatSize {
   width: number | null;
@@ -167,7 +175,7 @@ function Reply({
       onClose(true);
     }
   };
-  const error = empty ? "Write a follow-up first." : action.error && `Not sent: ${action.error} Try again.`;
+  const error = empty ? "Write a follow-up first." : action.error && notSent(action.error, action.code);
   return (
     <form
       data-reply
@@ -347,7 +355,7 @@ export function AskChat(props: AskChatProps) {
     setReplyFor(null);
     requestAnimationFrame(() => replyButtons.current.get(id)?.focus());
   };
-  const error = empty ? "Write a question first." : action.error && `Not sent: ${action.error} Try again.`;
+  const error = empty ? "Write a question first." : action.error && notSent(action.error, action.code);
 
   return (
     <section

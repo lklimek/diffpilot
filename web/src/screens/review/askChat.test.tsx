@@ -146,9 +146,7 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
     await openTour("#f1.5");
     await user().keyboard("a");
     await user().type(within(chat()).getByRole("textbox", { name: "Your question" }), "Why?{Enter}");
-    expect(await within(chat()).findByRole("alert")).toHaveTextContent(
-      "Not sent: You have 50 questions. Try again.",
-    );
+    expect(await within(chat()).findByRole("alert")).toHaveTextContent(/Not sent: You have 50 questions\.$/);
     expect(within(chat()).getByRole("textbox", { name: "Your question" })).toHaveValue("Why?");
   });
 });

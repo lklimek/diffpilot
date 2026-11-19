@@ -238,7 +238,7 @@ describe("Files view (brief §4.5)", () => {
     await user().click(within(inspector()).getByRole("button", { name: "Ask about these lines" }));
     const field = askField();
     await user().type(field, "Why?{Enter}");
-    expect(await within(askChat()).findByRole("alert")).toHaveTextContent(`Not sent: ${limit} Try again.`);
+    expect(await within(askChat()).findByRole("alert")).toHaveTextContent(new RegExp(`Not sent: ${limit}$`));
   });
 
   it("the toggle is disabled with the reason when the PR head moved", async () => {
