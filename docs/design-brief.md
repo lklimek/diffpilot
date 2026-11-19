@@ -287,6 +287,8 @@ for concise low assessments. Assessments remain collapsed by default; no step-co
 Previous / Next walk this sequence; after the last step of a flow comes the next flow's introduction. The
 first visit starts at PR context; reopening a PR returns to the last viewed block. Flow order: flows that
 change behaviour by importance first; then LLM-classified refactors; then LLM-classified tests; then quiet rows.
+The order is set by the plan and does not change when flows are analysed; the menu heading is "Flows", with no
+caption about the order.
 
 **Layout.** Three columns — left menu | centre | inspector. Column widths are resizable by dragging and
 remembered. Each column has "hide" and "full screen". A hidden column leaves a strip with its name;

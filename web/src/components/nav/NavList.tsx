@@ -67,7 +67,7 @@ const sameRow = (current: BlockRef | undefined, row: QuietRowRef) =>
   current?.block === "quiet" && JSON.stringify(current.row) === JSON.stringify(row);
 
 function Heading({ children }: { children: ReactNode }) {
-  return <h2 className="mt-3 mb-1 text-[10.5px] font-bold tracking-wide text-muted uppercase">{children}</h2>;
+  return <h3 className="mt-3 mb-1 text-[10.5px] font-bold tracking-wide text-muted uppercase">{children}</h3>;
 }
 
 interface QuietRowProps {
@@ -139,7 +139,7 @@ export function NavList({
           Problem, related work, fit questions, CI
         </span>
       </button>
-      <Heading>Flows · most important first</Heading>
+      <Heading>Flows</Heading>
       <ol className="m-0 list-none p-0">
         {flows.map((flow) => {
           const reviewed = isFlowReviewed(flow, ticked);
