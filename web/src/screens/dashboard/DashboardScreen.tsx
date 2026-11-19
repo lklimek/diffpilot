@@ -81,7 +81,6 @@ export function DashboardScreen() {
     (e): e is string => e !== null,
   );
 
-  // Keeps the first ranked row within 1600×900 with the side panel open.
   const main = view && summary && (
     <div className="grid content-start gap-3.5">
       <div>
