@@ -694,7 +694,7 @@ WPs), reporting channel. Brief WHAT, not HOW. WPs over ~1,000 lines are split be
 | First Codex login | Manual one-time command in the runner container (runbook); no UI | §6.1 O3, WP4-DOCS |
 | "LLM working" in Settings | Outcome of the most recent LLM call (time; plain message on error); no on-demand check | §5.3, WP2-JOBS, WP3-STATE |
 | LLM status of threads | From `analyse_flow` for threads located in its steps; other threads have no status | WP3-PIPE, WP3-PROMPTS |
-| Ask during re-analysis | Claimed before the next batch job; a running job is not pre-empted | WP3-ASK |
+| Ask during re-analysis | Claimed before every other queued job (dashboard ranking, then batch); a running job is not pre-empted | WP3-ASK |
 | Numbers like "80% likely" | Forbidden in the prompt; no hard rejection | WP3-PROMPTS, WP3-VERIFY |
 | Test code inside production files | LLM-classified; own flow at the end labelled "LLM-classified tests"; never hidden. Rust/Go plugins in v2 | WP3-PROMPTS, WP3-VERIFY, WP3-BLOCKS, §13 |
 | Git and releases | Branch `feat/v1` only; no pull requests until v1 is deployed; append-only migrations (applied files such as `0001_init.sql` are never edited; changes are new numbered files); contracts reshaped by CCR without compatibility; no versioning or changelog; handover in `docs/v1-handover.md` | §1 Git flow, §4.3, §10 |

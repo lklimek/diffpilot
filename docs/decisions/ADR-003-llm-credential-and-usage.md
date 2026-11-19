@@ -27,4 +27,4 @@
   cumulative totals (or the sum of rollout `last_token_usage`).
 
 ## Consequences
-- With one credential, batch and Ask jobs share one queue slot; Ask is claimed first (plan §5.3).
+- With one credential, batch and Ask jobs share one queue slot; Ask is claimed before every other queued job (dashboard ranking, then batch); a running job is never pre-empted (plan §5.3).
