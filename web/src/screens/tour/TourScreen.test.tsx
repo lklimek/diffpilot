@@ -82,6 +82,24 @@ describe("Tour screen (brief §4.3)", () => {
     expect(blockHeading()).toHaveTextContent("Default timeout 30 s → 5 s");
   });
 
+  it("the flows dropdown names a refused action; the next action that succeeds clears it", async () => {
+    setScenario("lazy-flows");
+    server.use(
+      http.post("/api/v1/analyses/:id/flows/:flow/request", () =>
+        HttpResponse.json({ code: "internal", message: "Down." }, { status: 500 }),
+      ),
+    );
+    await open();
+    await user().click(within(topBar()).getByRole("button", { name: /^Your progress/ }));
+    const flows = screen.getByRole("region", { name: "Flows: analysis and review" });
+    const play = within(flows).getAllByRole("button", { name: /^Analyse flow \d+$/ })[0]!;
+    const name = play.getAttribute("aria-label")!;
+    await user().click(play);
+    await waitFor(() => expect(flows).toHaveTextContent(`${name} not done: Down.`));
+    await user().click(within(flows).getByRole("button", { name: "Analyse all remaining flows" }));
+    await waitFor(() => expect(flows).not.toHaveTextContent("not done"));
+  });
+
   it("the step header says when the file's Viewed mark was not read from GitHub", async () => {
     setScenario("viewed-not-read");
     await open();

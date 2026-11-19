@@ -107,4 +107,21 @@ describe("FlowsProgressMenu (proposal §8)", () => {
     expect(screen.queryByRole("region", { name: "Flows: analysis and review" })).toBeNull();
     expect(button()).toHaveFocus();
   });
+
+  it("offers ▶ again on a failed flow, also in a finished analysis; only a click starts it", async () => {
+    const onRetry = vi.fn();
+    setup({
+      flows: withStates(["analysed", "analysed", "analysed", "analysed", "failed"]),
+      analysis: { state: "finished", total: 5 },
+      onRequest: undefined,
+      onRetry,
+    });
+    await userEvent.click(button());
+    const row = within(screen.getByRole("region", { name: "Flows: analysis and review" })).getAllByRole(
+      "listitem",
+    )[4]!;
+    expect(onRetry).not.toHaveBeenCalled();
+    await userEvent.click(within(row).getByRole("button", { name: "Analyse flow 5 again" }));
+    expect(onRetry).toHaveBeenCalledWith(tour.flows[4]!.id);
+  });
 });

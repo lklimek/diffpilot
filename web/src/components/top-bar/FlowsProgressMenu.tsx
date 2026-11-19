@@ -22,6 +22,8 @@ interface FlowsProgressMenuProps {
   onOpenFlow: (flow: FlowId) => void;
   /** Requests a flow's analysis; no ▶ without it. */
   onRequest?: (flow: FlowId) => void;
+  /** Requests a failed flow's analysis again; no ▶ on a failed flow without it. */
+  onRetry?: (flow: FlowId) => void;
   onPause?: () => void;
   onResume?: () => void;
   onBackground?: (enabled: boolean) => void;
@@ -106,7 +108,18 @@ function StatusLine({
  * its analysis state, steps ticked, and the one work action that fits (▶ analyse, ⏸ pause); never Cancel.
  */
 export function FlowsProgressMenu(props: FlowsProgressMenuProps) {
-  const { flows, analysis, ticked, background, busy = false, error, onOpenFlow, onRequest, onPause } = props;
+  const {
+    flows,
+    analysis,
+    ticked,
+    background,
+    busy = false,
+    error,
+    onOpenFlow,
+    onRequest,
+    onRetry,
+    onPause,
+  } = props;
   const [open, setOpen] = useState(false);
   const id = useId();
   const button = useRef<HTMLButtonElement>(null);
@@ -216,6 +229,24 @@ export function FlowsProgressMenu(props: FlowsProgressMenuProps) {
                         aria-label={`Analyse flow ${flow.position}`}
                         aria-disabled={busy || undefined}
                         onClick={() => !busy && onRequest(flow.id)}
+                        className={ICON}
+                      >
+                        <span aria-hidden>▶</span>
+                      </button>
+                    </Tooltip>
+                  )}
+                  {status?.state === "failed" && onRetry && (
+                    <Tooltip
+                      tip={busyTip(
+                        `Analyse this flow again: starts LLM work (one agent run) from scratch for this flow${paused ? "; while the analysis is paused it waits until you resume" : ""}.`,
+                        busy,
+                      )}
+                    >
+                      <button
+                        type="button"
+                        aria-label={`Analyse flow ${flow.position} again`}
+                        aria-disabled={busy || undefined}
+                        onClick={() => !busy && onRetry(flow.id)}
                         className={ICON}
                       >
                         <span aria-hidden>▶</span>
