@@ -1,5 +1,5 @@
 import { HttpResponse } from "msw";
-import type { AnchoredAskRequest } from "../../api/generated/types";
+import type { ChatAskRequest } from "../../api/askChat";
 import { forAnalysis, route } from "./common";
 import { answerLater } from "./ask-question";
 
@@ -7,8 +7,8 @@ import { answerLater } from "./ask-question";
 export const askAnchored = route(
   "askAnchored",
   forAnalysis(async ({ request }) => {
-    const { text, anchor } = (await request.json()) as AnchoredAskRequest;
-    const question = answerLater(anchor, text);
+    const { text, anchor, parent_id } = (await request.json()) as ChatAskRequest;
+    const question = answerLater(anchor, text, parent_id);
     return HttpResponse.json(question, { status: 202 });
   }),
 );

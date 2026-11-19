@@ -1,8 +1,9 @@
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { ChatAskRequest, ChatQuestion } from "../api/askChat";
 import { ApiError, createApiClient } from "../api/client";
 import { routes } from "../api/generated/routes";
-import type { AnalysisEvent } from "../api/generated/types";
+import type { AnalysisEvent, AnchoredAskRequest } from "../api/generated/types";
 import { setFixtureState } from "./fixtures";
 import { handlers } from "./handlers";
 import { setMockLanguage } from "./handlers/get-settings";
@@ -376,5 +377,19 @@ describe("msw handlers of the screens", () => {
     });
     expect(question).toMatchObject({ state: "pending", anchor: { kind: "lines" } });
     expect(question.step_id).toBeUndefined();
+  });
+
+  it("Ask chat: a follow-up keeps its thread (parent_id); flow and whole-PR questions are taken", async () => {
+    const api = createApiClient(BASE);
+    const ask = (body: ChatAskRequest) => api.askAnchored(ID, body as unknown as AnchoredAskRequest);
+    const root = (await ask({ text: "Why?", anchor: { kind: "pr" } })) as ChatQuestion;
+    expect(root).toMatchObject({ state: "pending", anchor: { kind: "pr" } });
+    expect(root.parent_id).toBeUndefined();
+    const follow = (await ask({ text: "And then?", anchor: { kind: "pr" }, parent_id: root.id })) as ChatQuestion;
+    expect(follow.parent_id).toBe(root.id);
+    const flow = (await ask({ text: "What?", anchor: { kind: "flow", flow_id: "f2" } })) as ChatQuestion;
+    expect(flow.anchor).toEqual({ kind: "flow", flow_id: "f2" });
+    const listed = (await api.listQuestions(ID)) as ChatQuestion[];
+    expect(listed.find((q) => q.id === follow.id)?.parent_id).toBe(root.id);
   });
 });
