@@ -28,7 +28,8 @@ In diffpilot the runner must not hold user tokens (T3, ADR-005) or contain GitHu
    skill's conventional-commit estimates (approved code constants), named as estimates in the basis text.
 4. **Judgement is a runner job** of kind `judge_work`, submitted through `JobExecutor` in batches of up to 8
    items. The `JobSpec` embeds the items' scan facts in its prompt (self-contained, A4); no checkout, GitHub token,
-   MemCan endpoint, session or skills; priority interactive. `select_model(JobKind::JudgeWork, …)` returns the
+   MemCan endpoint, session or skills; priority interactive (claimed after queued Ask jobs, before pipeline jobs).
+   `select_model(JobKind::JudgeWork, …)` returns the
    installation model with the installation-wide dashboard ranking effort (default low, set in Settings next to
    the model/effort choice; other kinds keep the saved effort). The server validates output against closed value
    sets and stores judgements per (user, item). While an analysis job holds the credential the ranking waits and

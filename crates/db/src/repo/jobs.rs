@@ -541,8 +541,8 @@ impl Jobs<'_> {
     }
 
     /// Claims the next runnable job: `queued`, credential usable and idle, no other running job of the same
-    /// analysis, a dashboard job only while its refresh is ranking in the job's attempt; interactive before batch, then oldest first.
-    /// Increments the attempt.
+    /// analysis, a dashboard job only while its refresh is ranking in the job's attempt; interactive before batch, Ask first within
+    /// interactive, then oldest first. Never pre-empts a claimed or running job. Increments the attempt.
     pub async fn claim(&self, params: ClaimParams<'_>) -> Result<Option<JobRecord>, DbError> {
         if params.credential_ids.is_empty() {
             return Ok(None);
@@ -576,7 +576,9 @@ impl Jobs<'_> {
                    AND (c.unusable_since IS NOT NULL OR c.paused_until > ",
         );
         query.push_bind(ts(params.now));
-        query.push(")) ORDER BY j.priority, j.created_at, j.rowid LIMIT 1) RETURNING id");
+        query.push(
+            ")) ORDER BY j.priority, j.kind <> 'ask', j.created_at, j.rowid LIMIT 1) RETURNING id",
+        );
         let claimed: Option<String> = query.build_query_scalar().fetch_optional(self.pool).await?;
         match claimed {
             Some(id) => self.get(parse_wire(&id, "jobs.id")?).await.map(Some),
@@ -1010,6 +1012,16 @@ impl Jobs<'_> {
         .fetch_one(self.pool)
         .await?;
         job_from_row(&row)
+    }
+
+    /// Whether a claimed or running job holds `credential`.
+    pub async fn credential_busy(&self, credential: &str) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE credential_id = ? AND state IN ('claimed', 'running'))",
+        )
+        .bind(credential)
+        .fetch_one(self.pool)
+        .await?)
     }
 
     /// Jobs of an analysis, oldest first; only those in `states` unless `states` is empty.
@@ -2518,6 +2530,113 @@ mod tests {
         let first = claim(&db, 2).await.expect("interactive judge job first");
         assert_eq!(first.kind, JobKind::JudgeWork);
         assert_eq!(claim(&db, 3).await, None, "the credential is busy");
+    }
+
+    fn ask_job(analysis: AnalysisId) -> NewJob {
+        NewJob {
+            spec: job_spec(analysis, JobKind::Ask),
+            priority: JobPriority::Interactive,
+            stage: JobStage::Ask(QuestionId::new_random()),
+            generation: 0,
+        }
+    }
+
+    async fn enqueue_new(db: &Db, job: NewJob, second: i64) -> JobId {
+        db.jobs()
+            .enqueue(job, at(second))
+            .await
+            .expect("enqueue")
+            .id
+    }
+
+    #[tokio::test]
+    async fn claim_takes_ask_then_ranking_then_pipeline_oldest_first_within_each() {
+        let db = db().await;
+        let pipeline_analysis = seed_analysis(&db).await.expect("seed");
+        let ask_analysis = seed_analysis(&db).await.expect("seed");
+        let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+        let pipeline = enqueue(&db, pipeline_analysis, "f1", 0).await;
+        let older_ranking = enqueue_new(&db, judge_job(refresh, 1), 1).await;
+        let newer_ranking = enqueue_new(&db, judge_job(refresh, 2), 2).await;
+        let older_ask = enqueue_new(&db, ask_job(ask_analysis), 3).await;
+        let newer_ask = enqueue_new(&db, ask_job(ask_analysis), 4).await;
+
+        let mut order = Vec::new();
+        for second in 10..15 {
+            let job = claim(&db, second).await.expect("a job");
+            db.jobs()
+                .complete(&succeeded(job.id, 1), at(second))
+                .await
+                .expect("complete");
+            order.push(job.id);
+        }
+        assert_eq!(
+            order,
+            [older_ask, newer_ask, older_ranking, newer_ranking, pipeline]
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_never_preempts_a_running_ranking_job() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+        let ranking = enqueue_new(&db, judge_job(refresh, 1), 0).await;
+        assert_eq!(claim(&db, 1).await.map(|job| job.id), Some(ranking));
+        db.jobs()
+            .record_events(ranking, 1, &[event(1)], at(61))
+            .await
+            .expect("running");
+        let running = db.jobs().get(ranking).await.expect("job");
+        let ask = enqueue_new(&db, ask_job(analysis), 2).await;
+        enqueue(&db, analysis, "f1", 3).await;
+
+        assert_eq!(claim(&db, 4).await, None, "no pre-emption");
+        assert_eq!(
+            db.jobs().get(ranking).await.expect("job"),
+            running,
+            "the running job is untouched"
+        );
+        db.jobs()
+            .complete(&succeeded(ranking, 1), at(5))
+            .await
+            .expect("complete");
+        assert_eq!(claim(&db, 6).await.map(|job| job.id), Some(ask));
+    }
+
+    #[tokio::test]
+    async fn credential_busy_only_while_a_job_is_claimed_or_running() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let jobs = db.jobs();
+        let ask = enqueue_new(&db, ask_job(analysis), 0).await;
+        assert!(
+            !jobs.credential_busy(CREDENTIAL).await.expect("busy"),
+            "queued only"
+        );
+        assert_eq!(claim(&db, 1).await.map(|job| job.id), Some(ask));
+        assert!(
+            jobs.credential_busy(CREDENTIAL).await.expect("busy"),
+            "claimed"
+        );
+        assert!(
+            !jobs.credential_busy("other").await.expect("busy"),
+            "per credential"
+        );
+        jobs.record_events(ask, 1, &[event(1)], at(61))
+            .await
+            .expect("running");
+        assert!(
+            jobs.credential_busy(CREDENTIAL).await.expect("busy"),
+            "running"
+        );
+        jobs.complete(&succeeded(ask, 1), at(2))
+            .await
+            .expect("complete");
+        assert!(
+            !jobs.credential_busy(CREDENTIAL).await.expect("busy"),
+            "finished"
+        );
     }
 
     /// Judge jobs leave the analysis-job rules as they were: per-PR, per-analysis and cancelled-analysis

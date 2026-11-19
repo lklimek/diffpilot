@@ -1673,6 +1673,82 @@ async fn unclaimed_judge_job_ends_the_ranking() {
     assert_eq!(error.message(), "No runner picked up the ranking job");
 }
 
+/// An Ask claimed ahead of the judge job (Ask goes first, plan §5.3) holds the credential: that wait is not
+/// "unclaimed"; once the credential is idle again the limit applies as before.
+#[tokio::test]
+async fn ask_holding_the_credential_does_not_count_as_unclaimed() {
+    let h = harness().await;
+    let snap = snapshot(prs(1), vec![], vec![]);
+    let id = h.stored("u1", &snap).await;
+    let run = RankRun {
+        scope: scope("u1"),
+        refresh_id: id,
+        attempt: 0,
+    };
+    let long_ago = tokio::time::Instant::now()
+        .checked_sub(UNCLAIMED_LIMIT)
+        .expect("uptime");
+    let mut ranking = Ranking {
+        state: &h.state,
+        run: &run,
+        counts: JudgeCounts::default(),
+        live: RankingState::Running,
+        zone: jiff::tz::TimeZone::UTC,
+        language: LlmLanguage::En,
+        day: now(),
+        unclaimed_since: Some(long_ago),
+        provisional: None,
+    };
+    let input = JudgeWorkInput {
+        items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
+    };
+    let job = ranking.submit(1, 0, &input).await.expect("submit").job_id;
+    let analysis = db::repo::analyses::testing::seed_analysis(h.db())
+        .await
+        .expect("analysis");
+    h.db()
+        .analyses()
+        .set_state(
+            analysis,
+            &contracts::api::analyses::AnalysisState::Finished { total: 1 },
+            Timestamp::now(),
+        )
+        .await
+        .expect("finished");
+    let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::Ask);
+    spec.credential.id = CREDENTIAL_ID.to_owned();
+    h.db()
+        .jobs()
+        .enqueue(
+            db::repo::jobs::NewJob {
+                spec,
+                priority: JobPriority::Interactive,
+                stage: JobStage::Ask(contracts::ids::QuestionId::new_random()),
+                generation: 0,
+            },
+            Timestamp::now(),
+        )
+        .await
+        .expect("enqueue ask");
+    let ask = h.claim().await;
+    assert_eq!(ask.kind, JobKind::Ask, "the later Ask is claimed first");
+
+    ranking
+        .observe(job)
+        .await
+        .expect("waiting behind an Ask, not unclaimed");
+    assert_eq!(ranking.live, RankingState::Running);
+    assert_eq!(ranking.unclaimed_since, None);
+
+    h.complete(&ask, JobOutcome::Cancelled).await;
+    ranking.unclaimed_since = Some(long_ago);
+    let error = ranking
+        .observe(job)
+        .await
+        .expect_err("idle credential, unclaimed too long");
+    assert!(matches!(error, RankError::Unclaimed));
+}
+
 #[tokio::test]
 async fn ranking_waits_for_running_analysis_job() {
     let h = harness().await;

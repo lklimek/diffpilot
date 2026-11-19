@@ -487,8 +487,8 @@ in non-interactive mode, every job is a new session with a context pack.
 becomes an `ask` job on the same `JobSpec` / `JobExecutor` interface; it resumes the analysis's agent session
 and carries the question and the step. The job streams the answer through the same events channel; the
 answer is stored as a `Question` of the step. Ask is available only after the analysis has finished, so it competes
-with batch jobs only during a re-analysis; then an `ask` job is claimed before the next batch job (a running
-job is not pre-empted).
+with dashboard ranking jobs, and with batch jobs only during a re-analysis; an `ask` job is claimed before every
+other queued job, ranking before batch (a running job is not pre-empted).
 The job interface must not assume that all jobs are long-running batches.
 
 **Pipeline** (each step is a resumable job; partial results are persisted but not shown until the analysis
