@@ -206,7 +206,6 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     signedOut: boolean;
   } | null>(null);
   const [inspectorFlash, setInspectorFlash] = useState<(MarkerTarget & { nonce: number }) | null>(null);
-  const flashNonce = useRef(0);
   const openPath = useRef<string | null>(null);
   // Where Shift+click and drags extend from: the last line number pressed in this file.
   const anchor = useRef<{ path: string; side: LineSide; line: number } | null>(null);
@@ -439,8 +438,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
       const at = thread?.line != null && thread.side ? hunkAt(file, thread.side, thread.line) : undefined;
       if (at) select({ kind: "hunk", id: at.id, ...(thread?.step_id ? { step: thread.step_id } : {}) });
     }
-    flashNonce.current += 1;
-    setInspectorFlash({ ...target, nonce: flashNonce.current });
+    setInspectorFlash((flash) => ({ ...target, nonce: (flash?.nonce ?? 0) + 1 }));
     openInspector();
   };
 
@@ -832,6 +830,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     diff,
     onEvidence,
     onFlagAsComment,
+    onFlag: (flag) => showInInspector({ kind: "annotation", id: flag.id }),
   };
   const panel =
     narrowed && hunk

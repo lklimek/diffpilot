@@ -330,6 +330,22 @@ describe("Files view (brief §4.5)", () => {
 });
 
 describe("Files Inspector panels (proposal §3)", () => {
+  it("flows and steps with LLM flags show the flag marker; a click opens the first strongest flag's step", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
+    await user().click(
+      within(inspector()).getByRole("button", { name: "Go to the first red flag in flow 1" }),
+    );
+    await waitFor(() => expect(inspectorHeading()).toHaveTextContent("Step 5 of flow 1 · Retry allowed?"));
+  });
+
+  it("in a hunk, each step with LLM flags shows its flag marker", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=96&end=109");
+    expect(
+      within(inspector()).getByRole("button", { name: "Go to the first red flag on step 5" }),
+    ).toBeVisible();
+    expect(within(inspector()).queryByRole("button", { name: /flag on step 3$/ })).toBeNull();
+  });
+
   it("a flag offers Use as review comment: the composer opens on the flag's lines with it as a draft", async () => {
     await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=96&end=109");
     const card = await waitFor(() => {

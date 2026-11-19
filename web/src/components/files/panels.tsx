@@ -55,6 +55,8 @@ export interface FilesPanelContext {
   diff?: ReactNode;
   onEvidence?: (evidence: Evidence) => void;
   onFlagAsComment?: (flag: Annotation) => void;
+  /** Goes to an LLM flag: its step in its hunk, flashed in the Inspector. */
+  onFlag?: (flag: Annotation) => void;
 }
 
 const BUTTON =
@@ -155,6 +157,7 @@ function FlowsSection({
             onOpenInFlows={ctx.onOpenInFlows}
             onRequestFlow={ctx.onRequestFlow}
             requestBusy={ctx.requestBusy}
+            onFlag={ctx.onFlag}
           />
         )}
         {quiet.map((part) => (
@@ -257,6 +260,7 @@ export function filePanel(ctx: FilesPanelContext): InspectorPanel {
               onOpenInFlows={ctx.onOpenInFlows}
               onRequestFlow={ctx.onRequestFlow}
               requestBusy={ctx.requestBusy}
+              onFlag={ctx.onFlag}
             />
           </Collapsible>
         )}

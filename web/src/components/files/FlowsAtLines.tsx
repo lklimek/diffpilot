@@ -1,7 +1,17 @@
 import { useId, type ReactNode } from "react";
-import type { AnalysisState, Flow, FlowId, HunkPart, LineRange, StepId } from "../../api/generated/types";
+import type {
+  AnalysisState,
+  Annotation,
+  Flow,
+  FlowId,
+  HunkPart,
+  LineRange,
+  StepId,
+} from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
 import { RiskLabel } from "../badge/LlmLabel";
+import { FlagMarker } from "../flag/FlagMarker";
+import { sortedFlags } from "../flag/flags";
 import { FlowWhyText, hasWhy } from "../flow-intro/FlowWhy";
 import { FlowWorkLabel } from "../flow-intro/status";
 import { NOT_ANALYSED_LABEL } from "../quiet/labels";
@@ -24,6 +34,27 @@ interface FlowsAtLinesProps {
   onRequestFlow?: (flow: FlowId) => void;
   /** A flow request is being sent. */
   requestBusy?: boolean;
+  /** Goes to an LLM flag (its step and lines); no flag marker without it. */
+  onFlag?: (flag: Annotation) => void;
+}
+
+/** The flag marker of some remarks: a click goes to the first flag at the strongest level. */
+function Flags({
+  annotations,
+  scope,
+  subject,
+  onFlag,
+}: {
+  annotations: readonly Annotation[];
+  scope: "step" | "flow";
+  subject: string;
+  onFlag?: (flag: Annotation) => void;
+}) {
+  const first = sortedFlags(annotations)[0];
+  if (!onFlag || !first) return null;
+  return (
+    <FlagMarker annotations={annotations} scope={scope} subject={subject} onSelect={() => onFlag(first)} />
+  );
 }
 
 const BUTTON =
@@ -44,7 +75,8 @@ function StepRow({
   ticked,
   onDetails,
   onOpenInFlows,
-}: { at: StepAtLines; ticked: boolean } & Pick<FlowsAtLinesProps, "onDetails" | "onOpenInFlows">) {
+  onFlag,
+}: { at: StepAtLines; ticked: boolean } & Pick<FlowsAtLinesProps, "onDetails" | "onOpenInFlows" | "onFlag">) {
   const { step } = at;
   const remarks = step.llm.annotations.length;
   const name = `Step ${step.number} · ${step.llm.title}`;
@@ -55,6 +87,12 @@ function StepRow({
       </span>
       <span className="flex flex-wrap items-center gap-1.5">
         <b>Step {step.number}</b> {step.llm.title} <RiskLabel risk={step.llm.assessment?.risk ?? null} />
+        <Flags
+          annotations={step.llm.annotations}
+          scope="step"
+          subject={`step ${step.number}`}
+          onFlag={onFlag}
+        />
       </span>
       <span className="text-[12px] text-muted">
         {linesText(at)}
@@ -169,6 +207,7 @@ export function FlowsAtLines({
   onOpenInFlows,
   onRequestFlow,
   requestBusy = false,
+  onFlag,
 }: FlowsAtLinesProps) {
   const id = useId();
   return (
@@ -189,6 +228,12 @@ export function FlowsAtLines({
               ) : (
                 <RiskLabel risk={flow.llm.risk} />
               )}
+              <Flags
+                annotations={steps.flatMap((at) => at.step.llm.annotations)}
+                scope="flow"
+                subject={`flow ${flow.position}`}
+                onFlag={onFlag}
+              />
             </span>
             {!pending && <WhyLine flow={flow} />}
             {pending && planned && (
@@ -203,6 +248,7 @@ export function FlowsAtLines({
                     ticked={ticked.includes(at.step.id)}
                     onDetails={onDetails}
                     onOpenInFlows={onOpenInFlows}
+                    onFlag={onFlag}
                   />
                 ))}
               </ul>
@@ -292,6 +338,7 @@ export function FlowsInFile({
   onOpenInFlows,
   onRequestFlow,
   requestBusy = false,
+  onFlag,
 }: Omit<FlowsAtLinesProps, "onDetails">) {
   const id = useId();
   return (
@@ -313,6 +360,12 @@ export function FlowsInFile({
               ) : (
                 <RiskLabel risk={flow.llm.risk} />
               )}
+              <Flags
+                annotations={steps.flatMap((at) => at.step.llm.annotations)}
+                scope="flow"
+                subject={`flow ${flow.position}`}
+                onFlag={onFlag}
+              />
             </span>
             {!pending && <WhyLine flow={flow} />}
             {pending && planned && (
