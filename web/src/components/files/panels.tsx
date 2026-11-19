@@ -95,22 +95,22 @@ function hunkOwners(ctx: FilesPanelContext, hunk: FileHunk): string {
       ? `flow ${f.flow.position} · ${f.steps.length} ${f.steps.length === 1 ? "step" : "steps"}`
       : `flow ${f.flow.position} · not analysed yet`,
   );
-  const quiet = [
-    ...new Set(
-      noFlowParts(hunk.parts).map(
-        (p) =>
-          ({
-            unexplained: "Unexplained",
-            not_analysed: "not analysed (path rule)",
-            context_rule: "line rule",
-            identical_move: "moved, text identical",
-            whitespace_only: "whitespace only",
-            step: "",
-            flow: "",
-          })[p.owner.kind],
-      ),
-    ),
-  ];
+  // Each part in no flow with its own lines: a whitespace line never reads as the whole hunk.
+  const quiet = noFlowParts(hunk.parts).map((p) => {
+    const n = p.range.end_line - p.range.start_line + 1;
+    const where = `${p.side === "base" ? "removed " : ""}${n === 1 ? "line" : "lines"} ${rangeText(p.range)}`;
+    return `${where}: ${
+      {
+        unexplained: "Unexplained",
+        not_analysed: "not analysed (path rule)",
+        context_rule: "line rule",
+        identical_move: "moved, text identical",
+        whitespace_only: "whitespace only",
+        step: "",
+        flow: "",
+      }[p.owner.kind]
+    }`;
+  });
   return [...flows, ...quiet].join("; ");
 }
 

@@ -281,6 +281,16 @@ describe("Files view (brief §4.5)", () => {
 });
 
 describe("Files Inspector panels (proposal §3)", () => {
+  it("the hunk list names the lines of each part in no flow, so a deletion never reads as whitespace", async () => {
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head");
+    const hunks = within(inspector()).getByRole("region", { name: /^Hunks in this file/ });
+    const deletion = within(hunks)
+      .getAllByRole("listitem")
+      .find((li) => li.textContent?.startsWith("removed lines 52–62"))!;
+    expect(deletion).toHaveTextContent("flow 4 · 1 step; removed line 62: whitespace only");
+    expect(deletion).not.toHaveTextContent(/step; whitespace only/);
+  });
+
   it("a hunk with one step shows that step's sections and flags, without Details or the per-step hint", async () => {
     await open("#lines?file=src%2Fconfig.rs&side=head&line=23");
     expect(inspectorHeading()).toHaveTextContent("config.rs · hunk, line 23");
