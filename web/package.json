@@ -1,6 +1,7 @@
 {
   "name": "diffpilot-web",
   "private": true,
+  "license": "FSL-1.1-ALv2",
   "version": "0.0.0",
   "type": "module",
   "scripts": {
