@@ -406,11 +406,11 @@ describe("Tour screen (brief §4.3)", () => {
     await open();
     const toggle = () => within(nav()).getByRole("button", { name: "Mark flow 3 reviewed" });
     await user().click(toggle());
-    expect(topBar()).toHaveTextContent("flows reviewed 1 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 1 / 5");
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f3.1", "f3.2"]));
     expect(toggle()).toHaveAttribute("aria-pressed", "true");
     await user().click(toggle());
-    expect(topBar()).toHaveTextContent("flows reviewed 0 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 0 / 5");
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual([]));
   });
 
