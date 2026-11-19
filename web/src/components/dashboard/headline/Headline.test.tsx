@@ -174,7 +174,7 @@ describe("NetChart: a bar lists its pull requests", () => {
     expect(list("Day 17 Nov")).toBeVisible();
     // The tip follows the clicked bar, also when the click also focused the chart.
     expect(document.querySelector("[data-chart-tip]")).toHaveTextContent(
-      /^Day 17 Nov.*Click to hide its pull requests$/,
+      /^Day 17 Nov.*Click or press Enter to hide its pull requests$/,
     );
     expect(document.querySelector('[data-point="1"][data-selected]')).not.toBeNull();
     expect(screen.getByRole("link", { name: /^acme\/a#5/ })).toBeVisible();
@@ -204,16 +204,37 @@ describe("NetChart: a bar lists its pull requests", () => {
     await userEvent.keyboard("{Enter}");
     expect(list("Day 17 Nov")).toBeNull();
     expect(chart).toHaveFocus();
-    // Back on the chart, the bar just hidden is read, and Enter lists it again.
-    expect(document.querySelector("[data-chart-reading]")).toHaveTextContent(/^Day 17 Nov:/);
+    // Back on the chart, the hiding is announced, and Enter lists the bar just hidden again.
+    expect(document.querySelector("[data-chart-reading]")).toHaveTextContent(
+      "Pull requests of Day 17 Nov hidden",
+    );
     fireEvent.keyDown(chart, { key: "Enter" });
     expect(list("Day 17 Nov")).toBeVisible();
+  });
+
+  it("Enter or Space after a click, with the pointer gone, acts on the clicked bar, not the last one", () => {
+    render(<Selecting />);
+    const chart = screen.getByRole("img");
+    // A real click focuses the SVG (tabIndex 0) before the click event.
+    fireEvent.mouseMove(chart, { clientX: 34 + ((720 - 80) / 3) * 1.5 });
+    chart.focus();
+    clickBar(1);
+    expect(list("Day 17 Nov")).toBeVisible();
+    fireEvent.mouseLeave(chart);
+    fireEvent.keyDown(chart, { key: " " });
+    expect(list("Day 18 Nov (so far)")).toBeNull();
+    expect(list("Day 17 Nov")).toBeNull();
+    expect(document.querySelector("[data-chart-reading]")).toHaveTextContent(
+      "Pull requests of Day 17 Nov hidden",
+    );
   });
 
   it("the hover tip says a bar can be clicked", () => {
     render(<Selecting />);
     fireEvent.mouseMove(screen.getByRole("img"), { clientX: 34 + (720 - 80) / 6 });
-    expect(document.querySelector("[data-chart-tip]")).toHaveTextContent("Click to list its pull requests");
+    expect(document.querySelector("[data-chart-tip]")).toHaveTextContent(
+      "Click or press Enter to list its pull requests",
+    );
   });
 
   it("without a selection handler the chart offers no listing", () => {

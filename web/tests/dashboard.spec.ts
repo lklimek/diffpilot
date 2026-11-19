@@ -312,7 +312,9 @@ test.describe("My work (msw)", () => {
     const { chart, at } = await netChartBar(page, 17);
     const list = page.getByRole("region", { name: "Pull requests of Mon 16 Nov" });
     await chart.hover(at);
-    await expect(page.locator("[data-chart-tip]")).toContainText("Click to list its pull requests");
+    await expect(page.locator("[data-chart-tip]")).toContainText(
+      "Click or press Enter to list its pull requests",
+    );
     await chart.click(at);
     await expect(list.getByRole("group", { name: "Opened (2)" })).toBeVisible();
     const closed = list.getByRole("group", { name: "Closed (3)" });

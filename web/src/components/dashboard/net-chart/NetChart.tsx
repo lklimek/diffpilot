@@ -87,6 +87,14 @@ export function NetChart({ points, unit, selected = null, onSelect, chartRef }: 
   }, []);
 
   const rows = netRows(points);
+  // Opening and closing the list is announced, whatever closed it (the bar again, Hide, the period switch).
+  const chosen = selected !== null && rows[selected] ? describePeriod(rows[selected]) : null;
+  const [announced, setAnnounced] = useState(chosen);
+  if (announced !== chosen) {
+    setAnnounced(chosen);
+    if (chosen !== null) setReading(`Pull requests of ${chosen} listed under the chart`);
+    else if (announced !== null) setReading(`Pull requests of ${announced} hidden`);
+  }
   if (rows.length === 0) {
     return <p className="text-xs text-muted">No pull request activity in this period.</p>;
   }
@@ -113,14 +121,7 @@ export function NetChart({ points, unit, selected = null, onSelect, chartRef }: 
     if (read) setReading(describe(rows[i]!));
   };
   const choose = (i: number) => {
-    if (!onSelect) return;
-    const next = i === selected ? null : i;
-    setReading(
-      next === null
-        ? `List of ${describePeriod(rows[i]!)} closed`
-        : `Pull requests of ${describePeriod(rows[i]!)} listed under the chart`,
-    );
-    onSelect(next);
+    onSelect?.(i === selected ? null : i);
   };
   const indexAt = (event: MouseEvent<SVGSVGElement>) => {
     const i = Math.floor(
@@ -129,7 +130,7 @@ export function NetChart({ points, unit, selected = null, onSelect, chartRef }: 
     return i >= 0 && i < rows.length ? i : null;
   };
   const onKeyDown = (event: KeyboardEvent<SVGSVGElement>) => {
-    const current = at ?? rows.length - 1;
+    const current = at ?? selected ?? rows.length - 1;
     if (onSelect && (event.key === "Enter" || event.key === " ")) {
       event.preventDefault();
       choose(current);
@@ -303,7 +304,9 @@ export function NetChart({ points, unit, selected = null, onSelect, chartRef }: 
             {onSelect && (
               <>
                 <br />
-                {at === selected ? "Click to hide its pull requests" : "Click to list its pull requests"}
+                {at === selected
+                  ? "Click or press Enter to hide its pull requests"
+                  : "Click or press Enter to list its pull requests"}
               </>
             )}
           </div>
