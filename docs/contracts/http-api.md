@@ -206,7 +206,8 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   of the pull request on `side`; `range` within the file, or none for the whole file). Lines are 1-based,
   `start_line ≤ end_line`, at most `AskAnchor::MAX_LINES` (2000); anything else is `invalid_request`. The step
   route stores a `step` anchor without lines. Also `flow` (`flow_id` of a flow with a stored analysis, `not_found`
-  otherwise) and `pr` (the whole pull request). `AskQuestion.anchor` is always set; `step_id` only for a step anchor.
+  otherwise; the flow must be shown analysed in the Tour, so a stored analysis that fails today's checks is
+  `not_found` too) and `pr` (the whole pull request). `AskQuestion.anchor` is always set; `step_id` only for a step anchor.
   A lines question's job gets the lines, their classic diff (three lines of context, clipped), the owners of their
   changed lines from R12 and the overlapping steps in summary (chosen at submit and stored with the question); its
   context pack those steps in full. A flow question's job gets the flow's introduction and steps in summary, its
@@ -217,7 +218,8 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   `AskQuestion.parent_id` is always the first question) and must repeat its `anchor` (else `invalid_request`).
   Limits count follow-ups like any question. The job's prompt carries the thread's earlier questions of this user
   with their answers, oldest first: the first question and the latest follow-ups (at most 6), each answer clipped to
-  4000 characters, at most 32 KiB, with a note on omitted ones (ADR-004 addendum 2026-11-19).
+  4000 characters and each entry to 16 KiB (a clipped entry says how many characters are missing, and the block
+  carries the clipped note), at most 32 KiB, with a note on omitted ones (ADR-004 addendum 2026-11-19).
 - **Files** (R12, v1.2). Every file of the pull request in diff order: `path`, `old_path` (renames), `status`,
   `binary`, `added`/`removed`, `group` (`code`, or `not_analysed` with the path rule's category, badge and rule),
   `not_rendered` (`too_large`, `generated`, `binary`: the code of that file is never shown), `viewed`, and `hunks` (the diff
@@ -540,7 +542,7 @@ Requesting it discards that document (only the version the server verified: a re
 requests the flow in one transaction: it runs in a new job round like a failed flow (the rejected output is
 never repaired), with the automatic retries of any requested flow. The same transaction removes what was said
 about its steps, whose ids the new run reuses: every user's ticks of `<flow>.` steps, the questions on its steps
-with their answers (their unfinished ask jobs are cancelled) and the feedback on its steps and annotations
+and on the flow as a whole (with their follow-ups) with their answers (their unfinished ask jobs are cancelled) and the feedback on its steps and annotations
 (removed as by its author, so its MemCan memory is deleted). Comments and pending review comments stay: they are
 anchored to code lines. Switching background analysis on ("Analyse all remaining flows") discards and requests
 every such flow the same way, in the transaction that switches it on. In a `finished` analysis any `failed` flow

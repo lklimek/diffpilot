@@ -53,7 +53,9 @@ impl ApiErrorSource for QuestionsApiError {
             Self::Ask(AskError::Diff(PrDiffError::NotPrepared)) => {
                 ApiErrorCode::AnalysisNotFinished
             }
-            Self::Ask(AskError::Diff(_) | AskError::Mirror(_)) => ApiErrorCode::Internal,
+            Self::Ask(AskError::Diff(_) | AskError::Mirror(_) | AskError::Tour(_)) => {
+                ApiErrorCode::Internal
+            }
             Self::Ask(AskError::NotFinished) => ApiErrorCode::AnalysisNotFinished,
             Self::Ask(AskError::UnknownStep | AskError::UnknownFlow | AskError::UnknownParent) => {
                 ApiErrorCode::NotFound
@@ -100,7 +102,7 @@ impl ApiErrorSource for QuestionsApiError {
             Self::Ask(AskError::Diff(PrDiffError::NotPrepared)) => {
                 Cow::Borrowed("The analysis has not finished yet.")
             }
-            Self::Ask(AskError::Diff(_) | AskError::Mirror(_)) => {
+            Self::Ask(AskError::Diff(_) | AskError::Mirror(_) | AskError::Tour(_)) => {
                 Cow::Borrowed("Something went wrong on the server. Try again later.")
             }
             Self::Ask(AskError::AnalysisLimit) => Cow::Owned(format!(

@@ -725,38 +725,26 @@ pub fn ask_pr(input: &AskPrInput<'_>) -> Result<String, PromptError> {
 }
 
 /// The earlier questions of a follow-up's thread with an introduction, or nothing for a first question: the first
-/// question, then the latest follow-ups that fit [`MAX_ASK_THREAD_BYTES`] (at most [`MAX_THREAD_FOLLOW_UPS`]), each
-/// clipped, with a note on the omitted ones.
+/// question, then the latest follow-ups that fit [`MAX_ASK_THREAD_BYTES`] (at most [`MAX_THREAD_FOLLOW_UPS`]), with a
+/// note on the omitted ones. Each entry is clipped to at most half the budget, so the first always fits; a clipped
+/// entry gives `clipped_chars` and the block the usual clipped note.
 fn thread_block(thread: &[ThreadQuestion<'_>]) -> Result<String, PromptError> {
-    #[derive(Serialize)]
-    struct Entry {
-        question: String,
-        state: AskState,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        answer: Option<String>,
-    }
     let entries = thread
         .iter()
-        .map(|asked| {
-            serde_json::to_string(&Entry {
-                question: clip(asked.question, MAX_QUESTION_CHARS).0,
-                state: asked.state,
-                answer: asked
-                    .answer
-                    .map(|answer| clip(answer, MAX_THREAD_ANSWER_CHARS).0),
-            })
-        })
+        .map(thread_entry)
         .collect::<Result<Vec<_>, _>>()?;
-    let Some((first, rest)) = entries.split_first() else {
+    let Some(((first, first_clipped), rest)) = entries.split_first() else {
         return Ok(String::new());
     };
     let mut used = first.len();
+    let mut clipped = *first_clipped;
     let mut latest = Vec::new();
-    for entry in rest.iter().rev().take(MAX_THREAD_FOLLOW_UPS) {
+    for (entry, entry_clipped) in rest.iter().rev().take(MAX_THREAD_FOLLOW_UPS) {
         if used + entry.len() > MAX_ASK_THREAD_BYTES {
             break;
         }
         used += entry.len();
+        clipped += entry_clipped;
         latest.push(entry.as_str());
     }
     let omitted = rest.len() - latest.len();
@@ -767,10 +755,45 @@ fn thread_block(thread: &[ThreadQuestion<'_>]) -> Result<String, PromptError> {
     }
     let mut out = format!("{}\n", part("thread")?);
     out.push_str(&data("earlier questions of this thread", &content));
+    out.push_str(&clipped_note(clipped)?);
     if omitted > 0 {
         out.push_str(&omitted_note(omitted)?);
     }
     Ok(out)
+}
+
+/// One entry of a thread block as a JSON line and the characters clipped from it: the question and the answer cut
+/// to their limits, then the answer shortened until the line fits half of [`MAX_ASK_THREAD_BYTES`].
+fn thread_entry(asked: &ThreadQuestion<'_>) -> Result<(String, usize), PromptError> {
+    #[derive(Serialize)]
+    struct Entry<'e> {
+        question: &'e str,
+        state: AskState,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        answer: Option<&'e str>,
+        #[serde(skip_serializing_if = "is_zero")]
+        clipped_chars: usize,
+    }
+    fn is_zero(chars: &usize) -> bool {
+        *chars == 0
+    }
+    let (question, question_clipped) = clip(asked.question, MAX_QUESTION_CHARS);
+    let answer = asked.answer.unwrap_or_default();
+    let mut keep = MAX_THREAD_ANSWER_CHARS;
+    loop {
+        let (shown, answer_clipped) = clip(answer, keep);
+        let clipped_chars = question_clipped + answer_clipped;
+        let line = serde_json::to_string(&Entry {
+            question: &question,
+            state: asked.state,
+            answer: asked.answer.map(|_| shown.as_str()),
+            clipped_chars,
+        })?;
+        if line.len() <= MAX_ASK_THREAD_BYTES / 2 || keep == 0 {
+            return Ok((line, clipped_chars));
+        }
+        keep /= 2;
+    }
 }
 
 fn side_label(side: LineSide) -> &'static str {

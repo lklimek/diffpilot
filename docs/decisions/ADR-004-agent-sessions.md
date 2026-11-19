@@ -107,7 +107,7 @@ rewritable migration); old analytic references must not be reused because they m
 - **Decision.** A follow-up under an Ask question (one level: every follow-up names its thread's first question)
   carries its thread in the `ask` job's prompt: the asker's earlier questions of that thread with their answers,
   oldest first. The first question always stays; then the latest follow-ups (at most 6) that fit 32 KiB, each answer
-  clipped to 4000 characters, with a note on omitted ones.
+  clipped to 4000 characters and each entry to 16 KiB (clipped entries are marked), with a note on omitted ones.
 - **Reason.** The working session holds the thread only while it lives. A re-fork after the analytic generation
   advanced, a lost working archive or a context pack would drop it; the owner requires that a follow-up remembers
   the earlier questions and answers of its thread. Putting the thread in the job makes it independent of the
