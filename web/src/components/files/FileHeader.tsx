@@ -15,8 +15,11 @@ export interface ViewedControl {
   saving: boolean;
   /** Why the mark cannot be changed here (head moved, not read); null when it can. */
   disabledReason: string | null;
-  /** The last change that failed, with the server's message (written for the reader). */
-  error: { message: string; retry: () => void } | null;
+  /**
+   * The last change that failed, with the server's message (written for the reader); `signIn` when the GitHub
+   * sign-in ended: a link to sign in again instead of Retry.
+   */
+  error: { message: string; retry: () => void; signIn?: string } | null;
   /** Marks or unmarks the file; the screen opens the next file once GitHub confirmed a mark. */
   onToggle: () => void;
 }
@@ -119,11 +122,19 @@ export function FileHeader({ file, pr, viewed, oldCode, headingRef }: FileHeader
           className="flex flex-wrap items-center gap-2 rounded-md border border-l-4 border-border border-l-high-bd bg-surface px-3 py-1 text-[12.5px]"
         >
           <p className="m-0 flex-1">{viewed.error.message}</p>
-          <Tooltip tip="Sends the same change to GitHub again.">
-            <button type="button" onClick={viewed.error.retry} className={BUTTON}>
-              Retry
-            </button>
-          </Tooltip>
+          {viewed.error.signIn ? (
+            <Tooltip tip="Opens the GitHub sign-in; the change is not sent again.">
+              <a href={viewed.error.signIn} className={BUTTON}>
+                Sign in again
+              </a>
+            </Tooltip>
+          ) : (
+            <Tooltip tip="Sends the same change to GitHub again.">
+              <button type="button" onClick={viewed.error.retry} className={BUTTON}>
+                Retry
+              </button>
+            </Tooltip>
+          )}
           <GithubLink
             url={github}
             tip="Open this file in the pull request on GitHub to mark it there (new tab)."

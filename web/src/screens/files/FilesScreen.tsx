@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useLocation, useNavigate, useParams } from "react-router";
 import { ApiError } from "../../api/client";
+import { routes } from "../../api/generated/routes";
 import type {
   AnalysisId,
   ApiErrorCode,
@@ -100,7 +101,11 @@ export function FilesScreen() {
     return (
       <Shell login={login}>
         <StatusMessage kind="error">{errorText(failed.error)}</StatusMessage>
-        <a href="/">My work</a>
+        {failed.error instanceof ApiError && failed.error.code === "unauthenticated" ? (
+          <a href={routes.authLogin.path}>Sign in again</a>
+        ) : (
+          <a href="/">My work</a>
+        )}
       </Shell>
     );
   }
@@ -195,7 +200,11 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
   };
   const [focusNext, setFocusNext] = useState<"ask" | "comment" | { heading: string } | null>(null);
   const [notice, setNotice] = useState<{ text: string; nonce: number } | null>(null);
-  const [viewedError, setViewedError] = useState<{ path: string; message: string } | null>(null);
+  const [viewedError, setViewedError] = useState<{
+    path: string;
+    message: string;
+    signedOut: boolean;
+  } | null>(null);
   const [inspectorFlash, setInspectorFlash] = useState<(MarkerTarget & { nonce: number }) | null>(null);
   const flashNonce = useRef(0);
   const openPath = useRef<string | null>(null);
@@ -485,9 +494,9 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
           );
         },
         onError: (error) => {
-          setViewedError({ path: at.path, message: errorText(error) });
-          // The PR moved on, or the mark may have changed: read the list again (head, marks).
           const code: ApiErrorCode | null = error instanceof ApiError ? error.code : null;
+          setViewedError({ path: at.path, message: errorText(error), signedOut: code === "unauthenticated" });
+          // The PR moved on, or the mark may have changed: read the list again (head, marks).
           if (code === "pr_head_changed" || code === "github_unavailable")
             void queryClient.invalidateQueries({ queryKey: ["files", analysisId] });
         },
@@ -506,7 +515,14 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
         : setViewed.isPending && setViewed.variables?.path !== file.path
           ? `Saving the Viewed mark of ${fileName(setViewed.variables!.path)} to GitHub; this file can be marked once GitHub confirmed it.`
           : null,
-    error: viewedError?.path === file.path ? { message: viewedError.message, retry: toggleViewed } : null,
+    error:
+      viewedError?.path === file.path
+        ? {
+            message: viewedError.message,
+            retry: toggleViewed,
+            signIn: viewedError.signedOut ? routes.authLogin.path : undefined,
+          }
+        : null,
     onToggle: toggleViewed,
   };
 

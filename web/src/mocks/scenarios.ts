@@ -107,7 +107,7 @@ interface Scenario {
   /** Changes to the `files` answer. */
   files?: (seed: FilesResponse) => FilesResponse;
   /** Viewed writes answer with this error code (GitHub refused, the head moved, GitHub did not answer). */
-  viewedError?: "github_refused" | "pr_head_changed" | "github_unavailable";
+  viewedError?: "github_refused" | "pr_head_changed" | "github_unavailable" | "conflict" | "unauthenticated";
 }
 
 /** Step f1.2 with one behaviour remark over lines 90–95 (see `remarkLayoutLines`), rated LOW. */
@@ -517,6 +517,10 @@ const SCENARIOS = {
   "signed-out": { me: () => ({ user: null, csrf_token: null }) },
   "no-reviews": { myAnalyses: () => ({ analyses: [] }) },
   "viewed-refused": { viewedError: "github_refused" },
+  // Another Viewed change of this user and analysis is still being saved.
+  "viewed-busy": { viewedError: "conflict" },
+  // The user's GitHub sign-in ended.
+  "viewed-signed-out": { viewedError: "unauthenticated" },
   "viewed-not-read": {
     files: (seed) => ({
       ...seed,

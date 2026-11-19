@@ -173,10 +173,59 @@ describe("Files view (brief §4.5)", () => {
     await user().click(screen.getByRole("button", { name: "Viewed" }));
     const alert = await screen.findByRole("alert");
     expect(alert.querySelector("p")).toHaveTextContent(
-      /^Not saved on GitHub: GitHub refused the change\. Your mark is unchanged; mark it on GitHub\.$/,
+      /^Not saved on GitHub: GitHub refused the change\. Your mark is unchanged; try again later or mark it on GitHub\.$/,
     );
     expect(fileHeading()).toHaveTextContent("src/lib.rs");
     expect(screen.getByRole("button", { name: "Viewed" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("a Viewed change still being saved elsewhere says so and offers Retry", async () => {
+    setScenario("viewed-busy");
+    await open("#lines?file=src%2Flib.rs&side=head");
+    await user().click(screen.getByRole("button", { name: "Viewed" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Your previous Viewed change is still being saved. Try again in a moment.",
+    );
+    expect(within(alert).getByRole("button", { name: "Retry" })).toBeVisible();
+  });
+
+  it("an ended GitHub sign-in on Viewed offers Sign in again, not Retry", async () => {
+    setScenario("viewed-signed-out");
+    await open("#lines?file=src%2Flib.rs&side=head");
+    await user().click(screen.getByRole("button", { name: "Viewed" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Your GitHub sign-in has ended. Sign in again.");
+    expect(within(alert).getByRole("link", { name: "Sign in again" })).toHaveAttribute(
+      "href",
+      "/auth/github/login",
+    );
+    expect(within(alert).queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("an ended GitHub sign-in when reading the files offers Sign in again", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/files", () =>
+        HttpResponse.json({ code: "unauthenticated", message: "Sign in again." }, { status: 401 }),
+      ),
+    );
+    renderRoute(`/analyses/${ID}/files`);
+    expect(await screen.findByText("Sign in again.")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Sign in again" })).toHaveAttribute("href", "/auth/github/login");
+  });
+
+  it("the Ask limit is said in plain words", async () => {
+    const limit = "You have 50 questions on this analysis, the most allowed.";
+    server.use(
+      http.post("/api/v1/analyses/:id/questions", () =>
+        HttpResponse.json({ code: "conflict", message: limit }, { status: 409 }),
+      ),
+    );
+    await open("#lines?file=src%2Frpc%2Fclient.rs&side=head&line=100&end=102");
+    await user().click(within(inspector()).getByRole("button", { name: "Ask about these lines" }));
+    const field = within(inspector()).getByRole("textbox", { name: /Ask the LLM about/ });
+    await user().type(field, "Why?{Enter}");
+    expect(await within(inspector()).findByText(`The question was not sent: ${limit}`)).toBeVisible();
   });
 
   it("the toggle is disabled with the reason when the PR head moved", async () => {

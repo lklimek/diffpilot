@@ -335,7 +335,15 @@ describe("msw handlers of the screens", () => {
     setScenario("viewed-refused");
     expect(
       await api.setFileViewed(ID, { path: "src/lib.rs", viewed: true }).catch((e: unknown) => e),
-    ).toMatchObject({ code: "github_refused" });
+    ).toMatchObject({ status: 422, code: "github_refused" });
+    setScenario("viewed-busy");
+    expect(
+      await api.setFileViewed(ID, { path: "src/lib.rs", viewed: true }).catch((e: unknown) => e),
+    ).toMatchObject({ status: 409, code: "conflict" });
+    setScenario("viewed-signed-out");
+    expect(
+      await api.setFileViewed(ID, { path: "src/lib.rs", viewed: true }).catch((e: unknown) => e),
+    ).toMatchObject({ status: 401, code: "unauthenticated" });
     expect((await api.getFiles(ID)).files.find((f) => f.path === "src/lib.rs")?.viewed).toBe("unviewed");
   });
 

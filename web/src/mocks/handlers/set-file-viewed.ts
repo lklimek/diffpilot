@@ -12,14 +12,16 @@ export const VIEWED_MS = 300;
 // Status and message as the server sends them (crates/server/src/api/files.rs).
 const ERRORS = {
   github_refused: [
-    502,
-    "Not saved on GitHub: GitHub refused the change. Your mark is unchanged; mark it on GitHub.",
+    422,
+    "Not saved on GitHub: GitHub refused the change. Your mark is unchanged; try again later or mark it on GitHub.",
   ],
   pr_head_changed: [
     409,
     "The pull request changed since this analysis; marking Viewed would apply to newer code. Analyse it again, or mark it on GitHub.",
   ],
   github_unavailable: [502, "GitHub did not confirm the change. Reload to see your mark, then try again."],
+  conflict: [409, "Your previous Viewed change is still being saved. Try again in a moment."],
+  unauthenticated: [401, "Your GitHub sign-in has ended. Sign in again."],
 } as const;
 
 /** `PUT /api/v1/analyses/{id}/files/viewed` (R13): 204 once "GitHub" confirmed; nothing is stored on refusal. */
