@@ -15,7 +15,7 @@ use super::batch::{literal, query};
 use super::client::{TokenSource, WorkClient, WorkError};
 use super::details::{Count, HistoryPr, Login, Name, Nodes, ReviewRequest};
 use super::search::{Candidates, IssueCandidate, IssueRelation, PrRelation};
-use super::{Actor, Comment, IssueDiscussion, ItemRef, Milestone, note, parse_repo, repo_name};
+use super::{ItemRef, Milestone, note, parse_repo, repo_name};
 use contracts::common::RepoRef;
 
 /// What the enumeration found for the unsearchable logins.
@@ -58,11 +58,17 @@ struct OpenIssue {
     created_at: Timestamp,
     updated_at: Timestamp,
     author_association: Option<String>,
-    author: Option<Actor>,
+    author: Option<Login>,
     assignees: Nodes<Login>,
     labels: Nodes<Name>,
-    comments: Nodes<Comment>,
+    comments: Nodes<IssueComment>,
     milestone: Option<Milestone>,
+}
+
+#[derive(Deserialize)]
+struct IssueComment {
+    #[serde(default)]
+    body: String,
 }
 
 #[derive(Deserialize)]
@@ -81,9 +87,9 @@ struct PageInfo {
 
 const PULL_NODES: &str = "number title url updatedAt author { login } assignees(first: 20) { nodes { login } } \
 reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } }";
-const ISSUE_NODES: &str = "number title url body createdAt updatedAt authorAssociation author { __typename login } \
+const ISSUE_NODES: &str = "number title url body createdAt updatedAt authorAssociation author { login } \
 assignees(first: 20) { nodes { login } } labels(first: 20) { nodes { name } } \
-comments(last: 50) { totalCount nodes { body createdAt url author { __typename login } } } milestone { title number state }";
+comments(last: 50) { totalCount nodes { body } } milestone { title number state }";
 
 /// Pages read per repository by [`WorkClient::authored_pull_requests`] (100 pull requests each): paging stops at
 /// the window start, so only a repository with more than 3000 pull requests updated in the window is cut.
@@ -132,13 +138,15 @@ struct RepoAuthored {
 
 /// `@login` in `text`, not part of a longer login or an e-mail address (case-insensitive).
 pub(crate) fn mentions(text: &str, login: &str) -> bool {
-    let word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
-    let lower = text
-        .lines()
+    text.lines()
         .filter(|line| !line.trim_start().starts_with('>'))
-        .collect::<Vec<_>>()
-        .join("\n")
-        .to_ascii_lowercase();
+        .any(|line| ranking_mentions(line, login))
+}
+
+// The ranking's text match includes quotes, preserving its existing relations and judge inputs.
+fn ranking_mentions(text: &str, login: &str) -> bool {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let lower = text.to_ascii_lowercase();
     let wanted = format!("@{}", login.to_ascii_lowercase());
     lower.match_indices(&wanted).any(|(at, _)| {
         let before = lower[..at].chars().next_back();
@@ -463,6 +471,11 @@ impl<T: TokenSource> WorkClient<T> {
                     if issue.assignees.nodes.iter().any(|a| same(&a.login, login)) {
                         relations.insert(IssueRelation::Assigned);
                     }
+                    let mut texts = std::iter::once(issue.body.as_str())
+                        .chain(issue.comments.nodes.iter().map(|c| c.body.as_str()));
+                    if texts.any(|text| ranking_mentions(text, login)) {
+                        relations.insert(IssueRelation::Mentioned);
+                    }
                 }
                 let Some(item) = ItemRef::new(&repo.owner, &repo.name, issue.number) else {
                     continue;
@@ -473,20 +486,10 @@ impl<T: TokenSource> WorkClient<T> {
                 found.add_issue(
                     item,
                     IssueCandidate {
-                        discussion: issue
-                            .comments
-                            .total_count
-                            .filter(|n| *n as usize == issue.comments.nodes.len())
-                            .map(|_| IssueDiscussion {
-                                state: "OPEN".to_owned(),
-                                body: issue.body.clone(),
-                                author: issue.author.clone(),
-                                created_at: issue.created_at,
-                                comments: issue.comments.clone(),
-                            }),
+                        mention_candidate: false,
                         title: issue.title,
                         url: issue.url,
-                        author: issue.author.and_then(|a| a.login),
+                        author: issue.author.map(|a| a.login),
                         author_association: issue.author_association,
                         assignees: issue.assignees.nodes.into_iter().map(|a| a.login).collect(),
                         labels: issue.labels.nodes.into_iter().map(|l| l.name).collect(),

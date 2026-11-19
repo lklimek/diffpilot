@@ -436,14 +436,11 @@ test("structured mention coverage stays in the collapsed summary and out of scan
   );
   expect((await strip.boundingBox())!.height).toBeLessThanOrEqual(28);
   const heading = (await strip.getByRole("button", { name: "Mentions (1)" }).boundingBox())!;
-  const coverage = (await strip.locator("[tabindex='0']").boundingBox())!;
+  const coverage = (await strip.locator("span[title]").boundingBox())!;
   expect(coverage.x).toBeGreaterThanOrEqual(heading.x + heading.width);
   const first = (await page.locator("li[data-item]").first().boundingBox())!;
   expect(first.y + first.height).toBeLessThanOrEqual(900);
-  await strip
-    .locator("[tabindex='0']")
-    .filter({ hasText: /Mentions not checked/ })
-    .focus();
+  await strip.getByRole("button", { name: "Mentions (1)" }).focus();
   await expect(page.getByRole("tooltip")).toContainText("@alice-helper");
   await expect(page.getByRole("tooltip")).toContainText("@slow");
   await strip.getByRole("button", { name: "Mentions (1)" }).click();

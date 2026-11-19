@@ -81,8 +81,9 @@ Discovery adds `mentions:<login>` to open-PR searches; enumeration discovers ran
 unsearchable logins have no mention fallback.
 Mention-only PRs and issues never enter the ranked snapshot; issues also assigned or in watched repositories remain ranked.
 A post counts while newer than every scanned login's latest comment or submitted review on that item. The
-scan uses a separate lightweight PR conversation query and reuses complete enumerated issue discussions.
-Q2's selection and batch size are unchanged. Only Mentioned candidates get conversation reads; the explicit
+scan uses separate bounded conversation queries for PRs and issues. Issue enumeration retains comment bodies
+only for the ranking's existing mention relation, never strip discovery.
+Q2's selection and batch size are unchanged. Only mention-search hits get conversation reads; the explicit
 request/time/window budgets are in plan §K. Truncated conversations keep mentions found in the read windows,
 with a factual `partly_read` row marker. Budget overflow, failed reads and deadline expiry leave one count of
 unchecked candidates in `mention_coverage.unchecked_items`; completed results remain.

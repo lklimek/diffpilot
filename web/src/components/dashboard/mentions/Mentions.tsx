@@ -48,7 +48,7 @@ export function Mentions({
     notes.push(`Mentions of @${login} were not checked because GitHub search is unavailable for this login.`);
   }
   for (const login of coverage?.timed_out_logins ?? []) {
-    notes.push(`PR mention search for @${login} was not completed within its request budget.`);
+    notes.push(`PR mentions of @${login} were not checked: GitHub search took too long.`);
   }
   if (items.length === 0 && notes.length === 0) return null;
   const visible = items
@@ -62,7 +62,9 @@ export function Mentions({
     >
       <header className="flex min-w-0 items-center justify-between gap-2">
         <h2 className="shrink-0 font-semibold">
-          <Tooltip tip={expanded ? "Collapse the mentions list" : "Expand the mentions list"}>
+          <Tooltip
+            tip={expanded ? "Collapse the mentions list" : `Expand the mentions list. ${notes.join(" ")}`}
+          >
             <button
               type="button"
               className="min-h-6 whitespace-nowrap"
@@ -77,11 +79,9 @@ export function Mentions({
           <span className="truncate text-xs text-muted">Only bot mentions ({items.length})</span>
         )}
         {!expanded && notes.length > 0 && (
-          <Tooltip tip={notes.join(" ")} className="min-w-0">
-            <span tabIndex={0} className="block truncate text-xs text-muted">
-              {notes.join(" ")}
-            </span>
-          </Tooltip>
+          <span aria-hidden="true" title={notes.join(" ")} className="min-w-0 truncate text-xs text-muted">
+            {notes.join(" ")}
+          </span>
         )}
       </header>
       {expanded &&

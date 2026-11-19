@@ -121,3 +121,32 @@ it("explains unavailable login searches once without an unrelated item count", (
   );
   expect(screen.queryByText(/on .* items/)).not.toBeInTheDocument();
 });
+
+it("announces coverage once on the toggle without another tab stop", async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <Mentions
+        {...props}
+        expanded={false}
+        items={[]}
+        coverage={{
+          unchecked_items: 5,
+          unchecked_logins: ["alice-helper"],
+          timed_out_logins: ["slow"],
+        }}
+      />
+      <button>Next</button>
+    </>,
+  );
+  await user.tab();
+  const toggle = screen.getByRole("button", { name: "Mentions (0)" });
+  expect(toggle).toHaveFocus();
+  expect(toggle).toHaveAccessibleDescription(/Mentions not checked on 5 items/);
+  expect(toggle).toHaveAccessibleDescription(/GitHub search took too long/);
+  const coverage = screen.getAllByText(/^Mentions not checked/)[0]!;
+  expect(coverage).toHaveAttribute("aria-hidden", "true");
+  expect(coverage).toHaveAttribute("title", expect.stringContaining("@alice-helper"));
+  await user.tab();
+  expect(screen.getByRole("button", { name: "Next" })).toHaveFocus();
+});

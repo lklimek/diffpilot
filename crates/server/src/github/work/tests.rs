@@ -369,10 +369,8 @@ async fn unsearchable_login_falls_back_to_enumeration() {
         BTreeSet::from([IssueRelation::Assigned])
     );
     assert!(
-        found.issues[&item("acme/consensus#1525")]
-            .discussion
-            .is_some(),
-        "enumeration reuses the complete discussion"
+        !found.issues[&item("acme/consensus#1525")].mention_candidate,
+        "enumeration alone does not discover strip candidates"
     );
     let graphql = fake.requests_on("graphql").await;
     assert!(graphql.iter().all(|r| r["rate_limit_selected"] == true));
@@ -1739,4 +1737,81 @@ async fn mention_policy_failures_warn_once_per_repository_per_refresh() {
         }
         mock.verify().await;
     }
+}
+
+async fn fallback_issue_page() -> (MockServer, Candidates) {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST")).and(path("/graphql"))
+        .respond_with(|r: &wiremock::Request| {
+            let query = String::from_utf8_lossy(&r.body);
+            let data = if query.contains("repositoryOwner") {
+                json!({"repositories":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
+                    {"nameWithOwner":"acme/app","pullRequests":{"totalCount":0},"issues":{"totalCount":4}}
+                ]}})
+            } else {
+                let nodes: Vec<_> = [
+                    (1, "@ALICE-helper please reply", ""),
+                    (2, "", "@alice-helper please reply"),
+                    (3, "> @alice-helper quoted", ""),
+                    (4, "@alice-helper-extra", "mail@alice-helper.dev"),
+                ].into_iter().map(|(number, body, comment)| json!({
+                    "number":number,"title":"Assigned issue","url":"","body":body,
+                    "createdAt":"2026-11-18T08:00:00Z","updatedAt":"2026-11-18T08:00:00Z",
+                    "author":{"login":"bob"},"assignees":{"nodes":[{"login":"alice-helper"}]},
+                    "labels":{"nodes":[]},"comments":{"totalCount":1,"nodes":[{"body":comment,"createdAt":"2026-11-18T08:00:00Z"}]}
+                })).collect();
+                json!({"issues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":nodes}})
+            };
+            ResponseTemplate::new(200).set_body_json(json!({"data":{"a0":data}}))
+        }).mount(&mock).await;
+    let result = mock_client(&mock)
+        .enumerate_owners(&logins(&["acme"]), &logins(&["alice-helper"]))
+        .await
+        .unwrap();
+    assert!(result.notes.is_empty(), "{:?}", result.notes);
+    (mock, result.candidates)
+}
+
+#[tokio::test]
+async fn fallback_issue_relations_match_base_without_discovering_strip_mentions() {
+    let (mock, candidates) = fallback_issue_page().await;
+    for number in 1..=4 {
+        let issue = &candidates.issues[&item(&format!("acme/app#{number}"))];
+        let mut expected = BTreeSet::from([IssueRelation::Assigned]);
+        if number < 4 {
+            expected.insert(IssueRelation::Mentioned);
+        }
+        assert_eq!(issue.relations, expected, "issue {number}");
+        assert_eq!(issue.comments, 1);
+    }
+    let before = mock.received_requests().await.unwrap().len();
+    let (mentions, _, unchecked) = crate::dashboard::refresh::mentions::collect(
+        &mock_client(&mock),
+        &crate::dashboard::score::ScoreRules::new("alice", &Default::default()),
+        &logins(&["alice"]),
+        &candidates,
+        &Default::default(),
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert!(mentions.is_empty());
+    assert_eq!(unchecked, 0);
+    assert_eq!(mock.received_requests().await.unwrap().len(), before);
+}
+
+#[tokio::test]
+async fn fallback_issue_selection_keeps_only_ranking_comment_fields() {
+    let (mock, _) = fallback_issue_page().await;
+    let requests = mock.received_requests().await.unwrap();
+    let query: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+    let query = query["query"].as_str().unwrap();
+    assert!(
+        query.contains("comments(last: 50) { totalCount nodes { body } }"),
+        "{query}"
+    );
+    assert!(
+        !query.contains("__typename"),
+        "ranking needs only the author's login"
+    );
 }

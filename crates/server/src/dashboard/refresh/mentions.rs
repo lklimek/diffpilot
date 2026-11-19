@@ -4,7 +4,7 @@ use super::{facts, owned};
 use crate::dashboard::mentions::{body, unanswered};
 use crate::dashboard::score::{OwnedChange, Relation, ScoreRules, pull_eligibility};
 use crate::github::work::{
-    Candidates, IssueRelation, ItemRef, PullDetail, TokenSource, WorkClient, WorkError, incomplete,
+    Candidates, ItemRef, PullDetail, TokenSource, WorkClient, WorkError, incomplete,
 };
 use contracts::api::dashboard::{GithubKind, Mention, ScanNote};
 use futures::{StreamExt, stream::FuturesUnordered};
@@ -29,42 +29,28 @@ pub(crate) async fn collect<T: TokenSource>(
         .pull_requests
         .iter()
         .filter(|(_, pr)| pr.mentioned())
-        .map(|(item, pr)| (item, GithubKind::Pr, pr.updated_at, false))
+        .map(|(item, pr)| (item, GithubKind::Pr, pr.updated_at))
         .chain(
             candidates
                 .issues
                 .iter()
                 .filter(|(_, i)| {
-                    i.relations.contains(&IssueRelation::Mentioned)
+                    i.mention_candidate
                         && !i
                             .author
                             .as_deref()
                             .is_some_and(|a| rules.is_skipped_author(a))
                 })
-                .map(|(item, i)| {
-                    (
-                        item,
-                        GithubKind::Issue,
-                        Some(i.updated_at),
-                        i.discussion.is_some(),
-                    )
-                }),
+                .map(|(item, i)| (item, GithubKind::Issue, Some(i.updated_at))),
         )
         .collect();
     wanted.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(b.0)));
     let total = wanted.len();
-    let mut reads = 0;
-    wanted.retain(|(_, _, _, cached)| {
-        if *cached {
-            return true;
-        }
-        reads += 1;
-        reads <= MAX_DISCUSSIONS
-    });
+    wanted.truncate(MAX_DISCUSSIONS);
     let deadline = Instant::now() + MENTION_LIMIT;
     let mut pending: FuturesUnordered<_> = wanted
         .into_iter()
-        .map(|(item, kind, _, _)| {
+        .map(|(item, kind, _)| {
             read_one(
                 client, rules, logins, candidates, details, ownership, item, kind,
             )
@@ -180,19 +166,13 @@ async fn read_one<T: TokenSource>(
         }
         GithubKind::Issue => {
             let candidate = &candidates.issues[item];
-            let discussion = match &candidate.discussion {
-                Some(cached) => cached.clone(),
-                None => {
-                    let Some(read) = client
-                        .issue_discussions(std::slice::from_ref(item))
-                        .await?
-                        .found
-                        .remove(item)
-                    else {
-                        return Ok(None);
-                    };
-                    read
-                }
+            let Some(discussion) = client
+                .issue_discussions(std::slice::from_ref(item))
+                .await?
+                .found
+                .remove(item)
+            else {
+                return Ok(None);
             };
             if discussion.state != "OPEN"
                 || discussion

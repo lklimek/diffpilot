@@ -2191,6 +2191,12 @@ async fn unsearchable_mentions_do_not_spend_the_budget_on_unrelated_open_prs() {
         .unwrap();
     issue["body"] = json!("@alice-helper please reply");
     issue["comments"] = json!({"nodes":[],"totalCount":0});
+    issues
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|i| i["number"] == 1525)
+        .unwrap()["body"] = json!("@alice-helper please reply");
     std::fs::write(&file, serde_json::to_vec(&issues).unwrap()).unwrap();
     let w = world_in(
         Arc::new(NoopRanker),
@@ -2199,6 +2205,12 @@ async fn unsearchable_mentions_do_not_spend_the_budget_on_unrelated_open_prs() {
     )
     .await;
     assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let ranked = w.items("").await.items;
+    let issue = ranked
+        .iter()
+        .find(|i| i.kind == ItemKind::Issue && i.number == Some(1525))
+        .unwrap();
+    assert!(issue.tags.iter().any(|tag| tag.text == "mentions you"));
     let summary = w.summary(ALICE).await;
     assert!(
         summary.mentions.iter().any(|m| m.number == 450),
@@ -2208,7 +2220,7 @@ async fn unsearchable_mentions_do_not_spend_the_budget_on_unrelated_open_prs() {
         !summary
             .mentions
             .iter()
-            .any(|m| m.number == 451 || m.number == 305),
+            .any(|m| m.number == 451 || m.number == 305 || m.number == 1525),
         "no fallback mention discovery for PRs or issues"
     );
     let expected =

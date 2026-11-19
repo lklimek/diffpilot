@@ -90,8 +90,8 @@ impl PrCandidate {
 /// An open issue found by search or enumeration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IssueCandidate {
-    /// Complete discussion already read by enumeration, when available.
-    pub discussion: Option<super::IssueDiscussion>,
+    /// Found by mention search; enumeration relations alone never feed the mentions strip.
+    pub mention_candidate: bool,
     /// Title.
     pub title: String,
     /// Web URL.
@@ -165,9 +165,7 @@ impl Candidates {
         match self.issues.get_mut(&item) {
             Some(found) => {
                 found.relations.extend(issue.relations);
-                if found.discussion.is_none() {
-                    found.discussion = issue.discussion;
-                }
+                found.mention_candidate |= issue.mention_candidate;
             }
             None => {
                 self.issues.insert(item, issue);
@@ -282,7 +280,7 @@ impl SearchItem {
 
     fn issue(self, relation: IssueRelation) -> IssueCandidate {
         IssueCandidate {
-            discussion: None,
+            mention_candidate: relation == IssueRelation::Mentioned,
             title: self.title,
             url: self.html_url,
             author: self.user.map(|user| user.login),
