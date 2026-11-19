@@ -312,14 +312,14 @@ fn ask_lines_input<'a>(job: JobContext<'a>, f: &'a Fixture) -> AskLinesInput<'a>
             step_id: &STEP.0,
             flow_id: &STEP.1,
             flow_title: "Retry of a broadcast",
-            title: "Retry allowed?",
-            file: "src/rpc/client.rs",
-            side: LineSide::Head,
-            range: contracts::common::LineRange {
+            step: StepSummary {
+                title: "Retry allowed?",
+                file: "src/rpc/client.rs",
+                side: LineSide::Head,
                 start_line: 96,
                 end_line: 101,
+                kind: contracts::common::FragmentKind::Modified,
             },
-            kind: contracts::common::FragmentKind::Modified,
         }]
     });
     AskLinesInput {

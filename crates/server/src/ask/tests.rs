@@ -1739,7 +1739,7 @@ async fn private_working_thread_is_committed_without_advancing_analytic_and_refo
             .contains("PRIVATE_MARKER")
     );
     let analytic_pack = crate::pipeline::context::StoredPacks {
-        db: f.state.db.clone(),
+        state: f.state.clone(),
     };
     use crate::jobs::claim::ContextPacks;
     for stage in [
@@ -1954,7 +1954,7 @@ async fn a_question_about_lines_carries_their_owners_and_steps() {
         assert!(prompt.contains(text), "{text} not in {prompt}");
     }
     assert!(prompt.contains("+"), "the classic diff is quoted");
-    let pack = job::context_pack(&f.state.db, f.analysis, id)
+    let pack = job::context_pack(&f.state, f.analysis, id)
         .await
         .expect("pack")
         .expect("some pack");
@@ -2007,4 +2007,129 @@ async fn anchors_outside_the_pull_request_or_the_step_are_refused() {
     let prompt = f.scripted_job(id).await.spec.prompt;
     let about = format!("f1.5 (its lines {0}-{0})", step.start_line);
     assert!(prompt.contains(&about), "{about} not in the prompt");
+}
+
+/// C4 contract: the steps that own asked lines are given to the job. Removed lines of a moved block are owned by
+/// the moved step (its `moved.from`), which sits on another file and side; the prompt quotes that owner in the
+/// facts, so its summary must be among the steps, and the context pack must hold it in full.
+#[tokio::test]
+async fn a_question_about_moved_away_lines_gets_their_owning_step() {
+    let f = fixture(false).await;
+    let golden = fixture_json("api/default/tour.json");
+    let mut threads = golden["threads"].clone();
+    for thread in threads.as_array_mut().expect("threads") {
+        for key in ["step_id", "llm_status", "llm_reason"] {
+            thread[key] = Value::Null;
+        }
+    }
+    let snapshot = json!({ "ci": golden["pr_context"]["facts"]["ci"], "threads": threads, "threads_status": "checked" });
+    f.state
+        .db
+        .documents()
+        .put(
+            f.analysis,
+            DocumentKind::GithubSnapshot,
+            "",
+            &snapshot,
+            Timestamp::now(),
+        )
+        .await
+        .expect("snapshot");
+    // src/util/backoff.rs is renamed to src/rpc/retry.rs; its removed base lines 5-6 and 23 are owned by steps on
+    // the head side (the head step at the deletion marker, the moved step whose original holds the line).
+    let anchor = json!({ "kind": "lines", "path": "src/util/backoff.rs", "side": "base", "range": { "start_line": 5, "end_line": 23 } });
+    let (status, body) = f.ask_anchored(anchor, QUESTION).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id: QuestionId = serde_json::from_value(body["id"].clone()).expect("id");
+    let prompt = f.scripted_job(id).await.spec.prompt;
+    let marker = r#""owner":{"kind":"step","flow_id":""#;
+    let owners: Vec<String> = prompt
+        .match_indices(marker)
+        .filter_map(|(at, _)| {
+            let rest = &prompt[at + marker.len()..];
+            let rest = &rest[rest.find(r#""step_id":""#)? + 11..];
+            Some(rest[..rest.find('"')?].to_owned())
+        })
+        .collect();
+    assert!(!owners.is_empty(), "the facts name owning steps: {prompt}");
+    for owner in &owners {
+        assert!(
+            prompt.contains(&format!(r#"{{"step_id":"{owner}","flow_id""#)),
+            "owner {owner} of asked lines is not among the steps given to the job: {prompt}"
+        );
+    }
+    let pack = job::context_pack(&f.state, f.analysis, id)
+        .await
+        .expect("pack")
+        .expect("some pack");
+    for owner in &owners {
+        assert!(
+            pack.contains(&format!(r#"{{"step_id":"{owner}""#)),
+            "the context pack holds owner {owner}: {pack}"
+        );
+    }
+}
+
+/// A user at the hourly limit gets the limit before any anchor check reads the diff or a file.
+#[tokio::test]
+async fn the_question_limit_is_checked_before_the_anchor() {
+    let f = fixture(false).await;
+    let limits = db::repo::questions::QuestionLimits {
+        per_analysis: 1000,
+        per_user: 1000,
+        user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+    };
+    for n in 0..MAX_QUESTIONS_PER_USER_PER_HOUR {
+        let question = NewQuestion {
+            id: QuestionId::new_random(),
+            analysis_id: f.analysis,
+            anchor: AskAnchor::Step {
+                step_id: StepId("f1.1".to_owned()),
+                lines: None,
+            },
+            user_id: "u1".to_owned(),
+            text: format!("q{n}"),
+        };
+        f.state
+            .db
+            .questions()
+            .create(question, limits, Timestamp::now())
+            .await
+            .expect("create");
+    }
+    let anchor =
+        json!({ "kind": "lines", "path": "src/not-in-the-pr.rs", "side": "head", "range": null });
+    let (status, body) = f.ask_anchored(anchor, QUESTION).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}
+
+/// A whole-file question says when its diff stops before the file's last changed line.
+#[test]
+fn a_whole_file_diff_says_where_it_stops() {
+    use contracts::api::files::{HunkPart, PartOwner};
+    use contracts::common::{LineRange, LineSide};
+    let part = |end_line| HunkPart {
+        side: LineSide::Head,
+        range: LineRange {
+            start_line: 10,
+            end_line,
+        },
+        owner: PartOwner::Unexplained { reason: None },
+        also_in: Vec::new(),
+    };
+    assert_eq!(job::clipped_diff_note(&[part(2000)], None), None);
+    let note = job::clipped_diff_note(&[part(10), part(2500)], None).expect("note");
+    assert!(
+        note.contains("lines 1-2000 only") && note.contains("up to line 2500"),
+        "{note}"
+    );
+    let range = Some(LineRange {
+        start_line: 2400,
+        end_line: 2600,
+    });
+    assert_eq!(
+        job::clipped_diff_note(&[part(2500)], range),
+        None,
+        "a range is quoted as asked"
+    );
 }

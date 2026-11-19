@@ -1,15 +1,17 @@
 //! The `ask` job of one question: spec, submit, follow, answer check and the context pack built at claim.
 
-use analysis::lines::changed_line_count;
+use std::collections::HashSet;
+
+use analysis::lines::{changed_line_count, ranges_overlap};
 use analysis::verify::{self, LineFacts, VerifyError, VerifyIssue, wording};
 use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
 use contracts::agent::ask::AskOutput;
 use contracts::agent::{self as agent, JobKind, StrictSchemaError};
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::code::{DiffLineKind, RangeQuery};
-use contracts::api::files::{HunkPart, PrFile};
+use contracts::api::files::{HunkPart, PartOwner};
 use contracts::api::questions::{AskAnchor, AskState};
-use contracts::api::tour::Flow;
+use contracts::api::tour::{Flow, Step};
 use contracts::common::{LineRange, LineSide};
 use contracts::ids::{AnalysisId, JobId, QuestionId, StepId};
 use contracts::job::access::AgentAccess;
@@ -42,7 +44,7 @@ use crate::pipeline::tour::{self, TourLoadError};
 use crate::pipeline::{self, CREDENTIAL_ID, PrDiffError, files};
 use crate::prompts::{
     self, AnsweredQuestion, AskContext, AskInput, AskLinesInput, Asked, AskedLines, JobContext,
-    Profile, PromptError, TouchedStep,
+    Profile, PromptError, StepSummary, TouchedStep,
 };
 use crate::state::AppState;
 
@@ -411,26 +413,22 @@ async fn submit(
         }
         AskAnchor::Lines { path, side, range } => {
             let about = lines_about(state, summary, path, *side, *range).await?;
-            let steps: Vec<TouchedStep<'_>> = about
-                .flows
-                .iter()
-                .flat_map(|flow| flow.steps.iter().map(move |step| (flow, step)))
-                .filter(|(_, step)| {
-                    step.facts.file == *path
-                        && step.facts.side == *side
-                        && range.is_none_or(|range| overlaps(step.facts.range, range))
-                })
-                .map(|(flow, step)| TouchedStep {
-                    step_id: &step.id,
-                    flow_id: &flow.id,
-                    flow_title: &flow.llm.title,
-                    title: &step.llm.title,
-                    file: &step.facts.file,
-                    side: step.facts.side,
-                    range: step.facts.range,
-                    kind: step.llm.kind,
-                })
-                .collect();
+            let steps: Vec<TouchedStep<'_>> =
+                touched(&about.flows, &about.facts, path, *side, *range)
+                    .map(|(flow, step)| TouchedStep {
+                        step_id: &step.id,
+                        flow_id: &flow.id,
+                        flow_title: &flow.llm.title,
+                        step: StepSummary {
+                            title: &step.llm.title,
+                            file: &step.facts.file,
+                            side: step.facts.side,
+                            start_line: step.facts.range.start_line,
+                            end_line: step.facts.range.end_line,
+                            kind: step.llm.kind,
+                        },
+                    })
+                    .collect();
             prompts::ask_lines(&AskLinesInput {
                 job,
                 lines: AskedLines {
@@ -506,22 +504,88 @@ struct LinesAbout {
     flows: Vec<Flow>,
 }
 
-fn overlaps(a: LineRange, b: LineRange) -> bool {
-    a.start_line <= b.end_line && b.start_line <= a.end_line
+/// The owners of the changed lines of `path` on `side` within `range` (all of them for the whole file), cut to
+/// `range`, and the Tour's flows: from the Files view's projection of the Tour, one source with the review.
+async fn lines_facts(
+    state: &AppState,
+    summary: &AnalysisSummary,
+    path: &str,
+    side: LineSide,
+    range: Option<LineRange>,
+) -> Result<(Vec<HunkPart>, Vec<Flow>), TourLoadError> {
+    let results = StoredResults::load(&state.db, summary.id).await?;
+    tour::with_projection(state, summary, results, |projection, tour| {
+        let listed = files::from_tour(projection, &tour);
+        let within =
+            |part: &HunkPart| range.is_none_or(|range| ranges_overlap(&part.range, &range));
+        let facts = projection
+            .files
+            .iter()
+            .zip(&listed)
+            .filter(|(file, _)| file.path_on(side) == Some(path))
+            .flat_map(|(_, listed)| &listed.hunks)
+            .flat_map(|hunk| &hunk.parts)
+            .filter(|part| part.side == side && within(part))
+            .map(|part| {
+                let mut part = part.clone();
+                if let Some(range) = range {
+                    part.range.start_line = part.range.start_line.max(range.start_line);
+                    part.range.end_line = part.range.end_line.min(range.end_line);
+                }
+                part
+            })
+            .collect();
+        (facts, tour.flows)
+    })
+    .await
 }
 
-/// The path of `file` on `side`, as `FileDiff::path_on`.
-fn file_path_on(file: &PrFile, side: LineSide) -> Option<&str> {
-    use contracts::api::files::FileChangeStatus::{Added, Deleted};
-    match (side, file.status) {
-        (LineSide::Head, Deleted) | (LineSide::Base, Added) => None,
-        (LineSide::Head, _) => Some(&file.path),
-        (LineSide::Base, _) => Some(file.old_path.as_deref().unwrap_or(&file.path)),
-    }
+/// The steps the asked lines touch, in Tour order: every step owning or also showing one of their changed lines
+/// (`facts`; for removed lines possibly a head step at the deletion marker or a moved step), and every step on
+/// `path` and `side` overlapping `range` (the whole file when `None`).
+fn touched<'f>(
+    flows: &'f [Flow],
+    facts: &[HunkPart],
+    path: &str,
+    side: LineSide,
+    range: Option<LineRange>,
+) -> impl Iterator<Item = (&'f Flow, &'f Step)> {
+    let named: HashSet<StepId> = facts
+        .iter()
+        .flat_map(|part| {
+            let owner = match &part.owner {
+                PartOwner::Step { step_id, .. } => Some(step_id),
+                _ => None,
+            };
+            owner.into_iter().chain(&part.also_in).cloned()
+        })
+        .collect();
+    let path = path.to_owned();
+    flows
+        .iter()
+        .flat_map(|flow| flow.steps.iter().map(move |step| (flow, step)))
+        .filter(move |(_, step)| {
+            named.contains(&step.id)
+                || (step.facts.file == path
+                    && step.facts.side == side
+                    && range.is_none_or(|range| ranges_overlap(&step.facts.range, &range)))
+        })
 }
 
-/// The classic diff, owners and flows of `path` on `side` (`range`: the lines, or the whole file): the owners come
-/// from the Files view's projection of the Tour, one source with the review.
+/// A note when a whole-file question's diff (lines 1 to [`RangeQuery::MAX_LINES`]) leaves out changed lines that
+/// `facts` lists further down.
+pub(super) fn clipped_diff_note(facts: &[HunkPart], range: Option<LineRange>) -> Option<String> {
+    let last = facts.iter().map(|part| part.range.end_line).max()?;
+    (range.is_none() && last > RangeQuery::MAX_LINES).then(|| {
+        format!(
+            "This diff covers lines 1-{} only; the file has changed lines up to line {last} (see the owners below). \
+             Read the rest in the repository.",
+            RangeQuery::MAX_LINES
+        )
+    })
+}
+
+/// The classic diff, owners and flows of `path` on `side` (`range`: the lines, or the whole file).
 async fn lines_about(
     state: &AppState,
     summary: &AnalysisSummary,
@@ -529,27 +593,7 @@ async fn lines_about(
     side: LineSide,
     range: Option<LineRange>,
 ) -> Result<LinesAbout, FollowError> {
-    let results = StoredResults::load(&state.db, summary.id).await?;
-    let (listed, flows) = tour::with_projection(state, summary, results, |projection, tour| {
-        (files::from_tour(projection, &tour), tour.flows)
-    })
-    .await?;
-    let within = |part: &HunkPart| range.is_none_or(|range| overlaps(part.range, range));
-    let facts = listed
-        .iter()
-        .filter(|file| file_path_on(file, side) == Some(path))
-        .flat_map(|file| &file.hunks)
-        .flat_map(|hunk| &hunk.parts)
-        .filter(|part| part.side == side && within(part))
-        .map(|part| {
-            let mut part = part.clone();
-            if let Some(range) = range {
-                part.range.start_line = part.range.start_line.max(range.start_line);
-                part.range.end_line = part.range.end_line.min(range.end_line);
-            }
-            part
-        })
-        .collect();
+    let (facts, flows) = lines_facts(state, summary, path, side, range).await?;
     let (from, to) = range.map_or((1, RangeQuery::MAX_LINES), |range| {
         (range.start_line, range.end_line)
     });
@@ -559,9 +603,9 @@ async fn lines_about(
         from,
         to,
     };
-    let diff = match pipeline::lines::diff(state, summary, query).await {
+    let mut diff = match pipeline::lines::diff(state, summary, query).await {
         Ok(diff) if diff.hunks.is_empty() => {
-            "No line of this range is changed by the pull request.".to_owned()
+            "No line of this range is changed by the pull request.\n".to_owned()
         }
         Ok(diff) => {
             let mut text = String::new();
@@ -582,10 +626,13 @@ async fn lines_about(
         }
         Err(error) => {
             tracing::debug!(analysis = %summary.id, ?error, "the classic diff of asked lines is not included");
-            "The classic diff is not included (too large or binary); read the file at both commits."
+            "The classic diff is not included (too large or binary); read the file at both commits.\n"
                 .to_owned()
         }
     };
+    if let Some(note) = clipped_diff_note(&facts, range) {
+        diff.push_str(&note);
+    }
     Ok(LinesAbout { diff, facts, flows })
 }
 
@@ -593,10 +640,11 @@ async fn lines_about(
 /// its flow analysis and this user's questions answered earlier across the PR. Without the stored step (never for a
 /// finished analysis) the pack holds the stored results only, so the claim is never blocked.
 pub async fn context_pack(
-    db: &Db,
+    state: &AppState,
     analysis: AnalysisId,
     question: QuestionId,
 ) -> Result<Option<String>, ContextPackError> {
+    let db = &state.db;
     let record = db.questions().get(question, Timestamp::now()).await?;
     let summary = db.analyses().summary(analysis).await?;
     let results = StoredResults::load(db, analysis).await?;
@@ -608,7 +656,7 @@ pub async fn context_pack(
             answer: &output.answer,
         })
         .collect();
-    let touched: Vec<(StepId, &AgentStep)>;
+    let touched_steps: Vec<(StepId, &AgentStep)>;
     let asked = match &record.question.anchor {
         AskAnchor::Step { step_id, .. } => {
             let Some(flow) = results
@@ -622,23 +670,21 @@ pub async fn context_pack(
             Asked::Step { step_id, flow }
         }
         AskAnchor::Lines { path, side, range } => {
-            touched = results
-                .flows
-                .iter()
-                .flat_map(|flow| {
-                    flow.steps
-                        .iter()
-                        .zip(1u32..)
-                        .map(move |(step, number)| (StepId::of(&flow.flow_id, number), step))
-                })
-                .filter(|(_, step)| {
-                    let lines = LineRange {
-                        start_line: step.start_line,
-                        end_line: step.end_line,
-                    };
-                    step.file == *path
-                        && step.side == *side
-                        && range.is_none_or(|range| overlaps(lines, range))
+            let ids: Vec<StepId> = match lines_facts(state, &summary, path, *side, *range).await {
+                Ok((facts, flows)) => touched(&flows, &facts, path, *side, *range)
+                    .map(|(_, step)| step.id.clone())
+                    .collect(),
+                Err(error) => {
+                    tracing::warn!(%analysis, %question, ?error,
+                        "the Tour of asked lines could not be built; the context pack holds no step of them");
+                    Vec::new()
+                }
+            };
+            touched_steps = ids
+                .into_iter()
+                .filter_map(|id| {
+                    let step = results.flows.iter().find_map(|flow| step_of(flow, &id))?;
+                    Some((id, step))
                 })
                 .collect();
             Asked::Lines {
@@ -647,7 +693,7 @@ pub async fn context_pack(
                     side: *side,
                     range: *range,
                 },
-                steps: &touched,
+                steps: &touched_steps,
             }
         }
     };

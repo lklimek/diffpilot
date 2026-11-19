@@ -129,10 +129,11 @@ impl ApiErrorCode {
             | Self::AppNotInstalled
             | Self::PositionRejected
             | Self::NotRendered
-            | Self::InvalidDashboardSettings => 422,
+            | Self::InvalidDashboardSettings
+            | Self::GithubRefused => 422,
             Self::GithubRateLimited | Self::RateLimited => 429,
             Self::Internal | Self::Configuration => 500,
-            Self::GithubUnavailable | Self::GithubRefused => 502,
+            Self::GithubUnavailable => 502,
             Self::Unavailable => 503,
         }
     }

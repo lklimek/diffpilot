@@ -1,15 +1,16 @@
 //! Inclusive line spans `(first, last)` and the interval operations verification and coverage use, so every
-//! pass works on ranges, never on single lines of a large hunk.
+//! pass works on ranges, never on single lines of a large hunk. The Files view's owners use the same operations and
+//! the same removed-line rule ([`marker_gap`]).
 
 use contracts::common::LineRange;
 
 use crate::diff::Hunk;
 
 /// Lines `first..=last`.
-pub(crate) type Span = (u32, u32);
+pub type Span = (u32, u32);
 
 /// Sorted, merged spans (overlapping and adjacent spans joined; inverted spans dropped).
-pub(crate) fn merge(mut spans: Vec<Span>) -> Vec<Span> {
+pub fn merge(mut spans: Vec<Span>) -> Vec<Span> {
     spans.retain(|&(first, last)| first <= last);
     spans.sort_unstable();
     let mut out: Vec<Span> = Vec::with_capacity(spans.len());
@@ -99,13 +100,13 @@ pub(crate) fn gaps(spans: &[Span], (first, last): Span) -> impl Iterator<Item = 
 }
 
 /// Whether `span` shares a line with the sorted, merged `spans`.
-pub(crate) fn touches(spans: &[Span], (first, last): Span) -> bool {
+pub fn touches(spans: &[Span], (first, last): Span) -> bool {
     let index = spans.partition_point(|&(_, end)| end < first);
     spans.get(index).is_some_and(|&(start, _)| start <= last)
 }
 
 /// Spans covered by at least two of `layers` (each layer sorted and merged), in order.
-pub(crate) fn covered_twice(layers: &[Vec<Span>]) -> Vec<Span> {
+pub fn covered_twice(layers: &[Vec<Span>]) -> Vec<Span> {
     let mut events: Vec<(u64, i32)> = Vec::new();
     for &(first, last) in layers.iter().flatten() {
         events.push((u64::from(first), 1));
@@ -136,23 +137,20 @@ pub(crate) fn hunk_spans(hunk: &Hunk, head: bool) -> Vec<Span> {
         .collect()
 }
 
-/// The head line after which a hunk's removed lines are shown (0 = before line 1).
-pub(crate) fn marker_of(hunk: &Hunk) -> u32 {
-    if hunk.head.len == 0 {
-        hunk.head.start
-    } else {
-        hunk.head.start.saturating_sub(1)
-    }
+/// The head lines a step must touch to explain removed lines shown at deletion marker `marker` (after head line
+/// `marker`): the lines on either side of the marker. Verification's coverage and the Files view's owners use it.
+pub fn marker_gap(marker: u32) -> Span {
+    (marker, marker.saturating_add(1))
 }
 
-/// Whether a deletion marker after head line `marker` lies inside head lines `first..=last` (the code view shows
-/// it there: `lines::deletion_markers`).
-pub(crate) fn marker_inside(marker: u32, (first, last): Span) -> bool {
-    first <= marker.saturating_add(1) && marker <= last
+/// Whether a deletion marker after head line `marker` lies inside head lines `span` (the code view shows it there:
+/// `lines::deletion_markers`), so a step on `span` explains the removed lines shown there.
+pub fn marker_inside(marker: u32, span: Span) -> bool {
+    touches(&[span], marker_gap(marker))
 }
 
 /// Spans of `LineRange`s.
-pub(crate) fn from_ranges(ranges: &[LineRange]) -> Vec<Span> {
+pub fn from_ranges(ranges: &[LineRange]) -> Vec<Span> {
     merge(ranges.iter().map(|r| (r.start_line, r.end_line)).collect())
 }
 

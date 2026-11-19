@@ -307,7 +307,7 @@ fn select<'a>(
     let selection = Selection {
         owner,
         head: Some((start, end)),
-        removed: spans::marker_inside(spans::marker_of(hunk), (start, end)),
+        removed: spans::marker_inside(hunk.deletion_marker(), (start, end)),
     };
     Some((hunk, selection))
 }

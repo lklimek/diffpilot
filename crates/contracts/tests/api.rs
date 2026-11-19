@@ -277,7 +277,7 @@ fn error_codes_map_to_statuses() {
         ("token_not_accepted", 403),
         ("token_limit_reached", 409),
         ("rate_limited", 429),
-        ("github_refused", 502),
+        ("github_refused", 422),
     ];
     assert_eq!(ApiErrorCode::ALL.len(), expected.len());
     for (code, (name, status)) in ApiErrorCode::ALL.into_iter().zip(expected) {

@@ -257,6 +257,32 @@ impl Questions<'_> {
         }
     }
 
+    /// The limit `user_id` has reached for a new question on `analysis` (`Asked::AnalysisLimit` or
+    /// `Asked::UserLimit`), if any: a cheap check before costly validation; [`Self::create`] checks again.
+    pub async fn limit_reached(
+        &self,
+        analysis: AnalysisId,
+        user_id: &str,
+        limits: QuestionLimits,
+    ) -> Result<Option<Asked>, DbError> {
+        let counts: Option<(u32, u32)> = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM questions WHERE analysis_id = a.id AND user_id = ?2),
+                    (SELECT COUNT(*) FROM questions WHERE user_id = ?2 AND created_at >= ?3)
+             FROM analyses a WHERE a.id = ?1",
+        )
+        .bind(analysis.to_string())
+        .bind(user_id)
+        .bind(ts(limits.user_window_start))
+        .fetch_optional(self.pool)
+        .await?;
+        match counts {
+            None => Err(DbError::NotFound),
+            Some((held, _)) if held >= limits.per_analysis => Ok(Some(Asked::AnalysisLimit)),
+            Some((_, recent)) if recent >= limits.per_user => Ok(Some(Asked::UserLimit)),
+            Some(_) => Ok(None),
+        }
+    }
+
     /// One question; `resumes_at` as of `now`.
     pub async fn get(&self, id: QuestionId, now: Timestamp) -> Result<QuestionRecord, DbError> {
         let row = sqlx::query(concat!(question_select!(), " WHERE q.id = ?2"))
@@ -677,6 +703,36 @@ mod tests {
             .await
             .expect("create");
         assert_eq!(fourth, Asked::AnalysisLimit);
+    }
+
+    #[tokio::test]
+    async fn limit_reached_tells_the_limit_before_any_insert() {
+        let db = Db::in_memory().await.expect("db");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let questions = db.questions();
+        let reached = |limits| questions.limit_reached(analysis, "u1", limits);
+        assert_eq!(reached(LIMITS).await.expect("check"), None);
+        ask(&db, analysis, "f1.1", "a", at(0)).await;
+        ask(&db, analysis, "f1.1", "b", at(1)).await;
+        assert_eq!(
+            reached(LIMITS).await.expect("check"),
+            Some(Asked::UserLimit)
+        );
+        let full = QuestionLimits {
+            per_analysis: 2,
+            user_window_start: at(100),
+            ..LIMITS
+        };
+        assert_eq!(
+            reached(full).await.expect("check"),
+            Some(Asked::AnalysisLimit)
+        );
+        assert!(matches!(
+            questions
+                .limit_reached(AnalysisId::new_random(), "u1", LIMITS)
+                .await,
+            Err(DbError::NotFound)
+        ));
     }
 
     #[tokio::test]

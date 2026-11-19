@@ -5,7 +5,7 @@ use wiremock::ResponseTemplate;
 
 use super::*;
 use crate::github::viewed::{FILES_VIEWED, MARK_VIEWED, MAX_FILE_PAGES, UNMARK_VIEWED};
-use crate::review::comments::github_tests::{HEAD, fixture};
+use crate::test_support::github::{HEAD, fake_github_sign_in, pr482 as fixture, spawn_fake_github};
 
 const CLIENT: &str = "src/rpc/client.rs";
 
@@ -43,7 +43,7 @@ async fn read_maps_every_state_and_the_head() {
     ]);
     f.mock(json!({"query": FILES_VIEWED}), files_page(nodes, None), 1)
         .await;
-    let read = read(&f.state, "u1", &f.summary).await;
+    let read = read(&f.state, "u1", &f.summary).await.expect("read");
     assert_eq!(read.status, ViewedStatus::Checked);
     assert_eq!(read.head, Some(CommitSha(HEAD.to_owned())));
     assert_eq!(
@@ -75,7 +75,7 @@ async fn read_follows_pages_up_to_the_cap() {
         )
         .await;
     }
-    let read = read(&f.state, "u1", &f.summary).await;
+    let read = read(&f.state, "u1", &f.summary).await.expect("read");
     assert_eq!(read.status, ViewedStatus::Partial);
     assert_eq!(read.files.len(), MAX_FILE_PAGES);
 }
@@ -89,7 +89,7 @@ async fn an_unanswered_read_is_not_checked() {
         1,
     )
     .await;
-    let read = read(&f.state, "u1", &f.summary).await;
+    let read = read(&f.state, "u1", &f.summary).await.expect("read");
     assert_eq!(
         read,
         ViewedRead {
@@ -213,12 +213,13 @@ async fn a_rejected_token_is_marked_for_refresh() {
     );
 }
 
-/// The GraphQL documents against fake-github: mark, read, unmark, and a refusal for a file outside the pull request.
+/// The GraphQL documents against fake-github: mark, read, unmark, and GitHub's answer for a file outside the pull
+/// request.
 #[tokio::test]
 async fn the_documents_work_against_fake_github() {
     use crate::github::viewed as client;
-    let base = crate::github::work::tests::spawn_fake().await;
-    let token = SecretString::from(crate::github::work::tests::sign_in(&base).await);
+    let base = spawn_fake_github(None).await;
+    let token = SecretString::from(fake_github_sign_in(&base).await);
     let mut config = crate::config::tests::test_config().github;
     config.api_url = url::Url::parse(&base).expect("url");
     let pr = PrRef {
@@ -246,5 +247,128 @@ async fn the_documents_work_against_fake_github() {
     let Err(ViewedWriteError::Graphql(error)) = outside else {
         panic!("{outside:?}")
     };
-    assert!(matches!(classify(error), ViewedError::Refused(_)));
+    // NOT_FOUND on the mutation field proves nothing (as for pending-review writes): the outcome stays open.
+    assert!(matches!(error, GraphqlError::FieldFailed(_)), "{error:?}");
+    assert!(matches!(classify(error), ViewedError::Github(_)));
+}
+
+/// One rule with pending-review writes: only an answer that proves nothing was applied is a refusal; an error
+/// next to resolved data or an unexpected answer leaves the mark open ("reload to see your mark").
+#[test]
+fn only_answers_that_prove_nothing_was_applied_are_refusals() {
+    use crate::github::graphql::GraphqlErrorType as Kind;
+    let status = GraphqlError::Status;
+    for refused in [
+        GraphqlError::NotExecuted(Kind::Other),
+        GraphqlError::NotExecuted(Kind::Forbidden),
+        GraphqlError::FieldFailed(Kind::Forbidden),
+        GraphqlError::RateLimited,
+        status(reqwest::StatusCode::UNPROCESSABLE_ENTITY),
+    ] {
+        let mapped = classify(refused);
+        assert!(matches!(mapped, ViewedError::Refused(_)), "{mapped:?}");
+    }
+    for open in [
+        GraphqlError::Rejected(Kind::Forbidden),
+        GraphqlError::Rejected(Kind::NotFound),
+        GraphqlError::Rejected(Kind::Unprocessable),
+        GraphqlError::FieldFailed(Kind::NotFound),
+        GraphqlError::FieldFailed(Kind::Unprocessable),
+        GraphqlError::NoData,
+        status(reqwest::StatusCode::BAD_GATEWAY),
+    ] {
+        let mapped = classify(open);
+        assert!(matches!(mapped, ViewedError::Github(_)), "{mapped:?}");
+    }
+}
+
+/// GitHub names a renamed file by its new path; the old path is not a file of the pull request.
+#[tokio::test]
+async fn a_renamed_file_is_marked_by_its_new_path() {
+    let f = fixture().await;
+    f.head_is(HEAD, 1).await;
+    f.mock(
+        json!({"query": MARK_VIEWED, "variables": {"in": {"path": "src/rpc/retry.rs"}}}),
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"data": {"markFileAsViewed": {"clientMutationId": null}}})),
+        1,
+    )
+    .await;
+    set(&f.state, "u1", &f.summary, "src/rpc/retry.rs", true)
+        .await
+        .expect("new path");
+    let old = set(&f.state, "u1", &f.summary, "src/util/backoff.rs", true).await;
+    assert!(matches!(old, Err(ViewedError::UnknownFile)), "{old:?}");
+}
+
+/// At most one Viewed write of a user runs per analysis; a second one meanwhile is refused before any GitHub call.
+#[tokio::test]
+async fn a_second_write_while_one_runs_is_refused() {
+    let f = fixture().await;
+    let head = json!({"data": {"repository": {"pullRequest": {"id": "PR_fixture482", "headRefOid": HEAD}}}});
+    f.mock(
+        json!({"query": crate::github::review::PULL_REQUEST_HEAD}),
+        ResponseTemplate::new(200)
+            .set_body_json(head)
+            .set_delay(std::time::Duration::from_millis(300)),
+        2,
+    )
+    .await;
+    f.mock(
+        json!({"query": MARK_VIEWED}),
+        ResponseTemplate::new(200)
+            .set_body_json(json!({"data": {"markFileAsViewed": {"clientMutationId": null}}})),
+        2,
+    )
+    .await;
+    let (first, second) = tokio::join!(set(&f.state, "u1", &f.summary, CLIENT, true), async {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        set(&f.state, "u1", &f.summary, CLIENT, true).await
+    });
+    first.expect("first");
+    assert!(matches!(second, Err(ViewedError::Busy)), "{second:?}");
+    set(&f.state, "u1", &f.summary, CLIENT, true)
+        .await
+        .expect("after the first ended");
+}
+
+/// A GitHub refusal of the read is visible to operators (warn, once per request, no token); the list still shows
+/// the marks as not read.
+#[tokio::test]
+async fn a_refused_read_is_logged_at_warn() {
+    let f = fixture().await;
+    f.mock(
+        json!({"query": FILES_VIEWED}),
+        ResponseTemplate::new(200).set_body_json(
+            json!({"errors": [{"type": "FORBIDDEN", "message": "Resource not accessible by integration"}]}),
+        ),
+        1,
+    )
+    .await;
+    let capture = crate::test_support::logs::LogCapture::start();
+    let read = read(&f.state, "u1", &f.summary).await.expect("read");
+    assert_eq!(read.status, ViewedStatus::NotChecked);
+    let logs = capture.text();
+    let warned: Vec<&str> = logs
+        .lines()
+        .filter(|line| {
+            line.contains("WARN") && line.contains("GitHub refused to read the Viewed marks")
+        })
+        .collect();
+    assert_eq!(warned.len(), 1, "{logs}");
+    assert!(!logs.contains(crate::review::tests::USER_TOKEN), "{logs}");
+}
+
+/// Without a GitHub sign-in the read is not "not checked": the user must sign in again.
+#[tokio::test]
+async fn a_read_without_a_sign_in_asks_to_sign_in() {
+    let f = fixture().await;
+    crate::auth::end_sign_in(&f.state, "u1")
+        .await
+        .expect("end sign-in");
+    let read = read(&f.state, "u1", &f.summary).await;
+    assert!(
+        matches!(read, Err(UserTokenError::SignInRequired)),
+        "{read:?}"
+    );
 }

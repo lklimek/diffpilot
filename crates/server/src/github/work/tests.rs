@@ -2,20 +2,15 @@
 //! in-process: its request log runs on tokio's clock, so paused time asserts pacing and retry waits.
 
 use std::collections::BTreeSet;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use contracts::common::RepoRef;
 use jiff::civil::Date;
-use reqwest::header::{ACCEPT, LOCATION};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use url::Url;
 use wiremock::matchers::{method, path, query_param_contains};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -23,9 +18,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::enumerate::mentions;
 use super::*;
 use crate::auth::UserTokenError;
+use crate::test_support::github::{fake_github_sign_in, http, spawn_fake_github};
 use crate::test_support::logs::LogCapture;
 
-const VERIFIER: &str = "work-client-verifier-0123456789-0123456789-0123456789";
 const STALE: &str = "ghu_stale_token_of_the_test";
 
 fn repo_root() -> PathBuf {
@@ -33,71 +28,16 @@ fn repo_root() -> PathBuf {
 }
 
 /// Starts the fake with the dashboard world; returns its base URL.
-pub(crate) async fn spawn_fake() -> String {
+async fn spawn_fake() -> String {
     spawn_fake_in(repo_root().join("fixtures/dashboard/github")).await
 }
 
 async fn spawn_fake_in(fixture: PathBuf) -> String {
-    let config = fake_github::Config {
-        fixture_dir: repo_root().join("fixtures/pr-482/github"),
-        app_url: Url::parse("http://app.test:3000").unwrap(),
-        user_login: None,
-        user_id: None,
-        app_id: None,
-        app_public_key_file: None,
-        dashboard_fixture_dir: Some(fixture),
-        dashboard_world_at: None,
-    };
-    let router = fake_github::router(&config).unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    format!("http://{addr}")
+    spawn_fake_github(Some(fixture)).await
 }
 
-fn http() -> reqwest::Client {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap()
-}
-
-/// The fake's OAuth web flow; returns the access token.
-pub(crate) async fn sign_in(base: &str) -> String {
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes()));
-    let mut authorize = Url::parse(&format!("{base}/login/oauth/authorize")).unwrap();
-    authorize.query_pairs_mut().extend_pairs([
-        ("client_id", "fixture-app-client-id"),
-        ("redirect_uri", "http://app.test:3000/auth/github/callback"),
-        ("state", "s"),
-        ("code_challenge", challenge.as_str()),
-        ("code_challenge_method", "S256"),
-    ]);
-    let response = http().get(authorize).send().await.unwrap();
-    let location = Url::parse(response.headers()[LOCATION].to_str().unwrap()).unwrap();
-    let code = location
-        .query_pairs()
-        .find(|(k, _)| k == "code")
-        .unwrap()
-        .1
-        .into_owned();
-    let body: Value = http()
-        .post(format!("{base}/login/oauth/access_token"))
-        .header(ACCEPT, "application/json")
-        .form(&[
-            ("client_id", "fixture-app-client-id"),
-            ("client_secret", "fixture-client-secret"),
-            ("code", &code),
-            ("redirect_uri", "http://app.test:3000/auth/github/callback"),
-            ("code_verifier", VERIFIER),
-        ])
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    body["access_token"].as_str().unwrap().to_owned()
+async fn sign_in(base: &str) -> String {
+    fake_github_sign_in(base).await
 }
 
 /// A token source: `current` until rejected, then `refreshed` (if any).

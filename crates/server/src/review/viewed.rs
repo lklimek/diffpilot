@@ -3,13 +3,13 @@
 //! The head can still move between that check and the write; GitHub then marks the file at the newer head, and it
 //! clears marks of files later commits change. GitHub calls live in `github::viewed`.
 
-use std::collections::BTreeMap;
-use std::convert::Infallible;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::files::{FileViewedState, ViewedStatus};
 use contracts::common::PrRef;
-use contracts::ids::CommitSha;
+use contracts::ids::{AnalysisId, CommitSha};
 use secrecy::SecretString;
 
 use crate::auth::{UserTokenError, user_access_token, user_token_rejected};
@@ -51,6 +51,9 @@ pub enum ViewedError {
     /// GitHub did not return the pull request.
     #[error("GitHub did not return the pull request")]
     MissingPullRequest,
+    /// Another Viewed write of the user on this analysis is still running.
+    #[error("another Viewed change is still being saved")]
+    Busy,
     /// The user's GitHub token is not available.
     #[error("the user's GitHub token is not available")]
     Token(#[from] UserTokenError),
@@ -76,19 +79,10 @@ fn pr_of(summary: &AnalysisSummary) -> PrRef {
     }
 }
 
-/// A refusal is an answer that says GitHub did not do it: refused before execution, or a FORBIDDEN, NOT_FOUND or
-/// UNPROCESSABLE error. Anything else leaves the outcome open.
+/// A refusal is an answer that proves the mark was not changed ([`GraphqlError::proves_not_applied`], the rule of
+/// pending-review writes); anything else leaves the outcome open.
 fn classify(error: GraphqlError) -> ViewedError {
-    let refused = matches!(error, GraphqlError::NotExecuted(_))
-        || matches!(
-            error.kind(),
-            Some(
-                GraphqlErrorType::Forbidden
-                    | GraphqlErrorType::NotFound
-                    | GraphqlErrorType::Unprocessable
-            )
-        );
-    if refused {
+    if error.proves_not_applied() {
         ViewedError::Refused(error)
     } else {
         ViewedError::Github(error)
@@ -96,8 +90,12 @@ fn classify(error: GraphqlError) -> ViewedError {
 }
 
 /// The user's Viewed marks of the analysed pull request; anything GitHub does not answer is "not read", never
-/// an assumed state.
-pub async fn read(state: &AppState, user_id: &str, summary: &AnalysisSummary) -> ViewedRead {
+/// an assumed state. An ended GitHub sign-in is an error: the user must sign in again.
+pub async fn read(
+    state: &AppState,
+    user_id: &str,
+    summary: &AnalysisSummary,
+) -> Result<ViewedRead, UserTokenError> {
     let unread = ViewedRead {
         files: BTreeMap::new(),
         status: ViewedStatus::NotChecked,
@@ -105,38 +103,79 @@ pub async fn read(state: &AppState, user_id: &str, summary: &AnalysisSummary) ->
     };
     let token = match user_access_token(state, user_id).await {
         Ok(token) => token,
+        Err(UserTokenError::SignInRequired) => return Err(UserTokenError::SignInRequired),
         Err(error) => {
             tracing::debug!(analysis = %summary.id, ?error, "no user token; the Viewed marks are not read");
-            return unread;
+            return Ok(unread);
         }
     };
-    match viewed::read(&state.config.github, &token, &pr_of(summary)).await {
-        Ok(read) => ViewedRead {
-            files: read.files,
-            status: if read.incomplete {
-                ViewedStatus::Partial
-            } else {
-                ViewedStatus::Checked
+    Ok(
+        match viewed::read(&state.config.github, &token, &pr_of(summary)).await {
+            Ok(read) => ViewedRead {
+                files: read.files,
+                status: if read.incomplete {
+                    ViewedStatus::Partial
+                } else {
+                    ViewedStatus::Checked
+                },
+                head: Some(CommitSha(read.head_oid)),
             },
-            head: Some(CommitSha(read.head_oid)),
-        },
-        Err(error) => {
-            if let ViewedReadError::Graphql(GraphqlError::Unauthorized) = &error {
+            Err(ViewedReadError::Graphql(GraphqlError::Unauthorized)) => {
                 user_token_rejected(state, user_id, &token).await;
+                tracing::debug!(analysis = %summary.id, "GitHub rejected the user token; the Viewed marks are not read");
+                unread
             }
-            tracing::debug!(analysis = %summary.id, ?error, "the Viewed marks could not be read from GitHub");
-            unread
+            Err(error) if read_refused(&error) => {
+                tracing::warn!(analysis = %summary.id, ?error,
+                "GitHub refused to read the Viewed marks; the file list shows them as not read");
+                unread
+            }
+            Err(error) => {
+                tracing::debug!(analysis = %summary.id, ?error, "the Viewed marks could not be read from GitHub");
+                unread
+            }
+        },
+    )
+}
+
+/// GitHub answered the read with a refusal (permission or a missing pull request), not a passing failure.
+fn read_refused(error: &ViewedReadError) -> bool {
+    match error {
+        ViewedReadError::MissingPullRequest => true,
+        ViewedReadError::Graphql(error) => {
+            matches!(
+                error.kind(),
+                Some(GraphqlErrorType::Forbidden | GraphqlErrorType::NotFound)
+            ) || matches!(error, GraphqlError::Status(status) if status.is_client_error())
         }
     }
 }
 
-/// [`read`] as an infallible future, for `github_read`.
-pub async fn read_cached(
-    state: &AppState,
-    user_id: &str,
-    summary: &AnalysisSummary,
-) -> Result<ViewedRead, Infallible> {
-    Ok(read(state, user_id, summary).await)
+/// Viewed writes running, by (user, analysis).
+static WRITING: LazyLock<Mutex<HashSet<(String, AnalysisId)>>> = LazyLock::new(Mutex::default);
+
+/// A running Viewed write; dropping it lets the next one start.
+struct Writing((String, AnalysisId));
+
+impl Writing {
+    fn start(user_id: &str, analysis: AnalysisId) -> Option<Self> {
+        let key = (user_id.to_owned(), analysis);
+        let started = WRITING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key.clone());
+        // Built only when started: dropping a guard removes its key.
+        started.then(|| Self(key))
+    }
+}
+
+impl Drop for Writing {
+    fn drop(&mut self) {
+        WRITING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.0);
+    }
 }
 
 /// Marks (`viewed`) or unmarks `path` on GitHub as the user, once the head is still the analysed one.
@@ -147,12 +186,13 @@ pub async fn set(
     path: &str,
     viewed: bool,
 ) -> Result<(), ViewedError> {
+    let _writing = Writing::start(user_id, summary.id).ok_or(ViewedError::Busy)?;
     let (_, files) = pr_diff(state, summary).await?;
     if !files.iter().any(|file| file.path == path) {
         return Err(ViewedError::UnknownFile);
     }
     let token = user_access_token(state, user_id).await?;
-    let result = write(state, &token, summary, path, viewed).await;
+    let result = write(state, &token, user_id, summary, path, viewed).await;
     if let Err(error) = &result
         && error.unauthorized()
     {
@@ -167,6 +207,7 @@ pub async fn set(
 async fn write(
     state: &AppState,
     token: &SecretString,
+    user_id: &str,
     summary: &AnalysisSummary,
     path: &str,
     viewed: bool,
@@ -182,7 +223,7 @@ async fn write(
     }
     match viewed::set(config, token, &pull.id, path, viewed).await {
         Ok(()) => {
-            tracing::info!(analysis = %summary.id, viewed, "Viewed mark changed on GitHub");
+            tracing::info!(analysis = %summary.id, user_id, path, viewed, "Viewed mark changed on GitHub");
             Ok(())
         }
         Err(ViewedWriteError::Graphql(error)) => Err(classify(error)),

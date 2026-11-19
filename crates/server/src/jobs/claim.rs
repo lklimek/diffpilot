@@ -490,7 +490,9 @@ mod tests {
     }
 
     fn packs(s: &Setup) -> StoredPacks {
-        StoredPacks { db: s.db.clone() }
+        StoredPacks {
+            state: state_with(s),
+        }
     }
 
     /// Packs of a database without stored results.

@@ -220,13 +220,16 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   `unexplained` parts are exactly the Tour's Unexplained rows. `viewed` is the user's GitHub state (`viewed`,
   `unviewed`, `dismissed`: viewed before a later commit changed the file) read as the user;
   `viewed_status` says whether it was read (`checked`, `partial` beyond 3000 files, `not_checked` when GitHub did
-  not answer; then every `viewed` is null, never assumed) and `current_head` is the head GitHub reported. An
+  not answer; then every `viewed` is null, never assumed) and `current_head` is the head GitHub reported. An ended
+  GitHub sign-in is 401 `unauthenticated` ("Sign in again"); a GitHub refusal of the read is logged at warn. An
   access-token reader gets the Viewed read cached for a minute.
 - **Viewed** (R13, v1.2). `{path, viewed}` marks or unmarks one file of the pull request as the user on GitHub
   (`markFileAsViewed` / `unmarkFileAsViewed`). A path outside the pull request is `invalid_request`; a head that
   moved since the analysis is `pr_head_changed` (nothing is written; the head can still move between that check
-  and the write); GitHub refusing it (e.g. the user token may not mark files) is `github_refused`, nothing changed;
-  an unexpected answer is `github_unavailable` (the mark may have changed; read again). Nothing is stored locally.
+  and the write); GitHub refusing it (an answer that proves nothing was applied, as for pending-review writes: e.g.
+  the user token may not mark files, or a rate limit) is `github_refused`, nothing changed; any other answer is
+  `github_unavailable` (the mark may have changed; read again). One write per user and analysis runs at a time; a
+  second one meanwhile is `conflict` before any GitHub call. Nothing is stored locally.
 - **MemCan status**: Settings and Tour PR-context facts expose `memcan_status {state, last_success_at}`,
   separate from `project_profile.memcan` (the stored analysis lookup). Read status never calls MemCan.
   `not_checked` means configured but no completed attempt since startup; `reachable` means the last attempt
@@ -290,10 +293,10 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `private_repository` | 422 | v1 is public repositories only |
 | `app_not_installed` | 422 | comment routes without the App on the PR repo |
 | `position_rejected` | 422 | GitHub silently rejected (`thread: null`) or target not commentable |
+| `github_refused` | 422 | GitHub refused a change made as the user (the Viewed mark, R13: refused before executing it, a rate limit, or `FORBIDDEN`); nothing was changed |
 | `not_rendered` | 422 | file classified as not rendered; diff of a binary file |
 | `internal` | 500 | anything else (no detail) |
 | `github_unavailable` | 502 | GitHub error or unexpected answer |
-| `github_refused` | 502 | GitHub refused a change made as the user (the Viewed mark, R13); nothing was changed |
 | `unavailable` | 503 | the database was busy or locked past its wait; carries `Retry-After: 1`. The web client retries a GET, PUT or DELETE once after that delay, never a POST |
 | `insufficient_scope` | 403 | a valid access token without the route's scope |
 | `token_not_accepted` | 403 | an access token on a route that is not `read` or on a non-safe method |

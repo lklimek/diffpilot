@@ -62,6 +62,26 @@ impl GraphqlError {
             _ => None,
         }
     }
+
+    /// The answer proves a mutation was not applied: GitHub refused it before executing it (GraphQL errors
+    /// without `data` or with `data: null`; HTTP 401, another 4xx or a rate limit), the client sent nothing, or
+    /// the mutation field failed with `FORBIDDEN`. Anything else (no answer, 5xx, an unreadable answer, an error
+    /// next to resolved data, another error of a failed field) leaves the outcome open.
+    pub fn proves_not_applied(&self) -> bool {
+        match self {
+            Self::NotExecuted(_)
+            | Self::Client(_)
+            | Self::Unauthorized
+            | Self::RateLimited
+            | Self::FieldFailed(GraphqlErrorType::Forbidden) => true,
+            Self::Status(status) => status.is_client_error(),
+            Self::Http(_)
+            | Self::Malformed(_)
+            | Self::NoData
+            | Self::Rejected(_)
+            | Self::FieldFailed(_) => false,
+        }
+    }
 }
 
 /// The `type` of the first GraphQL error.

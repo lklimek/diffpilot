@@ -108,6 +108,33 @@ describe("AskThread: the analysis's Ask conversation as one thread", () => {
     expect(screen.getByText("On a step that is not part of these flows")).toBeInTheDocument();
   });
 
+  it("names the file and lines of a question asked about lines, not a missing step", () => {
+    const lines = (anchor: AskQuestion["anchor"]): AskQuestion => {
+      const asked = question({ anchor });
+      delete asked.step_id;
+      return asked;
+    };
+    render(
+      <Harness
+        questions={[
+          {
+            ...lines({
+              kind: "lines",
+              path: "src/a.rs",
+              side: "head",
+              range: { start_line: 3, end_line: 9 },
+            }),
+            id: "a",
+          },
+          { ...lines({ kind: "lines", path: "src/b.rs", side: "base", range: null }), id: "b" },
+        ]}
+      />,
+    );
+    expect(screen.getByText("On src/a.rs:3-9")).toBeInTheDocument();
+    expect(screen.getByText("On src/b.rs (old code)")).toBeInTheDocument();
+    expect(screen.queryByText("On a step that is not part of these flows")).toBeNull();
+  });
+
   it("scrolls to the newest entry, but not while the user reads further up", () => {
     const { rerender } = render(<Harness />);
     const box = screen.getByRole("region", { name: "Scrollable conversation" });
