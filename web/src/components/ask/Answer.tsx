@@ -2,7 +2,8 @@ import { CodeText } from "../section/CodeText";
 import type { AskQuestion, Evidence } from "../../api/generated/types";
 import { busyTip } from "../button/button";
 import { clockText } from "../format/time";
-import { durationText, elapsedText } from "../dashboard/common/format";
+import { useEffect, useState } from "react";
+import { agoText } from "../dashboard/common/format";
 import { useAction } from "../inspector/action";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { UseAsCommentButton } from "../comment/UseAsCommentButton";
@@ -18,7 +19,7 @@ export interface AnswerProps {
   onAskAgain?: () => Promise<unknown> | void;
   /** "Use as review comment"; no button without it. */
   onUseAsComment?: () => void;
-  /** The current time (ms): a waiting question shows the time since it was asked. */
+  /** A fixed current time (ms) for the time since asking; it ticks by itself without one. */
   now?: number;
   /** An earlier question of the reader still waits: this one is queued behind it. */
   queued?: boolean;
@@ -52,13 +53,24 @@ function AskAgain({ onAskAgain }: Required<Pick<AnswerProps, "onAskAgain">>) {
   );
 }
 
-// `1:42` within the hour, then `2 h 15 min`.
-const since = (ms: number) => (ms < 3_600_000 ? elapsedText(ms) : durationText(ms));
+// While a question waits, the time since it was asked moves on (10 s steps); nothing ticks otherwise.
+function useTick(fixed: number | undefined): number {
+  const [now, setNow] = useState(() => fixed ?? Date.now());
+  useEffect(() => {
+    if (fixed !== undefined) return;
+    const timer = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(timer);
+  }, [fixed]);
+  return fixed ?? now;
+}
 
 const WRITING =
   "The LLM writes the answer; it appears whole when it is ready. A first question, or the first after the analysis changed, takes longer: the conversation is prepared first. The time shows the job is alive; it is no estimate.";
 
-/** A question still waiting: one line with a spinner, its state and the time since it was asked (AC10). */
+/**
+ * A question still waiting: one line with a spinner, its state and the time since it was asked (AC10); when the
+ * writing started is not known, so the time is said as "asked … ago".
+ */
 function Waiting({
   text,
   tip,
@@ -70,6 +82,7 @@ function Waiting({
   question: AskQuestion;
   now?: number;
 }) {
+  const at = useTick(now);
   return (
     <Tooltip tip={tip}>
       <p tabIndex={0} className="m-0 inline-flex items-center gap-1.5 text-muted">
@@ -78,7 +91,7 @@ function Waiting({
           className="inline-block size-3 flex-none animate-spin rounded-full border-2 border-muted border-t-transparent motion-reduce:animate-none"
         />
         <span role="status">{text}</span>
-        {now !== undefined && <span> · {since(now - Date.parse(question.created_at))}</span>}
+        <span> · asked {agoText(question.created_at, new Date(at))}</span>
       </p>
     </Tooltip>
   );

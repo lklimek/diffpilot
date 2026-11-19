@@ -934,7 +934,13 @@ describe("Use as review comment (owner request F31): anchors and availability", 
     const files = await screen.findByRole("textbox", { name: /^Comment on src\/config\.rs:3–4/ });
     await waitFor(() => expect(files).toHaveFocus());
     expect((files as HTMLTextAreaElement).value).toContain("Because.");
-    expect(screen.getByText(/^Opened src\/config\.rs:3–4 to comment on its lines/)).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("dialog", { name: "Ask" })).getByText(
+          /^Opened src\/config\.rs:3–4 to comment on its lines/,
+        ),
+      ).toBeVisible(),
+    );
   });
 
   it("an answer about another step opens that step and drafts there", async () => {
@@ -949,7 +955,35 @@ describe("Use as review comment (owner request F31): anchors and availability", 
     await waitFor(() => expect(composer()).toHaveFocus());
     expect(composer()).toHaveAccessibleName("Comment on src/rpc/client.rs:89");
     expect((composer() as HTMLTextAreaElement).value).toContain("In `RpcConfig::default`.");
-    expect(screen.getByText(/^Opened flow 1 · step 2 to comment on its lines/)).toBeInTheDocument();
+    // Said once the draft is there, aloud and visibly in the chat.
+    expect(
+      within(screen.getByRole("dialog", { name: "Ask" })).getByText(
+        /^Opened flow 1 · step 2 to comment on its lines/,
+      ),
+    ).toBeVisible();
+  });
+
+  it("an answer about another step whose lines cannot be read says so plainly", async () => {
+    setScenario("ask-thread");
+    await open();
+    await openStep("1", "5");
+    await screen.findAllByText(/should_retry/);
+    server.use(
+      http.get("/api/v1/analyses/:id/lines", () =>
+        HttpResponse.json(
+          { code: "internal", message: "Something went wrong on the server." },
+          { status: 500 },
+        ),
+      ),
+    );
+    await user().keyboard("a");
+    await user().click(within(await thread("t2")).getByRole("button", { name: "Use as review comment" }));
+    expect(
+      await within(screen.getByRole("dialog", { name: "Ask" })).findByText(
+        "The answer's lines could not be read: Something went wrong on the server.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/the draft is in the Comment composer/)).toBeNull();
   });
 
   it.each([

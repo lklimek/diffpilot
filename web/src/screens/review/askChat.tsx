@@ -6,13 +6,13 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router";
 import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
-import { useNow } from "../../app/now";
 import { useTourNotifications } from "../../app/workNotifications";
 import { routes } from "../../api/generated/routes";
 import type {
@@ -35,7 +35,7 @@ import {
 } from "../../api/queries";
 import { AskChat, type ChatSize } from "../../components/ask/chat/AskChat";
 import { AskLauncher } from "../../components/ask/chat/AskLauncher";
-import { linesOf, subjectOf, threadsOf, unreadOf, withoutRetried } from "../../components/ask/chat/model";
+import { linesOf, subjectOf, threadsOf, unreadOf } from "../../components/ask/chat/model";
 import { answerComment } from "../../components/comment/prefill";
 import { filesHash } from "../../components/files/model";
 import { blockFragment } from "../tour/sequence";
@@ -159,9 +159,7 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
   const questions = useQuestions(analysisId);
   const stream = useQuestionEvents(analysisId);
   const ask = useAskInChat(analysisId);
-  // A failed question asked again gives way to its retry.
-  const all = withoutRetried(questions.data ?? []);
-  const clock = useNow();
+  const all = questions.data ?? [];
 
   const layoutKey = `diffpilot.askChat.${login}`;
   const draftKey = `diffpilot.askChat.draft.${login}.${analysisId}`;
@@ -252,7 +250,27 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
     setChosen(options.anchor ? { anchor: options.anchor, at: placeKey } : null);
     show(options.thread);
   };
-  const control: AskChatControl = { place, setPlace, open, setActions, announce: setAnnouncement };
+  // Said aloud and shown in the chat for a few seconds.
+  const [status, setStatus] = useState<{ text: string } | null>(null);
+  const announce = useCallback((text: string) => {
+    setAnnouncement(text);
+    setStatus({ text });
+  }, []);
+  useEffect(() => {
+    if (!status) return;
+    const timer = setTimeout(() => setStatus(null), 6000);
+    return () => clearTimeout(timer);
+  }, [status]);
+  // Screens see a context that changes only with the place: `open` reads the latest state through a ref.
+  const latestOpen = useRef(open);
+  useLayoutEffect(() => {
+    latestOpen.current = open;
+  });
+  const stableOpen = useCallback((options?: Parameters<typeof open>[0]) => latestOpen.current(options), []);
+  const control = useMemo<AskChatControl>(
+    () => ({ place, setPlace, open: stableOpen, setActions, announce }),
+    [place, setPlace, stableOpen, setActions, announce],
+  );
 
   const subject: AskAnchor = wholePr
     ? { kind: "pr" }
@@ -366,12 +384,12 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
             setReplies(next);
             write(session, repliesKey, Object.keys(next).length ? next : null);
           }}
-          now={clock}
           signInHref={routes.authLogin.path}
+          status={status?.text ?? null}
           onSend={(text) => send({ text, anchor: subject })}
           onReply={(root, text) => send({ text, anchor: root.anchor, parent_id: root.id })}
           // The same question again in the same place: a first question as a first question, a follow-up in its
-          // thread; the retry then replaces the failed entry (`withoutRetried`).
+          // thread; the retry then replaces the failed entry (`withoutRetried` in the questions query).
           onAskAgain={(q) =>
             send({ text: q.text, anchor: q.anchor, ...(q.parent_id ? { parent_id: q.parent_id } : {}) })
           }

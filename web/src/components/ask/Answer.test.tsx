@@ -85,16 +85,16 @@ describe("Answer", () => {
         <Answer question={question({ state })} queued={queued} now={Date.parse("2026-11-16T10:21:42Z")} />,
       );
       expect(screen.getByRole("status")).toHaveTextContent(new RegExp(`^${text}$`));
-      expect(container).toHaveTextContent(`${text} · 1:42`);
+      expect(container).toHaveTextContent(`${text} · asked 1 min ago`);
       expect(container.querySelector(".animate-spin")).not.toBeNull();
     },
   );
 
-  it("shows a long wait in hours and minutes", () => {
+  it("names the time as time since asking (the start of the writing is not known)", () => {
     const { container } = render(
       <Answer question={question({ state: "answering" })} now={Date.parse("2026-11-16T12:35:00Z")} />,
     );
-    expect(container).toHaveTextContent("Being written · 2 h 15 min");
+    expect(container).toHaveTextContent("Being written · asked 2 h 15 min ago");
   });
 
   it("shows a question waiting for the usage limit with the reset time", () => {

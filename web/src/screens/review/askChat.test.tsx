@@ -1,4 +1,6 @@
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +9,7 @@ import { renderRoute, startMockServer } from "../../__tests__/screen";
 import type { AnalysisSummary, AnchoredAskRequest, AskQuestion } from "../../api/generated/types";
 import { seedFor, setFixtureState } from "../../mocks/fixtures";
 import { setScenario } from "../../mocks/scenarios";
+import { AskChatProvider, useAskChat } from "./askChat";
 
 const server = startMockServer();
 const ID = (seedFor("default", "analysis") as AnalysisSummary).id;
@@ -16,6 +19,7 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", FakeEventSource);
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   window.localStorage.clear();
 });
@@ -188,5 +192,34 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
     await user().type(within(chat()).getByRole("textbox", { name: "Your question" }), "Why?{Enter}");
     expect(await within(chat()).findByRole("alert")).toHaveTextContent(/Not sent: You have 50 questions\.$/);
     expect(within(chat()).getByRole("textbox", { name: "Your question" })).toHaveValue("Why?");
+  });
+
+  it("an idle chat does not re-render the screens: no clock runs and the context stays the same", async () => {
+    let renders = 0;
+    function Probe() {
+      useAskChat();
+      renders += 1;
+      return null;
+    }
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <AskChatProvider analysisId={ID}>
+            <Probe />
+          </AskChatProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await screen.findByRole("button", { name: /^Ask.*: open your private chat/ });
+    await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+    const before = renders;
+    try {
+      await act(() => vi.advanceTimersByTimeAsync(30_000));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(renders).toBe(before);
   });
 });

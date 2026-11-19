@@ -12,6 +12,7 @@ import type {
   Evidence,
   FilesResponse,
   FileHunk,
+  LineRange,
   LineSide,
   LinesResponse,
   PrFile,
@@ -668,8 +669,6 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     const target = fileOf(files.files, { file: e.file, side: e.side });
     if (target) go({ file: target.path, side: e.side, line: e.line });
   };
-  // "Use as review comment": the composer opens on the lines with `text` as a draft; nothing is sent. Lines folded
-  // away are read first.
   // The composer on the lines with `text` as a draft, focused; nothing is sent.
   const draftAt =
     (path: string, side: LineSide, start_line: number, end_line: number, text: string) =>
@@ -699,8 +698,13 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     end_line: number,
     text: string,
     what: string,
+    done?: () => void,
   ) => {
-    const draft = draftAt(path, side, start_line, end_line, text);
+    const placed = draftAt(path, side, start_line, end_line, text);
+    const draft = (data: LinesResponse) => {
+      placed(data);
+      done?.();
+    };
     const cached = path === pathOn(file, side) ? cachedLines(side, end_line) : undefined;
     if (cached) return draft(cached);
     readLines(path, side, start_line, end_line).then(draft, (error: unknown) =>
@@ -719,6 +723,8 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
       : undefined;
   // "Use as review comment" on an answer: the draft goes on the lines it was asked about and the composer takes the
   // focus (AC12); lines of another file open that file first, and the move is said.
+  const movedText = (path: string, range: LineRange) =>
+    `Opened ${path}:${rangeText(range)} to comment on its lines; the draft is in the Comment composer.`;
   const answerAsComment = (anchor: AskAnchor, text: string) => {
     const step = anchor.kind === "step" ? stepPlace(tour, anchor.step_id)?.step : undefined;
     const at =
@@ -733,13 +739,11 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     const { start_line, end_line } = at.range;
     const other =
       at.path === pathOn(file, at.side) ? undefined : fileOf(files.files, { file: at.path, side: at.side });
-    if (other) {
-      go({ file: other.path, side: at.side, line: start_line, end: end_line });
-      chat.announce(
-        `Opened ${at.path}:${rangeText(at.range)} to comment on its lines; the draft is in the Comment composer.`,
-      );
-    } else if (at.path !== pathOn(file, at.side)) return;
-    draftOn(at.path, at.side, start_line, end_line, text, "The answer's lines");
+    if (other) go({ file: other.path, side: at.side, line: start_line, end: end_line });
+    else if (at.path !== pathOn(file, at.side)) return;
+    draftOn(at.path, at.side, start_line, end_line, text, "The answer's lines", () => {
+      if (other) chat.announce(movedText(at.path, at.range));
+    });
   };
   // A draft handed over from Flows ("Use as review comment" on an answer about lines of a file) is taken once.
   const incoming = (location.state as { commentDraft?: AnswerDraft } | null)?.commentDraft;
@@ -751,7 +755,10 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
     void navigate({ ...location }, { replace: true, state: null });
     const { path, side, range, text } = incoming;
     readLines(path, side, range.start_line, range.end_line).then(
-      draftAt(path, side, range.start_line, range.end_line, text),
+      (data) => {
+        draftAt(path, side, range.start_line, range.end_line, text)(data);
+        chat.announce(movedText(path, range));
+      },
       (error: unknown) => setLinkNotice(`The answer's lines could not be read: ${errorText(error)}`),
     );
   });

@@ -91,6 +91,8 @@ export const useQuestions = (id: AnalysisId) => {
       const cached = client.getQueryData<AskQuestion[]>(["questions", id]) ?? [];
       return mergeFetchedQuestions(fetched, cached, (q) => (a.at.get(q) ?? -1) > since);
     },
+    // Every view (chat, Inspector copy, menu counts) shows a failed question asked again once.
+    select: withoutRetried,
   });
 };
 
@@ -103,6 +105,26 @@ function arrive(client: QueryClient, id: AnalysisId, question: AskQuestion, repl
     a.at.set(question.id, a.seq);
     return [...all.filter((q) => q.id !== question.id), question];
   });
+}
+
+/**
+ * The questions without failed ones asked again: a failed question gives way to a later one with the same text,
+ * subject and thread ("Ask again"), unless follow-ups hang on it.
+ */
+export function withoutRetried(questions: readonly AskQuestion[]): AskQuestion[] {
+  const key = (q: AskQuestion) => JSON.stringify([q.text, q.anchor, q.parent_id ?? null]);
+  const parents = new Set(questions.flatMap((q) => (q.parent_id ? [q.parent_id] : [])));
+  return questions.filter(
+    (q) =>
+      q.state !== "failed" ||
+      parents.has(q.id) ||
+      !questions.some(
+        (later) =>
+          later.id !== q.id &&
+          key(later) === key(q) &&
+          Date.parse(later.created_at) > Date.parse(q.created_at),
+      ),
+  );
 }
 
 /**

@@ -173,18 +173,3 @@ export function unreadOf(questions: readonly AskQuestion[], seen: ReadonlySet<Qu
 /** Whether an answer about the anchor can become a review comment: it has lines to anchor on. */
 export const hasLines = (anchor: AskAnchor) =>
   anchor.kind === "step" || (anchor.kind === "lines" && anchor.range !== null);
-
-/**
- * The questions without failed ones asked again: a failed question gives way to a later one with the same text,
- * subject and thread ("Ask again"), unless follow-ups hang on it.
- */
-export function withoutRetried(questions: readonly AskQuestion[]): AskQuestion[] {
-  const key = (q: AskQuestion) => JSON.stringify([q.text, q.anchor, q.parent_id ?? null]);
-  const parents = new Set(questions.flatMap((q) => (q.parent_id ? [q.parent_id] : [])));
-  return questions.filter(
-    (q) =>
-      q.state !== "failed" ||
-      parents.has(q.id) ||
-      !questions.some((later) => later.id !== q.id && key(later) === key(q) && asked(q, later) < 0),
-  );
-}

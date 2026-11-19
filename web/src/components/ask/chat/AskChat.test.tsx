@@ -279,10 +279,10 @@ describe("AskChat (proposal AC3–AC10)", () => {
       .getAllByRole("listitem")
       .filter((li) => li.dataset.thread);
     expect(within(a!).getByRole("status")).toHaveTextContent(/^Being written$/);
-    expect(a).toHaveTextContent("Being written · 2:00");
+    expect(a).toHaveTextContent("Being written · asked 2 min ago");
     expect(a!.querySelector(".animate-spin")).not.toBeNull();
     expect(within(b!).getByRole("status")).toHaveTextContent(/^Queued behind your earlier question$/);
-    expect(b).toHaveTextContent("Queued behind your earlier question · 1:00");
+    expect(b).toHaveTextContent("Queued behind your earlier question · asked 1 min ago");
   });
 
   it("a follow-up draft is the caller's: it is there again when the chat comes back", async () => {

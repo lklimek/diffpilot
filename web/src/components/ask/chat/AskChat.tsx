@@ -78,8 +78,10 @@ export interface AskChatProps {
   /** Follow-up drafts by thread (the first question's id); kept by the caller across Hide and reload. */
   replyDrafts: Readonly<Record<QuestionId, string>>;
   onReplyDraft: (root: QuestionId, text: string) => void;
-  /** The current time (ms): waiting questions show the time since they were asked. */
-  now: number;
+  /** A fixed current time (ms) for the time since asking (tests); it ticks by itself without one. */
+  now?: number;
+  /** A short note about what just happened (e.g. where "Use as review comment" moved the review); said aloud by the caller. */
+  status?: string | null;
   /** The sign-in page, offered when a question is refused for a lost sign-in. */
   signInHref: string;
   /** Sends a new question about `subject`; a rejection keeps the text and shows its message. */
@@ -593,6 +595,14 @@ export function AskChat(props: AskChatProps) {
           </ol>
         )}
       </div>
+      {props.status && (
+        <p
+          aria-hidden="true"
+          className="m-0 flex-none border-t border-border bg-accent-bg px-3 py-1 text-[12px]"
+        >
+          {props.status}
+        </p>
+      )}
       {arrived && (
         <div className="relative h-0 flex-none">
           <Tooltip

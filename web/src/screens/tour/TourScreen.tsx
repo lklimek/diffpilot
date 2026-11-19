@@ -88,7 +88,6 @@ import { useNow } from "../../app/now";
 import { FlowsMenu } from "./FlowsMenu";
 import { Workspace } from "./Workspace";
 import { useAskChat, useAskPlace, type AnswerDraft } from "../review/askChat";
-import { rangeText } from "../../components/section/format";
 import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "./review";
 
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
@@ -508,11 +507,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     chat.setActions({
       onEvidence: showEvidence,
       onUseAsComment: (anchor, text) => {
-        const moved = (where: string) =>
-          chat.announce(`Opened ${where} to comment on its lines; the draft is in the Comment composer.`);
+        // Lines of a file: Files drafts (and says so) once it has their lines.
         if (anchor.kind === "lines" && anchor.range) {
           const { path, side, range } = anchor;
-          moved(`${path}:${rangeText(range)}`);
           const hash = filesHash({ file: path, side, line: range.start_line, end: range.end_line });
           return void navigate(`${filesPath}${hash}`, {
             state: { commentDraft: { path, side, range, text } satisfies AnswerDraft },
@@ -536,10 +533,15 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           return setFocusNext("comment");
         }
         go({ block: "step", step_id: target.id });
-        moved(`flow ${found.flow.position} · step ${target.number}`);
-        queryClient
-          .fetchQuery(linesQuery(analysisId, stepQuery(target)))
-          .then((lines) => draftOn(lines, lines.changed[0] ?? lines.from));
+        queryClient.fetchQuery(linesQuery(analysisId, stepQuery(target))).then(
+          (lines) => {
+            draftOn(lines, lines.changed[0] ?? lines.from);
+            chat.announce(
+              `Opened flow ${found.flow.position} · step ${target.number} to comment on its lines; the draft is in the Comment composer.`,
+            );
+          },
+          (error: unknown) => chat.announce(`The answer's lines could not be read: ${errorText(error)}`),
+        );
       },
     });
   });
