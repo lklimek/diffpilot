@@ -94,7 +94,7 @@ it("shows unchecked items even with no rows and while collapsed", () => {
       {...props}
       expanded={false}
       items={[]}
-      notes={["Mentions not checked on 5 items this refresh."]}
+      coverage={{ unchecked_items: 5, unchecked_logins: [], timed_out_logins: [] }}
     />,
   );
   expect(screen.getByRole("region", { name: "Mentions" })).toHaveTextContent(
@@ -105,4 +105,19 @@ it("shows unchecked items even with no rows and while collapsed", () => {
 it("marks the row when only part of its conversation was read", () => {
   render(<Mentions {...props} items={[{ ...mention("1"), partly_read: true }]} />);
   expect(screen.getByRole("listitem")).toHaveTextContent("partly read");
+});
+
+it("explains unavailable login searches once without an unrelated item count", () => {
+  render(
+    <Mentions
+      {...props}
+      expanded={false}
+      items={[]}
+      coverage={{ unchecked_items: 0, unchecked_logins: ["alice-helper"], timed_out_logins: [] }}
+    />,
+  );
+  expect(screen.getByRole("region", { name: "Mentions" })).toHaveTextContent(
+    "Mentions of @alice-helper were not checked because GitHub search is unavailable for this login.",
+  );
+  expect(screen.queryByText(/on .* items/)).not.toBeInTheDocument();
 });

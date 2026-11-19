@@ -24,7 +24,7 @@ pub(crate) async fn collect<T: TokenSource>(
     candidates: &Candidates,
     details: &BTreeMap<ItemRef, PullDetail>,
     ownership: &owned::Ownership,
-) -> Result<(Vec<Mention>, Vec<ScanNote>), WorkError> {
+) -> Result<(Vec<Mention>, Vec<ScanNote>, u32), WorkError> {
     let mut wanted: Vec<_> = candidates
         .pull_requests
         .iter()
@@ -80,20 +80,13 @@ pub(crate) async fn collect<T: TokenSource>(
             notes.extend(note);
         }
     }
-    if unchecked > 0 {
-        let noun = if unchecked == 1 { "item" } else { "items" };
-        notes.push(ScanNote {
-            text: format!("Mentions not checked on {unchecked} {noun} this refresh."),
-            item: None,
-        });
-    }
     found.sort_by(|a, b| {
         a.created_at
             .cmp(&b.created_at)
             .then_with(|| a.id.cmp(&b.id))
     });
     found.dedup_by(|a, b| a.id == b.id);
-    Ok((found, notes))
+    Ok((found, notes, u32::try_from(unchecked).unwrap_or(u32::MAX)))
 }
 
 #[expect(

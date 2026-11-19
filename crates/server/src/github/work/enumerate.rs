@@ -424,10 +424,6 @@ impl<T: TokenSource> WorkClient<T> {
                 for login in logins {
                     let relations = [
                         (
-                            true, // Potential mention: the bounded conversation read decides.
-                            PrRelation::Mentioned,
-                        ),
-                        (
                             pull.author.as_ref().is_some_and(|a| same(&a.login, login)),
                             PrRelation::Authored,
                         ),
@@ -466,11 +462,6 @@ impl<T: TokenSource> WorkClient<T> {
                 for login in logins {
                     if issue.assignees.nodes.iter().any(|a| same(&a.login, login)) {
                         relations.insert(IssueRelation::Assigned);
-                    }
-                    let mut texts = std::iter::once(issue.body.as_str())
-                        .chain(issue.comments.nodes.iter().map(|c| c.body.as_str()));
-                    if texts.any(|text| mentions(text, login)) {
-                        relations.insert(IssueRelation::Mentioned);
                     }
                 }
                 let Some(item) = ItemRef::new(&repo.owner, &repo.name, issue.number) else {

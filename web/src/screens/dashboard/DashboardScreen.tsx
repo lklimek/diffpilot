@@ -81,6 +81,7 @@ export function DashboardScreen() {
     (e): e is string => e !== null,
   );
 
+  // Keeps the first ranked row within 1600×900 with the side panel open.
   const main = view && summary && (
     <div className="grid content-start gap-0.5">
       <div>
@@ -142,12 +143,7 @@ export function DashboardScreen() {
       )}
       <Mentions
         items={summary.mentions ?? []}
-        notes={(snapshot?.notes ?? [])
-          .filter(
-            (n) =>
-              n.text.startsWith("Mentions not checked on ") || n.text.startsWith("PR mention search for "),
-          )
-          .map((n) => n.text)}
+        coverage={summary.mention_coverage}
         withBots={page.withBots}
         onWithBotsChange={page.setWithBots}
         onHide={(id) => page.hideMention.mutate(id)}

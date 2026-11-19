@@ -77,16 +77,21 @@ either list re-judges just the items whose judged inputs change.
 
 ## Addendum (2026-11-19): unanswered mentions
 Owner-approved. My work has a compact Mentions strip above Needs you, outside P0–P3, scores and judgement.
-Discovery adds `mentions:<login>` to open-PR searches; enumerated PRs are potential mention candidates. Mention-only
-PRs and issues never enter the ranked snapshot; issues also assigned or in watched repositories remain ranked.
+Discovery adds `mentions:<login>` to open-PR searches; enumeration discovers ranking relations only;
+unsearchable logins have no mention fallback.
+Mention-only PRs and issues never enter the ranked snapshot; issues also assigned or in watched repositories remain ranked.
 A post counts while newer than every scanned login's latest comment or submitted review on that item. The
 scan uses a separate lightweight PR conversation query and reuses complete enumerated issue discussions.
 Q2's selection and batch size are unchanged. Only Mentioned candidates get conversation reads; the explicit
 request/time/window budgets are in plan §K. Truncated conversations keep mentions found in the read windows,
 with a factual `partly_read` row marker. Budget overflow, failed reads and deadline expiry leave one count of
-unchecked items in the strip; completed results remain. PR enumeration selects no conversation bodies and
+unchecked candidates in `mention_coverage.unchecked_items`; completed results remain.
+`unchecked_logins` names unavailable login searches and `timed_out_logins` names timed-out PR searches.
+Both read APIs expose the structured coverage; the strip shows it inside the collapsed summary.
+PR enumeration selects no conversation bodies and
 cannot lose ranked items because a mention read fails. Ownership reuses ranking's eligibility rule and a
-refresh-local policy cache; unreadable policies keep mentions with ownership unverified.
+refresh-local policy cache; unreadable policies keep mentions with ownership unverified and log a warning
+with the repository, policy location and error once per repository per refresh.
 
 Each post has a stable identity derived from item key and GitHub anchor. Migration 0011 stores hides per tenant,
 user and identity, independently of refresh history. A later post has a different identity. Session + CSRF is

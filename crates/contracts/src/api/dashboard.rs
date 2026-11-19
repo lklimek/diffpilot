@@ -18,6 +18,9 @@ pub struct DashboardSummary {
     /// Unanswered, unhidden mentions, oldest first; independent of the ranking.
     #[serde(default)]
     pub mentions: Vec<Mention>,
+    /// Mention reads omitted in this snapshot, independent of item filters and pagination.
+    #[serde(default)]
+    pub mention_coverage: MentionCoverage,
     /// Opaque; changes whenever the stored snapshot or its ranking changes (poll this, then fetch the items).
     pub revision: String,
     /// The newest refresh of the user, live or ended; null before the first.
@@ -28,6 +31,17 @@ pub struct DashboardSummary {
     pub schedule: ScheduleStatus,
     /// Items of the snapshot whose judgement came from an older ranking prompt (re-judged within the caps).
     pub older_prompt_judgements: u32,
+}
+
+/// Missing mention reads; zero items does not imply that every login was searched.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MentionCoverage {
+    /// Real candidates not checked because of the read budget, deadline or read failure.
+    pub unchecked_items: u32,
+    /// Logins whose mention discovery was unavailable; no enumeration fallback is attempted.
+    pub unchecked_logins: Vec<String>,
+    /// Logins whose PR mention search exceeded its request budget.
+    pub timed_out_logins: Vec<String>,
 }
 
 /// What started a refresh.
@@ -525,6 +539,9 @@ pub struct ItemPage {
     /// Unanswered, unhidden mentions on the first page only; empty on cursor pages.
     #[serde(default)]
     pub mentions: Vec<Mention>,
+    /// Mention reads omitted in this snapshot, independent of item filters and pagination.
+    #[serde(default)]
+    pub mention_coverage: MentionCoverage,
     /// The summary's `revision` the page belongs to.
     pub revision: String,
     /// Items of this page.

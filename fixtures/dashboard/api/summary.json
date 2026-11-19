@@ -1,4 +1,9 @@
 {
+  "mention_coverage": {
+    "unchecked_items": 0,
+    "unchecked_logins": [],
+    "timed_out_logins": []
+  },
   "mentions": [
     {
       "id": "f7da86982a7e447e0245d5fb6b0885357d517df0c6736aae75eaa33c357cec34",

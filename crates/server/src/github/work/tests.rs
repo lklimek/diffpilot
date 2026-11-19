@@ -354,11 +354,11 @@ async fn unsearchable_login_falls_back_to_enumeration() {
     );
     assert_eq!(
         found.pull_requests[&item("acme/consensus#1541")].relations["alice-helper"],
-        BTreeSet::from([PrRelation::Authored, PrRelation::Mentioned])
+        BTreeSet::from([PrRelation::Authored])
     );
     assert!(
-        found.pull_requests.values().all(|pr| pr.mentioned()),
-        "enumerated PRs are potential mentions until their bounded read"
+        found.pull_requests.values().all(|pr| !pr.mentioned()),
+        "enumeration never discovers mentions for unsearchable logins"
     );
     assert_eq!(
         found.issues.keys().cloned().collect::<Vec<_>>(),
@@ -1186,7 +1186,7 @@ async fn pr_mentions_are_discovered_by_search() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn pr_mention_search_and_enumeration_find_comment_only_candidates() {
+async fn pr_mention_search_finds_comment_only_candidates_without_enumeration_fallback() {
     let dir = tempfile::tempdir().unwrap();
     for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
         let entry = entry.unwrap();
@@ -1219,8 +1219,10 @@ async fn pr_mention_search_and_enumeration_find_comment_only_candidates() {
         .await
         .unwrap();
     assert!(
-        listed.candidates.pull_requests[&item("acme/platform#1203")].relations["alice-helper"]
-            .contains(&PrRelation::Mentioned),
+        !listed
+            .candidates
+            .pull_requests
+            .contains_key(&item("acme/platform#1203")),
         "{:?}",
         listed.notes
     );
@@ -1294,7 +1296,7 @@ async fn mention_conversation_budget_never_reads_more_than_forty_items() {
         );
     }
     let settings = contracts::api::dashboard::DashboardSettings::default();
-    let (mentions, notes) = crate::dashboard::refresh::mentions::collect(
+    let (mentions, _notes, unchecked) = crate::dashboard::refresh::mentions::collect(
         &mock_client(&mock),
         &crate::dashboard::score::ScoreRules::new("alice", &settings),
         &["alice".into()],
@@ -1305,11 +1307,7 @@ async fn mention_conversation_budget_never_reads_more_than_forty_items() {
     .await
     .unwrap();
     assert!(mentions.is_empty());
-    assert!(
-        notes
-            .iter()
-            .any(|n| n.text.contains("45 items") && n.text.contains("not checked"))
-    );
+    assert_eq!(unchecked, 45);
     mock.verify().await;
 }
 
@@ -1414,7 +1412,7 @@ async fn mention_deadline_keeps_finished_results_and_counts_unchecked_items() {
         );
     }
     let settings = contracts::api::dashboard::DashboardSettings::default();
-    let (mentions, notes) = crate::dashboard::refresh::mentions::collect(
+    let (mentions, _notes, unchecked) = crate::dashboard::refresh::mentions::collect(
         &client,
         &crate::dashboard::score::ScoreRules::new("alice", &settings),
         &["alice".into()],
@@ -1425,12 +1423,7 @@ async fn mention_deadline_keeps_finished_results_and_counts_unchecked_items() {
     .await
     .unwrap();
     assert_eq!(mentions.len(), 1, "finished results survive the deadline");
-    assert!(
-        notes
-            .iter()
-            .any(|n| n.text.contains("1 item") && n.text.contains("not checked")),
-        "{notes:?}"
-    );
+    assert_eq!(unchecked, 1);
 }
 
 #[tokio::test]
@@ -1525,8 +1518,8 @@ async fn mention_search_deadline_keeps_finished_logins_and_continues_after_timeo
             .pull_requests
             .contains_key(&item("acme/app#3"))
     );
-    assert_eq!(found.notes.len(), 1);
-    assert!(found.notes[0].text.contains("slow"));
+    assert!(found.notes.is_empty());
+    assert_eq!(found.timed_out_mention_logins, ["slow"]);
 }
 
 #[tokio::test]
@@ -1572,7 +1565,7 @@ async fn mention_budget_selects_newest_across_prs_and_issues() {
             .candidates,
     );
     let settings = contracts::api::dashboard::DashboardSettings::default();
-    let (found, notes) = crate::dashboard::refresh::mentions::collect(
+    let (found, _notes, unchecked) = crate::dashboard::refresh::mentions::collect(
         &client,
         &crate::dashboard::score::ScoreRules::new("alice", &settings),
         &logins(&["alice"]),
@@ -1591,11 +1584,7 @@ async fn mention_budget_selects_newest_across_prs_and_issues() {
             .iter()
             .any(|r| String::from_utf8_lossy(&r.body).contains("issue(number: 99)"))
     );
-    assert!(
-        notes
-            .iter()
-            .any(|n| n.text.contains("3 items") && n.text.contains("not checked"))
-    );
+    assert_eq!(unchecked, 3);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1657,7 +1646,7 @@ async fn mention_policy_is_shared_and_file_reads_are_concurrent_with_finished_re
             PrRelation::Mentioned,
         );
     }
-    let (found, notes) = crate::dashboard::refresh::mentions::collect(
+    let (found, _notes, unchecked) = crate::dashboard::refresh::mentions::collect(
         &client,
         &rules,
         &logins(&["alice"]),
@@ -1670,11 +1659,7 @@ async fn mention_policy_is_shared_and_file_reads_are_concurrent_with_finished_re
     assert_eq!(found.len(), 4);
     assert_eq!(policy_reads.load(Ordering::SeqCst), 1);
     assert!((2..=4).contains(&peak.load(Ordering::SeqCst)));
-    assert!(
-        notes
-            .iter()
-            .any(|n| n.text.contains("1 item") && n.text.contains("not checked"))
-    );
+    assert_eq!(unchecked, 1);
 }
 
 #[tokio::test]
@@ -1697,4 +1682,61 @@ async fn mention_truncated_issue_keeps_the_read_window() {
         .await
         .unwrap();
     assert_eq!(found.found[&item("acme/app#1")].comments.nodes.len(), 1);
+}
+
+#[tokio::test]
+async fn mention_policy_failures_warn_once_per_repository_per_refresh() {
+    use contracts::api::dashboard::{DashboardSettings, PolicyRef, RepositoryRule};
+    for (response, message) in [
+        (
+            ResponseTemplate::new(404),
+            "Ownership policy could not be read",
+        ),
+        (
+            ResponseTemplate::new(200).set_body_string("invalid json"),
+            "Ownership policy could not be parsed",
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(response)
+            .expect(2)
+            .mount(&mock)
+            .await;
+        let settings = DashboardSettings {
+            repositories: vec![RepositoryRule {
+                repo: repo("acme/app"),
+                alias: None,
+                watch_issues: false,
+                branch_patterns: vec![],
+                ownership_policy: Some(PolicyRef {
+                    repo: repo("acme/policy"),
+                    path: "policy.json".into(),
+                }),
+            }],
+            ..Default::default()
+        };
+        let rules = crate::dashboard::score::ScoreRules::new("alice", &settings);
+        let client = mock_client(&mock);
+        let capture = LogCapture::start();
+        for refresh in 1..=2 {
+            let ownership = crate::dashboard::refresh::owned::Ownership::new(&settings);
+            let canonical = repo("acme/app");
+            let alias = repo("ACME/App");
+            let (first, second) = tokio::join!(
+                ownership.paths(&client, &rules, &canonical),
+                ownership.paths(&client, &rules, &alias),
+            );
+            assert!(first.unwrap().is_none());
+            assert!(second.unwrap().is_none());
+            let logs = capture.text();
+            let warnings: Vec<_> = logs.lines().filter(|l| l.contains(message)).collect();
+            assert_eq!(warnings.len(), refresh, "{logs}");
+            assert!(warnings.iter().all(|l| l.contains("WARN")
+                && l.contains("acme/app")
+                && l.contains("policy.json")
+                && l.contains("error=")));
+        }
+        mock.verify().await;
+    }
 }

@@ -30,6 +30,9 @@ pub struct Snapshot {
     /// Unanswered mentions from the scan, independent of scoring.
     #[serde(default)]
     pub mentions: Vec<contracts::api::dashboard::Mention>,
+    /// Structured gaps in mention reads for this snapshot.
+    #[serde(default)]
+    pub mention_coverage: contracts::api::dashboard::MentionCoverage,
     /// [`SNAPSHOT_VERSION`].
     pub version: u32,
     /// The signed-in login at scan time.

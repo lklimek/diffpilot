@@ -224,7 +224,7 @@ async fn summary(
         Some(record) => Some(judge::status(&state, &record).await),
         None => None,
     };
-    let (revision, meta, older_prompt_judgements, scanned_at, mentions) =
+    let (revision, meta, older_prompt_judgements, scanned_at, mentions, mention_coverage) =
         match current_view(&state, &scope).await? {
             Some((revision, snapshot, view, record, older)) => (
                 revision,
@@ -232,12 +232,21 @@ async fn summary(
                 older,
                 record.scanned_at,
                 snapshot.mentions,
+                snapshot.mention_coverage,
             ),
-            None => (snapshot::NO_SNAPSHOT.to_owned(), None, 0, None, Vec::new()),
+            None => (
+                snapshot::NO_SNAPSHOT.to_owned(),
+                None,
+                0,
+                None,
+                Vec::new(),
+                Default::default(),
+            ),
         };
     let stored = dashboard.settings(&scope.tenant_id, &scope.user_id).await?;
     Ok(Json(DashboardSummary {
         mentions,
+        mention_coverage,
         revision,
         latest_refresh,
         snapshot: meta,
@@ -285,26 +294,28 @@ async fn items(
 ) -> DashboardResult<Response> {
     let Query(query) = query?;
     let scope = scope(&session);
-    let (revision, page, next_cursor, mentions) = match current_view(&state, &scope).await? {
-        Some((revision, snapshot, view, _, _)) => {
-            let (page, next) = snapshot::page(&view.items, &query, &revision)?;
-            (
-                revision,
-                page,
-                next,
-                if query.cursor.is_none() {
-                    snapshot.mentions
-                } else {
-                    Vec::new()
-                },
-            )
-        }
-        None => {
-            let revision = snapshot::NO_SNAPSHOT.to_owned();
-            let (page, next) = snapshot::page(&[], &query, &revision)?;
-            (revision, page, next, Vec::new())
-        }
-    };
+    let (revision, page, next_cursor, mentions, mention_coverage) =
+        match current_view(&state, &scope).await? {
+            Some((revision, snapshot, view, _, _)) => {
+                let (page, next) = snapshot::page(&view.items, &query, &revision)?;
+                (
+                    revision,
+                    page,
+                    next,
+                    if query.cursor.is_none() {
+                        snapshot.mentions
+                    } else {
+                        Vec::new()
+                    },
+                    snapshot.mention_coverage,
+                )
+            }
+            None => {
+                let revision = snapshot::NO_SNAPSHOT.to_owned();
+                let (page, next) = snapshot::page(&[], &query, &revision)?;
+                (revision, page, next, Vec::new(), Default::default())
+            }
+        };
     let mut items: Vec<WorkItem> = Vec::with_capacity(page.len());
     let mut heads = Vec::with_capacity(page.len());
     for item in page {
@@ -314,6 +325,7 @@ async fn items(
     review_links(&state, &session, &mut items, &heads).await?;
     let body = ItemPage {
         mentions,
+        mention_coverage,
         revision,
         items,
         next_cursor,

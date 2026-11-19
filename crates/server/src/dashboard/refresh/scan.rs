@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use contracts::api::dashboard::{
-    DashboardSettings, KindCounts, PolicyRef, ScanNote, ScanStepKey, StepState, TodosState,
-    TodosStatus,
+    DashboardSettings, KindCounts, MentionCoverage, PolicyRef, ScanNote, ScanStepKey, StepState,
+    TodosState, TodosStatus,
 };
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
@@ -205,10 +205,10 @@ pub(super) async fn scan<T: TokenSource>(
         .step(ScanStepKey::Context, StepState::Running, None, None)
         .await?;
     let owned = owned_changes(client, input, &details.found, &mut notes).await?;
-    let (mentions, mention_notes) = mentions::collect(
+    let (mentions, mention_notes, unchecked_items) = mentions::collect(
         client,
         input.rules,
-        &logins,
+        &searchable,
         &candidates,
         &details.found,
         &owned,
@@ -338,6 +338,11 @@ pub(super) async fn scan<T: TokenSource>(
         todo: count(todos.len()),
     };
     Ok(Snapshot {
+        mention_coverage: MentionCoverage {
+            unchecked_items,
+            unchecked_logins: found.unsearchable,
+            timed_out_logins: found.timed_out_mention_logins,
+        },
         mentions,
         version: SNAPSHOT_VERSION,
         own_login: input.own_login.to_owned(),

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Mention } from "../../../api/generated/types";
+import type { Mention, MentionCoverage } from "../../../api/generated/types";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { dateTimeText } from "../../format/time";
 import { Segmented } from "../common/Segmented";
@@ -7,7 +7,7 @@ import { OpenExternal } from "../common/OpenExternal";
 
 interface Props {
   items: Mention[];
-  notes?: string[];
+  coverage?: MentionCoverage;
   withBots: boolean;
   onWithBotsChange: (withBots: boolean) => void;
   expanded: boolean;
@@ -29,7 +29,7 @@ const waiting = (at: string, now: Date) => {
 /** Quick replies outside the ranking; all untrusted strings render as text. */
 export function Mentions({
   items,
-  notes = [],
+  coverage,
   withBots,
   onWithBotsChange,
   expanded,
@@ -39,6 +39,17 @@ export function Mentions({
   now,
 }: Props) {
   const [all, setAll] = useState(false);
+  const notes: string[] = [];
+  if (coverage?.unchecked_items) {
+    const count = coverage.unchecked_items;
+    notes.push(`Mentions not checked on ${count} ${count === 1 ? "item" : "items"} this refresh.`);
+  }
+  for (const login of coverage?.unchecked_logins ?? []) {
+    notes.push(`Mentions of @${login} were not checked because GitHub search is unavailable for this login.`);
+  }
+  for (const login of coverage?.timed_out_logins ?? []) {
+    notes.push(`PR mention search for @${login} was not completed within its request budget.`);
+  }
   if (items.length === 0 && notes.length === 0) return null;
   const visible = items
     .filter((item) => withBots || !item.is_bot)
@@ -50,7 +61,7 @@ export function Mentions({
       className="min-w-0 rounded-lg border border-border bg-surface px-2 sm:px-4"
     >
       <header className="flex min-w-0 items-center justify-between gap-2">
-        <h2 className="min-w-0 font-semibold">
+        <h2 className="shrink-0 font-semibold">
           <Tooltip tip={expanded ? "Collapse the mentions list" : "Expand the mentions list"}>
             <button
               type="button"
@@ -65,12 +76,20 @@ export function Mentions({
         {!expanded && items.length > 0 && visible.length === 0 && (
           <span className="truncate text-xs text-muted">Only bot mentions ({items.length})</span>
         )}
+        {!expanded && notes.length > 0 && (
+          <Tooltip tip={notes.join(" ")} className="min-w-0">
+            <span tabIndex={0} className="block truncate text-xs text-muted">
+              {notes.join(" ")}
+            </span>
+          </Tooltip>
+        )}
       </header>
-      {notes.map((note) => (
-        <p key={note} className="text-xs text-muted">
-          {note}
-        </p>
-      ))}
+      {expanded &&
+        notes.map((note) => (
+          <p key={note} className="text-xs text-muted">
+            {note}
+          </p>
+        ))}
       {expanded && items.length > 0 && (
         <>
           <div className="[&_[role=group]]:max-w-full [&_button]:px-1">

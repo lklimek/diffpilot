@@ -909,6 +909,10 @@ export type DashboardSummary = {
  */
 mentions: Array<Mention>,
 /**
+ * Mention reads omitted in this snapshot, independent of item filters and pagination.
+ */
+mention_coverage: MentionCoverage,
+/**
  * Opaque; changes whenever the stored snapshot or its ranking changes (poll this, then fetch the items).
  */
 revision: string,
@@ -1719,6 +1723,10 @@ export type ItemPage = {
  */
 mentions: Array<Mention>,
 /**
+ * Mention reads omitted in this snapshot, independent of item filters and pagination.
+ */
+mention_coverage: MentionCoverage,
+/**
  * The summary's `revision` the page belongs to.
  */
 revision: string,
@@ -2104,6 +2112,23 @@ text: string,
  * Server-built GitHub link to the mentioning post.
  */
 url: string, };
+
+/**
+ * Missing mention reads; zero items does not imply that every login was searched.
+ */
+export type MentionCoverage = {
+/**
+ * Real candidates not checked because of the read budget, deadline or read failure.
+ */
+unchecked_items: number,
+/**
+ * Logins whose mention discovery was unavailable; no enumeration fallback is attempted.
+ */
+unchecked_logins: Array<string>,
+/**
+ * Logins whose PR mention search exceeded its request budget.
+ */
+timed_out_logins: Array<string>, };
 
 /**
  * Model and reasoning effort (plan §5.2, ADR-002).

@@ -24,7 +24,7 @@ pub enum PrRelation {
     Assigned,
     /// Review requested from the login (directly; GitHub search also counts team requests).
     ReviewRequested,
-    /// Potential mention from search or enumeration; never a ranking relation.
+    /// Potential mention from search; never a ranking relation.
     Mentioned,
 }
 
@@ -201,6 +201,8 @@ pub struct PrSearch {
     pub candidates: Candidates,
     /// Logins search refused; the caller enumerates the configured owners for them (Q11).
     pub unsearchable: Vec<String>,
+    /// PR mention searches that exceeded their request budget.
+    pub timed_out_mention_logins: Vec<String>,
     /// Searches that failed otherwise.
     pub notes: Vec<ScanNote>,
     /// Searches GitHub answered.
@@ -359,10 +361,7 @@ impl<T: TokenSource> WorkClient<T> {
                     match read {
                         Ok(read) => read,
                         Err(_) => {
-                            found.notes.push(note(
-                                format!("PR mention search for {login} was not completed within its request budget"),
-                                None,
-                            ));
+                            found.timed_out_mention_logins.push(login.clone());
                             continue;
                         }
                     }

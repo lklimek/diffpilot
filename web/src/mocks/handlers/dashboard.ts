@@ -124,7 +124,13 @@ const SCENARIOS = {
         revision: "r-1029-empty",
         snapshot: { ...SUMMARY.snapshot!, item_counts: zero, checked: { pr: 38, issue: 21, todo: 29 } },
       },
-      items: { mentions: [], revision: "r-1029-empty", items: [], next_cursor: null },
+      items: {
+        mention_coverage: SUMMARY.mention_coverage,
+        mentions: [],
+        revision: "r-1029-empty",
+        items: [],
+        next_cursor: null,
+      },
     };
   },
   /** The last scan stopped on GitHub's rate limit; the 08:12 snapshot stays; Refresh waits for the reset. */
@@ -159,6 +165,17 @@ const SCENARIOS = {
     summary: { ...SUMMARY, mentions: MENTIONS },
     items: { ...ITEMS, mentions: MENTIONS },
   }),
+  "mention-coverage": (): Base => ({
+    summary: {
+      ...SUMMARY,
+      mention_coverage: {
+        unchecked_items: 5,
+        unchecked_logins: ["alice-helper"],
+        timed_out_logins: ["slow"],
+      },
+    },
+    items: ITEMS,
+  }),
   "mention-hide-gone": (): Base => ({
     summary: { ...SUMMARY, mentions: MENTIONS },
     items: ITEMS,
@@ -170,7 +187,13 @@ const SCENARIOS = {
   /** No refresh yet: no snapshot, no items. */
   "first-run": (): Base => ({
     summary: { ...SUMMARY, mentions: [], revision: "r-none", latest_refresh: null, snapshot: null },
-    items: { mentions: [], revision: "r-none", items: [], next_cursor: null },
+    items: {
+      mention_coverage: SUMMARY.mention_coverage,
+      mentions: [],
+      revision: "r-none",
+      items: [],
+      next_cursor: null,
+    },
   }),
   /** First dashboard visit: no time zone stored, so the schedule cannot run yet (R6b stores it). */
   "no-time-zone": noTimeZone,
@@ -393,7 +416,7 @@ function etagOf(body: unknown): string {
  * matching `If-None-Match`.
  */
 export const listDashboardItems = route("listDashboardItems", ({ request }) => {
-  const { items: page } = current();
+  const { items: page, summary } = current();
   const query = new URL(request.url).searchParams;
   const limit = Math.min(Number(query.get("limit") ?? 100), 500);
   const cursor = query.get("cursor");
@@ -413,6 +436,7 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
   const matching = page.items.filter(keep);
   const next = offset + limit < matching.length ? `${page.revision}:${offset + limit}` : null;
   const body: ItemPage = {
+    mention_coverage: summary.mention_coverage,
     mentions: cursor ? [] : (page.mentions ?? []).filter((m) => !hiddenMentions.has(m.id)),
     revision: page.revision,
     items: matching.slice(offset, offset + limit),

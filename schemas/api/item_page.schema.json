@@ -12,6 +12,15 @@
       },
       "default": []
     },
+    "mention_coverage": {
+      "description": "Mention reads omitted in this snapshot, independent of item filters and pagination.",
+      "$ref": "#/$defs/MentionCoverage",
+      "default": {
+        "unchecked_items": 0,
+        "unchecked_logins": [],
+        "timed_out_logins": []
+      }
+    },
     "revision": {
       "description": "The summary's `revision` the page belongs to.",
       "type": "string"
@@ -142,6 +151,37 @@
       "required": [
         "owner",
         "name"
+      ]
+    },
+    "MentionCoverage": {
+      "description": "Missing mention reads; zero items does not imply that every login was searched.",
+      "type": "object",
+      "properties": {
+        "unchecked_items": {
+          "description": "Real candidates not checked because of the read budget, deadline or read failure.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unchecked_logins": {
+          "description": "Logins whose mention discovery was unavailable; no enumeration fallback is attempted.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timed_out_logins": {
+          "description": "Logins whose PR mention search exceeded its request budget.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "unchecked_items",
+        "unchecked_logins",
+        "timed_out_logins"
       ]
     },
     "WorkItem": {

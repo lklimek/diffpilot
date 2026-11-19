@@ -59,6 +59,7 @@ function wrapper() {
 
 const page = (items: WorkItem[], revision: string, next: string | null): ItemPage => ({
   mentions: [],
+  mention_coverage: { unchecked_items: 0, unchecked_logins: [], timed_out_logins: [] },
   revision,
   items,
   next_cursor: next,

@@ -425,3 +425,28 @@ test("hiding a vanished mention removes its row and updates the count without an
   await expect(strip.locator(`a[href="${href}"]`)).toHaveCount(0);
   await expect(page.getByText(/Could not hide this mention. Try again./)).toHaveCount(0);
 });
+
+test("structured mention coverage stays in the collapsed summary and out of scan notes", async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto("/?dashboard=mention-coverage");
+  const strip = page.getByRole("region", { name: "Mentions" });
+  await expect(strip).toContainText("Mentions not checked on 5 items this refresh.");
+  await expect(strip).toContainText(
+    "Mentions of @alice-helper were not checked because GitHub search is unavailable for this login.",
+  );
+  expect((await strip.boundingBox())!.height).toBeLessThanOrEqual(28);
+  const heading = (await strip.getByRole("button", { name: "Mentions (1)" }).boundingBox())!;
+  const coverage = (await strip.locator("[tabindex='0']").boundingBox())!;
+  expect(coverage.x).toBeGreaterThanOrEqual(heading.x + heading.width);
+  const first = (await page.locator("li[data-item]").first().boundingBox())!;
+  expect(first.y + first.height).toBeLessThanOrEqual(900);
+  await strip
+    .locator("[tabindex='0']")
+    .filter({ hasText: /Mentions not checked/ })
+    .focus();
+  await expect(page.getByRole("tooltip")).toContainText("@alice-helper");
+  await expect(page.getByRole("tooltip")).toContainText("@slow");
+  await strip.getByRole("button", { name: "Mentions (1)" }).click();
+  await expect(strip.getByText(/^Mentions of @alice-helper/)).toBeVisible();
+  await expect(page.locator("aside")).not.toContainText("Mentions not checked");
+});

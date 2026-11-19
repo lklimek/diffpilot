@@ -1864,6 +1864,12 @@ async fn mentions_stay_outside_ranking_and_hide_is_scoped_and_token_readable() {
             read.body["mentions"],
             serde_json::to_value(&before.mentions).unwrap()
         );
+        assert_eq!(
+            read.body["mention_coverage"],
+            json!({
+                "unchecked_items": 0, "unchecked_logins": ["alice-helper"], "timed_out_logins": []
+            })
+        );
     }
     let uri = format!("/api/v1/dashboard/mentions/{}/hide", mention.id);
     assert_eq!(
@@ -1905,7 +1911,7 @@ async fn mentions_stay_outside_ranking_and_hide_is_scoped_and_token_readable() {
 }
 
 #[tokio::test]
-async fn mention_only_prs_search_and_enumeration_honor_exclusions_and_hide_identity() {
+async fn mention_only_prs_honor_search_coverage_exclusions_and_hide_identity() {
     let dir = tempfile::tempdir().unwrap();
     for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
         let entry = entry.unwrap();
@@ -1996,7 +2002,7 @@ async fn mention_only_prs_search_and_enumeration_honor_exclusions_and_hide_ident
                 .iter()
                 .filter(|m| m.number == number)
                 .count(),
-            2
+            if number == 321 { 2 } else { 0 }
         );
         assert!(
             !w.items("")
@@ -2135,5 +2141,88 @@ async fn mention_only_items_are_not_counted_in_ranking_progress() {
     assert_eq!(
         total(ScanStepKey::Issues),
         Some(summary.snapshot.unwrap().checked.issue)
+    );
+}
+
+#[tokio::test]
+async fn unsearchable_mentions_do_not_spend_the_budget_on_unrelated_open_prs() {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let file = dir.path().join("pull-requests.json");
+    let mut prs: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let mut template = prs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["number"] == 311)
+        .unwrap()
+        .clone();
+    template["author"]["login"] = json!("bob");
+    template["assignees"] = json!({"nodes":[]});
+    template["reviewRequests"] = json!({"nodes":[]});
+    template["reviews"] = json!({"nodes":[],"totalCount":0});
+    template["comments"] = json!({"nodes":[],"totalCount":0});
+    template["reviewThreads"] = json!({"nodes":[],"totalCount":0});
+    for number in 400..445 {
+        let mut pr = template.clone();
+        pr["number"] = json!(number);
+        pr["body"] = json!("Unrelated work");
+        pr["updatedAt"] = json!("2026-11-18T08:00:00Z");
+        prs.as_array_mut().unwrap().push(pr);
+    }
+    template["number"] = json!(450);
+    template["body"] = json!("@alice please reply");
+    template["updatedAt"] = json!("2026-11-16T08:00:00Z");
+    prs.as_array_mut().unwrap().push(template.clone());
+    template["number"] = json!(451);
+    template["body"] = json!("@alice-helper please reply");
+    prs.as_array_mut().unwrap().push(template);
+    std::fs::write(&file, serde_json::to_vec(&prs).unwrap()).unwrap();
+    let file = dir.path().join("issues.json");
+    let mut issues: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let issue = issues
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|i| i["number"] == 305)
+        .unwrap();
+    issue["body"] = json!("@alice-helper please reply");
+    issue["comments"] = json!({"nodes":[],"totalCount":0});
+    std::fs::write(&file, serde_json::to_vec(&issues).unwrap()).unwrap();
+    let w = world_in(
+        Arc::new(NoopRanker),
+        Duration::from_secs(120),
+        dir.path().to_owned(),
+    )
+    .await;
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let summary = w.summary(ALICE).await;
+    assert!(
+        summary.mentions.iter().any(|m| m.number == 450),
+        "the older real candidate must be read"
+    );
+    assert!(
+        !summary
+            .mentions
+            .iter()
+            .any(|m| m.number == 451 || m.number == 305),
+        "no fallback mention discovery for PRs or issues"
+    );
+    let expected =
+        json!({"unchecked_items":0,"unchecked_logins":["alice-helper"],"timed_out_logins":[]});
+    for uri in ["/api/v1/dashboard", "/api/v1/dashboard/items"] {
+        let read = w.send("GET", uri, ALICE, &[]).await;
+        assert_eq!(read.body["mention_coverage"], expected);
+    }
+    assert!(
+        !summary
+            .snapshot
+            .unwrap()
+            .notes
+            .iter()
+            .any(|n| n.text.contains("Mentions not checked"))
     );
 }

@@ -1,7 +1,7 @@
 //! Ownership policies (Q3, Q4; skill `fetch_owned_paths`, `owned_change`): the paths whose areas name a scanned
 //! login as owner or reviewer, and how much real code a pull request changes there.
 
-use crate::github::work::{ItemRef, TokenSource, WorkClient, WorkError};
+use crate::github::work::{ItemRef, TokenSource, WorkClient, WorkError, repo_name};
 use contracts::api::dashboard::{DashboardSettings, PolicyRef};
 use contracts::common::RepoRef;
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,9 +69,29 @@ impl Ownership {
             .paths
             .get_or_try_init(|| async {
                 match client.file_contents(&policy.repo, &policy.path).await {
-                    Ok(text) => Ok(owned_paths(rules, &text).ok()),
-                    Err(error) if error.ends_refresh() => Err(error),
-                    Err(_) => Ok(None),
+                    Ok(text) => match owned_paths(rules, &text) {
+                        Ok(paths) => Ok(Some(paths)),
+                        Err(error) => {
+                            tracing::warn!(
+                                repo = %repo_name(repo), policy_repo = %repo_name(&policy.repo),
+                                path = %policy.path, %error,
+                                "Ownership policy could not be parsed"
+                            );
+                            Ok(None)
+                        }
+                    },
+                    Err(error) => {
+                        tracing::warn!(
+                            repo = %repo_name(repo), policy_repo = %repo_name(&policy.repo),
+                            path = %policy.path, %error,
+                            "Ownership policy could not be read"
+                        );
+                        if error.ends_refresh() {
+                            Err(error)
+                        } else {
+                            Ok(None)
+                        }
+                    }
                 }
             })
             .await?;
