@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { githubLineUrl, sha256Hex, stepDiffUrl } from "./links";
+import { githubLineUrl, sha256Hex, siteDiffUrl, stepDiffUrl } from "./links";
 
 const PR = {
   repo: { owner: "dashpay", name: "platform" },
@@ -102,5 +102,30 @@ describe("stepDiffUrl", () => {
 
   it("is null for a step without changed lines", () => {
     expect(stepDiffUrl(PR, { ...facts, changed_lines: [] })).toBeNull();
+  });
+});
+
+describe("siteDiffUrl", () => {
+  const step = {
+    file: "src/a.rs",
+    side: "head" as const,
+    changed_lines: [
+      { start_line: 89, end_line: 89 },
+      { start_line: 91, end_line: 94 },
+      { start_line: 96, end_line: 96 },
+    ],
+  };
+  const site = { file: "src/a.rs", side: "head" as const, range: { start_line: 90, end_line: 95 } };
+  const hash = sha256Hex("src/a.rs");
+
+  it("anchors the site's lines that are changed lines of its step", () => {
+    expect(siteDiffUrl(PR, site, step)).toBe(`${CHANGES}#diff-${hash}R91-R94`);
+  });
+
+  it("is null without the step, outside its changed lines, or on another file or side", () => {
+    expect(siteDiffUrl(PR, site, undefined)).toBeNull();
+    expect(siteDiffUrl(PR, { ...site, range: { start_line: 97, end_line: 99 } }, step)).toBeNull();
+    expect(siteDiffUrl(PR, { ...site, file: "src/b.rs" }, step)).toBeNull();
+    expect(siteDiffUrl(PR, { ...site, side: "base" }, step)).toBeNull();
   });
 });

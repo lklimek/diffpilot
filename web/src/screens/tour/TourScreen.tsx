@@ -666,6 +666,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         key={step.id}
         step={step}
         pr={tour.analysis.pr}
+        stepOf={(id) => findStep(tour, id)?.step}
         threadsStatus={tour.pr_context.facts.threads_status}
         code={
           <>

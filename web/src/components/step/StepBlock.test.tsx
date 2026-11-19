@@ -23,7 +23,7 @@ describe("StepBlock", () => {
     );
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAccessibleDescription(
-      "Open the changed lines in the pull request diff on GitHub (new tab)",
+      "Open the changed lines in the pull request diff on GitHub (new tab). GitHub shows its latest version.",
     );
   });
 
@@ -218,6 +218,36 @@ describe("StepBlock", () => {
     expect(open[0]).toHaveAccessibleName("Open step for src/sync/peers.rs:7");
     await userEvent.click(open[0]!);
     expect(onSelectStep).toHaveBeenCalledWith("f1.8");
+  });
+
+  it("links a pattern site inside its step's changed lines to the PR diff, other sites at the commit", async () => {
+    const f3 = tour.flows[2]!;
+    const patterns = structuredClone(f3.llm.pattern_repetitions);
+    // f1.2 changes src/rpc/client.rs lines 89, 91-94 and 96.
+    patterns[0]!.sites.push({
+      ...patterns[0]!.sites[0]!,
+      file: "src/rpc/client.rs",
+      step_id: "f1.2",
+      range: { start_line: 90, end_line: 95 },
+    });
+    render(
+      <StepBlock
+        step={stepOf(tour, "f3.2")}
+        pr={tour.analysis.pr}
+        stepOf={(id) => stepOf(tour, id)}
+        code={null}
+        patterns={patterns}
+      />,
+    );
+    await userEvent.click(screen.getByText("Same pattern × 2"));
+    expect(screen.getByRole("link", { name: /src\/rpc\/client.rs:90–95/ })).toHaveAttribute(
+      "href",
+      `https://github.com/acme/node-client/pull/482/changes#diff-${sha256Hex("src/rpc/client.rs")}R91-R94`,
+    );
+    expect(screen.getByRole("link", { name: /src\/sync\/peers.rs:201–205/ })).toHaveAttribute(
+      "href",
+      patterns[0]!.sites[0]!.github_url,
+    );
   });
 
   it("ignores pattern repetitions explained in other steps", () => {

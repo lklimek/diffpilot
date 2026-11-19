@@ -1,8 +1,15 @@
 import { CodeText } from "../section/CodeText";
 import { useId, useState, type ReactNode } from "react";
-import type { ImpactRef, PatternRepetition, Step, StepId, ThreadsStatus } from "../../api/generated/types";
+import type {
+  ImpactRef,
+  PatternRepetition,
+  PatternSite,
+  Step,
+  StepId,
+  ThreadsStatus,
+} from "../../api/generated/types";
 import { KindLabel } from "../badge/LlmLabel";
-import { stepGithubLink, type PrLinkBase } from "../github/links";
+import { siteDiffUrl, stepGithubLink, type PrLinkBase } from "../github/links";
 import { GithubLink } from "../inspector/text";
 import { rangeText, threadsNote } from "../section/format";
 import { ProvenanceTag } from "../section/ProvenanceTag";
@@ -31,6 +38,8 @@ interface StepBlockProps {
   oldCode?: { shown: boolean; onToggle: () => void };
   /** Opens another step (pattern sites that lie in a step). */
   onSelectStep?: (step: StepId) => void;
+  /** Looks up a step of the tour; with `pr`, pattern sites in a step's changed lines link the PR diff. */
+  stepOf?: (step: StepId) => Step | undefined;
   /** Whether the PR's review threads were read completely (`PrContextFacts.threads_status`). */
   threadsStatus?: ThreadsStatus;
 }
@@ -183,9 +192,11 @@ function Impact({
 function Pattern({
   pattern,
   onSelectStep,
+  diffUrl,
 }: {
   pattern: PatternRepetition;
   onSelectStep?: (s: StepId) => void;
+  diffUrl: (site: PatternSite) => string | null;
 }) {
   return (
     <details className="rounded-lg border border-border bg-surface px-4 py-2 text-[12.5px]">
@@ -198,7 +209,7 @@ function Pattern({
           const where = `${site.file}:${rangeText(site.range)}`;
           return (
             <li key={`${where}:${site.side}`}>
-              <GithubLink url={site.github_url} tip="Open these lines on GitHub (new tab)">
+              <GithubLink url={diffUrl(site) ?? site.github_url} tip="Open these lines on GitHub (new tab)">
                 {where}
                 {site.side === "base" && " (base)"}
               </GithubLink>
@@ -234,6 +245,7 @@ export function StepBlock({
   ownComments = 0,
   oldCode,
   onSelectStep,
+  stepOf,
   threadsStatus = "checked",
 }: StepBlockProps) {
   const headingId = useId();
@@ -297,7 +309,14 @@ export function StepBlock({
           <div className="grid min-w-0 gap-3">
             {llm.impact.length > 0 && <Impact key={step.id} impacts={llm.impact} impactCode={impactCode} />}
             {repeated.map((p) => (
-              <Pattern key={p.description} pattern={p} onSelectStep={onSelectStep} />
+              <Pattern
+                key={p.description}
+                pattern={p}
+                onSelectStep={onSelectStep}
+                diffUrl={(site) =>
+                  pr && site.step_id ? siteDiffUrl(pr, site, stepOf?.(site.step_id)?.facts) : null
+                }
+              />
             ))}
           </div>
         )}

@@ -1,4 +1,4 @@
-import type { LineSide, PrSummary, StepFacts } from "../../api/generated/types";
+import type { LineSide, PatternSite, PrSummary, StepFacts } from "../../api/generated/types";
 
 /** What a pull request's GitHub line links are built from. */
 export type PrLinkBase = Pick<PrSummary, "repo" | "number" | "base_sha" | "head_sha">;
@@ -99,10 +99,29 @@ export function stepDiffUrl(
   return githubLineUrl(pr, { path: facts.file, side: facts.side, start, end }, true);
 }
 
+/** The site's lines that are changed lines of its step, first to last, in the PR's changes view; else null. */
+export function siteDiffUrl(
+  pr: PrLinkBase,
+  site: Pick<PatternSite, "file" | "side" | "range">,
+  step: Pick<StepFacts, "file" | "side" | "changed_lines"> | undefined,
+): string | null {
+  if (!step || step.file !== site.file || step.side !== site.side) return null;
+  let [start, end] = [Infinity, -Infinity];
+  for (const r of step.changed_lines) {
+    const [a, b] = [Math.max(r.start_line, site.range.start_line), Math.min(r.end_line, site.range.end_line)];
+    if (a <= b) [start, end] = [Math.min(start, a), Math.max(end, b)];
+  }
+  if (start > end) return null;
+  return githubLineUrl(pr, { path: site.file, side: site.side, start, end }, true);
+}
+
 /** Link and tip of a step's lines: its changed lines in the PR diff, else the server's link at the analysed commit. */
 export function stepGithubLink(pr: PrLinkBase | undefined, facts: StepFacts): { url: string; tip: string } {
   const diff = pr ? stepDiffUrl(pr, facts) : null;
   return diff
-    ? { url: diff, tip: "Open the changed lines in the pull request diff on GitHub (new tab)" }
+    ? {
+        url: diff,
+        tip: "Open the changed lines in the pull request diff on GitHub (new tab). GitHub shows its latest version.",
+      }
     : { url: facts.github_url, tip: `Open these lines on GitHub at the ${facts.side} commit (new tab)` };
 }

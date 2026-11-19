@@ -57,7 +57,9 @@ describe("Inspector at a step", () => {
       `https://github.com/acme/node-client/pull/482/changes#diff-${sha256Hex("src/rpc/client.rs")}R99`,
     );
     expect(link).toHaveAccessibleName("src/rpc/client.rs:99 (opens on GitHub in a new tab)");
-    expect(link).toHaveAccessibleDescription(/pull request diff on GitHub/);
+    expect(link).toHaveAccessibleDescription(
+      /pull request diff on GitHub \(new tab\)\. GitHub shows its latest version\./,
+    );
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.queryByText(/unless marked otherwise/)).toBeNull();

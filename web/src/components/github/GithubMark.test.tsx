@@ -20,7 +20,8 @@ describe("GitHub link mark", () => {
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAccessibleDescription("Open these lines on GitHub (new tab)");
     expect(githubIcon(link)).toHaveAttribute("aria-hidden", "true");
-    expect(githubIcon(link)).toHaveAttribute("fill", "currentColor");
+    // GitHub logo guidelines: the mark is not recoloured with the link; it stays the neutral muted grey.
+    expect(githubIcon(link)).toHaveClass("text-muted");
     expect(link).not.toHaveTextContent("↗");
   });
 
@@ -38,7 +39,7 @@ describe("GitHub link mark", () => {
     render(<OpenExternal href={GITHUB} label="Open PLAT-1 on GitHub" />);
     const link = screen.getByRole("link", { name: "Open PLAT-1 on GitHub (new tab)" });
     expect(link).toHaveAccessibleDescription("Open PLAT-1 on GitHub (new tab)");
-    expect(githubIcon(link)).not.toBeNull();
+    expect(githubIcon(link)).toHaveClass("text-muted");
   });
 
   it("an icon link elsewhere (MemCan) keeps the external arrow", () => {
