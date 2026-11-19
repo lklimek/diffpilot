@@ -74,7 +74,7 @@ function Group({ label, tip, items }: { label: string; tip: string; items: BarPu
                     href={pr.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="shrink-0 font-mono text-accent underline"
+                    className="inline-flex min-h-6 shrink-0 items-center font-mono text-accent underline"
                   >
                     {pr.id}
                     <GithubMark />
