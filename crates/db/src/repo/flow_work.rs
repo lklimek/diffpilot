@@ -1259,6 +1259,7 @@ mod tests {
         use crate::repo::feedback::NewFeedback;
         use crate::repo::questions::{NewQuestion, QuestionLimits};
         use contracts::api::feedback::{FeedbackTarget, FeedbackValue};
+        use contracts::api::questions::AskAnchor;
         use contracts::api::review::ReviewState;
         use contracts::ids::{AnnotationId, FeedbackId, QuestionId, StepId};
         let db = Db::in_memory().await.unwrap();
@@ -1301,13 +1302,28 @@ mod tests {
             user_window_start: Timestamp::now() - SignedDuration::from_hours(24),
         };
         let (asked, kept) = (QuestionId::new_random(), QuestionId::new_random());
-        for (question, step) in [(asked, "f1.2"), (kept, "f2.1")] {
+        let on_lines = QuestionId::new_random();
+        let step = |step: &str| AskAnchor::Step {
+            step_id: StepId(step.into()),
+            lines: None,
+        };
+        // A question about lines is about code, not about a step: it outlives the flow's steps.
+        let lines = AskAnchor::Lines {
+            path: "f1.rs".into(),
+            side: contracts::common::LineSide::Head,
+            range: None,
+        };
+        for (question, anchor) in [
+            (asked, step("f1.2")),
+            (kept, step("f2.1")),
+            (on_lines, lines),
+        ] {
             db.questions()
                 .create(
                     NewQuestion {
                         id: question,
                         analysis_id: id,
-                        step_id: StepId(step.into()),
+                        anchor,
                         user_id: "u1".into(),
                         text: "why?".into(),
                     },
@@ -1360,6 +1376,7 @@ mod tests {
             Err(DbError::NotFound)
         ));
         assert!(db.questions().get(kept, Timestamp::now()).await.is_ok());
+        assert!(db.questions().get(on_lines, Timestamp::now()).await.is_ok());
         let left: Vec<FeedbackTarget> = db
             .feedback()
             .list(id, "u2")

@@ -6,7 +6,11 @@ use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
 use contracts::agent::ask::AskOutput;
 use contracts::agent::{self as agent, JobKind, StrictSchemaError};
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
-use contracts::api::questions::AskState;
+use contracts::api::code::{DiffLineKind, RangeQuery};
+use contracts::api::files::{HunkPart, PrFile};
+use contracts::api::questions::{AskAnchor, AskState};
+use contracts::api::tour::Flow;
+use contracts::common::{LineRange, LineSide};
 use contracts::ids::{AnalysisId, JobId, QuestionId, StepId};
 use contracts::job::access::AgentAccess;
 use contracts::job::result::{JobOutcome, JobResult};
@@ -34,9 +38,11 @@ use crate::memcan::profile;
 use crate::model::{ModelContext, select_model};
 use crate::pipeline::context::{StoredResults, pack};
 use crate::pipeline::prepass::PrepassRunError;
-use crate::pipeline::{self, CREDENTIAL_ID, PrDiffError};
+use crate::pipeline::tour::{self, TourLoadError};
+use crate::pipeline::{self, CREDENTIAL_ID, PrDiffError, files};
 use crate::prompts::{
-    self, AnsweredQuestion, AskContext, AskInput, JobContext, Profile, PromptError,
+    self, AnsweredQuestion, AskContext, AskInput, AskLinesInput, Asked, AskedLines, JobContext,
+    Profile, PromptError, TouchedStep,
 };
 use crate::state::AppState;
 
@@ -69,6 +75,9 @@ pub(super) enum FollowError {
     /// The pre-pass could not be read or computed.
     #[error("the pre-pass of the analysis is not available")]
     Prepass(#[from] PrepassRunError),
+    /// The Tour (owners of the asked lines) could not be built.
+    #[error("the Tour of the analysis is not available")]
+    Tour(#[from] TourLoadError),
     /// The diff of the analysis is not available.
     #[error("the diff of the analysis is not available")]
     Diff(#[from] PrDiffError),
@@ -372,28 +381,71 @@ async fn submit(
     record: &QuestionRecord,
 ) -> Result<JobHandle, FollowError> {
     let question = &record.question;
-    let (_, step) = stored_step(&state.db, summary.id, &question.step_id)
-        .await?
-        .ok_or(FollowError::UnknownStep)?;
     let (mirror_dir, files) = pipeline::pr_diff(state, summary).await?;
     let prepass = pipeline::prepass::ensure_for_read(state, summary, &mirror_dir, &files).await?;
     let memcan_profile = profile::stored(&state.db, summary.id).await?;
     let pr = &summary.pr;
-    let prompt = prompts::ask(&AskInput {
-        job: JobContext {
-            pr,
-            language: summary.language,
-            sub_agents: prompts::SUB_AGENTS_DEFAULT,
-            prepass: &prepass,
-        },
-        step_id: &question.step_id,
-        step: &step,
-        question: &question.text,
-        profile: Profile {
-            file: prepass.profile_file.as_deref(),
-            memcan: memcan_profile.text(),
-        },
-    })?;
+    let job = JobContext {
+        pr,
+        language: summary.language,
+        sub_agents: prompts::SUB_AGENTS_DEFAULT,
+        prepass: &prepass,
+    };
+    let profile = Profile {
+        file: prepass.profile_file.as_deref(),
+        memcan: memcan_profile.text(),
+    };
+    let prompt = match &question.anchor {
+        AskAnchor::Step { step_id, lines } => {
+            let (_, step) = stored_step(&state.db, summary.id, step_id)
+                .await?
+                .ok_or(FollowError::UnknownStep)?;
+            prompts::ask(&AskInput {
+                job,
+                step_id,
+                step: &step,
+                lines: *lines,
+                question: &question.text,
+                profile,
+            })?
+        }
+        AskAnchor::Lines { path, side, range } => {
+            let about = lines_about(state, summary, path, *side, *range).await?;
+            let steps: Vec<TouchedStep<'_>> = about
+                .flows
+                .iter()
+                .flat_map(|flow| flow.steps.iter().map(move |step| (flow, step)))
+                .filter(|(_, step)| {
+                    step.facts.file == *path
+                        && step.facts.side == *side
+                        && range.is_none_or(|range| overlaps(step.facts.range, range))
+                })
+                .map(|(flow, step)| TouchedStep {
+                    step_id: &step.id,
+                    flow_id: &flow.id,
+                    flow_title: &flow.llm.title,
+                    title: &step.llm.title,
+                    file: &step.facts.file,
+                    side: step.facts.side,
+                    range: step.facts.range,
+                    kind: step.llm.kind,
+                })
+                .collect();
+            prompts::ask_lines(&AskLinesInput {
+                job,
+                lines: AskedLines {
+                    path,
+                    side: *side,
+                    range: *range,
+                },
+                diff: &about.diff,
+                facts: &about.facts,
+                steps: &steps,
+                question: &question.text,
+                profile,
+            })?
+        }
+    };
     let spec = JobSpec {
         job_id: JobId::new_random(),
         attempt: 0,
@@ -446,6 +498,97 @@ async fn submit(
     Ok(handle)
 }
 
+/// What the server knows about asked lines: their classic diff as text, the owners of their changed lines and the
+/// Tour's flows.
+struct LinesAbout {
+    diff: String,
+    facts: Vec<HunkPart>,
+    flows: Vec<Flow>,
+}
+
+fn overlaps(a: LineRange, b: LineRange) -> bool {
+    a.start_line <= b.end_line && b.start_line <= a.end_line
+}
+
+/// The path of `file` on `side`, as `FileDiff::path_on`.
+fn file_path_on(file: &PrFile, side: LineSide) -> Option<&str> {
+    use contracts::api::files::FileChangeStatus::{Added, Deleted};
+    match (side, file.status) {
+        (LineSide::Head, Deleted) | (LineSide::Base, Added) => None,
+        (LineSide::Head, _) => Some(&file.path),
+        (LineSide::Base, _) => Some(file.old_path.as_deref().unwrap_or(&file.path)),
+    }
+}
+
+/// The classic diff, owners and flows of `path` on `side` (`range`: the lines, or the whole file): the owners come
+/// from the Files view's projection of the Tour, one source with the review.
+async fn lines_about(
+    state: &AppState,
+    summary: &AnalysisSummary,
+    path: &str,
+    side: LineSide,
+    range: Option<LineRange>,
+) -> Result<LinesAbout, FollowError> {
+    let results = StoredResults::load(&state.db, summary.id).await?;
+    let (listed, flows) = tour::with_projection(state, summary, results, |projection, tour| {
+        (files::from_tour(projection, &tour), tour.flows)
+    })
+    .await?;
+    let within = |part: &HunkPart| range.is_none_or(|range| overlaps(part.range, range));
+    let facts = listed
+        .iter()
+        .filter(|file| file_path_on(file, side) == Some(path))
+        .flat_map(|file| &file.hunks)
+        .flat_map(|hunk| &hunk.parts)
+        .filter(|part| part.side == side && within(part))
+        .map(|part| {
+            let mut part = part.clone();
+            if let Some(range) = range {
+                part.range.start_line = part.range.start_line.max(range.start_line);
+                part.range.end_line = part.range.end_line.min(range.end_line);
+            }
+            part
+        })
+        .collect();
+    let (from, to) = range.map_or((1, RangeQuery::MAX_LINES), |range| {
+        (range.start_line, range.end_line)
+    });
+    let query = RangeQuery {
+        path: path.to_owned(),
+        side,
+        from,
+        to,
+    };
+    let diff = match pipeline::lines::diff(state, summary, query).await {
+        Ok(diff) if diff.hunks.is_empty() => {
+            "No line of this range is changed by the pull request.".to_owned()
+        }
+        Ok(diff) => {
+            let mut text = String::new();
+            for hunk in &diff.hunks {
+                text.push_str(&hunk.header);
+                text.push('\n');
+                for line in &hunk.lines {
+                    text.push(match line.kind {
+                        DiffLineKind::Context => ' ',
+                        DiffLineKind::Added => '+',
+                        DiffLineKind::Removed => '-',
+                    });
+                    text.push_str(&line.text);
+                    text.push('\n');
+                }
+            }
+            text
+        }
+        Err(error) => {
+            tracing::debug!(analysis = %summary.id, ?error, "the classic diff of asked lines is not included");
+            "The classic diff is not included (too large or binary); read the file at both commits."
+                .to_owned()
+        }
+    };
+    Ok(LinesAbout { diff, facts, flows })
+}
+
 /// The context pack of an `ask` job, built at claim: the stored results with the asked step in full, the rest of
 /// its flow analysis and this user's questions answered earlier across the PR. Without the stored step (never for a
 /// finished analysis) the pack holds the stored results only, so the claim is never blocked.
@@ -457,15 +600,6 @@ pub async fn context_pack(
     let record = db.questions().get(question, Timestamp::now()).await?;
     let summary = db.analyses().summary(analysis).await?;
     let results = StoredResults::load(db, analysis).await?;
-    let step_id = &record.question.step_id;
-    let Some(flow) = results
-        .flows
-        .iter()
-        .find(|flow| step_of(flow, step_id).is_some())
-    else {
-        tracing::warn!(%analysis, %question, "the asked step is not stored; the context pack holds the analysis only");
-        return Ok(pack(&summary.pr, &results, None)?);
-    };
     let answered = db.questions().history_before(question).await?;
     let earlier: Vec<AnsweredQuestion<'_>> = answered
         .iter()
@@ -474,9 +608,51 @@ pub async fn context_pack(
             answer: &output.answer,
         })
         .collect();
+    let touched: Vec<(StepId, &AgentStep)>;
+    let asked = match &record.question.anchor {
+        AskAnchor::Step { step_id, .. } => {
+            let Some(flow) = results
+                .flows
+                .iter()
+                .find(|flow| step_of(flow, step_id).is_some())
+            else {
+                tracing::warn!(%analysis, %question, "the asked step is not stored; the context pack holds the analysis only");
+                return Ok(pack(&summary.pr, &results, None)?);
+            };
+            Asked::Step { step_id, flow }
+        }
+        AskAnchor::Lines { path, side, range } => {
+            touched = results
+                .flows
+                .iter()
+                .flat_map(|flow| {
+                    flow.steps
+                        .iter()
+                        .zip(1u32..)
+                        .map(move |(step, number)| (StepId::of(&flow.flow_id, number), step))
+                })
+                .filter(|(_, step)| {
+                    let lines = LineRange {
+                        start_line: step.start_line,
+                        end_line: step.end_line,
+                    };
+                    step.file == *path
+                        && step.side == *side
+                        && range.is_none_or(|range| overlaps(lines, range))
+                })
+                .collect();
+            Asked::Lines {
+                lines: AskedLines {
+                    path,
+                    side: *side,
+                    range: *range,
+                },
+                steps: &touched,
+            }
+        }
+    };
     let ask = AskContext {
-        step_id,
-        flow,
+        asked,
         earlier: &earlier,
     };
     Ok(pack(&summary.pr, &results, Some(ask))?)

@@ -7,7 +7,7 @@ use contracts::api::dashboard::{
 };
 use contracts::api::feedback::FeedbackValue;
 use contracts::api::questions::AskState;
-use contracts::common::LlmLanguage;
+use contracts::common::{LineSide, LlmLanguage};
 use contracts::job::result::JobFailureKind;
 use contracts::job::spec::{CredentialKind, ReasoningEffort};
 use contracts::job::state::JobState;
@@ -340,6 +340,10 @@ async fn check_lists_match_contract_enums() {
                 ]
                 .map(wire_name),
             ),
+        ),
+        (
+            "questions",
+            in_list([LineSide::Head, LineSide::Base].map(wire_name)),
         ),
         (
             "feedback",
@@ -1294,6 +1298,92 @@ async fn russian_migration_keeps_the_data_and_accepts_ru() {
     .await
     .expect("index");
     assert_eq!(unique, 1);
+}
+
+/// Migration 0012 rebuilds `questions` with anchors: every stored question stays, as a step anchor.
+#[tokio::test]
+async fn question_anchors_migration_keeps_every_question_as_a_step_anchor() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before_anchors = MIGRATIONS
+        .iter()
+        .position(|(_, name, _)| *name == "question_anchors")
+        .expect("migration 0012");
+    migrate(&pool, before_anchors)
+        .await
+        .expect("schema before 0012");
+    let db = Db { pool };
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO questions (id, tenant_id, analysis_id, step_id, user_id, text, state, answer, job_id, created_at,
+             answered_at)
+           VALUES ('q1', 'default', 'a1', 'f1.1', 'u1', 'why?', 'answered', '{\"answer\":\"a\",\"evidence\":[]}',
+                   'j9', 't1', 't2'),
+                  ('q2', 'default', 'a2', 'f2.3', 'u1', 'how?', 'pending', NULL, NULL, 't3', NULL);",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("questions of the old schema");
+    migrate(&db.pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+    type Row = (
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT id, step_id, path, state, answer, answered_at FROM questions ORDER BY rowid",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("questions");
+    assert_eq!(
+        rows,
+        [
+            (
+                "q1".to_owned(),
+                Some("f1.1".to_owned()),
+                None,
+                "answered".to_owned(),
+                Some(r#"{"answer":"a","evidence":[]}"#.to_owned()),
+                Some("t2".to_owned())
+            ),
+            (
+                "q2".to_owned(),
+                Some("f2.3".to_owned()),
+                None,
+                "pending".to_owned(),
+                None,
+                None
+            ),
+        ]
+    );
+    let index: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_schema WHERE name = 'questions_by_analysis'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("index");
+    assert_eq!(index, 1);
+    let check: String = sqlx::query_scalar("PRAGMA foreign_key_check")
+        .fetch_optional(&db.pool)
+        .await
+        .expect("check")
+        .unwrap_or_default();
+    assert_eq!(check, "");
 }
 
 /// Another connection that read the old definitions before migration 0010 accepts Russian afterwards.
