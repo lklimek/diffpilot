@@ -16,6 +16,7 @@ use futures::future::BoxFuture;
 
 use crate::jobs::claim::{ContextPackError, ContextPacks};
 use crate::prompts::{self, AskContext, ContextPackInput, PromptError};
+use crate::state::AppState;
 
 /// The stored agent results of one analysis.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -73,8 +74,8 @@ pub fn pack(
 /// The claim path's context packs: the analysis's results stored at claim time (`ask` jobs: `ask::context_pack`).
 #[derive(Clone, Debug)]
 pub struct StoredPacks {
-    /// The database.
-    pub db: Db,
+    /// The server state (an `ask` job about lines rebuilds the Tour to find the steps they touch).
+    pub state: AppState,
 }
 
 impl ContextPacks for StoredPacks {
@@ -85,10 +86,11 @@ impl ContextPacks for StoredPacks {
     ) -> BoxFuture<'a, Result<Option<String>, ContextPackError>> {
         Box::pin(async move {
             if let JobStage::Ask(question) = stage {
-                return crate::ask::context_pack(&self.db, analysis, *question).await;
+                return crate::ask::context_pack(&self.state, analysis, *question).await;
             }
-            let summary = self.db.analyses().summary(analysis).await?;
-            let results = StoredResults::load(&self.db, analysis).await?;
+            let db = &self.state.db;
+            let summary = db.analyses().summary(analysis).await?;
+            let results = StoredResults::load(db, analysis).await?;
             Ok(pack(&summary.pr, &results, None)?)
         })
     }

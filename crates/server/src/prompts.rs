@@ -248,7 +248,37 @@ pub struct AskedLines<'a> {
     pub range: Option<LineRange>,
 }
 
-/// A step of the analysis overlapping asked lines, in summary.
+/// A step in summary, as every prompt lists steps (title, place, kind).
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct StepSummary<'a> {
+    /// The step's title.
+    pub title: &'a str,
+    /// Repository-relative path on `side`.
+    pub file: &'a str,
+    /// Side of the step's lines.
+    pub side: LineSide,
+    /// First line.
+    pub start_line: u32,
+    /// Last line.
+    pub end_line: u32,
+    /// Step kind.
+    pub kind: FragmentKind,
+}
+
+impl<'a> StepSummary<'a> {
+    fn of(step: &'a AgentStep) -> Self {
+        Self {
+            title: &step.title,
+            file: &step.file,
+            side: step.side,
+            start_line: step.start_line,
+            end_line: step.end_line,
+            kind: step.kind,
+        }
+    }
+}
+
+/// A step of the analysis the asked lines touch, in summary, with its server id and flow.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct TouchedStep<'a> {
     /// Server id of the step.
@@ -257,17 +287,9 @@ pub struct TouchedStep<'a> {
     pub flow_id: &'a FlowId,
     /// The flow's title.
     pub flow_title: &'a str,
-    /// The step's title.
-    pub title: &'a str,
-    /// Repository-relative path on `side`.
-    pub file: &'a str,
-    /// Side of the step's lines.
-    pub side: LineSide,
-    /// The step's lines.
+    /// The step.
     #[serde(flatten)]
-    pub range: LineRange,
-    /// Step kind.
-    pub kind: FragmentKind,
+    pub step: StepSummary<'a>,
 }
 
 /// Input of the `ask` prompt about lines without a single step.
@@ -391,24 +413,15 @@ impl<'a> FlowEntry<'a> {
 #[derive(Serialize)]
 struct StepEntry<'a> {
     id: &'a str,
-    title: &'a str,
-    file: &'a str,
-    side: LineSide,
-    start_line: u32,
-    end_line: u32,
-    kind: FragmentKind,
+    #[serde(flatten)]
+    step: StepSummary<'a>,
 }
 
 impl<'a> StepEntry<'a> {
     fn of(id: &'a str, step: &'a AgentStep) -> Self {
         Self {
             id,
-            title: &step.title,
-            file: &step.file,
-            side: step.side,
-            start_line: step.start_line,
-            end_line: step.end_line,
-            kind: step.kind,
+            step: StepSummary::of(step),
         }
     }
 }
@@ -495,6 +508,7 @@ pub fn ask(input: &AskInput<'_>) -> Result<String, PromptError> {
         ASK,
         &[
             ("step_id", &about),
+            ("ask_rules", part("ask_rules")?),
             ("lenses", part("lenses")?),
             ("profile", &profile(input.profile)?),
             ("step", &data("step", &step)),
@@ -526,6 +540,7 @@ pub fn ask_lines(input: &AskLinesInput<'_>) -> Result<String, PromptError> {
         ASK_LINES,
         &[
             ("place", &place),
+            ("ask_rules", part("ask_rules")?),
             ("lenses", part("lenses")?),
             ("profile", &profile(input.profile)?),
             ("lines", &data("lines", &serde_json::to_string(lines)?)),

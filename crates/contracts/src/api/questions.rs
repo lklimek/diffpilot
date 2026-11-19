@@ -54,8 +54,8 @@ pub enum AskAnchor {
 }
 
 impl AskAnchor {
-    /// Longest line range of an anchor, in lines (as `RangeQuery`).
-    pub const MAX_LINES: u32 = 2000;
+    /// Longest line range of an anchor, in lines: the longest range the API serves.
+    pub const MAX_LINES: u32 = crate::api::code::RangeQuery::MAX_LINES;
 
     /// The step of a step anchor.
     pub fn step_id(&self) -> Option<&StepId> {

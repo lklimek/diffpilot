@@ -106,19 +106,30 @@ pub async fn ask(
     if superseded(&state.db.analyses().get(analysis.id).await?) {
         return Err(AskError::Superseded);
     }
-    check_anchor(state, analysis, &request.anchor).await?;
     let now = Timestamp::now();
+    let limits = QuestionLimits {
+        per_analysis: MAX_QUESTIONS_PER_ANALYSIS,
+        per_user: MAX_QUESTIONS_PER_USER_PER_HOUR,
+        user_window_start: now - SignedDuration::from_hours(1),
+    };
+    // Refused requests do no diff or file work.
+    match state
+        .db
+        .questions()
+        .limit_reached(analysis.id, user_id, limits)
+        .await?
+    {
+        Some(Asked::AnalysisLimit) => return Err(AskError::AnalysisLimit),
+        Some(_) => return Err(AskError::UserLimit),
+        None => {}
+    }
+    check_anchor(state, analysis, &request.anchor).await?;
     let question = NewQuestion {
         id: QuestionId::new_random(),
         analysis_id: analysis.id,
         anchor: request.anchor,
         user_id: user_id.to_owned(),
         text: text.to_owned(),
-    };
-    let limits = QuestionLimits {
-        per_analysis: MAX_QUESTIONS_PER_ANALYSIS,
-        per_user: MAX_QUESTIONS_PER_USER_PER_HOUR,
-        user_window_start: now - SignedDuration::from_hours(1),
     };
     let db = &state.db;
     let event = state
