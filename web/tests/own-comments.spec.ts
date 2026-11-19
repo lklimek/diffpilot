@@ -35,6 +35,7 @@ test("a comment added in a step is found again after Next and Previous: by mouse
   await page.getByRole("button", { name: "← Previous" }).click();
   const marker = code(page).getByRole("button", { name: "Your pending comment at line 96" });
   await expect(marker).toBeVisible();
+  await marker.hover();
   await expect(marker).toHaveAccessibleDescription(/pending review; nothing is published/);
   await marker.click();
   await code(page).getByRole("button", { name: "Open the comment here" }).click();

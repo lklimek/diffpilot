@@ -182,52 +182,55 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
       {cloneElement(children, {
         "aria-expanded": open && !outside,
         "aria-haspopup": "dialog",
-        "aria-controls": id,
-        "aria-describedby": `${id}-body`,
+        // The dialog exists only while open, so the references are given only then.
+        "aria-controls": open ? id : undefined,
+        "aria-describedby": open ? `${id}-body` : undefined,
         onClick: () => {
           setDismissed(false);
           setPinned(pinned ? null : id);
         },
       })}
-      <span
-        ref={dialog}
-        id={id}
-        role="dialog"
-        aria-label={label}
-        tabIndex={-1}
-        hidden={!open || outside}
-        style={position}
-        className={`fixed z-50 flex w-max max-w-[min(360px,calc(100vw-16px))] cursor-auto flex-col pt-1 font-sans text-xs font-normal whitespace-normal normal-case outline-none select-text ${
-          position.bottom !== undefined ? "pt-0 pb-1" : ""
-        }`}
-      >
+      {open && (
         <span
-          ref={box}
-          data-popover-box
-          className={`block min-h-0 overflow-y-auto overscroll-contain rounded-md border bg-surface px-2.5 py-1.5 text-left text-text shadow-tip [overflow-wrap:anywhere] ${
-            pinned ? "border-accent" : "border-border"
+          ref={dialog}
+          id={id}
+          role="dialog"
+          aria-label={label}
+          tabIndex={-1}
+          hidden={outside}
+          style={position}
+          className={`fixed z-50 flex w-max max-w-[min(360px,calc(100vw-16px))] cursor-auto flex-col pt-1 font-sans text-xs font-normal whitespace-normal normal-case outline-none select-text ${
+            position.bottom !== undefined ? "pt-0 pb-1" : ""
           }`}
         >
-          <span className="mb-1 flex min-h-6 items-center gap-2">
-            {tag && <ProvenanceTag source={tag} focusable={pinned} />}
-            {pinned && (
-              <Tooltip tip="Closes this popover (Esc)." className="ml-auto">
-                <button
-                  type="button"
-                  aria-label="Close"
-                  onClick={close}
-                  className="inline-flex size-6 cursor-pointer items-center justify-center rounded border-0 bg-transparent text-[14px] text-muted hover:bg-surface-2 hover:text-text"
-                >
-                  <span aria-hidden>×</span>
-                </button>
-              </Tooltip>
-            )}
-          </span>
-          <span id={`${id}-body`} className="grid gap-1.5">
-            {content(pinned, unpin)}
+          <span
+            ref={box}
+            data-popover-box
+            className={`block min-h-0 overflow-y-auto overscroll-contain rounded-md border bg-surface px-2.5 py-1.5 text-left text-text shadow-tip [overflow-wrap:anywhere] ${
+              pinned ? "border-accent" : "border-border"
+            }`}
+          >
+            <span className="mb-1 flex min-h-6 items-center gap-2">
+              {tag && <ProvenanceTag source={tag} focusable={pinned} />}
+              {pinned && (
+                <Tooltip tip="Closes this popover (Esc)." className="ml-auto">
+                  <button
+                    type="button"
+                    aria-label="Close"
+                    onClick={close}
+                    className="inline-flex size-6 cursor-pointer items-center justify-center rounded border-0 bg-transparent text-[14px] text-muted hover:bg-surface-2 hover:text-text"
+                  >
+                    <span aria-hidden>×</span>
+                  </button>
+                </Tooltip>
+              )}
+            </span>
+            <span id={`${id}-body`} className="grid gap-1.5">
+              {content(pinned, unpin)}
+            </span>
           </span>
         </span>
-      </span>
+      )}
     </span>
   );
 }

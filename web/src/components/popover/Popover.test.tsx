@@ -21,6 +21,27 @@ const marker = (name: string, text: string) => (
 );
 
 describe("Popover", () => {
+  it("mounts its content only while open, with no dangling aria references when closed", async () => {
+    const user = userEvent.setup();
+    const { container } = render(marker("Remark", "Full remark text"));
+    const trigger = screen.getByRole("button", { name: "Remark" });
+    expect(container).not.toHaveTextContent("Full remark text");
+    expect(container.querySelector("[role=dialog]")).toBeNull();
+    expect(trigger).not.toHaveAttribute("aria-controls");
+    expect(trigger).not.toHaveAttribute("aria-describedby");
+    await user.hover(trigger);
+    expect(container).toHaveTextContent("Full remark text");
+    expect(trigger).toHaveAccessibleDescription("Full remark text");
+    expect(document.getElementById(trigger.getAttribute("aria-controls")!)).not.toBeNull();
+    await user.unhover(trigger);
+    expect(container).not.toHaveTextContent("Full remark text");
+    await user.click(trigger);
+    await user.unhover(trigger);
+    expect(container).toHaveTextContent("Full remark text");
+    await user.click(document.body);
+    expect(container).not.toHaveTextContent("Full remark text");
+  });
+
   it("shows its content on hover and on keyboard focus, and hides it after", async () => {
     const user = userEvent.setup();
     render(marker("Remark", "Full remark text"));
@@ -42,10 +63,10 @@ describe("Popover", () => {
     const user = userEvent.setup();
     render(marker("Remark", "Full remark text"));
     const trigger = screen.getByRole("button", { name: "Remark" });
-    expect(trigger).toHaveAccessibleDescription("Full remark text");
     expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
     await user.click(trigger);
+    expect(trigger).toHaveAccessibleDescription(/^Full remark text/);
     expect(trigger).toHaveAttribute("aria-expanded", "true");
     expect(trigger).toHaveAttribute("aria-controls", screen.getByRole("dialog").id);
   });

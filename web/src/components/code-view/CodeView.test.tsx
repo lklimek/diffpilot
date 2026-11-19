@@ -277,6 +277,7 @@ describe("CodeView", () => {
     const threads = document.querySelectorAll("[data-mark=thread]");
     expect([...threads].map(rowOf)).toEqual([99]);
     expect(threads[0]).toHaveAccessibleName("GitHub thread by bob at line 99");
+    act(() => (threads[0] as HTMLElement).focus());
     expect(threads[0]).toHaveAccessibleDescription(/Should we retry non-idempotent calls at all\?/);
     unmount();
     render(<CodeView {...stepProps("f1.2", "missed")} />);
@@ -599,11 +600,12 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
     expect(rowOf(marker)).toBe(2);
     expect(marker.querySelector("svg")).not.toBeNull();
+    expect(marker).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Is the retry bounded?")).toBeNull();
+    act(() => marker.focus());
     expect(marker).toHaveAccessibleDescription(
       "Is the retry bounded? Your comment in your GitHub pending review; nothing is published.",
     );
-    expect(marker).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("Is the retry bounded?")).not.toBeVisible();
   });
 
   it("shows the comment's own text on hover, on a target of at least 24 px", async () => {
