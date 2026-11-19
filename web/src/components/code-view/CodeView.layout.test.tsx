@@ -99,7 +99,7 @@ describe("CodeView: one remark over a replaced line and hidden comment lines", (
     const sign = line.querySelector<HTMLElement>("[data-mark=changed]")!;
     const marker = line.querySelector<HTMLElement>("[data-mark=remark]")!;
     expect(sign.parentElement?.closest("span.flex")?.className).toMatch(/(^|\s)gap-1(\s|$)/);
-    expect(marker).toHaveAccessibleName("LLM remark at line 363");
+    expect(marker).toHaveAccessibleName(/^LLM remark at line 363: /);
     expect(sign).toHaveTextContent("+added line");
     expect([sign, sign.parentElement!].some((e) => e.hasAttribute("aria-describedby"))).toBe(false);
   });
@@ -180,7 +180,7 @@ describe("CodeView: a remark starting inside a replacement", () => {
     render(<CodeView lines={lines} annotations={[remark]} band="low" hideContextChanges />);
     const markers = document.querySelectorAll("[data-mark=remark]");
     expect(markers).toHaveLength(1);
-    expect(markers[0]).toHaveAccessibleName("LLM remark at line 364");
+    expect(markers[0]).toHaveAccessibleName(/^LLM remark at line 364: /);
     expect(row("head", 364)).toContainElement(markers[0] as HTMLElement);
     expect(row("head", 363)).toBeNull();
   });

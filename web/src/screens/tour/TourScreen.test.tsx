@@ -108,7 +108,7 @@ describe("Tour screen (brief §4.3)", () => {
     await open();
     await openStep("1", "5");
     const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
-    await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
+    await user().click(within(code).getByRole("button", { name: "LLM remark at line 99: Red flag" }));
     await user().click(screen.getByRole("button", { name: /^Show in Inspector: Red flag/ }));
     const flags = within(inspector()).getByRole("region", { name: /^Flags/ });
     const item = flags.querySelector('[data-annotation-id="f1.5.a3"]');
@@ -131,7 +131,7 @@ describe("Tour screen (brief §4.3)", () => {
       await open();
       await openStep("1", "5");
       const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
-      await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
+      await user().click(within(code).getByRole("button", { name: "LLM remark at line 99: Red flag" }));
       await user().click(screen.getByRole("button", { name: /^Show in Inspector: Red flag/ }));
       const flashed = () => inspector().querySelector('[data-annotation-id="f1.5.a3"]');
       await waitFor(() => expect(flashed()).toHaveAttribute("data-flash"));

@@ -198,8 +198,8 @@ describe("CodeView", () => {
     expect(label).toHaveTextContent(/^LLM remark: note$/);
     expect(highlight).not.toHaveTextContent("◇");
     expect(label).toHaveAccessibleDescription(/Risk not rated by the LLM/);
-    act(() => screen.getByRole("button", { name: "LLM remark at line 2" }).focus());
-    expect(screen.getByRole("dialog", { name: "LLM remarks at line 2" })).toHaveTextContent(
+    act(() => screen.getByRole("button", { name: /^LLM remark at line 2:/ }).focus());
+    expect(screen.getByRole("dialog", { name: /^LLM remark at line 2:/ })).toHaveTextContent(
       "Risk not rated by the LLM.",
     );
   });
@@ -248,11 +248,11 @@ describe("CodeView", () => {
     expect(document.querySelector("[data-highlight]")).toHaveAttribute("data-selected");
   });
 
-  it("marks the first line of a highlight with an LLM remark marker", () => {
+  it("marks the first line of each LLM remark with its own marker (one ◆ per remark)", () => {
     render(<CodeView {...stepProps("f1.2")} />);
     const remarks = document.querySelectorAll("[data-mark=remark]");
-    expect([...remarks].map(rowOf)).toEqual([91]);
-    expect(remarks[0]).toHaveAccessibleName(/LLM remarks? at line 91/);
+    expect([...remarks].map(rowOf)).toEqual([91, 93]);
+    expect(remarks[0]).toHaveAccessibleName(/^LLM remark at line 91: /);
   });
 
   it("shows ≠ on moved lines that differ from the moved original, inside a moved block", () => {
@@ -389,19 +389,15 @@ describe("CodeView", () => {
     await userEvent.keyboard("{ArrowDown}");
     expect(screen.getByRole("button", { name: "Comment on removed line 99" })).toHaveFocus();
     await userEvent.keyboard("{ArrowDown}{Enter}");
-    expect(onLineAction).toHaveBeenLastCalledWith({
-      path: "src/rpc/client.rs",
-      side: "head",
-      start_line: null,
-      line: 89,
-    });
+    expect(onLineAction).toHaveBeenLastCalledWith(
+      { path: "src/rpc/client.rs", side: "head", start_line: null, line: 89 },
+      { extend: false },
+    );
     await userEvent.click(screen.getByRole("button", { name: "Comment on removed line 99" }));
-    expect(onLineAction).toHaveBeenLastCalledWith({
-      path: "src/rpc/client.rs",
-      side: "base",
-      start_line: null,
-      line: 99,
-    });
+    expect(onLineAction).toHaveBeenLastCalledWith(
+      { path: "src/rpc/client.rs", side: "base", start_line: null, line: 99 },
+      { extend: false },
+    );
     await userEvent.keyboard("{End}");
     expect(screen.getByRole("button", { name: "Comment on line 96" })).toHaveFocus();
     expect(
@@ -837,12 +833,12 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
         band="medium"
       />,
     );
-    const marker = screen.getByRole("button", { name: "2 LLM remarks at line 1" });
+    const marker = screen.getByRole("button", { name: "LLM remark at line 1: Behaviour" });
     expect(marker.className).toMatch(/(^|\s)size-6(\s|$)/);
     await user.hover(document.querySelector("[data-highlight] [data-line='2']")!);
     expect(screen.queryByRole("tooltip")).toBeNull();
     await user.hover(marker);
-    const popover = screen.getByRole("dialog", { name: "LLM remarks at line 1" });
+    const popover = screen.getByRole("dialog", { name: "LLM remark at line 1: Behaviour" });
     expect(popover).toHaveTextContent("Behaviour · lines 1–2");
     const wasLabel = within(popover).getByText("Was:");
     const isLabel = within(popover).getByText("Is:");
@@ -857,20 +853,24 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     expect(is.className).toMatch(/(^|\s)mt-/);
     expect(wasLabel).toHaveClass("font-semibold");
     expect(isLabel).toHaveClass("font-semibold");
-    expect(popover).toHaveTextContent("Red flag · line 1");
-    expect(popover).toHaveTextContent("Potential double broadcast:");
+    expect(popover).not.toHaveTextContent("Red flag");
+    await user.unhover(marker);
+    await user.hover(screen.getByRole("button", { name: "LLM remark at line 1: Red flag" }));
+    const flag = screen.getByRole("dialog", { name: "LLM remark at line 1: Red flag" });
+    expect(flag).toHaveTextContent("Red flag · line 1");
+    expect(flag).toHaveTextContent("Potential double broadcast:");
     expect(
-      within(popover)
+      within(flag)
         .getAllByRole("listitem")
         .map((i) => i.textContent),
     ).toEqual(["1. The reply arrives late.", "2. The client sends again."]);
-    expect(within(popover).getByText("LLM")).toHaveAttribute("data-provenance", "llm");
-    expect(within(popover).getByText("LLM")).toHaveAccessibleDescription(
+    expect(within(flag).getByText("LLM")).toHaveAttribute("data-provenance", "llm");
+    expect(within(flag).getByText("LLM")).toHaveAccessibleDescription(
       "This text was written by the LLM; it was not checked.",
     );
     expect(screen.queryByRole("tooltip")).toBeNull();
-    expect(within(popover).queryByRole("button", { name: /Show in Inspector/ })).toBeNull();
-    expectTrustWording(popover.textContent ?? "");
+    expect(within(flag).queryByRole("button", { name: /Show in Inspector/ })).toBeNull();
+    expectTrustWording(flag.textContent ?? "");
   });
 
   it("a pinned remark offers Show in Inspector for each remark; clicking it does not select the highlight", async () => {
@@ -885,8 +885,8 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
         onSelectAnnotation={onSelectAnnotation}
       />,
     );
-    await user.click(screen.getByRole("button", { name: "LLM remark at line 1" }));
-    const popover = screen.getByRole("dialog", { name: "LLM remarks at line 1" });
+    await user.click(screen.getByRole("button", { name: "LLM remark at line 1: Note" }));
+    const popover = screen.getByRole("dialog", { name: "LLM remark at line 1: Note" });
     await user.click(within(popover).getByRole("button", { name: /^Show in Inspector/ }));
     expect(onShowInInspector).toHaveBeenCalledWith({ kind: "annotation", id: "n1" });
     expect(onSelectAnnotation).not.toHaveBeenCalled();

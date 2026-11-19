@@ -76,8 +76,8 @@ export interface CodeViewProps {
   highlight?: Highlight;
   /** A highlight was activated (click, or Enter on its label): its annotation ids. */
   onSelectAnnotation?: (ids: AnnotationId[]) => void;
-  /** Comment action on a displayed line; without it line numbers are plain text. */
-  onLineAction?: (target: CommentTarget) => void;
+  /** Action of a line number (comment, or select in the Files view); `extend` with Shift or a drag. */
+  onLineAction?: (target: CommentTarget, how: { extend: boolean }) => void;
   /** "Ask about this line" on a displayed line (the selected lines when the line is in a selection); none without it. */
   onAskLine?: (target: CommentTarget) => void;
   /** Load the rest of a deleted block whose `lines` were cut (`lines.length < total_lines`). */
@@ -86,6 +86,17 @@ export interface CodeViewProps {
   onShowInInspector?: (target: MarkerTarget) => void;
   /** "N.M" of a thread's step when it is not the step shown; its Show in Inspector then names that step. */
   otherThreadStep?: (thread: GithubThread) => string | null;
+  /** Rating of each remark's step when the code mixes steps (Files view); a run takes the highest. */
+  bandOf?: (annotation: Annotation) => RiskBand | null;
+  /** The step a remark belongs to when the code mixes steps ("flow 1 · step 2"), named with it. */
+  remarkOwner?: (annotation: Annotation) => string | null;
+  /** The reader's selected lines of `lines.side` (highlighted); set (null for none) to select by dragging too. */
+  selection?: { from: number; to: number } | null;
+  /** The hunk a changed line belongs to; its rows carry the hunk and a click in their code selects it. */
+  hunkOf?: (side: LineSide, line: number) => string | null;
+  /** The selected hunk (its lines are marked). */
+  selectedHunk?: string | null;
+  onSelectHunk?: (hunk: string) => void;
 }
 
 const BANDS = REMARK_LOOK;
@@ -93,6 +104,14 @@ const BANDS = REMARK_LOOK;
 // Every segment reserves the same 5 px left bar column, so line numbers and code never shift.
 const SEGMENT = "border-l-5 min-w-full w-max";
 const STRIP = "sticky left-0 block w-max pr-2 pl-[calc(var(--ln)+var(--gutter))] font-sans";
+
+const RANK: RiskBand[] = ["low", "medium", "high"];
+/** The highest rating of several; null when none is rated. */
+const highest = (bands: readonly (RiskBand | null)[]): RiskBand | null =>
+  bands.reduce<RiskBand | null>(
+    (top, b) => (b !== null && (top === null || RANK.indexOf(b) > RANK.indexOf(top)) ? b : top),
+    null,
+  );
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const keyOf = (ref: LineRef) => `${ref.side}:${ref.line}`;
@@ -109,12 +128,19 @@ interface LineContext {
   onDeleteComment?: (commentId: string) => Promise<void>;
   activeKey: string | null;
   tabKey: string | null;
-  onLineAction?: (target: CommentTarget) => void;
+  onLineAction?: (target: CommentTarget, how: { extend: boolean }) => void;
   onAskLine?: (target: CommentTarget) => void;
   onFocusLine: (key: string) => void;
   onShowInInspector?: (target: MarkerTarget) => void;
   unrated: boolean;
   otherThreadStep?: (thread: GithubThread) => string | null;
+  remarkOwner?: (annotation: Annotation) => string | null;
+  bandOf?: (annotation: Annotation) => RiskBand | null;
+  /** Selected lines of the view's side; undefined: no selecting (line numbers comment). */
+  selection?: { side: LineSide; from: number; to: number } | null;
+  hunkOf?: (side: LineSide, line: number) => string | null;
+  selectedHunk?: string | null;
+  onSelectHunk?: (hunk: string) => void;
 }
 
 interface LineProps {
@@ -125,7 +151,7 @@ interface LineProps {
   tokens: Token[] | undefined;
   row?: Row;
   removed?: boolean;
-  /** First line of an LLM highlight: the remarks its marker shows. */
+  /** The LLM remarks starting on this line: one marker each. */
   remarks?: readonly Annotation[];
 }
 
@@ -149,6 +175,11 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
   const threads = ctx.threads.get(key);
   // A row with a marker button grows to the button's 24 px target.
   const tall = Boolean(remarks?.length || threads || mine);
+  const selected = ctx.selection?.side === side && ctx.selection.from <= line && line <= ctx.selection.to;
+  const hunk = ctx.hunkOf?.(side, line) ?? null;
+  const hunkSelected = hunk !== null && hunk === ctx.selectedHunk;
+  const target: CommentTarget = { path: ctx.path, side, start_line: null, line };
+  const selecting = ctx.selection !== undefined;
   return (
     <>
       <div
@@ -158,19 +189,49 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
         data-moved={row?.moved || undefined}
         data-removed={removed || undefined}
         data-commenting={commenting || undefined}
-        className={`group/line grid min-w-full grid-cols-[var(--ln)_var(--gutter)_max-content] ${tall ? "min-h-6 items-center" : ""} ${background}`}
+        data-selected-line={selected || undefined}
+        data-hunk={hunk ?? undefined}
+        data-hunk-selected={hunkSelected || undefined}
+        onClick={
+          hunk !== null && ctx.onSelectHunk
+            ? (event: MouseEvent) => {
+                // A click in the code, not on a control, and not the end of a text selection.
+                if ((event.target as Element).closest("button, a")) return;
+                if (window.getSelection?.()?.isCollapsed === false) return;
+                ctx.onSelectHunk?.(hunk);
+              }
+            : undefined
+        }
+        className={`group/line grid min-w-full grid-cols-[var(--ln)_var(--gutter)_max-content] ${tall ? "min-h-6 items-center" : ""} ${selected ? "bg-accent-bg" : background} ${
+          hunkSelected
+            ? "shadow-[inset_4px_0_0_var(--color-accent)]"
+            : hunk !== null
+              ? "cursor-pointer shadow-[inset_2px_0_0_var(--color-mv-bd)]"
+              : ""
+        }`}
       >
         {ctx.onLineAction ? (
           <button
             type="button"
             data-line-action
             aria-label={label}
+            aria-pressed={selecting ? selected : undefined}
             title={label}
             tabIndex={ctx.tabKey === key ? 0 : -1}
             onFocus={() => ctx.onFocusLine(key)}
+            onPointerDown={
+              selecting ? (event) => ctx.onLineAction?.(target, { extend: event.shiftKey }) : undefined
+            }
+            onPointerOver={
+              selecting
+                ? (event) => {
+                    if (event.buttons === 1) ctx.onLineAction?.(target, { extend: true });
+                  }
+                : undefined
+            }
             onClick={(event: MouseEvent) => {
               event.stopPropagation();
-              ctx.onLineAction?.({ path: ctx.path, side, start_line: null, line });
+              ctx.onLineAction?.(target, { extend: event.shiftKey });
             }}
             className="sticky left-0 cursor-pointer border-0 bg-transparent p-0 pr-2.5 text-right font-[inherit] text-muted hover:text-accent hover:underline"
           >
@@ -208,14 +269,16 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
               className="text-[13px] font-bold"
             />
           )}
-          {remarks && remarks.length > 0 && (
+          {remarks?.map((a) => (
             <RemarkMarker
-              annotations={remarks}
+              key={a.id}
+              annotation={a}
               line={line}
-              unrated={ctx.unrated}
+              owner={ctx.remarkOwner?.(a)}
+              unrated={ctx.bandOf ? ctx.bandOf(a) === null : ctx.unrated}
               onShowInInspector={ctx.onShowInInspector}
             />
-          )}
+          ))}
           {threads && (
             <ThreadMarker
               threads={threads}
@@ -285,6 +348,8 @@ function WasIs({ annotations, unrated }: { annotations: readonly Annotation[]; u
 interface HighlightRunProps {
   annotations: Annotation[];
   band: RiskBand | null;
+  /** Names each remark's step in the label (code of several steps). */
+  remarkOwner?: (annotation: Annotation) => string | null;
   selected: boolean;
   onSelect?: (ids: AnnotationId[]) => void;
   /** The lines of the range, with removed blocks and fold rows inside it. */
@@ -292,12 +357,17 @@ interface HighlightRunProps {
 }
 
 /** One LLM remark range: a single label at its top and a bar along it; the lines keep their own look. */
-function HighlightRun({ annotations, band, selected, onSelect, children }: HighlightRunProps) {
+function HighlightRun({ annotations, band, remarkOwner, selected, onSelect, children }: HighlightRunProps) {
   const descriptionId = useId();
   const look = BANDS[band ?? "none"];
   const flag = strongestFlag(annotations);
   const ids = annotations.map((a) => a.id);
-  const remark = `LLM remark: ${[...new Set(annotations.map((a) => a.type))].join(", ")}`;
+  const owned = (a: Annotation) => {
+    const owner = remarkOwner?.(a);
+    return owner ? `${a.type} (${owner})` : a.type;
+  };
+  const kinds = [...new Set(annotations.map(owned))];
+  const remark = `${remarkOwner && annotations.length > 1 ? "LLM remarks" : "LLM remark"}: ${kinds.join(", ")}`;
   const text = [flag && FLAG_LOOK[flag].label, look.label, remark].filter(Boolean).join(" · ");
   const description = <WasIs annotations={annotations} unrated={band === null} />;
   const labelClass = `${STRIP} border-0 bg-transparent text-left text-[10.5px] leading-[17px] font-bold ${flag ? FLAG_LOOK[flag].text : look.text} ${
@@ -581,6 +651,12 @@ export function CodeView({
   onDeleteComment,
   onShowInInspector,
   otherThreadStep,
+  bandOf,
+  remarkOwner,
+  selection,
+  hunkOf,
+  selectedHunk = null,
+  onSelectHunk,
 }: CodeViewProps) {
   const id = useId();
   const view = useRef<HTMLDivElement>(null);
@@ -708,38 +784,47 @@ export function CodeView({
     onShowInInspector,
     unrated: band === null,
     otherThreadStep,
+    remarkOwner,
+    bandOf,
+    selection: selection === undefined ? undefined : selection && { side: lines.side, ...selection },
+    hunkOf,
+    selectedHunk,
+    onSelectHunk,
   };
   for (const t of threads) {
     if (t.path !== lines.path || t.side === null || t.line === null) continue;
     const key = keyOf({ side: t.side, line: t.line });
     ctx.threads.set(key, [...(ctx.threads.get(key) ?? []), t]);
   }
-  // The remark marker sits on the first line of each run its remarks cover (the line that never folds).
+  // One remark marker per remark, on its first displayed line (a line that never folds, see `hiddenLines`).
+  const remarksAt = new Map<number, Annotation[]>();
+  for (const a of annotations) {
+    const at = Math.max(a.range.start_line, lines.from);
+    if (at > lines.to) continue;
+    remarksAt.set(at, [...(remarksAt.get(at) ?? []), a]);
+  }
   const firstOf = (run: Run) => {
     const part = run.parts[0]!;
     if (part.kind === "highlight") return part.rows[0];
     if (part.kind !== "deleted") return undefined;
-    const covered = (r: Row) =>
-      run.annotations.some((a) => a.range.start_line <= r.line && r.line <= a.range.end_line);
-    return part.paired.find(covered) ?? part.paired[0];
+    return part.paired[0];
   };
-  const remarkKeys = new Set(
-    items.flatMap((item) => {
-      const first = item.kind === "run" ? firstOf(item) : undefined;
-      return first ? [keyOf({ side: lines.side, line: first.line })] : [];
-    }),
-  );
-  // The gutter fits the most marker buttons any displayed line has (remark, threads, own comments).
+  // The gutter fits the most marker buttons any displayed line has (remarks, threads, own comments).
   const buttons = Math.max(
     0,
-    ...keys.map((k) => Number(remarkKeys.has(k)) + Number(ctx.threads.has(k)) + Number(byLine.has(k))),
+    ...keys.map(
+      (k) =>
+        (k.startsWith(`${lines.side}:`) ? (remarksAt.get(Number(k.split(":")[1])) ?? []).length : 0) +
+        Number(ctx.threads.has(k)) +
+        Number(byLine.has(k)),
+    ),
   );
 
   const maxLine = Math.max(lines.to, ...lines.deleted.map((d) => d.base_start + d.lines.length));
   const base = lines.side === "base";
   const unchangedContext = kind === "context" && lines.changed.length === 0;
   const label = `${lines.path}, lines ${lines.from} to ${lines.to}${base ? ", removed code at the base commit" : ""}`;
-  const line = (row: Row, remarks?: readonly Annotation[]) => (
+  const line = (row: Row) => (
     <Line
       key={row.line}
       ctx={ctx}
@@ -748,7 +833,7 @@ export function CodeView({
       text={row.text}
       tokens={tokens?.[row.index]}
       row={row}
-      remarks={remarks}
+      remarks={remarksAt.get(row.line)}
     />
   );
   // Lines in order, a fold row where rule-covered lines are hidden; a shown fold keeps its Hide row.
@@ -782,12 +867,7 @@ export function CodeView({
         </div>
       );
     });
-  const deletedRun = (
-    segment: Extract<Segment, { kind: "deleted" }>,
-    nested: boolean,
-    first?: Row,
-    remarks?: readonly Annotation[],
-  ) => {
+  const deletedRun = (segment: Extract<Segment, { kind: "deleted" }>, nested: boolean) => {
     const { block } = segment;
     const after = block.after_line;
     return (
@@ -806,7 +886,7 @@ export function CodeView({
             removed
           />
         ))}
-        paired={folded(lines.side, segment.paired, (row) => line(row, row === first ? remarks : undefined))}
+        paired={folded(lines.side, segment.paired, line)}
         anchor={after < lines.from ? `before line ${lines.from}` : `after line ${after}`}
         onLoadDeleted={onLoadDeleted}
       />
@@ -874,16 +954,13 @@ export function CodeView({
             <HighlightRun
               key={`h${item.parts[0]!.kind === "deleted" ? `d${item.parts[0]!.block.base_start}` : first?.line}`}
               annotations={item.annotations}
-              band={band}
+              band={bandOf ? highest(item.annotations.map(bandOf)) : band}
+              remarkOwner={remarkOwner}
               selected={item.annotations.some((a) => a.id === selectedAnnotation)}
               onSelect={onSelectAnnotation}
             >
               {item.parts.map((part) =>
-                part.kind === "deleted"
-                  ? deletedRun(part, true, first, item.annotations)
-                  : folded(lines.side, part.rows, (row) =>
-                      line(row, row === first ? item.annotations : undefined),
-                    ),
+                part.kind === "deleted" ? deletedRun(part, true) : folded(lines.side, part.rows, line),
               )}
             </HighlightRun>
           );
@@ -891,7 +968,7 @@ export function CodeView({
         if (item.kind === "deleted") return deletedRun(item, false);
         return (
           <div key={`r${item.rows[0]!.line}`} data-segment className={`${SEGMENT} border-transparent`}>
-            {folded(lines.side, item.rows, (row) => line(row))}
+            {folded(lines.side, item.rows, line)}
           </div>
         );
       })}
