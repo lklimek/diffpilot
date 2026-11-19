@@ -725,6 +725,8 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
             },
     ask,
     askFilters,
+    commentHint:
+      "Select lines by their numbers in the code (Shift+click or drag extends); the comment goes on the last selected line (c). Any displayed line can take a comment, with or without an LLM remark.",
     isCurrent: subject.kind === "file" ? onFile : inBlock,
     feedback,
     diff,

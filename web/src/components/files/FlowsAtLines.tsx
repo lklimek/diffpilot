@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from "react";
-import type { AnalysisState, FlowId, HunkPart, StepId } from "../../api/generated/types";
+import type { AnalysisState, FlowId, HunkPart, LineRange, StepId } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
 import { RiskLabel } from "../badge/LlmLabel";
 import { FlowWorkLabel } from "../flow-intro/status";
@@ -28,8 +28,15 @@ interface FlowsAtLinesProps {
 const BUTTON =
   "min-h-6 cursor-pointer rounded border border-border bg-surface px-2 text-[12px] text-text hover:border-accent aria-disabled:cursor-wait aria-disabled:opacity-60";
 
+const rangesText = (ranges: readonly LineRange[], prefix: string) =>
+  ranges.length === 0
+    ? []
+    : [
+        `${prefix}${ranges.length === 1 && ranges[0]!.start_line === ranges[0]!.end_line ? "line" : "lines"} ${ranges.map(rangeText).join(", ")}`,
+      ];
+/** "lines 96, 100–103 · removed lines 102–103": head and base numbers are of different commits. */
 const linesText = (at: StepAtLines) =>
-  `${at.side === "base" ? "removed " : ""}${at.lines.length === 1 && at.lines[0]!.start_line === at.lines[0]!.end_line ? "line" : "lines"} ${at.lines.map(rangeText).join(", ")}`;
+  [...rangesText(at.lines, ""), ...rangesText(at.removed, "removed ")].join(" · ");
 
 function StepRow({
   at,

@@ -29,6 +29,8 @@ export interface CommentComposerProps {
   available: boolean;
   /** The line being commented on; null = none chosen yet. */
   line: CommentLine | null;
+  /** How to choose a line, shown while none is chosen (the Files view selects lines first). */
+  emptyHint?: string;
   /** The user's pending comments (`PendingReview.comments`); those on `line` can be edited and deleted. */
   comments: readonly PendingComment[];
   /** Creates the comment (POST …/pending-review/comments); a failed request is retried with the same key and payload. */
@@ -277,8 +279,8 @@ export function CommentComposer(props: CommentComposerProps) {
   } else if (line === null) {
     body = (
       <p className="text-[12.5px] text-muted">
-        Click a line number in the code to comment on that line (c comments on the current line). Any
-        displayed line can take a comment, with or without an LLM remark.
+        {props.emptyHint ??
+          "Click a line number in the code to comment on that line (c comments on the current line). Any displayed line can take a comment, with or without an LLM remark."}
       </p>
     );
   } else {

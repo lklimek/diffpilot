@@ -109,6 +109,8 @@ export interface FilesInspector {
   panel?: InspectorPanel;
   back?: InspectorBack;
   ask: AskSubject | null;
+  /** The comment section's text while no line is chosen. */
+  commentHint?: string;
   askFilters: AskFilter[];
   isCurrent: (question: AskQuestion) => boolean;
   /** The step feedback rates; null with the reason feedback is not offered here. */
@@ -213,6 +215,7 @@ export function InspectorPane(props: InspectorPaneProps) {
         }
       }
       comments={pending.data.comments}
+      emptyHint={props.files?.commentHint}
       onCreate={comments.create}
       onEdit={comments.edit}
       onDelete={comments.remove}

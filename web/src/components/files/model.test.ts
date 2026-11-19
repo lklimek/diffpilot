@@ -93,6 +93,11 @@ describe("Files view model", () => {
       ["f1.7", "explained"],
       ["f1.8", "explained"],
     ]);
+    // A step's head lines and removed (base) lines are kept apart: their numbers are of different commits.
+    expect(flows[0]!.steps[0]).toMatchObject({
+      lines: [{ start_line: 96, end_line: 96 }],
+      removed: [{ start_line: 102, end_line: 103 }],
+    });
     const context = flowsAt(tour, hunk(client, "h17").parts);
     expect(context[0]!.steps.map((s) => [s.step.id, s.role])).toEqual([["f1.2", "also"]]);
     expect(noFlowParts(hunk(client, "h17").parts).map((p) => p.owner.kind)).toEqual([

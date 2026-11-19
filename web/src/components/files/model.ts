@@ -84,9 +84,10 @@ export interface StepPlace {
 /** Where a step sits in a set of lines: it explains them, or shows lines another part explains. */
 export interface StepAtLines extends StepPlace {
   role: "explained" | "also";
-  /** The lines of this set it explains or shows. */
+  /** The head lines of this set it explains or shows. */
   lines: LineRange[];
-  side: LineSide;
+  /** The removed (base) lines of this set it explains or shows. */
+  removed: LineRange[];
 }
 
 /** A flow at some lines: its steps there, or (`planned`) lines its plan holds before it was analysed. */
@@ -112,12 +113,10 @@ export function flowsAt(tour: Tour, parts: readonly HunkPart[]): FlowAtLines[] {
   const add = (id: StepId, role: StepAtLines["role"], part: HunkPart) => {
     const place = stepPlace(tour, id);
     if (!place) return;
-    const at = steps.get(id);
-    if (!at) steps.set(id, { ...place, role, lines: [part.range], side: part.side });
-    else {
-      if (role === "explained") at.role = "explained";
-      at.lines.push(part.range);
-    }
+    const at = steps.get(id) ?? { ...place, role, lines: [], removed: [] };
+    if (role === "explained") at.role = "explained";
+    (part.side === "base" ? at.removed : at.lines).push(part.range);
+    steps.set(id, at);
   };
   for (const part of parts) {
     if (part.owner.kind === "step") add(part.owner.step_id, "explained", part);
@@ -127,7 +126,7 @@ export function flowsAt(tour: Tour, parts: readonly HunkPart[]): FlowAtLines[] {
   return tour.flows.flatMap((flow) => {
     const here = flow.steps.flatMap((s) => {
       const at = steps.get(s.id);
-      return at ? [{ ...at, lines: mergeRanges(at.lines) }] : [];
+      return at ? [{ ...at, lines: mergeRanges(at.lines), removed: mergeRanges(at.removed) }] : [];
     });
     return here.length > 0 || planned.has(flow.id)
       ? [{ flow, planned: planned.has(flow.id), steps: here }]

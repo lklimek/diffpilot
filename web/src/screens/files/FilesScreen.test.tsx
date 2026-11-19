@@ -55,6 +55,7 @@ describe("Files view (brief §4.5)", () => {
     await waitFor(() => expect(hashOf(router)).toBe("#lines?file=src/config.rs&side=head"));
     expect(screen.getAllByRole("banner")[0]).toHaveTextContent("Your progress");
     expect(screen.getByRole("button", { name: "View: Files" })).toBeVisible();
+    expect(inspector()).toHaveTextContent("Select lines by their numbers in the code");
     expectTrustWording(document.body.textContent ?? "");
   });
 
