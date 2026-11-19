@@ -33,5 +33,5 @@ export const analysisHref = (analysis: AnalysisSummary) =>
 /** Tooltip of the "Open" link of an analysis: it only navigates; ticks and answers are kept once the user started. */
 export const openTip = (analysis: { has_my_state?: boolean }) =>
   analysis.has_my_state === true
-    ? "Opens your review of this analysis where you left it; ticks and answers are kept. Starts nothing: no analysis, no LLM use."
-    : "Opens the review of this analysis. Starts nothing: no analysis, no LLM use.";
+    ? "Opens your review where you left it; ticks and answers are kept. Starts nothing."
+    : "Opens the review. Starts nothing.";

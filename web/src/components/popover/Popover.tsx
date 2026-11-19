@@ -18,8 +18,8 @@ interface PopoverProps {
   label: string;
   /** Source of the content, shown as a provenance tag in the popover's top row. */
   tag?: ProvenanceSource;
-  /** The text; `pinned` adds what only a pinned popover offers (links). Also the trigger's description. */
-  content: (pinned: boolean) => ReactNode;
+  /** The text; `pinned` adds what only a pinned popover offers (links, actions); `close` unpins it. Also the trigger's description. */
+  content: (pinned: boolean, close: () => void) => ReactNode;
   /** The trigger: one button without an `onClick`; it gets the ARIA state and the click. */
   children: ReactElement<{
     onClick?: () => void;
@@ -94,6 +94,12 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
     setDismissed(true);
     const active = document.activeElement;
     if (active === document.body || wrapper.current?.contains(active)) trigger()?.focus();
+  };
+
+  // Unpins after an action in the popover; the focus stays where the action put it.
+  const unpin = () => {
+    if (pinnedId === id) setPinned(null);
+    setDismissed(true);
   };
 
   // Fixed position so scroll containers do not clip it; it follows its trigger while the page scrolls, below it
@@ -218,7 +224,7 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
             )}
           </span>
           <span id={`${id}-body`} className="grid gap-1.5">
-            {content(pinned)}
+            {content(pinned, unpin)}
           </span>
         </span>
       </span>

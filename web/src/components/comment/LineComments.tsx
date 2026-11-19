@@ -1,6 +1,5 @@
-import { Fragment, type MouseEvent } from "react";
 import type { LineSide, PendingComment } from "../../api/generated/types";
-import { Tooltip } from "../tooltip/Tooltip";
+import { Popover } from "../popover/Popover";
 import { PendingCommentItem, type PendingCommentItemProps } from "./PendingCommentItem";
 
 /** Key of a displayed line: side and number. */
@@ -72,31 +71,40 @@ export function CommentMarker({
   const name = `Your ${n === 1 ? "" : `${n} `}pending ${what} ${file ? "on" : "at"} ${subject}`;
   const about =
     n === 1
-      ? "Your comment in your GitHub pending review; nothing is published. Opens its text here."
-      : "Your comments in your GitHub pending review; nothing is published. Opens their text here.";
-  const tip = (
-    <>
-      {comments.map((c) => (
-        <Fragment key={c.id}>
-          <span className="mb-1 line-clamp-6 whitespace-pre-wrap">{c.body}</span>{" "}
-        </Fragment>
-      ))}
-      <span className="block opacity-80">{about}</span>
-    </>
-  );
+      ? "Your comment in your GitHub pending review; nothing is published."
+      : "Your comments in your GitHub pending review; nothing is published.";
   return (
-    <Tooltip tip={tip} className="inline-flex">
+    <Popover
+      label={name}
+      className="inline-flex"
+      content={(pinned) => (
+        <>
+          {comments.map((c) => (
+            <span key={c.id} className="line-clamp-6 whitespace-pre-wrap">
+              {c.body}
+            </span>
+          ))}{" "}
+          <span className="block text-muted">{about}</span>
+          {pinned && (
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={panelId}
+              onClick={onToggle}
+              className="min-h-6 cursor-pointer justify-self-start rounded border border-border bg-surface px-2 text-text hover:border-accent"
+            >
+              {open
+                ? `Hide the ${n === 1 ? "comment" : "comments"} here`
+                : `Open the ${n === 1 ? "comment" : "comments"} here`}
+            </button>
+          )}
+        </>
+      )}
+    >
       <button
         type="button"
         data-mark="comment"
         aria-label={name}
-        aria-expanded={open}
-        aria-controls={panelId}
-        onClick={(event: MouseEvent) => {
-          // Inside an LLM highlight a click would also select its remark.
-          event.stopPropagation();
-          onToggle();
-        }}
         className={`${MARKER} text-[10px] font-bold text-accent hover:text-text`}
       >
         <SpeechBubble />
@@ -106,7 +114,7 @@ export function CommentMarker({
           </span>
         )}
       </button>
-    </Tooltip>
+    </Popover>
   );
 }
 

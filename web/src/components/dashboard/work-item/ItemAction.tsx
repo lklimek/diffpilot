@@ -20,15 +20,15 @@ export function reviewAction(item: WorkItem): { label: string; tip: string; prim
   if (review.head_moved) {
     return {
       label: "Open",
-      tip: `Your analysis is of head ${review.analysed_head.slice(0, 7)}; the PR has moved since. Opens the review start page, which offers to re-analyse or to open the earlier review. Starts nothing: no analysis, no LLM use.`,
+      tip: `The PR has moved since your analysis (head ${review.analysed_head.slice(0, 7)}). Opens the start page, which offers to re-analyse or open the earlier review. Starts nothing.`,
       primary: true,
     };
   }
   return {
     label: "Open",
     tip: review.has_my_state
-      ? "Opens your review of the current head; ticks and answers are kept. Starts nothing: no analysis, no LLM use."
-      : "Opens your review of the current head. Starts nothing: no analysis, no LLM use.",
+      ? "Opens your review; ticks and answers are kept. Starts nothing."
+      : "Opens your review. Starts nothing.",
     primary: true,
   };
 }

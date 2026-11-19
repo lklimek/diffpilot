@@ -262,8 +262,13 @@ export function HomeScreen() {
                                 : "Opens the progress of the running analysis."
                             }
                           >
-                            <Link to={analysisHref(outcome.analysis)} data-primary className={SMALL_PRIMARY}>
-                              {outcome.analysis.review_ready ? "Open" : "Show progress"}
+                            <Link
+                              to={analysisHref(outcome.analysis)}
+                              data-primary
+                              className="border-l border-border py-1.5 pl-4 font-semibold whitespace-nowrap text-accent no-underline hover:underline"
+                            >
+                              {outcome.analysis.review_ready ? "Open" : "Show progress"}{" "}
+                              <span aria-hidden="true">→</span>
                             </Link>
                           </Tooltip>
                         </>
@@ -305,7 +310,7 @@ export function HomeScreen() {
                       tone="warn"
                       title="The PR has moved."
                       actions={
-                        <Tooltip tip="Opens the analysis of the older head. Starts nothing: no analysis, no LLM use.">
+                        <Tooltip tip="Opens the analysis of the older head. Starts nothing.">
                           <Link to={analysisHref(outcome.analysis)} className={buttonClass("plain", true)}>
                             Open the old analysis
                           </Link>

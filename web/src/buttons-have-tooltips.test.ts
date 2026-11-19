@@ -31,6 +31,33 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
       "GitHub thread marker: hover and focus show its popover with the thread excerpt, which serves as its tooltip.",
   },
   {
+    file: "components/code-view/CodeView.tsx",
+    match: "Ask about this line",
+    reason: "Action button inside the Ask icon's popover, which says what it does.",
+  },
+  {
+    file: "components/code-view/CodeView.tsx",
+    match: "aria-label={`Show ${more}`}",
+    reason:
+      "Show-the-rest icon of a deleted block: hover and focus show its popover that explains it; its action button sits in that popover.",
+  },
+  {
+    file: "components/code-view/CodeView.tsx",
+    match: "onLoadDeleted(block)",
+    reason: "Action button inside the show-the-rest icon's popover, which says what it does.",
+  },
+  {
+    file: "components/comment/LineComments.tsx",
+    match: 'data-mark="comment"',
+    reason:
+      "Pending-comment marker: hover and focus show its popover with the comment text, which serves as its tooltip.",
+  },
+  {
+    file: "components/comment/LineComments.tsx",
+    match: "aria-controls={panelId}",
+    reason: "Action button inside the comment marker's popover, labelled Open or Hide the comment.",
+  },
+  {
     file: "components/ask/AskForm.tsx",
     match: "aria-expanded",
     reason:

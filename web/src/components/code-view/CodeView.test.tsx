@@ -327,7 +327,12 @@ describe("CodeView", () => {
     const block = { after_line: 1, base_start: 10, lines: ["x", "y"], total_lines: 7 };
     const lines = plain(1, ["a", "b"], { deleted: [block] });
     const { rerender } = render(<CodeView lines={lines} onLoadDeleted={onLoadDeleted} />);
-    await userEvent.click(screen.getByRole("button", { name: "5 more deleted lines" }));
+    // An icon: its popover explains it; the action is a labelled button in the pinned popover.
+    const icon = screen.getByRole("button", { name: "Show 5 more deleted lines" });
+    expect(icon).not.toHaveAttribute("title");
+    await userEvent.click(icon);
+    expect(onLoadDeleted).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Show the rest" }));
     expect(onLoadDeleted).toHaveBeenCalledWith(block);
     rerender(<CodeView lines={lines} />);
     expect(screen.queryByRole("button", { name: /more deleted lines/ })).toBeNull();
@@ -595,7 +600,7 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     expect(rowOf(marker)).toBe(2);
     expect(marker.querySelector("svg")).not.toBeNull();
     expect(marker).toHaveAccessibleDescription(
-      "Is the retry bounded? Your comment in your GitHub pending review; nothing is published. Opens its text here.",
+      "Is the retry bounded? Your comment in your GitHub pending review; nothing is published.",
     );
     expect(marker).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Is the retry bounded?")).not.toBeVisible();
@@ -607,7 +612,8 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const marker = screen.getByRole("button", { name: "Your 2 pending comments at line 2" });
     expect(marker.className).toMatch(/(^|\s)size-6(\s|$)/);
     await user.hover(marker);
-    const tip = screen.getByRole("tooltip");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    const tip = screen.getByRole("dialog", { name: "Your 2 pending comments at line 2" });
     expect(tip).toHaveTextContent("Is the retry bounded?");
     expect(tip).toHaveTextContent("And the backoff?");
     // A long comment is clamped; `block` would override the clamp's display.
@@ -621,15 +627,26 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     view([mine()]);
     const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
     await user.click(marker);
-    expect(marker).toHaveAttribute("aria-expanded", "true");
+    // The click pins the popover; opening the text is its labelled action.
+    expect(screen.queryByRole("list", { name: /^Your pending comments/ })).toBeNull();
+    const open = screen.getByRole("button", { name: "Open the comment here" });
+    expect(open).toHaveAttribute("aria-expanded", "false");
+    await user.click(open);
+    expect(screen.getByRole("button", { name: "Hide the comment here" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
     const panel = screen.getByRole("list", { name: "Your pending comments at line 2" });
-    expect(marker).toHaveAttribute("aria-controls", panel.id);
+    expect(screen.getByRole("button", { name: "Hide the comment here" })).toHaveAttribute(
+      "aria-controls",
+      panel.id,
+    );
     expect(within(panel).getByText("Is the retry bounded?")).toBeVisible();
     // Readable without edit mode; Edit and Delete only with their callbacks.
     expect(within(panel).queryByRole("textbox")).toBeNull();
     expect(within(panel).queryByRole("button")).toBeNull();
     expectTrustWording(panel.textContent ?? "");
-    await user.click(marker);
+    await user.click(screen.getByRole("button", { name: "Hide the comment here" }));
     expect(screen.queryByRole("list", { name: /^Your pending comments/ })).toBeNull();
   });
 
@@ -638,6 +655,10 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     view([mine()]);
     const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
     marker.focus();
+    await user.keyboard("{Enter}");
+    await user.tab();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Open the comment here" })).toHaveFocus();
     await user.keyboard("{Enter}");
     const panel = () => screen.queryByRole("list", { name: "Your pending comments at line 2" });
     expect(within(panel()!).getByText("Is the retry bounded?")).toBeVisible();
@@ -651,6 +672,7 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const onDeleteComment = vi.fn().mockResolvedValue(undefined);
     view([mine(), mine({ id: "c2", body: "And the backoff?" })], { onEditComment, onDeleteComment });
     await user.click(screen.getByRole("button", { name: "Your 2 pending comments at line 2" }));
+    await user.click(screen.getByRole("button", { name: "Open the comments here" }));
     const panel = screen.getByRole("list", { name: "Your pending comments at line 2" });
     expect(
       within(panel)
@@ -682,10 +704,6 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
 
   it("opens the comment asked for (from the pending-review list) without a click", () => {
     view([mine(), mine({ id: "c9", line: 3, body: "Other" })], { revealComment: "c9" });
-    expect(screen.getByRole("button", { name: "Your pending comment at line 3" })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
     const panel = screen.getByRole("list", { name: "Your pending comments at line 3" });
     expect(within(panel).getByText("Other")).toBeVisible();
     expect(screen.queryByRole("list", { name: "Your pending comments at line 2" })).toBeNull();
@@ -704,6 +722,7 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const top = screen.getByRole("button", { name: "Your 2 pending file comments on src/a.rs" });
     expect(top.closest("[data-line]")).toBeNull();
     await user.click(top);
+    await user.click(screen.getByRole("button", { name: "Open the comments here" }));
     const panel = screen.getByRole("list", { name: "Your pending file comments on src/a.rs" });
     expect(within(panel).getByText("File-level note.")).toBeVisible();
     expect(within(panel).getByText("No link.")).toBeVisible();

@@ -119,7 +119,8 @@ describe("code of long and disjoint ranges", () => {
 
   it("reads the rest of a long removed block in parts of at most the limit", async () => {
     show(<RangeCode ctx={ctx()} query={{ path: "a.rs", side: "head", from: 1, to: 1 }} />);
-    await userEvent.click(await screen.findByRole("button", { name: "3001 more deleted lines" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Show 3001 more deleted lines" }));
+    await userEvent.click(screen.getByRole("button", { name: "Show the rest" }));
     await screen.findByRole("region", { name: /a\.rs, lines 2100 to 4099, removed code/ });
     await userEvent.click(screen.getByRole("button", { name: "Show lines 4100–5100 of a.rs (base commit)" }));
     await screen.findByRole("region", { name: /a\.rs, lines 4100 to 5100, removed code/ });

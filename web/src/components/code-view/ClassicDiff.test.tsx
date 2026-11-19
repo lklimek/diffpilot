@@ -137,6 +137,7 @@ describe("ClassicDiff", () => {
     const base = screen.getByRole("button", { name: "Your pending comment at removed line 54" });
     expect(base.closest("[data-diff-line]")).toHaveAttribute("data-diff-line", "removed");
     await userEvent.click(head);
+    await userEvent.click(screen.getByRole("button", { name: "Open the comment here" }));
     const panel = screen.getByRole("list", { name: "Your pending comments at line 96" });
     expect(within(panel).getByText("Bounded?")).toBeVisible();
   });

@@ -13,6 +13,12 @@ function stepLines(stepId: string) {
   return linesFor("default", file, side, range.start_line, range.end_line)!;
 }
 
+// The icon opens a popover on hover; a click pins it, and its labelled button does the asking.
+const ask = async (name: string) => {
+  await userEvent.click(screen.getByRole("button", { name }));
+  await userEvent.click(screen.getByRole("button", { name: "Ask about this line" }));
+};
+
 const asks = () => screen.getAllByRole("button", { name: /^Ask the LLM about / });
 
 describe("Ask the LLM about a line: the code view", () => {
@@ -21,13 +27,19 @@ describe("Ask the LLM about a line: the code view", () => {
     render(<CodeView lines={stepLines("f1.2")} onLineAction={() => {}} onAskLine={onAskLine} />);
     expect(asks()).toHaveLength(9 + 3);
     expect(asks().filter((b) => b.tabIndex === 0)).toHaveLength(1);
-    expect(asks()[0]).toHaveAttribute("title", expect.stringMatching(/^Ask the LLM about line \d+/));
+    expect(asks()[0]).not.toHaveAttribute("title");
     // Tab from a line's comment action reaches the same line's Ask action.
     act(() => screen.getByRole("button", { name: "Comment on line 89" }).focus());
     await userEvent.tab();
     expect(screen.getByRole("button", { name: "Ask the LLM about line 89" })).toHaveFocus();
     await userEvent.keyboard("{ArrowUp}");
     expect(screen.getByRole("button", { name: "Ask the LLM about removed line 99" })).toHaveFocus();
+    // Enter pins the popover, Tab (past its Close) reaches its button, Enter asks and unpins.
+    await userEvent.keyboard("{Enter}");
+    expect(onAskLine).not.toHaveBeenCalled();
+    await userEvent.tab();
+    await userEvent.tab();
+    expect(screen.getByRole("button", { name: "Ask about this line" })).toHaveFocus();
     await userEvent.keyboard("{Enter}");
     expect(onAskLine).toHaveBeenLastCalledWith({
       path: "src/rpc/client.rs",
@@ -35,7 +47,7 @@ describe("Ask the LLM about a line: the code view", () => {
       start_line: null,
       line: 99,
     });
-    await userEvent.click(screen.getByRole("button", { name: "Ask the LLM about line 92" }));
+    await ask("Ask the LLM about line 92");
     expect(onAskLine).toHaveBeenLastCalledWith({
       path: "src/rpc/client.rs",
       side: "head",
@@ -50,7 +62,7 @@ describe("Ask the LLM about a line: the code view", () => {
     const code = (line: number) => document.querySelector(`[data-side="head"][data-line="${line}"] code`)!;
     const selection = window.getSelection()!;
     selection.setBaseAndExtent(code(90).firstChild ?? code(90), 0, code(93).firstChild ?? code(93), 1);
-    await userEvent.click(screen.getByRole("button", { name: "Ask the LLM about line 91" }));
+    await ask("Ask the LLM about line 91");
     expect(onAskLine).toHaveBeenLastCalledWith({
       path: "src/rpc/client.rs",
       side: "head",
@@ -59,7 +71,7 @@ describe("Ask the LLM about a line: the code view", () => {
     });
     // A line outside the selection: that line only.
     selection.setBaseAndExtent(code(90).firstChild ?? code(90), 0, code(93).firstChild ?? code(93), 1);
-    await userEvent.click(screen.getByRole("button", { name: "Ask the LLM about line 95" }));
+    await ask("Ask the LLM about line 95");
     expect(onAskLine).toHaveBeenLastCalledWith({
       path: "src/rpc/client.rs",
       side: "head",
@@ -100,7 +112,7 @@ describe("Ask the LLM about a line: the classic diff", () => {
     ]);
     expect(asks().filter((b) => b.tabIndex === 0)).toHaveLength(1);
     act(() => asks()[0]!.focus());
-    await userEvent.keyboard("{ArrowDown}{Enter}");
+    await userEvent.keyboard("{ArrowDown}{Enter}{Tab}{Tab}{Enter}");
     expect(onAskLine).toHaveBeenLastCalledWith({
       path: "src/rpc/client.rs",
       side: "base",
@@ -110,8 +122,10 @@ describe("Ask the LLM about a line: the classic diff", () => {
     expect(asks().filter((b) => b.tabIndex === 0)).toEqual([
       screen.getByRole("button", { name: "Ask the LLM about removed line 54" }),
     ]);
-    // The rows keep their text: the action's mark is drawn by CSS.
-    expect(document.querySelector('[data-diff-line="added"]')).toHaveTextContent(/^97\+added line/);
+    // The code keeps its text: the action's mark is drawn by CSS.
+    expect(document.querySelector('[data-diff-line="added"] code')).toHaveTextContent(
+      /^match send\(http\)\.await \{$/,
+    );
   });
 
   it("asks about the selected lines of one side when the clicked line is in the selection", async () => {
@@ -134,7 +148,7 @@ describe("Ask the LLM about a line: the classic diff", () => {
     render(<ClassicDiff diff={added} onAskLine={onAskLine} />);
     const code = (text: string) => screen.getByText(text);
     window.getSelection()!.setBaseAndExtent(code("line 97").firstChild!, 0, code("line 99").firstChild!, 2);
-    await userEvent.click(screen.getByRole("button", { name: "Ask the LLM about line 98" }));
+    await ask("Ask the LLM about line 98");
     expect(onAskLine).toHaveBeenLastCalledWith({
       path: "src/rpc/client.rs",
       side: "head",
@@ -146,5 +160,49 @@ describe("Ask the LLM about a line: the classic diff", () => {
   it("offers no Ask action without its callback", () => {
     render(<ClassicDiff diff={diff} />);
     expect(screen.queryAllByRole("button", { name: /^Ask the LLM about / })).toHaveLength(0);
+  });
+});
+
+describe("code-view icons: popup on hover, pinned by a click until the next click", () => {
+  const onAskLine = vi.fn();
+  const icon = () => screen.getByRole("button", { name: "Ask the LLM about line 92" });
+  const popup = () => screen.queryByRole("dialog", { name: "Ask the LLM about line 92" });
+  const renderIt = () => render(<CodeView lines={stepLines("f1.2")} onAskLine={onAskLine} />);
+
+  it("shows the explanation on hover and on keyboard focus, never as a plain tooltip", async () => {
+    renderIt();
+    expect(popup()).toBeNull();
+    await userEvent.hover(icon());
+    expect(popup()).toBeVisible();
+    expect(popup()).toHaveTextContent(/nothing is sent yet\. The answer is LLM output/);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    // The action only appears once pinned.
+    expect(screen.queryByRole("button", { name: "Ask about this line" })).toBeNull();
+    await userEvent.unhover(icon());
+    expect(popup()).toBeNull();
+    act(() => icon().focus());
+    expect(popup()).toBeVisible();
+  });
+
+  it("a click pins it until the next click anywhere; Escape closes it", async () => {
+    renderIt();
+    await userEvent.click(icon());
+    await userEvent.unhover(icon());
+    expect(popup()).toBeVisible();
+    expect(screen.getByRole("button", { name: "Ask about this line" })).toBeVisible();
+    await userEvent.click(document.body);
+    expect(popup()).toBeNull();
+    await userEvent.click(icon());
+    await userEvent.keyboard("{Escape}");
+    expect(popup()).toBeNull();
+  });
+
+  it("the action inside the popup asks and unpins", async () => {
+    onAskLine.mockClear();
+    renderIt();
+    await userEvent.click(icon());
+    await userEvent.click(screen.getByRole("button", { name: "Ask about this line" }));
+    expect(onAskLine).toHaveBeenCalledTimes(1);
+    expect(popup()).toBeNull();
   });
 });
