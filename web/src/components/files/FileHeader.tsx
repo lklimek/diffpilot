@@ -14,7 +14,7 @@ export interface ViewedControl {
   saving: boolean;
   /** Why the mark cannot be changed here (head moved, not read); null when it can. */
   disabledReason: string | null;
-  /** The last change GitHub refused; the mark is unchanged. */
+  /** The last change that failed, with the server's message (written for the reader). */
   error: { message: string; retry: () => void } | null;
   /** Marks or unmarks the file; the screen opens the next file once GitHub confirmed a mark. */
   onToggle: () => void;
@@ -93,13 +93,18 @@ export function FileHeader({ file, pr, viewed, oldCode, headingRef }: FileHeader
           <Tooltip tip={busyTip(viewed.disabledReason ?? VIEWED_TIP, viewed.saving)}>
             <button
               type="button"
-              aria-label="Viewed"
               aria-pressed={on}
               aria-disabled={blocked || undefined}
               onClick={() => !blocked && viewed.onToggle()}
               className={BUTTON}
             >
-              {viewed.saving ? "Saving to GitHub…" : `${on ? "☑" : "☐"} Viewed`}
+              {viewed.saving ? (
+                "Saving to GitHub…"
+              ) : (
+                <>
+                  <span aria-hidden>{on ? "☑" : "☐"} </span>Viewed
+                </>
+              )}
             </button>
           </Tooltip>
         </span>
@@ -116,7 +121,7 @@ export function FileHeader({ file, pr, viewed, oldCode, headingRef }: FileHeader
           role="alert"
           className="flex flex-wrap items-center gap-2 rounded-md border border-l-4 border-border border-l-high-bd bg-surface px-3 py-1 text-[12.5px]"
         >
-          <p className="m-0 flex-1">Not saved on GitHub. {viewed.error.message} Your mark is unchanged.</p>
+          <p className="m-0 flex-1">{viewed.error.message}</p>
           <Tooltip tip="Sends the same change to GitHub again.">
             <button type="button" onClick={viewed.error.retry} className={BUTTON}>
               Retry

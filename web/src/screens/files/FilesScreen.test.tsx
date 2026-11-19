@@ -155,7 +155,10 @@ describe("Files view (brief §4.5)", () => {
   it("v marks the file Viewed on GitHub after confirmation, then opens the next file with focus on its header", async () => {
     await open("#lines?file=src%2Flib.rs&side=head");
     await user().keyboard("v");
-    expect(screen.getByRole("button", { name: "Viewed" })).toHaveTextContent("Saving to GitHub…");
+    expect(screen.getByRole("button", { name: "Saving to GitHub…" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     await waitFor(() => expect(fileHeading()).toHaveTextContent("src/rpc/client.rs"));
     expect(fileHeading()).toHaveFocus();
     expect(
@@ -169,7 +172,9 @@ describe("Files view (brief §4.5)", () => {
     await open("#lines?file=src%2Flib.rs&side=head");
     await user().click(screen.getByRole("button", { name: "Viewed" }));
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/^Not saved on GitHub\. GitHub refused/);
+    expect(alert.querySelector("p")).toHaveTextContent(
+      /^Not saved on GitHub: GitHub refused the change\. Your mark is unchanged; mark it on GitHub\.$/,
+    );
     expect(fileHeading()).toHaveTextContent("src/lib.rs");
     expect(screen.getByRole("button", { name: "Viewed" })).toHaveAttribute("aria-pressed", "false");
   });
@@ -204,6 +209,59 @@ describe("Files view (brief §4.5)", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Viewed" })).toHaveAttribute("aria-disabled", "true"),
     );
+  });
+
+  it("github_unavailable shows the server's message and re-reads the file list (the mark may have changed)", async () => {
+    let reads = 0;
+    server.use(
+      http.put("/api/v1/analyses/:id/files/viewed", () =>
+        HttpResponse.json(
+          {
+            code: "github_unavailable",
+            message: "GitHub did not confirm the change. Reload to see your mark, then try again.",
+          },
+          { status: 502 },
+        ),
+      ),
+      http.get("/api/v1/analyses/:id/files", () => {
+        reads += 1;
+        return HttpResponse.json(seed);
+      }),
+    );
+    await open("#lines?file=src%2Flib.rs&side=head");
+    const before = reads;
+    await user().click(screen.getByRole("button", { name: "Viewed" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).not.toHaveTextContent("Your mark is unchanged");
+    expect(alert).toHaveTextContent("GitHub did not confirm the change.");
+    await waitFor(() => expect(reads).toBeGreaterThan(before));
+  });
+
+  it("a mark confirmed after the reader moved on does not take them back; another save waits for it", async () => {
+    await open("#lines?file=src%2Flib.rs&side=head");
+    await user().keyboard("v");
+    await user().click(within(tree()).getByRole("button", { name: /metrics\.rs/ }));
+    expect(fileHeading()).toHaveTextContent("src/rpc/metrics.rs");
+    // While lib.rs is saving, metrics.rs cannot start its own save (its outcome would be lost).
+    expect(screen.getByRole("button", { name: "Viewed" })).toHaveAttribute("aria-disabled", "true");
+    await waitFor(() =>
+      expect(within(tree()).getByRole("button", { name: /lib\.rs/ })).toHaveTextContent("viewed on GitHub"),
+    );
+    expect(fileHeading()).toHaveTextContent("src/rpc/metrics.rs");
+    expect(fileHeading()).not.toHaveFocus();
+  });
+
+  it("a partial Viewed read (over 3000 files) gives GitHub's file limit as the reason", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/files", () => {
+        const files = structuredClone(seed) as FilesResponse;
+        files.viewed_status = "partial";
+        files.files = files.files.map((f) => (f.path === "src/lib.rs" ? { ...f, viewed: null } : f));
+        return HttpResponse.json(files);
+      }),
+    );
+    await open("#lines?file=src%2Flib.rs&side=head");
+    expect(screen.getByRole("button", { name: "Viewed" })).toHaveAccessibleDescription(/first 3000 files/);
   });
 
   it("a link to a file outside the PR says so and opens the first file", async () => {

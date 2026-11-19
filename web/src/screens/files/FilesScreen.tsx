@@ -204,6 +204,7 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
   const [viewedError, setViewedError] = useState<{ path: string; message: string } | null>(null);
   const [inspectorFlash, setInspectorFlash] = useState<(MarkerTarget & { nonce: number }) | null>(null);
   const flashNonce = useRef(0);
+  const openPath = useRef<string | null>(null);
   const anchor = useRef<{ side: LineSide; line: number } | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
   const askRef = useRef<HTMLTextAreaElement>(null);
@@ -422,6 +423,7 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
 
   // Viewed: the mark changes only after GitHub confirmed; a mark then opens the next file (Q6, A1).
   const headMoved = files.current_head !== null && files.current_head !== tour.analysis.pr.head_sha;
+  openPath.current = file.path;
   const toggleViewed = () => {
     const at = file;
     const mark = at.viewed !== "viewed";
@@ -432,7 +434,9 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
         onSuccess: () => {
           if (!mark) return say(`Removed the Viewed mark of ${fileName(at.path)} on GitHub.`);
           const next = nextFile(files.files, at.path);
-          if (!next) return say(`Marked ${fileName(at.path)} as viewed on GitHub.`);
+          // The next file opens only while the reader is still on the file they marked.
+          if (!next || openPath.current !== at.path)
+            return say(`Marked ${fileName(at.path)} as viewed on GitHub.`);
           open(next.path);
           setFocusNext({ heading: next.path });
           say(
@@ -441,9 +445,9 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
         },
         onError: (error) => {
           setViewedError({ path: at.path, message: errorText(error) });
-          // The PR moved on: re-read the head so the toggle says why it is off.
+          // The PR moved on, or the mark may have changed: read the list again (head, marks).
           const code: ApiErrorCode | null = error instanceof ApiError ? error.code : null;
-          if (code === "pr_head_changed")
+          if (code === "pr_head_changed" || code === "github_unavailable")
             void queryClient.invalidateQueries({ queryKey: ["files", analysisId] });
         },
       },
@@ -455,8 +459,12 @@ function FilesView({ analysisId, tour, files, ticked, login }: FilesViewProps) {
     disabledReason: headMoved
       ? `This analysis is for ${short(tour.analysis.pr.head_sha)}; the PR is now at ${short(files.current_head!)}. Marking Viewed would apply to newer code on GitHub.`
       : file.viewed === null
-        ? "Viewed state not read from GitHub (GitHub did not answer); nothing is assumed. Mark it on GitHub."
-        : null,
+        ? files.viewed_status === "partial"
+          ? "Viewed state not read: GitHub lists only the first 3000 files of a pull request. Mark it on GitHub."
+          : "Viewed state not read from GitHub (GitHub did not answer); nothing is assumed. Mark it on GitHub."
+        : setViewed.isPending && setViewed.variables?.path !== file.path
+          ? `Saving the Viewed mark of ${fileName(setViewed.variables!.path)} to GitHub; this file can be marked once GitHub confirmed it.`
+          : null,
     error: viewedError?.path === file.path ? { message: viewedError.message, retry: toggleViewed } : null,
     onToggle: toggleViewed,
   };

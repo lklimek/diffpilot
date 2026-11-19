@@ -110,8 +110,8 @@ describe("FileHeader", () => {
   it("waits for GitHub, shows a refusal plainly with Retry, and stays disabled with a reason", async () => {
     const saving = control({ saving: true });
     const { rerender } = render(<FileHeader file={client} pr={pr} viewed={saving} />);
-    const toggle = screen.getByRole("button", { name: "Viewed" });
-    expect(toggle).toHaveTextContent("Saving to GitHub…");
+    // The saving state is the button's name, so a screen reader hears it.
+    const toggle = screen.getByRole("button", { name: "Saving to GitHub…" });
     expect(toggle).toHaveAttribute("aria-disabled", "true");
     await userEvent.click(toggle);
     expect(saving.onToggle).not.toHaveBeenCalled();
@@ -124,7 +124,8 @@ describe("FileHeader", () => {
       />,
     );
     const alert = screen.getByRole("alert");
-    expect(alert).toHaveTextContent("Not saved on GitHub. GitHub refused it. Your mark is unchanged.");
+    // The server's message is written for the reader: shown as is, once.
+    expect(alert.querySelector("p")).toHaveTextContent(/^GitHub refused it\.$/);
     await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
     expect(retry).toHaveBeenCalledOnce();
     expect(within(alert).getByRole("link", { name: /Mark it on GitHub/ })).toHaveAttribute(

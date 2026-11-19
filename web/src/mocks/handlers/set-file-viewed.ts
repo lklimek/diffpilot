@@ -9,10 +9,17 @@ import { apiError, forAnalysis, route } from "./common";
 /** How long GitHub takes to confirm a Viewed mark in the mocks. */
 export const VIEWED_MS = 300;
 
+// Status and message as the server sends them (crates/server/src/api/files.rs).
 const ERRORS = {
-  github_refused: [502, "GitHub refused to change the Viewed mark of this file. Nothing was changed."],
-  pr_head_changed: [409, "The pull request has new commits since this analysis. Nothing was changed."],
-  github_unavailable: [502, "GitHub did not answer as expected. The mark may have changed; read it again."],
+  github_refused: [
+    502,
+    "Not saved on GitHub: GitHub refused the change. Your mark is unchanged; mark it on GitHub.",
+  ],
+  pr_head_changed: [
+    409,
+    "The pull request changed since this analysis; marking Viewed would apply to newer code. Analyse it again, or mark it on GitHub.",
+  ],
+  github_unavailable: [502, "GitHub did not confirm the change. Reload to see your mark, then try again."],
 } as const;
 
 /** `PUT /api/v1/analyses/{id}/files/viewed` (R13): 204 once "GitHub" confirmed; nothing is stored on refusal. */
