@@ -227,7 +227,8 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   (`markFileAsViewed` / `unmarkFileAsViewed`). A path outside the pull request is `invalid_request`; a head that
   moved since the analysis is `pr_head_changed` (nothing is written; the head can still move between that check
   and the write); GitHub refusing it (an answer that proves nothing was applied, as for pending-review writes: e.g.
-  the user token may not mark files, or a rate limit) is `github_refused`, nothing changed; any other answer is
+  the user token may not mark files, or a rate limit) is `github_refused`, nothing changed; a failed read of the
+  pull request before the write is `github_unavailable` with nothing sent; any other answer to the write is
   `github_unavailable` (the mark may have changed; read again). One write per user and analysis runs at a time; a
   second one meanwhile is `conflict` before any GitHub call. Nothing is stored locally.
 - **MemCan status**: Settings and Tour PR-context facts expose `memcan_status {state, last_success_at}`,
