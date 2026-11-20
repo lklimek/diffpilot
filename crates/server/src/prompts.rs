@@ -70,6 +70,8 @@ const MAX_TITLE_CHARS: usize = 300;
 const MAX_DEPENDENCY_BYTES: usize = 16 * 1024;
 /// Most characters of a PR-controlled name or path in a dependency entry.
 const MAX_DEPENDENCY_NAME_CHARS: usize = 80;
+/// Most characters of a path in a dependency entry (cut in the middle; a line number is never cut).
+const MAX_DEPENDENCY_PATH_CHARS: usize = 300;
 /// Most facts of one crate in its dependency entry; the rest are counted.
 const MAX_PROMPT_FACTS: usize = 15;
 /// Most used crates of one crate in its dependency entry; the rest are counted.
@@ -1203,7 +1205,14 @@ fn dependencies(view: Option<&DependencyView>) -> Result<String, PromptError> {
             format!("{shown}…")
         }
     };
-    let line = |at: &contracts::api::deps::HeadLine| short(&format!("{}:{}", at.file, at.line));
+    // A cited line keeps its number: only the path is bounded, cut in its middle.
+    let line = |at: &contracts::api::deps::HeadLine| {
+        format!(
+            "{}:{}",
+            middle_clipped(&at.file, MAX_DEPENDENCY_PATH_CHARS),
+            at.line
+        )
+    };
     let controlled: Vec<_> = view.repositories.iter().filter(|r| r.controlled).collect();
     let mut lookups = Vec::new();
     for repository in controlled.iter().filter(|r| r.kind != RepositoryKind::This) {
@@ -1283,7 +1292,10 @@ fn dependencies(view: Option<&DependencyView>) -> Result<String, PromptError> {
         let notes: Vec<String> = changes.notes.iter().map(|n| short(&n.text)).collect();
         let entry = serde_json::json!({
             "crate": short(&krate.name),
-            "manifest": krate.manifest.as_deref().map(short),
+            "manifest": krate
+                .manifest
+                .as_deref()
+                .map(|path| middle_clipped(path, MAX_DEPENDENCY_PATH_CHARS)),
             "changed_lines": changes.changed_lines,
             "flows": flows,
             "uses": uses,
@@ -1818,6 +1830,18 @@ fn clip(text: &str, max_chars: usize) -> (String, usize) {
         return (text.to_owned(), 0);
     }
     (text.chars().take(max_chars).collect(), total - max_chars)
+}
+
+/// `text` of at most `max_chars` characters: a longer one keeps its start and end around `…`.
+fn middle_clipped(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_owned();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let head: String = text.chars().take(keep / 2).collect();
+    let tail: String = text.chars().skip(total - (keep - keep / 2)).collect();
+    format!("{head}…{tail}")
 }
 
 /// `text` cut to at most `max_bytes` bytes on a character boundary and the number of bytes cut.

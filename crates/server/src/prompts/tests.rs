@@ -2108,3 +2108,12 @@ fn a_fact_on_a_deep_workspace_path_keeps_its_line_in_the_pr_context_prompt() {
         "the fact's evidence line is cut: {prompt}"
     );
 }
+
+#[test]
+fn middle_clipping_keeps_both_ends_within_the_bound() {
+    assert_eq!(middle_clipped("short/path.rs", 300), "short/path.rs");
+    let long = format!("start/{}/end.rs", "x".repeat(400));
+    let clipped = middle_clipped(&long, 300);
+    assert_eq!(clipped.chars().count(), 300);
+    assert!(clipped.starts_with("start/") && clipped.ends_with("/end.rs") && clipped.contains('…'));
+}
