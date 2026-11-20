@@ -92,7 +92,7 @@ describe("side panel sections", () => {
   });
 
   it("lists the user's PRs ready to merge with their size and CI tags; none: a plain line, no copy button", () => {
-    const { unmount } = render(<ReadyToMerge items={SUMMARY.snapshot!.ready_to_merge} />);
+    const { unmount } = render(<ReadyToMerge items={SUMMARY.snapshot!.ready_to_merge} pending={0} />);
     expect(screen.getByText("Ready to merge").closest("summary")).toHaveTextContent("1 PRs");
     const [item] = screen.getAllByRole("listitem");
     expect(item).toHaveTextContent("WUI-311");
@@ -105,9 +105,24 @@ describe("side panel sections", () => {
     );
     expect(screen.getByText(/By id; they stay in the ranking too/)).toBeInTheDocument();
     unmount();
-    render(<ReadyToMerge items={[]} />);
-    expect(screen.getByText("None of your PRs can be merged on GitHub right now.")).toBeInTheDocument();
+    render(<ReadyToMerge items={[]} pending={0} />);
+    expect(
+      screen.getByText("None of your PRs could be merged on GitHub at the last scan."),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Copy list/ })).toBeNull();
+    expect(screen.queryByText(/not computed/)).toBeNull();
+  });
+
+  it("Ready to merge counts merge states GitHub had not computed, and says when a snapshot did not record them", () => {
+    const { unmount } = render(<ReadyToMerge items={[]} pending={2} />);
+    expect(
+      screen.getByText("2 PRs: GitHub had not computed the merge state yet; the next refresh checks again."),
+    ).toBeInTheDocument();
+    unmount();
+    render(<ReadyToMerge items={[]} pending={null} />);
+    expect(screen.getByText("Ready to merge").closest("summary")).toHaveTextContent("not recorded");
+    expect(screen.getByText("Not recorded for this snapshot — refresh to see it.")).toBeInTheDocument();
+    expect(screen.queryByText(/None of your PRs/)).toBeNull();
   });
 
   describe("copy list", () => {
@@ -150,7 +165,7 @@ describe("side panel sections", () => {
 
     it("copies Ready to merge without a wait part and says when copying did not work", async () => {
       clipboard(() => Promise.resolve());
-      render(<ReadyToMerge items={SUMMARY.snapshot!.ready_to_merge} />);
+      render(<ReadyToMerge items={SUMMARY.snapshot!.ready_to_merge} pending={0} />);
       await userEvent.click(screen.getByRole("button", { name: "Copy list of PRs ready to merge" }));
       expect(await written[0]!["text/plain"]!.text()).toBe(
         "[acme/wallet-ui#311](https://github.com/acme/wallet-ui/pull/311) feat(wallet): show pending withdrawals - small (+266 / -114)",

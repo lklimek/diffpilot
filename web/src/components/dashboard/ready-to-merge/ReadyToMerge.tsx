@@ -4,8 +4,20 @@ import { OpenExternal, openLabel } from "../common/OpenExternal";
 import { FactTags, SizePill } from "../common/Tags";
 import { AsideSection } from "../side-panel/AsideSection";
 
-/** The user's PRs GitHub lets them merge now, in the server's order (by id) (side panel). */
-export function ReadyToMerge({ items }: { items: ReadyToMergeItem[] }) {
+const prs = (n: number) => `${n} ${n === 1 ? "PR" : "PRs"}`;
+
+/**
+ * The user's PRs GitHub let them merge at the last scan, in the server's order (by id) (side panel). `pending`:
+ * how many merge states GitHub had not computed yet; null when the snapshot did not record merge states.
+ */
+export function ReadyToMerge({ items, pending }: { items: ReadyToMergeItem[]; pending: number | null }) {
+  if (pending === null) {
+    return (
+      <AsideSection title="Ready to merge" defaultOpen summary="not recorded">
+        <p className="text-xs text-muted">Not recorded for this snapshot — refresh to see it.</p>
+      </AsideSection>
+    );
+  }
   return (
     <AsideSection
       title="Ready to merge"
@@ -17,7 +29,7 @@ export function ReadyToMerge({ items }: { items: ReadyToMergeItem[] }) {
       }
     >
       {items.length === 0 ? (
-        <p className="text-xs text-muted">None of your PRs can be merged on GitHub right now.</p>
+        <p className="text-xs text-muted">None of your PRs could be merged on GitHub at the last scan.</p>
       ) : (
         <ul className="m-0 list-none p-0">
           {items.map((item) => (
@@ -35,11 +47,16 @@ export function ReadyToMerge({ items }: { items: ReadyToMergeItem[] }) {
           ))}
         </ul>
       )}
+      {pending > 0 && (
+        <p className="mt-1.5 text-xs text-muted">
+          {prs(pending)}: GitHub had not computed the merge state yet; the next refresh checks again.
+        </p>
+      )}
       <CopyListButton lines={items} what="PRs ready to merge" />
       <p className="mt-1.5 text-xs text-muted">
-        Your PRs whose merge button on GitHub is active: not a draft, you can write to the repository, and
-        GitHub allows the merge (a check that is not required may not have passed). By id; they stay in the
-        ranking too.
+        Your PRs whose merge button on GitHub was active at the last scan: not a draft, you can write to the
+        repository, and GitHub allows the merge (a check that is not required may not have passed). By id;
+        they stay in the ranking too.
       </p>
     </AsideSection>
   );

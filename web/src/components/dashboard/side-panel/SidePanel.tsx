@@ -49,7 +49,7 @@ interface SidePanelProps {
   main: ReactNode;
   /** The panel's sections. */
   children: ReactNode;
-  /** Text of the collapsed rail, e.g. `More · waiting on others 3`. */
+  /** Text of the collapsed rail, e.g. `More · waiting 3 · ready 2`. */
   railText: string;
 }
 
@@ -148,7 +148,7 @@ export function SidePanel({ main, children, railText }: SidePanelProps) {
             {children}
           </>
         ) : (
-          <Tooltip tip="Open the side panel: waiting on others, yesterday, charts, scan notes">
+          <Tooltip tip="Open the side panel: waiting on others, ready to merge, yesterday, charts, scan notes">
             <button
               ref={rail}
               type="button"

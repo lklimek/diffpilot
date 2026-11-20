@@ -36,7 +36,7 @@ import {
 } from "./history";
 import { REVIEW_START_PATH, SETTINGS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
-import { reviewHref } from "./state";
+import { railText, reviewHref } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
 const errorText = (error: unknown) =>
@@ -248,9 +248,9 @@ export function DashboardScreen() {
       )}
       {main &&
         (snapshot && charts ? (
-          <SidePanel main={main} railText={`More · waiting on others ${snapshot.awaiting.length}`}>
+          <SidePanel main={main} railText={railText(snapshot)}>
             <WaitingOnOthers items={snapshot.awaiting} now={now} />
-            <ReadyToMerge items={snapshot.ready_to_merge} />
+            <ReadyToMerge items={snapshot.ready_to_merge} pending={snapshot.merge_state_pending} />
             <Yesterday
               label={fullDayLabel(charts.yesterday.day)}
               prs={charts.yesterday.prs}
