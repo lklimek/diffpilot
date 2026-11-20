@@ -28,7 +28,7 @@ export function CopyListButton({ lines, what }: { lines: CopyLine[]; what: strin
     timer.current = window.setTimeout(() => setResult(""), SHOWN_MS);
   };
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="mt-1.5 flex flex-wrap items-center gap-2">
       <Tooltip tip="Copies one line per PR with its GitHub link, to paste into Slack.">
         <button
           type="button"

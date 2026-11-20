@@ -38,8 +38,8 @@ export function ReadyToMerge({ items }: { items: ReadyToMergeItem[] }) {
       <CopyListButton lines={items} what="PRs ready to merge" />
       <p className="mt-1.5 text-xs text-muted">
         Your PRs whose merge button on GitHub is active: not a draft, you can write to the repository, and
-        GitHub reports the merge as clean or only checks that are not required as not passing. By id; they
-        stay in the ranking too.
+        GitHub allows the merge (a check that is not required may not have passed). By id; they stay in the
+        ranking too.
       </p>
     </AsideSection>
   );
