@@ -51,7 +51,7 @@ test("a PR waiting only on others is not in Needs you but in Waiting on others",
   await signIn(page);
   await expect(workList(page).locator("li[data-item]").first()).toBeVisible();
   expect(await rowIds(page)).not.toContain("PLAT-1176");
-  await page.getByRole("button", { name: /^« More · waiting on others 1$/ }).click();
+  await page.getByRole("button", { name: /^« More · waiting 1 · ready 1$/ }).click();
   const waiting = page.getByRole("listitem").filter({ hasText: "PLAT-1176" });
   await expect(waiting).toHaveCount(1);
   await expect(waiting).toContainText("@jun-park");
