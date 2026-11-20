@@ -2079,3 +2079,32 @@ fn lines_block_skips_an_oversized_entry_and_keeps_the_rest() {
     assert!(!block.contains("xxxx"), "{block}");
     assert!(block.contains("omitted 1 more entries"), "{block}");
 }
+
+/// A fact's line is evidence the agent cites: a deep workspace path keeps its line number in the prompt.
+#[test]
+fn a_fact_on_a_deep_workspace_path_keeps_its_line_in_the_pr_context_prompt() {
+    use contracts::api::deps::{ConversionFact, ConversionKind, HeadLine, TypeDefinition};
+    let path = "packages/rs-drive-abci/src/execution/platform_events/state_transition_processing/v0/mod.rs";
+    let mut view = dependency_view_with("node-client", "upstream-types");
+    let changes = view.repositories[0].crates[0]
+        .changes
+        .as_mut()
+        .expect("changed crate");
+    changes.facts = vec![ConversionFact {
+        kind: ConversionKind::TryFromImpl,
+        at: HeadLine {
+            file: path.to_owned(),
+            line: 123,
+        },
+        type_name: "StateTransitionType".to_owned(),
+        written: "dpp::state_transition::StateTransitionType".to_owned(),
+        type_crate: "dpp".to_owned(),
+        imported_at: None,
+        definition: TypeDefinition::NotLocated,
+    }];
+    let prompt = pr_context_with(&view).expect("pr_context");
+    assert!(
+        prompt.contains(&format!("{path}:123")),
+        "the fact's evidence line is cut: {prompt}"
+    );
+}
