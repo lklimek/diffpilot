@@ -92,6 +92,14 @@ pub enum MapLimit {
         /// Facts kept.
         kept: u32,
     },
+    /// Files of a crate that may hold a searched definition were not read: definitions not found there are not
+    /// searched.
+    DefinitionsUnread {
+        /// The crate's directory.
+        dir: String,
+        /// Files not read.
+        files: u32,
+    },
 }
 
 /// A conversion added on a changed line of a crate for a type of another crate (ADR-021).
@@ -402,8 +410,29 @@ impl DependencyMap {
     }
 
     /// Settles the definitions of the facts whose names `queries` searched, from the head `files` (path, text) the
-    /// search found: the first definition in path order inside the defining crate, else [`Definition::NotLocated`].
-    pub fn locate(&mut self, queries: &[DefinitionQuery], files: &[(String, String)]) {
+    /// search found: the first definition in path order inside the defining crate, else [`Definition::NotLocated`];
+    /// in a crate holding one of the found files that were `unread`, else [`Definition::NotSearched`] and a
+    /// [`MapLimit::DefinitionsUnread`].
+    pub fn locate(
+        &mut self,
+        queries: &[DefinitionQuery],
+        files: &[(String, String)],
+        unread: &[String],
+    ) {
+        let mut incomplete: BTreeMap<usize, u32> = BTreeMap::new();
+        for path in unread {
+            if let Some(index) = self.crate_of(path) {
+                *incomplete.entry(index).or_default() += 1;
+            }
+        }
+        for (&index, &count) in &incomplete {
+            if let Some(krate) = self.crates.get(index) {
+                self.limits.push(MapLimit::DefinitionsUnread {
+                    dir: krate.dir.clone(),
+                    files: count,
+                });
+            }
+        }
         let mut files: Vec<&(String, String)> = files.iter().collect();
         files.sort_by(|a, b| a.0.cmp(&b.0));
         let owners: Vec<Option<usize>> =
@@ -432,7 +461,16 @@ impl DependencyMap {
                         line,
                     })
                 })
-                .map_or(Definition::NotLocated, |at| Definition::Located { at });
+                .map_or_else(
+                    || {
+                        if incomplete.contains_key(&(index as usize)) {
+                            Definition::NotSearched
+                        } else {
+                            Definition::NotLocated
+                        }
+                    },
+                    |at| Definition::Located { at },
+                );
         }
     }
 }

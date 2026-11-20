@@ -33,7 +33,7 @@
       "$ref": "#/$defs/NotesState"
     },
     "repositories": {
-      "description": "This repository first, then other repositories (controlled first), registries and other sources.",
+      "description": "This repository first, then controlled GitHub repositories, other GitHub repositories, other git URLs,\nregistries, paths and unknown sources, holding the direct dependencies of the changed crates.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/DependencyRepository"
@@ -184,6 +184,31 @@
           "required": [
             "kind",
             "kept"
+          ]
+        },
+        {
+          "description": "Files of a crate that may hold a searched type definition were not read (too large, over the read budget or\nthe file cap): definitions not found there are `not_searched`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "definitions_unread"
+            },
+            "dir": {
+              "description": "The crate's directory (`\"\"` = repository root).",
+              "type": "string"
+            },
+            "files": {
+              "description": "Files not read.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "dir",
+            "files"
           ]
         }
       ]
@@ -452,7 +477,7 @@
           "minimum": 0
         },
         "other_dependencies": {
-          "description": "Direct dependencies not listed (neither in this repository nor controlled).",
+          "description": "Direct dependencies not listed (over the view's cap of crates outside this repository and controlled ones).",
           "type": "integer",
           "format": "uint32",
           "minimum": 0

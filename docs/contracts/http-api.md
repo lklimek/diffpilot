@@ -248,17 +248,20 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   `Cargo.toml` at head, nothing checked), `controlled_owners` (the pull
   request's owner plus Settings, as applied to this response), `limits` (what was cut or not read, with paths),
   `files_outside_crates` (changed files in no crate, not checked), `notes` (`produced`, `pending` before the plan is
-  stored, `not_produced` for plans without notes) and `repositories`: this repository first, then GitHub
-  repositories (controlled first), registries and other sources. Each repository lists crates: name, version,
+  stored, `not_produced` for plans without notes) and `repositories`: this repository first, then controlled
+  GitHub repositories, other GitHub repositories, other git URLs, registries (`crates.io`: the repository is not
+  looked up), paths and unknown sources, holding the direct dependencies of the changed crates (at most 200 crates
+  outside this repository and controlled repositories). Each repository lists crates: name, version,
   manifest path (workspace crates), the `Cargo.lock` or `Cargo.toml` line of its source, `used_by` (changed crates
   depending on it directly), `facts_about` (facts naming its types) and, for a changed crate, `changes`: changed
   lines and files, flows touching it, conversion `facts` (deterministic: kind, line, type, the type's crate, the
-  import line, the definition line, `not_located` or `other_repository`), `facts_hidden`, `other_facts` (facts about
+  import line, the definition line, `not_located`, `not_searched` or `other_repository`), `facts_hidden`, `other_facts` (facts about
   types of crates that are neither workspace members nor controlled, counted only), LLM `notes` (text, lines,
-  changed lines; at most 3, `notes_hidden` counts the rest) and `other_dependencies` (direct dependencies not
-  listed). The map is computed once per analysis (older analyses at the first read) and stored; a mirror error
-  answers like the other analysis reads, nothing is stored and the next read computes it again. A failed
-  definition search leaves its facts `not_searched`.
+  changed lines; at most 3, `notes_hidden` counts the rest) and `other_dependencies` (direct dependencies over the
+  view's cap, not listed). The map is computed once per analysis (older analyses at the first read) and stored; a
+  mirror error, a failed definition search included, answers like the other analysis reads, nothing is stored and
+  the next read computes it again. Definition files found but not read leave their facts `not_searched` with a
+  `definitions_unread {dir, files}` limit.
 - **Controlled owners** (R16, v1.2). Replaces the installation-wide list of controlled GitHub owners (case-insensitive,
   deduplicated, sorted); `Settings.controlled_owners` reports it with who changed it and when. The pull request's
   owner is controlled whether listed or not.

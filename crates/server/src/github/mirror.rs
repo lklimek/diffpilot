@@ -235,6 +235,20 @@ pub async fn read_blobs(
     read_blobs_in_slot(&READ_PERMITS, READ_TIMEOUT, mirror, requests, limits).await
 }
 
+/// One of the read slots, waiting at most `wait`.
+async fn read_slot(
+    permits: &Arc<tokio::sync::Semaphore>,
+    wait: Duration,
+) -> Result<tokio::sync::OwnedSemaphorePermit, MirrorError> {
+    tokio::time::timeout(wait, Arc::clone(permits).acquire_owned())
+        .await
+        .map_err(|_| MirrorError::Timeout {
+            operation: "read slot",
+            timeout: wait,
+        })?
+        .map_err(|_| MirrorError::ReadSlotsClosed)
+}
+
 /// [`read_blobs`] with its slots and slot wait given; the slot moves into the blocking task and is released
 /// when the read ends.
 async fn read_blobs_in_slot(
@@ -244,13 +258,7 @@ async fn read_blobs_in_slot(
     requests: Vec<(CommitSha, String)>,
     limits: Limits,
 ) -> Result<Vec<Blob>, MirrorError> {
-    let slot = tokio::time::timeout(wait, Arc::clone(permits).acquire_owned())
-        .await
-        .map_err(|_| MirrorError::Timeout {
-            operation: "read slot",
-            timeout: wait,
-        })?
-        .map_err(|_| MirrorError::ReadSlotsClosed)?;
+    let slot = read_slot(permits, wait).await?;
     let mirror = mirror.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let _slot = slot;
@@ -290,12 +298,9 @@ pub async fn tree_paths(mirror: &Path, commit: &CommitSha) -> Result<Vec<String>
         .collect())
 }
 
-/// Most files [`grep_definitions`] returns.
-pub const MAX_DEFINITION_FILES: usize = 200;
-
 /// The `.rs` files under `dir` (`""` = the whole tree) at `commit` that contain `struct`, `enum`, `union`, `trait` or
-/// `type` followed by one of `names` (`git grep -w`, literal pathspec), in path order, at most
-/// [`MAX_DEFINITION_FILES`]. Names that are not plain identifiers are left out; none left means no search.
+/// `type` followed by one of `names` (`git grep -w`, literal pathspec), in path order; runs in a read slot. Names
+/// that are not plain identifiers are left out; none left means no search.
 pub async fn grep_definitions(
     mirror: &Path,
     commit: &CommitSha,
@@ -319,9 +324,11 @@ pub async fn grep_definitions(
         .env("GIT_LITERAL_PATHSPECS", "1")
         .args(["grep", "-l", "-z", "-I", "-w", "-E", "--no-color", "-e"])
         .arg(&pattern)
+        .arg("--end-of-options")
         .arg(&commit.0)
         .arg("--")
         .arg(if dir.is_empty() { "." } else { dir });
+    let _slot = read_slot(&READ_PERMITS, READ_TIMEOUT).await?;
     let output = run(command, "grep", READ_TIMEOUT).await?;
     // Exit 1 with no output: nothing matched.
     if output.status.code() == Some(1) && output.stdout.is_empty() {
@@ -338,7 +345,6 @@ pub async fn grep_definitions(
         .map(str::to_owned)
         .collect();
     paths.sort();
-    paths.truncate(MAX_DEFINITION_FILES);
     Ok(paths)
 }
 

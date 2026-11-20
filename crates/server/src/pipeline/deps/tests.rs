@@ -188,12 +188,34 @@ fn deps_view_this_repository_first_with_changed_crates_by_size() {
 }
 
 #[test]
-fn deps_view_lists_controlled_repositories_and_counts_the_rest() {
+fn deps_view_lists_controlled_repositories_first_then_other_sources() {
     let view = view();
+    let groups: Vec<(RepositoryKind, bool, Option<&str>)> = view
+        .repositories
+        .iter()
+        .map(|r| (r.kind, r.controlled, r.location.as_deref()))
+        .collect();
     assert_eq!(
-        view.repositories.len(),
-        2,
-        "other/foo is not controlled; serde is a registry crate"
+        groups,
+        [
+            (RepositoryKind::This, true, None),
+            (
+                RepositoryKind::Github,
+                true,
+                Some("https://github.com/dashpay/platform?tag=v2")
+            ),
+            (
+                RepositoryKind::Github,
+                false,
+                Some("https://github.com/other/foo")
+            ),
+            (RepositoryKind::Registry, false, Some("crates.io")),
+        ]
+    );
+    let serde = find(&view, "serde");
+    assert_eq!(
+        (serde.used_by.as_slice(), serde.facts_about),
+        (["app".to_owned()].as_slice(), 0)
     );
     let platform = &view.repositories[1];
     assert_eq!(platform.kind, RepositoryKind::Github);
@@ -211,7 +233,36 @@ fn deps_view_lists_controlled_repositories_and_counts_the_rest() {
         })
     );
     let app = find(&view, "app").changes.as_ref().expect("changed");
-    assert_eq!(app.other_dependencies, 2, "serde and foo");
+    assert_eq!(
+        app.other_dependencies, 0,
+        "every direct dependency is listed"
+    );
+}
+
+#[test]
+fn deps_view_lists_at_most_the_cap_of_other_crates_and_counts_the_rest() {
+    let mut manifest =
+        String::from("[package]\nname = \"big\"\nversion = \"0.1.0\"\n\n[dependencies]\n");
+    for n in 0..MAX_OTHER_CRATES + 5 {
+        manifest.push_str(&format!("dep{n:03} = \"1\"\n"));
+    }
+    let files: HashMap<&str, &str> = [("Cargo.toml", manifest.as_str())].into_iter().collect();
+    let paths: Vec<String> = files.keys().map(|p| (*p).to_owned()).collect();
+    let map = cargo_map::map(&repo("acme", "big"), &paths, &|p| files.get(p).copied());
+    let diff = vec![file("src/lib.rs", vec![hunk("h1", 1, 1)])];
+    let pr_repo = repo("acme", "big");
+    let view = project(&ProjectionInput {
+        map: &map,
+        pr_repo: &pr_repo,
+        files: &diff,
+        plan: None,
+        controlled: &[],
+    });
+    let registry = &view.repositories[1];
+    assert_eq!(registry.kind, RepositoryKind::Registry);
+    assert_eq!(registry.crates.len(), MAX_OTHER_CRATES);
+    let big = find(&view, "big").changes.as_ref().expect("changed");
+    assert_eq!(big.other_dependencies, 5);
 }
 
 #[test]
@@ -252,9 +303,9 @@ fn deps_view_controlling_another_owner_lists_its_repository() {
         names,
         ["dashpay/dash-evo-tool", "dashpay/platform", "other/foo"]
     );
+    assert!(view.repositories[2].controlled);
     let app = find(&view, "app").changes.as_ref().expect("changed");
     assert_eq!(app.other_facts, 0);
-    assert_eq!(app.other_dependencies, 1);
 }
 
 #[test]
@@ -416,4 +467,54 @@ async fn deps_compute_of_a_repository_without_cargo() {
     .await
     .expect("computed");
     assert_eq!(map, DependencyMap::default());
+}
+
+#[tokio::test]
+async fn deps_compute_definition_files_over_the_cap_are_not_searched() {
+    let comments: Vec<(String, String)> = (0..MAX_DEFINITION_FILES)
+        .map(|n| {
+            (
+                format!("crates/chain/src/a{n:03}.rs"),
+                "// struct Height is defined elsewhere\n".to_owned(),
+            )
+        })
+        .collect();
+    let mut files: Vec<(&str, &str)> = vec![
+        ("Cargo.toml", ROOT),
+        ("Cargo.lock", LOCK),
+        ("crates/app/Cargo.toml", APP),
+        ("crates/chain/Cargo.toml", CORE),
+        ("crates/app/src/lib.rs", APP_SOURCE),
+        ("crates/chain/src/zz.rs", "pub struct Height;\n"),
+    ];
+    files.extend(comments.iter().map(|(p, t)| (p.as_str(), t.as_str())));
+    let (dir, head) = repository(&files);
+    let diff = vec![file("crates/app/src/lib.rs", vec![hunk("h1", 5, 3)])];
+    let map = compute(
+        AnalysisId::new_random(),
+        &repo("dashpay", "dash-evo-tool"),
+        &head,
+        dir.path(),
+        &diff,
+    )
+    .await
+    .expect("computed");
+    let height = map
+        .facts
+        .iter()
+        .find(|f| f.type_name == "Height")
+        .expect("fact");
+    assert_eq!(
+        height.definition,
+        Definition::NotSearched,
+        "the defining file is past the cap: not read, so not 'not located'"
+    );
+    assert!(
+        map.limits.contains(&MapLimit::DefinitionsUnread {
+            dir: "crates/chain".to_owned(),
+            files: 1
+        }),
+        "{:?}",
+        map.limits
+    );
 }

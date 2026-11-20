@@ -1120,8 +1120,8 @@ async fn files_wait_for_the_analysis_and_viewed_refuses_other_paths() {
     assert_eq!(body["code"], json!("unauthenticated"));
 }
 
-/// R15 on fixture PR 482: one crate at the repository root, its five registry dependencies counted (none is
-/// controlled), the fixture plan's notes ranked by changed lines, no conversion facts.
+/// R15 on fixture PR 482: one crate at the repository root, its five registry dependencies listed under the
+/// registry, the fixture plan's notes ranked by changed lines, no conversion facts.
 #[tokio::test]
 async fn dependencies_of_the_fixture_pull_request() {
     let h = Harness::new().await;
@@ -1134,7 +1134,13 @@ async fn dependencies_of_the_fixture_pull_request() {
         contracts::api::deps::DependencyStatus::Available
     );
     assert_eq!(view.notes, contracts::api::deps::NotesState::Produced);
-    assert_eq!(view.repositories.len(), 1, "{view:?}");
+    assert_eq!(view.repositories.len(), 2, "{view:?}");
+    let registry = &view.repositories[1];
+    assert_eq!(
+        registry.kind,
+        contracts::api::deps::RepositoryKind::Registry
+    );
+    assert_eq!(registry.crates.len(), 5, "{registry:?}");
     let this = &view.repositories[0];
     assert_eq!(this.kind, contracts::api::deps::RepositoryKind::This);
     let [krate] = this.crates.as_slice() else {
@@ -1146,7 +1152,7 @@ async fn dependencies_of_the_fixture_pull_request() {
         changes.changed_lines > 0 && changes.files > 0,
         "{changes:?}"
     );
-    assert_eq!(changes.other_dependencies, 5);
+    assert_eq!(changes.other_dependencies, 0);
     assert!(changes.facts.is_empty(), "{:?}", changes.facts);
     assert_eq!(changes.notes.len(), 3);
     assert_eq!(changes.notes_hidden, 1);

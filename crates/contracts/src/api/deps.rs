@@ -21,7 +21,8 @@ pub struct DependencyView {
     pub files_outside_crates: u32,
     /// Whether the LLM's notes exist for this analysis.
     pub notes: NotesState,
-    /// This repository first, then other repositories (controlled first), registries and other sources.
+    /// This repository first, then controlled GitHub repositories, other GitHub repositories, other git URLs,
+    /// registries, paths and unknown sources, holding the direct dependencies of the changed crates.
     pub repositories: Vec<DependencyRepository>,
 }
 
@@ -70,6 +71,14 @@ pub enum DependencyLimit {
     FactsCut {
         /// Facts kept.
         kept: u32,
+    },
+    /// Files of a crate that may hold a searched type definition were not read (too large, over the read budget or
+    /// the file cap): definitions not found there are `not_searched`.
+    DefinitionsUnread {
+        /// The crate's directory (`""` = repository root).
+        dir: String,
+        /// Files not read.
+        files: u32,
     },
 }
 
@@ -167,7 +176,7 @@ pub struct CrateChanges {
     pub notes: Vec<CrateNote>,
     /// Notes beyond those listed.
     pub notes_hidden: u32,
-    /// Direct dependencies not listed (neither in this repository nor controlled).
+    /// Direct dependencies not listed (over the view's cap of crates outside this repository and controlled ones).
     pub other_dependencies: u32,
 }
 

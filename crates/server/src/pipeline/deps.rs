@@ -29,10 +29,14 @@ use crate::state::AppState;
 
 /// Most bytes of changed Rust files one computation reads for conversion facts.
 pub const MAX_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+/// Most files read per definition search (in path order); the rest count as not read.
+pub const MAX_DEFINITION_FILES: usize = 200;
 /// Most bytes of files read to confirm definitions.
 pub const MAX_DEFINITION_BYTES: u64 = 32 * 1024 * 1024;
 /// Most facts listed per crate; the rest are counted.
 pub const MAX_FACTS_PER_CRATE: usize = 50;
+/// Most dependency crates listed outside this repository and controlled repositories; the rest are counted.
+pub const MAX_OTHER_CRATES: usize = 200;
 /// Most notes listed per crate; the rest are counted.
 pub const MAX_NOTES_PER_CRATE: usize = 3;
 
@@ -168,24 +172,29 @@ async fn compute(
     for (path, added) in &sources {
         map.add_facts(path, texts.get(*path).map(String::as_str), added);
     }
-    let mut searched: Vec<DefinitionQuery> = Vec::new();
+    // A failed search is a mirror read error: nothing is stored and the next read computes the map again.
+    let queries: Vec<DefinitionQuery> = map.definition_queries();
     let mut found: BTreeSet<String> = BTreeSet::new();
-    for query in map.definition_queries() {
-        match mirror::grep_definitions(mirror, head, &query.dir, &query.names).await {
-            Ok(paths) => {
-                found.extend(paths);
-                searched.push(query);
-            }
-            Err(error) => {
-                tracing::warn!(%analysis, dir = %query.dir, ?error,
-                    "definition search failed; those definitions are shown as not searched");
-            }
+    let mut unread: BTreeSet<String> = BTreeSet::new();
+    for query in &queries {
+        let mut paths = mirror::grep_definitions(mirror, head, &query.dir, &query.names).await?;
+        if paths.len() > MAX_DEFINITION_FILES {
+            unread.extend(paths.split_off(MAX_DEFINITION_FILES));
         }
+        found.extend(paths);
     }
     let found: Vec<String> = found.into_iter().collect();
     let texts = read_texts(mirror, head, &found, MAX_DEFINITION_BYTES).await?;
+    unread.extend(found.into_iter().filter(|path| !texts.contains_key(path)));
+    let unread: Vec<String> = unread
+        .into_iter()
+        .filter(|path| !texts.contains_key(path))
+        .collect();
+    if !unread.is_empty() {
+        tracing::debug!(%analysis, unread = unread.len(), "definition files not read; their definitions are not searched");
+    }
     let candidates: Vec<(String, String)> = texts.into_iter().collect();
-    map.locate(&searched, &candidates);
+    map.locate(&queries, &candidates, &unread);
     Ok(map)
 }
 
@@ -368,30 +377,53 @@ pub fn project(input: &ProjectionInput<'_>) -> DependencyView {
         });
     }
 
-    // Direct dependencies of the changed crates: listed when in this repository or controlled, counted otherwise.
+    // Direct dependencies of the changed crates, with who uses them.
     let mut used_by: BTreeMap<Target, BTreeSet<String>> = BTreeMap::new();
-    for (&index, entry) in &mut changes {
+    for &index in changes.keys() {
         let Some(krate) = map.crates.get(index) else {
             continue;
         };
-        let mut others: BTreeSet<&str> = BTreeSet::new();
         for dependency in &krate.dependencies {
             if dependency.target
-                == (Target::Repo {
+                != (Target::Repo {
                     index: to_u32(index),
                 })
             {
-                continue;
-            }
-            if listed_target(dependency.target) {
                 used_by
                     .entry(dependency.target)
                     .or_default()
                     .insert(krate.name.clone());
-            } else {
-                others.insert(dependency.package.as_str());
             }
         }
+    }
+    // Listed: this repository and controlled repositories in full, other sources up to MAX_OTHER_CRATES.
+    let mut others_listed = 0;
+    let listed: BTreeSet<Target> = used_by
+        .keys()
+        .copied()
+        .filter(|&target| {
+            listed_target(target) || {
+                others_listed += 1;
+                others_listed <= MAX_OTHER_CRATES
+            }
+        })
+        .collect();
+    for (&index, entry) in &mut changes {
+        let Some(krate) = map.crates.get(index) else {
+            continue;
+        };
+        let others: BTreeSet<&str> = krate
+            .dependencies
+            .iter()
+            .filter(|d| {
+                d.target
+                    != (Target::Repo {
+                        index: to_u32(index),
+                    })
+                    && !listed.contains(&d.target)
+            })
+            .map(|d| d.package.as_str())
+            .collect();
         entry.other_dependencies = to_u32(others.len());
     }
 
@@ -433,41 +465,103 @@ pub fn project(input: &ProjectionInput<'_>) -> DependencyView {
         crates,
     });
 
-    // Controlled repositories of external crates.
-    let mut others: BTreeMap<(String, String), DependencyRepository> = BTreeMap::new();
-    for (target, users) in &used_by {
+    // External crates grouped by repository or source: controlled repositories first, then other GitHub
+    // repositories, other git URLs, registries, paths and unknown sources.
+    let mut groups: BTreeMap<(u8, String), DependencyRepository> = BTreeMap::new();
+    for target in &listed {
         let Target::External { index } = *target else {
             continue;
         };
-        let (Some(external), Some(repo)) = (map.external.get(index as usize), external_repo(index))
-        else {
+        let Some(external) = map.external.get(index as usize) else {
             continue;
         };
-        let (location, revision) = match &external.source {
-            CrateSource::Git { url, rev, .. } => (Some(url.clone()), rev.clone()),
-            CrateSource::Path { path, .. } => (Some(path.clone()), None),
-            CrateSource::Registry { .. } | CrateSource::Unknown => (None, None),
+        let users = used_by
+            .get(target)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        let (rank, key, kind, repo, location, revision) = match &external.source {
+            CrateSource::Git {
+                repo: Some(repo),
+                url,
+                rev,
+            } => {
+                let rank = if controlled(repo) { 0 } else { 1 };
+                let key = format!("{}/{}", repo.owner.to_lowercase(), repo.name.to_lowercase());
+                (
+                    rank,
+                    key,
+                    RepositoryKind::Github,
+                    Some(repo.clone()),
+                    Some(url.clone()),
+                    rev.clone(),
+                )
+            }
+            CrateSource::Path {
+                repo: Some(repo),
+                path,
+            } => {
+                let rank = if controlled(repo) { 0 } else { 1 };
+                let key = format!("{}/{}", repo.owner.to_lowercase(), repo.name.to_lowercase());
+                (
+                    rank,
+                    key,
+                    RepositoryKind::Github,
+                    Some(repo.clone()),
+                    Some(path.clone()),
+                    None,
+                )
+            }
+            CrateSource::Git {
+                repo: None,
+                url,
+                rev,
+            } => (
+                2,
+                url.clone(),
+                RepositoryKind::OtherGit,
+                None,
+                Some(url.clone()),
+                rev.clone(),
+            ),
+            CrateSource::Registry { registry } => (
+                3,
+                registry.clone(),
+                RepositoryKind::Registry,
+                None,
+                Some(registry.clone()),
+                None,
+            ),
+            CrateSource::Path { repo: None, path } => (
+                4,
+                path.clone(),
+                RepositoryKind::Path,
+                None,
+                Some(path.clone()),
+                None,
+            ),
+            CrateSource::Unknown => (5, String::new(), RepositoryKind::Unknown, None, None, None),
         };
-        let key = (repo.owner.to_lowercase(), repo.name.to_lowercase());
-        let entry = others.entry(key).or_insert_with(|| DependencyRepository {
-            kind: RepositoryKind::Github,
-            repo: Some(repo.clone()),
-            location: location.clone(),
-            controlled: true,
-            crates: Vec::new(),
-        });
-        entry.crates.push(DependencyCrate {
+        let group = groups
+            .entry((rank, key))
+            .or_insert_with(|| DependencyRepository {
+                kind,
+                controlled: rank == 0,
+                repo,
+                location,
+                crates: Vec::new(),
+            });
+        group.crates.push(DependencyCrate {
             name: external.package.clone(),
             version: external.version.clone(),
             manifest: None,
             source_at: external.evidence.as_ref().map(head_line),
             revision,
-            used_by: users.iter().cloned().collect(),
+            used_by: users,
             facts_about: facts_about.get(target).copied().unwrap_or(0),
             changes: None,
         });
     }
-    for mut repository in others.into_values() {
+    for mut repository in groups.into_values() {
         sort_crates(&mut repository.crates);
         view.repositories.push(repository);
     }
@@ -575,6 +669,10 @@ fn limit(limit: &MapLimit) -> DependencyLimit {
         },
         MapLimit::SourceUnread { path } => DependencyLimit::SourceUnread { path: path.clone() },
         MapLimit::FactsCut { kept } => DependencyLimit::FactsCut { kept: *kept },
+        MapLimit::DefinitionsUnread { dir, files } => DependencyLimit::DefinitionsUnread {
+            dir: dir.clone(),
+            files: *files,
+        },
     }
 }
 

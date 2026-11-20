@@ -879,7 +879,7 @@ notes: Array<CrateNote>,
  */
 notes_hidden: number,
 /**
- * Direct dependencies not listed (neither in this repository nor controlled).
+ * Direct dependencies not listed (over the view's cap of crates outside this repository and controlled ones).
  */
 other_dependencies: number, };
 
@@ -1214,7 +1214,15 @@ path: string, } | { "kind": "facts_cut",
 /**
  * Facts kept.
  */
-kept: number, };
+kept: number, } | { "kind": "definitions_unread",
+/**
+ * The crate's directory (`""` = repository root).
+ */
+dir: string,
+/**
+ * Files not read.
+ */
+files: number, };
 
 /**
  * A repository or other source of crates.
@@ -1271,7 +1279,8 @@ files_outside_crates: number,
  */
 notes: NotesState,
 /**
- * This repository first, then other repositories (controlled first), registries and other sources.
+ * This repository first, then controlled GitHub repositories, other GitHub repositories, other git URLs,
+ * registries, paths and unknown sources, holding the direct dependencies of the changed crates.
  */
 repositories: Array<DependencyRepository>, };
 

@@ -601,7 +601,7 @@ fn deps_definitions_are_searched_in_the_defining_crate() {
             "// struct Height\n".to_owned(),
         ),
     ];
-    map.locate(&queries, &files);
+    map.locate(&queries, &files, &[]);
     let expected = Definition::Located {
         at: FileLine {
             file: "crates/b/src/z.rs".to_owned(),
@@ -619,7 +619,7 @@ fn deps_definitions_are_searched_in_the_defining_crate() {
 fn deps_definition_not_found_is_not_located() {
     let mut map = with_facts();
     let queries = map.definition_queries();
-    map.locate(&queries, &[]);
+    map.locate(&queries, &[], &[]);
     assert_eq!(map.facts[1].definition, Definition::NotLocated);
     assert_eq!(map.facts[0].definition, Definition::OtherRepository);
 }
@@ -627,6 +627,39 @@ fn deps_definition_not_found_is_not_located() {
 #[test]
 fn deps_unsearched_names_stay_not_searched() {
     let mut map = with_facts();
-    map.locate(&[], &[]);
+    map.locate(&[], &[], &[]);
     assert_eq!(map.facts[1].definition, Definition::NotSearched);
+}
+
+#[test]
+fn deps_definition_files_not_read_leave_definitions_not_searched() {
+    let mut map = with_facts();
+    let queries = map.definition_queries();
+    let unread = [
+        "crates/b/src/huge.rs".to_owned(),
+        "crates/b/src/other.rs".to_owned(),
+    ];
+    map.locate(&queries, &[], &unread);
+    assert_eq!(
+        map.facts[1].definition,
+        Definition::NotSearched,
+        "a file found but not read may hold the definition"
+    );
+    assert_eq!(
+        map.limits,
+        [MapLimit::DefinitionsUnread {
+            dir: "crates/b".to_owned(),
+            files: 2
+        }]
+    );
+    let mut located = with_facts();
+    let files = [(
+        "crates/b/src/z.rs".to_owned(),
+        "pub struct Height;\n".to_owned(),
+    )];
+    located.locate(&queries, &files, &unread);
+    assert!(
+        matches!(located.facts[1].definition, Definition::Located { .. }),
+        "a definition found in a read file is located"
+    );
 }

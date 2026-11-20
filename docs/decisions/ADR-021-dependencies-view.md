@@ -33,11 +33,14 @@ what was added for other crates' types and where those types are defined.
 4. **Controlled owners** are an installation-wide list in Settings; the pull request's owner is always controlled.
    "Yours" is applied when the view is read, so a Settings change needs no recomputation.
 5. **Storage.** The map is the analysis's `dependencies` document (migration 0015 widens the document kinds),
-   computed after the pre-pass before the plan, or on first read for older analyses; a mirror read error is not
-   stored. The `pr_context` prompt receives the map and the notes as fenced data and is told to look up upstream
+   computed after the pre-pass before the plan, or on first read for older analyses; a mirror read error
+   (including a failed definition search) is not stored, and the next read computes the map again. The `pr_context` prompt receives the map and the notes as fenced data and is told to look up upstream
    issues and pull requests in controlled dependency repositories (ADR-005 addendum 2026-11-20).
-6. **Bounds.** At most 400 manifests and 16 MiB of Cargo text (4 MiB per file), 64 type names and 200 hits per
-   definition search, 50 facts per crate in the view. A cut is a listed limit; a non-Cargo repository is
+6. **Bounds.** At most 400 manifests and 16 MiB of Cargo text (4 MiB per file), 64 type names and 200 files read
+   per definition search (files found but not read leave their definitions `not_searched`, a listed limit), 50
+   facts per crate and 200 crates outside this repository and controlled repositories in the view (the rest are
+   counted). The `pr_context` prompt lists at most 5 controlled dependency repositories, 15 facts per crate and
+   clips Cargo names. A cut is a listed limit; a non-Cargo repository is
    `not_rust` ("not available"), never "no dependencies".
 
 ## Consequences
