@@ -130,6 +130,7 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
     { kind: "target_specific", manifest: "Cargo.toml" },
     { kind: "source_cut", path: "src/huge.rs" },
     { kind: "definitions_unread", dir: "crates/core", files: 3 },
+    { kind: "workspace_entries_cut", manifest: "Cargo.toml" },
   ];
 
   it.each([
@@ -140,6 +141,10 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
     [
       { kind: "target_specific", manifest: "Cargo.toml" },
       "Cargo.toml has target-specific dependency tables; they are listed for every target (cfg is not evaluated).",
+    ],
+    [
+      { kind: "workspace_entries_cut", manifest: "Cargo.toml" },
+      "Cargo.toml lists more workspace members or exclusions than are read; crate membership may be incomplete.",
     ],
     [
       { kind: "source_cut", path: "src/huge.rs" },

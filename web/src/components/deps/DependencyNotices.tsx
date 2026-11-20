@@ -26,6 +26,8 @@ function limitText(limit: DependencyLimit): string {
       return `${limit.manifest}: its workspace is not determined, so its lock file and inherited dependencies are not resolved.`;
     case "target_specific":
       return `${limit.manifest} has target-specific dependency tables; they are listed for every target (cfg is not evaluated).`;
+    case "workspace_entries_cut":
+      return `${limit.manifest} lists more workspace members or exclusions than are read; crate membership may be incomplete.`;
     case "source_cut":
       return `${limit.path} has more conversion candidates than are checked; the rest are not checked.`;
     case "definitions_unread":

@@ -220,6 +220,7 @@ export function mockDependenciesLimits(): DependencyView {
       { kind: "target_specific", manifest: "Cargo.toml" },
       { kind: "source_cut", path: "src/rpc/generated_codes.rs" },
       { kind: "definitions_unread", dir: "crates/node-sdk", files: 2 },
+      { kind: "workspace_entries_cut", manifest: "Cargo.toml" },
     ],
   };
 }
