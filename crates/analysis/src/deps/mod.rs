@@ -26,6 +26,9 @@ pub const MAX_DEFINITION_NAMES: usize = 64;
 /// Most `Cargo.lock` files read (those next to a read manifest, in path order); an unread one needed by a workspace
 /// is [`MapLimit::LockUnreadable`].
 pub const MAX_LOCKS: usize = 64;
+/// Most `members` and most `exclude` entries read per workspace root; the rest are cut
+/// ([`MapLimit::WorkspaceEntriesCut`]).
+pub const MAX_WORKSPACE_ENTRIES: usize = 256;
 /// Registry name of crates.io.
 pub const CRATES_IO: &str = "crates.io";
 
@@ -100,6 +103,12 @@ pub enum MapLimit {
     /// inherited dependencies are not resolved.
     WorkspaceUnresolved {
         /// Its manifest.
+        manifest: String,
+    },
+    /// A workspace root with more `members` or `exclude` entries than [`MAX_WORKSPACE_ENTRIES`]: the first ones
+    /// were read, so membership may be incomplete.
+    WorkspaceEntriesCut {
+        /// The root manifest.
         manifest: String,
     },
     /// A manifest with `[target.…]` dependency tables: they are listed for every target (`cfg` is not evaluated).
@@ -269,9 +278,10 @@ pub struct FileLine {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CrateSource {
-    /// A registry ([`CRATES_IO`] or the registry's index URL).
+    /// A registry: [`CRATES_IO`], a registry index URL (from `Cargo.lock`) or a registry name (the manifest's
+    /// `registry` key, without a lock file).
     Registry {
-        /// The registry.
+        /// The registry name or index URL.
         registry: String,
     },
     /// A git repository.
@@ -599,6 +609,11 @@ pub fn map<'t>(
         }
     }
     let mut builder = Builder::new(pr_repo, &manifests);
+    for root in builder.cut_roots() {
+        limits.push(MapLimit::WorkspaceEntriesCut {
+            manifest: root.path.clone(),
+        });
+    }
     for manifest in builder.packages() {
         if matches!(builder.membership(&manifest.dir), Membership::Unresolved) {
             limits.push(MapLimit::WorkspaceUnresolved {
@@ -717,8 +732,12 @@ struct Builder<'b, 't> {
     manifests: &'b [Manifest<'t>],
     /// Read manifests by directory.
     by_dir: HashMap<&'b str, &'b Manifest<'t>>,
+    /// `members` and `exclude` of each workspace root, read once, by the root's directory.
+    rules: HashMap<&'b str, RootRules>,
     /// Members (package directories) of each workspace root, by the root's directory.
     members: HashMap<&'b str, HashSet<String>>,
+    /// Membership of each package directory, decided once.
+    memberships: HashMap<&'b str, Membership<'b, 't>>,
     crates: Vec<RepoCrate>,
     external: Vec<ExternalCrate>,
     external_index: HashMap<(String, Option<String>, String), u32>,
@@ -745,17 +764,44 @@ impl<'b, 't> Builder<'b, 't> {
             pr_repo,
             manifests,
             by_dir,
+            rules: HashMap::new(),
             members: HashMap::new(),
+            memberships: HashMap::new(),
             crates: Vec::new(),
             external: Vec::new(),
             external_index: HashMap::new(),
             locks: BTreeMap::new(),
         };
         for root in manifests.iter().filter(|m| m.workspace().is_some()) {
+            builder.rules.insert(root.dir.as_str(), RootRules::of(root));
+        }
+        for root in manifests.iter().filter(|m| m.workspace().is_some()) {
             let members = builder.members_of(root);
             builder.members.insert(root.dir.as_str(), members);
         }
+        for manifest in builder.packages() {
+            let membership = builder.resolve(&manifest.dir);
+            builder
+                .memberships
+                .insert(manifest.dir.as_str(), membership);
+        }
         builder
+    }
+
+    /// Roots whose `members` or `exclude` were cut.
+    fn cut_roots(&self) -> Vec<&'b Manifest<'t>> {
+        let manifests: &'b [Manifest<'t>] = self.manifests;
+        manifests
+            .iter()
+            .filter(|m| self.rules.get(m.dir.as_str()).is_some_and(|r| r.cut))
+            .collect()
+    }
+
+    /// Whether the package at `dir` is excluded from workspace `root`.
+    fn excluded(&self, root: &Manifest<'_>, dir: &str) -> bool {
+        self.rules
+            .get(root.dir.as_str())
+            .is_some_and(|rules| rules.excluded(dir))
     }
 
     /// Manifests with a named package.
@@ -779,12 +825,15 @@ impl<'b, 't> Builder<'b, 't> {
         if root.package().is_some() {
             members.insert(root.dir.clone());
         }
-        let patterns = member_patterns(root);
+        let patterns: &[String] = self
+            .rules
+            .get(root.dir.as_str())
+            .map_or(&[], |rules| rules.members.as_slice());
         for manifest in self.packages() {
             if patterns
                 .iter()
                 .any(|pattern| glob_matches(pattern, &manifest.dir))
-                && !excluded(root, &manifest.dir)
+                && !self.excluded(root, &manifest.dir)
             {
                 members.insert(manifest.dir.clone());
             }
@@ -801,7 +850,7 @@ impl<'b, 't> Builder<'b, 't> {
                     .is_some_and(|m| m.package().is_some());
                 if package
                     && within(&root.dir, &dependency)
-                    && !excluded(root, &dependency)
+                    && !self.excluded(root, &dependency)
                     && members.insert(dependency.clone())
                 {
                     queue.push_back(dependency);
@@ -811,9 +860,17 @@ impl<'b, 't> Builder<'b, 't> {
         members
     }
 
+    /// The workspace of the package at `dir`, as decided once in [`Builder::new`].
+    fn membership(&self, dir: &str) -> Membership<'b, 't> {
+        self.memberships
+            .get(dir)
+            .copied()
+            .unwrap_or(Membership::Standalone)
+    }
+
     /// The workspace of the package at `dir`: its own `[workspace]`, its `package.workspace` pointer, else the
     /// nearest ancestor root that does not exclude it (an excluded package looks further up).
-    fn membership(&self, dir: &str) -> Membership<'b, 't> {
+    fn resolve(&self, dir: &str) -> Membership<'b, 't> {
         let Some(&own) = self.by_dir.get(dir) else {
             return Membership::Standalone;
         };
@@ -844,7 +901,7 @@ impl<'b, 't> Builder<'b, 't> {
             ancestor = dir_of(ancestor);
             if let Some(&root) = self.by_dir.get(ancestor)
                 && root.workspace().is_some()
-                && !excluded(root, dir)
+                && !self.excluded(root, dir)
             {
                 return member_of(root);
             }
@@ -1273,38 +1330,51 @@ fn normalise(base_dir: &str, path: &str) -> Option<Inside> {
     Some(Inside(stack.join("/")))
 }
 
-/// The `members` globs of workspace root `root`, relative to the repository root.
-fn member_patterns(root: &Manifest<'_>) -> Vec<String> {
-    root.workspace()
-        .and_then(|w| w.get("members"))
-        .and_then(Item::as_array)
-        .map(|list| {
-            list.iter()
-                .filter_map(|v| v.as_str())
-                .filter_map(|pattern| normalise(&root.dir, pattern).map(|Inside(p)| p))
-                .collect()
-        })
-        .unwrap_or_default()
+/// The `members` globs and `exclude` entries of a workspace root, normalised to repository paths once, at most
+/// [`MAX_WORKSPACE_ENTRIES`] of each.
+struct RootRules {
+    members: Vec<String>,
+    exclude: Vec<String>,
+    /// Entries beyond the cap were left out.
+    cut: bool,
 }
 
-/// Whether the package at `dir` is excluded from workspace `root`: under an `exclude` entry and not under a literal
-/// `members` entry (an explicit member wins; a glob match does not, as in Cargo).
-fn excluded(root: &Manifest<'_>, dir: &str) -> bool {
-    let under = |base: &str| dir == base || base.is_empty() || dir.starts_with(&format!("{base}/"));
-    let excluded = root
-        .workspace()
-        .and_then(|w| w.get("exclude"))
-        .and_then(Item::as_array)
-        .is_some_and(|list| {
+impl RootRules {
+    fn of(root: &Manifest<'_>) -> Self {
+        let mut cut = false;
+        let mut entries = |key: &str| -> Vec<String> {
+            let Some(list) = root
+                .workspace()
+                .and_then(|w| w.get(key))
+                .and_then(Item::as_array)
+            else {
+                return Vec::new();
+            };
+            cut |= list.len() > MAX_WORKSPACE_ENTRIES;
             list.iter()
+                .take(MAX_WORKSPACE_ENTRIES)
                 .filter_map(|v| v.as_str())
-                .filter_map(|entry| normalise(&root.dir, entry))
-                .any(|Inside(entry)| under(&entry))
-        });
-    excluded
-        && !member_patterns(root)
-            .iter()
-            .any(|member| within(member, dir) && !member.is_empty())
+                .filter_map(|entry| normalise(&root.dir, entry).map(|Inside(p)| p))
+                .collect()
+        };
+        let members = entries("members");
+        let exclude = entries("exclude");
+        Self {
+            members,
+            exclude,
+            cut,
+        }
+    }
+
+    /// Whether the package at `dir` is excluded: under an `exclude` entry and not under a literal `members` entry
+    /// (an explicit member wins; a glob match does not, as in Cargo).
+    fn excluded(&self, dir: &str) -> bool {
+        self.exclude.iter().any(|entry| within(entry, dir))
+            && !self
+                .members
+                .iter()
+                .any(|member| !member.is_empty() && within(member, dir))
+    }
 }
 
 /// Whether `dir` is `base` or below it (`""` = the repository root).

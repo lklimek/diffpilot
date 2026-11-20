@@ -999,3 +999,40 @@ fn deps_member_globs_stay_cheap_on_hostile_patterns() {
     assert_eq!(map.crates.len(), 1);
     assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }
+
+#[test]
+fn deps_workspace_entries_are_capped_and_membership_stays_cheap() {
+    let started = std::time::Instant::now();
+    let patterns: Vec<String> = (0..100_000).map(|n| format!("\"p{n}/**/x*\"")).collect();
+    let root = format!(
+        "[workspace]\nmembers = [\"crates/*\", {}]\nexclude = [{}]\n",
+        patterns.join(", "),
+        patterns.join(", ")
+    );
+    let packages: Vec<(String, String)> = (0..200)
+        .map(|n| {
+            (
+                format!("crates/c{n:03}/Cargo.toml"),
+                format!("[package]\nname = \"c{n}\"\n"),
+            )
+        })
+        .collect();
+    let mut files: Vec<(&str, &str)> = vec![("Cargo.toml", root.as_str())];
+    files.extend(packages.iter().map(|(p, t)| (p.as_str(), t.as_str())));
+    let map = map_of(&files);
+    assert_eq!(map.crates.len(), 200);
+    assert!(map.limits.contains(&MapLimit::WorkspaceEntriesCut {
+        manifest: "Cargo.toml".to_owned()
+    }));
+    assert!(
+        !map.limits
+            .iter()
+            .any(|l| matches!(l, MapLimit::WorkspaceUnresolved { .. })),
+        "the first entry still makes them members"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+}

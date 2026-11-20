@@ -41,7 +41,8 @@ what was added for other crates' types and where those types are defined.
    computed after the pre-pass before the plan, or on first read for older analyses; a mirror read error
    (including a failed definition search) is not stored, and the next read computes the map again. The `pr_context` prompt receives the map and the notes as fenced data and is told to look up upstream
    issues and pull requests in controlled dependency repositories (ADR-005 addendum 2026-11-20).
-6. **Bounds.** At most 400 manifests, 64 lock files (next to a read manifest, read after the manifests) and
+6. **Bounds.** At most 400 manifests, 256 `members` and 256 `exclude` entries per workspace root
+   (`workspace_entries_cut`; membership is decided once per package), 64 lock files (next to a read manifest, read after the manifests) and
    16 MiB of Cargo text (4 MiB per file); per changed file at most 4096 conversion candidates (`source_cut`), item
    headers of at most 512 tokens ending in `{` or `;`; parsing, token rules and definition lookup (each file lexed
    once) run on the blocking pool in a read slot; 64 type names and 200 files read

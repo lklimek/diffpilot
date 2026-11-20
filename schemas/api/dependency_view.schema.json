@@ -205,6 +205,24 @@
           ]
         },
         {
+          "description": "A workspace root with more `members` or `exclude` entries than the server reads: membership may be\nincomplete.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "workspace_entries_cut"
+            },
+            "manifest": {
+              "description": "The root manifest.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "manifest"
+          ]
+        },
+        {
           "description": "A manifest with `[target.…]` dependency tables: they are listed for every target (`cfg` is not evaluated).",
           "type": "object",
           "properties": {

@@ -684,6 +684,9 @@ fn limit(limit: &MapLimit) -> DependencyLimit {
         MapLimit::WorkspaceUnresolved { manifest } => DependencyLimit::WorkspaceUnresolved {
             manifest: manifest.clone(),
         },
+        MapLimit::WorkspaceEntriesCut { manifest } => DependencyLimit::WorkspaceEntriesCut {
+            manifest: manifest.clone(),
+        },
         MapLimit::TargetSpecific { manifest } => DependencyLimit::TargetSpecific {
             manifest: manifest.clone(),
         },
