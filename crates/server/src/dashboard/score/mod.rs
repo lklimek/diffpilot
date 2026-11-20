@@ -569,24 +569,29 @@ pub fn awaiting_others<'a>(rules: &ScoreRules, prs: &'a [PrFacts]) -> Vec<&'a Pr
 }
 
 /// The user's PR the user could merge, merge state aside: by a scanned login that is not an excluded author, not a
-/// draft, and the user can write to the base repository.
+/// draft, the user can write to the base repository, and it targets the repository's default branch (owner: Ready
+/// to merge lists only pull requests into the main branch).
 fn mergeable_by_user(rules: &ScoreRules, pr: &PrFacts) -> bool {
     pr.author
         .as_deref()
         .is_some_and(|a| rules.is_scanned(a) && !rules.is_skipped_author(a))
         && !pr.is_draft
         && pr.viewer_can_write
+        && pr.base_ref.is_some()
+        && pr.base_ref == pr.default_branch
 }
 
-/// The user's PR GitHub lets the user merge now (Ready to merge, K17): [`mergeable_by_user`] and the merge state is
-/// clean, has hooks or unstable (a check that is not required has not passed). Such a PR is ranked, never waiting
-/// only on others.
+/// The user's PR that is ready to merge now (Ready to merge, K17): [`mergeable_by_user`], the merge state is clean or
+/// has hooks (every check passed), CI is not red, and nothing is left to answer: no unresolved review thread, no
+/// change request (people or bots) and no comment awaiting the user's reply. Such a PR is ranked, never waiting only
+/// on others.
 pub fn ready_to_merge(rules: &ScoreRules, pr: &PrFacts) -> bool {
     mergeable_by_user(rules, pr)
-        && matches!(
-            pr.merge_state,
-            MergeState::Clean | MergeState::HasHooks | MergeState::Unstable
-        )
+        && matches!(pr.merge_state, MergeState::Clean | MergeState::HasHooks)
+        && pr.ci != CiEffective::Red
+        && pr.unresolved_threads == 0
+        && pr.changes_requested_by.is_empty()
+        && !pr.awaiting_our_reply
 }
 
 /// The user's PR whose merge state GitHub had not computed by the scan: it would be checked for Ready to merge.

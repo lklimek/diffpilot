@@ -711,6 +711,7 @@
     "headRefOid": "31ec423c802120440321b5aadb51db1c05171ec1",
     "mergeable": "MERGEABLE",
     "mergeStateStatus": "UNKNOWN",
+    "computedMergeStateStatus": "CLEAN",
     "reviewDecision": "REVIEW_REQUIRED",
     "additions": 95,
     "deletions": 20,

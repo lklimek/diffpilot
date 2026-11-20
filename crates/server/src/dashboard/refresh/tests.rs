@@ -810,13 +810,13 @@ async fn full_refresh_stores_the_expected_snapshot() {
         .collect();
     assert_eq!(
         ready,
-        [("WUI-298", "https://github.com/acme/wallet-ui/pull/298")],
-        "only the user's PR GitHub lets the user merge"
+        [("NC-476", "https://github.com/acme/node-client/pull/476")],
+        "only the user's PR into the default branch that GitHub lets the user merge (WUI-298 targets a feature branch)"
     );
     assert_eq!(
         meta.merge_state_pending,
-        Some(1),
-        "WUI-298 was UNKNOWN at the details read and CLEAN when read again; NC-476 stays unknown"
+        Some(0),
+        "NC-476 was UNKNOWN at the details read and CLEAN when read again; WUI-298 targets a feature branch"
     );
     assert_eq!(
         meta.checked.pr,

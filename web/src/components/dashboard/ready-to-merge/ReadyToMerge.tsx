@@ -54,9 +54,9 @@ export function ReadyToMerge({ items, pending }: { items: ReadyToMergeItem[]; pe
       )}
       <CopyListButton lines={items} what="PRs ready to merge" />
       <p className="mt-1.5 text-xs text-muted">
-        Your PRs whose merge button on GitHub was active at the last scan: not a draft, you can write to the
-        repository, and GitHub allows the merge (a check that is not required may not have passed). By id;
-        they stay in the ranking too.
+        Your PRs into the repository's default branch that were ready to merge at the last scan: not a draft,
+        you can write to the repository, every check passed, and no unresolved thread, change request or
+        comment awaiting your reply. By id; they stay in the ranking too.
       </p>
     </AsideSection>
   );
