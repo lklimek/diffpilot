@@ -62,9 +62,11 @@ disk for images and build cache, plus the scratch volumes. Check: `docker versio
    sudoedit /srv/diffpilot/.env
    ```
 
-   In the editor set `SR_GITHUB_APP_ID`, `SR_GITHUB_CLIENT_ID`, `SR_GITHUB_CLIENT_SECRET`, `SR_MEMCAN_URL` (the
-   full MCP endpoint, e.g. `http://memcan.lan:8190/mcp`), `SR_MEMCAN_TOKEN`, and `SR_RUNNER_CLAUDIUS_REF` (a
-   claudius commit SHA pins the agent's skills; recommended); keep the rest unless an address clashes.
+   In the editor set `SR_ALLOWED_LOGINS` (the GitHub logins allowed to sign in, comma-separated:
+   `lklimek,Claudius-Maginificent`), `SR_GITHUB_APP_ID`, `SR_GITHUB_CLIENT_ID`, `SR_GITHUB_CLIENT_SECRET`,
+   `SR_MEMCAN_URL` (the full MCP endpoint, e.g. `http://memcan.lan:8190/mcp`), `SR_MEMCAN_TOKEN`, and
+   `SR_RUNNER_CLAUDIUS_REF` (a claudius commit SHA pins the agent's skills; recommended); keep the rest unless an
+   address clashes.
    `SR_SECRET_KEY` encrypts stored tokens and cannot be rotated in v1: keep a copy with the backups.
    `sudo /srv/diffpilot/app/deploy/check-production-config.sh --env-file /srv/diffpilot/.env` must pass:
    besides development switches it refuses values left from `.env.example`, empty secrets, a runner secret under
@@ -110,17 +112,9 @@ disk for images and build cache, plus the scratch volumes. Check: `docker versio
    `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`): the failed access-token attempt limit counts
    per client address, and without it all clients share one.
 
-9. Sign-in allowlist: the database starts with `lklimek` and `Claudius-Maginificent`. Adding a login (server
-   stopped; the helper container needs Internet for `apt`):
-
-   ```sh
-   sr stop server
-   docker run --rm -v diffpilot_server-data:/data ubuntu:26.04 sh -c \
-     "apt-get update -qq && apt-get install -y -qq sqlite3 > /dev/null &&
-      sqlite3 /data/diffpilot.sqlite \"INSERT OR IGNORE INTO tenant_allowed_logins (tenant_id, login) VALUES ('default', 'NEW-LOGIN');\" &&
-      chown -R 10010:10010 /data"
-   sr start server
-   ```
+9. Sign-in allowlist: `SR_ALLOWED_LOGINS` in `/srv/diffpilot/.env`, applied at every server start (logins added;
+   the others removed with their sessions, GitHub tokens and access tokens). After editing it: `sr up -d server`, then
+   `sr logs --since 5m server | grep 'sign-in allowlist set'` shows the logins added and removed.
 
 ## Secrets as files (optional)
 
@@ -228,6 +222,14 @@ sr up -d
 1, restart loop). Never run an older image against an upgraded database: roll back with the matching backup.
 `... was previously applied but has been modified` means an applied migration was edited: the build is defective;
 roll back and report it, never delete the database.
+
+## Upgrade to v1.2
+
+**Set `SR_ALLOWED_LOGINS` before upgrading** (step 1 of "Upgrade"): the v1.2 server does not start without it, and
+from then on it is the sign-in allowlist, applied at every start (ADR-007 addendum). List every login that should
+keep access, e.g. `SR_ALLOWED_LOGINS=lklimek,Claudius-Maginificent`; a login left out loses its sessions, stored
+GitHub tokens and personal access tokens at the first start. Migration 0016 drops the logins 0001 seeded while
+nobody has signed in through them. `deploy/check-production-config.sh --env-file` fails while the variable is empty.
 
 ## Upgrade to v1.1
 
@@ -616,7 +618,8 @@ The development host's instance (compose project `diffpilot-local`) takes its ge
 `~/.config/diffpilot-local/stack.env` (mode 0600) and the App and MemCan secrets from
 `~/.config/diffpilot/secrets.env`; the App key `~/.config/diffpilot/github-app.pem` stays readable by the
 host user only, so `deploy/dev/compose.host-uid.yaml` runs the server under that uid (`SR_SERVER_UID`/`_GID` in
-`stack.env`). Initialize a fresh data volume's ownership before the first server start, as shown below.
+`stack.env`). `stack.env` also holds `SR_ALLOWED_LOGINS=lklimek,Claudius-Maginificent`. Initialize a fresh data
+volume's ownership before the first server start, as shown below.
 
 ```sh
 cd /data/git-worktrees/home-ubuntu-git-diffpilot-wp3-ops   # or any checkout of the same tree
@@ -654,7 +657,8 @@ docker run --rm --network none -v sr-spike-codex-home:/src:ro -v diffpilot-local
 
 First sign-in (owner, once per database): open `http://localhost:3000` in a browser on this host (or through an
 SSH tunnel `ssh -L 3000:127.0.0.1:3000 agentic`), choose "Sign in with GitHub", sign in as an allowed login
-(`lklimek`), approve the App. The server binds the login to its GitHub id at this first sign-in.
+(`lklimek`, from `SR_ALLOWED_LOGINS`), approve the App. The server binds the login to its GitHub id at this first
+sign-in.
 
 Development without containers: `deploy/dev/stack.sh` (fake GitHub, fake provider, no isolation).
 `deploy/dev/real-codex-smoke.sh` with `SR_SMOKE_ISOLATION=supervisor` runs one analysis with the production runner

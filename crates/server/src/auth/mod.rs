@@ -29,6 +29,8 @@ use contracts::api::error::ApiErrorCode;
 use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::sessions::Liveness;
+use db::repo::tenants::AllowlistChange;
+use db::repo::{DEFAULT_TENANT, Db};
 use jiff::SignedDuration;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
@@ -68,6 +70,22 @@ pub(crate) fn liveness(now: Timestamp) -> Liveness {
         now,
         seen_after: now - SESSION_IDLE_TIMEOUT,
     }
+}
+
+/// Makes the default tenant's sign-in allowlist equal `SR_ALLOWED_LOGINS` (ADR-007); run at start, before serving.
+pub async fn apply_allowed_logins(db: &Db, logins: &[String]) -> Result<AllowlistChange, DbError> {
+    let change = db
+        .tenants()
+        .reconcile_logins(DEFAULT_TENANT, logins, Timestamp::now())
+        .await?;
+    tracing::info!(
+        added = change.added.len(),
+        removed = change.removed.len(),
+        added_logins = ?change.added,
+        removed_logins = ?change.removed,
+        "sign-in allowlist set from SR_ALLOWED_LOGINS"
+    );
+    Ok(change)
 }
 
 /// Logs a start-up warning when `SR_PUBLIC_URL` is plain HTTP on a host other than localhost: cookies then lack

@@ -31,7 +31,94 @@ pub enum LoginAdmission {
     IdMismatch,
 }
 
+/// SQL condition on a row of user `?2` in tenant `?1`, the user found by the GitHub id an allowlist entry was bound to.
+macro_rules! of_user {
+    () => {
+        "tenant_id = ?1 AND user_id IN (SELECT id FROM users WHERE github_id = ?2)"
+    };
+}
+
+/// Outcome of [`Tenants::reconcile_logins`]; logins as stored.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AllowlistChange {
+    /// Logins added, unbound.
+    pub added: Vec<String>,
+    /// Logins removed.
+    pub removed: Vec<String>,
+}
+
 impl Tenants<'_> {
+    /// Makes the tenant's allowlist equal `logins` (case-insensitive) in one transaction: adds missing logins
+    /// unbound, keeps listed entries with their binding, and removes the others. A removed bound entry also ends
+    /// its user's access in the tenant: sessions and GitHub token pair deleted, access tokens revoked at `now`, so
+    /// listing the login again revives none of them (ADR-007).
+    pub async fn reconcile_logins(
+        &self,
+        tenant_id: &str,
+        logins: &[String],
+        now: Timestamp,
+    ) -> Result<AllowlistChange, DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
+        let stored: Vec<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT login, github_id FROM tenant_allowed_logins WHERE tenant_id = ? ORDER BY login",
+        )
+        .bind(tenant_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut change = AllowlistChange::default();
+        // `COLLATE NOCASE` folds ASCII only, as `eq_ignore_ascii_case`.
+        for (login, github_id) in stored {
+            if logins
+                .iter()
+                .any(|wanted| wanted.eq_ignore_ascii_case(&login))
+            {
+                continue;
+            }
+            if let Some(github_id) = github_id {
+                for sql in [
+                    concat!("DELETE FROM sessions WHERE ", of_user!()),
+                    concat!("DELETE FROM user_tokens WHERE ", of_user!()),
+                ] {
+                    sqlx::query(sql)
+                        .bind(tenant_id)
+                        .bind(github_id)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                sqlx::query(concat!(
+                    "UPDATE access_tokens SET revoked_at = ?3 WHERE revoked_at IS NULL AND ",
+                    of_user!()
+                ))
+                .bind(tenant_id)
+                .bind(github_id)
+                .bind(timestamp(now))
+                .execute(&mut *tx)
+                .await?;
+            }
+            sqlx::query("DELETE FROM tenant_allowed_logins WHERE tenant_id = ? AND login = ?")
+                .bind(tenant_id)
+                .bind(&login)
+                .execute(&mut *tx)
+                .await?;
+            change.removed.push(login);
+        }
+        for login in logins {
+            let inserted = sqlx::query(
+                "INSERT INTO tenant_allowed_logins (tenant_id, login) VALUES (?, ?)
+                 ON CONFLICT (tenant_id, login) DO NOTHING",
+            )
+            .bind(tenant_id)
+            .bind(login)
+            .execute(&mut *tx)
+            .await?;
+            if inserted.rows_affected() == 1 {
+                change.added.push(login.clone());
+            }
+        }
+        tx.commit().await?;
+        Ok(change)
+    }
+
     /// Checks `login` (case-insensitive) against the tenant's allowlist; the first admission binds the entry to
     /// `github_id`, later admissions must present the same id.
     pub async fn admit_login(
@@ -136,11 +223,33 @@ mod tests {
     use super::*;
     use crate::repo::DEFAULT_TENANT;
 
+    fn logins(list: &[&str]) -> Vec<String> {
+        list.iter().map(|login| (*login).to_owned()).collect()
+    }
+
+    async fn allowlist(db: &Db) -> Vec<(String, Option<i64>)> {
+        sqlx::query_as(
+            "SELECT login, github_id FROM tenant_allowed_logins WHERE tenant_id = ? ORDER BY login",
+        )
+        .bind(DEFAULT_TENANT)
+        .fetch_all(&db.pool)
+        .await
+        .expect("allowlist")
+    }
+
     #[tokio::test]
     async fn first_admission_binds_the_id_and_later_ones_must_match() {
         let db = Db::in_memory().await.expect("db");
         let now = Timestamp::now();
         let tenants = db.tenants();
+        tenants
+            .reconcile_logins(
+                DEFAULT_TENANT,
+                &logins(&["lklimek", "Claudius-Maginificent"]),
+                Timestamp::now(),
+            )
+            .await
+            .expect("reconcile");
         let admit =
             |login: &'static str, id: i64| tenants.admit_login(DEFAULT_TENANT, login, id, now);
         assert_eq!(
@@ -172,5 +281,200 @@ mod tests {
                 .expect("admit"),
             LoginAdmission::NotListed
         );
+    }
+
+    #[tokio::test]
+    async fn reconcile_adds_missing_logins_unbound_and_removes_unlisted_ones() {
+        let db = Db::in_memory().await.expect("db");
+        let tenants = db.tenants();
+        assert_eq!(allowlist(&db).await, [], "a fresh database allows nobody");
+        let first = tenants
+            .reconcile_logins(DEFAULT_TENANT, &logins(&["alice", "Bob"]), Timestamp::now())
+            .await
+            .expect("first");
+        assert_eq!(
+            first,
+            AllowlistChange {
+                added: logins(&["alice", "Bob"]),
+                removed: Vec::new()
+            }
+        );
+        testing::allow_login(&db, DEFAULT_TENANT, "alice", 7)
+            .await
+            .expect("bind alice");
+
+        let second = tenants
+            .reconcile_logins(
+                DEFAULT_TENANT,
+                &logins(&["ALICE", "carol"]),
+                Timestamp::now(),
+            )
+            .await
+            .expect("second");
+        assert_eq!(
+            second,
+            AllowlistChange {
+                added: logins(&["carol"]),
+                removed: logins(&["Bob"])
+            },
+            "logins compare case-insensitively"
+        );
+        assert_eq!(
+            allowlist(&db).await,
+            [("alice".to_owned(), Some(7)), ("carol".to_owned(), None)],
+            "a kept entry keeps its spelling and binding"
+        );
+        let again = tenants
+            .reconcile_logins(
+                DEFAULT_TENANT,
+                &logins(&["ALICE", "carol"]),
+                Timestamp::now(),
+            )
+            .await
+            .expect("unchanged");
+        assert_eq!(again, AllowlistChange::default());
+        let other = tenants
+            .reconcile_logins("other-tenant", &[], Timestamp::now())
+            .await
+            .expect("other tenant");
+        assert_eq!(other, AllowlistChange::default());
+        assert_eq!(allowlist(&db).await.len(), 2, "other tenants are untouched");
+    }
+
+    /// ADR-007 addendum: removing a bound entry ends its user's sessions, GitHub token pair and access tokens, so
+    /// adding the login again later revives none of them.
+    #[tokio::test]
+    async fn reconcile_removing_a_bound_login_ends_its_access_for_good() {
+        use crate::repo::access_tokens::NewAccessToken;
+        use crate::repo::sessions::{Liveness, NewSession};
+        use crate::repo::tokens::EncryptedTokens;
+        use crate::repo::users::GithubProfile;
+        use contracts::api::access_tokens::{AccessTokenId, TokenScope};
+        use jiff::SignedDuration;
+
+        let db = Db::in_memory().await.expect("db");
+        let now = Timestamp::now();
+        let tenants = db.tenants();
+        tenants
+            .reconcile_logins(DEFAULT_TENANT, &logins(&["alice", "bob"]), Timestamp::now())
+            .await
+            .expect("allow");
+        for (user, login, github_id) in [("u-alice", "alice", 7), ("u-bob", "bob", 8)] {
+            let profile = GithubProfile {
+                github_id,
+                login: login.to_owned(),
+                name: None,
+                avatar_url: None,
+            };
+            db.users()
+                .upsert_member(DEFAULT_TENANT, user, &profile, now)
+                .await
+                .expect("user");
+            assert_eq!(
+                tenants
+                    .admit_login(DEFAULT_TENANT, login, github_id, now)
+                    .await
+                    .expect("admit"),
+                LoginAdmission::Allowed
+            );
+            db.sessions()
+                .create(
+                    &NewSession {
+                        token_hash: user.as_bytes(),
+                        tenant_id: DEFAULT_TENANT,
+                        user_id: user,
+                        csrf_token: "csrf",
+                        expires_at: now + SignedDuration::from_hours(1),
+                    },
+                    now,
+                )
+                .await
+                .expect("session");
+            db.user_tokens()
+                .put(
+                    user,
+                    DEFAULT_TENANT,
+                    &EncryptedTokens {
+                        access_ct: vec![1],
+                        access_expires_at: now + SignedDuration::from_hours(8),
+                        refresh_ct: vec![2],
+                        refresh_expires_at: now + SignedDuration::from_hours(24),
+                    },
+                    now,
+                )
+                .await
+                .expect("pair");
+            let mut hash = [0u8; 32];
+            hash[..user.len()].copy_from_slice(user.as_bytes());
+            db.access_tokens()
+                .create(
+                    DEFAULT_TENANT,
+                    user,
+                    &NewAccessToken {
+                        id: AccessTokenId(format!("{:0>8}", &user[2..])),
+                        name: "agent".to_owned(),
+                        token_hash: hash,
+                        scopes: vec![TokenScope::Read],
+                        expires_at: now + SignedDuration::from_hours(24),
+                    },
+                    now,
+                )
+                .await
+                .expect("access token");
+        }
+
+        let change = tenants
+            .reconcile_logins(DEFAULT_TENANT, &logins(&["bob"]), Timestamp::now())
+            .await
+            .expect("remove alice");
+        assert_eq!(change.removed, logins(&["alice"]));
+        // Back on the list, and alice signs in again with the same GitHub id.
+        tenants
+            .reconcile_logins(DEFAULT_TENANT, &logins(&["bob", "alice"]), Timestamp::now())
+            .await
+            .expect("add alice again");
+        assert_eq!(
+            tenants
+                .admit_login(DEFAULT_TENANT, "alice", 7, now)
+                .await
+                .expect("admit"),
+            LoginAdmission::Allowed
+        );
+
+        let live = Liveness {
+            now,
+            seen_after: now - SignedDuration::from_hours(1),
+        };
+        let sessions = db.sessions();
+        assert!(
+            sessions
+                .live(b"u-alice", live)
+                .await
+                .expect("read")
+                .is_none(),
+            "the removed user's session ended"
+        );
+        assert!(sessions.live(b"u-bob", live).await.expect("read").is_some());
+        assert!(
+            db.user_tokens()
+                .get("u-alice")
+                .await
+                .expect("read")
+                .is_none(),
+            "the removed user's GitHub token pair is deleted"
+        );
+        assert!(db.user_tokens().get("u-bob").await.expect("read").is_some());
+        let credential = |id: &str| {
+            let id = AccessTokenId(id.to_owned());
+            let tokens = db.access_tokens();
+            async move { tokens.credential(&id).await.expect("read") }
+        };
+        let alice_token = credential("000alice").await.expect("listed again");
+        assert!(
+            alice_token.record.revoked_at.is_some(),
+            "the removed user's access tokens are revoked"
+        );
+        let bob_token = credential("00000bob").await.expect("bob's token");
+        assert!(bob_token.record.revoked_at.is_none());
     }
 }

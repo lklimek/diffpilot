@@ -368,6 +368,7 @@ fn config(dir: &Path, github: &MockServer, app_key: Option<&Path>) -> Config {
     let remotes = dir.join("remotes");
     let env: HashMap<&str, String> = HashMap::from([
         ("SR_PUBLIC_URL", "http://review.example.test".to_owned()),
+        ("SR_ALLOWED_LOGINS", "alice".to_owned()),
         ("SR_DATA_DIR", dir.join("data").display().to_string()),
         (
             "SR_SECRET_KEY",

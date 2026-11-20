@@ -45,6 +45,8 @@ enum StartError {
         path.display()
     )]
     FormerDatabase { path: PathBuf },
+    #[error("could not apply SR_ALLOWED_LOGINS to the sign-in allowlist")]
+    AllowedLogins(#[source] DbError),
     #[error("could not listen on {addr}; check {key} and whether the port is in use")]
     Bind {
         key: &'static str,
@@ -114,6 +116,9 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     let db = Db::open(&path)
         .await
         .map_err(|source| StartError::Database { path, source })?;
+    server::auth::apply_allowed_logins(&db, &config.allowed_logins)
+        .await
+        .map_err(StartError::AllowedLogins)?;
     let public = bind(LISTEN_ADDR, config.listen_addr).await?;
     let runner = bind(RUNNER_LISTEN_ADDR, config.runner_listen_addr).await?;
     let state = AppState::with_queue(config, db);

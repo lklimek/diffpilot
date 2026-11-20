@@ -197,7 +197,10 @@ async fn flow_auto_retries_migration_keeps_the_rows_of_an_existing_database() {
             .expect("versions");
     assert_eq!(
         versions,
-        (1..=i64::try_from(MIGRATIONS.len()).expect("count")).collect::<Vec<_>>()
+        MIGRATIONS
+            .iter()
+            .map(|(version, ..)| *version)
+            .collect::<Vec<_>>()
     );
     // Running the migrator again changes nothing (the checksum of 0001 still matches).
     migrate(&db.pool, MIGRATIONS.len())
@@ -215,32 +218,73 @@ async fn tenant_default_seeded() {
     assert_eq!(ids, [DEFAULT_TENANT]);
 }
 
+async fn allowlist_rows(pool: &sqlx::SqlitePool) -> Vec<(String, Option<i64>)> {
+    sqlx::query_as(
+        "SELECT login, github_id FROM tenant_allowed_logins WHERE tenant_id = 'default' ORDER BY login",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("allowlist")
+}
+
+/// ADR-007 addendum: a fresh database allows nobody until `SR_ALLOWED_LOGINS` is applied.
 #[tokio::test]
-async fn default_allowlist_seeded_unbound_and_case_insensitive() {
+async fn fresh_allowlist_is_empty() {
     let db = db().await;
-    let rows: Vec<(String, Option<i64>)> =
-        sqlx::query_as("SELECT login, github_id FROM tenant_allowed_logins WHERE tenant_id = 'default' ORDER BY login")
-            .fetch_all(&db.pool)
-            .await
-            .expect("allowlist");
+    assert_eq!(allowlist_rows(&db.pool).await, []);
+}
+
+/// Migration 0016 drops the logins 0001 seeded only while nobody signed in through them; a bound entry and
+/// logins the deployment added stay.
+#[tokio::test]
+async fn unbound_seed_logins_migration_keeps_bound_and_added_entries() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before = MIGRATIONS
+        .iter()
+        .position(|(version, ..)| *version == 16)
+        .expect("migration 0016");
+    migrate(&pool, before).await.expect("up to 0016");
     assert_eq!(
-        rows,
+        allowlist_rows(&pool).await,
         [
             ("Claudius-Maginificent".to_owned(), None),
             ("lklimek".to_owned(), None)
-        ]
+        ],
+        "0001 seeds both"
     );
-    let found: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM tenant_allowed_logins WHERE login = 'LKLIMEK'")
-            .fetch_one(&db.pool)
-            .await
-            .expect("lookup");
-    assert_eq!(found, 1);
+    sqlx::raw_sql(
+        "UPDATE tenant_allowed_logins SET github_id = 7, bound_at = 't' WHERE login = 'LKLIMEK';
+         INSERT INTO tenant_allowed_logins (tenant_id, login) VALUES ('default', 'alice');",
+    )
+    .execute(&pool)
+    .await
+    .expect("existing install");
+    migrate(&pool, MIGRATIONS.len()).await.expect("0016");
+    assert_eq!(
+        allowlist_rows(&pool).await,
+        [("alice".to_owned(), None), ("lklimek".to_owned(), Some(7))]
+    );
 }
 
 #[tokio::test]
 async fn allowlist_binds_each_github_id_once_per_tenant() {
     let db = db().await;
+    sqlx::query(
+        "INSERT INTO tenant_allowed_logins (tenant_id, login) VALUES ('default', 'lklimek'), ('default', 'Claudius-Maginificent')",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("allow");
     sqlx::query(
         "UPDATE tenant_allowed_logins SET github_id = 7, bound_at = 't' WHERE login = 'lklimek'",
     )

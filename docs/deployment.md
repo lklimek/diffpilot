@@ -167,6 +167,7 @@ Required means compose or the service refuses to start without it. "Secret" valu
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
 | `SR_PUBLIC_URL` | yes | | Public base URL, `https://<host-name>`. The OAuth callback is derived from it; `https://` makes cookies `Secure`. |
+| `SR_ALLOWED_LOGINS` | yes | | GitHub logins allowed to sign in, comma-separated, case-insensitive (section 6, "Sign-in allow-list"). |
 | `SR_SECRET_KEY` | yes, secret | | 32 random bytes, base64 (`openssl rand -base64 32`). |
 | `SR_RUNNER_SECRET` | yes, secret | | Shared by server and runner, at least 32 characters (`openssl rand -hex 32`). |
 | `SR_GITHUB_APP_ID` | yes | | App ID. |
@@ -290,36 +291,28 @@ Portainer stores stack variables in its own database: keep a copy of `SR_SECRET_
 commands below and in sections 8 to 12, use the Docker CLI on the host (`docker exec`, `docker run` against the
 volumes) or the container console in Portainer (Containers → `<container>` → Console, with the user named there).
 
-### Sign-in allow-list (before the server is reachable)
+### Sign-in allow-list
 
-> **Warning:** the database is created with the project maintainers' GitHub logins `lklimek` and
-> `Claudius-Maginificent` on its sign-in allow-list. Until you replace them, those accounts can sign in to your
-> instance as soon as it is reachable. Do this step before the reverse proxy routes to the server (section 7); the
-> HTTP port is published on loopback only by default (`SR_PUBLISH_ADDR`).
+Only the GitHub logins in `SR_ALLOWED_LOGINS` can sign in, for example `SR_ALLOWED_LOGINS=octocat,hubot`. The server
+applies the list at every start, before it serves a request: it adds missing logins and removes the others. A
+login is bound to its GitHub account at its first sign-in; removing it ends that account's sessions, deletes its
+stored GitHub tokens and revokes its personal access tokens, so listing it again later needs a new sign-in and new
+access tokens. The start log line `sign-in allowlist set from SR_ALLOWED_LOGINS` names the logins added and removed.
+Changing the list takes a restart of `server` (`dp up -d server`).
 
-Only allow-listed GitHub logins can sign in. Once `server` is `healthy` (it creates and migrates the database at its
-first start), replace the seeded logins with your own: server stopped, the helper container needs Internet for
-`apt`; replace `<your-login>` and add one `VALUES` row per login. The last line lists the allow-list; it must show
-only your logins.
+The server refuses to start without the variable, and with an entry that is not a GitHub login (letters, digits,
+`-` or `_`, at most 39) or a login listed twice.
 
-```sh
-docker stop <project>-server-1
-docker run --rm -v <project>_server-data:/data ubuntu:26.04 sh -c \
-  "apt-get update -qq && apt-get install -y -qq sqlite3 > /dev/null &&
-   sqlite3 /data/diffpilot.sqlite \"DELETE FROM tenant_allowed_logins WHERE tenant_id = 'default' AND login IN ('lklimek', 'Claudius-Maginificent');
-     INSERT OR IGNORE INTO tenant_allowed_logins (tenant_id, login) VALUES ('default', '<your-login>');
-     SELECT login FROM tenant_allowed_logins;\" &&
-   chown -R 10010:10010 /data"
-docker start <project>-server-1
-```
-
-A login is bound to its GitHub account at its first sign-in.
+**Databases created before `SR_ALLOWED_LOGINS`** were seeded with the maintainers' logins `lklimek` and
+`Claudius-Maginificent`. An upgrade drops them while nobody has signed in through them; afterwards the variable
+decides, so set it to every login that should keep access before upgrading. The manual allow-list edits of earlier
+versions (`sqlite3 … tenant_allowed_logins`) are no longer needed: the next start replaces them with the variable.
 
 ## 7. Reverse proxy and TLS
 
-Route to the server only after the allow-list step of section 6. The server speaks plain HTTP on
-`SR_PUBLISH_ADDR:SR_HTTP_PORT` (default `127.0.0.1:3000`); TLS terminates at a reverse proxy you run in front of it,
-for the host name of `SR_PUBLIC_URL`. Requirements:
+Route to the server only once `SR_ALLOWED_LOGINS` holds your logins (section 6, "Sign-in allow-list"). The server
+speaks plain HTTP on `SR_PUBLISH_ADDR:SR_HTTP_PORT` (default `127.0.0.1:3000`); TLS terminates at a reverse proxy
+you run in front of it, for the host name of `SR_PUBLIC_URL`. Requirements:
 
 - Forward everything under `/` to the server; the server routes `/`, `/api/`, `/auth/` and `/healthz` itself.
 - Append the client address to `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For
@@ -336,7 +329,7 @@ for the host name of `SR_PUBLIC_URL`. Requirements:
 
 ## 8. First start
 
-1. **Start** (section 6, allow-list step included) and wait until `server`, `runner` and `egress-proxy` are
+1. **Start** (section 6, with `SR_ALLOWED_LOGINS` set) and wait until `server`, `runner` and `egress-proxy` are
    `healthy`.
 
 2. **Codex sign-in** (once per `runner-state` volume). The runner keeps one Codex credential in its state volume;
@@ -443,7 +436,7 @@ Never delete the database to get past a migration error.
 | Egress proxy exits 64 or 65 | `SR_MEMCAN_URL` is not `http(s)://host[:port][/path]` (64), or its host name does not resolve (65). |
 | Server exits 1 | The last log line names the variable (configuration), or `the schema migration failed` (section 11). |
 | Runner `unhealthy`, jobs stay queued | Less free disk than `SR_RUNNER_DISK_RESERVE_MIB`; free space, e.g. remove the `tmp-*` volumes with the stack stopped ([runbook.md](runbook.md), "Temporary volumes"). |
-| Sign-in shows "This GitHub login is not allowed." (`login_error=login_not_allowed` in the URL) | The login is not on the allow-list (section 6, "Sign-in allow-list"). |
+| Sign-in shows "This GitHub login is not allowed." (`login_error=login_not_allowed` in the URL) | The login is not in `SR_ALLOWED_LOGINS` (section 6, "Sign-in allow-list"); after changing it restart `server`. |
 | GitHub says the redirect URI is not associated | The App's callback URL differs from `<SR_PUBLIC_URL>/auth/github/callback`. |
 | Settings shows "Sign-in to the LLM provider is needed" | The Codex credential is missing or was rejected: sign in again (section 8, step 2). |
 | Analyses stop with live updates missing | The reverse proxy buffers or cuts event streams (section 7). |
