@@ -14,17 +14,25 @@ export function resetControlledOwners(): void {
   saved = null;
 }
 
-const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 
-/** `PUT /api/v1/settings/controlled-owners` (R16). */
+/** `PUT /api/v1/settings/controlled-owners` (R16), like the server: trims, answers 400 `invalid_request`, keeps the
+ * first spelling of owners that differ only in case. */
 export const setControlledOwners = route("setControlledOwners", async ({ request }) => {
-  const { owners } = (await request.json()) as SetControlledOwnersRequest;
-  if (owners.length > 50 || owners.some((owner) => !OWNER.test(owner))) {
-    return apiError(422, "invalid_request", "Each owner must be a GitHub login; at most 50.");
+  const body = (await request.json()) as Partial<SetControlledOwnersRequest>;
+  const owners = Array.isArray(body.owners) ? body.owners.map((owner) => String(owner).trim()) : null;
+  if (owners === null || owners.length > 50 || owners.some((owner) => !OWNER.test(owner))) {
+    return apiError(
+      400,
+      "invalid_request",
+      "Each organisation must be a GitHub login (letters, digits and -, up to 39 characters); at most 50.",
+    );
   }
-  const unique = [...new Map(owners.map((o) => [o.toLowerCase(), o])).values()].sort((a, b) =>
-    a.toLowerCase().localeCompare(b.toLowerCase()),
-  );
+  const first = new Map<string, string>();
+  for (const owner of owners) {
+    if (!first.has(owner.toLowerCase())) first.set(owner.toLowerCase(), owner);
+  }
+  const unique = [...first.values()].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
   saved = { owners: unique, changed_by: "lklimek", changed_at: new Date().toISOString() };
   return HttpResponse.json(saved);
 });
