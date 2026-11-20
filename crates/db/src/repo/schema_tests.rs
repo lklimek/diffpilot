@@ -1300,6 +1300,77 @@ async fn russian_migration_keeps_the_data_and_accepts_ru() {
     assert_eq!(unique, 1);
 }
 
+/// Migration 0015 widens the document kinds in place: stored documents stay, `dependencies` is accepted and an unknown
+/// kind is still refused.
+#[tokio::test]
+async fn dependencies_migration_keeps_documents_and_accepts_the_new_kind() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    migrate(&pool, 14).await.expect("schema before 0015");
+    let db = Db { pool };
+    let analysis = crate::repo::analyses::testing::seed_analysis(&db)
+        .await
+        .expect("analysis");
+    db.documents()
+        .put(
+            analysis,
+            crate::repo::documents::DocumentKind::Plan,
+            "",
+            &serde_json::json!({"flows": []}),
+            Timestamp::now(),
+        )
+        .await
+        .expect("plan stored");
+    let refused = sqlx::query(
+        "INSERT INTO documents (analysis_id, tenant_id, kind, key, body, created_at) VALUES (?, 'default', 'dependencies', '', '{}', 't')",
+    )
+    .bind(analysis.to_string())
+    .execute(&db.pool)
+    .await;
+    assert!(refused.is_err(), "not a kind before 0015");
+    migrate(&db.pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+    db.documents()
+        .put(
+            analysis,
+            crate::repo::documents::DocumentKind::Dependencies,
+            "",
+            &serde_json::json!({"status": "not_rust"}),
+            Timestamp::now(),
+        )
+        .await
+        .expect("dependencies accepted");
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM documents WHERE analysis_id = ? ORDER BY kind")
+            .bind(analysis.to_string())
+            .fetch_all(&db.pool)
+            .await
+            .expect("kinds");
+    assert_eq!(kinds, ["dependencies", "plan"]);
+    let junk = sqlx::query(
+        "INSERT INTO documents (analysis_id, tenant_id, kind, key, body, created_at) VALUES (?, 'default', 'junk', '', '{}', 't')",
+    )
+    .bind(analysis.to_string())
+    .execute(&db.pool)
+    .await;
+    assert!(junk.is_err(), "an unknown kind is refused");
+    let check: String = sqlx::query_scalar("PRAGMA integrity_check")
+        .fetch_one(&db.pool)
+        .await
+        .expect("check");
+    assert_eq!(check, "ok");
+}
+
 /// Migration 0012 rebuilds `questions` with anchors: every stored question stays, as a step anchor.
 #[tokio::test]
 async fn question_anchors_migration_keeps_every_question_as_a_step_anchor() {

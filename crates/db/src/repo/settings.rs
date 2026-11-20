@@ -1,6 +1,7 @@
 //! Repository for `settings`: what the Settings screen reads and writes besides the LLM call outcome
 //! (`llm_credentials`): the user's language, the tenant's analysed repositories and credential usability.
 
+use contracts::api::settings::ControlledOwners;
 use contracts::common::{LlmLanguage, RepoRef};
 use contracts::ids::AnalysisId;
 use contracts::job::result::{JobFailureKind, JobOutcome, LlmCallOutcome};
@@ -134,6 +135,52 @@ fn selection(row: &sqlx::sqlite::SqliteRow) -> Result<StoredLlmSelection, DbErro
 }
 
 impl SettingsRepo<'_> {
+    /// The tenant's controlled GitHub owners, sorted case-insensitively, with who saved them last.
+    pub async fn controlled_owners(&self, tenant_id: &str) -> Result<ControlledOwners, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
+        let owners = read_controlled_owners(&mut tx, tenant_id).await?;
+        tx.commit().await?;
+        Ok(owners)
+    }
+
+    /// Replaces the tenant's controlled owners (duplicates differing only in case are kept once) and records the
+    /// editor; returns the saved list.
+    pub async fn set_controlled_owners(
+        &self,
+        tenant_id: &str,
+        owners: &[String],
+        login: &str,
+        now: Timestamp,
+    ) -> Result<ControlledOwners, DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
+        sqlx::query("DELETE FROM controlled_owners WHERE tenant_id = ?")
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await?;
+        for owner in owners {
+            // A case-only duplicate is kept once; a CHECK failure still aborts (`OR IGNORE` would skip it).
+            sqlx::query(
+                "INSERT INTO controlled_owners (tenant_id, owner) VALUES (?, ?) ON CONFLICT (tenant_id, owner) DO NOTHING",
+            )
+                .bind(tenant_id)
+                .bind(owner)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(
+            "INSERT INTO controlled_owners_changed (tenant_id, changed_by, changed_at) VALUES (?, ?, ?)
+             ON CONFLICT (tenant_id) DO UPDATE SET changed_by = excluded.changed_by, changed_at = excluded.changed_at",
+        )
+        .bind(tenant_id)
+        .bind(login)
+        .bind(ts(now))
+        .execute(&mut *tx)
+        .await?;
+        let saved = read_controlled_owners(&mut tx, tenant_id).await?;
+        tx.commit().await?;
+        Ok(saved)
+    }
+
     /// Installation-wide choice, independent of tenant or requesting user.
     pub async fn llm_selection(&self) -> Result<Option<StoredLlmSelection>, DbError> {
         sqlx::query(SELECTION_SQL)
@@ -363,6 +410,36 @@ impl SettingsRepo<'_> {
     }
 }
 
+async fn read_controlled_owners(
+    tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
+    tenant_id: &str,
+) -> Result<ControlledOwners, DbError> {
+    let owners: Vec<String> = sqlx::query_scalar(
+        "SELECT owner FROM controlled_owners WHERE tenant_id = ? ORDER BY owner COLLATE NOCASE",
+    )
+    .bind(tenant_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let changed: Option<(String, String)> = sqlx::query_as(
+        "SELECT changed_by, changed_at FROM controlled_owners_changed WHERE tenant_id = ?",
+    )
+    .bind(tenant_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (changed_by, changed_at) = match changed {
+        Some((by, at)) => (
+            Some(by),
+            Some(parse_ts(&at, "controlled_owners_changed.changed_at")?),
+        ),
+        None => (None, None),
+    };
+    Ok(ControlledOwners {
+        owners,
+        changed_by,
+        changed_at,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use contracts::job::spec::{CredentialKind, LlmCredentialRef};
@@ -378,6 +455,69 @@ mod tests {
             owner: "acme".to_owned(),
             name: name.to_owned(),
         }
+    }
+
+    #[tokio::test]
+    async fn controlled_owners_round_trip_sorted_and_unique() {
+        let db = Db::in_memory().await.expect("db");
+        let empty = db
+            .settings()
+            .controlled_owners(DEFAULT_TENANT)
+            .await
+            .expect("read");
+        assert_eq!(empty, ControlledOwners::default(), "nothing saved yet");
+        let now = Timestamp::now();
+        let owners = ["dashpay", "Acme", "DashPay", "lklimek"].map(str::to_owned);
+        let saved = db
+            .settings()
+            .set_controlled_owners(DEFAULT_TENANT, &owners, "lklimek", now)
+            .await
+            .expect("save");
+        assert_eq!(
+            saved.owners,
+            ["Acme", "dashpay", "lklimek"],
+            "case-insensitive, first spelling kept"
+        );
+        assert_eq!(saved.changed_by.as_deref(), Some("lklimek"));
+        assert!(saved.changed_at.is_some());
+        let replaced = db
+            .settings()
+            .set_controlled_owners(DEFAULT_TENANT, &["x".to_owned()], "other", now)
+            .await
+            .expect("replace");
+        assert_eq!(replaced.owners, ["x"]);
+        assert_eq!(replaced.changed_by.as_deref(), Some("other"));
+        assert_eq!(
+            db.settings()
+                .controlled_owners(DEFAULT_TENANT)
+                .await
+                .expect("read"),
+            replaced
+        );
+    }
+
+    #[tokio::test]
+    async fn controlled_owners_refuse_an_overlong_login() {
+        let db = Db::in_memory().await.expect("db");
+        let result = db
+            .settings()
+            .set_controlled_owners(
+                DEFAULT_TENANT,
+                &["x".repeat(40)],
+                "lklimek",
+                Timestamp::now(),
+            )
+            .await;
+        assert!(result.is_err(), "{result:?}");
+        let kept = db
+            .settings()
+            .controlled_owners(DEFAULT_TENANT)
+            .await
+            .expect("read");
+        assert!(
+            kept.owners.is_empty() && kept.changed_by.is_none(),
+            "rolled back"
+        );
     }
 
     #[tokio::test]

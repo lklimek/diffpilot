@@ -245,7 +245,15 @@ async fn migration_0010_on_a_seeded_v9_database() {
             .map(|(_, rows)| rows.len()),
         Some(0)
     );
-    assert_eq!(schema_after.len(), schema_before.len() + 3);
+    // 0015 adds `controlled_owners` and `controlled_owners_changed` (with their primary-key indexes) and widens the
+    // document kinds in place.
+    assert_eq!(schema_after.len(), schema_before.len() + 7);
+    let added_0015 = |entry: &String| {
+        matches!(
+            entry.split('|').nth(2),
+            Some("controlled_owners" | "controlled_owners_changed")
+        )
+    };
     // 0012 rebuilds `questions` with four anchor columns after `step_id`, 0013 appends `touched_steps` and 0014
     // `kind`, `flow_id` and `parent_id`, all empty for existing step questions except `kind`; the repository and
     // schema tests check that table, so here it is compared without them.
@@ -253,16 +261,27 @@ async fn migration_0010_on_a_seeded_v9_database() {
     let schema_before: Vec<_> = schema_before
         .into_iter()
         .filter(|entry| !rebuilt(entry))
+        .map(|entry| entry.replace("'memcan_profile'))", "'memcan_profile', 'dependencies'))"))
         .collect();
     let schema_after: Vec<_> = schema_after
         .into_iter()
         .filter(|entry| {
-            entry.split('|').nth(2) != Some("dashboard_hidden_mentions") && !rebuilt(entry)
+            entry.split('|').nth(2) != Some("dashboard_hidden_mentions")
+                && !rebuilt(entry)
+                && !added_0015(entry)
         })
         .collect();
     let rows_after: Vec<_> = rows_after
         .into_iter()
-        .filter(|(t, _)| t != "_sqlx_migrations" && t != "dashboard_hidden_mentions")
+        .filter(|(t, _)| {
+            !matches!(
+                t.as_str(),
+                "_sqlx_migrations"
+                    | "dashboard_hidden_mentions"
+                    | "controlled_owners"
+                    | "controlled_owners_changed"
+            )
+        })
         .map(|(table, rows)| {
             if table != "questions" {
                 return (table, rows);
