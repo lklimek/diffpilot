@@ -347,7 +347,14 @@ describe("WorkList", () => {
     fireEvent.keyDown(document.body, { key: "j" });
     expect(document.activeElement).toBe(alarm);
     fireEvent.keyDown(document.body, { key: "Enter" });
-    expect(within(alarm).getByRole("heading", { name: "Score breakdown" })).toBeVisible();
+    const detail = document.getElementById(score.getAttribute("aria-controls")!)!;
+    expect(within(detail).getByRole("heading", { name: "Score breakdown" })).toBeVisible();
+    // Enter on the score button itself toggles once.
+    score.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(detail).not.toBeVisible();
+    await userEvent.keyboard("{Enter}");
+    expect(within(detail).getByRole("heading", { name: "Score breakdown" })).toBeVisible();
   });
 
   it("counts the P0 alarms of a hidden kind among the listed items", async () => {

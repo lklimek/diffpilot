@@ -20,8 +20,8 @@ interface AlarmRowProps {
   /** The alarm's frame, focused by `j`/`k`. */
   focusRef?: Ref<HTMLDivElement>;
   /** The score breakdown is open. */
-  expanded?: boolean;
-  onToggle?: () => void;
+  expanded: boolean;
+  onToggle: () => void;
   now: Date;
 }
 
@@ -35,8 +35,8 @@ export function AlarmRow({
   onNavigate,
   current = false,
   focusRef,
-  expanded = false,
-  onToggle = () => {},
+  expanded,
+  onToggle,
   now,
 }: AlarmRowProps) {
   const points = Math.round(item.score.total_tenths / 10);
