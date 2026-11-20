@@ -57,7 +57,7 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 | POST | `/api/v1/analyses/{id}/questions` | session_csrf | `AnchoredAskRequest` | 202 `AskQuestion` (R14 `askAnchored`, v1.2) |
 | GET | `/api/v1/analyses/{id}/files` | read | – | `FilesResponse` (R12 `getFiles`, v1.2; 409 `analysis_not_finished` until plan and PR context are accepted) |
 | PUT | `/api/v1/analyses/{id}/files/viewed` | session_csrf | `SetViewedRequest` | 204 (R13 `setFileViewed`, v1.2) |
-| GET | `/api/v1/analyses/{id}/dependencies` | read | – | `DependencyView` (R15 `getDependencies`, v1.2; 409 `analysis_not_finished` until the pre-pass is stored) |
+| GET | `/api/v1/analyses/{id}/dependencies` | read | – | `DependencyView` (R15 `getDependencies`, v1.2; 409 `analysis_not_finished` until the analysis base is stored) |
 | GET / POST | `/api/v1/analyses/{id}/feedback` | read / session_csrf | – / `FeedbackRequest` | `Feedback[]` / `Feedback` |
 | DELETE | `…/feedback/{feedback_id}` | session_csrf | – | 204 |
 | GET | `/api/v1/analyses/{id}/pending-review` | read | – | `PendingReview` |
@@ -66,7 +66,7 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 | DELETE | `…/pending-review/comments/{comment_id}` | session_csrf | – | 204 |
 | GET | `/api/v1/settings` | read | – | `Settings` |
 | PUT | `/api/v1/settings/language` | session_csrf | `SetLanguageRequest` | 204 |
-| PUT | `/api/v1/settings/controlled-owners` | session_csrf | `SetControlledOwnersRequest` | `ControlledOwners` (R16 `setControlledOwners`, v1.2; 422 `invalid_request` for an owner that is not a GitHub login, more than 50 owners) |
+| PUT | `/api/v1/settings/controlled-owners` | session_csrf | `SetControlledOwnersRequest` | `ControlledOwners` (R16 `setControlledOwners`, v1.2; 400 `invalid_request` for an owner that is not a GitHub login, more than 50 owners) |
 | GET | `/api/v1/repos/{owner}/{name}/settings` | read | – | `RepoSettings` (read-only; 409 `analysis_not_finished` while not known) |
 
 ## Rules
@@ -244,8 +244,8 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   pull request before the write is `github_unavailable` with nothing sent; any other answer to the write is
   `github_unavailable` (the mark may have changed; read again). One write per user and analysis runs at a time; a
   second one meanwhile is `conflict` before any GitHub call. Nothing is stored locally.
-- **Dependencies** (R15, v1.2; ADR-021). The Cargo map of the head commit: `status` (`available`, `not_rust`: no
-  `Cargo.toml` at head, nothing checked; `not_checked` with a plain `reason`), `controlled_owners` (the pull
+- **Dependencies** (R15, v1.2; ADR-021). The Cargo map of the head commit: `status` (`available`, or `not_rust`: no
+  `Cargo.toml` at head, nothing checked), `controlled_owners` (the pull
   request's owner plus Settings, as applied to this response), `limits` (what was cut or not read, with paths),
   `files_outside_crates` (changed files in no crate, not checked), `notes` (`produced`, `pending` before the plan is
   stored, `not_produced` for plans without notes) and `repositories`: this repository first, then GitHub
@@ -256,8 +256,9 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   import line, the definition line, `not_located` or `other_repository`), `facts_hidden`, `other_facts` (facts about
   types of crates that are neither workspace members nor controlled, counted only), LLM `notes` (text, lines,
   changed lines; at most 3, `notes_hidden` counts the rest) and `other_dependencies` (direct dependencies not
-  listed). The map is computed once per analysis (older analyses at the first read); a mirror error answers 503
-  `unavailable` and is retried by the next read.
+  listed). The map is computed once per analysis (older analyses at the first read) and stored; a mirror error
+  answers like the other analysis reads, nothing is stored and the next read computes it again. A failed
+  definition search leaves its facts `not_searched`.
 - **Controlled owners** (R16, v1.2). Replaces the installation-wide list of controlled GitHub owners (case-insensitive,
   deduplicated, sorted); `Settings.controlled_owners` reports it with who changed it and when. The pull request's
   owner is controlled whether listed or not.

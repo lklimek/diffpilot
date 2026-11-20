@@ -200,7 +200,7 @@ pub enum DependencyKind {
 }
 
 /// What a dependency resolves to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Target {
     /// A crate of this repository (index into [`DependencyMap::crates`]).

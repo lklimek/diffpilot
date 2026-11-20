@@ -13,12 +13,14 @@ use axum::{Json, Router};
 use contracts::api::error::ApiErrorCode;
 use contracts::api::settings::AppInstallation;
 use contracts::api::settings::{
-    RepoSettings, SetAskEffortRequest, SetJudgeEffortRequest, SetLanguageRequest, Settings,
+    ControlledOwners, RepoSettings, SetAskEffortRequest, SetControlledOwnersRequest,
+    SetJudgeEffortRequest, SetLanguageRequest, Settings,
 };
 use contracts::common::RepoRef;
 use contracts::job::result::{JobFailureKind, LlmCallOutcome, LlmCallStatus};
 use contracts::routes::{
-    GET_REPO_SETTINGS, GET_SETTINGS, SET_ASK_EFFORT, SET_JUDGE_EFFORT, SET_LANGUAGE, SET_LLM,
+    GET_REPO_SETTINGS, GET_SETTINGS, SET_ASK_EFFORT, SET_CONTROLLED_OWNERS, SET_JUDGE_EFFORT,
+    SET_LANGUAGE, SET_LLM,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -57,6 +59,9 @@ pub enum SettingsApiError {
     /// Model outside the deployment catalog.
     #[error("the model is not available")]
     InvalidModel,
+    /// A controlled owner is not a GitHub login, or the list is too long.
+    #[error("the controlled owners are not valid")]
+    InvalidOwners,
     /// No pre-pass of the repository is stored yet.
     #[error("the repository settings are not known yet")]
     NotKnownYet,
@@ -70,7 +75,9 @@ impl ApiErrorSource for SettingsApiError {
         match self {
             Self::Json(rejection) => rejection.code(),
             Self::Path(rejection) => rejection.code(),
-            Self::InvalidRepository | Self::InvalidModel => ApiErrorCode::InvalidRequest,
+            Self::InvalidRepository | Self::InvalidModel | Self::InvalidOwners => {
+                ApiErrorCode::InvalidRequest
+            }
             Self::NotKnownYet => ApiErrorCode::AnalysisNotFinished,
             Self::Db(error) => error.code(),
         }
@@ -83,6 +90,10 @@ impl ApiErrorSource for SettingsApiError {
             Self::Db(error) => error.public_message(),
             Self::InvalidModel => Cow::Borrowed("Choose a model from the available list."),
             Self::InvalidRepository => Cow::Borrowed("The repository name is not valid."),
+            Self::InvalidOwners => Cow::Borrowed(
+                "Each organisation must be a GitHub login (letters, digits and -, up to 39 characters); at most \
+                 50.",
+            ),
             Self::NotKnownYet => Cow::Borrowed(
                 "Not known yet: the repository settings are read during an analysis and appear once one has \
                  run.",
@@ -102,6 +113,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route(GET_SETTINGS.path, get(read))
         .route(SET_LANGUAGE.path, put(set_language))
+        .route(SET_CONTROLLED_OWNERS.path, put(set_controlled_owners))
         .route(SET_LLM.path, put(set_llm))
         .route(SET_ASK_EFFORT.path, put(set_ask_effort))
         .route(SET_JUDGE_EFFORT.path, put(set_judge_effort))
@@ -126,6 +138,46 @@ async fn set_language(
         .map_err(failure)?;
     tracing::info!(user_id = %session.user_id, language = ?request.language, "LLM text language set");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Replaces the installation-wide controlled owners (R16).
+async fn set_controlled_owners(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    body: Result<Json<SetControlledOwnersRequest>, JsonRejection>,
+) -> SettingsResult<Json<ControlledOwners>> {
+    let Json(request) = body.map_err(failure)?;
+    let owners: Vec<String> = request.owners.iter().map(|o| o.trim().to_owned()).collect();
+    if owners.len() > SetControlledOwnersRequest::MAX_OWNERS || !owners.iter().all(|o| is_login(o))
+    {
+        return Err(failure(SettingsApiError::InvalidOwners));
+    }
+    let user = state
+        .db
+        .users()
+        .get(&session.user_id)
+        .await
+        .map_err(failure)?;
+    let saved = state
+        .db
+        .settings()
+        .set_controlled_owners(
+            &session.tenant_id,
+            &owners,
+            &user.profile.login,
+            Timestamp::now(),
+        )
+        .await
+        .map_err(failure)?;
+    tracing::info!(user_id = %session.user_id, owners = saved.owners.len(), "controlled owners saved");
+    Ok(Json(saved))
+}
+
+/// A GitHub user or organisation login: letters, digits and `-`, 1 to 39 characters, not starting with `-`.
+fn is_login(owner: &str) -> bool {
+    (1..=39).contains(&owner.len())
+        && !owner.starts_with('-')
+        && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 async fn set_llm(
@@ -270,7 +322,13 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
             .settings()
             .analysed_repos(&session.tenant_id)
             .await?,
-        controlled_owners: None,
+        controlled_owners: Some(
+            state
+                .db
+                .settings()
+                .controlled_owners(&session.tenant_id)
+                .await?,
+        ),
     })
 }
 
@@ -776,6 +834,48 @@ mod tests {
         let (_, settings) = h.get(GET_SETTINGS.path).await;
         assert_eq!(settings["memcan_status"]["state"], "not_checked");
         assert_eq!(settings["memcan_status"]["last_success_at"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn controlled_owners_are_validated_saved_and_listed() {
+        let h = harness().await;
+        let put = |body: Value| {
+            let h = &h;
+            async move {
+                h.send(
+                    "PUT",
+                    SET_CONTROLLED_OWNERS.path,
+                    Some(&h.cookie),
+                    true,
+                    Some(body),
+                )
+                .await
+            }
+        };
+        let (_, settings) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(
+            settings["controlled_owners"],
+            json!({"owners": [], "changed_by": null, "changed_at": null})
+        );
+        let too_many: Vec<String> = (0..51).map(|n| format!("o{n}")).collect();
+        for body in [
+            json!({"owners": ["-bad"]}),
+            json!({"owners": ["a/b"]}),
+            json!({"owners": [""]}),
+            json!({"owners": ["x".repeat(40)]}),
+            json!({"owners": too_many}),
+            json!({}),
+        ] {
+            let (status, error) = put(body.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(error["code"], json!("invalid_request"), "{body}");
+        }
+        let (status, saved) = put(json!({"owners": ["dashpay", " Acme ", "DASHPAY"]})).await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(saved["owners"], json!(["Acme", "dashpay"]));
+        assert_eq!(saved["changed_by"], json!("lklimek"));
+        let (_, settings) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(settings["controlled_owners"], saved);
     }
 
     #[tokio::test]

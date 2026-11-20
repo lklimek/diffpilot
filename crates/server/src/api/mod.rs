@@ -14,6 +14,7 @@ pub mod analyses;
 pub mod auth;
 pub mod comments;
 pub mod dashboard;
+pub mod deps;
 pub mod diff;
 pub mod error;
 pub mod events;
@@ -47,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .merge(auth::routes())
         .merge(comments::routes())
         .merge(dashboard::routes())
+        .merge(deps::routes())
         .merge(diff::routes())
         .merge(events::routes())
         .merge(feedback::routes())
