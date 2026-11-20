@@ -502,3 +502,131 @@ proptest! {
         ]);
     }
 }
+
+const SOURCE: &str = "use dpp::identity::Identity;\nuse bee::Height;\nuse crate::model::Local;\nimpl From<Identity> for Local {}\nimpl TryFrom<Height> for Local {}\npub fn parse_height(s: &str) -> Height { todo() }\nimpl From<std::fmt::Error> for Local {}\nimpl From<a_app::X> for Local {}\n";
+
+fn with_facts() -> DependencyMap {
+    let mut map = workspace();
+    map.add_facts(
+        "crates/a/src/lib.rs",
+        Some(SOURCE),
+        &[1, 2, 3, 4, 5, 6, 7, 8],
+    );
+    map
+}
+
+#[test]
+fn deps_facts_name_the_crate_of_each_type() {
+    let map = with_facts();
+    let facts: Vec<(ConversionKind, u32, &str)> = map
+        .facts
+        .iter()
+        .map(|f| (f.kind, f.at.line, f.type_name.as_str()))
+        .collect();
+    assert_eq!(
+        facts,
+        [
+            (ConversionKind::FromImpl, 4, "Identity"),
+            (ConversionKind::TryFromImpl, 5, "Height"),
+            (ConversionKind::ConversionFn, 6, "Height"),
+        ],
+        "local, std and own-crate types are no facts"
+    );
+    let identity = &map.facts[0];
+    assert_eq!(identity.crate_index, 0);
+    assert_eq!(
+        external(
+            &map,
+            &Dependency {
+                code_name: String::new(),
+                package: String::new(),
+                kind: DependencyKind::Normal,
+                line: 0,
+                target: identity.target,
+            }
+        )
+        .package,
+        "dpp"
+    );
+    assert_eq!(
+        identity.imported_at,
+        Some(FileLine {
+            file: "crates/a/src/lib.rs".to_owned(),
+            line: 1
+        })
+    );
+    assert_eq!(identity.definition, Definition::OtherRepository);
+    let height = &map.facts[1];
+    assert_eq!(height.target, Target::Repo { index: 1 });
+    assert_eq!(height.definition, Definition::NotSearched);
+}
+
+#[test]
+fn deps_unread_source_is_a_limit() {
+    let mut map = workspace();
+    map.add_facts("crates/a/src/big.rs", None, &[1]);
+    assert!(map.limits.contains(&MapLimit::SourceUnread {
+        path: "crates/a/src/big.rs".to_owned()
+    }));
+    map.add_facts("docs/x.rs", None, &[1]);
+    assert_eq!(
+        map.limits.len(),
+        1,
+        "a file outside every crate is not checked here"
+    );
+}
+
+#[test]
+fn deps_definitions_are_searched_in_the_defining_crate() {
+    let mut map = with_facts();
+    let queries = map.definition_queries();
+    assert_eq!(
+        queries,
+        [DefinitionQuery {
+            dir: "crates/b".to_owned(),
+            names: vec!["Height".to_owned()]
+        }]
+    );
+    let files = vec![
+        (
+            "crates/a/src/h.rs".to_owned(),
+            "pub struct Height;\n".to_owned(),
+        ),
+        (
+            "crates/b/src/z.rs".to_owned(),
+            "\npub struct Height(u64);\n".to_owned(),
+        ),
+        (
+            "crates/b/src/m.rs".to_owned(),
+            "// struct Height\n".to_owned(),
+        ),
+    ];
+    map.locate(&queries, &files);
+    let expected = Definition::Located {
+        at: FileLine {
+            file: "crates/b/src/z.rs".to_owned(),
+            line: 2,
+        },
+    };
+    assert_eq!(
+        map.facts[1].definition, expected,
+        "not in another crate, not in a comment"
+    );
+    assert_eq!(map.facts[2].definition, expected);
+}
+
+#[test]
+fn deps_definition_not_found_is_not_located() {
+    let mut map = with_facts();
+    let queries = map.definition_queries();
+    map.locate(&queries, &[]);
+    assert_eq!(map.facts[1].definition, Definition::NotLocated);
+    assert_eq!(map.facts[0].definition, Definition::OtherRepository);
+}
+
+#[test]
+fn deps_unsearched_names_stay_not_searched() {
+    let mut map = with_facts();
+    map.locate(&[], &[]);
+    assert_eq!(map.facts[1].definition, Definition::NotSearched);
+}

@@ -10,6 +10,7 @@ use toml_edit::{Document, Item, TableLike};
 
 use crate::counters::cargo::{self, LineIndex};
 use crate::related;
+use crate::tech::{self, CandidateKind, TypeOrigin};
 
 #[cfg(test)]
 mod tests;
@@ -18,6 +19,10 @@ mod tests;
 pub const MAX_MANIFESTS: usize = 400;
 /// Most bytes of Cargo text read over all files; a file beyond it is unreadable.
 pub const MAX_CARGO_TEXT_BYTES: usize = 16 * 1024 * 1024;
+/// Most conversion facts kept; the rest are cut ([`MapLimit::FactsCut`]).
+pub const MAX_FACTS: usize = 2000;
+/// Most type names one definition search looks for.
+pub const MAX_DEFINITION_NAMES: usize = 64;
 /// Registry name of crates.io.
 pub const CRATES_IO: &str = "crates.io";
 
@@ -35,6 +40,8 @@ pub struct DependencyMap {
     pub crates: Vec<RepoCrate>,
     /// Crates from outside the repository that its crates depend on directly.
     pub external: Vec<ExternalCrate>,
+    /// Conversions added for types of other crates, in file and line order.
+    pub facts: Vec<ConversionFact>,
 }
 
 /// Whether the map exists.
@@ -75,6 +82,77 @@ pub enum MapLimit {
         /// Directory of its root manifest (`""` = repository root).
         workspace_dir: String,
     },
+    /// A changed Rust file that was not read: its conversions are not checked.
+    SourceUnread {
+        /// Its path.
+        path: String,
+    },
+    /// More conversion facts than [`MAX_FACTS`]; the first ones in file order are kept.
+    FactsCut {
+        /// Facts kept.
+        kept: u32,
+    },
+}
+
+/// A conversion added on a changed line of a crate for a type of another crate (ADR-021).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversionFact {
+    /// What the line adds.
+    pub kind: ConversionKind,
+    /// The `impl` or `fn` line.
+    pub at: FileLine,
+    /// The crate holding the line (index into [`DependencyMap::crates`]).
+    pub crate_index: u32,
+    /// The type's name.
+    pub type_name: String,
+    /// The type's path as written.
+    pub written: String,
+    /// The crate the type comes from.
+    pub target: Target,
+    /// The `use` line that imports it, if it came through one.
+    pub imported_at: Option<FileLine>,
+    /// Where the type is defined.
+    pub definition: Definition,
+}
+
+/// What a conversion fact's line adds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversionKind {
+    /// `impl From<A> for B`.
+    FromImpl,
+    /// `impl TryFrom<A> for B`.
+    TryFromImpl,
+    /// `impl Trait for B`: a trait implemented on the other crate's type.
+    ImplOnForeignType,
+    /// A function named like a conversion whose signature names the type.
+    ConversionFn,
+}
+
+/// Where a fact's type is defined.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Definition {
+    /// Found in the defining crate of this repository.
+    Located {
+        /// The definition line.
+        at: FileLine,
+    },
+    /// Searched in the defining crate of this repository and not found (generated, a macro, a re-export).
+    NotLocated,
+    /// Not searched: the search limit was reached or the search failed.
+    NotSearched,
+    /// The type is in another repository; not looked up.
+    OtherRepository,
+}
+
+/// One definition search: type names in one crate directory of this repository.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefinitionQuery {
+    /// The crate's directory (`""` = repository root).
+    pub dir: String,
+    /// The type names, sorted and unique.
+    pub names: Vec<String>,
 }
 
 /// A crate of the repository.
@@ -205,6 +283,160 @@ impl DependencyMap {
     }
 }
 
+impl DependencyMap {
+    /// Adds the conversion facts of the changed Rust file `path`, whose head text is `text` (`None`: not read) and
+    /// whose added head lines are the sorted `added`: conversions for types of crates the file's crate depends on.
+    pub fn add_facts(&mut self, path: &str, text: Option<&str>, added: &[u32]) {
+        let Some(from) = self.crate_of(path) else {
+            return;
+        };
+        let Some(text) = text else {
+            self.limits.push(MapLimit::SourceUnread {
+                path: path.to_owned(),
+            });
+            return;
+        };
+        for candidate in tech::conversion_candidates(text, added) {
+            let TypeOrigin::Crate {
+                code_name,
+                import_line,
+            } = &candidate.origin
+            else {
+                continue;
+            };
+            let Some(dependency) = self.crates.get(from).and_then(|krate| {
+                krate
+                    .dependencies
+                    .iter()
+                    .find(|d| d.code_name == *code_name)
+            }) else {
+                continue;
+            };
+            let target = dependency.target;
+            if target
+                == (Target::Repo {
+                    index: to_u32(from),
+                })
+                || self.facts.iter().any(|fact| {
+                    fact.at.file == path
+                        && fact.at.line == candidate.line
+                        && fact.type_name == candidate.type_name
+                })
+            {
+                continue;
+            }
+            if self.facts.len() >= MAX_FACTS {
+                if !self
+                    .limits
+                    .iter()
+                    .any(|l| matches!(l, MapLimit::FactsCut { .. }))
+                {
+                    self.limits.push(MapLimit::FactsCut {
+                        kept: to_u32(MAX_FACTS),
+                    });
+                }
+                return;
+            }
+            let definition = match target {
+                Target::Repo { .. } => Definition::NotSearched,
+                Target::External { index } => {
+                    match self.external.get(index as usize).map(|e| &e.source) {
+                        Some(CrateSource::Path { repo: None, .. }) => Definition::NotLocated,
+                        _ => Definition::OtherRepository,
+                    }
+                }
+            };
+            self.facts.push(ConversionFact {
+                kind: match candidate.kind {
+                    CandidateKind::FromImpl => ConversionKind::FromImpl,
+                    CandidateKind::TryFromImpl => ConversionKind::TryFromImpl,
+                    CandidateKind::ImplOnType => ConversionKind::ImplOnForeignType,
+                    CandidateKind::ConversionFn => ConversionKind::ConversionFn,
+                },
+                at: FileLine {
+                    file: path.to_owned(),
+                    line: candidate.line,
+                },
+                crate_index: to_u32(from),
+                type_name: candidate.type_name,
+                written: candidate.written,
+                target,
+                imported_at: import_line.map(|line| FileLine {
+                    file: path.to_owned(),
+                    line,
+                }),
+                definition,
+            });
+        }
+    }
+
+    /// The definition searches the facts need: per crate of this repository, the names of its types the facts name,
+    /// at most [`MAX_DEFINITION_NAMES`] over all searches.
+    pub fn definition_queries(&self) -> Vec<DefinitionQuery> {
+        let mut by_crate: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+        for fact in &self.facts {
+            if let (Target::Repo { index }, Definition::NotSearched) =
+                (fact.target, &fact.definition)
+            {
+                by_crate
+                    .entry(index)
+                    .or_default()
+                    .push(fact.type_name.clone());
+            }
+        }
+        let mut budget = MAX_DEFINITION_NAMES;
+        let mut out = Vec::new();
+        for (index, mut names) in by_crate {
+            names.sort();
+            names.dedup();
+            names.truncate(budget);
+            budget -= names.len();
+            if let (Some(krate), false) = (self.crates.get(index as usize), names.is_empty()) {
+                out.push(DefinitionQuery {
+                    dir: krate.dir.clone(),
+                    names,
+                });
+            }
+        }
+        out
+    }
+
+    /// Settles the definitions of the facts whose names `queries` searched, from the head `files` (path, text) the
+    /// search found: the first definition in path order inside the defining crate, else [`Definition::NotLocated`].
+    pub fn locate(&mut self, queries: &[DefinitionQuery], files: &[(String, String)]) {
+        let mut files: Vec<&(String, String)> = files.iter().collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        let owners: Vec<Option<usize>> =
+            files.iter().map(|(path, _)| self.crate_of(path)).collect();
+        for fact in &mut self.facts {
+            let (Target::Repo { index }, Definition::NotSearched) = (fact.target, &fact.definition)
+            else {
+                continue;
+            };
+            let Some(dir) = self.crates.get(index as usize).map(|k| &k.dir) else {
+                continue;
+            };
+            let searched = queries
+                .iter()
+                .any(|q| q.dir == *dir && q.names.binary_search(&fact.type_name).is_ok());
+            if !searched {
+                continue;
+            }
+            fact.definition = files
+                .iter()
+                .zip(&owners)
+                .filter(|(_, owner)| **owner == Some(index as usize))
+                .find_map(|((path, text), _)| {
+                    tech::definition_line(text, &fact.type_name).map(|line| FileLine {
+                        file: path.clone(),
+                        line,
+                    })
+                })
+                .map_or(Definition::NotLocated, |at| Definition::Located { at });
+        }
+    }
+}
+
 /// The Cargo files among `head_paths` the map reads: every `Cargo.lock` and the first [`MAX_MANIFESTS`]
 /// `Cargo.toml` files in path order.
 pub fn cargo_files_to_read(head_paths: &[String]) -> Vec<String> {
@@ -299,6 +531,7 @@ pub fn map<'t>(
         limits,
         crates: builder.crates,
         external: builder.external,
+        facts: Vec::new(),
     }
 }
 

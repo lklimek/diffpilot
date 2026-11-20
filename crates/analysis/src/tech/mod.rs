@@ -10,6 +10,11 @@ use crate::lines::ranges;
 
 mod rust;
 
+pub use rust::conversions::{
+    CONVERSION_PREFIXES, Candidate, CandidateKind, TypeOrigin, conversion_candidates,
+    definition_line,
+};
+
 /// A language plugin.
 pub trait TechPlugin: Send + Sync {
     /// Plugin name.
