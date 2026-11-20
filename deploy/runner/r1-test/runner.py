@@ -780,7 +780,11 @@ def sweep_failure_scenario(sup):
     spawn(sup, ["/bin/sleep", "1000"], key)
     print("SCENARIO sweep-failure: sweep requested", flush=True)
     reply = sup.call("sweep")
-    print(f"CHECK sweep_failure_terminates_container FAIL the supervisor answered {reply}", flush=True)
+    if reply.get("ok") is False:
+        # The supervisor reports the failed sweep, then ends the container: wait to be killed.
+        print(f"SCENARIO sweep-failure: the supervisor reported {reply}", flush=True)
+        time.sleep(60)
+    print(f"CHECK sweep_failure_terminates_container FAIL the supervisor answered {reply} and kept running", flush=True)
     raise SystemExit(1)
 
 
