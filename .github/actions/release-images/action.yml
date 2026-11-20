@@ -1,33 +1,34 @@
 name: Build and test the release images
 description: >-
   Builds the server, runner and egress proxy images of a release (tagged diffpilot-*:local, the names the stack test
-  uses) with OCI labels and licence notices, checks the notices and runs the proxy and stack tests. No credentials.
+  uses) with OCI labels and licence notices, checks the notices and runs the runner container suite, the proxy test
+  and the stack test. Needs no credentials.
 inputs:
   version:
     description: Release version X.Y.Z (no v prefix)
     required: true
-outputs:
-  tags:
-    description: Image tags to publish, space-separated (X.Y.Z, and X.Y, X, latest when this is the newest of its line)
-    value: ${{ steps.tags.outputs.tags }}
 runs:
   using: composite
   steps:
-    # Tags from the version and every vX.Y.Z tag of the repository (the checkout needs fetch-depth 0).
-    - id: tags
-      name: Image tags
+    - name: Release version
       shell: bash
       env:
         VERSION: ${{ inputs.version }}
       run: |
         scripts/release-image-tags.sh --self-test
-        mapfile -t existing < <(git tag -l 'v*')
-        tags="$(scripts/release-image-tags.sh "$VERSION" "${existing[@]}" | tr '\n' ' ')"
-        echo "tags=${tags% }" >> "$GITHUB_OUTPUT"
-        echo "::notice title=Image tags::${tags% }"
+        scripts/release-image-tags.sh "$VERSION" > /dev/null
     - name: No development or test switch in the production files
       shell: bash
       run: deploy/check-production-config.sh
+    # Same suite as the CI images job. It builds the runner image unlabelled (and its test images); the labelled build
+    # below reuses those layers and then holds diffpilot-runner:local, so the suite checks the published layers.
+    - name: Runner container suite (Rust supervisor, production image checks)
+      shell: bash
+      env:
+        DOCKER_BUILDKIT: "1"
+        R1_SUPERVISOR: rust
+        R1_SKIP_CODEX: "1"
+      run: deploy/runner/r1-test/run.sh "$RUNNER_TEMP/r1-test.log"
     - name: Build the images
       shell: bash
       env:
@@ -47,14 +48,14 @@ runs:
         )
         docker build "${labels[@]}" --label org.opencontainers.image.title=diffpilot-egress-proxy \
           --label "org.opencontainers.image.description=diffpilot egress proxy (Squid, explicit forward proxy)" \
-          -t diffpilot-egress-proxy:local deploy/egress-proxy
+          --build-context workspace=. -t diffpilot-egress-proxy:local deploy/egress-proxy
         docker build "${labels[@]}" --label org.opencontainers.image.title=diffpilot-runner \
           --label "org.opencontainers.image.description=diffpilot runner (supervisor, runner, Codex CLI)" \
           --build-context workspace=. -t diffpilot-runner:local deploy/runner
         docker build "${labels[@]}" --label org.opencontainers.image.title=diffpilot \
           --label "org.opencontainers.image.description=diffpilot server (web UI and API)" \
           -f deploy/server/Dockerfile -t diffpilot-server:local .
-    # deploy/notices/README.md: the files every image must carry (non-empty).
+    # deploy/notices/README.md: the files every image must carry (non-empty; a directory needs a non-empty file).
     - name: Licence notices in the images
       shell: bash
       run: |
@@ -65,22 +66,23 @@ runs:
           id="$(docker create "$image")"
           for file in "$@"; do
             mkdir -p "$dir/$(dirname "$file")"
-            if ! docker cp -q "$id:$file" "$dir/$file" || [ ! -s "$dir/$file" ]; then
+            if ! docker cp -q "$id:$file" "$dir/$file" || ! find "$dir/$file" -type f -size +0 | grep -q .; then
               echo "::error::$image lacks the notice $file"
               docker rm "$id" > /dev/null
               exit 1
             fi
-            echo "$image $file $(wc -c < "$dir/$file") bytes"
+            echo "$image $file $(du -sb "$dir/$file" | cut -f 1) bytes"
           done
           docker rm "$id" > /dev/null
           rm -rf "$dir"
         }
         doc=/usr/share/doc/diffpilot
-        check diffpilot-server:local $doc/LICENSE.md $doc/third-party-rust-server.txt $doc/third-party-npm-web.txt
-        check diffpilot-runner:local $doc/LICENSE.md $doc/third-party-rust-runner.txt \
+        check diffpilot-server:local $doc/LICENSE.md $doc/packages.txt $doc/third-party-rust-server.txt \
+          $doc/third-party-npm-web.txt
+        check diffpilot-runner:local $doc/LICENSE.md $doc/packages.txt $doc/third-party-rust-runner.txt \
           $doc/third-party-rust-analysis.txt $doc/codex/LICENSE $doc/codex/NOTICE $doc/github-mcp-server/LICENSE \
-          $doc/github-mcp-server/third-party-licenses.linux.md
-        check diffpilot-egress-proxy:local /usr/share/doc/squid-openssl/copyright
+          $doc/github-mcp-server/third-party-licenses.linux.md $doc/github-mcp-server/third-party
+        check diffpilot-egress-proxy:local $doc/LICENSE.md $doc/packages.txt /usr/share/doc/squid-openssl/copyright
     - name: Egress proxy test
       shell: bash
       run: PROXY_SKIP_BUILD=1 deploy/egress-proxy/test.sh "$RUNNER_TEMP/egress-proxy-test.log"

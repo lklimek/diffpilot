@@ -1,9 +1,10 @@
 name: Release images
 
 # Publishes the server, runner and egress proxy images to Docker Hub when a release tag vX.Y.Z is pushed
-# (docs/deployment.md, "Published images"). A manual run is a dry run: it builds and tests the images and prints the
-# tags it would push, without credentials and without pushing. linux/amd64 only (the runner image pins x86_64 Codex
-# and github-mcp-server archives).
+# (docs/deployment.md, "Publishing images"). Job `build` builds and tests without credentials; job `publish` holds
+# the Docker Hub token and only loads the tested images, checks, tags and pushes. A manual run is a dry run: `build`
+# only, printing the tags a release would push. linux/amd64 only (the runner image pins x86_64 Codex and
+# github-mcp-server archives).
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
@@ -17,80 +18,131 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-
 env:
   IMAGE_SERVER: docker.io/lklimek/diffpilot
   IMAGE_RUNNER: docker.io/lklimek/diffpilot-runner
   IMAGE_PROXY: docker.io/lklimek/diffpilot-egress-proxy
 
 jobs:
-  dry-run:
-    name: Dry run (build and test, no push)
-    if: github.event_name == 'workflow_dispatch'
+  build:
+    name: Build and test (no credentials)
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - id: build
-        uses: ./.github/actions/release-images
-        with:
-          version: ${{ inputs.version }}
-      - name: Tags a release would push
-        env:
-          TAGS: ${{ steps.build.outputs.tags }}
-        run: |
-          for tag in $TAGS; do
-            echo "$IMAGE_SERVER:$tag $IMAGE_RUNNER:$tag $IMAGE_PROXY:$tag"
-          done
-
-  # Only a tag pushed to this repository (never a fork or a pull request). The Docker Hub credentials come from the
-  # environment docker-hub (environment or repository secrets); nothing runs after the login but tagging and pushing.
-  publish:
-    name: Publish to Docker Hub
-    if: github.event_name == 'push' && github.repository == 'lklimek/diffpilot' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    environment: docker-hub
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
       - id: version
-        name: Version from the tag
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-      - id: build
-        uses: ./.github/actions/release-images
+        name: Version
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then version="$INPUT_VERSION"; else version="${GITHUB_REF_NAME#v}"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/release-images
         with:
           version: ${{ steps.version.outputs.version }}
+      - name: Tags a release would push
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mapfile -t existing < <(git tag -l 'v*')
+          for tag in $(scripts/release-image-tags.sh "$VERSION" "${existing[@]}"); do
+            echo "$IMAGE_SERVER:$tag $IMAGE_RUNNER:$tag $IMAGE_PROXY:$tag"
+          done
+      - name: Save the images
+        if: github.event_name == 'push'
+        run: |
+          docker save diffpilot-server:local diffpilot-runner:local diffpilot-egress-proxy:local \
+            | zstd -T0 -3 -q -o "$RUNNER_TEMP/release-images.tar.zst"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'push'
+        with:
+          name: release-images
+          path: ${{ runner.temp }}/release-images.tar.zst
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  # Only a tag pushed to this repository (never a fork or a pull request). Runs no build, test or repository code but
+  # the tag script. One publish at a time across releases, so the moving tags are computed from the release tags
+  # present when it runs and never move back.
+  publish:
+    name: Publish to Docker Hub
+    needs: build
+    if: github.event_name == 'push' && github.repository == 'lklimek/diffpilot' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: docker-hub
+    concurrency:
+      group: release-images-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/release-image-tags.sh
+          sparse-checkout-cone-mode: false
+      - id: tags
+        name: Image tags
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          mapfile -t existing < <(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/||')
+          tags="$(scripts/release-image-tags.sh "$VERSION" "${existing[@]}" | tr '\n' ' ')"
+          echo "tags=${tags% }" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Image tags::${tags% }"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-images
+          path: ${{ runner.temp }}
+      - name: Load the tested images
+        run: zstd -dc "$RUNNER_TEMP/release-images.tar.zst" | docker load
       - name: Log in to Docker Hub
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
-            echo "::error::set the secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (docs/deployment.md, \"Published images\")"
+            echo "::error::set the secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (docs/deployment.md, \"Publishing images\")"
             exit 1
           fi
           printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+      # X.Y.Z never moves: a release whose X.Y.Z exists for any image pushes nothing. Fails closed when the registry
+      # answers anything but "not found".
+      - name: X.Y.Z is not published yet
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          for image in "$IMAGE_SERVER" "$IMAGE_RUNNER" "$IMAGE_PROXY"; do
+            if out="$(docker manifest inspect "$image:$VERSION" 2>&1)"; then
+              echo "::error::$image:$VERSION already exists; a release version is published once"
+              exit 1
+            elif ! grep -qiE 'no such manifest|not found' <<< "$out"; then
+              echo "::error::cannot check $image:$VERSION (does the repository exist, may the token read it?): $out"
+              exit 1
+            fi
+          done
+      # Tag by tag across the three images, X.Y.Z first: no moving tag is pushed before every image has its X.Y.Z,
+      # and a failure leaves at most one moving tag on mixed versions.
       - name: Push
         env:
-          TAGS: ${{ steps.build.outputs.tags }}
+          TAGS: ${{ steps.tags.outputs.tags }}
         run: |
-          for pair in "diffpilot-server:local=$IMAGE_SERVER" "diffpilot-runner:local=$IMAGE_RUNNER" \
-            "diffpilot-egress-proxy:local=$IMAGE_PROXY"; do
-            for tag in $TAGS; do
+          pairs=("diffpilot-server:local=$IMAGE_SERVER" "diffpilot-runner:local=$IMAGE_RUNNER"
+            "diffpilot-egress-proxy:local=$IMAGE_PROXY")
+          for tag in $TAGS; do
+            for pair in "${pairs[@]}"; do
               docker tag "${pair%%=*}" "${pair#*=}:$tag"
               docker push --quiet "${pair#*=}:$tag"
             done
-            docker image inspect -f '{{join .RepoDigests "\n"}}' "${pair%%=*}"
           done
+          for pair in "${pairs[@]}"; do docker image inspect -f '{{join .RepoDigests "\n"}}' "${pair%%=*}"; done
       - name: Log out
         if: always()
         run: docker logout docker.io
