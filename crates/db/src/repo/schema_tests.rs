@@ -1642,3 +1642,176 @@ async fn cancelled_acquire_keeps_the_in_memory_database() {
         );
     }
 }
+
+/// A pool migrated up to (not including) migration 0016: a database of an existing v1.1 install.
+async fn pre_0016_pool() -> sqlx::SqlitePool {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before = MIGRATIONS
+        .iter()
+        .position(|(version, ..)| *version == 16)
+        .expect("migration 0016");
+    migrate(&pool, before).await.expect("up to 0016");
+    pool
+}
+
+/// Signs `user` (GitHub id `github_id`) in through the bound entry `login`: a user row, the binding, one session,
+/// one GitHub token pair and one access token, all in tenant `default`.
+async fn signed_in_v11_user(pool: &sqlx::SqlitePool, user: &str, login: &str, github_id: i64) {
+    let now = sessions::timestamp(Timestamp::now());
+    let later = sessions::timestamp(Timestamp::now() + SignedDuration::from_hours(24));
+    sqlx::query(
+        "INSERT INTO users (id, github_id, login, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+    )
+    .bind(user)
+    .bind(github_id)
+    .bind(login)
+    .bind(&now)
+    .execute(pool)
+    .await
+    .expect("user");
+    sqlx::query(
+        "INSERT INTO memberships (tenant_id, user_id, created_at) VALUES ('default', ?, ?)",
+    )
+    .bind(user)
+    .bind(&now)
+    .execute(pool)
+    .await
+    .expect("membership");
+    sqlx::query(
+        "INSERT INTO tenant_allowed_logins (tenant_id, login, github_id, bound_at) VALUES ('default', ?1, ?2, ?3)
+         ON CONFLICT (tenant_id, login) DO UPDATE SET github_id = excluded.github_id, bound_at = excluded.bound_at",
+    )
+    .bind(login)
+    .bind(github_id)
+    .bind(&now)
+    .execute(pool)
+    .await
+    .expect("binding");
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, tenant_id, user_id, csrf_token, created_at, last_seen_at, expires_at)
+         VALUES (?1, 'default', ?2, 'csrf', ?3, ?3, ?4)",
+    )
+    .bind(user.as_bytes())
+    .bind(user)
+    .bind(&now)
+    .bind(&later)
+    .execute(pool)
+    .await
+    .expect("session");
+    sqlx::query(
+        "INSERT INTO user_tokens (user_id, tenant_id, access_ct, access_expires_at, refresh_ct, refresh_expires_at,
+                                  updated_at)
+         VALUES (?1, 'default', x'01', ?3, x'02', ?3, ?2)",
+    )
+    .bind(user)
+    .bind(&now)
+    .bind(&later)
+    .execute(pool)
+    .await
+    .expect("token pair");
+    let mut hash = [0u8; 32];
+    hash[..user.len()].copy_from_slice(user.as_bytes());
+    sqlx::query(
+        "INSERT INTO access_tokens (id, tenant_id, user_id, name, token_hash, scopes, created_at, expires_at)
+         VALUES (?1, 'default', ?2, 'agent', ?3, '[\"read\"]', ?4, ?5)",
+    )
+    .bind(format!("{user:0>8}"))
+    .bind(user)
+    .bind(&hash[..])
+    .bind(&now)
+    .bind(&later)
+    .execute(pool)
+    .await
+    .expect("access token");
+}
+
+async fn live_credentials(pool: &sqlx::SqlitePool, user: &str) -> (i64, i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM sessions WHERE user_id = ?1),
+                (SELECT COUNT(*) FROM user_tokens WHERE user_id = ?1),
+                (SELECT COUNT(*) FROM access_tokens WHERE user_id = ?1 AND revoked_at IS NULL)",
+    )
+    .bind(user)
+    .fetch_one(pool)
+    .await
+    .expect("credentials")
+}
+
+/// ADR-007 addendum, first v1.2 start of an existing install: `lklimek` bound, `Claudius-Maginificent` still
+/// unbound, and an `SR_ALLOWED_LOGINS` without `lklimek`. Migration 0016 drops only the unbound seed; the start's
+/// reconcile then removes the bound seed with all its credentials and adds the listed logins unbound.
+#[tokio::test]
+async fn first_v12_start_on_a_partially_bound_seed_ends_the_unlisted_maintainer() {
+    let pool = pre_0016_pool().await;
+    signed_in_v11_user(&pool, "u-lk", "lklimek", 7).await;
+    signed_in_v11_user(&pool, "u-owner", "owner", 9).await;
+    assert_eq!(live_credentials(&pool, "u-lk").await, (1, 1, 1));
+
+    migrate(&pool, MIGRATIONS.len()).await.expect("0016");
+    assert_eq!(
+        allowlist_rows(&pool).await,
+        [
+            ("lklimek".to_owned(), Some(7)),
+            ("owner".to_owned(), Some(9))
+        ],
+        "0016 keeps the bound seed and the deployment's own login"
+    );
+    let db = Db { pool };
+    let change = db
+        .tenants()
+        .reconcile_logins(
+            DEFAULT_TENANT,
+            &["OWNER".to_owned(), "Claudius-Maginificent".to_owned()],
+            Timestamp::now(),
+        )
+        .await
+        .expect("reconcile");
+    assert_eq!(change.removed, ["lklimek"]);
+    assert_eq!(change.added, ["Claudius-Maginificent"]);
+    assert_eq!(
+        allowlist_rows(&db.pool).await,
+        [
+            ("Claudius-Maginificent".to_owned(), None),
+            ("owner".to_owned(), Some(9))
+        ],
+        "the re-listed owner keeps spelling and binding"
+    );
+    assert_eq!(
+        live_credentials(&db.pool, "u-lk").await,
+        (0, 0, 0),
+        "lklimek's access ended"
+    );
+    assert_eq!(
+        live_credentials(&db.pool, "u-owner").await,
+        (1, 1, 1),
+        "the owner keeps hers"
+    );
+}
+
+/// A fresh install whose `SR_ALLOWED_LOGINS` names a seeded login: 0001 seeds it, 0016 drops it, the start adds it
+/// back unbound, so the operator's own list wins and nothing is left bound from the seed.
+#[tokio::test]
+async fn fresh_install_listing_a_seeded_login_gets_it_unbound() {
+    let db = db().await;
+    let change = db
+        .tenants()
+        .reconcile_logins(DEFAULT_TENANT, &["LKLIMEK".to_owned()], Timestamp::now())
+        .await
+        .expect("reconcile");
+    assert_eq!(change.added, ["LKLIMEK"]);
+    assert_eq!(change.removed, Vec::<String>::new());
+    assert_eq!(
+        allowlist_rows(&db.pool).await,
+        [("LKLIMEK".to_owned(), None)]
+    );
+}
