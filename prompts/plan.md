@@ -9,6 +9,7 @@ Task: partition the changed hunks listed below into flows.
 - Size: split a flow larger than about 25 steps or 500 changed lines along control flow. Do not scatter one logical change over tiny flows: a visibility or signature change belongs to the flow that needs it.
 - `importance_rank` (1 = read first, unique) orders flows by expected risk at system scale: what a production user or operator would notice if this change introduces, worsens, exposes or leaves a relevant defect; never rank the severity of a pre-existing problem that it fixes. Judge with the `severity` skill against the project profile. The flow you expect to get the highest risk band comes first. Among flows of equal expected risk: `behavioural` and `api_contract`, then `new_code`, `config_build`, `dependency` and `other`, then `move`, `rename` and `refactor_pure`, then `docs_comments`.
 - `intent`: imperative, naming the entry points. `depends_on`: flows the reviewer should read first. Flow ids `f1`, `f2`, ….
+- `crate_notes`: for each crate or package (a directory with its own `Cargo.toml` or other manifest) whose listed hunks change production code, at most 3 keyword notes on what changed there, the most changed first, each at most 80 characters, plain text, naming types and functions in backticks ("parsing of `TransitionType`", "new `impl TryFrom<Foo>`", "retry around `sdk.fetch`"), with the ids of the listed hunks it describes. What changed, never a judgement. [] when nothing is worth a note.
 {{batch}}
 {{profile}}
 {{moves}}

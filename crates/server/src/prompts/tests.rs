@@ -27,6 +27,7 @@ struct Fixture {
     pr_context: PrContextOutput,
     flows: Vec<FlowAnalysisOutput>,
     threads: Vec<GithubThread>,
+    dependencies: contracts::api::deps::DependencyView,
 }
 
 fn fixture_dir() -> PathBuf {
@@ -89,11 +90,41 @@ static FIXTURE: LazyLock<Fixture> = LazyLock::new(|| {
     })
     .expect("prepass");
     let tour: serde_json::Value = read_json("api-seed/default/tour.json");
+    let head_paths: Vec<String> = git(&repo, &["ls-tree", "-r", "--name-only", &pr.head_sha.0])
+        .expect("ls-tree")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let head_text = |path: &str| git(&repo, &["show", &format!("{}:{path}", pr.head_sha.0)]);
+    let cargo: HashMap<String, String> = analysis::deps::cargo_files_to_read(&head_paths)
+        .into_iter()
+        .filter_map(|path| head_text(&path).map(|text| (path, text)))
+        .collect();
+    let mut map = analysis::deps::map(&pr.repo, &head_paths, &|path| {
+        cargo.get(path).map(String::as_str)
+    });
+    for file in files.iter().filter(|file| file.path.ends_with(".rs")) {
+        let added: Vec<u32> = file
+            .hunks
+            .iter()
+            .flat_map(|h| h.added.iter().copied())
+            .collect();
+        map.add_facts(&file.path, head_text(&file.path).as_deref(), &added);
+    }
+    let plan: PlanOutput = read_json("agent/plan.json");
+    let dependencies = crate::pipeline::deps::project(&crate::pipeline::deps::ProjectionInput {
+        map: &map,
+        pr_repo: &pr.repo,
+        files: &files,
+        plan: Some(&plan),
+        controlled: &[],
+    });
     Fixture {
         pr,
         files,
         prepass,
-        plan: read_json("agent/plan.json"),
+        plan,
+        dependencies,
         pr_context: read_json("agent/pr_context.json"),
         flows: (1..=5)
             .map(|n| read_json(&format!("agent/flow-{n}.json")))
@@ -178,6 +209,7 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
         job,
         description: Some(DESCRIPTION),
         profile: profile(f),
+        dependencies: Some(&f.dependencies),
     };
     let threads = flow_threads(f);
     let examples = calibration_examples();
@@ -698,6 +730,7 @@ fn hostile_pr_text_stays_inside_its_block() {
             job,
             description: Some(description),
             profile: profile(f),
+            dependencies: None,
         };
         pr_context(&input).expect("pr_context")
     };
@@ -810,6 +843,7 @@ fn instruction_files_get_the_t14_notice_in_every_prompt() {
         job,
         description: None,
         profile: profile(f),
+        dependencies: None,
     };
     let flow_input = FlowInput {
         job,
@@ -1025,6 +1059,7 @@ fn profile_union_file_wins() {
             job: job(f, LlmLanguage::En),
             description: None,
             profile,
+            dependencies: None,
         };
         split(&pr_context(&input).expect("pr_context"))
     };
@@ -1301,6 +1336,7 @@ fn sub_agents_are_a_parameter_default_off() {
             job,
             description: None,
             profile: profile(f),
+            dependencies: None,
         })
         .expect("pr_context")
     };

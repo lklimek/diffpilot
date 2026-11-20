@@ -322,4 +322,33 @@ mod tests {
         assert_eq!(merged.flows[2].hunks[0].hunk_id, HunkId("h9".to_owned()));
         assert_eq!(merged.unassigned.len(), 1);
     }
+
+    #[test]
+    fn merged_plans_concatenate_crate_notes() {
+        let plan = |notes: Option<Vec<&str>>| PlanOutput {
+            flows: Vec::new(),
+            unassigned: Vec::new(),
+            crate_notes: notes.map(|list| {
+                list.into_iter()
+                    .map(|text| contracts::agent::plan::PlanCrateNote {
+                        note: text.to_owned(),
+                        hunks: vec![HunkId("h1".to_owned())],
+                    })
+                    .collect()
+            }),
+        };
+        assert_eq!(merge_plans(&[plan(None), plan(None)]).crate_notes, None);
+        let merged = merge_plans(&[
+            plan(Some(vec!["a"])),
+            plan(None),
+            plan(Some(vec!["b", "c"])),
+        ]);
+        let notes: Vec<String> = merged
+            .crate_notes
+            .expect("notes")
+            .into_iter()
+            .map(|n| n.note)
+            .collect();
+        assert_eq!(notes, ["a", "b", "c"]);
+    }
 }

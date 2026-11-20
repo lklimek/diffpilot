@@ -189,13 +189,16 @@ async fn compute(
     Ok(map)
 }
 
+/// File texts by path.
+type Texts = BTreeMap<String, String>;
+
 /// UTF-8 texts of `paths` at `commit`, bounded by `total` bytes; unread, too large or non-UTF-8 files are left out.
 async fn read_texts(
     mirror: &Path,
     commit: &CommitSha,
     paths: &[String],
     total: u64,
-) -> Result<BTreeMap<String, String>, MirrorError> {
+) -> Result<Texts, MirrorError> {
     if paths.is_empty() {
         return Ok(BTreeMap::new());
     }

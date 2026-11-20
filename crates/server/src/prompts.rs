@@ -17,6 +17,7 @@ use contracts::agent::analyse_flow::{
 };
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
+use contracts::api::deps::{DependencyStatus, DependencyView, RepositoryKind, TypeDefinition};
 use contracts::api::files::HunkPart;
 use contracts::api::pr::PrSummary;
 use contracts::api::questions::AskState;
@@ -65,6 +66,8 @@ pub const MAX_CALIBRATION_CHARS: usize = 1000;
 pub const MAX_THREADS: usize = 50;
 
 const MAX_TITLE_CHARS: usize = 300;
+/// Most bytes of the per-crate dependency entries in a `pr_context` prompt.
+const MAX_DEPENDENCY_BYTES: usize = 12 * 1024;
 const MAX_DESCRIPTION_CHARS: usize = 16_000;
 const MAX_PROFILE_CHARS: usize = 16_000;
 const MAX_EXCERPT_CHARS: usize = 2_000;
@@ -185,6 +188,8 @@ pub struct PrContextInput<'a> {
     pub description: Option<&'a str>,
     /// Project profile.
     pub profile: Profile<'a>,
+    /// The Dependencies view of the head (ADR-021), if computed.
+    pub dependencies: Option<&'a DependencyView>,
 }
 
 /// A GitHub review thread listed for a flow under its alias (`t1`, …).
@@ -1169,8 +1174,100 @@ fn pr_context_task(input: &PrContextInput<'_>) -> Result<String, PromptError> {
                 &path_list("related_repos", "related repositories", &related)?,
             ),
             ("dependency_files", &dependency_files),
+            ("dependencies", &dependencies(input.dependencies)?),
         ],
     )
+}
+
+/// The changed crates of `view` as one-line JSON entries, and the controlled dependency repositories to look in;
+/// empty without a Cargo map.
+fn dependencies(view: Option<&DependencyView>) -> Result<String, PromptError> {
+    let Some(view) = view.filter(|view| view.status == DependencyStatus::Available) else {
+        return Ok(String::new());
+    };
+    let line = |at: &contracts::api::deps::HeadLine| format!("{}:{}", at.file, at.line);
+    let mut entries = Vec::new();
+    let mut lookups = Vec::new();
+    let all = || {
+        view.repositories
+            .iter()
+            .flat_map(|r| r.crates.iter().map(move |c| (r, c)))
+    };
+    for repository in &view.repositories {
+        match (&repository.kind, &repository.repo) {
+            (RepositoryKind::This, _) => {}
+            (_, Some(repo)) => {
+                let names: Vec<&str> = repository.crates.iter().map(|c| c.name.as_str()).collect();
+                lookups.push(format!(
+                    "{}/{} (crates: {})",
+                    repo.owner,
+                    repo.name,
+                    names.join(", ")
+                ));
+            }
+            (_, None) => {}
+        }
+    }
+    for (_, krate) in all() {
+        let Some(changes) = &krate.changes else {
+            continue;
+        };
+        let uses: Vec<serde_json::Value> = all()
+            .filter(|(_, other)| other.used_by.contains(&krate.name))
+            .map(|(repository, other)| {
+                let from = match (&repository.kind, &repository.repo) {
+                    (RepositoryKind::This, _) => "this repository".to_owned(),
+                    (_, Some(repo)) => format!("{}/{}", repo.owner, repo.name),
+                    (_, None) => "other".to_owned(),
+                };
+                serde_json::json!({"crate": other.name, "from": from})
+            })
+            .collect();
+        let facts: Vec<serde_json::Value> = changes
+            .facts
+            .iter()
+            .map(|fact| {
+                let definition = match &fact.definition {
+                    TypeDefinition::Located { at } => line(at),
+                    TypeDefinition::NotLocated => "not located".to_owned(),
+                    TypeDefinition::NotSearched => "not searched".to_owned(),
+                    TypeDefinition::OtherRepository => "in another repository".to_owned(),
+                };
+                serde_json::json!({
+                    "at": line(&fact.at),
+                    "kind": fact.kind,
+                    "type": fact.written,
+                    "type_crate": fact.type_crate,
+                    "definition": definition,
+                })
+            })
+            .collect();
+        let flows: Vec<&str> = changes.flows.iter().map(|f| f.id.0.as_str()).collect();
+        let notes: Vec<&str> = changes.notes.iter().map(|n| n.text.as_str()).collect();
+        let entry = serde_json::json!({
+            "crate": krate.name,
+            "manifest": krate.manifest,
+            "changed_lines": changes.changed_lines,
+            "flows": flows,
+            "uses": uses,
+            "other_dependencies": changes.other_dependencies,
+            "facts": facts,
+            "facts_not_listed": changes.facts_hidden + changes.other_facts,
+            "notes": notes,
+        });
+        entries.push(entry.to_string());
+    }
+    if entries.is_empty() {
+        return Ok(String::new());
+    }
+    let mut out = format!("{}\n", part("dependencies")?);
+    out.push_str(&lines_block("dependencies", entries, MAX_DEPENDENCY_BYTES)?);
+    out.push_str(&path_list(
+        "dependency_repos",
+        "dependency repositories",
+        &lookups,
+    )?);
+    Ok(out)
 }
 
 fn flow_task(input: &FlowInput<'_>) -> Result<String, PromptError> {

@@ -58,5 +58,10 @@
     "ask_effort": "medium",
     "changed_by": null,
     "changed_at": null
+  },
+  "controlled_owners": {
+    "owners": [],
+    "changed_by": null,
+    "changed_at": null
   }
 }

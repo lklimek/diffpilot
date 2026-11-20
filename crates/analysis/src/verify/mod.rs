@@ -17,7 +17,7 @@ use std::path::Path;
 
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::agent::ask::AskOutput;
-use contracts::agent::plan::{PlanOutput, PlannedFlow};
+use contracts::agent::plan::{PlanCrateNote, PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::tour::{FlowGraph, MoveFact};
 use contracts::common::{Evidence, FileRanges, LineSide};
@@ -286,6 +286,28 @@ pub struct FlowContext<'a> {
 /// base and a head path).
 pub fn plan(output: &PlanOutput, diff: &DiffIndex<'_>) -> Result<VerifiedPlan, VerifyError> {
     check_plan::plan(output, diff)
+}
+
+/// Keeps the `crate_notes` a reviewer may see (ADR-021): trimmed, at most [`PlanCrateNote::MAX_CHARS`] characters,
+/// plain text without a wording-rule hit, citing hunks of `diff` only (unknown ids are left out; a note left with
+/// none is dropped). Returns how many notes were dropped. Never an issue: notes are optional and must not cost a
+/// repair round of the plan.
+pub fn keep_crate_notes(output: &mut PlanOutput, diff: &DiffIndex<'_>) -> usize {
+    let Some(notes) = output.crate_notes.as_mut() else {
+        return 0;
+    };
+    let before = notes.len();
+    notes.retain_mut(|note| {
+        note.note = note.note.trim().to_owned();
+        note.hunks.retain(|id| diff.hunk(id).is_some());
+        note.hunks.dedup();
+        !note.note.is_empty()
+            && note.note.chars().count() <= PlanCrateNote::MAX_CHARS
+            && !note.hunks.is_empty()
+            && plain::check(&note.note).is_none()
+            && wording::warnings_in(&note.note).is_empty()
+    });
+    before - notes.len()
 }
 
 /// [`plan`] for a plan accepted and stored earlier, read again: lines it leaves in no flow and not in
