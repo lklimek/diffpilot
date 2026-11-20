@@ -1930,3 +1930,102 @@ fn a_long_thread_stays_within_its_budget_and_says_what_it_clipped() {
         "{block}"
     );
 }
+
+/// The fixture's Dependencies view with one controlled dependency repository whose crate is named `dependency`
+/// and used by the changed crate, which is renamed to `changed`.
+fn dependency_view_with(changed: &str, dependency: &str) -> contracts::api::deps::DependencyView {
+    use contracts::api::deps::{DependencyCrate, DependencyRepository, RepositoryKind};
+    let mut view = FIXTURE.dependencies.clone();
+    let this = &mut view.repositories[0];
+    this.crates[0].name = changed.to_owned();
+    view.repositories.push(DependencyRepository {
+        kind: RepositoryKind::Github,
+        repo: Some(contracts::common::RepoRef {
+            owner: "acme".to_owned(),
+            name: "upstream".to_owned(),
+        }),
+        location: Some("https://github.com/acme/upstream".to_owned()),
+        controlled: true,
+        crates: vec![DependencyCrate {
+            name: dependency.to_owned(),
+            version: None,
+            manifest: None,
+            source_at: None,
+            revision: None,
+            used_by: vec![changed.to_owned()],
+            facts_about: 0,
+            changes: None,
+        }],
+    });
+    view
+}
+
+fn pr_context_with(view: &contracts::api::deps::DependencyView) -> Result<String, PromptError> {
+    let f = &*FIXTURE;
+    pr_context(&PrContextInput {
+        job: job(f, LlmLanguage::En),
+        description: None,
+        profile: profile(f),
+        dependencies: Some(view),
+    })
+}
+
+/// Cargo package names are PR-controlled: in the crate entries and in the lookup list they stay quoted data.
+#[test]
+fn hostile_crate_names_stay_inside_their_blocks() {
+    let benign = pr_context_with(&dependency_view_with("plain", "plain-dep")).expect("benign");
+    let hostile = pr_context_with(&dependency_view_with(HOSTILE, HOSTILE)).expect("hostile");
+    assert_contained(&benign, &hostile, "pr_context dependencies");
+}
+
+/// A PR-controlled package name of a controlled git dependency must not push the PR-context prompt over its budget
+/// (the analysis would fail with a server error on every retry).
+#[test]
+fn an_oversized_dependency_crate_name_keeps_the_pr_context_prompt_within_budget() {
+    let view = dependency_view_with("node-client", &"a".repeat(PROMPT_BUDGET_BYTES));
+    let prompt = pr_context_with(&view);
+    assert!(prompt.is_ok(), "{:?}", prompt.err());
+}
+
+/// The most changed crate with the projection's maximum of 50 facts (realistic workspace paths) still reaches the
+/// PR-context prompt.
+#[test]
+fn the_most_changed_crate_with_fifty_facts_reaches_the_pr_context_prompt() {
+    use contracts::api::deps::{ConversionFact, ConversionKind, HeadLine, TypeDefinition};
+    let mut view = dependency_view_with("node-client", "upstream-types");
+    let changes = view.repositories[0].crates[0]
+        .changes
+        .as_mut()
+        .expect("changed crate");
+    let line = |file: &str, line| HeadLine {
+        file: file.to_owned(),
+        line,
+    };
+    changes.facts = (0..50)
+        .map(|n| ConversionFact {
+            kind: ConversionKind::TryFromImpl,
+            at: line(
+                "packages/rs-drive-abci/src/execution/platform_events/state_transition_processing/v0/mod.rs",
+                100 + n,
+            ),
+            type_name: format!("StateTransitionType{n}"),
+            written: format!("dpp::state_transition::StateTransitionType{n}"),
+            type_crate: "dpp".to_owned(),
+            imported_at: None,
+            definition: TypeDefinition::Located {
+                at: line("packages/rs-dpp/src/state_transition/state_transition_types.rs", n),
+            },
+        })
+        .collect();
+    let prompt = pr_context_with(&view).expect("pr_context");
+    let (_, blocks) = split(&prompt);
+    let block = blocks
+        .iter()
+        .find(|block| block.label == "dependencies")
+        .expect("dependencies block");
+    assert!(
+        block.content.contains(r#""crate":"node-client""#),
+        "the most changed crate is missing: {}",
+        block.content
+    );
+}
