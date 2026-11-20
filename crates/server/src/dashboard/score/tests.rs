@@ -2236,6 +2236,32 @@ fn merge_ready_by_display_id_without_excluded_authors() {
     assert!(scored(&prs[0]).excluded.is_none(), "still ranked");
 }
 
+/// K15 says a PR waits only on others when "nothing is the user's move", including "no merge the user can make";
+/// K17 and the docs say a PR in Ready to merge stays ranked. A PR GitHub lets the user merge (no required review,
+/// so no review decision; a review requested from someone else) must therefore not be listed as waiting only on
+/// others.
+#[test]
+fn a_pr_ready_to_merge_does_not_wait_only_on_others() {
+    let r = rules();
+    let facts = PrFacts {
+        labels: vec!["ready-for-human".into()],
+        review_requested_from_others: vec!["bob".into()],
+        others_review_requested_at: Some(ago(2.0)),
+        review_decision: None,
+        merge_state: MergeState::Clean,
+        viewer_can_write: true,
+        ..pr()
+    };
+    assert!(
+        ready_to_merge(&r, &facts),
+        "precondition: GitHub lets the user merge it"
+    );
+    assert!(
+        !waits_on_others(&r, &facts),
+        "listed under Waiting on others (nothing is your move) and Ready to merge at once"
+    );
+}
+
 // --- text rules -------------------------------------------------------------------------------------------
 
 #[test]
