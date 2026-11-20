@@ -32,6 +32,8 @@ export function DependencyNotices({ view, links }: { view: DependencyView; links
   const prOwner = view.repositories.find((r) => r.kind === "this")?.repo?.owner;
   const others = view.controlled_owners.filter((o) => o.toLowerCase() !== prOwner?.toLowerCase());
   const outside = view.files_outside_crates;
+  // Files of a crate whose manifest was not read count as outside crates: absence is then not established.
+  const cut = view.limits.some((l) => l.kind === "manifests_cut" || l.kind === "manifest_unreadable");
   const settings = (
     <Tooltip tip="Opens Settings, where the installation's controlled organisations are listed.">
       <a href={links.settings} onClick={(event) => inApp(event, () => links.onNavigate(links.settings))}>
@@ -59,10 +61,17 @@ export function DependencyNotices({ view, links }: { view: DependencyView; links
         </section>
       )}
       {!hasChangedCrate(view) ? (
-        <p className="m-0">
-          No Rust crate is changed by this pull request; {count(outside, "changed file")} outside crates{" "}
-          {outside === 1 ? "is" : "are"} not checked.
-        </p>
+        cut ? (
+          <p className="m-0">
+            No crate that was read is changed by this pull request; {count(outside, "changed file")}{" "}
+            {outside === 1 ? "is" : "are"} in no read crate and {outside === 1 ? "is" : "are"} not checked.
+          </p>
+        ) : (
+          <p className="m-0">
+            No Rust crate is changed by this pull request; {count(outside, "changed file")} outside crates{" "}
+            {outside === 1 ? "is" : "are"} not checked.
+          </p>
+        )
       ) : (
         outside > 0 && (
           <p className="m-0">

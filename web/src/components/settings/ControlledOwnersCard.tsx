@@ -13,6 +13,12 @@ const MAX_OWNERS = 50;
 // GitHub login: letters, digits and inner -, up to 39 characters (the server's rule).
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 
+const asSet = (list: readonly string[]) =>
+  list
+    .map((o) => o.toLowerCase())
+    .sort()
+    .join("\n");
+
 /** Why `value` cannot join `list`, or null. */
 function check(value: string, list: string[]): string | null {
   if (!OWNER.test(value))
@@ -38,13 +44,17 @@ export function ControlledOwnersCard({
   onSave: (owners: string[]) => void;
 }) {
   const [draft, setDraft] = useState(owners.owners);
-  // A newly saved list (normalised by the server) replaces the draft; the card stays mounted, so focus stays.
-  const [base, setBase] = useState(owners.owners);
-  if (base.join("\n") !== owners.owners.join("\n")) {
-    setBase(owners.owners);
+  const [edited, setEdited] = useState(false);
+  // Each save (a new time, or a new list) replaces the draft; the card stays mounted, so focus stays.
+  const savedKey = `${owners.changed_at ?? ""}\n${owners.owners.join("\n")}`;
+  const [base, setBase] = useState(savedKey);
+  if (base !== savedKey) {
+    setBase(savedKey);
     setDraft(owners.owners);
+    setEdited(false);
   }
-  const unchanged = draft.join("\n") === owners.owners.join("\n");
+  // Logins are case-insensitive and the server sorts the list: the same set is no change.
+  const unchanged = asSet(draft) === asSet(owners.owners);
   const off = busy || unchanged;
   return (
     <SettingsCard title={LABEL} help={<HelpTip topic="controlled_owners" />}>
@@ -54,7 +64,10 @@ export function ControlledOwnersCard({
         items={draft}
         empty="None listed: only each pull request's own owner is yours."
         check={check}
-        onChange={setDraft}
+        onChange={(list) => {
+          setDraft(list);
+          setEdited(true);
+        }}
         placeholder="GitHub organisation or user"
         hint="A pull request's own owner is always yours; it need not be listed."
       />
@@ -81,7 +94,7 @@ export function ControlledOwnersCard({
           changed by {owners.changed_by} at {dateTimeText(owners.changed_at)}
         </p>
       )}
-      {saved && <p role="status">Controlled organisations saved.</p>}
+      {saved && !edited && <p role="status">Controlled organisations saved.</p>}
       {error && <p role="alert">The controlled organisations were not saved: {error}</p>}
     </SettingsCard>
   );

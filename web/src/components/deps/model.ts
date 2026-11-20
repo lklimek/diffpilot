@@ -31,15 +31,16 @@ export interface DepsLinks {
   onNavigate: (href: string) => void;
 }
 
-/** Stable key of a repository level (open state). */
-export const repositoryKey = (repo: DependencyRepository): string =>
-  repo.kind === "this"
-    ? "this"
-    : `${repo.kind}:${repo.repo ? `${repo.repo.owner}/${repo.repo.name}` : (repo.location ?? "")}`;
+/** Stable key of a repository level (open state); `index` tells apart sources with neither name nor location. */
+export function repositoryKey(repo: DependencyRepository, index: number): string {
+  if (repo.kind === "this") return "this";
+  const name = repo.repo ? `${repo.repo.owner}/${repo.repo.name}` : repo.location;
+  return `${repo.kind}:${name ?? `#${index}`}`;
+}
 
-/** Stable key of a crate level (open state). */
-export const crateKey = (repo: DependencyRepository, crate: DependencyCrate): string =>
-  `${repositoryKey(repo)}/${crate.name}`;
+/** Stable key of a crate level (open state): one per package version of its source. */
+export const crateKey = (repoKey: string, crate: DependencyCrate): string =>
+  `${repoKey}/${crate.name}@${crate.version ?? ""}`;
 
 /** Open unless toggled: this repository and changed crates start open, everything else closed. */
 export const isOpen = (open: Readonly<Record<string, boolean>>, key: string, byDefault: boolean) =>

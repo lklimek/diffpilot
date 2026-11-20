@@ -27,7 +27,7 @@ export function LineLinkTo({
   const { href, external } = links.line(target);
   const text = children ?? lineText(target);
   return external ? (
-    <Tooltip tip="Opens this line on GitHub at the analysed commit (new tab): the Files view shows only the files this pull request changes.">
+    <Tooltip tip="Opens this line on GitHub at the analysed commit (new tab): the Files view does not show this file's lines (not changed by this pull request, or generated, too large or binary).">
       <a href={href} target="_blank" rel="noopener noreferrer" className="font-mono text-[12.5px]">
         {text}
       </a>

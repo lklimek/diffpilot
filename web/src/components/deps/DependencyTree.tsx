@@ -145,14 +145,22 @@ function Source({ at, links }: { at: HeadLine; links: DepsLinks }) {
 }
 
 function Changes({
+  name,
   changes,
   view,
   links,
 }: {
+  /** The crate's name, which its headings carry for the screen reader's heading list. */
+  name: string;
   changes: CrateChanges;
   view: DependencyView;
   links: DepsLinks;
 }) {
+  const crate = (
+    <>
+      <span className="sr-only">{name}:</span>{" "}
+    </>
+  );
   return (
     <>
       <p className="m-0 flex flex-wrap items-baseline gap-x-1.5">
@@ -178,11 +186,11 @@ function Changes({
         )}
       </p>
       <section className="grid gap-1">
-        <h3 className="text-sm font-semibold">Conversions added for other crates&apos; types</h3>
+        <h3 className="text-sm font-semibold">{crate}Conversions added for other crates&apos; types</h3>
         <CrateFacts changes={changes} origins={crateOrigins(view)} links={links} />
       </section>
       <section className="grid gap-1">
-        <h3 className="text-sm font-semibold">LLM notes on what changed</h3>
+        <h3 className="text-sm font-semibold">{crate}LLM notes on what changed</h3>
         <CrateNotes changes={changes} notes={view.notes} links={links} />
       </section>
       {changes.other_dependencies > 0 && (
@@ -227,7 +235,7 @@ function CrateDetails({
         </p>
       )}
       {crate.changes ? (
-        <Changes changes={crate.changes} view={view} links={links} />
+        <Changes name={crate.name} changes={crate.changes} view={view} links={links} />
       ) : (
         <p className="m-0 text-muted">Not changed by this pull request.</p>
       )}
@@ -237,39 +245,45 @@ function CrateDetails({
 
 /** Repositories → crates → per changed crate its facts and LLM notes; levels open on click. */
 export function DependencyTree({ view, open, onToggle, links }: DependencyTreeProps) {
+  const id = useId();
   return (
-    <ul aria-label="Repositories" className="m-0 grid list-none gap-2 p-0">
-      {view.repositories.map((repo) => {
-        const key = repositoryKey(repo);
-        return (
-          <Level
-            key={key}
-            label={repositoryLabel(repo)}
-            aside={<RepositoryAside repo={repo} />}
-            open={isOpen(open, key, repo.kind === "this")}
-            onToggle={(value) => onToggle(key, value)}
-          >
-            <ul
-              aria-label={`Crates of ${repo.repo ? `${repo.repo.owner}/${repo.repo.name}` : (repo.location ?? "")}`}
-              className="m-0 grid list-none gap-1.5 p-0"
+    <section aria-labelledby={id} className="grid gap-2">
+      <h2 id={id} className="text-base font-semibold">
+        Repositories
+      </h2>
+      <ul aria-labelledby={id} className="m-0 grid list-none gap-2 p-0">
+        {view.repositories.map((repo, index) => {
+          const key = repositoryKey(repo, index);
+          return (
+            <Level
+              key={key}
+              label={repositoryLabel(repo)}
+              aside={<RepositoryAside repo={repo} />}
+              open={isOpen(open, key, repo.kind === "this")}
+              onToggle={(value) => onToggle(key, value)}
             >
-              {repo.crates.map((crate) => {
-                const ck = crateKey(repo, crate);
-                return (
-                  <Level
-                    key={ck}
-                    label={crateLabel(crate)}
-                    open={isOpen(open, ck, crate.changes !== null)}
-                    onToggle={(value) => onToggle(ck, value)}
-                  >
-                    <CrateDetails crate={crate} view={view} links={links} />
-                  </Level>
-                );
-              })}
-            </ul>
-          </Level>
-        );
-      })}
-    </ul>
+              <ul
+                aria-label={`Crates of ${repo.repo ? `${repo.repo.owner}/${repo.repo.name}` : (repo.location ?? "")}`}
+                className="m-0 grid list-none gap-1.5 p-0"
+              >
+                {repo.crates.map((crate) => {
+                  const ck = crateKey(key, crate);
+                  return (
+                    <Level
+                      key={ck}
+                      label={crateLabel(crate)}
+                      open={isOpen(open, ck, crate.changes !== null)}
+                      onToggle={(value) => onToggle(ck, value)}
+                    >
+                      <CrateDetails crate={crate} view={view} links={links} />
+                    </Level>
+                  );
+                })}
+              </ul>
+            </Level>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

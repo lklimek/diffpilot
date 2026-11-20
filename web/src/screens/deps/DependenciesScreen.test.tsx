@@ -70,6 +70,22 @@ describe("Dependencies view (brief 2026-11-20, plan U1–U3)", () => {
     expect(def).toHaveAttribute("target", "_blank");
   });
 
+  it("a line of a PR file the Files view does not render (generated Cargo.lock) opens on GitHub", async () => {
+    setScenario("deps-multi");
+    renderRoute(`/analyses/${ID}/deps`);
+    const list = await repositories();
+    await userEvent.click(within(list).getByRole("button", { name: /^acme\/node-sdk/ }));
+    await userEvent.click(within(list).getByRole("button", { name: /^rpc-types/ }));
+    const tour = seedFor("default", "tour") as { analysis: { pr: { head_sha: string } } };
+    const lock = screen.getByRole("link", { name: "Cargo.lock:30" });
+    expect(lock).toHaveAttribute(
+      "href",
+      `https://github.com/acme/node-client/blob/${tour.analysis.pr.head_sha}/Cargo.lock#L30`,
+    );
+    expect(lock).toHaveAttribute("target", "_blank");
+    expect(lock).toHaveAccessibleDescription(/on GitHub at the analysed commit \(new tab\)/);
+  });
+
   it("a flow link opens the flow in the Flows view", async () => {
     const router = renderRoute(`/analyses/${ID}/deps`);
     await repositories();

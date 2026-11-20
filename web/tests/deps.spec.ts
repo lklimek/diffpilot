@@ -44,8 +44,12 @@ async function seriousViolations(page: Page, width: number) {
   // Below 1000 px the shared top bar crowds its controls in every review view (Files too): not this view's.
   const sharedBar = (id: string, html: string) =>
     width < 1000 && id === "target-size" && /aria-label="(Settings, signed in|View: )/.test(html);
-  return results.violations
-    .filter((v) => v.impact === "serious" || v.impact === "critical")
+  // The heading outline (best practice, any impact): no skipped level.
+  const headings = await new AxeBuilder({ page }).withRules(["heading-order"]).analyze();
+  return [
+    ...results.violations.filter((v) => v.impact === "serious" || v.impact === "critical"),
+    ...headings.violations,
+  ]
     .map((v) => ({ ...v, nodes: v.nodes.filter((n) => !sharedBar(v.id, n.html)) }))
     .filter((v) => v.nodes.length > 0)
     .map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(" ")}`);
@@ -69,8 +73,10 @@ test("no serious axe violations in any state, wide and narrow, light and dark; t
         await openAll(page);
         expect(await seriousViolations(page, width), `${scenario} ${width} ${colorScheme}`).toEqual([]);
         await expectTrustWording(page);
-        if (shots && colorScheme === "light")
+        if (shots && colorScheme === "light") {
+          await page.evaluate(() => window.scrollTo(0, 0));
           await page.screenshot({ path: `${shots}/${scenario}-${width}.png`, fullPage: true });
+        }
       }
     }
   }

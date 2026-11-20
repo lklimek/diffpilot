@@ -77,4 +77,37 @@ describe("ControlledOwnersCard (plan U4: installation-wide list, PR owner implic
       "The controlled organisations were not saved: Try again.",
     );
   });
+
+  it("the same owners in another order or case are not a change", async () => {
+    render(
+      <ControlledOwnersCard
+        owners={{ ...SAVED, owners: ["acme", "dashpay"] }}
+        busy={false}
+        onSave={() => {}}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Remove acme" }));
+    await userEvent.type(field(), "ACME{Enter}");
+    expect(screen.getByRole("button", { name: "Save organisations" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  });
+
+  it("a new save replaces the draft even when the list is the same; the saved note clears on the next edit", async () => {
+    const owners = { ...SAVED, owners: ["acme", "dashpay"] };
+    const { rerender } = render(<ControlledOwnersCard owners={owners} busy={false} onSave={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: "Remove acme" }));
+    await userEvent.type(field(), "acme{Enter}");
+    const later = new Date(2026, 10, 20, 10, 0).toISOString();
+    rerender(
+      <ControlledOwnersCard owners={{ ...owners, changed_at: later }} busy={false} saved onSave={() => {}} />,
+    );
+    expect(screen.getByRole("list", { name: "Controlled organisations" })).toHaveTextContent(
+      /^acme.*dashpay/,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Controlled organisations saved.");
+    await userEvent.type(field(), "other{Enter}");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
 });

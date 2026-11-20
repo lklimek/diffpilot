@@ -95,6 +95,22 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
     );
   });
 
+  it.each([
+    [{ kind: "manifests_cut", total: 512, read: 400 }],
+    [{ kind: "manifest_unreadable", path: "crates/broken/Cargo.toml" }],
+  ] as const)(
+    "no changed crate in a cut map (%o) says only that no crate that was read is changed",
+    (limit) => {
+      render(
+        <DependencyNotices view={{ ...mockDependenciesNoChangedCrate(), limits: [limit] }} links={links()} />,
+      );
+      expect(document.body).toHaveTextContent(
+        "No crate that was read is changed by this pull request; 3 changed files are in no read crate and are not checked.",
+      );
+      expect(document.body).not.toHaveTextContent("No Rust crate is changed");
+    },
+  );
+
   it("controlled owners: the pull request's owner is always yours; the Settings list is linked in-app", async () => {
     const onNavigate = vi.fn();
     render(<DependencyNotices view={mockDependenciesNoControlled()} links={links(onNavigate)} />);
@@ -175,10 +191,38 @@ describe("DependencyTree (repository → crate → facts and notes, disclosure b
   it("keys are stable per repository and crate", () => {
     const view = mockDependenciesMulti();
     const [own, sdk] = view.repositories;
-    expect(repositoryKey(own!)).toBe("this");
-    expect(repositoryKey(sdk!)).toBe("github:acme/node-sdk");
-    expect(crateKey(sdk!, sdk!.crates[0]!)).toBe("github:acme/node-sdk/rpc-types");
-    expect(repositoryKey(view.repositories[3]!)).toBe("registry:crates.io");
+    expect(repositoryKey(own!, 0)).toBe("this");
+    expect(repositoryKey(sdk!, 1)).toBe("github:acme/node-sdk");
+    expect(crateKey("github:acme/node-sdk", sdk!.crates[0]!)).toBe("github:acme/node-sdk/rpc-types@0.3.1");
+    expect(repositoryKey(view.repositories[3]!, 3)).toBe("registry:crates.io");
+  });
+
+  it("two versions of one crate and sources without name keep separate levels", async () => {
+    const view = mockDependenciesMulti();
+    const registry = view.repositories[3]!;
+    const syn = { ...registry.crates[0]!, name: "syn", version: "1.0.109" };
+    registry.crates = [syn, { ...syn, version: "2.0.87" }];
+    const unknown = {
+      kind: "unknown" as const,
+      repo: null,
+      location: null,
+      controlled: false,
+      crates: [syn],
+    };
+    view.repositories.push(unknown, { ...unknown });
+    expect(new Set(view.repositories.map((r, i) => repositoryKey(r, i))).size).toBe(view.repositories.length);
+    expect(crateKey("registry:crates.io", registry.crates[0]!)).not.toBe(
+      crateKey("registry:crates.io", registry.crates[1]!),
+    );
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<Tree view={view} />);
+    await userEvent.click(screen.getByRole("button", { name: /^crates\.io/ }));
+    const [v1, v2] = screen.getAllByRole("button", { name: /^syn/ });
+    await userEvent.click(v1!);
+    expect(v1).toHaveAttribute("aria-expanded", "true");
+    expect(v2).toHaveAttribute("aria-expanded", "false");
+    expect(errors).not.toHaveBeenCalled();
+    errors.mockRestore();
   });
 
   it("onToggle receives the level's key and its new state", async () => {
@@ -187,7 +231,7 @@ describe("DependencyTree (repository → crate → facts and notes, disclosure b
     await userEvent.click(screen.getByRole("button", { name: /^acme\/node-client/ }));
     expect(onToggle).toHaveBeenCalledWith("this", false);
     await userEvent.click(screen.getByRole("button", { name: /^node-client/ }));
-    expect(onToggle).toHaveBeenCalledWith("this/node-client", false);
+    expect(onToggle).toHaveBeenCalledWith("this/node-client@0.7.0", false);
   });
 
   it("a changed crate (open by default) says its changed lines and flows; flows link to the Flows view", async () => {
@@ -235,7 +279,7 @@ describe("DependencyTree (repository → crate → facts and notes, disclosure b
   it("a fact names the repository of its type's crate and whether it is yours", () => {
     render(<Tree view={mockDependenciesNoControlled()} />);
     const facts = screen.getByRole("heading", {
-      name: "Conversions added for other crates' types",
+      name: "node-client: Conversions added for other crates' types",
     }).parentElement!;
     const items = within(facts)
       .getAllByRole("listitem")
@@ -244,6 +288,16 @@ describe("DependencyTree (repository → crate → facts and notes, disclosure b
       expect.stringMatching(/from rpc-types in acme\/node-sdk \(yours\)/),
       expect.stringMatching(/from node-proto in this repository/),
       expect.stringMatching(/from node-proto in this repository/),
+    ]);
+  });
+
+  it("headings: one h2 for the tree; per-crate h3s name their crate", () => {
+    render(<Tree view={mockDependenciesMulti()} />);
+    expect(screen.getByRole("heading", { level: 2, name: "Repositories" })).toBeVisible();
+    expect(screen.getByRole("list", { name: "Repositories" })).toBeVisible();
+    expect(screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual([
+      "node-client: Conversions added for other crates' types",
+      "node-client: LLM notes on what changed",
     ]);
   });
 

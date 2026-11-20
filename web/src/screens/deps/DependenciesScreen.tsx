@@ -109,10 +109,13 @@ function DependenciesView({
       /* Storage unavailable: the levels stay as toggled on this page. */
     }
   };
-  // A file of the pull request opens in the Files view; any other file on GitHub at the analysed commit.
+  // A file of the pull request that the Files view renders opens there; any other file on GitHub at the analysed
+  // commit (generated, too large or binary files show no lines in the Files view).
   const links: DepsLinks = {
     line: (t) =>
-      files.files.some((f) => (t.side === "base" ? (f.old_path ?? f.path) : f.path) === t.file)
+      files.files.some(
+        (f) => (t.side === "base" ? (f.old_path ?? f.path) : f.path) === t.file && f.not_rendered === null,
+      )
         ? { href: `${base}/files${filesHash(t)}`, external: false }
         : {
             href: githubLineUrl(
