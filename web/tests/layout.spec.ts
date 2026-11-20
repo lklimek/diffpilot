@@ -139,6 +139,20 @@ test("resizing persists across steps and reload; hiding inspector gives code spa
   );
 });
 
+// At 1280 px the bar leaves the PR line about 160 px: the title (at least 8ch) and the head commit stay; the language
+// tag and the CI chip return with room.
+test("the PR line keeps its title and head commit at 1280 px and everything at 1600 px", async ({ page }) => {
+  for (const width of [1280, 1600]) {
+    await page.setViewportSize({ width, height: 800 });
+    await open(page, "real-tiny");
+    const banner = page.getByRole("banner");
+    const items = [banner.locator("strong").first(), banner.locator("code").first()];
+    if (width === 1600)
+      items.push(banner.getByText(/^EN$/), banner.getByRole("link", { name: /^Check runs/ }));
+    for (const item of items) await expect(item).toBeInViewport();
+  }
+});
+
 // Screenshots only with SCREENSHOT_DIR set, e.g. /data/artifacts/diffpilot/<date>/wp3-tour-10.
 const shots = process.env.SCREENSHOT_DIR;
 for (const width of [1280, 1440]) {

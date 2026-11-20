@@ -201,6 +201,8 @@ describe("AnalysisProgress (brief §4.2)", () => {
     );
     const headline = screen.getByText("0 of 2 flows analysed. The review is open.");
     expect(headline.parentElement).toContainElement(screen.getByRole("link", { name: "Open" }));
+    expect(headline.closest("[aria-live]")).not.toBeNull();
+    expect(screen.getByRole("link", { name: "Open" }).closest("[aria-live]")).toBeNull();
     const stages = screen.getByRole("list", { name: "Analysis stages" });
     expect(stages.nextElementSibling).toContainElement(
       screen.getByRole("group", { name: "Analysis actions" }),
