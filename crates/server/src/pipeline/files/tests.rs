@@ -1,4 +1,4 @@
-use contracts::agent::analyse_flow::FlowIntroduction;
+use contracts::agent::analyse_flow::{AgentIncidental, FlowIntroduction};
 use contracts::api::tour::UnexplainedReason;
 use contracts::api::tour::{
     FlowAnalysisStatus, FlowFacts, FlowGraph, FlowGroup, FlowLlm, MoveFact, PlannedFlowDetails,
@@ -168,6 +168,7 @@ fn step_owner(flow: &str, step: &str) -> PartOwner {
 }
 
 struct Case {
+    incidentals: Vec<(FlowId, Vec<AgentIncidental>)>,
     files: Vec<FileDiff>,
     prepass: Prepass,
     covered: Vec<(FlowId, Vec<FileRanges>)>,
@@ -183,7 +184,13 @@ impl Case {
             .iter()
             .map(|(flow, lines)| (flow, lines.as_slice()))
             .collect();
+        let incidentals: Vec<(&FlowId, &[AgentIncidental])> = self
+            .incidentals
+            .iter()
+            .map(|(flow, items)| (flow, items.as_slice()))
+            .collect();
         project(&FilesInput {
+            incidentals: &incidentals,
             files: &self.files,
             prepass: &self.prepass,
             covered: &covered,
@@ -211,6 +218,7 @@ fn every_changed_line_gets_the_owner_the_tour_decided() {
     let quiet_moves =
         json!([{"from": moved_from, "to": head(lines(1, 2)), "badge": "text_identical"}]);
     let case = Case {
+        incidentals: Vec::new(),
         files: vec![file(
             A,
             FileStatus::Modified,
@@ -343,6 +351,7 @@ fn every_changed_line_gets_the_owner_the_tour_decided() {
 #[test]
 fn steps_of_other_flows_on_the_lines_are_also_in() {
     let case = Case {
+        incidentals: Vec::new(),
         files: vec![file(
             A,
             FileStatus::Modified,
@@ -418,6 +427,7 @@ fn removed_lines_belong_to_the_step_the_verification_assigns() {
         on(A, LineSide::Head, &[lines(40, 45)]),
     ];
     let case = Case {
+        incidentals: Vec::new(),
         files: vec![file(
             A,
             FileStatus::Modified,
@@ -481,6 +491,7 @@ fn path_rule_files_are_grouped_and_their_hunks_not_analysed() {
         rule: "tests/**".to_owned(),
     };
     let case = Case {
+        incidentals: Vec::new(),
         files: vec![
             file(
                 test_file,
@@ -556,6 +567,7 @@ fn a_huge_hunk_with_many_steps_is_not_quadratic() {
             .collect()
     };
     let case = Case {
+        incidentals: Vec::new(),
         files: vec![file(
             A,
             FileStatus::Added,
@@ -733,6 +745,7 @@ async fn owners_of_covered_lines_follow_the_verification_on_fixture_pr_482() {
 fn inline_test_lines_read_as_not_analysed_tests() {
     let rule = analysis::tech::TEST_ITEM_RULE.to_owned();
     let case = Case {
+        incidentals: Vec::new(),
         files: vec![file(A, FileStatus::Added, vec![hunk("h1", (0, 0), (1, 4))])],
         prepass: prepass(&[], json!([]), &[]),
         covered: Vec::new(),
@@ -790,5 +803,60 @@ fn inline_test_lines_read_as_not_analysed_tests() {
                 &[]
             ),
         ]
+    );
+}
+
+/// Lines an accepted flow names as incidental read as such in Files, with the LLM's sentence; the flow's steps keep
+/// theirs.
+#[test]
+fn incidental_lines_name_their_flow_and_sentence() {
+    let head = LineSide::Head;
+    let text = "Makes `send` public for the new caller.";
+    let mut case = Case {
+        incidentals: vec![(
+            FlowId("f1".to_owned()),
+            vec![AgentIncidental {
+                file: A.to_owned(),
+                side: head,
+                start_line: 3,
+                end_line: 4,
+                text: text.to_owned(),
+            }],
+        )],
+        files: vec![file(
+            A,
+            FileStatus::Modified,
+            vec![hunk("h1", (0, 0), (1, 4))],
+        )],
+        prepass: prepass(&[], json!([]), &[]),
+        covered: vec![(FlowId("f1".to_owned()), vec![on(A, head, &[lines(1, 4)])])],
+        flows: vec![flow(
+            "f1",
+            FlowAnalysisState::Analysed,
+            vec![step("f1.1", A, head, lines(1, 2))],
+            Vec::new(),
+        )],
+        unexplained: Vec::new(),
+        not_analysed: Vec::new(),
+    };
+    let incidental = PartOwner::Incidental {
+        flow_id: FlowId("f1".to_owned()),
+        text: text.to_owned(),
+    };
+    let parts = |case: &Case| case.run()[0].hunks[0].parts.clone();
+    assert_eq!(
+        parts(&case),
+        [
+            part(head, lines(1, 2), step_owner("f1", "f1.1"), &[]),
+            part(head, lines(3, 4), incidental, &[]),
+        ]
+    );
+    // Without the incidental change, the flow holds the lines without a step.
+    case.incidentals.clear();
+    assert_eq!(
+        parts(&case)[1].owner,
+        PartOwner::Flow {
+            flow_id: FlowId("f1".to_owned())
+        }
     );
 }

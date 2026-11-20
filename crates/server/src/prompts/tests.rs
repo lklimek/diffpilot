@@ -2127,3 +2127,30 @@ fn middle_clipping_keeps_both_ends_within_the_bound() {
     assert_eq!(clipped.chars().count(), 300);
     assert!(clipped.starts_with("start/") && clipped.ends_with("/end.rs") && clipped.contains('…'));
 }
+
+#[test]
+fn flow_steps_follow_control_flow_and_incidental_changes_go_to_files() {
+    let prompts = render_all(LlmLanguage::En);
+    let instructions = |name: &str| {
+        let (_, prompt) = prompts
+            .iter()
+            .find(|(found, _)| found == name)
+            .expect("prompt");
+        split(prompt).0
+    };
+    let flow = instructions("analyse_flow-f1.en");
+    for rule in [
+        "Steps follow control flow: the trigger, the calls, the state changes, the result",
+        "never one step per changed line",
+        "`## incidental`",
+        "shown in the Files view",
+        "A change with a risk to flag or rate is a step, never incidental",
+    ] {
+        assert!(flow.contains(rule), "analyse_flow lacks: {rule}");
+    }
+    let plan = instructions("plan.en");
+    assert!(
+        plan.contains("incidental changes there, not steps"),
+        "plan lacks the incidental hint"
+    );
+}

@@ -2787,7 +2787,15 @@ step_id: StepId, } | { "kind": "flow",
 /**
  * The flow.
  */
-flow_id: FlowId, } | { "kind": "unexplained",
+flow_id: FlowId, } | { "kind": "incidental",
+/**
+ * The flow.
+ */
+flow_id: FlowId,
+/**
+ * What changed there, as the LLM wrote it.
+ */
+text: string, } | { "kind": "unexplained",
 /**
  * Why the server did not send them to the LLM; absent when the LLM did not explain them.
  */

@@ -10,6 +10,7 @@ use analysis::lines::ranges;
 use analysis::prepass::{Disposition, NotRenderedReason as PrepassNotRendered, Prepass};
 use analysis::tech::is_line_rule_name;
 use analysis::verify::spans::{Span, covered_twice, from_ranges as spans, marker_inside, touches};
+use contracts::agent::analyse_flow::AgentIncidental;
 use contracts::api::files::{
     FileChangeStatus, FileGroup, FileHunk, HunkPart, NotRenderedReason, PartOwner, PrFile,
 };
@@ -30,6 +31,8 @@ pub struct FilesInput<'a> {
     pub prepass: &'a Prepass,
     /// Accepted flows with the changed lines the plan places in them (coverage's input).
     pub covered: &'a [(&'a FlowId, &'a [FileRanges])],
+    /// Accepted flows with the incidental changes their analyses name.
+    pub incidentals: &'a [(&'a FlowId, &'a [AgentIncidental])],
     /// The Tour's flows in Tour order.
     pub flows: &'a [Flow],
     /// The Tour's Unexplained rows.
@@ -46,7 +49,14 @@ pub fn from_tour(projection: &Projection<'_>, tour: &contracts::api::tour::Tour)
         .iter()
         .map(|flow| (&flow.flow_id, flow.covered.as_slice()))
         .collect();
+    let incidentals: Vec<(&FlowId, &[AgentIncidental])> = projection
+        .skeleton
+        .flows
+        .iter()
+        .map(|flow| (&flow.flow_id, flow.output.incidentals.as_slice()))
+        .collect();
     project(&FilesInput {
+        incidentals: &incidentals,
         files: projection.files,
         prepass: projection.prepass,
         covered: &covered,
@@ -267,6 +277,20 @@ impl<'a> SideOwners<'a> {
             if row.side == side && row.file == path {
                 let owner = PartOwner::Unexplained { reason: row.reason };
                 layers.push((spans(&row.ranges), Layer::Fixed(owner)));
+            }
+        }
+        // Off every step by verification; before the flows' own lines.
+        for (flow, items) in input.incidentals {
+            for item in items
+                .iter()
+                .filter(|item| item.side == side && item.file == path)
+            {
+                let owner = PartOwner::Incidental {
+                    flow_id: (*flow).clone(),
+                    text: item.text.clone(),
+                };
+                let span = (item.start_line, item.end_line);
+                layers.push((vec![span], Layer::Fixed(owner)));
             }
         }
         for (flow, covered) in input.covered {

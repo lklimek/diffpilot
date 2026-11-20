@@ -227,8 +227,10 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   `not_rendered` (`too_large`, `generated`, `binary`: the code of that file is never shown), `viewed`, and `hunks` (the diff
   without context: `base`/`head` ranges, `after_line` for a pure deletion). Each hunk's `parts` split its lines,
   base side first, into runs with one `owner`: `step` (the first step of the accepted flow whose verification
-  covered the line), `flow` (a flow not analysed yet whose plan holds the line), `unexplained` (with the Tour's
-  reason), `not_analysed`, `context_rule` (a line rule), `identical_move` (with both ranges) or `whitespace_only`;
+  covered the line), `flow` (a flow not analysed yet whose plan holds the line), `incidental` (the accepted flow's
+  analysis names the line an incidental change off its control flow: `flow_id` and the LLM's one-sentence `text`),
+  `unexplained` (with the Tour's reason), `not_analysed` (also inline test code a line rule recognised),
+  `context_rule` (a comment or import line rule), `identical_move` (with both ranges) or `whitespace_only`;
   `also_in` lists the other steps whose lines include the run. Owners come from the coverage the Tour uses: the
   `unexplained` parts are exactly the Tour's Unexplained rows. `viewed` is the user's GitHub state (`viewed`,
   `unviewed`, `dismissed`: viewed before a later commit changed the file) read as the user;
