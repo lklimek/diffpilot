@@ -50,7 +50,7 @@ function Tree({ view, onNavigate = vi.fn() }: { view: DependencyView; onNavigate
 
 describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled owners)", () => {
   it("not_rust: says the view is not available and nothing was checked, never that there are no dependencies", () => {
-    render(<DependencyNotices view={mockDependenciesNotRust()} links={links()} />);
+    render(<DependencyNotices prOwner="acme" view={mockDependenciesNotRust()} links={links()} />);
     expect(document.body).toHaveTextContent(
       "Dependencies: not available — this view reads Cargo (Rust) workspaces only; nothing was checked.",
     );
@@ -59,7 +59,7 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
   });
 
   it("limits: every limit is listed and the map is called incomplete, never complete", () => {
-    render(<DependencyNotices view={mockDependenciesLimits()} links={links()} />);
+    render(<DependencyNotices prOwner="acme" view={mockDependenciesLimits()} links={links()} />);
     const limits = screen.getByRole("region", { name: "This map is incomplete" });
     const items = within(limits)
       .getAllByRole("listitem")
@@ -78,18 +78,18 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
   });
 
   it("without limits no limits region and no claim of completeness", () => {
-    render(<DependencyNotices view={mockDependencies()} links={links()} />);
+    render(<DependencyNotices prOwner="acme" view={mockDependencies()} links={links()} />);
     expect(screen.queryByRole("region", { name: "This map is incomplete" })).toBeNull();
     expect(document.body).not.toHaveTextContent(/\bcomplete\b/);
   });
 
   it("files outside crates are counted as not checked", () => {
-    render(<DependencyNotices view={mockDependenciesMulti()} links={links()} />);
+    render(<DependencyNotices prOwner="acme" view={mockDependenciesMulti()} links={links()} />);
     expect(document.body).toHaveTextContent("2 changed files are outside any Cargo crate (not checked).");
   });
 
   it("no changed crate: says so with the files outside crates not checked", () => {
-    render(<DependencyNotices view={mockDependenciesNoChangedCrate()} links={links()} />);
+    render(<DependencyNotices prOwner="acme" view={mockDependenciesNoChangedCrate()} links={links()} />);
     expect(document.body).toHaveTextContent(
       "No Rust crate is changed by this pull request; 3 changed files outside crates are not checked.",
     );
@@ -102,7 +102,11 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
     "no changed crate in a cut map (%o) says only that no crate that was read is changed",
     (limit) => {
       render(
-        <DependencyNotices view={{ ...mockDependenciesNoChangedCrate(), limits: [limit] }} links={links()} />,
+        <DependencyNotices
+          prOwner="acme"
+          view={{ ...mockDependenciesNoChangedCrate(), limits: [limit] }}
+          links={links()}
+        />,
       );
       expect(document.body).toHaveTextContent(
         "No crate that was read is changed by this pull request; 3 changed files are in no read crate and are not checked.",
@@ -111,9 +115,43 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
     },
   );
 
+  const LIMITS: DependencyView["limits"] = [
+    { kind: "manifests_cut", total: 512, read: 400 },
+    { kind: "manifest_unreadable", path: "crates/broken/Cargo.toml" },
+    { kind: "lock_unreadable", path: "Cargo.lock" },
+    { kind: "no_lock_file", workspace_dir: "" },
+    { kind: "source_unread", path: "src/rpc/client.rs" },
+    { kind: "facts_cut", kept: 200 },
+  ];
+
+  it.each(LIMITS.map((l) => [l.kind, l] as const))(
+    "available with no repositories and %s: not checked, never an absence claim; the PR owner stays implicit",
+    (_, limit) => {
+      const view: DependencyView = {
+        ...mockDependenciesNoChangedCrate(),
+        controlled_owners: ["acme"],
+        repositories: [],
+        files_outside_crates: 4,
+        limits: [limit],
+      };
+      render(<DependencyNotices prOwner="acme" view={view} links={links()} />);
+      expect(document.body).toHaveTextContent(
+        "No crate that was read is changed by this pull request; 4 changed files are in no read crate and are not checked.",
+      );
+      expect(document.body).not.toHaveTextContent("No Rust crate is changed");
+      expect(document.body).toHaveTextContent(
+        "Yours: acme (this pull request's owner). No other organisation is listed in Settings.",
+      );
+      expect(screen.getByRole("region", { name: "This map is incomplete" })).toBeVisible();
+      expectTrustWording(document.body.textContent ?? "");
+    },
+  );
+
   it("controlled owners: the pull request's owner is always yours; the Settings list is linked in-app", async () => {
     const onNavigate = vi.fn();
-    render(<DependencyNotices view={mockDependenciesNoControlled()} links={links(onNavigate)} />);
+    render(
+      <DependencyNotices prOwner="acme" view={mockDependenciesNoControlled()} links={links(onNavigate)} />,
+    );
     expect(document.body).toHaveTextContent(
       "Yours: acme (this pull request's owner). No other organisation is listed in Settings.",
     );
@@ -125,7 +163,7 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
   });
 
   it("controlled owners from Settings are listed after the pull request's owner", () => {
-    render(<DependencyNotices view={mockDependenciesMulti()} links={links()} />);
+    render(<DependencyNotices prOwner="acme" view={mockDependenciesMulti()} links={links()} />);
     expect(document.body).toHaveTextContent("Yours: acme (this pull request's owner), dashpay.");
   });
 
@@ -133,7 +171,7 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
     ["pending", "LLM notes are not written yet: they come with the plan of this analysis."],
     ["not_produced", "LLM notes were not produced for this analysis."],
   ] as const)("notes %s: one line for the whole view", (notes, text) => {
-    render(<DependencyNotices view={mockDependenciesNotes(notes)} links={links()} />);
+    render(<DependencyNotices prOwner="acme" view={mockDependenciesNotes(notes)} links={links()} />);
     expect(document.body).toHaveTextContent(text);
   });
 });
@@ -299,6 +337,15 @@ describe("DependencyTree (repository → crate → facts and notes, disclosure b
       "node-client: Conversions added for other crates' types",
       "node-client: LLM notes on what changed",
     ]);
+  });
+
+  it("no repositories: one line says no crate is listed and nothing here was checked, no empty list", () => {
+    render(<Tree view={{ ...mockDependenciesLimits(), repositories: [] }} />);
+    expect(screen.getByRole("heading", { level: 2, name: "Repositories" })).toBeVisible();
+    expect(screen.queryByRole("list", { name: "Repositories" })).toBeNull();
+    expect(document.body).toHaveTextContent(
+      "No crate is listed: the map could not be read completely (see above); nothing here was checked.",
+    );
   });
 
   it("states and the whole tree keep the trust wording", async () => {

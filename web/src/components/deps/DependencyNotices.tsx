@@ -26,14 +26,22 @@ function limitText(limit: DependencyLimit): string {
 }
 
 /** What the map covers, before the tree: not available, its limits, files outside crates, owners, notes. */
-export function DependencyNotices({ view, links }: { view: DependencyView; links: DepsLinks }) {
+export function DependencyNotices({
+  view,
+  prOwner,
+  links,
+}: {
+  view: DependencyView;
+  /** Owner of the pull request's repository (from the analysis): always yours, even with an empty map. */
+  prOwner: string;
+  links: DepsLinks;
+}) {
   const id = useId();
   if (view.status === "not_rust") return <p className="m-0">{NOT_RUST}</p>;
-  const prOwner = view.repositories.find((r) => r.kind === "this")?.repo?.owner;
-  const others = view.controlled_owners.filter((o) => o.toLowerCase() !== prOwner?.toLowerCase());
+  const others = view.controlled_owners.filter((o) => o.toLowerCase() !== prOwner.toLowerCase());
   const outside = view.files_outside_crates;
-  // Files of a crate whose manifest was not read count as outside crates: absence is then not established.
-  const cut = view.limits.some((l) => l.kind === "manifests_cut" || l.kind === "manifest_unreadable");
+  // Absence is claimed only for a complete map: with any limit or no crate listed it was not established.
+  const cut = view.limits.length > 0 || view.repositories.length === 0;
   const settings = (
     <Tooltip tip="Opens Settings, where the installation's controlled organisations are listed.">
       <a href={links.settings} onClick={(event) => inApp(event, () => links.onNavigate(links.settings))}>
@@ -80,7 +88,7 @@ export function DependencyNotices({ view, links }: { view: DependencyView; links
         )
       )}
       <p className="m-0">
-        Yours: {prOwner ? `${prOwner} (this pull request's owner)` : "this pull request's owner"}
+        Yours: {prOwner} (this pull request&apos;s owner)
         {others.length > 0
           ? `, ${others.join(", ")}.`
           : ". No other organisation is listed in Settings."}{" "}

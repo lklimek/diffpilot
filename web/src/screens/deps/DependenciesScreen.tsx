@@ -155,7 +155,7 @@ function DependenciesView({
   } else {
     body = (
       <>
-        <DependencyNotices view={deps.data} links={links} />
+        <DependencyNotices view={deps.data} prOwner={pr.repo.owner} links={links} />
         {deps.data.status === "available" && (
           <DependencyTree view={deps.data} open={open} onToggle={toggle} links={links} />
         )}
