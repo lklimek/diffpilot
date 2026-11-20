@@ -10,6 +10,7 @@ use analysis::lines::ranges;
 use analysis::prepass::{Disposition, NotRenderedReason as PrepassNotRendered, Prepass};
 use analysis::tech::is_line_rule_name;
 use analysis::verify::spans::{Span, covered_twice, from_ranges as spans, marker_inside, touches};
+use contracts::agent::analyse_flow::AgentIncidental;
 use contracts::api::files::{
     FileChangeStatus, FileGroup, FileHunk, HunkPart, NotRenderedReason, PartOwner, PrFile,
 };
@@ -30,6 +31,8 @@ pub struct FilesInput<'a> {
     pub prepass: &'a Prepass,
     /// Accepted flows with the changed lines the plan places in them (coverage's input).
     pub covered: &'a [(&'a FlowId, &'a [FileRanges])],
+    /// Accepted flows with the incidental changes their analyses name.
+    pub incidentals: &'a [(&'a FlowId, &'a [AgentIncidental])],
     /// The Tour's flows in Tour order.
     pub flows: &'a [Flow],
     /// The Tour's Unexplained rows.
@@ -46,7 +49,14 @@ pub fn from_tour(projection: &Projection<'_>, tour: &contracts::api::tour::Tour)
         .iter()
         .map(|flow| (&flow.flow_id, flow.covered.as_slice()))
         .collect();
+    let incidentals: Vec<(&FlowId, &[AgentIncidental])> = projection
+        .skeleton
+        .flows
+        .iter()
+        .map(|flow| (&flow.flow_id, flow.output.incidentals.as_slice()))
+        .collect();
     project(&FilesInput {
+        incidentals: &incidentals,
         files: projection.files,
         prepass: projection.prepass,
         covered: &covered,
@@ -240,22 +250,47 @@ impl<'a> SideOwners<'a> {
         }
         let whitespace = ranges(&input.prepass.whitespace_lines(side, path));
         layers.push((spans(&whitespace), Layer::Fixed(PartOwner::WhitespaceOnly)));
-        for item in input.not_analysed.iter().flat_map(|section| &section.items) {
-            if let (true, Some(lines)) = (is_line_rule_name(&item.rule), &item.ranges)
-                && item.side == side
-                && item.file == path
-            {
-                let owner = PartOwner::ContextRule {
-                    badge: item.badge,
-                    rule: item.rule.clone(),
-                };
-                layers.push((spans(lines), Layer::Fixed(owner)));
+        for section in input.not_analysed {
+            for item in &section.items {
+                if let (true, Some(lines)) = (is_line_rule_name(&item.rule), &item.ranges)
+                    && item.side == side
+                    && item.file == path
+                {
+                    // Test code is not analysed at all; comments and imports are context for the agent.
+                    let owner = if section.category == NotAnalysedCategory::Tests {
+                        PartOwner::NotAnalysed {
+                            category: section.category,
+                            badge: item.badge,
+                            rule: item.rule.clone(),
+                        }
+                    } else {
+                        PartOwner::ContextRule {
+                            badge: item.badge,
+                            rule: item.rule.clone(),
+                        }
+                    };
+                    layers.push((spans(lines), Layer::Fixed(owner)));
+                }
             }
         }
         for row in input.unexplained {
             if row.side == side && row.file == path {
                 let owner = PartOwner::Unexplained { reason: row.reason };
                 layers.push((spans(&row.ranges), Layer::Fixed(owner)));
+            }
+        }
+        // Off every step by verification; before the flows' own lines.
+        for (flow, items) in input.incidentals {
+            for item in items
+                .iter()
+                .filter(|item| item.side == side && item.file == path)
+            {
+                let owner = PartOwner::Incidental {
+                    flow_id: (*flow).clone(),
+                    text: item.text.clone(),
+                };
+                let span = (item.start_line, item.end_line);
+                layers.push((vec![span], Layer::Fixed(owner)));
             }
         }
         for (flow, covered) in input.covered {

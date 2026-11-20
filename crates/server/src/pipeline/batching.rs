@@ -136,7 +136,7 @@ mod tests {
                 }),
             })
         };
-        let batches = plan_batches(&prepass.agent_files(&files));
+        let batches = plan_batches(&prepass.plan_files(&files));
         assert_eq!(
             batches.len(),
             1,

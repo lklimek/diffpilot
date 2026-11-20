@@ -1125,13 +1125,21 @@ fn generated_and_quiet_hunks_are_never_given_to_the_agent() {
         .lines()
         .filter_map(|line| line.strip_prefix("  ")?.split(' ').next())
         .collect();
-    let expected: Vec<&str> = f
+    let agent: Vec<&HunkId> = f
         .prepass
         .hunks
         .iter()
         .filter(|hunk| hunk.disposition == prepass::Disposition::Agent)
-        .map(|hunk| hunk.id.0.as_str())
+        .map(|hunk| &hunk.id)
         .collect();
+    // Hunks of context lines only (h17: a comment line on each side) are not listed either.
+    let context_only = f.prepass.context_only_hunks(&f.files);
+    let expected: Vec<&str> = agent
+        .into_iter()
+        .filter(|id| !context_only.contains(id))
+        .map(|id| id.0.as_str())
+        .collect();
+    assert!(!expected.contains(&"h17"), "{expected:?}");
     assert_eq!(listed, expected);
     assert!(
         listed.len() < f.prepass.hunks.len(),
@@ -1190,7 +1198,7 @@ fn plan_ranks_flows_by_expected_risk_and_bounds_flow_size() {
 }
 
 #[test]
-fn plan_lists_context_lines_per_hunk_and_every_moved_block() {
+fn plan_lists_context_lines_per_hunk_leaves_out_context_hunks_and_lists_every_moved_block() {
     let f = &*FIXTURE;
     let input = PlanInput {
         job: job(f, LlmLanguage::En),
@@ -1199,9 +1207,11 @@ fn plan_lists_context_lines_per_hunk_and_every_moved_block() {
         batch: None,
     };
     let task = plan(&input).expect("plan");
-    // h17 changes one comment line on each side: listed, its lines marked as context.
+    // h17 changes one comment line on each side and nothing else: not listed, it costs no tokens.
+    assert!(!task.contains("h17 "), "{task}");
+    // h24 also changes code: listed, its comment lines marked as context.
     assert!(
-        task.contains("h17 base 99,1 head 89,1; context only: base 99, head 89"),
+        task.contains("h24 base 22,2 head 49,2; context only: base 22, head 49"),
         "{task}"
     );
     // The function moved within src/rpc/client.rs is listed with its move fact.
@@ -2116,4 +2126,31 @@ fn middle_clipping_keeps_both_ends_within_the_bound() {
     let clipped = middle_clipped(&long, 300);
     assert_eq!(clipped.chars().count(), 300);
     assert!(clipped.starts_with("start/") && clipped.ends_with("/end.rs") && clipped.contains('…'));
+}
+
+#[test]
+fn flow_steps_follow_control_flow_and_incidental_changes_go_to_files() {
+    let prompts = render_all(LlmLanguage::En);
+    let instructions = |name: &str| {
+        let (_, prompt) = prompts
+            .iter()
+            .find(|(found, _)| found == name)
+            .expect("prompt");
+        split(prompt).0
+    };
+    let flow = instructions("analyse_flow-f1.en");
+    for rule in [
+        "Steps follow control flow: the trigger, the calls, the state changes, the result",
+        "never one step per changed line",
+        "`## incidental`",
+        "shown in the Files view",
+        "A change with a risk to flag or rate is a step, never incidental",
+    ] {
+        assert!(flow.contains(rule), "analyse_flow lacks: {rule}");
+    }
+    let plan = instructions("plan.en");
+    assert!(
+        plan.contains("incidental changes there, not steps"),
+        "plan lacks the incidental hint"
+    );
 }

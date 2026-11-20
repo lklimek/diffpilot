@@ -129,6 +129,7 @@ mod tests {
                 impact_refs: Vec::new(),
                 pattern_repetitions: Vec::new(),
                 thread_statuses: Vec::new(),
+                incidentals: Vec::new(),
             },
             step_ids: Vec::new(),
             graph: FlowGraph {

@@ -1103,6 +1103,7 @@ fn plan_task(input: &PlanInput<'_>) -> Result<String, PromptError> {
         .map(|hunk| (&hunk.id, hunk.disposition))
         .collect();
     let context = prepass.context();
+    let context_only = prepass.context_only_hunks(input.files);
     let mut listing = String::new();
     for file in input.files {
         // A hunk the pre-pass does not know is listed: only a deterministic rule takes material out.
@@ -1113,6 +1114,7 @@ fn plan_task(input: &PlanInput<'_>) -> Result<String, PromptError> {
                 dispositions
                     .get(&hunk.id)
                     .is_none_or(|kind| *kind == Disposition::Agent)
+                    && !context_only.contains(&hunk.id)
             })
             .collect();
         if hunks.is_empty() {
@@ -1327,6 +1329,7 @@ fn dependencies(view: Option<&DependencyView>) -> Result<String, PromptError> {
 fn flow_task(input: &FlowInput<'_>) -> Result<String, PromptError> {
     let flow = input.flow;
     let context = input.job.prepass.context();
+    let context_only = input.job.prepass.context_only_hunks(input.files);
     let mut hunks = String::new();
     let mut paths: Vec<&str> = Vec::new();
     for selection in &flow.hunks {
@@ -1344,6 +1347,9 @@ fn flow_task(input: &FlowInput<'_>) -> Result<String, PromptError> {
             ));
             continue;
         };
+        if context_only.contains(&hunk.id) {
+            continue;
+        }
         paths.extend(file.old_path.as_deref());
         paths.push(&file.path);
         let id = plain(&hunk.id.0);

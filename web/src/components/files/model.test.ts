@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { FilesResponse, PrFile, Tour } from "../../api/generated/types";
+import type { FilesResponse, HunkPart, PrFile, Tour } from "../../api/generated/types";
 import { seedFor } from "../../mocks/fixtures";
 import seed from "../../mocks/files-482.json";
 import {
@@ -29,6 +29,24 @@ const client = file("src/rpc/client.rs");
 const hunk = (f: PrFile, id: string) => f.hunks.find((h) => h.id === id)!;
 
 describe("Files view model", () => {
+  it("places incidental lines in their flow, not among parts in no flow", () => {
+    const part: HunkPart = {
+      side: "head",
+      range: { start_line: 3, end_line: 4 },
+      owner: { kind: "incidental", flow_id: "f1", text: "Re-exports `Retry`." },
+      also_in: [],
+    };
+    const [flow, ...rest] = flowsAt(tour, [part]);
+    expect(rest).toEqual([]);
+    expect(flow!.flow.id).toBe("f1");
+    expect(flow!.planned).toBe(false);
+    expect(flow!.steps).toEqual([]);
+    expect(flow!.incidentals).toEqual([
+      { text: "Re-exports `Retry`.", lines: [{ start_line: 3, end_line: 4 }], removed: [] },
+    ]);
+    expect(noFlowParts([part])).toEqual([]);
+  });
+
   it("labels hunks by their lines, removed lines counted, a pure deletion by its base lines", () => {
     expect(hunkLabel(hunk(client, "h19"))).toBe("lines 96–109 (+ 2 removed)");
     expect(hunkLabel(hunk(client, "h14"))).toBe("line 35");

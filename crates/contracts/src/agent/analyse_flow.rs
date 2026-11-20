@@ -27,6 +27,24 @@ pub struct FlowAnalysisOutput {
     pub pattern_repetitions: Vec<AgentPatternRepetition>,
     /// Status of every listed GitHub thread located in this flow's steps.
     pub thread_statuses: Vec<AgentThreadStatus>,
+    /// Changed lines of this flow off its control flow, each with one sentence shown in the Files view, not a step.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub incidentals: Vec<AgentIncidental>,
+}
+
+/// Changed lines off the flow's control flow (an import, a visibility change, a re-export, glue): shown in Files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentIncidental {
+    /// Repository-relative path on that side.
+    pub file: String,
+    /// head normally; base for removed lines with no head line to anchor to.
+    pub side: LineSide,
+    /// First line.
+    pub start_line: u32,
+    /// Last line.
+    pub end_line: u32,
+    /// One sentence on what changed there; no risk, no verdict.
+    pub text: String,
 }
 
 /// Introduction of a flow (brief §3).

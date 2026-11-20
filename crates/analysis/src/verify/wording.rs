@@ -97,6 +97,13 @@ pub fn pr_context(output: &PrContextOutput) -> Vec<WordingWarning> {
 /// Wording warnings in the texts of an `analyse_flow` output.
 pub fn flow(output: &FlowAnalysisOutput) -> Vec<WordingWarning> {
     let mut found = Vec::new();
+    for (index, incidental) in output.incidentals.iter().enumerate() {
+        scan(
+            &mut found,
+            &format!("incidentals[{index}].text"),
+            &incidental.text,
+        );
+    }
     let intro = &output.introduction;
     scan(
         &mut found,

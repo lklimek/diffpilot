@@ -583,6 +583,50 @@
         "additionalProperties": false
       },
       "description": "Status of every listed GitHub thread located in this flow's steps."
+    },
+    "incidentals": {
+      "type": "array",
+      "items": {
+        "description": "Changed lines off the flow's control flow (an import, a visibility change, a re-export, glue): shown in Files.",
+        "type": "object",
+        "properties": {
+          "file": {
+            "description": "Repository-relative path on that side.",
+            "type": "string"
+          },
+          "side": {
+            "description": "head normally; base for removed lines with no head line to anchor to. `head`: Lines of the head commit. `base`: Lines of the base commit (removed code).",
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ]
+          },
+          "start_line": {
+            "description": "First line.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_line": {
+            "description": "Last line.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "text": {
+            "description": "One sentence on what changed there; no risk, no verdict.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "side",
+          "start_line",
+          "end_line",
+          "text"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Changed lines of this flow off its control flow, each with one sentence shown in the Files view, not a step."
     }
   },
   "required": [
@@ -592,7 +636,8 @@
     "edges",
     "impact_refs",
     "pattern_repetitions",
-    "thread_statuses"
+    "thread_statuses",
+    "incidentals"
   ],
   "description": "The analysis of one flow.",
   "additionalProperties": false

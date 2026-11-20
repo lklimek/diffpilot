@@ -19,7 +19,7 @@ import { CodeText } from "../section/CodeText";
 import { rangeText } from "../section/format";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
-import type { FlowAtLines, StepAtLines } from "./model";
+import type { FlowAtLines, IncidentalAtLines, StepAtLines } from "./model";
 
 interface FlowsAtLinesProps {
   /** The flows at the lines (`flowsAt`), in tour order. */
@@ -67,7 +67,7 @@ const rangesText = (ranges: readonly LineRange[], prefix: string) =>
         `${prefix}${ranges.length === 1 && ranges[0]!.start_line === ranges[0]!.end_line ? "line" : "lines"} ${ranges.map(rangeText).join(", ")}`,
       ];
 /** "lines 96, 100–103 · removed lines 102–103": head and base numbers are of different commits. */
-const linesText = (at: StepAtLines) =>
+const linesText = (at: Pick<StepAtLines, "lines" | "removed">) =>
   [...rangesText(at.lines, ""), ...rangesText(at.removed, "removed ")].join(" · ");
 
 function StepRow({
@@ -146,6 +146,21 @@ function StepRow({
   );
 }
 
+/** Changed lines the flow's analysis names off its control flow: one LLM sentence, no step, nothing to tick. */
+function IncidentalRow({ at }: { at: IncidentalAtLines }) {
+  return (
+    <li className="grid gap-0.5 border-t border-border pt-1.5">
+      <span className="text-[10.5px] font-bold tracking-wide text-muted uppercase">
+        Incidental change (LLM)
+      </span>
+      <span className="text-[12px] text-muted">{linesText(at)}</span>
+      <span>
+        <CodeText text={at.text} /> <ProvenanceTag source="llm" />
+      </span>
+    </li>
+  );
+}
+
 /** "Why this flow: problem → change" of an analysed flow (LLM), as in the Flows strip; nothing without one. */
 function WhyLine({ flow }: { flow: Flow }) {
   if (!hasWhy(flow)) return null;
@@ -212,7 +227,7 @@ export function FlowsAtLines({
   const id = useId();
   return (
     <div className="grid gap-2">
-      {flows.map(({ flow, planned, steps }) => {
+      {flows.map(({ flow, planned, steps, incidentals }) => {
         const pending = flow.analysis_status !== undefined && flow.analysis_status.state !== "analysed";
         return (
           <div
@@ -239,7 +254,7 @@ export function FlowsAtLines({
             {pending && planned && (
               <PendingFlow flow={flow} onRequestFlow={onRequestFlow} requestBusy={requestBusy} />
             )}
-            {steps.length > 0 && (
+            {steps.length + incidentals.length > 0 && (
               <ul className="m-0 grid list-none gap-1.5 p-0">
                 {steps.map((at) => (
                   <StepRow
@@ -250,6 +265,9 @@ export function FlowsAtLines({
                     onOpenInFlows={onOpenInFlows}
                     onFlag={onFlag}
                   />
+                ))}
+                {incidentals.map((at) => (
+                  <IncidentalRow key={at.text} at={at} />
                 ))}
               </ul>
             )}
@@ -284,18 +302,18 @@ export function NoFlowPart({ part }: { part: HunkPart }) {
     case "not_analysed":
       text = (
         <>
-          In no flow. Not analysed: recognised by file path (rule <code>{owner.rule}</code>){" "}
-          <ProvenanceBadge badge={owner.badge} />, no LLM ({NOT_ANALYSED_LABEL[owner.category]}). The agent
-          may read it as evidence; it does not explain it.
+          In no flow. Not analysed: recognised by{" "}
+          {owner.badge === "classified_by_line_rule" ? "a line rule" : "file path"} (rule{" "}
+          <code>{owner.rule}</code>) <ProvenanceBadge badge={owner.badge} />, no LLM (
+          {NOT_ANALYSED_LABEL[owner.category]}). The agent may read it as evidence; it does not explain it.
         </>
       );
       break;
     case "context_rule":
       text = (
         <>
-          In no flow. Covered by a line rule (<code>{owner.rule}</code>){" "}
-          <ProvenanceBadge badge={owner.badge} />: sent to the LLM as context, with no duty to explain it.
-          Hidden in the code by default.
+          In no flow. Recognised by a line rule (<code>{owner.rule}</code>){" "}
+          <ProvenanceBadge badge={owner.badge} />; not explained by the LLM. Hidden in the code by default.
         </>
       );
       break;
@@ -343,7 +361,7 @@ export function FlowsInFile({
   const id = useId();
   return (
     <div className="grid gap-2">
-      {flows.map(({ flow, planned, steps }) => {
+      {flows.map(({ flow, planned, steps, incidentals }) => {
         const pending = flow.analysis_status !== undefined && flow.analysis_status.state !== "analysed";
         const done = steps.filter((s) => ticked.includes(s.step.id)).length;
         return (
@@ -410,6 +428,12 @@ export function FlowsInFile({
                   </Tooltip>
                 </span>
               </>
+            )}
+            {incidentals.length > 0 && (
+              <span className="text-[12px] text-muted">
+                {incidentals.length} incidental {incidentals.length === 1 ? "change" : "changes"} here (LLM
+                text, no step)
+              </span>
             )}
           </div>
         );

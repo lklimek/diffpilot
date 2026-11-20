@@ -21,8 +21,8 @@ pub use codec::{encode, parse};
 
 /// Maximum bytes in a flow document (also enforced when collecting the file).
 pub const MAX_BYTES: usize = 1024 * 1024;
-/// Grammar and verification context version (2: flags replace questions).
-pub const VERSION: u32 = 2;
+/// Grammar and verification context version (2: flags replace questions; 3: incidental changes).
+pub const VERSION: u32 = 3;
 
 /// A problem in the model's document. Line numbers are one-based.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

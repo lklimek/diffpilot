@@ -538,6 +538,13 @@ fn ask_anchors_and_files_wire_formats() {
             json!({"kind": "whitespace_only"}),
         ),
         (
+            serde_json::to_value(PartOwner::Incidental {
+                flow_id: FlowId("f1".to_owned()),
+                text: "Makes `send` public.".to_owned(),
+            }),
+            json!({"kind": "incidental", "flow_id": "f1", "text": "Makes `send` public."}),
+        ),
+        (
             serde_json::to_value(FileGroup::Code),
             json!({"kind": "code"}),
         ),

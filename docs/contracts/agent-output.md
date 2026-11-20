@@ -63,6 +63,8 @@ repository there is no GitHub tool: `related_work` is `[]` and the server shows 
 - `impact_refs[]`: head-only code outside the diff the change may affect (`step_id`, location, `symbol`,
   `reason`, `basis`). `pattern_repetitions[]`: a pattern explained once (`explained_in_step_id`) with `sites`.
 - `thread_statuses[]`: for each listed thread alias `t<n>`: `still_valid | stale | already_addressed`, `reason`.
+- `incidentals[]` (may be absent): changed lines of the flow off its control flow, outside every step (`file`,
+  `side`, `start_line`, `end_line`, one-sentence `text`), shown in the Files view.
 
 ## `ask`
 `answer` (suspicions as questions to check) and structured `evidence[]` (PR file, side, line).

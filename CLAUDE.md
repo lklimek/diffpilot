@@ -21,7 +21,7 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   Model and effort come from `select_model`, a plain Rust function in the server using the stored
   installation-wide Settings choice (default Sol, high; Ask: stored Ask effort, default medium). Each new job reads the current choice.
 - Flow jobs write tagged `out/flow.md` and run `sr-check`; server and checker share `analysis::tagged` (ADR-014).
-  Format version 2 (flags): server and runner images are rebuilt together. Plan, PR context and Ask keep JSON.
+  Format version 3 (incidental changes): server and runner images are rebuilt together. Plan, PR context and Ask keep JSON.
 - Only `runner::provider` knows Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
   (`generic` returns `None` in v1).
 - Every UI block is a self-contained component in `web/src/components/`: props in, callbacks out, no fetching,

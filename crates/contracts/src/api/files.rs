@@ -159,6 +159,14 @@ pub enum PartOwner {
         /// The flow.
         flow_id: FlowId,
     },
+    /// The plan places the lines in this flow, whose analysis names them an incidental change off its control flow:
+    /// no step, one LLM sentence.
+    Incidental {
+        /// The flow.
+        flow_id: FlowId,
+        /// What changed there, as the LLM wrote it.
+        text: String,
+    },
     /// In no flow: "Unexplained — read these yourself".
     Unexplained {
         /// Why the server did not send them to the LLM; absent when the LLM did not explain them.

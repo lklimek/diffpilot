@@ -266,7 +266,7 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
         }
         files.insert(id.into(), value);
     }
-    let mut root = json!({"flow_id":header.words[1], "steps":[], "edges":[], "impact_refs":[], "pattern_repetitions":[], "thread_statuses":[]});
+    let mut root = json!({"flow_id":header.words[1], "steps":[], "edges":[], "impact_refs":[], "pattern_repetitions":[], "thread_statuses":[], "incidentals":[]});
     let mut active_step: Option<usize> = None;
     let mut step_lines = Vec::new();
     for mut section in sections {
@@ -435,6 +435,20 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
                     sites.push(location(site, &files, line)?);
                 }
                 array_mut(&mut root,"pattern_repetitions")?.push(json!({"description":description,"explained_in_step_id":section.words[1],"sites":sites}));
+            }
+            (2, "incidental") => {
+                section.args(2)?;
+                let at = &section.words[1];
+                let mut value = if at.contains(':') {
+                    location(at, &files, line)?
+                } else {
+                    let anchor = catalog.hunks.get(at).ok_or_else(|| {
+                        Problem::new(line, format!("unknown planned hunk `{at}`"))
+                    })?;
+                    json!({"file":anchor.file,"side":anchor.side,"start_line":anchor.start,"end_line":anchor.end})
+                };
+                value["text"] = json!(section.required("text")?);
+                array_mut(&mut root, "incidentals")?.push(value);
             }
             (2, "thread") => {
                 section.args(3)?;
@@ -730,6 +744,13 @@ pub fn encode(document: &FlowAnalysisOutput, catalog: &Catalog) -> Result<String
         ));
         field(&mut body, "reason", &thread.reason);
     }
+    for incidental in value["incidentals"].as_array().into_iter().flatten() {
+        body.push_str(&format!(
+            "\n## incidental {}\n",
+            loc(incidental, &mut files)
+        ));
+        emit_fields(&mut body, incidental, &["text"]);
+    }
     let mut out = format!("# flow {}\n", document.flow_id.0);
     for (id, path) in files {
         if !catalog.files.contains_key(&id) {
@@ -768,6 +789,7 @@ pub(super) fn source_lines(text: &str) -> Result<BTreeMap<String, usize>, Proble
                     "impact" => "impact_refs",
                     "repetition" => "pattern_repetitions",
                     "thread" => "thread_statuses",
+                    "incidental" => "incidentals",
                     _ => continue,
                 };
                 let index = counts.entry(key.into()).or_default();

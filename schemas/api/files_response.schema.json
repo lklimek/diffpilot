@@ -436,6 +436,29 @@
           ]
         },
         {
+          "description": "The plan places the lines in this flow, whose analysis names them an incidental change off its control flow:\nno step, one LLM sentence.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "incidental"
+            },
+            "flow_id": {
+              "description": "The flow.",
+              "$ref": "#/$defs/FlowId"
+            },
+            "text": {
+              "description": "What changed there, as the LLM wrote it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "flow_id",
+            "text"
+          ]
+        },
+        {
           "description": "In no flow: \"Unexplained — read these yourself\".",
           "type": "object",
           "properties": {
