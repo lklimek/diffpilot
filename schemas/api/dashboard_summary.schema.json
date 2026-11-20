@@ -651,14 +651,14 @@
           }
         },
         "ready_to_merge": {
-          "description": "The user's pull requests GitHub let the user merge at the scan, by display id; also ranked.",
+          "description": "The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/ReadyToMergeItem"
           }
         },
         "merge_state_pending": {
-          "description": "The user's pull requests whose merge state GitHub had not computed by the scan (read again by the next\nrefresh); null when the snapshot did not record merge states (stored before they were).",
+          "description": "The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read\nagain by the next refresh); null when the snapshot did not record merge states (stored before they were).",
           "type": [
             "integer",
             "null"
@@ -944,7 +944,7 @@
       ]
     },
     "ReadyToMergeItem": {
-      "description": "A pull request of the user that GitHub lets the user merge now: not a draft, write access to the base\nrepository, merge state clean, has hooks or unstable.",
+      "description": "A pull request of the user ready to merge: into the default branch, not a draft, write access, every check passed\nand nothing left to answer (plan K17).",
       "type": "object",
       "properties": {
         "id": {

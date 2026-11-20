@@ -2163,6 +2163,14 @@ fn ready_to_merge_when_github_lets_the_user_merge() {
             false,
         ),
         (
+            "more reviews than were fetched (an older change request may be hidden)",
+            PrFacts {
+                reviews_truncated: true,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
             "a linked login's PR",
             PrFacts {
                 author: Some("alice-ci".into()),
@@ -2359,6 +2367,42 @@ fn a_pr_ready_to_merge_does_not_wait_only_on_others() {
         !waits_on_others(&r, &facts),
         "listed under Waiting on others (nothing is your move) and Ready to merge at once"
     );
+}
+
+/// Waiting on others keeps GitHub's merge button as "a merge the user can make" (K15): a PR into a feature branch,
+/// or with a failed check that is not required, is the user's move although Ready to merge does not list it.
+#[test]
+fn a_pr_github_lets_the_user_merge_does_not_wait_only_on_others() {
+    let r = rules();
+    let mergeable = PrFacts {
+        labels: vec!["ready-for-human".into()],
+        review_requested_from_others: vec!["bob".into()],
+        others_review_requested_at: Some(ago(2.0)),
+        review_decision: None,
+        merge_state: MergeState::Clean,
+        viewer_can_write: true,
+        base_ref: Some("main".into()),
+        ..pr()
+    };
+    for (case, facts) in [
+        (
+            "into a feature branch",
+            PrFacts {
+                base_ref: Some("feat/x".into()),
+                ..mergeable.clone()
+            },
+        ),
+        (
+            "a check that is not required failed",
+            PrFacts {
+                merge_state: MergeState::Unstable,
+                ..mergeable.clone()
+            },
+        ),
+    ] {
+        assert!(!ready_to_merge(&r, &facts), "{case}: not ready to merge");
+        assert!(!waits_on_others(&r, &facts), "{case}: the user's move");
+    }
 }
 
 // --- text rules -------------------------------------------------------------------------------------------

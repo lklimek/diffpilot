@@ -107,7 +107,7 @@ describe("side panel sections", () => {
     unmount();
     render(<ReadyToMerge items={[]} pending={0} />);
     expect(
-      screen.getByText("None of your PRs could be merged on GitHub at the last scan."),
+      screen.getByText("None of your PRs was ready to merge at the last scan."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Copy list/ })).toBeNull();
     expect(screen.queryByText(/not computed/)).toBeNull();

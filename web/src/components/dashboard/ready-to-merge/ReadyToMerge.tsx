@@ -29,7 +29,7 @@ export function ReadyToMerge({ items, pending }: { items: ReadyToMergeItem[]; pe
       }
     >
       {items.length === 0 ? (
-        <p className="text-xs text-muted">None of your PRs could be merged on GitHub at the last scan.</p>
+        <p className="text-xs text-muted">None of your PRs was ready to merge at the last scan.</p>
       ) : (
         <ul className="m-0 list-none p-0">
           {items.map((item) => (
