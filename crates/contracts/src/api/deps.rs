@@ -78,6 +78,12 @@ pub enum DependencyLimit {
         /// Its manifest.
         manifest: String,
     },
+    /// A workspace root with more `members` or `exclude` entries than the server reads: membership may be
+    /// incomplete.
+    WorkspaceEntriesCut {
+        /// The root manifest.
+        manifest: String,
+    },
     /// A manifest with `[target.…]` dependency tables: they are listed for every target (`cfg` is not evaluated).
     TargetSpecific {
         /// The manifest.

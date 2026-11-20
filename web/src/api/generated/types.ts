@@ -1218,6 +1218,10 @@ kept: number, } | { "kind": "workspace_unresolved",
 /**
  * Its manifest.
  */
+manifest: string, } | { "kind": "workspace_entries_cut",
+/**
+ * The root manifest.
+ */
 manifest: string, } | { "kind": "target_specific",
 /**
  * The manifest.
