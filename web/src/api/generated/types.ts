@@ -2973,6 +2973,40 @@ resumes_at: string | null,
 message: string | null, };
 
 /**
+ * A pull request of the user that GitHub lets the user merge now: not a draft, write access to the base
+ * repository, merge state clean, has hooks or unstable.
+ */
+export type ReadyToMergeItem = {
+/**
+ * Display alias, e.g. `PLAT-1176`.
+ */
+id: string,
+/**
+ * Repository.
+ */
+repo: RepoRef,
+/**
+ * Pull request number.
+ */
+number: number,
+/**
+ * Title.
+ */
+title: string,
+/**
+ * GitHub link, built by the server.
+ */
+url: string,
+/**
+ * Deterministic tags from scan facts (CI state; checks not passing that are not required).
+ */
+tags: Array<FactTag>,
+/**
+ * Size mark of its full diff (display only); absent when the totals are unknown.
+ */
+change_size?: ChangeSizeMark, };
+
+/**
  * Reasoning effort of the model.
  */
 export type ReasoningEffort = "low" | "medium" | "high";
@@ -3553,6 +3587,10 @@ excluded: number,
  * The user's pull requests waiting on other people.
  */
 awaiting: Array<AwaitingItem>,
+/**
+ * The user's pull requests GitHub lets the user merge now, by display id; also ranked.
+ */
+ready_to_merge: Array<ReadyToMergeItem>,
 /**
  * Dated pull request and review events of the chart window (12 weeks), across the scanned logins.
  */

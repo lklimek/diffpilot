@@ -22,7 +22,7 @@ const REACH_BATCH: usize = 50;
 const PULL_FRAGMENT: &str = " fragment Pull on PullRequest { number title url state isDraft \
 isCrossRepository body additions deletions createdAt updatedAt mergeable mergeStateStatus reviewDecision \
 baseRefName headRefName headRefOid milestone { title number state } \
-baseRepository { nameWithOwner isPrivate defaultBranchRef { name } } author { __typename login } \
+baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { name } } author { __typename login } \
 labels(first: 20) { nodes { name } } participants { totalCount } \
 closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nodes { name } } } } \
 assignees(first: 10) { nodes { login } } \
@@ -93,6 +93,9 @@ pub struct PullRepository {
     pub is_private: bool,
     /// Default branch.
     pub default_branch_ref: Option<Name>,
+    /// The signed-in user's permission (`ADMIN`, `MAINTAIN`, `WRITE`, `TRIAGE`, `READ`); null when unknown.
+    #[serde(default)]
+    pub viewer_permission: Option<String>,
 }
 
 /// An issue a pull request closes.

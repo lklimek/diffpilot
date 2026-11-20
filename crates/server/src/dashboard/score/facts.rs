@@ -50,6 +50,31 @@ pub enum Mergeable {
     Unknown,
 }
 
+/// GitHub `mergeStateStatus`.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeState {
+    /// Mergeable, commit status passing.
+    Clean,
+    /// Mergeable, commit status passing, pre-receive hooks.
+    HasHooks,
+    /// Mergeable while a check that is not required has not passed.
+    Unstable,
+    /// The head branch is out of date.
+    Behind,
+    /// Blocked, e.g. by a required review or check.
+    Blocked,
+    /// The merge commit cannot be created cleanly.
+    Dirty,
+    /// A draft.
+    Draft,
+    /// Not determined, or stored before it was recorded.
+    #[default]
+    Unknown,
+}
+
 /// GitHub `reviewDecision`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -142,6 +167,13 @@ pub struct PrFacts {
     pub ci: CiEffective,
     /// Mergeability.
     pub mergeable: Mergeable,
+    /// GitHub's merge state; unknown in snapshots stored before it was recorded.
+    #[serde(default)]
+    pub merge_state: MergeState,
+    /// The user can write to the base repository (`viewerPermission` write, maintain or admin); false in snapshots
+    /// stored before it was recorded.
+    #[serde(default)]
+    pub viewer_can_write: bool,
     /// Review decision; null when the repository requires no reviews.
     pub review_decision: Option<ReviewDecision>,
     /// Unresolved review threads.

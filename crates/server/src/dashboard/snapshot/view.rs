@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 use contracts::api::dashboard::{
     AwaitingItem, EXCLUDED_ITEMS_LIMIT, ExcludedItem, ExclusionCount, Exclusions, Fact, FactTag,
-    ItemCounts, ItemKey, ItemKind, ItemTarget, ItemText, RankingState, ScoreState, SnapshotMeta,
-    Tier, WorkItem,
+    ItemCounts, ItemKey, ItemKind, ItemTarget, ItemText, RankingState, ReadyToMergeItem,
+    ScoreState, SnapshotMeta, Tier, WorkItem,
 };
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
@@ -17,8 +17,8 @@ use jiff::tz::TimeZone;
 use super::{Snapshot, StoredIssue, StoredPr, StoredTodo};
 use crate::dashboard::refresh::rank::ItemJudgement;
 use crate::dashboard::score::{
-    self, CiEffective, Judgement, Mergeable, Milestone, Relation, ScoreError, ScoreRules, Scored,
-    TodoStatus, awaiting_others, todo_display_ids,
+    self, CiEffective, Judgement, MergeState, Mergeable, Milestone, Relation, ScoreError,
+    ScoreRules, Scored, TodoStatus, awaiting_others, merge_ready, todo_display_ids,
 };
 
 /// A ranked item with what the request-time review link needs.
@@ -41,6 +41,8 @@ pub struct View {
     pub exclusions: Exclusions,
     /// The user's pull requests waiting on others.
     pub awaiting: Vec<AwaitingItem>,
+    /// The user's pull requests GitHub lets the user merge now.
+    pub ready_to_merge: Vec<ReadyToMergeItem>,
 }
 
 impl View {
@@ -64,6 +66,7 @@ impl View {
             item_counts: self.item_counts,
             excluded: self.exclusions.total,
             awaiting: self.awaiting.clone(),
+            ready_to_merge: self.ready_to_merge.clone(),
             history: snapshot.history.clone(),
             todos: snapshot.todos_state.clone(),
             notes: snapshot.notes.clone(),
@@ -165,6 +168,7 @@ pub fn build(
         items.push(work_item(&rules, &look_back, item, source, text, memcan_ui));
     }
     let awaiting = awaiting(&rules, snapshot);
+    let ready_to_merge = ready_to_merge(&rules, snapshot);
     for left_out in &ranking.excluded {
         tracing::debug!(item = %left_out.id, reason = %left_out.reason, "dashboard item left out");
     }
@@ -173,6 +177,7 @@ pub fn build(
         item_counts: counts,
         exclusions: exclusions(ranking.excluded, &sources, memcan_ui),
         awaiting,
+        ready_to_merge,
     }
 }
 
@@ -628,4 +633,39 @@ fn awaiting(rules: &ScoreRules, snapshot: &Snapshot) -> Vec<AwaitingItem> {
 /// over-estimate of the wait.
 fn waiting_since(requested: Option<Timestamp>, created: Timestamp) -> Timestamp {
     requested.unwrap_or(created)
+}
+
+/// The user's pull requests GitHub lets the user merge now ([`merge_ready`]); they stay ranked.
+fn ready_to_merge(rules: &ScoreRules, snapshot: &Snapshot) -> Vec<ReadyToMergeItem> {
+    let facts: Vec<_> = snapshot
+        .pull_requests
+        .iter()
+        .map(|pr| pr.facts.clone())
+        .collect();
+    merge_ready(rules, &facts)
+        .into_iter()
+        .filter_map(|f| {
+            let stored = snapshot
+                .pull_requests
+                .iter()
+                .find(|pr| pr.facts.repo == f.repo && pr.facts.number == f.number)?;
+            let mut tags: Vec<FactTag> = ci_tag(stored).into_iter().collect();
+            if f.merge_state == MergeState::Unstable {
+                tags.push(tag(
+                    "non-required checks not passing",
+                    "GitHub allows the merge while a check that is not required has not passed (merge state \
+                     unstable)",
+                ));
+            }
+            Some(ReadyToMergeItem {
+                id: rules.display_id(&f.repo, f.number),
+                repo: f.repo.clone(),
+                number: f.number,
+                title: f.title.clone(),
+                url: github_url(&f.repo, "pull", f.number),
+                tags,
+                change_size: score::size_mark(f),
+            })
+        })
+        .collect()
 }

@@ -75,6 +75,8 @@ fn pr(number: u32, title: &str) -> StoredPr {
             milestone_context: MilestoneContext::default(),
             ci: CiEffective::Green,
             mergeable: Mergeable::Mergeable,
+            merge_state: crate::dashboard::score::MergeState::Unknown,
+            viewer_can_write: false,
             review_decision: None,
             unresolved_threads: 0,
             review_pending_for_us: false,

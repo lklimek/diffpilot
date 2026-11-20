@@ -25,9 +25,9 @@ use contracts::time::Timestamp;
 
 pub use ci::{CheckContext, CheckRollup, CiSummary, classify_ci};
 pub use facts::{
-    CiEffective, EligibilityJudgement, Freshness, IssueFacts, JudgedPart, Judgement, Mergeable,
-    Milestone, MilestoneContext, OwnedChange, PrFacts, Relation, ReviewDecision, TodoFacts,
-    TodoStatus,
+    CiEffective, EligibilityJudgement, Freshness, IssueFacts, JudgedPart, Judgement, MergeState,
+    Mergeable, Milestone, MilestoneContext, OwnedChange, PrFacts, Relation, ReviewDecision,
+    TodoFacts, TodoStatus,
 };
 pub use parts::{
     ESTIMATE, SIZE_MARKS, change_size_points, recency_points, size_mark, unblocks_points,
@@ -562,6 +562,33 @@ pub fn awaiting_others<'a>(rules: &ScoreRules, prs: &'a [PrFacts]) -> Vec<&'a Pr
         wait(a)
             .cmp(&wait(b))
             .then_with(|| text::compare_ids(&id(a), &id(b)))
+    });
+    rows
+}
+
+/// The user's PR GitHub lets the user merge now (Ready to merge): by a scanned login that is not an excluded author,
+/// not a draft, the user can write to the base repository, and the merge state is clean, has hooks or unstable (a
+/// check that is not required has not passed). It does not change the ranking.
+pub fn ready_to_merge(rules: &ScoreRules, pr: &PrFacts) -> bool {
+    pr.author
+        .as_deref()
+        .is_some_and(|a| rules.is_scanned(a) && !rules.is_skipped_author(a))
+        && !pr.is_draft
+        && pr.viewer_can_write
+        && matches!(
+            pr.merge_state,
+            MergeState::Clean | MergeState::HasHooks | MergeState::Unstable
+        )
+}
+
+/// The PRs [`ready_to_merge`], by display id.
+pub fn merge_ready<'a>(rules: &ScoreRules, prs: &'a [PrFacts]) -> Vec<&'a PrFacts> {
+    let mut rows: Vec<&PrFacts> = prs.iter().filter(|pr| ready_to_merge(rules, pr)).collect();
+    rows.sort_by(|a, b| {
+        text::compare_ids(
+            &rules.display_id(&a.repo, a.number),
+            &rules.display_id(&b.repo, b.number),
+        )
     });
     rows
 }

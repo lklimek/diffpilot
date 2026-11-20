@@ -803,6 +803,16 @@ async fn full_refresh_stores_the_expected_snapshot() {
         )]
     );
     assert_eq!(meta.awaiting[0].total_tenths, None, "not ranked");
+    let ready: Vec<_> = meta
+        .ready_to_merge
+        .iter()
+        .map(|r| (r.id.as_str(), r.url.as_str()))
+        .collect();
+    assert_eq!(
+        ready,
+        [("WUI-298", "https://github.com/acme/wallet-ui/pull/298")],
+        "only the user's PR GitHub lets the user merge"
+    );
     assert_eq!(
         meta.checked.pr,
         meta.item_counts.pr + u32::try_from(meta.awaiting.len()).expect("count") + meta.excluded,

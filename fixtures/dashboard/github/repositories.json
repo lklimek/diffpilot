@@ -9,6 +9,7 @@
     },
     "url": "https://github.com/acme/platform",
     "isPrivate": false,
+    "viewerPermission": "WRITE",
     "isArchived": false,
     "defaultBranchRef": {
       "name": "main"
@@ -25,6 +26,7 @@
     },
     "url": "https://github.com/acme/wallet-ui",
     "isPrivate": false,
+    "viewerPermission": "WRITE",
     "isArchived": false,
     "defaultBranchRef": {
       "name": "main"
@@ -41,6 +43,7 @@
     },
     "url": "https://github.com/acme/node-client",
     "isPrivate": false,
+    "viewerPermission": "WRITE",
     "isArchived": false,
     "defaultBranchRef": {
       "name": "main"
@@ -57,6 +60,7 @@
     },
     "url": "https://github.com/acme/docs-site",
     "isPrivate": false,
+    "viewerPermission": "WRITE",
     "isArchived": false,
     "defaultBranchRef": {
       "name": "main"
@@ -73,6 +77,7 @@
     },
     "url": "https://github.com/acme/consensus",
     "isPrivate": false,
+    "viewerPermission": "WRITE",
     "isArchived": false,
     "defaultBranchRef": {
       "name": "main"
@@ -89,6 +94,7 @@
     },
     "url": "https://github.com/acme/review-policies",
     "isPrivate": false,
+    "viewerPermission": "WRITE",
     "isArchived": false,
     "defaultBranchRef": {
       "name": "main"
@@ -105,6 +111,7 @@
     },
     "url": "https://github.com/acme/ops-runbooks",
     "isPrivate": true,
+    "viewerPermission": "WRITE",
     "isArchived": false,
     "defaultBranchRef": {
       "name": "main"
@@ -121,6 +128,7 @@
     },
     "url": "https://github.com/acme/legacy-wallet",
     "isPrivate": false,
+    "viewerPermission": "READ",
     "isArchived": true,
     "defaultBranchRef": {
       "name": "main"
