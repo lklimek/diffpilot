@@ -204,7 +204,7 @@ test.describe("My work (msw)", () => {
       .locator("details", { has: page.getByRole("heading", { name: "Waiting on others" }) });
     const copy = waiting.getByRole("button", { name: "Copy list of PRs waiting on others" });
     await copy.click();
-    await expect(waiting.getByRole("status")).toHaveText("Copied 3 lines.");
+    await expect(waiting.getByRole("status").filter({ hasText: /^Copied/ })).toHaveText("Copied 3 lines.");
     await expect(copy).toBeFocused();
     const copied = await page.evaluate(
       () => (window as unknown as { copied: { text: string; html: string } }).copied,
@@ -426,6 +426,8 @@ test.describe("My work (msw)", () => {
 
   for (const colorScheme of ["light", "dark"] as const) {
     test(`no serious axe violations in every mockup state, ${colorScheme}`, async ({ page }) => {
+      // One axe pass per mockup state; CI runners need more than the default 30 s.
+      test.setTimeout(120_000);
       await page.emulateMedia({ colorScheme });
       for (const scenario of [
         "normal",

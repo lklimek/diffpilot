@@ -1,0 +1,21 @@
+# cargo-about configuration for the third-party notices of the Rust binaries in the images (deploy/notices/README.md).
+# A crate whose licence expression cannot be satisfied by this list fails the image build: add a licence only after
+# checking that its terms allow redistribution in the images.
+accepted = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Zlib",
+]
+# The images are linux/amd64 only; dev and build dependencies are not part of the binaries.
+targets = ["x86_64-unknown-linux-gnu"]
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+# The workspace's own crates (publish = false) are covered by LICENSE.md.
+private = { ignore = true }

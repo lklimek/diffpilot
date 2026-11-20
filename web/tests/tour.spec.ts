@@ -330,7 +330,13 @@ test("every top-bar control explains itself in a tooltip", async ({ page }) => {
     /PR context/,
   );
   await expect(banner.getByRole("button", { name: "View: Flows" })).toHaveAccessibleDescription(/Files/);
-  await expect(banner.getByText(/^Check runs:/).first()).toHaveAccessibleDescription(/Failing checks/);
+  // The chip (link or span) carries the tooltip; its text may sit in an inner truncating span.
+  await expect(
+    banner
+      .locator("[aria-describedby]")
+      .filter({ hasText: /^Check runs:/ })
+      .first(),
+  ).toHaveAccessibleDescription(/Failing checks/);
   await expect(banner.getByText(/^Your progress/)).toHaveAccessibleDescription(/No percentage/);
   await expect(banner.getByRole("button", { name: /^Pending review/ })).toHaveAccessibleDescription(
     /pending review/,

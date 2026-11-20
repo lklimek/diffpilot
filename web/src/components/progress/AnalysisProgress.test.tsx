@@ -185,6 +185,30 @@ describe("AnalysisProgress (brief §4.2)", () => {
     expect(open).toHaveTextContent("→");
   });
 
+  it("puts Open on the headline's line and the actions on the left right under the stages", () => {
+    render(
+      <AnalysisProgress
+        state={{ state: "running", done: 0, total: 2 }}
+        reviewReady
+        reviewHref="/analyses/a1"
+        progress={failedAt("done", "done")}
+        backgroundAnalysis={false}
+        busy={false}
+        onCancel={vi.fn()}
+        onRetry={vi.fn()}
+        onBackground={vi.fn()}
+      />,
+    );
+    const headline = screen.getByText("0 of 2 flows analysed. The review is open.");
+    expect(headline.parentElement).toContainElement(screen.getByRole("link", { name: "Open" }));
+    expect(headline.closest("[aria-live]")).not.toBeNull();
+    expect(screen.getByRole("link", { name: "Open" }).closest("[aria-live]")).toBeNull();
+    const stages = screen.getByRole("list", { name: "Analysis stages" });
+    expect(stages.nextElementSibling).toContainElement(
+      screen.getByRole("group", { name: "Analysis actions" }),
+    );
+  });
+
   it("disables the actions while a request runs", async () => {
     const { onRetry, onCancel } = show({ state: "failed", flow: null, message: "x" }, true);
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));

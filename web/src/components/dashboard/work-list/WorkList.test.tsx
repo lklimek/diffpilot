@@ -331,6 +331,32 @@ describe("WorkList", () => {
     expect(rows.className).toMatch(/bg-surface-2/);
   });
 
+  it("a P0 alarm shows its points and the same score breakdown as a ranked row (button and Enter)", async () => {
+    render(<List />);
+    const alarm = screen.getByRole("group", { name: "P0 alarm PLAT-1187" });
+    const score = within(alarm).getByRole("button", { name: "Score 107, show breakdown" });
+    expect(score).toHaveTextContent(/^107$/);
+    expect(within(alarm).queryByRole("heading", { name: "Score breakdown" })).toBeNull();
+    await userEvent.click(score);
+    expect(within(alarm).getByRole("heading", { name: "Score breakdown" })).toBeVisible();
+    expect(within(alarm).getByText(/P0 alarm \(score 107 kept for reference\)/)).toBeVisible();
+    expect(score).toHaveAccessibleName("Score 107, hide breakdown");
+    await userEvent.click(score);
+    expect(within(alarm).queryByRole("heading", { name: "Score breakdown" })).toBeNull();
+    // Enter on the focused alarm toggles it like a ranked row.
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(document.activeElement).toBe(alarm);
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    const detail = document.getElementById(score.getAttribute("aria-controls")!)!;
+    expect(within(detail).getByRole("heading", { name: "Score breakdown" })).toBeVisible();
+    // Enter on the score button itself toggles once.
+    score.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(detail).not.toBeVisible();
+    await userEvent.keyboard("{Enter}");
+    expect(within(detail).getByRole("heading", { name: "Score breakdown" })).toBeVisible();
+  });
+
   it("counts the P0 alarms of a hidden kind among the listed items", async () => {
     render(<List initial={["pr", "todo"]} />);
     const listed = () =>

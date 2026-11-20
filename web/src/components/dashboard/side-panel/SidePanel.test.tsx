@@ -160,7 +160,22 @@ describe("side panel sections", () => {
       expect(await written[0]!["text/html"]!.text()).toContain(
         '<a href="https://github.com/acme/platform/pull/1176">acme/platform#1176</a>',
       );
-      expect(screen.getByRole("status")).toHaveTextContent("Copied 3 lines.");
+      expect(screen.getByText("Copied 3 lines.")).toHaveAttribute("role", "status");
+    });
+
+    it("each Waiting on others row has a copy icon next to its GitHub link that copies that row's line", async () => {
+      clipboard(() => Promise.resolve());
+      render(<WaitingOnOthers items={SUMMARY.snapshot!.awaiting} now={NOW} />);
+      const github = screen.getByRole("link", { name: "Open PLAT-1176 on GitHub (new tab)" });
+      const copy = screen.getByRole("button", { name: "Copy line of PLAT-1176" });
+      // Same row line, right after the GitHub mark.
+      expect(github.closest("div")).toContainElement(copy);
+      expect(screen.getAllByRole("button", { name: /^Copy line of / })).toHaveLength(3);
+      await userEvent.click(copy);
+      expect(await written[0]!["text/plain"]!.text()).toBe(
+        "[acme/platform#1176](https://github.com/acme/platform/pull/1176) feat(sync): parallel header download - large (+3200 / -400) — waits on @jun-park, team:core for 11 d",
+      );
+      expect(screen.getByText("Copied the line of PLAT-1176.")).toBeInTheDocument();
     });
 
     it("copies Ready to merge without a wait part and says when copying did not work", async () => {

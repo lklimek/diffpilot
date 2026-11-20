@@ -17,8 +17,8 @@ use jiff::tz::TimeZone;
 use super::{Snapshot, StoredIssue, StoredPr, StoredTodo};
 use crate::dashboard::refresh::rank::ItemJudgement;
 use crate::dashboard::score::{
-    self, CiEffective, Judgement, MergeState, Mergeable, Milestone, Relation, ScoreError,
-    ScoreRules, Scored, TodoStatus, awaiting_others, merge_ready, todo_display_ids,
+    self, CiEffective, Judgement, Mergeable, Milestone, Relation, ScoreError, ScoreRules, Scored,
+    TodoStatus, awaiting_others, merge_ready, todo_display_ids,
 };
 
 /// A ranked item with what the request-time review link needs.
@@ -661,14 +661,7 @@ fn ready_to_merge(rules: &ScoreRules, snapshot: &Snapshot) -> Vec<ReadyToMergeIt
                 .pull_requests
                 .iter()
                 .find(|pr| pr.facts.repo == f.repo && pr.facts.number == f.number)?;
-            let mut tags: Vec<FactTag> = ci_tag(stored).into_iter().collect();
-            if f.merge_state == MergeState::Unstable {
-                tags.push(tag(
-                    "non-required checks not passing",
-                    "GitHub allows the merge while a check that is not required has not passed (merge state \
-                     unstable)",
-                ));
-            }
+            let tags: Vec<FactTag> = ci_tag(stored).into_iter().collect();
             Some(ReadyToMergeItem {
                 id: rules.display_id(&f.repo, f.number),
                 repo: f.repo.clone(),

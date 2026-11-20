@@ -77,7 +77,6 @@ export function WorkItemRow({
   now,
 }: WorkItemRowProps) {
   const detailId = `detail-${item.key}`;
-  const provisional = item.score.state !== "final";
   const llm = item.llm;
   const inherited =
     llm?.inherited === true ? (
@@ -86,9 +85,6 @@ export function WorkItemRow({
         tip={`This item changed after the ${dayText(llm.judged_at)} judgement. The text and LLM parts are from then until the LLM judges it again.`}
       />
     ) : null;
-  const scoreLabel = `Score ${provisional ? "provisional " : ""}${Math.round(item.score.total_tenths / 10)}, ${
-    expanded ? "hide" : "show"
-  } breakdown`;
   return (
     <li
       data-item={item.key}
@@ -154,23 +150,7 @@ export function WorkItemRow({
           </p>
         )}
         <div className="col-start-4 row-start-1 flex items-center justify-end gap-2 pt-px @min-[1600px]:col-start-6">
-          <Tooltip tip={<ScoreTip item={item} />}>
-            <button
-              type="button"
-              aria-label={scoreLabel}
-              aria-controls={detailId}
-              aria-expanded={expanded}
-              onClick={onToggle}
-              data-score
-              className={`inline-flex h-7 min-w-[46px] cursor-pointer items-center justify-center rounded-md border px-1.5 font-mono text-sm font-bold tabular-nums hover:border-accent ${
-                provisional
-                  ? "border-dashed border-med-bd bg-transparent text-med"
-                  : "border-border bg-surface-2 text-text"
-              }`}
-            >
-              {scoreText(item.score)}
-            </button>
-          </Tooltip>
+          <ScoreButton item={item} expanded={expanded} onToggle={onToggle} controls={detailId} />
           <ItemAction item={item} reviewHref={reviewHref} onNavigate={onNavigate} />
         </div>
       </div>
@@ -182,5 +162,42 @@ export function WorkItemRow({
         {expanded && <ScoreBreakdown item={item} now={now} />}
       </div>
     </li>
+  );
+}
+
+/** The points of an item; a click shows or hides its score breakdown (`controls` is the breakdown's id). */
+export function ScoreButton({
+  item,
+  expanded,
+  onToggle,
+  controls,
+}: {
+  item: WorkItem;
+  expanded: boolean;
+  onToggle: () => void;
+  controls: string;
+}) {
+  const provisional = item.score.state !== "final";
+  const label = `Score ${provisional ? "provisional " : ""}${Math.round(item.score.total_tenths / 10)}, ${
+    expanded ? "hide" : "show"
+  } breakdown`;
+  return (
+    <Tooltip tip={<ScoreTip item={item} />}>
+      <button
+        type="button"
+        aria-label={label}
+        aria-controls={controls}
+        aria-expanded={expanded}
+        onClick={onToggle}
+        data-score
+        className={`inline-flex h-7 min-w-[46px] cursor-pointer items-center justify-center rounded-md border px-1.5 font-mono text-sm font-bold tabular-nums hover:border-accent ${
+          provisional
+            ? "border-dashed border-med-bd bg-transparent text-med"
+            : "border-border bg-surface-2 text-text"
+        }`}
+      >
+        {scoreText(item.score)}
+      </button>
+    </Tooltip>
   );
 }

@@ -153,7 +153,7 @@ services:
   egress-proxy:
     <<: *hardening
     image: ${SR_PROXY_IMAGE:-diffpilot-egress-proxy:local}
-    build: { context: egress-proxy }
+    build: { context: egress-proxy, additional_contexts: { workspace: .. } }
     # Kept in RAM on purpose: under 1 KB of configuration the entrypoint writes at every start (hosts file, MemCan
     # rule); nothing else is stored.
     tmpfs: ["/run/squid:uid=13,gid=13,mode=0750,size=1m"]

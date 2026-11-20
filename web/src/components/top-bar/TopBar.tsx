@@ -198,7 +198,12 @@ export function TopBar({
         </a>
       )}
       {pr && (
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+        <div
+          className={`flex min-w-0 flex-1 items-center gap-2 overflow-hidden ${
+            // Separates the PR's own line from the breadcrumb (page path).
+            view ? "ml-1.5 border-l-2 border-border pl-5" : ""
+          }`}
+        >
           {!view && (
             <>
               <a
@@ -218,33 +223,35 @@ export function TopBar({
               </Tooltip>
             </>
           )}
-          <strong className="truncate font-semibold">{pr.title}</strong>
-          <Tooltip tip={`Head commit analysed: ${pr.head_sha}`}>
+          <strong className="min-w-[8ch] truncate font-semibold">{pr.title}</strong>
+          <Tooltip tip={`Head commit analysed: ${pr.head_sha}`} className="shrink-0">
             <code tabIndex={0} className="text-xs text-muted">
               {pr.head_sha.slice(0, 7)}
             </code>
           </Tooltip>
-          <LanguageTag language={language} />
+          <span className="shrink-0">
+            <LanguageTag language={language} />
+          </span>
           {ci && checksHref && (
-            <Tooltip tip={`${CHECKS_LINK_TIP} ${ciTip(ci)}`}>
+            <Tooltip tip={`${CHECKS_LINK_TIP} ${ciTip(ci)}`} className="min-w-0">
               <a
                 href={checksHref}
                 target="_blank"
                 rel="noopener noreferrer"
-                className={`inline-flex min-h-6 items-center rounded border px-1.5 text-[11px] leading-[18px] font-semibold no-underline ${
+                className={`inline-flex min-h-6 max-w-full items-center rounded border px-1.5 text-[11px] leading-[18px] font-semibold no-underline ${
                   ci.state === "failing" ? "border-high-bd bg-high-bg text-high" : "border-border text-text"
                 }`}
               >
-                {ciText(ci)}
+                <span className="truncate">{ciText(ci)}</span>
                 <GithubMark />
               </a>
             </Tooltip>
           )}
           {ci && !checksHref && (
-            <Tooltip tip={ciTip(ci)}>
+            <Tooltip tip={ciTip(ci)} className="min-w-0">
               <span
                 tabIndex={0}
-                className={`cursor-help rounded border px-1.5 text-[11px] leading-[18px] font-semibold ${
+                className={`block max-w-full cursor-help truncate rounded border px-1.5 text-[11px] leading-[18px] font-semibold ${
                   ci.state === "failing" ? "border-high-bd bg-high-bg text-high" : "border-border text-text"
                 }`}
               >
