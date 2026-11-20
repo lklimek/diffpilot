@@ -960,6 +960,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
           current: "files",
           flowsHref: flowsTarget(),
           filesHref: `${location.pathname}${location.hash}`,
+          depsHref: `/analyses/${analysisId}/deps`,
           prContextHref: `${flowsHref}#pr_context`,
           onNavigate: (href) => void navigate(href),
         }}

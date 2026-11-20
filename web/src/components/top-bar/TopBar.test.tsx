@@ -67,6 +67,7 @@ describe("TopBar", () => {
       current: "files" as const,
       flowsHref: "/analyses/a",
       filesHref: "/analyses/a/files",
+      depsHref: "/analyses/a/deps",
       prContextHref: "/analyses/a#pr_context",
       onNavigate,
     };
@@ -94,9 +95,34 @@ describe("TopBar", () => {
     expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a");
     expect(menu).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(menu);
+    await userEvent.click(within(crumbs).getByRole("link", { name: "Dependencies" }));
+    expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a/deps");
+    await userEvent.click(menu);
     await userEvent.keyboard("{Escape}");
     expect(menu).toHaveAttribute("aria-expanded", "false");
     expect(menu).toHaveFocus();
     expect(screen.getByRole("banner")).toHaveTextContent("Your progress 1 / 5");
+  });
+
+  it("the Dependencies view is the third view: named in the menu button and its tooltip", async () => {
+    const view = {
+      current: "deps" as const,
+      flowsHref: "/analyses/a",
+      filesHref: "/analyses/a/files",
+      depsHref: "/analyses/a/deps",
+      prContextHref: "/analyses/a#pr_context",
+      onNavigate: vi.fn(),
+    };
+    render(<TopBar pr={tour.analysis.pr} login="alice" view={view} />);
+    const menu = screen.getByRole("button", { name: "View: Dependencies" });
+    expect(menu).toHaveAccessibleDescription(/Dependencies \(crates this pull request changes/);
+    await userEvent.click(menu);
+    const links = within(screen.getByRole("navigation", { name: "Breadcrumb" })).getAllByRole("link");
+    expect(links.slice(-3).map((l) => l.textContent)).toEqual(["Flows", "Files", "✓Dependencies"]);
+    expect(
+      within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("link", {
+        name: "Dependencies",
+      }),
+    ).toHaveAttribute("aria-current", "page");
   });
 });

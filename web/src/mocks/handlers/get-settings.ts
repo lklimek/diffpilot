@@ -23,6 +23,7 @@ export const getSettings = route("getSettings", () => {
     ...settings,
     llm_selection: savedSelection ?? settings.llm_selection,
     language: language ?? settings.language,
-    controlled_owners: savedControlledOwners() ?? settings.controlled_owners,
+    controlled_owners: savedControlledOwners() ??
+      settings.controlled_owners ?? { owners: [], changed_by: null, changed_at: null },
   });
 });

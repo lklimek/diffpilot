@@ -33,18 +33,19 @@ interface TopBarProps {
   view?: ReviewViews;
 }
 
-/** The two views of one analysis and where the breadcrumb leads (in-app links). */
+/** The views of one analysis and where the breadcrumb leads (in-app links). */
 export interface ReviewViews {
-  current: "flows" | "files";
+  current: "flows" | "files" | "deps";
   flowsHref: string;
   filesHref: string;
+  depsHref: string;
   /** The PR context block of the Flows view. */
   prContextHref: string;
   /** Follows an in-app link (a plain click; other clicks keep the browser's behaviour). */
   onNavigate: (href: string) => void;
 }
 
-const VIEW_NAMES = { flows: "Flows", files: "Files" } as const;
+const VIEW_NAMES = { flows: "Flows", files: "Files", deps: "Dependencies" } as const;
 
 // A plain left click stays in the app; a modified or middle click opens the link the browser's way.
 const inApp = (event: MouseEvent, follow: () => void) => {
@@ -53,7 +54,7 @@ const inApp = (event: MouseEvent, follow: () => void) => {
   follow();
 };
 
-/** `diffpilot › owner/repo #n [GitHub] › Flows ▾ / Files ▾` (brief §4 rule 5). */
+/** `diffpilot › owner/repo #n [GitHub] › Flows ▾ / Files ▾ / Dependencies ▾` (brief §4 rule 5). */
 function Breadcrumb({ pr, view }: { pr: PrSummary; view: ReviewViews }) {
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -67,7 +68,7 @@ function Breadcrumb({ pr, view }: { pr: PrSummary; view: ReviewViews }) {
     document.addEventListener("pointerdown", outside);
     return () => document.removeEventListener("pointerdown", outside);
   }, [open]);
-  const href = { flows: view.flowsHref, files: view.filesHref };
+  const href = { flows: view.flowsHref, files: view.filesHref, deps: view.depsHref };
   const sep = (
     <span aria-hidden className="text-muted">
       ›
@@ -114,7 +115,7 @@ function Breadcrumb({ pr, view }: { pr: PrSummary; view: ReviewViews }) {
           button.current?.focus();
         }}
       >
-        <Tooltip tip="Switch between the two views of this review: Flows (step by step) and Files (one file at a time) (s).">
+        <Tooltip tip="Switch between the views of this review: Flows (step by step), Files (one file at a time; s switches between these two) and Dependencies (crates this pull request changes, what they depend on in your organisations, and what was added for other crates' types).">
           <button
             ref={button}
             type="button"
@@ -132,7 +133,7 @@ function Breadcrumb({ pr, view }: { pr: PrSummary; view: ReviewViews }) {
           hidden={!open}
           className="absolute top-full left-0 z-40 m-0 mt-1 grid min-w-32 list-none gap-0.5 rounded-md border border-border bg-surface p-1 shadow-tip"
         >
-          {(["flows", "files"] as const).map((v) => (
+          {(["flows", "files", "deps"] as const).map((v) => (
             <li key={v}>
               <a
                 href={href[v]}

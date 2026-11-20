@@ -56,6 +56,12 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
       "File row named by its path and Viewed state; a tip would cover the rows below, like the flow rows.",
   },
   {
+    file: "components/deps/DependencyTree.tsx",
+    match: "data-disclosure",
+    reason:
+      "Repository or crate row of the Dependencies tree: named by its repository or crate, its expanded state is announced; a tip would cover the rows below.",
+  },
+  {
     file: "components/help/HelpDialog.tsx",
     match: "onClick={onClose}",
     reason: "Close of the modal help dialog: takes the focus on open, where a tip would cover the dialog.",

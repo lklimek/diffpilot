@@ -51,3 +51,14 @@ export function DifferingLinesBadge({ count }: { count: number }) {
     </Tooltip>
   );
 }
+
+/** Badge naming the deterministic source of a Dependencies view fact (Rust tokens, Cargo.lock, Cargo.toml). */
+export function CheckBadge({ text, tip }: { text: string; tip: string }) {
+  return (
+    <Tooltip tip={tip}>
+      <span data-badge={text} tabIndex={0} className={`${BASE} border-mv-bd bg-surface-2 text-text`}>
+        {text}
+      </span>
+    </Tooltip>
+  );
+}
