@@ -95,7 +95,7 @@ jobs:
         # Fails closed: without the list (network, access) the moving tags could move back.
         run: |
           refs="$(git ls-remote --tags --refs origin 'v*')"
-          if ! grep -q "refs/tags/v$VERSION\$" <<< "$refs"; then
+          if ! grep -qxF "refs/tags/v$VERSION" < <(awk '{print $2}' <<< "$refs"); then
             echo "::error::the release tag v$VERSION is not in the repository's tag list; cannot compute the image tags"
             exit 1
           fi
