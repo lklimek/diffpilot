@@ -299,8 +299,9 @@ pub fn keep_crate_notes(output: &mut PlanOutput, diff: &DiffIndex<'_>) -> usize 
     let before = notes.len();
     notes.retain_mut(|note| {
         note.note = note.note.trim().to_owned();
-        note.hunks.retain(|id| diff.hunk(id).is_some());
-        note.hunks.dedup();
+        let mut seen = BTreeSet::new();
+        note.hunks
+            .retain(|id| diff.hunk(id).is_some() && seen.insert(id.clone()));
         !note.note.is_empty()
             && note.note.chars().count() <= PlanCrateNote::MAX_CHARS
             && !note.hunks.is_empty()
