@@ -20,6 +20,7 @@ import type {
   DashboardSettings,
   DashboardSettingsView,
   DashboardSummary,
+  DependencyView,
   DiffResponse,
   Feedback,
   FeedbackId,
@@ -41,6 +42,7 @@ import type {
   RepoRef,
   RepoSettings,
   ReviewState,
+  SetControlledOwnersRequest,
   SetLanguageRequest,
   SetTimeZoneRequest,
   SetViewedRequest,
@@ -256,6 +258,7 @@ export function createApiClient(baseUrl = "") {
     getFiles: (id: AnalysisId) => call<FilesResponse>("getFiles", { params: { id } }),
     setFileViewed: (id: AnalysisId, body: SetViewedRequest) =>
       call<void>("setFileViewed", { params: { id }, body }),
+    getDependencies: (id: AnalysisId) => call<DependencyView>("getDependencies", { params: { id } }),
     listFeedback: (id: AnalysisId) => call<Feedback[]>("listFeedback", { params: { id } }),
     postFeedback: (id: AnalysisId, body: FeedbackRequest) =>
       call<Feedback>("postFeedback", { params: { id }, body }),
@@ -280,6 +283,8 @@ export function createApiClient(baseUrl = "") {
     pauseAnalysis: (id: AnalysisId) => call<AnalysisSummary>("pauseAnalysis", { params: { id } }),
     resumeAnalysis: (id: AnalysisId) => call<AnalysisSummary>("resumeAnalysis", { params: { id } }),
     setLanguage: (body: SetLanguageRequest) => call<void>("setLanguage", { body }),
+    setControlledOwners: (body: SetControlledOwnersRequest) =>
+      call<import("./generated/types").ControlledOwners>("setControlledOwners", { body }),
     getRepoSettings: (repo: RepoRef) =>
       call<RepoSettings>("getRepoSettings", { params: { owner: repo.owner, name: repo.name } }),
     getDashboardSettings: () => call<DashboardSettingsView>("getDashboardSettings"),

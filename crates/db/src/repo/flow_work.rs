@@ -535,6 +535,7 @@ mod tests {
                 })
                 .collect(),
             unassigned: vec![],
+            crate_notes: None,
         };
         db.documents()
             .put(id, DocumentKind::Plan, "", &plan, Timestamp::now())
@@ -649,6 +650,7 @@ mod tests {
                 })
                 .collect(),
             unassigned: vec![],
+            crate_notes: None,
         };
         db.documents()
             .put(id, DocumentKind::Plan, "", &plan, Timestamp::now())

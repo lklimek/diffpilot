@@ -67,6 +67,13 @@ pub fn plan(output: &PlanOutput) -> Vec<WordingWarning> {
     found
 }
 
+/// Wording-rule hits in one text.
+pub fn warnings_in(text: &str) -> Vec<WordingWarning> {
+    let mut found = Vec::new();
+    scan(&mut found, "", text);
+    found
+}
+
 /// Wording warnings in the texts of a `pr_context` output.
 pub fn pr_context(output: &PrContextOutput) -> Vec<WordingWarning> {
     let mut found = Vec::new();

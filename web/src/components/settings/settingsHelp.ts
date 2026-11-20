@@ -158,6 +158,16 @@ const HELP = {
     empty: "No repository is listed before the first analysis.",
     example: "dashpay/platform: related repositories found in Cargo.toml and Cargo.lock.",
   },
+  controlled_owners: {
+    section: "Repository settings",
+    title: "Controlled organisations",
+    what: 'GitHub organisations or users whose repositories are yours. The Dependencies view marks their repositories and crates "yours", lists their crates among a changed crate\'s dependencies, and the PR-context agent looks up issues and pull requests in them.',
+    when: "Every time a Dependencies view or a PR context prompt is built; a change applies at once, without analysing again.",
+    empty: "Only the pull request's own owner is controlled; it always is.",
+    limits:
+      "Up to 50 GitHub logins (letters, digits and -, up to 39 characters), one list for the whole installation.",
+    example: "dashpay: a pull request in dashpay/dash-evo-tool shows dashpay/platform crates as yours.",
+  },
   linked_logins: {
     section: "Dashboard",
     title: "Linked logins",
@@ -369,6 +379,7 @@ export const CONTRACT_HELP: {
     language: "language",
     app_installations: "app_installations",
     repos: "repository_settings",
+    controlled_owners: "controlled_owners",
   },
   llmSelection: {
     models: "llm_model",

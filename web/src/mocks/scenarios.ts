@@ -11,6 +11,7 @@ import type {
   FeedbackMemory,
   PendingReview,
   AskQuestion,
+  DependencyView,
   FilesResponse,
   LinesResponse,
   MeResponse,
@@ -23,6 +24,14 @@ import type {
   Tour,
 } from "../api/generated/types";
 import largeGraphs from "./diagrams/large-flow-graphs.json";
+import {
+  mockDependenciesLimits,
+  mockDependenciesMulti,
+  mockDependenciesNoChangedCrate,
+  mockDependenciesNoControlled,
+  mockDependenciesNotes,
+  mockDependenciesNotRust,
+} from "./dependencies";
 import { seedFor, seedNow } from "./fixtures";
 import { REAL_QUESTIONS, REAL_TOURS } from "./real";
 
@@ -106,6 +115,8 @@ interface Scenario {
   commentPublished?: true;
   /** Changes to the `files` answer. */
   files?: (seed: FilesResponse) => FilesResponse;
+  /** `dependencies` answer; `"error"` answers 503 (the mirror could not be read; nothing is stored). */
+  dependencies?: () => DependencyView | "error";
   /** Viewed writes fail like this (GitHub refused, the head moved or was not read, GitHub did not answer, busy, signed out). */
   viewedError?:
     | "github_refused"
@@ -687,6 +698,15 @@ const SCENARIOS = {
   "threads-partial": { tour: (seed) => withThreads(seed, "partial") },
   "threads-not-checked": { tour: (seed) => withThreads(seed, "not_checked") },
   "unchecked-facts": { tour: withUncheckedFacts },
+  "deps-multi": { dependencies: mockDependenciesMulti },
+  "deps-not-rust": { dependencies: mockDependenciesNotRust },
+  "deps-limits": { dependencies: mockDependenciesLimits },
+  "deps-notes-pending": { dependencies: () => mockDependenciesNotes("pending") },
+  "deps-notes-not-produced": { dependencies: () => mockDependenciesNotes("not_produced") },
+  "deps-notes-empty": { dependencies: () => mockDependenciesNotes("produced") },
+  "deps-no-controlled": { dependencies: mockDependenciesNoControlled },
+  "deps-no-changed-crate": { dependencies: mockDependenciesNoChangedCrate },
+  "deps-error": { dependencies: () => "error" },
   "llm-unknown": {
     settings: { ...SETTINGS, llm_status: null, language: "pl" },
     repoSettings: {

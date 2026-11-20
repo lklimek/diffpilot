@@ -7,6 +7,7 @@ pub mod auth;
 pub mod code;
 pub mod comments;
 pub mod dashboard;
+pub mod deps;
 pub mod error;
 pub mod events;
 pub mod feedback;

@@ -34,6 +34,7 @@ use crate::state::AppState;
 pub mod batching;
 pub mod context;
 pub mod control;
+pub mod deps;
 mod driver;
 pub mod files;
 pub mod ingest;

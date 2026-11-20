@@ -27,6 +27,7 @@ struct Fixture {
     pr_context: PrContextOutput,
     flows: Vec<FlowAnalysisOutput>,
     threads: Vec<GithubThread>,
+    dependencies: contracts::api::deps::DependencyView,
 }
 
 fn fixture_dir() -> PathBuf {
@@ -89,11 +90,41 @@ static FIXTURE: LazyLock<Fixture> = LazyLock::new(|| {
     })
     .expect("prepass");
     let tour: serde_json::Value = read_json("api-seed/default/tour.json");
+    let head_paths: Vec<String> = git(&repo, &["ls-tree", "-r", "--name-only", &pr.head_sha.0])
+        .expect("ls-tree")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let head_text = |path: &str| git(&repo, &["show", &format!("{}:{path}", pr.head_sha.0)]);
+    let cargo: HashMap<String, String> = analysis::deps::cargo_files_to_read(&head_paths)
+        .into_iter()
+        .filter_map(|path| head_text(&path).map(|text| (path, text)))
+        .collect();
+    let mut map = analysis::deps::map(&pr.repo, &head_paths, &|path| {
+        cargo.get(path).map(String::as_str)
+    });
+    for file in files.iter().filter(|file| file.path.ends_with(".rs")) {
+        let added: Vec<u32> = file
+            .hunks
+            .iter()
+            .flat_map(|h| h.added.iter().copied())
+            .collect();
+        map.add_facts(&file.path, head_text(&file.path).as_deref(), &added);
+    }
+    let plan: PlanOutput = read_json("agent/plan.json");
+    let dependencies = crate::pipeline::deps::project(&crate::pipeline::deps::ProjectionInput {
+        map: &map,
+        pr_repo: &pr.repo,
+        files: &files,
+        plan: Some(&plan),
+        controlled: &[],
+    });
     Fixture {
         pr,
         files,
         prepass,
-        plan: read_json("agent/plan.json"),
+        plan,
+        dependencies,
         pr_context: read_json("agent/pr_context.json"),
         flows: (1..=5)
             .map(|n| read_json(&format!("agent/flow-{n}.json")))
@@ -178,6 +209,7 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
         job,
         description: Some(DESCRIPTION),
         profile: profile(f),
+        dependencies: Some(&f.dependencies),
     };
     let threads = flow_threads(f);
     let examples = calibration_examples();
@@ -698,6 +730,7 @@ fn hostile_pr_text_stays_inside_its_block() {
             job,
             description: Some(description),
             profile: profile(f),
+            dependencies: None,
         };
         pr_context(&input).expect("pr_context")
     };
@@ -810,6 +843,7 @@ fn instruction_files_get_the_t14_notice_in_every_prompt() {
         job,
         description: None,
         profile: profile(f),
+        dependencies: None,
     };
     let flow_input = FlowInput {
         job,
@@ -1025,6 +1059,7 @@ fn profile_union_file_wins() {
             job: job(f, LlmLanguage::En),
             description: None,
             profile,
+            dependencies: None,
         };
         split(&pr_context(&input).expect("pr_context"))
     };
@@ -1301,6 +1336,7 @@ fn sub_agents_are_a_parameter_default_off() {
             job,
             description: None,
             profile: profile(f),
+            dependencies: None,
         })
         .expect("pr_context")
     };
@@ -1893,4 +1929,191 @@ fn a_long_thread_stays_within_its_budget_and_says_what_it_clipped() {
         block.contains("(The server clipped the block above:"),
         "{block}"
     );
+}
+
+/// The fixture's Dependencies view with one controlled dependency repository whose crate is named `dependency`
+/// and used by the changed crate, which is renamed to `changed`.
+fn dependency_view_with(changed: &str, dependency: &str) -> contracts::api::deps::DependencyView {
+    use contracts::api::deps::{DependencyCrate, DependencyRepository, RepositoryKind};
+    let mut view = FIXTURE.dependencies.clone();
+    let this = &mut view.repositories[0];
+    this.crates[0].name = changed.to_owned();
+    view.repositories.push(DependencyRepository {
+        kind: RepositoryKind::Github,
+        repo: Some(contracts::common::RepoRef {
+            owner: "acme".to_owned(),
+            name: "upstream".to_owned(),
+        }),
+        location: Some("https://github.com/acme/upstream".to_owned()),
+        controlled: true,
+        crates: vec![DependencyCrate {
+            name: dependency.to_owned(),
+            version: None,
+            manifest: None,
+            source_at: None,
+            revision: None,
+            used_by: vec![changed.to_owned()],
+            facts_about: 0,
+            changes: None,
+        }],
+    });
+    view
+}
+
+fn pr_context_with(view: &contracts::api::deps::DependencyView) -> Result<String, PromptError> {
+    let f = &*FIXTURE;
+    pr_context(&PrContextInput {
+        job: job(f, LlmLanguage::En),
+        description: None,
+        profile: profile(f),
+        dependencies: Some(view),
+    })
+}
+
+/// Cargo package names are PR-controlled: in the crate entries and in the lookup list they stay quoted data.
+#[test]
+fn hostile_crate_names_stay_inside_their_blocks() {
+    let benign = pr_context_with(&dependency_view_with("plain", "plain-dep")).expect("benign");
+    let hostile = pr_context_with(&dependency_view_with(HOSTILE, HOSTILE)).expect("hostile");
+    assert_contained(&benign, &hostile, "pr_context dependencies");
+}
+
+/// A PR-controlled package name of a controlled git dependency must not push the PR-context prompt over its budget
+/// (the analysis would fail with a server error on every retry).
+#[test]
+fn an_oversized_dependency_crate_name_keeps_the_pr_context_prompt_within_budget() {
+    let view = dependency_view_with("node-client", &"a".repeat(PROMPT_BUDGET_BYTES));
+    let prompt = pr_context_with(&view);
+    assert!(prompt.is_ok(), "{:?}", prompt.err());
+}
+
+/// The most changed crate with the projection's maximum of 50 facts (realistic workspace paths) still reaches the
+/// PR-context prompt.
+#[test]
+fn the_most_changed_crate_with_fifty_facts_reaches_the_pr_context_prompt() {
+    use contracts::api::deps::{ConversionFact, ConversionKind, HeadLine, TypeDefinition};
+    let mut view = dependency_view_with("node-client", "upstream-types");
+    let changes = view.repositories[0].crates[0]
+        .changes
+        .as_mut()
+        .expect("changed crate");
+    let line = |file: &str, line| HeadLine {
+        file: file.to_owned(),
+        line,
+    };
+    changes.facts = (0..50)
+        .map(|n| ConversionFact {
+            kind: ConversionKind::TryFromImpl,
+            at: line(
+                "packages/rs-drive-abci/src/execution/platform_events/state_transition_processing/v0/mod.rs",
+                100 + n,
+            ),
+            type_name: format!("StateTransitionType{n}"),
+            written: format!("dpp::state_transition::StateTransitionType{n}"),
+            type_crate: "dpp".to_owned(),
+            imported_at: None,
+            definition: TypeDefinition::Located {
+                at: line("packages/rs-dpp/src/state_transition/state_transition_types.rs", n),
+            },
+        })
+        .collect();
+    let prompt = pr_context_with(&view).expect("pr_context");
+    let (_, blocks) = split(&prompt);
+    let block = blocks
+        .iter()
+        .find(|block| block.label == "dependencies")
+        .expect("dependencies block");
+    assert!(
+        block.content.contains(r#""crate":"node-client""#),
+        "the most changed crate is missing: {}",
+        block.content
+    );
+}
+
+/// The agent is given at most 5 dependency repositories to look in, all controlled.
+#[test]
+fn dependency_lookups_are_controlled_repositories_at_most_five() {
+    use contracts::api::deps::{DependencyRepository, RepositoryKind};
+    let mut view = dependency_view_with("node-client", "upstream-types");
+    let template = view.repositories[1].clone();
+    for (n, controlled) in [
+        (1, true),
+        (2, true),
+        (3, true),
+        (4, true),
+        (5, true),
+        (6, false),
+    ] {
+        view.repositories.push(DependencyRepository {
+            repo: Some(contracts::common::RepoRef {
+                owner: if controlled { "acme" } else { "stranger" }.to_owned(),
+                name: format!("repo{n}"),
+            }),
+            controlled,
+            kind: RepositoryKind::Github,
+            ..template.clone()
+        });
+    }
+    let prompt = pr_context_with(&view).expect("pr_context");
+    let (_, blocks) = split(&prompt);
+    let block = blocks
+        .iter()
+        .find(|block| block.label == "dependency repositories")
+        .expect("lookup block");
+    let lines: Vec<&str> = block.content.lines().collect();
+    assert_eq!(lines.len(), 5, "{lines:?}");
+    assert!(lines.iter().all(|l| l.starts_with("acme/")), "{lines:?}");
+    assert!(prompt.contains("omitted 1 more entries"), "{prompt}");
+}
+
+/// An entry too large for its block is skipped; the entries after it still reach the agent.
+#[test]
+fn lines_block_skips_an_oversized_entry_and_keeps_the_rest() {
+    let block = lines_block(
+        "list",
+        vec!["x".repeat(100), "small".to_owned(), "tiny".to_owned()],
+        50,
+    )
+    .expect("block");
+    assert!(block.contains("small\ntiny\n"), "{block}");
+    assert!(!block.contains("xxxx"), "{block}");
+    assert!(block.contains("omitted 1 more entries"), "{block}");
+}
+
+/// A fact's line is evidence the agent cites: a deep workspace path keeps its line number in the prompt.
+#[test]
+fn a_fact_on_a_deep_workspace_path_keeps_its_line_in_the_pr_context_prompt() {
+    use contracts::api::deps::{ConversionFact, ConversionKind, HeadLine, TypeDefinition};
+    let path = "packages/rs-drive-abci/src/execution/platform_events/state_transition_processing/v0/mod.rs";
+    let mut view = dependency_view_with("node-client", "upstream-types");
+    let changes = view.repositories[0].crates[0]
+        .changes
+        .as_mut()
+        .expect("changed crate");
+    changes.facts = vec![ConversionFact {
+        kind: ConversionKind::TryFromImpl,
+        at: HeadLine {
+            file: path.to_owned(),
+            line: 123,
+        },
+        type_name: "StateTransitionType".to_owned(),
+        written: "dpp::state_transition::StateTransitionType".to_owned(),
+        type_crate: "dpp".to_owned(),
+        imported_at: None,
+        definition: TypeDefinition::NotLocated,
+    }];
+    let prompt = pr_context_with(&view).expect("pr_context");
+    assert!(
+        prompt.contains(&format!("{path}:123")),
+        "the fact's evidence line is cut: {prompt}"
+    );
+}
+
+#[test]
+fn middle_clipping_keeps_both_ends_within_the_bound() {
+    assert_eq!(middle_clipped("short/path.rs", 300), "short/path.rs");
+    let long = format!("start/{}/end.rs", "x".repeat(400));
+    let clipped = middle_clipped(&long, 300);
+    assert_eq!(clipped.chars().count(), 300);
+    assert!(clipped.starts_with("start/") && clipped.ends_with("/end.rs") && clipped.contains('…'));
 }

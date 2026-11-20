@@ -765,6 +765,62 @@ line: number, };
 export type CommitSha = string;
 
 /**
+ * The installation-wide list of controlled GitHub owners: their repositories are "yours" in the Dependencies
+ * view, besides the pull request's owner, which always is.
+ */
+export type ControlledOwners = {
+/**
+ * Owner logins, sorted case-insensitively, unique.
+ */
+owners: Array<string>,
+/**
+ * Who saved the list last; null before the first save.
+ */
+changed_by: string | null,
+/**
+ * When it was saved last.
+ */
+changed_at: string | null, };
+
+/**
+ * A conversion added for a type of another crate: a deterministic fact (Rust tokens), never a verdict.
+ */
+export type ConversionFact = {
+/**
+ * What the line adds.
+ */
+kind: ConversionKind,
+/**
+ * The `impl` or `fn` line.
+ */
+at: HeadLine,
+/**
+ * The type's name.
+ */
+type_name: string,
+/**
+ * The type's path as written.
+ */
+written: string,
+/**
+ * The crate the type comes from.
+ */
+type_crate: string,
+/**
+ * The `use` line importing it, if any.
+ */
+imported_at: HeadLine | null,
+/**
+ * Where the type is defined.
+ */
+definition: TypeDefinition, };
+
+/**
+ * What a conversion fact's line adds.
+ */
+export type ConversionKind = "from_impl" | "try_from_impl" | "impl_on_foreign_type" | "conversion_fn";
+
+/**
  * Counters over material that is not analysed.
  */
 export type Counters = {
@@ -785,6 +841,77 @@ dependencies_changed: Array<string>,
  * files); their changes are not counted in `dependencies_changed`.
  */
 dependency_files_not_checked: Array<string>, };
+
+/**
+ * What the pull request changes in a crate.
+ */
+export type CrateChanges = {
+/**
+ * Changed lines (added and removed) in its files.
+ */
+changed_lines: number,
+/**
+ * Changed files.
+ */
+files: number,
+/**
+ * Flows with lines in it, in Tour order.
+ */
+flows: Array<CrateFlow>,
+/**
+ * Conversions added for types of workspace or controlled crates (deterministic), at most 50.
+ */
+facts: Array<ConversionFact>,
+/**
+ * Facts beyond those listed.
+ */
+facts_hidden: number,
+/**
+ * Facts about types of other crates (counted, not listed).
+ */
+other_facts: number,
+/**
+ * The LLM's notes, at most 3, most changed lines first.
+ */
+notes: Array<CrateNote>,
+/**
+ * Notes beyond those listed.
+ */
+notes_hidden: number,
+/**
+ * Direct dependencies not listed (over the view's cap of crates outside this repository and controlled ones).
+ */
+other_dependencies: number, };
+
+/**
+ * A flow with lines in a crate.
+ */
+export type CrateFlow = {
+/**
+ * Flow id.
+ */
+id: FlowId,
+/**
+ * Its title (LLM).
+ */
+title: string, };
+
+/**
+ * A keyword note of the LLM on what changed in a crate.
+ */
+export type CrateNote = {
+/**
+ * The note (LLM).
+ */
+text: string,
+/**
+ * The changed lines of the hunks it describes, in this crate (head side when present).
+ */
+lines: Array<FileRange>,
+/**
+ * Changed lines of those hunks: the ranking key.
+ */
+changed_lines: number, };
 
 /**
  * Body of `POST /api/v1/settings/access-tokens`.
@@ -1018,6 +1145,160 @@ replacement?: LineRange,
  * hide them.
  */
 context_only?: Array<number>, };
+
+/**
+ * A crate.
+ */
+export type DependencyCrate = {
+/**
+ * Package name.
+ */
+name: string,
+/**
+ * Version, if known.
+ */
+version: string | null,
+/**
+ * Manifest path of a crate of this repository.
+ */
+manifest: string | null,
+/**
+ * The `Cargo.lock` record or manifest declaration naming its source (head commit).
+ */
+source_at: HeadLine | null,
+/**
+ * Locked git commit, if any.
+ */
+revision: string | null,
+/**
+ * Changed crates depending on it directly.
+ */
+used_by: Array<string>,
+/**
+ * Conversion facts naming its types.
+ */
+facts_about: number,
+/**
+ * What the pull request changes in it; null for an unchanged crate.
+ */
+changes: CrateChanges | null, };
+
+/**
+ * Something the map does not cover.
+ */
+export type DependencyLimit = { "kind": "manifests_cut",
+/**
+ * Manifests at the head commit.
+ */
+total: number,
+/**
+ * Manifests read.
+ */
+read: number, } | { "kind": "manifest_unreadable",
+/**
+ * Its path.
+ */
+path: string, } | { "kind": "lock_unreadable",
+/**
+ * Its path.
+ */
+path: string, } | { "kind": "no_lock_file",
+/**
+ * Directory of its root manifest (`""` = repository root).
+ */
+workspace_dir: string, } | { "kind": "source_unread",
+/**
+ * Its path.
+ */
+path: string, } | { "kind": "facts_cut",
+/**
+ * Facts kept.
+ */
+kept: number, } | { "kind": "workspace_unresolved",
+/**
+ * Its manifest.
+ */
+manifest: string, } | { "kind": "workspace_entries_cut",
+/**
+ * The root manifest.
+ */
+manifest: string, } | { "kind": "target_specific",
+/**
+ * The manifest.
+ */
+manifest: string, } | { "kind": "source_cut",
+/**
+ * Its path.
+ */
+path: string, } | { "kind": "definitions_unread",
+/**
+ * The crate's directory (`""` = repository root).
+ */
+dir: string,
+/**
+ * Files not read.
+ */
+files: number, };
+
+/**
+ * A repository or other source of crates.
+ */
+export type DependencyRepository = {
+/**
+ * What kind of source it is.
+ */
+kind: RepositoryKind,
+/**
+ * The GitHub repository, when known.
+ */
+repo: RepoRef | null,
+/**
+ * The registry name, git URL or path as Cargo names it; null for this repository.
+ */
+location: string | null,
+/**
+ * The repository's owner is controlled ("yours").
+ */
+controlled: boolean,
+/**
+ * Its crates: changed crates first (by changed lines), then by name.
+ */
+crates: Array<DependencyCrate>, };
+
+/**
+ * Whether the map exists.
+ */
+export type DependencyStatus = "available" | "not_rust";
+
+/**
+ * Response of `GET /api/v1/analyses/{id}/dependencies`.
+ */
+export type DependencyView = {
+/**
+ * Whether the head commit has Cargo manifests.
+ */
+status: DependencyStatus,
+/**
+ * Owners whose repositories are "yours": the pull request's owner and the Settings list, sorted.
+ */
+controlled_owners: Array<string>,
+/**
+ * What the map does not cover.
+ */
+limits: Array<DependencyLimit>,
+/**
+ * Changed files in no crate (not checked).
+ */
+files_outside_crates: number,
+/**
+ * Whether the LLM's notes exist for this analysis.
+ */
+notes: NotesState,
+/**
+ * This repository first, then controlled GitHub repositories, other GitHub repositories, other git URLs,
+ * registries, paths and unknown sources, holding the direct dependencies of the changed crates.
+ */
+repositories: Array<DependencyRepository>, };
 
 /**
  * A diff hunk.
@@ -1716,6 +1997,19 @@ kind: NodeKind,
  * Label (the step title).
  */
 label: string, };
+
+/**
+ * A line of a file at the head commit.
+ */
+export type HeadLine = {
+/**
+ * Repository-relative path.
+ */
+file: string,
+/**
+ * 1-based line.
+ */
+line: number, };
 
 /**
  * A dated event for the charts.
@@ -2469,6 +2763,11 @@ items: Array<NotAnalysedItem>, };
 export type NotRenderedReason = "too_large" | "generated" | "binary";
 
 /**
+ * Whether the LLM's crate notes exist.
+ */
+export type NotesState = "produced" | "pending" | "not_produced";
+
+/**
  * Whether an issue was introduced by the pull request.
  */
 export type Origin = "introduced" | "pre_existing" | "unclear";
@@ -3193,6 +3492,11 @@ related_repos: Array<RepoRef>,
 project_profile: ProjectProfileStatus, };
 
 /**
+ * Kind of a crate source.
+ */
+export type RepositoryKind = "this" | "github" | "other_git" | "registry" | "path" | "unknown";
+
+/**
  * Settings of one repository row.
  */
 export type RepositoryRule = {
@@ -3463,6 +3767,15 @@ export type SetAskEffortRequest = {
 reasoning_effort: ReasoningEffort, };
 
 /**
+ * Body of `PUT /api/v1/settings/controlled-owners`.
+ */
+export type SetControlledOwnersRequest = {
+/**
+ * GitHub owner logins (users or organisations), at most [`SetControlledOwnersRequest::MAX_OWNERS`].
+ */
+owners: Array<string>, };
+
+/**
  * Body of `PUT /api/v1/settings/llm/judge-effort`.
  */
 export type SetJudgeEffortRequest = {
@@ -3534,7 +3847,11 @@ app_installations: Array<AppInstallation> | null,
 /**
  * The tenant's known repositories (any pull request opened); each one's settings can be opened.
  */
-repos: Array<RepoRef>, };
+repos: Array<RepoRef>,
+/**
+ * Installation-wide controlled GitHub owners (Dependencies view, ADR-021); absent on older servers.
+ */
+controlled_owners?: ControlledOwners, };
 
 /**
  * Size mark of a pull request: a fixed table of changed lines (additions + deletions), plan §C.2 K16.
@@ -3837,6 +4154,15 @@ quiet: QuietRows,
  * Every GitHub review thread of the pull request.
  */
 threads: Array<GithubThread>, };
+
+/**
+ * Where a fact's type is defined.
+ */
+export type TypeDefinition = { "kind": "located",
+/**
+ * The definition line.
+ */
+at: HeadLine, } | { "kind": "not_located" } | { "kind": "not_searched" } | { "kind": "other_repository" };
 
 /**
  * Unexplained lines of one file on one side, with why the server left them out when it decided so.

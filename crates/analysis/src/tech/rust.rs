@@ -10,6 +10,8 @@ use ra_ap_rustc_lexer::{FrontmatterAllowed, LiteralKind, TokenKind, strip_sheban
 use super::{FileSource, OtherSide};
 use crate::diff::Hunk;
 
+pub(super) mod conversions;
+
 /// Deepest `{` nesting of a `use` tree the rules read; a deeper tree is unreadable.
 const MAX_USE_DEPTH: usize = 32;
 

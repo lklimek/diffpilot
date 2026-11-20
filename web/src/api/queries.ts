@@ -143,6 +143,10 @@ export const useAskInChat = (id: AnalysisId) => {
 export const useFiles = (id: AnalysisId) =>
   useQuery({ queryKey: ["files", id], queryFn: () => api.getFiles(id), refetchOnWindowFocus: true });
 
+/** The Cargo map of the head commit with conversion facts and crate notes (ADR-021). */
+export const useDependencies = (id: AnalysisId) =>
+  useQuery({ queryKey: ["dependencies", id], queryFn: () => api.getDependencies(id) });
+
 /**
  * Marks or unmarks a file as viewed on GitHub. Nothing changes before GitHub confirmed; then the cached mark is
  * set and the list read again.
@@ -522,6 +526,21 @@ export function useSetAskEffort() {
         ["settings"],
         (old) => old && { ...old, llm_selection: selection },
       ),
+  });
+}
+
+/** Saves the installation-wide controlled owners; Dependencies views are read again with them. */
+export function useSetControlledOwners() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (owners: string[]) => api.setControlledOwners({ owners }),
+    onSuccess: (controlled_owners) => {
+      client.setQueryData<import("./generated/types").Settings>(
+        ["settings"],
+        (old) => old && { ...old, controlled_owners },
+      );
+      void client.invalidateQueries({ queryKey: ["dependencies"] });
+    },
   });
 }
 

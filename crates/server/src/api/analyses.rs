@@ -135,6 +135,15 @@ impl From<PrDiffError> for AnalysisApiError {
     }
 }
 
+impl From<crate::pipeline::deps::DepsRunError> for AnalysisApiError {
+    fn from(error: crate::pipeline::deps::DepsRunError) -> Self {
+        match error {
+            crate::pipeline::deps::DepsRunError::Mirror(error) => Self::Mirror(error),
+            crate::pipeline::deps::DepsRunError::Db(error) => Self::Db(error),
+        }
+    }
+}
+
 impl From<IngestError> for AnalysisApiError {
     fn from(error: IngestError) -> Self {
         match error {

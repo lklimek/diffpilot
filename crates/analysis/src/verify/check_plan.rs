@@ -461,6 +461,7 @@ mod tests {
                 flow("f2", 2, vec![part("h1", 12, 12), whole("h4")]),
             ],
             unassigned: vec![unassigned(whole("h2"))],
+            crate_notes: None,
         };
         let verified = run(&output).expect("accepted");
         assert_eq!(
@@ -506,6 +507,7 @@ mod tests {
                 ],
             )],
             unassigned: vec![unassigned(whole("h2"))],
+            crate_notes: None,
         };
         let issues = run(&output).expect_err("rejected");
         assert_eq!(
@@ -540,6 +542,7 @@ mod tests {
                 flow("f2", 2, vec![whole("h4"), whole("h5")]),
             ],
             unassigned: vec![unassigned(whole("h3"))],
+            crate_notes: None,
         };
         let issues = run(&output).expect_err("rejected");
         assert_eq!(
@@ -578,6 +581,7 @@ mod tests {
                 second,
             ],
             unassigned: vec![reason],
+            crate_notes: None,
         };
         let issues = run(&output).expect_err("rejected");
         assert_eq!(
@@ -613,6 +617,7 @@ mod tests {
         let output = PlanOutput {
             flows,
             unassigned: Vec::new(),
+            crate_notes: None,
         };
         let Err(VerifyError::Rejected(issues)) = plan(&output, &diff) else {
             panic!("rejected");
@@ -641,6 +646,7 @@ mod tests {
                 flow("f2", 2, vec![part("h1", 11, 12), whole("h4")]),
             ],
             unassigned: vec![unassigned(whole("h2"))],
+            crate_notes: None,
         };
         let issues = run(&output).expect_err("rejected");
         assert_eq!(
@@ -673,7 +679,7 @@ mod tests {
                     }
                 }
             }
-            let output = PlanOutput { flows, unassigned: unassigned_hunks };
+            let output = PlanOutput { flows, unassigned: unassigned_hunks , crate_notes: None };
             let result = run(&output);
             prop_assert_eq!(result.is_ok(), owners.iter().all(|hunk| hunk.len() == 1), "{:?}", result);
             if let Ok(verified) = result {

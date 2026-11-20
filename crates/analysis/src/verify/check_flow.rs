@@ -951,6 +951,7 @@ mod tests {
             output: contracts::agent::plan::PlanOutput {
                 flows: vec![planned()],
                 unassigned: Vec::new(),
+                crate_notes: None,
             },
             flow_lines: BTreeMap::from([(FlowId("f1".to_owned()), lines)]),
             unassigned: Vec::new(),

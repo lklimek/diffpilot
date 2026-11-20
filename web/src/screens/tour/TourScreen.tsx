@@ -969,6 +969,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           current: "flows",
           flowsHref: `${location.pathname}${location.hash}`,
           filesHref,
+          depsHref: `/analyses/${analysisId}/deps`,
           prContextHref: `/analyses/${analysisId}#${blockFragment(PR_CONTEXT)}`,
           onNavigate: (href) => void navigate(href),
         }}

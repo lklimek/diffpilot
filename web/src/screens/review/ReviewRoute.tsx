@@ -1,7 +1,7 @@
 import { Outlet, useParams } from "react-router";
 import { AskChatProvider } from "./askChat";
 
-/** The review of one analysis: Flows and Files share this layout, so the Ask chat survives switching between them. */
+/** The review of one analysis: Flows, Files and Dependencies share this layout, so the Ask chat survives switching. */
 export function ReviewRoute() {
   const { analysisId = "" } = useParams();
   return (

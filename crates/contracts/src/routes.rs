@@ -407,6 +407,21 @@ pub const ASK_ANCHORED: Route = route(
     SessionCsrf,
 );
 
+/// R15: the Cargo map of the head commit with conversion facts and crate notes (ADR-021).
+pub const GET_DEPENDENCIES: Route = route(
+    "getDependencies",
+    Get,
+    "/api/v1/analyses/{id}/dependencies",
+    READ,
+);
+/// R16: replaces the installation-wide list of controlled GitHub owners.
+pub const SET_CONTROLLED_OWNERS: Route = route(
+    "setControlledOwners",
+    Put,
+    "/api/v1/settings/controlled-owners",
+    SessionCsrf,
+);
+
 /// Every route.
 pub const ROUTES: &[Route] = &[
     REQUEST_FLOW,
@@ -435,6 +450,7 @@ pub const ROUTES: &[Route] = &[
     ASK_ANCHORED,
     GET_FILES,
     SET_FILE_VIEWED,
+    GET_DEPENDENCIES,
     LIST_FEEDBACK,
     POST_FEEDBACK,
     DELETE_FEEDBACK,
@@ -444,6 +460,7 @@ pub const ROUTES: &[Route] = &[
     DELETE_COMMENT,
     GET_SETTINGS,
     SET_LANGUAGE,
+    SET_CONTROLLED_OWNERS,
     SET_LLM,
     SET_ASK_EFFORT,
     GET_REPO_SETTINGS,

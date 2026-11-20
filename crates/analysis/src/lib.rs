@@ -3,6 +3,7 @@
 pub mod blob;
 pub mod counters;
 pub mod coverage;
+pub mod deps;
 pub mod diff;
 pub mod lines;
 pub mod moves;

@@ -37,7 +37,8 @@ use super::context::StoredResults;
 use super::unsent::{self, Unsent};
 use super::verdict::{self, Facts, Outputs};
 use super::{
-    CREDENTIAL_ID, DriverEnd, PipelineError, control, diff_files, prepare, prepass, statistics,
+    CREDENTIAL_ID, DriverEnd, PipelineError, control, deps, diff_files, prepare, prepass,
+    statistics,
 };
 use crate::api::settings::plain_failure;
 use crate::github::oauth::endpoint;
@@ -118,6 +119,10 @@ struct Driver<'a> {
     memcan_down: bool,
     /// Stages whose job waits for the usage limit to reset, with when it is queued again if known.
     paused: BTreeMap<String, Option<Timestamp>>,
+    /// The Cargo map of the head (ADR-021); `None` when it could not be computed (the prompt then has none).
+    dependencies: Option<analysis::deps::DependencyMap>,
+    /// The tenant's controlled owners, read once per run.
+    controlled_owners: Vec<String>,
 }
 
 /// Runs the analysis until it is finished (or was not live) or no flow work is admitted.
@@ -134,6 +139,15 @@ pub(super) async fn drive(
     let files = diff_files(mirror.clone(), &summary).await?;
     let snapshot = snapshot(state, &summary).await?;
     let prepass = prepass::ensure(state, &summary, &mirror, &files).await?;
+    let dependencies = match deps::ensure(state, &summary, &mirror, &files).await {
+        Ok(map) => Some(map),
+        Err(error) => {
+            tracing::warn!(%analysis, ?error,
+                "dependency map not computed; the PR context prompt goes without it and the Dependencies page computes it on read");
+            None
+        }
+    };
+    let controlled_owners = controlled_owners(state, analysis).await;
     let profile::Ensured {
         lookup: memcan_profile,
         memcan_failed,
@@ -203,8 +217,25 @@ pub(super) async fn drive(
         calibration: HashMap::new(),
         memcan_down: memcan_failed,
         paused: BTreeMap::new(),
+        dependencies,
+        controlled_owners,
     };
     driver.run().await
+}
+
+/// The controlled owners of the analysis's tenant; none when they cannot be read (logged).
+async fn controlled_owners(state: &AppState, analysis: AnalysisId) -> Vec<String> {
+    let owners = async {
+        let tenant = state.db.analyses().get(analysis).await?.tenant_id;
+        state.db.settings().controlled_owners(&tenant).await
+    };
+    match owners.await {
+        Ok(owners) => owners.owners,
+        Err(error) => {
+            tracing::warn!(%analysis, ?error, "controlled owners not read; only the pull request's owner counts as controlled");
+            Vec::new()
+        }
+    }
 }
 
 /// The stored GitHub snapshot, read and stored first when missing (with the analysis creator's token).
@@ -264,6 +295,7 @@ impl Driver<'_> {
             let empty = PlanOutput {
                 flows: Vec::new(),
                 unassigned: Vec::new(),
+                crate_notes: None,
             };
             let plan = self.with_unfit(empty);
             self.plan_known(plan, PlanFrom::Agent).await?;
@@ -640,10 +672,15 @@ impl Driver<'_> {
         } else {
             match &stage {
                 JobStage::Plan { batch } => {
-                    let plan: PlanOutput = self.parse(&stage, output.clone())?;
+                    let mut plan: PlanOutput = self.parse(&stage, output.clone())?;
                     let files = self.batch_files(*batch);
                     match verdict::plan(&plan, &files)? {
                         Ok(_) => {
+                            let dropped = verdict::keep_crate_notes(&mut plan, &files)?;
+                            if dropped > 0 {
+                                tracing::info!(analysis = %self.analysis, batch, dropped,
+                                    "plan crate notes left out: unknown hunks, too long, or not plain text");
+                            }
                             self.plan_accepted(*batch, plan).await?;
                             None
                         }
@@ -874,10 +911,20 @@ impl Driver<'_> {
                 finish(RepairOf::Plan(&input), &|| prompts::plan(&input))?
             }
             JobStage::PrContext => {
+                let view = self.dependencies.as_ref().map(|map| {
+                    deps::project(&deps::ProjectionInput {
+                        map,
+                        pr_repo: &self.summary.pr.repo,
+                        files: &self.facts.files,
+                        plan: self.results.plan.as_ref(),
+                        controlled: &self.controlled_owners,
+                    })
+                });
                 let input = PrContextInput {
                     job,
                     description: self.snapshot.description.as_deref(),
                     profile,
+                    dependencies: view.as_ref(),
                 };
                 finish(RepairOf::PrContext(&input), &|| prompts::pr_context(&input))?
             }

@@ -17,6 +17,7 @@ use contracts::agent::analyse_flow::{
 };
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
+use contracts::api::deps::{DependencyStatus, DependencyView, RepositoryKind, TypeDefinition};
 use contracts::api::files::HunkPart;
 use contracts::api::pr::PrSummary;
 use contracts::api::questions::AskState;
@@ -65,6 +66,20 @@ pub const MAX_CALIBRATION_CHARS: usize = 1000;
 pub const MAX_THREADS: usize = 50;
 
 const MAX_TITLE_CHARS: usize = 300;
+/// Most bytes of the per-crate dependency entries in a `pr_context` prompt.
+const MAX_DEPENDENCY_BYTES: usize = 16 * 1024;
+/// Most characters of a PR-controlled name or path in a dependency entry.
+const MAX_DEPENDENCY_NAME_CHARS: usize = 80;
+/// Most characters of a path in a dependency entry (cut in the middle; a line number is never cut).
+const MAX_DEPENDENCY_PATH_CHARS: usize = 300;
+/// Most facts of one crate in its dependency entry; the rest are counted.
+const MAX_PROMPT_FACTS: usize = 15;
+/// Most used crates of one crate in its dependency entry; the rest are counted.
+const MAX_PROMPT_USES: usize = 20;
+/// Most controlled dependency repositories the agent is given to look in (ADR-005 addendum).
+const MAX_LOOKUP_REPOS: usize = 5;
+/// Most crate names listed per lookup repository.
+const MAX_LOOKUP_CRATES: usize = 10;
 const MAX_DESCRIPTION_CHARS: usize = 16_000;
 const MAX_PROFILE_CHARS: usize = 16_000;
 const MAX_EXCERPT_CHARS: usize = 2_000;
@@ -185,6 +200,8 @@ pub struct PrContextInput<'a> {
     pub description: Option<&'a str>,
     /// Project profile.
     pub profile: Profile<'a>,
+    /// The Dependencies view of the head (ADR-021), if computed.
+    pub dependencies: Option<&'a DependencyView>,
 }
 
 /// A GitHub review thread listed for a flow under its alias (`t1`, …).
@@ -1169,8 +1186,142 @@ fn pr_context_task(input: &PrContextInput<'_>) -> Result<String, PromptError> {
                 &path_list("related_repos", "related repositories", &related)?,
             ),
             ("dependency_files", &dependency_files),
+            ("dependencies", &dependencies(input.dependencies)?),
         ],
     )
+}
+
+/// The changed crates of `view` as one-line JSON entries, and the controlled dependency repositories to look in;
+/// empty without a Cargo map. PR-controlled names are clipped; entries, facts and repositories are bounded.
+fn dependencies(view: Option<&DependencyView>) -> Result<String, PromptError> {
+    let Some(view) = view.filter(|view| view.status == DependencyStatus::Available) else {
+        return Ok(String::new());
+    };
+    let short = |text: &str| -> String {
+        let (shown, omitted) = clip(text, MAX_DEPENDENCY_NAME_CHARS);
+        if omitted == 0 {
+            shown
+        } else {
+            format!("{shown}…")
+        }
+    };
+    // A cited line keeps its number: only the path is bounded, cut in its middle.
+    let line = |at: &contracts::api::deps::HeadLine| {
+        format!(
+            "{}:{}",
+            middle_clipped(&at.file, MAX_DEPENDENCY_PATH_CHARS),
+            at.line
+        )
+    };
+    let controlled: Vec<_> = view.repositories.iter().filter(|r| r.controlled).collect();
+    let mut lookups = Vec::new();
+    for repository in controlled.iter().filter(|r| r.kind != RepositoryKind::This) {
+        let Some(repo) = &repository.repo else {
+            continue;
+        };
+        let mut names: Vec<String> = repository
+            .crates
+            .iter()
+            .take(MAX_LOOKUP_CRATES)
+            .map(|c| short(&c.name))
+            .collect();
+        if repository.crates.len() > MAX_LOOKUP_CRATES {
+            names.push(format!(
+                "+{} more",
+                repository.crates.len() - MAX_LOOKUP_CRATES
+            ));
+        }
+        lookups.push(format!(
+            "{}/{} (crates: {})",
+            short(&repo.owner),
+            short(&repo.name),
+            names.join(", ")
+        ));
+    }
+    let mut entries = Vec::new();
+    for krate in view.repositories.iter().flat_map(|r| &r.crates) {
+        let Some(changes) = &krate.changes else {
+            continue;
+        };
+        let mut uses = Vec::new();
+        let mut uncontrolled = 0;
+        for repository in &view.repositories {
+            for other in repository
+                .crates
+                .iter()
+                .filter(|c| c.used_by.contains(&krate.name))
+            {
+                if !repository.controlled {
+                    uncontrolled += 1;
+                    continue;
+                }
+                let from = match (&repository.kind, &repository.repo) {
+                    (RepositoryKind::This, _) => "this repository".to_owned(),
+                    (_, Some(repo)) => short(&format!("{}/{}", repo.owner, repo.name)),
+                    (_, None) => "other".to_owned(),
+                };
+                uses.push(serde_json::json!({"crate": short(&other.name), "from": from}));
+            }
+        }
+        let uses_not_listed = uses.len().saturating_sub(MAX_PROMPT_USES);
+        uses.truncate(MAX_PROMPT_USES);
+        let facts: Vec<serde_json::Value> = changes
+            .facts
+            .iter()
+            .take(MAX_PROMPT_FACTS)
+            .map(|fact| {
+                let definition = match &fact.definition {
+                    TypeDefinition::Located { at } => line(at),
+                    TypeDefinition::NotLocated => "not located".to_owned(),
+                    TypeDefinition::NotSearched => "not searched".to_owned(),
+                    TypeDefinition::OtherRepository => "in another repository".to_owned(),
+                };
+                serde_json::json!({
+                    "at": line(&fact.at),
+                    "kind": fact.kind,
+                    "type": short(&fact.written),
+                    "type_crate": short(&fact.type_crate),
+                    "definition": definition,
+                })
+            })
+            .collect();
+        let facts_not_listed = u64::from(changes.facts_hidden)
+            + u64::from(changes.other_facts)
+            + (changes.facts.len() - facts.len()) as u64;
+        let flows: Vec<&str> = changes.flows.iter().map(|f| f.id.0.as_str()).collect();
+        let notes: Vec<String> = changes.notes.iter().map(|n| short(&n.text)).collect();
+        let entry = serde_json::json!({
+            "crate": short(&krate.name),
+            "manifest": krate
+                .manifest
+                .as_deref()
+                .map(|path| middle_clipped(path, MAX_DEPENDENCY_PATH_CHARS)),
+            "changed_lines": changes.changed_lines,
+            "flows": flows,
+            "uses": uses,
+            "other_dependencies": u64::from(changes.other_dependencies)
+                + uncontrolled
+                + uses_not_listed as u64,
+            "facts": facts,
+            "facts_not_listed": facts_not_listed,
+            "notes": notes,
+        });
+        entries.push(entry.to_string());
+    }
+    if entries.is_empty() {
+        return Ok(String::new());
+    }
+    let mut out = format!("{}\n", part("dependencies")?);
+    out.push_str(&lines_block("dependencies", entries, MAX_DEPENDENCY_BYTES)?);
+    out.push_str(&path_list(
+        "dependency_repos",
+        "dependency repositories",
+        &lookups[..lookups.len().min(MAX_LOOKUP_REPOS)],
+    )?);
+    if lookups.len() > MAX_LOOKUP_REPOS {
+        out.push_str(&omitted_note(lookups.len() - MAX_LOOKUP_REPOS)?);
+    }
+    Ok(out)
 }
 
 fn flow_task(input: &FlowInput<'_>) -> Result<String, PromptError> {
@@ -1460,12 +1611,13 @@ fn listed(label: &str, items: &[String], max: usize) -> Result<String, PromptErr
     Ok(out)
 }
 
-/// A data block of one-line JSON entries, filled up to `max_bytes`, with a note on the omitted entries.
+/// A data block of one-line JSON entries, filled up to `max_bytes` (an entry that does not fit is skipped, later ones
+/// may still fit), with a note on the omitted entries.
 fn lines_block(label: &str, entries: Vec<String>, max_bytes: usize) -> Result<String, PromptError> {
     let mut content = String::new();
     let mut omitted = 0;
     for entry in entries {
-        if omitted == 0 && content.len() + entry.len() < max_bytes {
+        if content.len() + entry.len() < max_bytes {
             content.push_str(&entry);
             content.push('\n');
         } else {
@@ -1678,6 +1830,18 @@ fn clip(text: &str, max_chars: usize) -> (String, usize) {
         return (text.to_owned(), 0);
     }
     (text.chars().take(max_chars).collect(), total - max_chars)
+}
+
+/// `text` of at most `max_chars` characters: a longer one keeps its start and end around `…`.
+fn middle_clipped(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_owned();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let head: String = text.chars().take(keep / 2).collect();
+    let tail: String = text.chars().skip(total - (keep - keep / 2)).collect();
+    format!("{head}…{tail}")
 }
 
 /// `text` cut to at most `max_bytes` bytes on a character boundary and the number of bytes cut.

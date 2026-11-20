@@ -113,6 +113,14 @@ Personal access tokens keep working after Sign out.
 - **Empty or default:** No repository is listed before the first analysis.
 - **Example:** dashpay/platform: related repositories found in Cargo.toml and Cargo.lock.
 
+### Controlled organisations
+
+- **What:** GitHub organisations or users whose repositories are yours. The Dependencies view marks their repositories and crates "yours", lists their crates among a changed crate's dependencies, and the PR-context agent looks up issues and pull requests in them.
+- **When used:** Every time a Dependencies view or a PR context prompt is built; a change applies at once, without analysing again.
+- **Empty or default:** Only the pull request's own owner is controlled; it always is.
+- **Limits:** Up to 50 GitHub logins (letters, digits and -, up to 39 characters), one list for the whole installation.
+- **Example:** dashpay: a pull request in dashpay/dash-evo-tool shows dashpay/platform crates as yours.
+
 ## Dashboard
 
 ### Linked logins

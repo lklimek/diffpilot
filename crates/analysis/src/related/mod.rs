@@ -70,7 +70,7 @@ pub fn from_cargo<'t>(
 }
 
 /// `(owner, repository)` of a GitHub git URL (`https://`, `ssh://git@`, `git://`, `git@github.com:`).
-fn github_repo(url: &str) -> Option<(String, String)> {
+pub(crate) fn github_repo(url: &str) -> Option<(String, String)> {
     let path = match url.split_once("://") {
         Some((_, rest)) => {
             let (authority, path) = rest.split_once('/')?;
@@ -117,7 +117,7 @@ fn valid_owner(owner: &str) -> bool {
     (1..=39).contains(&owner.len()) && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-fn valid_name(name: &str) -> bool {
+pub(crate) fn valid_name(name: &str) -> bool {
     (1..=100).contains(&name.len())
         && name != "."
         && name != ".."

@@ -8,3 +8,4 @@ Task: describe this pull request at project scale, so the reviewer can judge whe
 {{pr_text}}
 {{related_repos}}
 {{dependency_files}}
+{{dependencies}}

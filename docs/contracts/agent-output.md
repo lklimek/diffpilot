@@ -27,6 +27,10 @@ output against the schema, then verifies it (`analysis::verify`), then projects 
   (no head lines) can only be selected whole; a head sub-range covers the removed lines whose deletion marker
   lies inside it.
 - Flow cap: about 25 steps or 500 changed lines; split larger flows.
+- `crate_notes[]` (v1.2, ADR-021; nullable, null in plans stored before it): `{note, hunks[]}`, a keyword note
+  of at most 80 characters on what changed in one crate ("parsing of `TransitionType`"), anchored by the listed
+  hunk ids it describes. The server maps hunks to crates; unknown hunk ids are left out, and a note left with no
+  hunk, longer than 80 characters, not plain text or breaking a wording rule is dropped and logged (no repair).
 
 ## `pr_context`
 `problem`, `why_needed`, `what_it_gives`; `related_work[]` (`reference` URL or `owner/repo#n`, `kind`,

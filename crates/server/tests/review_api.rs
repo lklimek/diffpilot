@@ -351,6 +351,10 @@ fn files(id: AnalysisId) -> String {
     format!("/api/v1/analyses/{id}/files")
 }
 
+fn dependencies(id: AnalysisId) -> String {
+    format!("/api/v1/analyses/{id}/dependencies")
+}
+
 fn files_viewed(id: AnalysisId) -> String {
     format!("/api/v1/analyses/{id}/files/viewed")
 }
@@ -792,6 +796,7 @@ async fn analysis_routes_check_session_csrf_and_tenant() {
         ("PUT", review_state(id), true, body()),
         ("GET", get_diff.clone(), false, None),
         ("GET", files(id), false, None),
+        ("GET", dependencies(id), false, None),
         ("PUT", files_viewed(id), true, viewed()),
         ("POST", questions.clone(), true, ask_lines()),
     ] {
@@ -1113,6 +1118,59 @@ async fn files_wait_for_the_analysis_and_viewed_refuses_other_paths() {
     let (status, body) = h.send("GET", &files(id), Some(BOB), false, None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
     assert_eq!(body["code"], json!("unauthenticated"));
+}
+
+/// R15 on fixture PR 482: one crate at the repository root, its five registry dependencies listed under the
+/// registry, the fixture plan's notes ranked by changed lines, no conversion facts.
+#[tokio::test]
+async fn dependencies_of_the_fixture_pull_request() {
+    let h = Harness::new().await;
+    let id = h.analysis(true).await;
+    let (status, body) = h.get(&dependencies(id)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let view: contracts::api::deps::DependencyView = serde_json::from_value(body).expect("view");
+    assert_eq!(
+        view.status,
+        contracts::api::deps::DependencyStatus::Available
+    );
+    assert_eq!(view.notes, contracts::api::deps::NotesState::Produced);
+    assert_eq!(view.repositories.len(), 2, "{view:?}");
+    let registry = &view.repositories[1];
+    assert_eq!(
+        registry.kind,
+        contracts::api::deps::RepositoryKind::Registry
+    );
+    assert_eq!(registry.crates.len(), 5, "{registry:?}");
+    let this = &view.repositories[0];
+    assert_eq!(this.kind, contracts::api::deps::RepositoryKind::This);
+    let [krate] = this.crates.as_slice() else {
+        panic!("one crate: {:?}", this.crates);
+    };
+    assert_eq!(krate.name, "node-client");
+    let changes = krate.changes.as_ref().expect("changed");
+    assert!(
+        changes.changed_lines > 0 && changes.files > 0,
+        "{changes:?}"
+    );
+    assert_eq!(changes.other_dependencies, 0);
+    assert!(changes.facts.is_empty(), "{:?}", changes.facts);
+    assert_eq!(changes.notes.len(), 3);
+    assert_eq!(changes.notes_hidden, 1);
+    assert!(
+        changes
+            .notes
+            .windows(2)
+            .all(|pair| pair[0].changed_lines >= pair[1].changed_lines),
+        "{:?}",
+        changes.notes
+    );
+    let (status, again) = h.get(&dependencies(id)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_value::<contracts::api::deps::DependencyView>(again).expect("view"),
+        view,
+        "stored and served again"
+    );
 }
 
 /// C1 contract: a `step` owner is a step of the named flow that holds the lines in the Tour, and head lines it owns
