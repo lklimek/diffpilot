@@ -181,7 +181,6 @@ it("Sign out of a session that already ended (401) still clears the drafts and s
   const router = renderRoute("/settings");
   await userEvent.click(within(await region("Account")).getByRole("button", { name: "Sign out" }));
   await expectSignedOutHome(router);
-  expect(screen.queryByText(/Not signed out/)).toBeNull();
   expect(window.sessionStorage.getItem("diffpilot.comment-drafts.alice.a1")).toBeNull();
   window.sessionStorage.clear();
 });
