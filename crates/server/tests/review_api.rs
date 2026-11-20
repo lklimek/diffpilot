@@ -55,6 +55,7 @@ struct Harness {
 fn config(dir: &Path) -> Config {
     let env: HashMap<&str, String> = HashMap::from([
         ("SR_PUBLIC_URL", "http://review.example.test".to_owned()),
+        ("SR_ALLOWED_LOGINS", "alice".to_owned()),
         ("SR_DATA_DIR", dir.join("data").display().to_string()),
         (
             "SR_SECRET_KEY",

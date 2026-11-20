@@ -44,6 +44,7 @@ chmod 0444 "$tmp/app.pem"
 sed -e "s|^SR_SECRET_KEY=.*|SR_SECRET_KEY=$(head -c 32 /dev/urandom | base64)|" \
   -e "s|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')|" \
   -e "s|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:$http_port|" \
+  -e "s|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=alice|" \
   -e "s|^SR_HTTP_PORT=.*|SR_HTTP_PORT=$http_port|" \
   -e "s|^SR_GITHUB_APP_PRIVATE_KEY_PATH=.*|SR_GITHUB_APP_PRIVATE_KEY_PATH=$tmp/app.pem|" \
   -e "s|^SR_MEMCAN_URL=.*|SR_MEMCAN_URL=http://$host_ip:$memcan_port/mcp|" \

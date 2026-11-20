@@ -12,7 +12,7 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | Table | Holds | Key constraints |
 |---|---|---|
 | `tenants` | tenants; `default` seeded | – |
-| `tenant_allowed_logins` | sign-in allowlist (ADR-007); seeds `lklimek`, `Claudius-Maginificent` | login `NOCASE`; `github_id` bound once at first sign-in with `bound_at`; `UNIQUE(tenant_id, github_id)` |
+| `tenant_allowed_logins` | sign-in allowlist (ADR-007); made equal to `SR_ALLOWED_LOGINS` at every start (v1.2; migration 0016 drops the unbound seed rows) | login `NOCASE`; `github_id` bound once at first sign-in with `bound_at`; `UNIQUE(tenant_id, github_id)` |
 | `users` | GitHub users (id, login, name, avatar, LLM language `en`, `pl` or `ru`; `ru` since migration 0010) | no `tenant_id` (memberships) |
 | `memberships` | user ↔ tenant | – |
 | `oauth_logins` | OAuth state + encrypted PKCE verifier, short-lived | – |

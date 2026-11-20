@@ -300,9 +300,17 @@ async fn migration_0010_on_a_seeded_v9_database() {
             (table, rows)
         })
         .collect();
+    // 0016 drops the allowlist logins 0001 seeded, still unbound here.
     let rows_before: Vec<_> = rows_before
         .into_iter()
         .filter(|(t, _)| t != "_sqlx_migrations")
+        .map(|(table, rows)| {
+            if table == "tenant_allowed_logins" {
+                (table, Vec::new())
+            } else {
+                (table, rows)
+            }
+        })
         .collect();
     assert_eq!(rows_before, rows_after, "row contents changed");
     assert_eq!(schema_before, schema_after, "other schema entries changed");

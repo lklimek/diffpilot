@@ -7,10 +7,10 @@
 # the check fails unless --no-render is given.
 #
 # With --env-file (production, without --local) FILE's values are checked too, by name only (never printed): no
-# value left from .env.example, secrets set (runner secret at least 32 characters), an https public URL, no
-# development override, no `$` interpolation (the effective value would be unknown; variables of the invoking
-# shell also override FILE in compose, so run it from a clean shell). An unpinned SR_RUNNER_CLAUDIUS_REF (not a
-# commit id or refs/tags/...) and an empty SR_TRUSTED_PROXIES are warnings only.
+# value left from .env.example, secrets set (runner secret at least 32 characters), an https public URL, allowed
+# sign-in logins set, no development override, no `$` interpolation (the effective value would be unknown;
+# variables of the invoking shell also override FILE in compose, so run it from a clean shell). An unpinned
+# SR_RUNNER_CLAUDIUS_REF (not a commit id or refs/tags/...) and an empty SR_TRUSTED_PROXIES are warnings only.
 #
 # Usage: deploy/check-production-config.sh [--env-file FILE [--local | --secret-files]] [--no-render]
 #        deploy/check-production-config.sh --self-test [--no-render]
@@ -152,6 +152,9 @@ check_env() {
   if [[ ! "${values[SR_PUBLIC_URL]:-}" =~ ^https://[^/?#]+ ]]; then
     say "SR_PUBLIC_URL must be an https:// URL (the reverse proxy's public name; Secure cookies)"
   fi
+  if [[ -z "${values[SR_ALLOWED_LOGINS]:-}" ]]; then
+    say "SR_ALLOWED_LOGINS is empty: list the GitHub logins allowed to sign in, comma-separated (the server does not start without one)"
+  fi
   if [[ -z "${values[SR_TRUSTED_PROXIES]:-}" ]]; then
     echo "check-production-config: warning: SR_TRUSTED_PROXIES is empty: behind the reverse proxy every client" \
       "then shares one address, so failed access-token attempts of all clients count against one limit;" \
@@ -256,6 +259,7 @@ if ((self_test)); then
     -e 's|^SR_GITHUB_CLIENT_SECRET=.*|SR_GITHUB_CLIENT_SECRET=CANARY-client-secret|' \
     -e 's|^SR_MEMCAN_URL=.*|SR_MEMCAN_URL=http://memcan.test.invalid:8190/mcp|' \
     -e 's|^SR_MEMCAN_TOKEN=.*|SR_MEMCAN_TOKEN=CANARY-memcan-token|' \
+    -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=octocat,hubot|' \
     -e "s|^SR_RUNNER_CLAUDIUS_REF=.*|SR_RUNNER_CLAUDIUS_REF=$(printf '%040d' 7)|" "$repo/.env.example" > "$tmp/good.env"
   # env_case NAME pass|fail SECRET_FILES SED_ARGS...: check_env of the good env edited by sed.
   env_case() {
@@ -278,6 +282,11 @@ if ((self_test)); then
   env_case ".env.example public URL" fail 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=https://review.example.com|'
   env_case "http public URL" fail 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://review.test.invalid|'
   env_case "empty secret" fail 0 -e 's|^SR_SECRET_KEY=.*|SR_SECRET_KEY=|'
+  want_text="SR_ALLOWED_LOGINS is empty" env_case "no allowed login" fail 0 \
+    -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=|'
+  want_text="SR_ALLOWED_LOGINS is empty" env_case "allowed logins unset" fail 0 -e '/^SR_ALLOWED_LOGINS=/d'
+  want_text="SR_ALLOWED_LOGINS still holds a placeholder" env_case "allowed logins placeholder" fail 0 \
+    -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=REPLACE_WITH_GITHUB_LOGINS|'
   env_case "short runner secret" fail 0 -e 's|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=CANARY-0123456789abcdef0123456|'
   want_text="warning: SR_RUNNER_CLAUDIUS_REF" env_case "skills on a branch (warning only)" pass 0 \
     -e 's|^SR_RUNNER_CLAUDIUS_REF=.*|SR_RUNNER_CLAUDIUS_REF=main|'

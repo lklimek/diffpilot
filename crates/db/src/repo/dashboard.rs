@@ -3553,8 +3553,11 @@ mod tests {
         .fetch_all(&db.pool)
         .await
         .expect("versions");
-        let all = i64::try_from(super::super::MIGRATIONS.len()).expect("count");
-        assert_eq!(versions, (1..=all).collect::<Vec<_>>());
+        let all: Vec<i64> = super::super::MIGRATIONS
+            .iter()
+            .map(|(version, ..)| *version)
+            .collect();
+        assert_eq!(versions, all);
     }
 
     /// Migration 0005 upgrades a database with dashboard rows in place: refreshes, settings and judgements are kept,

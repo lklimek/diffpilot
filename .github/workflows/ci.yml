@@ -160,7 +160,7 @@ jobs:
             -e SR_PUBLIC_URL=http://localhost:3000 -e SR_SECRET_KEY="$(head -c 32 /dev/urandom | base64)" \
             -e SR_RUNNER_SECRET=ci-runner-secret -e SR_GITHUB_APP_ID=1 -e SR_GITHUB_CLIENT_ID=ci \
             -e SR_GITHUB_CLIENT_SECRET=ci -e SR_GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app.pem \
-            -e SR_MEMCAN_URL=http://127.0.0.1:9/mcp -e SR_MEMCAN_TOKEN=ci \
+            -e SR_MEMCAN_URL=http://127.0.0.1:9/mcp -e SR_MEMCAN_TOKEN=ci -e SR_ALLOWED_LOGINS=ci \
             --mount type=volume,target=/var/lib/diffpilot diffpilot-server:local
           for _ in $(seq 60); do
             status="$(docker inspect -f '{{.State.Health.Status}}' sr-ci-server)"
