@@ -875,3 +875,27 @@ plan: `docs/v1.1-dashboard-plan.md`.
 - **Settings.** "Controlled organisations": an installation-wide list of GitHub owners; the pull request's owner is
   always controlled. The PR-context agent receives the map and looks up upstream issues and pull requests in
   controlled dependency repositories (ADR-005 addendum 2026-11-20). Decision: ADR-021.
+
+### Owner-approved amendment — 2026-11-20: flows follow control flow; imports and tests cost no tokens
+
+Owner feedback (FL1): a step "Remove the public export of the rejection reason" was no step of any flow, only a
+changed import. Flows follow control flow, not every changed line; import changes and test code are not worth LLM
+tokens; per-line notes belong in the Files view, which exists to discuss changes. This supersedes the
+corresponding parts of the 2026-11-17 and 2026-11-18 amendments:
+
+- **Cut before the LLM (deterministic, Rust lexer, `analysis::tech`).** The import rule also covers re-exports
+  (`pub`, `pub(crate)`, `pub(super)`, `pub(self)`, `pub(in …)` before `use` on the same line) and plain `use`
+  trees spanning several lines, with the same name-binding conditions. A new rule takes inline test code: items
+  whose first attribute is `#[cfg(test)]`, or `#[test]` / `#[<path>::test]` when nothing in the file can bind that
+  path, starting and ending their lines, outside macro token trees; covered are lines inside such an item's body,
+  or the whole item when its attribute and first item lines changed (so an attribute never moves onto an
+  unchanged item). Test items are left out of import scoping, so `use super::*` in a test module no longer shows
+  every import. Hunks made only of such context lines are not listed in plan or flow prompts.
+- **Nothing hidden.** Every cut line stays in Files: imports as a line rule, inline tests as Not analysed (Tests,
+  classified by line rule) and counted as test lines; test code is not hidden in the code views. Residual risk: a
+  removed re-export can re-point a glob import elsewhere; downstream breakage is a compile error.
+- **Incidental changes.** A flow's analysis may name changed lines of its flow off its control flow (an import, a
+  visibility change, a re-export, glue) as an incidental change with one sentence instead of a step (flow file
+  format 3, ADR-014 addendum 2026-11-20). They cover their lines, carry no flag, rating or assessment (a change
+  with a risk to flag or rate is a step) and follow the wording rules. Files lists them under their flow as
+  "Incidental change (LLM)"; the Flows view does not show them.

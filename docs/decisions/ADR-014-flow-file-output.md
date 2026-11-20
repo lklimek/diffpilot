@@ -84,3 +84,13 @@ gains an optional `flag` object, and a stored `question` reads as a `flag` witho
 it. Stored analyses are not migrated or analysed again. Today's checks accept such
 a flag, and the Tour shows it with level `unknown`, its text as the title and no
 scenario. Only new agent output must carry the object, and the grammar enforces it.
+
+## Addendum 2026-11-20: incidental changes (format version 3)
+
+Owner decision (brief amendment 2026-11-20): steps follow control flow, and changed lines off it need a place
+other than a step. `## incidental <hunk-id|file-id:side:first-last>` with one required `text` names such lines of
+the flow; no other field, annotation or assessment is accepted after it. The verifier keeps an incidental change
+on changed lines of this flow, off every step, and applies the text, agent-limitation and wording rules; its
+lines count as covered. A flow still needs a step. `FlowAnalysisOutput` gains `incidentals` (empty when absent, so
+stored flows read unchanged); the Files contract gains the owner `incidental` with the flow and the sentence. The
+context version is 3: server and runner images are rebuilt together.
