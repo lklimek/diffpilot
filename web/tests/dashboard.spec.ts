@@ -146,6 +146,78 @@ test.describe("My work (msw)", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
+  test("side panel: Ready to merge lists the user's mergeable PRs; Copy list puts linked lines on the clipboard", async ({
+    page,
+    context,
+  }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await open(page);
+    const side = page.getByRole("complementary");
+    const ready = side.locator("details", { has: page.getByRole("heading", { name: "Ready to merge" }) });
+    await expect(ready.locator("summary")).toContainText("1 PRs");
+    await expect(ready.getByRole("link", { name: "Open WUI-311 on GitHub (new tab)" })).toBeVisible();
+    await expect(ready.getByText("CI failing")).toBeVisible();
+    // Still ranked: the same PR is in Needs you.
+    await expect(
+      page.getByRole("region", { name: "Needs you" }).getByRole("link", { name: "Open WUI-311 on GitHub" }),
+    ).toBeVisible();
+    const copy = ready.getByRole("button", { name: "Copy list of PRs ready to merge" });
+    const box = (await copy.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(24);
+    await copy.focus();
+    await page.keyboard.press("Enter");
+    await expect(ready.getByRole("status")).toHaveText("Copied 1 line.");
+    const clip = await page.evaluate(async () => {
+      const [item] = await navigator.clipboard.read();
+      return {
+        text: await (await item!.getType("text/plain")).text(),
+        html: await (await item!.getType("text/html")).text(),
+      };
+    });
+    expect(clip.text).toBe(
+      "[acme/wallet-ui#311](https://github.com/acme/wallet-ui/pull/311) feat(wallet): show pending withdrawals - small (+266 / -114)",
+    );
+    expect(clip.html).toContain(
+      '<a href="https://github.com/acme/wallet-ui/pull/311">acme/wallet-ui#311</a>',
+    );
+  });
+
+  test("Copy list over plain HTTP: without the Clipboard API a copy event still carries HTML and text", async ({
+    page,
+  }) => {
+    // The LAN deployment is not a secure context: no navigator.clipboard there.
+    await page.addInitScript(() => {
+      Object.defineProperty(Navigator.prototype, "clipboard", { get: () => undefined, configurable: true });
+      window.addEventListener("copy", (event) => {
+        const copied = {
+          text: event.clipboardData?.getData("text/plain"),
+          html: event.clipboardData?.getData("text/html"),
+        };
+        (window as unknown as { copied: typeof copied }).copied = copied;
+      });
+    });
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await open(page);
+    const waiting = page
+      .getByRole("complementary")
+      .locator("details", { has: page.getByRole("heading", { name: "Waiting on others" }) });
+    const copy = waiting.getByRole("button", { name: "Copy list of PRs waiting on others" });
+    await copy.click();
+    await expect(waiting.getByRole("status")).toHaveText("Copied 3 lines.");
+    await expect(copy).toBeFocused();
+    const copied = await page.evaluate(
+      () => (window as unknown as { copied: { text: string; html: string } }).copied,
+    );
+    expect(copied.text.split("\n")).toHaveLength(3);
+    expect(copied.text).toContain(
+      "[acme/platform#1176](https://github.com/acme/platform/pull/1176) feat(sync): parallel header download - large (+3200 / -400) — waits on @jun-park, team:core for 11 d",
+    );
+    expect(copied.html).toContain(
+      '<a href="https://github.com/acme/platform/pull/1176">acme/platform#1176</a>',
+    );
+  });
+
   test("kind toggles combine by keyboard, the last one on stays on, and the choice is remembered", async ({
     page,
   }) => {

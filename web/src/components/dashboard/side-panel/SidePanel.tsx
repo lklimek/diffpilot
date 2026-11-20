@@ -129,7 +129,7 @@ export function SidePanel({ main, children, railText }: SidePanelProps) {
       )}
       <aside
         ref={aside}
-        aria-label="More: waiting on others, yesterday, charts, scan notes"
+        aria-label="More: waiting on others, ready to merge, yesterday, charts, scan notes"
         className="sticky top-16 grid max-h-[calc(100vh-80px)] min-w-0 content-start gap-2.5 overflow-auto"
       >
         {open ? (

@@ -13,6 +13,7 @@ import { ExcludedItems } from "../../components/dashboard/excluded-items/Exclude
 import { Mentions } from "../../components/dashboard/mentions/Mentions";
 import { EmptyWork } from "../../components/dashboard/work-list/EmptyWork";
 import { SidePanel } from "../../components/dashboard/side-panel/SidePanel";
+import { ReadyToMerge } from "../../components/dashboard/ready-to-merge/ReadyToMerge";
 import { WaitingOnOthers } from "../../components/dashboard/waiting-on-others/WaitingOnOthers";
 import { Yesterday } from "../../components/dashboard/yesterday/Yesterday";
 import { ThroughputMinis } from "../../components/dashboard/throughput-minis/ThroughputMinis";
@@ -249,6 +250,7 @@ export function DashboardScreen() {
         (snapshot && charts ? (
           <SidePanel main={main} railText={`More · waiting on others ${snapshot.awaiting.length}`}>
             <WaitingOnOthers items={snapshot.awaiting} now={now} />
+            <ReadyToMerge items={snapshot.ready_to_merge} />
             <Yesterday
               label={fullDayLabel(charts.yesterday.day)}
               prs={charts.yesterday.prs}
