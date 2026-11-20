@@ -197,7 +197,12 @@ export function TopBar({
         </a>
       )}
       {pr && (
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+        <div
+          className={`flex min-w-0 flex-1 items-center gap-2 overflow-hidden ${
+            // Separates the PR's own line from the breadcrumb (page path).
+            view ? "ml-1.5 border-l-2 border-border pl-5" : ""
+          }`}
+        >
           {!view && (
             <>
               <a
@@ -217,7 +222,7 @@ export function TopBar({
               </Tooltip>
             </>
           )}
-          <strong className="truncate font-semibold">{pr.title}</strong>
+          <strong className="min-w-[20ch] truncate font-semibold">{pr.title}</strong>
           <Tooltip tip={`Head commit analysed: ${pr.head_sha}`}>
             <code tabIndex={0} className="text-xs text-muted">
               {pr.head_sha.slice(0, 7)}
