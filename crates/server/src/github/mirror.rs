@@ -235,6 +235,19 @@ pub async fn read_blobs(
     read_blobs_in_slot(&READ_PERMITS, READ_TIMEOUT, mirror, requests, limits).await
 }
 
+/// Runs CPU-bound `work` on the blocking pool in a read slot, so it is bounded together with the blob reads.
+pub async fn in_read_slot<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, MirrorError> {
+    let slot = read_slot(&READ_PERMITS, READ_TIMEOUT).await?;
+    tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        work()
+    })
+    .await
+    .map_err(MirrorError::Task)
+}
+
 /// One of the read slots, waiting at most `wait`.
 async fn read_slot(
     permits: &Arc<tokio::sync::Semaphore>,

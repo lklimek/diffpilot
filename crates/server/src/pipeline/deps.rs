@@ -145,13 +145,18 @@ async fn compute(
     let cargo_files = cargo_map::cargo_files_to_read(&head_paths);
     let budget = u64::try_from(cargo_map::MAX_CARGO_TEXT_BYTES).unwrap_or(u64::MAX);
     let texts = read_texts(mirror, head, &cargo_files, budget).await?;
-    let mut map = cargo_map::map(pr_repo, &head_paths, &|path| {
-        texts.get(path).map(String::as_str)
-    });
+    // Parsing and token rules are CPU work: on the blocking pool, in a read slot.
+    let repo = pr_repo.clone();
+    let mut map = mirror::in_read_slot(move || {
+        cargo_map::map(&repo, &head_paths, &|path| {
+            texts.get(path).map(String::as_str)
+        })
+    })
+    .await?;
     if map.status == MapStatus::NotRust {
         return Ok(map);
     }
-    let sources: Vec<(&str, Vec<u32>)> = files
+    let sources: Vec<(String, Vec<u32>)> = files
         .iter()
         .filter(|file| {
             !file.binary && file.status != FileStatus::Deleted && file.path.ends_with(".rs")
@@ -163,15 +168,19 @@ async fn compute(
                 .flat_map(|h| h.added.iter().copied())
                 .collect();
             added.sort_unstable();
-            (file.path.as_str(), added)
+            (file.path.clone(), added)
         })
         .filter(|(path, added)| !added.is_empty() && map.crate_of(path).is_some())
         .collect();
-    let paths: Vec<String> = sources.iter().map(|(path, _)| (*path).to_owned()).collect();
+    let paths: Vec<String> = sources.iter().map(|(path, _)| path.clone()).collect();
     let texts = read_texts(mirror, head, &paths, MAX_SOURCE_BYTES).await?;
-    for (path, added) in &sources {
-        map.add_facts(path, texts.get(*path).map(String::as_str), added);
-    }
+    let mut map = mirror::in_read_slot(move || {
+        for (path, added) in &sources {
+            map.add_facts(path, texts.get(path).map(String::as_str), added);
+        }
+        map
+    })
+    .await?;
     // A failed search is a mirror read error: nothing is stored and the next read computes the map again.
     let queries: Vec<DefinitionQuery> = map.definition_queries();
     let mut found: BTreeSet<String> = BTreeSet::new();
@@ -194,8 +203,11 @@ async fn compute(
         tracing::debug!(%analysis, unread = unread.len(), "definition files not read; their definitions are not searched");
     }
     let candidates: Vec<(String, String)> = texts.into_iter().collect();
-    map.locate(&queries, &candidates, &unread);
-    Ok(map)
+    mirror::in_read_slot(move || {
+        map.locate(&queries, &candidates, &unread);
+        map
+    })
+    .await
 }
 
 /// File texts by path.
@@ -669,6 +681,13 @@ fn limit(limit: &MapLimit) -> DependencyLimit {
         },
         MapLimit::SourceUnread { path } => DependencyLimit::SourceUnread { path: path.clone() },
         MapLimit::FactsCut { kept } => DependencyLimit::FactsCut { kept: *kept },
+        MapLimit::WorkspaceUnresolved { manifest } => DependencyLimit::WorkspaceUnresolved {
+            manifest: manifest.clone(),
+        },
+        MapLimit::TargetSpecific { manifest } => DependencyLimit::TargetSpecific {
+            manifest: manifest.clone(),
+        },
+        MapLimit::SourceCut { path } => DependencyLimit::SourceCut { path: path.clone() },
         MapLimit::DefinitionsUnread { dir, files } => DependencyLimit::DefinitionsUnread {
             dir: dir.clone(),
             files: *files,

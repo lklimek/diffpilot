@@ -187,6 +187,60 @@
           ]
         },
         {
+          "description": "A package whose workspace is not determined (outside the members of the workspace above it, or a\n`package.workspace` pointer to a manifest not read): its lock file and inherited dependencies are not resolved.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "workspace_unresolved"
+            },
+            "manifest": {
+              "description": "Its manifest.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "manifest"
+          ]
+        },
+        {
+          "description": "A manifest with `[target.…]` dependency tables: they are listed for every target (`cfg` is not evaluated).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "target_specific"
+            },
+            "manifest": {
+              "description": "The manifest.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "manifest"
+          ]
+        },
+        {
+          "description": "A changed Rust file with more conversion candidates than the server checks: the rest are not checked.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "source_cut"
+            },
+            "path": {
+              "description": "Its path.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ]
+        },
+        {
           "description": "Files of a crate that may hold a searched type definition were not read (too large, over the read budget or\nthe file cap): definitions not found there are `not_searched`.",
           "type": "object",
           "properties": {

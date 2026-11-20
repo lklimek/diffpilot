@@ -1214,7 +1214,19 @@ path: string, } | { "kind": "facts_cut",
 /**
  * Facts kept.
  */
-kept: number, } | { "kind": "definitions_unread",
+kept: number, } | { "kind": "workspace_unresolved",
+/**
+ * Its manifest.
+ */
+manifest: string, } | { "kind": "target_specific",
+/**
+ * The manifest.
+ */
+manifest: string, } | { "kind": "source_cut",
+/**
+ * Its path.
+ */
+path: string, } | { "kind": "definitions_unread",
 /**
  * The crate's directory (`""` = repository root).
  */

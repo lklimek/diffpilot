@@ -2,7 +2,7 @@
 //! dependency comes from, read from `Cargo.toml` files and `Cargo.lock` with `toml_edit`. Nothing is run and no IO
 //! happens here: what cannot be read is a [`MapLimit`], never an absence.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use contracts::common::RepoRef;
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,9 @@ pub const MAX_CARGO_TEXT_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_FACTS: usize = 2000;
 /// Most type names one definition search looks for.
 pub const MAX_DEFINITION_NAMES: usize = 64;
+/// Most `Cargo.lock` files read (those next to a read manifest, in path order); an unread one needed by a workspace
+/// is [`MapLimit::LockUnreadable`].
+pub const MAX_LOCKS: usize = 64;
 /// Registry name of crates.io.
 pub const CRATES_IO: &str = "crates.io";
 
@@ -91,6 +94,23 @@ pub enum MapLimit {
     FactsCut {
         /// Facts kept.
         kept: u32,
+    },
+    /// A package whose workspace is not determined: outside the members of the workspace above it, or a
+    /// `package.workspace` pointer to a manifest that was not read or has no `[workspace]`. Its lock file and
+    /// inherited dependencies are not resolved.
+    WorkspaceUnresolved {
+        /// Its manifest.
+        manifest: String,
+    },
+    /// A manifest with `[target.…]` dependency tables: they are listed for every target (`cfg` is not evaluated).
+    TargetSpecific {
+        /// The manifest.
+        manifest: String,
+    },
+    /// A changed Rust file with more conversion candidates than [`tech::MAX_CANDIDATES`]: the rest are not checked.
+    SourceCut {
+        /// Its path.
+        path: String,
     },
     /// Files of a crate that may hold a searched definition were not read: definitions not found there are not
     /// searched.
@@ -304,7 +324,13 @@ impl DependencyMap {
             });
             return;
         };
-        for candidate in tech::conversion_candidates(text, added) {
+        let (candidates, cut) = tech::conversion_candidates_bounded(text, added);
+        if cut {
+            self.limits.push(MapLimit::SourceCut {
+                path: path.to_owned(),
+            });
+        }
+        for candidate in candidates {
             let TypeOrigin::Crate {
                 code_name,
                 import_line,
@@ -349,7 +375,8 @@ impl DependencyMap {
                 Target::Repo { .. } => Definition::NotSearched,
                 Target::External { index } => {
                     match self.external.get(index as usize).map(|e| &e.source) {
-                        Some(CrateSource::Path { repo: None, .. }) => Definition::NotLocated,
+                        // A path crate whose manifest was not read, or outside the repository: not searched.
+                        Some(CrateSource::Path { repo: None, .. }) => Definition::NotSearched,
                         _ => Definition::OtherRepository,
                     }
                 }
@@ -433,10 +460,26 @@ impl DependencyMap {
                 });
             }
         }
+        // Each file is lexed once, for the names searched in the crate that owns it.
         let mut files: Vec<&(String, String)> = files.iter().collect();
         files.sort_by(|a, b| a.0.cmp(&b.0));
-        let owners: Vec<Option<usize>> =
-            files.iter().map(|(path, _)| self.crate_of(path)).collect();
+        let mut found: Vec<(usize, &str, HashMap<String, u32>)> = Vec::new();
+        for (path, text) in files {
+            let Some(owner) = self.crate_of(path) else {
+                continue;
+            };
+            let Some(dir) = self.crates.get(owner).map(|k| &k.dir) else {
+                continue;
+            };
+            let names: Vec<&str> = queries
+                .iter()
+                .filter(|q| q.dir == *dir)
+                .flat_map(|q| q.names.iter().map(String::as_str))
+                .collect();
+            if !names.is_empty() {
+                found.push((owner, path.as_str(), tech::definition_lines(text, &names)));
+            }
+        }
         for fact in &mut self.facts {
             let (Target::Repo { index }, Definition::NotSearched) = (fact.target, &fact.definition)
             else {
@@ -451,13 +494,12 @@ impl DependencyMap {
             if !searched {
                 continue;
             }
-            fact.definition = files
+            fact.definition = found
                 .iter()
-                .zip(&owners)
-                .filter(|(_, owner)| **owner == Some(index as usize))
-                .find_map(|((path, text), _)| {
-                    tech::definition_line(text, &fact.type_name).map(|line| FileLine {
-                        file: path.clone(),
+                .filter(|(owner, ..)| *owner == index as usize)
+                .find_map(|(_, path, lines)| {
+                    lines.get(&fact.type_name).map(|&line| FileLine {
+                        file: (*path).to_owned(),
                         line,
                     })
                 })
@@ -475,24 +517,25 @@ impl DependencyMap {
     }
 }
 
-/// The Cargo files among `head_paths` the map reads: every `Cargo.lock` and the first [`MAX_MANIFESTS`]
-/// `Cargo.toml` files in path order.
+/// The Cargo files among `head_paths` the map reads, in reading order: the first [`MAX_MANIFESTS`] `Cargo.toml`
+/// files in path order, then at most [`MAX_LOCKS`] `Cargo.lock` files next to one of them.
 pub fn cargo_files_to_read(head_paths: &[String]) -> Vec<String> {
     let mut manifests: Vec<&String> = head_paths
         .iter()
         .filter(|p| file_name(p) == MANIFEST)
         .collect();
     manifests.sort();
+    manifests.dedup();
     manifests.truncate(MAX_MANIFESTS);
-    let mut out: Vec<String> = head_paths
+    let dirs: HashSet<&str> = manifests.iter().map(|p| dir_of(p)).collect();
+    let mut locks: Vec<&String> = head_paths
         .iter()
-        .filter(|p| file_name(p) == LOCK)
-        .chain(manifests)
-        .cloned()
+        .filter(|p| file_name(p) == LOCK && dirs.contains(dir_of(p)))
         .collect();
-    out.sort();
-    out.dedup();
-    out
+    locks.sort();
+    locks.dedup();
+    locks.truncate(MAX_LOCKS);
+    manifests.into_iter().chain(locks).cloned().collect()
 }
 
 /// Builds the map of the commit whose paths are `head_paths`; `text(path)` gives a Cargo file's text (`None` when
@@ -522,32 +565,50 @@ pub fn map<'t>(
         budget = budget.checked_sub(text.len())?;
         Some(text)
     };
+    let present: HashSet<&str> = head_paths.iter().map(String::as_str).collect();
     let mut manifests: Vec<Manifest<'t>> = Vec::new();
     for path in cargo_files_to_read(head_paths)
         .iter()
         .filter(|p| file_name(p) == MANIFEST)
     {
         match read(path).and_then(|text| Some((text, cargo::parse(text)?))) {
-            Some((text, document)) => manifests.push(Manifest {
-                dir: dir_of(path).to_owned(),
-                path: path.clone(),
-                lines: LineIndex::new(text),
-                document,
-            }),
+            Some((text, document)) => {
+                let manifest = Manifest {
+                    dir: dir_of(path).to_owned(),
+                    path: path.clone(),
+                    lines: LineIndex::new(text),
+                    document,
+                };
+                let target_specific = manifest
+                    .document
+                    .get("target")
+                    .and_then(Item::as_table_like)
+                    .is_some_and(|targets| {
+                        targets
+                            .iter()
+                            .any(|(_, t)| t.as_table_like().is_some_and(|t| !kinds(t).is_empty()))
+                    });
+                if target_specific {
+                    limits.push(MapLimit::TargetSpecific {
+                        manifest: path.clone(),
+                    });
+                }
+                manifests.push(manifest);
+            }
             None => limits.push(MapLimit::ManifestUnreadable { path: path.clone() }),
         }
     }
-    let mut builder = Builder {
-        pr_repo,
-        manifests: &manifests,
-        crates: Vec::new(),
-        external: Vec::new(),
-        external_index: HashMap::new(),
-        locks: BTreeMap::new(),
-    };
+    let mut builder = Builder::new(pr_repo, &manifests);
+    for manifest in builder.packages() {
+        if matches!(builder.membership(&manifest.dir), Membership::Unresolved) {
+            limits.push(MapLimit::WorkspaceUnresolved {
+                manifest: manifest.path.clone(),
+            });
+        }
+    }
     for root in builder.lock_roots() {
         let path = join(&root, LOCK);
-        let lock = if head_paths.contains(&path) {
+        let lock = if present.contains(path.as_str()) {
             match read(&path).and_then(Lock::parse) {
                 Some(lock) => Some(lock),
                 None => {
@@ -588,24 +649,6 @@ impl Manifest<'_> {
 
     fn workspace(&self) -> Option<&dyn TableLike> {
         self.document.get("workspace").and_then(Item::as_table_like)
-    }
-
-    /// Whether `dir` is listed in this workspace root's `exclude`.
-    fn excludes(&self, dir: &str) -> bool {
-        let excluded = self
-            .workspace()
-            .and_then(|w| w.get("exclude"))
-            .and_then(Item::as_array);
-        excluded.is_some_and(|list| {
-            list.iter().filter_map(|v| v.as_str()).any(|entry| {
-                normalise(&self.dir, entry).is_some_and(|Inside(excluded)| {
-                    dir == excluded
-                        || dir
-                            .strip_prefix(excluded.as_str())
-                            .is_some_and(|rest| rest.starts_with('/'))
-                })
-            })
-        })
     }
 }
 
@@ -659,6 +702,8 @@ struct Declared {
     package: String,
     git: Option<String>,
     path: Option<String>,
+    /// The `registry` key: a registry other than crates.io.
+    registry: Option<String>,
     /// Directory paths in the declaration are relative to.
     base_dir: String,
     /// Where the declaration that gives the source is.
@@ -670,6 +715,10 @@ struct Declared {
 struct Builder<'b, 't> {
     pr_repo: &'b RepoRef,
     manifests: &'b [Manifest<'t>],
+    /// Read manifests by directory.
+    by_dir: HashMap<&'b str, &'b Manifest<'t>>,
+    /// Members (package directories) of each workspace root, by the root's directory.
+    members: HashMap<&'b str, HashSet<String>>,
     crates: Vec<RepoCrate>,
     external: Vec<ExternalCrate>,
     external_index: HashMap<(String, Option<String>, String), u32>,
@@ -677,28 +726,149 @@ struct Builder<'b, 't> {
     locks: BTreeMap<String, Option<Lock>>,
 }
 
+/// Which workspace a package belongs to (Cargo's rules over the read manifests).
+#[derive(Clone, Copy)]
+enum Membership<'b, 't> {
+    /// A member of the workspace with this root manifest.
+    Root(&'b Manifest<'t>),
+    /// No workspace: the package is its own lock root.
+    Standalone,
+    /// Not determined ([`MapLimit::WorkspaceUnresolved`]).
+    Unresolved,
+}
+
 impl<'b, 't> Builder<'b, 't> {
-    /// The workspace root of the manifest at `dir`: the nearest manifest at or above it with `[workspace]` that
-    /// does not exclude it.
-    fn root_of(&self, dir: &str) -> Option<&'b Manifest<'t>> {
+    fn new(pr_repo: &'b RepoRef, manifests: &'b [Manifest<'t>]) -> Self {
+        let by_dir: HashMap<&'b str, &'b Manifest<'t>> =
+            manifests.iter().map(|m| (m.dir.as_str(), m)).collect();
+        let mut builder = Self {
+            pr_repo,
+            manifests,
+            by_dir,
+            members: HashMap::new(),
+            crates: Vec::new(),
+            external: Vec::new(),
+            external_index: HashMap::new(),
+            locks: BTreeMap::new(),
+        };
+        for root in manifests.iter().filter(|m| m.workspace().is_some()) {
+            let members = builder.members_of(root);
+            builder.members.insert(root.dir.as_str(), members);
+        }
+        builder
+    }
+
+    /// Manifests with a named package.
+    fn packages(&self) -> Vec<&'b Manifest<'t>> {
         let manifests: &'b [Manifest<'t>] = self.manifests;
         manifests
             .iter()
-            .filter(|m| m.workspace().is_some())
-            .filter(|m| m.dir.is_empty() || m.dir == dir || dir.starts_with(&format!("{}/", m.dir)))
-            .max_by_key(|m| m.dir.len())
-            .filter(|root| !root.excludes(dir))
+            .filter(|m| {
+                m.package()
+                    .and_then(|p| p.get("name"))
+                    .and_then(Item::as_str)
+                    .is_some()
+            })
+            .collect()
     }
 
-    /// Directories whose `Cargo.lock` applies: workspace roots and crates without a workspace.
+    /// Members of the workspace rooted at `root`: the root package, packages matching a `members` glob, and,
+    /// transitively, path dependencies of members inside the root directory that are not excluded.
+    fn members_of(&self, root: &'b Manifest<'t>) -> HashSet<String> {
+        let mut members = HashSet::new();
+        if root.package().is_some() {
+            members.insert(root.dir.clone());
+        }
+        let patterns = member_patterns(root);
+        for manifest in self.packages() {
+            if patterns
+                .iter()
+                .any(|pattern| glob_matches(pattern, &manifest.dir))
+                && !excluded(root, &manifest.dir)
+            {
+                members.insert(manifest.dir.clone());
+            }
+        }
+        let mut queue: VecDeque<String> = members.iter().cloned().collect();
+        while let Some(dir) = queue.pop_front() {
+            let Some(manifest) = self.by_dir.get(dir.as_str()) else {
+                continue;
+            };
+            for dependency in path_dependencies(manifest, root) {
+                let package = self
+                    .by_dir
+                    .get(dependency.as_str())
+                    .is_some_and(|m| m.package().is_some());
+                if package
+                    && within(&root.dir, &dependency)
+                    && !excluded(root, &dependency)
+                    && members.insert(dependency.clone())
+                {
+                    queue.push_back(dependency);
+                }
+            }
+        }
+        members
+    }
+
+    /// The workspace of the package at `dir`: its own `[workspace]`, its `package.workspace` pointer, else the
+    /// nearest ancestor root that does not exclude it (an excluded package looks further up).
+    fn membership(&self, dir: &str) -> Membership<'b, 't> {
+        let Some(&own) = self.by_dir.get(dir) else {
+            return Membership::Standalone;
+        };
+        if own.workspace().is_some() {
+            return Membership::Root(own);
+        }
+        let member_of = |root: &'b Manifest<'t>| {
+            if self
+                .members
+                .get(root.dir.as_str())
+                .is_some_and(|members| members.contains(dir))
+            {
+                Membership::Root(root)
+            } else {
+                Membership::Unresolved
+            }
+        };
+        if let Some(pointer) = own.package().and_then(|p| p.get("workspace")) {
+            return pointer
+                .as_str()
+                .and_then(|pointer| normalise(dir, pointer))
+                .and_then(|Inside(root)| self.by_dir.get(root.as_str()).copied())
+                .filter(|root| root.workspace().is_some())
+                .map_or(Membership::Unresolved, member_of);
+        }
+        let mut ancestor = dir;
+        while !ancestor.is_empty() {
+            ancestor = dir_of(ancestor);
+            if let Some(&root) = self.by_dir.get(ancestor)
+                && root.workspace().is_some()
+                && !excluded(root, dir)
+            {
+                return member_of(root);
+            }
+        }
+        Membership::Standalone
+    }
+
+    /// The workspace root manifest of the package at `dir`, if it is a member of one.
+    fn root_of(&self, dir: &str) -> Option<&'b Manifest<'t>> {
+        match self.membership(dir) {
+            Membership::Root(root) => Some(root),
+            Membership::Standalone | Membership::Unresolved => None,
+        }
+    }
+
+    /// Directories whose `Cargo.lock` applies: workspace roots of members and standalone packages.
     fn lock_roots(&self) -> Vec<String> {
         let mut roots: Vec<String> = self
-            .manifests
-            .iter()
-            .filter(|m| m.package().is_some())
-            .map(|m| {
-                self.root_of(&m.dir)
-                    .map_or(m.dir.clone(), |r| r.dir.clone())
+            .packages()
+            .into_iter()
+            .filter_map(|m| match self.membership(&m.dir) {
+                Membership::Root(root) => Some(root.dir.clone()),
+                Membership::Standalone => Some(m.dir.clone()),
+                Membership::Unresolved => None,
             })
             .collect();
         roots.sort();
@@ -707,16 +877,7 @@ impl<'b, 't> Builder<'b, 't> {
     }
 
     fn build(&mut self) {
-        let manifests: &'b [Manifest<'t>] = self.manifests;
-        let packages: Vec<&'b Manifest<'t>> = manifests
-            .iter()
-            .filter(|m| {
-                m.package()
-                    .and_then(|p| p.get("name"))
-                    .and_then(Item::as_str)
-                    .is_some()
-            })
-            .collect();
+        let packages = self.packages();
         for manifest in &packages {
             let root = self.root_of(&manifest.dir);
             let Some(package) = manifest.package() else {
@@ -760,8 +921,13 @@ impl<'b, 't> Builder<'b, 't> {
     }
 
     fn dependencies(&mut self, manifest: &'b Manifest<'t>, index: usize) -> Vec<Dependency> {
+        let membership = self.membership(&manifest.dir);
         let root = self.root_of(&manifest.dir);
-        let lock_root = root.map_or(manifest.dir.clone(), |r| r.dir.clone());
+        let lock_root = match membership {
+            Membership::Root(root) => Some(root.dir.clone()),
+            Membership::Standalone => Some(manifest.dir.clone()),
+            Membership::Unresolved => None,
+        };
         let mut tables: Vec<(DependencyKind, &Item)> = kinds(manifest.document.as_table());
         if let Some(targets) = manifest
             .document
@@ -783,7 +949,7 @@ impl<'b, 't> Builder<'b, 't> {
                     .and_then(|(key, _)| key.span())
                     .map_or(0, |span| manifest.lines.line(span.start));
                 let declared = declared(manifest, root, key, value, line);
-                let target = self.target(&declared, &lock_root, index);
+                let target = self.target(&declared, lock_root.as_deref(), index);
                 let code_name = match target {
                     Target::Repo { index } if declared.package == key => self
                         .crates
@@ -803,7 +969,7 @@ impl<'b, 't> Builder<'b, 't> {
         out
     }
 
-    fn target(&mut self, declared: &Declared, lock_root: &str, from: usize) -> Target {
+    fn target(&mut self, declared: &Declared, lock_root: Option<&str>, from: usize) -> Target {
         if let Some(path) = &declared.path {
             match normalise(&declared.base_dir, path) {
                 Some(Inside(dir)) => {
@@ -819,7 +985,15 @@ impl<'b, 't> Builder<'b, 't> {
                     return self.add(&declared.package, None, source, declared.evidence.clone());
                 }
                 None => {
-                    let source = sibling(self.pr_repo, &declared.base_dir, path);
+                    let source = if path.starts_with('/') || path.contains('\\') {
+                        // An absolute or Windows path: outside the repository, as written.
+                        CrateSource::Path {
+                            path: path.clone(),
+                            repo: None,
+                        }
+                    } else {
+                        sibling(self.pr_repo, &declared.base_dir, path)
+                    };
                     return self.add(&declared.package, None, source, declared.evidence.clone());
                 }
             }
@@ -827,7 +1001,8 @@ impl<'b, 't> Builder<'b, 't> {
         if declared.unresolved {
             return self.add(&declared.package, None, CrateSource::Unknown, None);
         }
-        if let Some(Some(lock)) = self.locks.get(lock_root)
+        if let Some(lock_root) = lock_root
+            && let Some(Some(lock)) = self.locks.get(lock_root)
             && let Some((version, source, line)) =
                 locked(lock, self.crates.get(from), &declared.package)
         {
@@ -844,7 +1019,10 @@ impl<'b, 't> Builder<'b, 't> {
                 rev: None,
             },
             None => CrateSource::Registry {
-                registry: CRATES_IO.to_owned(),
+                registry: declared
+                    .registry
+                    .clone()
+                    .unwrap_or_else(|| CRATES_IO.to_owned()),
             },
         };
         self.add(&declared.package, None, source, declared.evidence.clone())
@@ -897,6 +1075,7 @@ fn declared(
             package: field(value, "package").unwrap_or_else(|| key.to_owned()),
             git: field(value, "git"),
             path: field(value, "path"),
+            registry: field(value, "registry"),
             base_dir: manifest.dir.clone(),
             evidence: Some(FileLine {
                 file: manifest.path.clone(),
@@ -918,6 +1097,7 @@ fn declared(
             package: field(item, "package").unwrap_or_else(|| key.to_owned()),
             git: field(item, "git"),
             path: field(item, "path"),
+            registry: field(item, "registry"),
             base_dir: root.dir.clone(),
             evidence: Some(FileLine {
                 file: root.path.clone(),
@@ -929,6 +1109,7 @@ fn declared(
             package: key.to_owned(),
             git: None,
             path: None,
+            registry: None,
             base_dir: manifest.dir.clone(),
             evidence: None,
             unresolved: true,
@@ -949,11 +1130,7 @@ fn locked(
         [only] => *only,
         _ => {
             let entry = from
-                .and_then(|krate| {
-                    lock.packages.iter().find(|p| {
-                        p.name == krate.name && p.source.is_none() && p.version == krate.version
-                    })
-                })
+                .and_then(|krate| own_record(lock, krate, package))
                 .and_then(|record| {
                     record
                         .dependencies
@@ -973,6 +1150,28 @@ fn locked(
         .as_deref()
         .map_or(CrateSource::Unknown, source_of);
     Some((chosen.version.clone(), source, chosen.line))
+}
+
+/// The lock record of workspace crate `krate` (no source): by name and version (a package without a version is
+/// `0.0.0`), else the only record of that name naming `package` among its dependencies.
+fn own_record<'l>(lock: &'l Lock, krate: &RepoCrate, package: &str) -> Option<&'l LockPackage> {
+    let own: Vec<&LockPackage> = lock
+        .packages
+        .iter()
+        .filter(|p| p.name == krate.name && p.source.is_none())
+        .collect();
+    let version = krate.version.as_deref().unwrap_or("0.0.0");
+    if let Some(record) = own.iter().find(|p| p.version.as_deref() == Some(version)) {
+        return Some(record);
+    }
+    let naming: Vec<&&LockPackage> = own
+        .iter()
+        .filter(|p| p.dependencies.iter().any(|d| lock_entry(d).0 == package))
+        .collect();
+    match naming.as_slice() {
+        [only] => Some(only),
+        _ => None,
+    }
 }
 
 /// `name [version [(source)]]` of a `Cargo.lock` dependency entry.
@@ -1072,6 +1271,141 @@ fn normalise(base_dir: &str, path: &str) -> Option<Inside> {
         }
     }
     Some(Inside(stack.join("/")))
+}
+
+/// The `members` globs of workspace root `root`, relative to the repository root.
+fn member_patterns(root: &Manifest<'_>) -> Vec<String> {
+    root.workspace()
+        .and_then(|w| w.get("members"))
+        .and_then(Item::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str())
+                .filter_map(|pattern| normalise(&root.dir, pattern).map(|Inside(p)| p))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether the package at `dir` is excluded from workspace `root`: under an `exclude` entry and not under a literal
+/// `members` entry (an explicit member wins; a glob match does not, as in Cargo).
+fn excluded(root: &Manifest<'_>, dir: &str) -> bool {
+    let under = |base: &str| dir == base || base.is_empty() || dir.starts_with(&format!("{base}/"));
+    let excluded = root
+        .workspace()
+        .and_then(|w| w.get("exclude"))
+        .and_then(Item::as_array)
+        .is_some_and(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str())
+                .filter_map(|entry| normalise(&root.dir, entry))
+                .any(|Inside(entry)| under(&entry))
+        });
+    excluded
+        && !member_patterns(root)
+            .iter()
+            .any(|member| within(member, dir) && !member.is_empty())
+}
+
+/// Whether `dir` is `base` or below it (`""` = the repository root).
+fn within(base: &str, dir: &str) -> bool {
+    base.is_empty() || dir == base || dir.starts_with(&format!("{base}/"))
+}
+
+/// Directories of the path dependencies of `manifest` (inherited ones through `root`), inside the repository.
+fn path_dependencies(manifest: &Manifest<'_>, root: &Manifest<'_>) -> Vec<String> {
+    let mut tables: Vec<(DependencyKind, &Item)> = kinds(manifest.document.as_table());
+    if let Some(targets) = manifest
+        .document
+        .get("target")
+        .and_then(Item::as_table_like)
+    {
+        for (_, target) in targets.iter() {
+            tables.extend(target.as_table_like().map(kinds).unwrap_or_default());
+        }
+    }
+    let inherited = root
+        .workspace()
+        .and_then(|w| w.get("dependencies"))
+        .and_then(Item::as_table_like);
+    let path_of = |item: &Item| {
+        item.as_table_like()
+            .and_then(|t| t.get("path"))
+            .and_then(Item::as_str)
+            .map(str::to_owned)
+    };
+    let mut out = Vec::new();
+    for (_, item) in tables {
+        let Some(table) = item.as_table_like() else {
+            continue;
+        };
+        for (key, value) in table.iter() {
+            let found = if inherits(value) {
+                inherited
+                    .and_then(|t| t.get(key))
+                    .and_then(path_of)
+                    .and_then(|path| normalise(&root.dir, &path))
+            } else {
+                path_of(value).and_then(|path| normalise(&manifest.dir, &path))
+            };
+            out.extend(found.map(|Inside(dir)| dir));
+        }
+    }
+    out
+}
+
+/// Whether `path` matches the glob `pattern` (segments; `*` and `?` within a segment, `**` for any segments). A
+/// pattern of more than 64 segments matches nothing. Dynamic programming: O(pattern × path) segment matches.
+fn glob_matches(pattern: &str, path: &str) -> bool {
+    let pattern: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let path: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if pattern.len() > 64 {
+        return false;
+    }
+    // matched[j]: the pattern so far matches the first j path segments.
+    let mut matched = vec![false; path.len() + 1];
+    matched[0] = true;
+    for segment in &pattern {
+        let mut next = vec![false; path.len() + 1];
+        for j in 0..=path.len() {
+            next[j] = if *segment == "**" {
+                matched[..=j].iter().any(|m| *m)
+            } else {
+                j > 0
+                    && matched[j - 1]
+                    && segment_matches(segment.as_bytes(), path[j - 1].as_bytes())
+            };
+        }
+        matched = next;
+    }
+    matched[path.len()]
+}
+
+/// `*` and `?` wildcards within one path segment (iterative, linear backtracking).
+fn segment_matches(pattern: &[u8], text: &[u8]) -> bool {
+    let (mut p, mut t) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        match pattern.get(p) {
+            Some(b'*') => {
+                star = Some((p, t));
+                p += 1;
+            }
+            Some(&c) if c == b'?' || c == text[t] => {
+                p += 1;
+                t += 1;
+            }
+            _ => match star {
+                Some((sp, st)) => {
+                    p = sp + 1;
+                    t = st + 1;
+                    star = Some((sp, st + 1));
+                }
+                None => return false,
+            },
+        }
+    }
+    pattern[p..].iter().all(|&c| c == b'*')
 }
 
 /// Dependency tables of a manifest or `target.<cfg>` table.

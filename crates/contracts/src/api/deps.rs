@@ -72,6 +72,22 @@ pub enum DependencyLimit {
         /// Facts kept.
         kept: u32,
     },
+    /// A package whose workspace is not determined (outside the members of the workspace above it, or a
+    /// `package.workspace` pointer to a manifest not read): its lock file and inherited dependencies are not resolved.
+    WorkspaceUnresolved {
+        /// Its manifest.
+        manifest: String,
+    },
+    /// A manifest with `[target.…]` dependency tables: they are listed for every target (`cfg` is not evaluated).
+    TargetSpecific {
+        /// The manifest.
+        manifest: String,
+    },
+    /// A changed Rust file with more conversion candidates than the server checks: the rest are not checked.
+    SourceCut {
+        /// Its path.
+        path: String,
+    },
     /// Files of a crate that may hold a searched type definition were not read (too large, over the read budget or
     /// the file cap): definitions not found there are `not_searched`.
     DefinitionsUnread {

@@ -151,7 +151,13 @@ fn deps_workspace_crates_with_names_versions_and_code_names() {
     let b = krate(&map, "b");
     assert_eq!(b.code_name, "bee", "`[lib] name`");
     assert_eq!(b.version.as_deref(), Some("1.4.0"), "inherited version");
-    assert!(map.limits.is_empty(), "{:?}", map.limits);
+    assert_eq!(
+        map.limits,
+        [MapLimit::TargetSpecific {
+            manifest: "crates/a/Cargo.toml".to_owned()
+        }],
+        "only the `[target.…]` table of a-app"
+    );
 }
 
 #[test]
@@ -431,14 +437,26 @@ fn deps_files_to_read_are_manifests_and_lock_files() {
         "crates/a/Cargo.toml",
         "crates/a/Cargo.toml.orig",
         "docs/Cargo.lock.md",
+        "fixtures/old/Cargo.lock",
     ]
     .iter()
     .map(|p| (*p).to_owned())
     .collect();
     assert_eq!(
         cargo_files_to_read(&paths),
-        ["Cargo.lock", "Cargo.toml", "crates/a/Cargo.toml"]
+        ["Cargo.toml", "crates/a/Cargo.toml", "Cargo.lock"],
+        "manifests first; a lock without a manifest beside it is not read"
     );
+}
+
+#[test]
+fn deps_lock_files_read_are_capped() {
+    let paths: Vec<String> = (0..MAX_LOCKS + 2)
+        .flat_map(|i| [format!("c{i:03}/Cargo.toml"), format!("c{i:03}/Cargo.lock")])
+        .collect();
+    let wanted = cargo_files_to_read(&paths);
+    let locks = wanted.iter().filter(|p| p.ends_with("Cargo.lock")).count();
+    assert_eq!(locks, MAX_LOCKS);
 }
 
 #[test]
@@ -570,7 +588,10 @@ fn deps_unread_source_is_a_limit() {
     }));
     map.add_facts("docs/x.rs", None, &[1]);
     assert_eq!(
-        map.limits.len(),
+        map.limits
+            .iter()
+            .filter(|l| matches!(l, MapLimit::SourceUnread { .. }))
+            .count(),
         1,
         "a file outside every crate is not checked here"
     );
@@ -645,6 +666,8 @@ fn deps_definition_files_not_read_leave_definitions_not_searched() {
         Definition::NotSearched,
         "a file found but not read may hold the definition"
     );
+    map.limits
+        .retain(|l| !matches!(l, MapLimit::TargetSpecific { .. }));
     assert_eq!(
         map.limits,
         [MapLimit::DefinitionsUnread {
@@ -808,4 +831,171 @@ fn review_deep_toml_does_not_overflow_a_worker_stack() {
         })
         .expect("thread");
     assert!(handle.join().is_ok());
+}
+
+// Cargo workspace semantics, registries and lock entries (ADR-021 §1).
+
+#[test]
+fn deps_members_globs_decide_membership() {
+    let root = "[workspace]\nmembers = [\"crates/*\", \"tools/**\"]\n\n[workspace.dependencies]\ndpp = { git = \"https://github.com/dashpay/platform\" }\n";
+    let inherit = |name: &str| {
+        format!("[package]\nname = \"{name}\"\n\n[dependencies]\ndpp.workspace = true\n")
+    };
+    let (a, deep, stray) = (inherit("a"), inherit("deep"), inherit("stray"));
+    let map = map_of(&[
+        ("Cargo.toml", root),
+        ("Cargo.lock", "version = 4\n"),
+        ("crates/a/Cargo.toml", a.as_str()),
+        ("tools/x/y/Cargo.toml", deep.as_str()),
+        ("fixtures/stray/Cargo.toml", stray.as_str()),
+    ]);
+    for member in ["a", "deep"] {
+        let dpp = external(&map, dependency(krate(&map, member), "dpp"));
+        assert!(
+            matches!(dpp.source, CrateSource::Git { .. }),
+            "{member}: {:?}",
+            dpp.source
+        );
+    }
+    let dpp = external(&map, dependency(krate(&map, "stray"), "dpp"));
+    assert_eq!(
+        dpp.source,
+        CrateSource::Unknown,
+        "not a member: nothing inherited"
+    );
+    assert!(map.limits.contains(&MapLimit::WorkspaceUnresolved {
+        manifest: "fixtures/stray/Cargo.toml".to_owned()
+    }));
+    assert!(
+        !map.limits
+            .iter()
+            .any(|l| matches!(l, MapLimit::NoLockFile { .. })),
+        "{:?}",
+        map.limits
+    );
+}
+
+#[test]
+fn deps_path_dependencies_of_members_are_members() {
+    let root = "[workspace]\nmembers = [\"app\"]\n\n[workspace.dependencies]\nserde = \"1\"\n";
+    let app = "[package]\nname = \"app\"\n\n[dependencies]\nlib = { path = \"../lib\" }\n";
+    let lib = "[package]\nname = \"lib\"\n\n[dependencies]\nserde.workspace = true\n";
+    let map = map_of(&[
+        ("Cargo.toml", root),
+        ("app/Cargo.toml", app),
+        ("lib/Cargo.toml", lib),
+    ]);
+    let serde = external(&map, dependency(krate(&map, "lib"), "serde"));
+    assert!(
+        matches!(serde.source, CrateSource::Registry { .. }),
+        "{:?}",
+        serde.source
+    );
+}
+
+#[test]
+fn deps_excluded_package_looks_for_a_root_further_up() {
+    let outer = "[workspace]\nmembers = [\"inner/pkg\"]\n\n[workspace.dependencies]\ndpp = { git = \"https://github.com/dashpay/platform\" }\n";
+    let inner = "[workspace]\nmembers = []\nexclude = [\"pkg\"]\n";
+    let pkg = "[package]\nname = \"pkg\"\n\n[dependencies]\ndpp.workspace = true\n";
+    let map = map_of(&[
+        ("Cargo.toml", outer),
+        ("inner/Cargo.toml", inner),
+        ("inner/pkg/Cargo.toml", pkg),
+    ]);
+    let dpp = external(&map, dependency(krate(&map, "pkg"), "dpp"));
+    assert!(
+        matches!(dpp.source, CrateSource::Git { .. }),
+        "{:?}",
+        dpp.source
+    );
+}
+
+#[test]
+fn deps_package_workspace_pointer_is_followed() {
+    let ws = "[workspace]\nmembers = [\"../shared\"]\n\n[workspace.dependencies]\nserde = { version = \"1\", registry = \"acme\" }\n";
+    let shared = "[package]\nname = \"shared\"\nworkspace = \"../ws\"\n\n[dependencies]\nserde.workspace = true\n";
+    let map = map_of(&[("ws/Cargo.toml", ws), ("shared/Cargo.toml", shared)]);
+    let serde = external(&map, dependency(krate(&map, "shared"), "serde"));
+    assert_eq!(
+        serde.source,
+        CrateSource::Registry {
+            registry: "acme".to_owned()
+        },
+        "inherited through the pointer, with its registry key"
+    );
+    assert!(map.limits.contains(&MapLimit::NoLockFile {
+        workspace_dir: "ws".to_owned()
+    }));
+    let broken = "[package]\nname = \"lost\"\nworkspace = \"../nowhere\"\n";
+    let map = map_of(&[("lost/Cargo.toml", broken)]);
+    assert_eq!(
+        map.limits,
+        [MapLimit::WorkspaceUnresolved {
+            manifest: "lost/Cargo.toml".to_owned()
+        }]
+    );
+}
+
+#[test]
+fn deps_target_specific_tables_are_a_limit() {
+    let a = "[package]\nname = \"a\"\n\n[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n";
+    let map = map_of(&[("Cargo.toml", a), ("Cargo.lock", "version = 4\n")]);
+    assert_eq!(dependency(krate(&map, "a"), "libc").package, "libc");
+    assert!(map.limits.contains(&MapLimit::TargetSpecific {
+        manifest: "Cargo.toml".to_owned()
+    }));
+}
+
+#[test]
+fn deps_lock_entries_of_older_formats_pick_the_named_source() {
+    // Lock v1/v3 write `name version (source)` in dependency lists when a name has several records.
+    let a = "[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n[dependencies]\nfoo = \"1\"\n";
+    let lock = "[[package]]\nname = \"a\"\nversion = \"0.1.0\"\ndependencies = [\n \"foo 1.0.0 (git+https://github.com/acme/foo#abc)\",\n]\n\n[[package]]\nname = \"foo\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n[[package]]\nname = \"foo\"\nversion = \"1.0.0\"\nsource = \"git+https://github.com/acme/foo#abc\"\n";
+    let map = map_of(&[("Cargo.toml", a), ("Cargo.lock", lock)]);
+    let foo = external(&map, dependency(krate(&map, "a"), "foo"));
+    assert!(
+        matches!(&foo.source, CrateSource::Git { rev: Some(rev), .. } if rev == "abc"),
+        "{:?}",
+        foo.source
+    );
+}
+
+#[test]
+fn deps_hostile_detector_input_stays_bounded_in_time_and_size() {
+    let started = std::time::Instant::now();
+    let text = format!("{}\n", "impl From<a::B> for C<".repeat(20_000));
+    let (got, _) = tech::conversion_candidates_bounded(&text, &[1]);
+    assert!(got.len() <= tech::MAX_CANDIDATES);
+    let text = format!(
+        "struct L;\n{}",
+        "impl From<dpp::X> for L {}\n".repeat(10_000)
+    );
+    let added: Vec<u32> = (1..=10_001).collect();
+    let (got, cut) = tech::conversion_candidates_bounded(&text, &added);
+    assert!(cut && got.len() == tech::MAX_CANDIDATES, "{}", got.len());
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    let mut map = workspace();
+    map.add_facts("crates/a/src/lib.rs", Some(&text), &added);
+    assert!(map.limits.contains(&MapLimit::SourceCut {
+        path: "crates/a/src/lib.rs".to_owned()
+    }));
+}
+
+#[test]
+fn deps_member_globs_stay_cheap_on_hostile_patterns() {
+    let started = std::time::Instant::now();
+    let pattern = vec!["**"; 60].join("/") + "/x";
+    let root = format!("[workspace]\nmembers = [\"{pattern}\"]\n");
+    let deep = vec!["d"; 40].join("/") + "/y/Cargo.toml";
+    let map = map_of(&[
+        ("Cargo.toml", root.as_str()),
+        (deep.as_str(), "[package]\nname = \"y\"\n"),
+    ]);
+    assert_eq!(map.crates.len(), 1);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }

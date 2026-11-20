@@ -246,7 +246,9 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   second one meanwhile is `conflict` before any GitHub call. Nothing is stored locally.
 - **Dependencies** (R15, v1.2; ADR-021). The Cargo map of the head commit: `status` (`available`, or `not_rust`: no
   `Cargo.toml` at head, nothing checked), `controlled_owners` (the pull
-  request's owner plus Settings, as applied to this response), `limits` (what was cut or not read, with paths),
+  request's owner plus Settings, as applied to this response), `limits` (what was cut, not read or not resolved, with paths: `manifests_cut`,
+  `manifest_unreadable`, `lock_unreadable`, `no_lock_file`, `workspace_unresolved`, `target_specific`,
+  `source_unread`, `source_cut`, `facts_cut`, `definitions_unread`),
   `files_outside_crates` (changed files in no crate, not checked), `notes` (`produced`, `pending` before the plan is
   stored, `not_produced` for plans without notes) and `repositories`: this repository first, then controlled
   GitHub repositories, other GitHub repositories, other git URLs, registries (`crates.io`: the repository is not
