@@ -14,6 +14,7 @@ not accept, fails the build. The release workflow checks that every file below i
 | runner | `third-party-rust-runner.txt` | crates linked into `diffpilot-supervisor` and `diffpilot-runner` | cargo-about, `crates/runner` |
 | runner | `third-party-rust-analysis.txt` | crates linked into `sr-check` | cargo-about, `crates/analysis` |
 | runner | `codex/LICENSE`, `codex/NOTICE` | Codex CLI itself (see the gap below) | `openai/codex` at the pinned release tag |
+| runner | `codex/bubblewrap/COPYING`, `codex/bubblewrap/SOURCE` | `codex-resources/bwrap` of the Codex package: bubblewrap, LGPL-2.0-or-later; `SOURCE` points to its corresponding source | `openai/codex` at the pinned tag (`codex-rs/vendor/bubblewrap`) |
 | runner | `github-mcp-server/LICENSE`, `github-mcp-server/third-party-licenses.linux.md`, `github-mcp-server/third-party/` | github-mcp-server, the list of its Go modules and their licence texts | the release archive and the source archive of the pinned tag |
 
 Ubuntu packages keep their copyright files in `/usr/share/doc/<package>/copyright` (the runner image keeps them,
@@ -35,9 +36,10 @@ The Codex CLI binaries (`/opt/codex/bin/`) are upstream's release build, redistr
 third-party Rust crates, and upstream ships no notice file for them (neither in the release archive nor at the
 tag; its `NOTICE` covers only Ratatui). Generating one with cargo-about from `codex-rs/Cargo.lock` at the pinned tag
 is not practical in the image build: its git dependency `rusty_v8` makes `cargo fetch` clone V8 and Chromium
-submodules (more than 3 GB, still running after 7 minutes in a trial). The same applies to the `rg` and `bwrap`
-binaries in the Codex package. The image therefore carries Codex's `LICENSE` and `NOTICE` only, matching upstream's
-own distribution; closing the gap needs a notice file from upstream.
+submodules (more than 3 GB, still running after 7 minutes in a trial). The same applies to the `rg` binary in the
+Codex package (ripgrep, MIT or Unlicense). The image therefore carries Codex's `LICENSE` and `NOTICE` for these,
+matching upstream's own distribution; closing the gap needs a notice file from upstream. The package's bubblewrap
+(`bwrap`, LGPL) is covered: its licence text and the pointer to its source are in `codex/bubblewrap/`.
 
 ## Tools
 
@@ -61,8 +63,8 @@ own distribution; closing the gap needs a notice file from upstream.
   `npm install --save-exact generate-license-file@<version>` in `npm/`.
 - **Bumping Codex or github-mcp-server** (`deploy/runner/Dockerfile`): the notice files and github-mcp-server's
   source archive are fetched for the same tag and verified by `CODEX_LICENSE_SHA256`, `CODEX_NOTICE_SHA256`,
-  `GITHUB_MCP_THIRD_PARTY_SHA256` and `GITHUB_MCP_SOURCE_SHA256`; a changed file fails the build until its checksum
-  is updated.
+  `CODEX_BWRAP_COPYING_SHA256`, `GITHUB_MCP_THIRD_PARTY_SHA256` and `GITHUB_MCP_SOURCE_SHA256`; a changed file fails
+  the build until its checksum is updated.
 
 Local check of the Rust notices without an image build (cargo-about installed):
 

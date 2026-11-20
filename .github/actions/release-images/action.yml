@@ -80,7 +80,8 @@ runs:
         check diffpilot-server:local $doc/LICENSE.md $doc/packages.txt $doc/third-party-rust-server.txt \
           $doc/third-party-npm-web.txt
         check diffpilot-runner:local $doc/LICENSE.md $doc/packages.txt $doc/third-party-rust-runner.txt \
-          $doc/third-party-rust-analysis.txt $doc/codex/LICENSE $doc/codex/NOTICE $doc/github-mcp-server/LICENSE \
+          $doc/third-party-rust-analysis.txt $doc/codex/LICENSE $doc/codex/NOTICE $doc/codex/bubblewrap/COPYING \
+          $doc/codex/bubblewrap/SOURCE $doc/github-mcp-server/LICENSE \
           $doc/github-mcp-server/third-party-licenses.linux.md $doc/github-mcp-server/third-party
         check diffpilot-egress-proxy:local $doc/LICENSE.md $doc/packages.txt /usr/share/doc/squid-openssl/copyright
     - name: Egress proxy test

@@ -63,6 +63,8 @@ ARG GITHUB_MCP_SHA256=a442f9db287cea01008bcb55fe6bc0292270301046c3edbd1a8b22d6e4
 # list and the licence texts of its Go modules (third-party/ of the tag's source archive).
 ARG CODEX_LICENSE_SHA256=d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc
 ARG CODEX_NOTICE_SHA256=9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915
+# The package's codex-resources/bwrap is bubblewrap (LGPL-2.0-or-later), built from codex-rs/vendor/bubblewrap.
+ARG CODEX_BWRAP_COPYING_SHA256=b7993225104d90ddd8024fd838faf300bea5e83d91203eab98e29512acebd69c
 ARG GITHUB_MCP_THIRD_PARTY_SHA256=7caad4bd6a08cdb9079f5ac9eb2783857569522dfb4b3a52f3d414ff37fb258f
 ARG GITHUB_MCP_SOURCE_SHA256=fb85acd573def7a0a5d35739a52da51f1d42fe281e3a044b58776c33d8e0705e
 
@@ -82,10 +84,17 @@ RUN curl -fsSL -o /tmp/codex.tar.gz \
     && tar -xzf /tmp/github-mcp.tar.gz -C /opt/github-mcp --no-same-owner github-mcp-server \
     && chmod -R go-w /opt/codex /opt/github-mcp
 
-RUN mkdir -p /opt/notices/codex /opt/notices/github-mcp-server \
+RUN mkdir -p /opt/notices/codex/bubblewrap /opt/notices/github-mcp-server \
     && raw=https://raw.githubusercontent.com \
     && curl -fsSL -o /opt/notices/codex/LICENSE "$raw/openai/codex/rust-v${CODEX_VERSION}/LICENSE" \
     && curl -fsSL -o /opt/notices/codex/NOTICE "$raw/openai/codex/rust-v${CODEX_VERSION}/NOTICE" \
+    && curl -fsSL -o /opt/notices/codex/bubblewrap/COPYING \
+        "$raw/openai/codex/rust-v${CODEX_VERSION}/codex-rs/vendor/bubblewrap/COPYING" \
+    && printf '%s\n' \
+        "/opt/codex/codex-resources/bwrap is bubblewrap, licensed under LGPL-2.0-or-later (COPYING)." \
+        "Corresponding source: https://github.com/openai/codex/tree/rust-v${CODEX_VERSION}/codex-rs/vendor/bubblewrap" \
+        "(built by https://github.com/openai/codex/tree/rust-v${CODEX_VERSION}/codex-rs/bwrap)." \
+        > /opt/notices/codex/bubblewrap/SOURCE \
     && curl -fsSL -o /opt/notices/github-mcp-server/third-party-licenses.linux.md \
         "$raw/github/github-mcp-server/v${GITHUB_MCP_VERSION}/third-party-licenses.linux.md" \
     && curl -fsSL -o /tmp/github-mcp-src.tar.gz \
@@ -93,6 +102,7 @@ RUN mkdir -p /opt/notices/codex /opt/notices/github-mcp-server \
     && tar -xzf /tmp/github-mcp.tar.gz -C /opt/notices/github-mcp-server --no-same-owner LICENSE \
     && printf '%s  %s\n' "${CODEX_LICENSE_SHA256}" /opt/notices/codex/LICENSE \
         "${CODEX_NOTICE_SHA256}" /opt/notices/codex/NOTICE \
+        "${CODEX_BWRAP_COPYING_SHA256}" /opt/notices/codex/bubblewrap/COPYING \
         "${GITHUB_MCP_THIRD_PARTY_SHA256}" /opt/notices/github-mcp-server/third-party-licenses.linux.md \
         "${GITHUB_MCP_SOURCE_SHA256}" /tmp/github-mcp-src.tar.gz \
         | sha256sum -c - \

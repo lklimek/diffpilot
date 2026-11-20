@@ -459,15 +459,20 @@ repository (never on forks or pull requests), in two jobs:
 
 1. `build`, without credentials: builds the three images (linux/amd64) with their licence notices and OCI labels,
    checks the notices, runs the runner container suite, the egress proxy test and the stack test against exactly
-   these images, and hands them to the next job as a workflow artifact (kept one day).
+   these images, and hands them to the next job as a workflow artifact (kept seven days).
 2. `publish`, in the environment `docker-hub`, one at a time across releases: loads the tested images, computes the
-   tags of section 3 from the release tags present at that moment, logs in, refuses to continue when `X.Y.Z` of any
-   of the three images already exists (a release version is published once), pushes tag by tag across the three
-   images (`X.Y.Z` first, then `X.Y`, `X`, `latest`) and logs out.
+   tags of section 3 from the release tags present at that moment (it stops when it cannot read them), logs in,
+   refuses to continue when `X.Y.Z` of any of the three images already exists (a release version is published once),
+   pushes tag by tag across the three images (`X.Y.Z` first, then `X.Y`, `X`, `latest`) and logs out.
 
 A manual run (Actions → Release images → Run workflow, with a version) is a dry run: `build` only, printing the
-tags a release would push, without credentials and without pushing. A failed publish can be re-run while no
-`X.Y.Z` was pushed; after a partial push, release the next patch version.
+tags a release would push, without credentials and without pushing.
+
+Recovery: a failed or cancelled publish that pushed no `X.Y.Z` is re-run with "Re-run failed jobs" while the
+artifact exists (seven days), else with "Re-run all jobs" (builds and tests again). After a partial push (some
+`X.Y.Z` exist), release the next patch version. GitHub keeps at most one waiting publish: when a third release is
+tagged while one publish runs and another waits, the waiting one is cancelled and must be re-run. Push release
+tags one at a time, each after the previous publish has finished.
 
 Setup on GitHub, once:
 
