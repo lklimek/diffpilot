@@ -168,6 +168,7 @@ fn snapshot(prs: Vec<StoredPr>, issues: Vec<StoredIssue>, todos: Vec<StoredTodo>
             issue: 0,
             todo: 0,
         },
+        merge_states_recorded: true,
         todos_hidden: false,
     }
 }

@@ -3588,9 +3588,14 @@ excluded: number,
  */
 awaiting: Array<AwaitingItem>,
 /**
- * The user's pull requests GitHub lets the user merge now, by display id; also ranked.
+ * The user's pull requests GitHub let the user merge at the scan, by display id; also ranked.
  */
 ready_to_merge: Array<ReadyToMergeItem>,
+/**
+ * The user's pull requests whose merge state GitHub had not computed by the scan (read again by the next
+ * refresh); null when the snapshot did not record merge states (stored before they were).
+ */
+merge_state_pending: number | null,
 /**
  * Dated pull request and review events of the chart window (12 weeks), across the scanned logins.
  */

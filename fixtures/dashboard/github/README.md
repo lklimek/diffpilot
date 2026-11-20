@@ -8,7 +8,7 @@ the dev stack serves the world moved to today (`--dashboard-world-at 2026-11-18T
 
 | Case | Items |
 |---|---|
-| Authored, open | `acme/wallet-ui#311` (CI failing, 2 unresolved threads, changes requested, milestone v2.5), `#298` (stacked on #311's head, team review request; no review decision, merge state `CLEAN`: ready to merge), `acme/node-client#476` (awaiting `tobias-w`), `#490` (draft), `acme/platform#1176` (ready label, awaiting `jun-park` + team) |
+| Authored, open | `acme/wallet-ui#311` (CI failing, 2 unresolved threads, changes requested, milestone v2.5), `#298` (stacked on #311's head, team review request; no review decision, merge state `UNKNOWN` on the first read and `CLEAN` after: ready to merge), `acme/node-client#476` (awaiting `tobias-w`; merge state stays `UNKNOWN`), `#490` (draft), `acme/platform#1176` (ready label, awaiting `jun-park` + team) |
 | Review requested | `acme/platform#1203` (fixes #1187, CI green, milestone v2.4, owned path), `#1199` (large, milestone v3.0), `acme/wallet-ui#320` (requested today), `acme/node-client#482` (the recorded PR; head follows `POST /_fake/head`), `#495` (excluded bot author), `acme/docs-site#77`, `acme/consensus#1534` (3 unresolved threads) |
 | Assigned PR, private | `acme/ops-runbooks#14` (private repository: needs a token) |
 | Archived | `acme/legacy-wallet#9` (excluded by `archived:false`) |

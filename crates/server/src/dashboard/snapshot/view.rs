@@ -43,6 +43,8 @@ pub struct View {
     pub awaiting: Vec<AwaitingItem>,
     /// The user's pull requests GitHub lets the user merge now.
     pub ready_to_merge: Vec<ReadyToMergeItem>,
+    /// `SnapshotMeta.merge_state_pending`.
+    pub merge_state_pending: Option<u32>,
 }
 
 impl View {
@@ -67,6 +69,7 @@ impl View {
             excluded: self.exclusions.total,
             awaiting: self.awaiting.clone(),
             ready_to_merge: self.ready_to_merge.clone(),
+            merge_state_pending: self.merge_state_pending,
             history: snapshot.history.clone(),
             todos: snapshot.todos_state.clone(),
             notes: snapshot.notes.clone(),
@@ -169,6 +172,14 @@ pub fn build(
     }
     let awaiting = awaiting(&rules, snapshot);
     let ready_to_merge = ready_to_merge(&rules, snapshot);
+    let merge_state_pending = snapshot.merge_states_recorded.then(|| {
+        let pending = snapshot
+            .pull_requests
+            .iter()
+            .filter(|pr| score::merge_state_pending(&rules, &pr.facts))
+            .count();
+        u32::try_from(pending).unwrap_or(u32::MAX)
+    });
     for left_out in &ranking.excluded {
         tracing::debug!(item = %left_out.id, reason = %left_out.reason, "dashboard item left out");
     }
@@ -178,6 +189,7 @@ pub fn build(
         exclusions: exclusions(ranking.excluded, &sources, memcan_ui),
         awaiting,
         ready_to_merge,
+        merge_state_pending,
     }
 }
 

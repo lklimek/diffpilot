@@ -4,14 +4,14 @@
 //! pages (`first`/`last`/`after`, opaque cursors). Other fields are read from the node; lookups that find nothing
 //! are `null` with a `NOT_FOUND` error next to the data.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde_json::{Map, Value, json};
 
 use super::query::{Document, Field, Fragment, Kind, Selection};
-use super::world::{AccountKind, World, name_with_owner};
+use super::world::{AccountKind, World, name_with_owner, number};
 
 /// Type names that are concrete objects; a type condition naming anything else (an interface) always applies.
 const CONCRETE: &[&str] = &[
@@ -139,6 +139,8 @@ struct Executor<'a> {
     fragments: &'a HashMap<String, Fragment>,
     rate_limit: Value,
     moved_head: &'a MovedHead,
+    /// Pull requests whose lazily computed merge state was read once (see `World::computed_merge_states`).
+    merge_reads: &'a mut HashSet<(String, u64)>,
     /// Lookups that found nothing (answered next to the data).
     errors: Vec<Value>,
 }
@@ -150,12 +152,14 @@ pub(crate) fn execute(
     world: &World,
     rate_limit: Value,
     moved_head: &MovedHead,
+    merge_reads: &mut HashSet<(String, u64)>,
 ) -> Value {
     let mut executor = Executor {
         world,
         fragments: &doc.fragments,
         rate_limit,
         moved_head,
+        merge_reads,
         errors: Vec::new(),
     };
     let data = executor.object(
@@ -250,6 +254,21 @@ impl Executor<'_> {
         node
     }
 
+    /// A lazily computed merge state: the first lookup selecting `mergeStateStatus` keeps the fixture's value,
+    /// later lookups answer the computed one.
+    fn lazy_merge_state(&mut self, node: &mut Value, field: &Field) {
+        let key = (name_with_owner(node).to_ascii_lowercase(), number(node));
+        let Some(computed) = self.world.computed_merge_states.get(&key) else {
+            return;
+        };
+        let selected = collect_fields(&field.selections, Some("PullRequest"), self.fragments)
+            .iter()
+            .any(|f| f.name == "mergeStateStatus");
+        if selected && !self.merge_reads.insert(key) {
+            node["mergeStateStatus"] = computed.clone();
+        }
+    }
+
     fn resolve(&mut self, parent: &Value, field: &Field, path: &[String]) -> Value {
         let typename = parent["__typename"].as_str().unwrap_or_default();
         let arg = |name: &str| field.args.get(name);
@@ -286,7 +305,11 @@ impl Executor<'_> {
                 let found = if field.name == "issue" {
                     world.issue(repository, number).cloned()
                 } else {
-                    world.pull_request(repository, number).map(|node| self.pull(node))
+                    world.pull_request(repository, number).map(|node| {
+                        let mut node = self.pull(node);
+                        self.lazy_merge_state(&mut node, field);
+                        node
+                    })
                 };
                 found.unwrap_or_else(|| {
                     let what = if field.name == "issue" { "an Issue" } else { "a PullRequest" };

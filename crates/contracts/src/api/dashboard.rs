@@ -272,8 +272,11 @@ pub struct SnapshotMeta {
     pub excluded: u32,
     /// The user's pull requests waiting on other people.
     pub awaiting: Vec<AwaitingItem>,
-    /// The user's pull requests GitHub lets the user merge now, by display id; also ranked.
+    /// The user's pull requests GitHub let the user merge at the scan, by display id; also ranked.
     pub ready_to_merge: Vec<ReadyToMergeItem>,
+    /// The user's pull requests whose merge state GitHub had not computed by the scan (read again by the next
+    /// refresh); null when the snapshot did not record merge states (stored before they were).
+    pub merge_state_pending: Option<u32>,
     /// Dated pull request and review events of the chart window (12 weeks), across the scanned logins.
     pub history: Vec<HistoryEvent>,
     /// State of the MemCan TODOs.

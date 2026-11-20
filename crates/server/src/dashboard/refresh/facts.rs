@@ -268,16 +268,7 @@ pub(super) fn pr(
             "CONFLICTING" => Mergeable::Conflicting,
             _ => Mergeable::Unknown,
         },
-        merge_state: match detail.merge_state_status.as_str() {
-            "CLEAN" => MergeState::Clean,
-            "HAS_HOOKS" => MergeState::HasHooks,
-            "UNSTABLE" => MergeState::Unstable,
-            "BEHIND" => MergeState::Behind,
-            "BLOCKED" => MergeState::Blocked,
-            "DIRTY" => MergeState::Dirty,
-            "DRAFT" => MergeState::Draft,
-            _ => MergeState::Unknown,
-        },
+        merge_state: merge_state(&detail.merge_state_status),
         viewer_can_write: detail
             .base_repository
             .as_ref()
@@ -344,6 +335,20 @@ pub(super) fn pr(
                 title: capped(&issue.title, TITLE_CHARS),
             })
             .collect(),
+    }
+}
+
+/// GitHub's `mergeStateStatus`; an unknown value is [`MergeState::Unknown`].
+pub(super) fn merge_state(status: &str) -> MergeState {
+    match status {
+        "CLEAN" => MergeState::Clean,
+        "HAS_HOOKS" => MergeState::HasHooks,
+        "UNSTABLE" => MergeState::Unstable,
+        "BEHIND" => MergeState::Behind,
+        "BLOCKED" => MergeState::Blocked,
+        "DIRTY" => MergeState::Dirty,
+        "DRAFT" => MergeState::Draft,
+        _ => MergeState::Unknown,
     }
 }
 

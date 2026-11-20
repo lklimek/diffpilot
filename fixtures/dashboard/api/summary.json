@@ -223,6 +223,7 @@
         }
       }
     ],
+    "merge_state_pending": 0,
     "history": [
       {
         "kind": "pr_opened",

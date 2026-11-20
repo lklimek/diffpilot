@@ -651,11 +651,20 @@
           }
         },
         "ready_to_merge": {
-          "description": "The user's pull requests GitHub lets the user merge now, by display id; also ranked.",
+          "description": "The user's pull requests GitHub let the user merge at the scan, by display id; also ranked.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/ReadyToMergeItem"
           }
+        },
+        "merge_state_pending": {
+          "description": "The user's pull requests whose merge state GitHub had not computed by the scan (read again by the next\nrefresh); null when the snapshot did not record merge states (stored before they were).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
         },
         "history": {
           "description": "Dated pull request and review events of the chart window (12 weeks), across the scanned logins.",

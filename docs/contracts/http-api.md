@@ -642,7 +642,9 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   size filter on R1b. A pull request of the user that waits only on others (plan §C.2 K15) is not an
   item: it is listed in `SnapshotMeta.awaiting` only (`AwaitingItem.total_tenths` is null), never ranked, counted
   or excluded, so no tier filter hands it out as work. `SnapshotMeta.ready_to_merge` lists, by display id, the
-  user's pull requests GitHub lets the user merge now (plan §C.2 K17); they stay ranked.
+  user's pull requests GitHub let the user merge at the scan (plan §C.2 K17); they are ranked, never waiting only
+  on others. `merge_state_pending` counts the user's pull requests whose merge state GitHub had not computed by the
+  scan (the next refresh reads them again); null when the snapshot did not record merge states.
 - **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
   with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
   recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per

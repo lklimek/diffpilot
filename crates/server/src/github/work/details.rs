@@ -38,6 +38,9 @@ commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 10
 pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt \
 checkSuite { workflowRun { workflow { name } } } } ... on StatusContext { context state createdAt } } } } } } } }";
 
+/// `mergeStateStatus` per pull request, as GitHub answered it (Q17).
+pub type MergeStates = BTreeMap<ItemRef, String>;
+
 /// A GraphQL connection's nodes.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", bound(deserialize = "N: Deserialize<'de>"))]
@@ -423,6 +426,29 @@ impl<T: TokenSource> WorkClient<T> {
             fetched.notes.push(left_out(&pr, "Details", false));
         }
         Ok(fetched)
+    }
+
+    /// `mergeStateStatus` of open pull requests, read again (Q17), ten per query. A pull request GitHub does not
+    /// resolve, or whose batch fails, is absent (its first answer stands).
+    pub async fn merge_states(&self, pulls: &[ItemRef]) -> Result<MergeStates, WorkError> {
+        let answers = self
+            .batched(pulls, PR_BATCH, "", |pr| {
+                repository(
+                    &pr.repo,
+                    &format!("pullRequest(number: {}) {{ mergeStateStatus }}", pr.number),
+                )
+            })
+            .await?;
+        Ok(answers
+            .resolved
+            .into_iter()
+            .filter_map(|(pr, value)| {
+                let state = value["pullRequest"]["mergeStateStatus"]
+                    .as_str()?
+                    .to_owned();
+                Some((pr, state))
+            })
+            .collect())
     }
 
     /// Milestones of issues (Q9), fifty per query; `None` for an issue without one.

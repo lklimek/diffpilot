@@ -814,6 +814,11 @@ async fn full_refresh_stores_the_expected_snapshot() {
         "only the user's PR GitHub lets the user merge"
     );
     assert_eq!(
+        meta.merge_state_pending,
+        Some(1),
+        "WUI-298 was UNKNOWN at the details read and CLEAN when read again; NC-476 stays unknown"
+    );
+    assert_eq!(
         meta.checked.pr,
         meta.item_counts.pr + u32::try_from(meta.awaiting.len()).expect("count") + meta.excluded,
         "scanned = Needs you + Waiting on others + Excluded"

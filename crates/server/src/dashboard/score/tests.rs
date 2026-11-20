@@ -2205,6 +2205,52 @@ fn ready_to_merge_when_github_lets_the_user_merge() {
     assert!(!ready_to_merge(&r, &old));
 }
 
+/// A merge state GitHub had not computed is pending only for a PR that would otherwise be checked for Ready to
+/// merge.
+#[test]
+fn merge_state_pending_only_for_the_users_mergeable_prs() {
+    let r = rules();
+    let unknown = PrFacts {
+        merge_state: MergeState::Unknown,
+        viewer_can_write: true,
+        ..pr()
+    };
+    assert!(merge_state_pending(&r, &unknown));
+    assert!(!ready_to_merge(&r, &unknown));
+    for (case, facts) in [
+        (
+            "computed",
+            PrFacts {
+                merge_state: MergeState::Blocked,
+                ..unknown.clone()
+            },
+        ),
+        (
+            "draft",
+            PrFacts {
+                is_draft: true,
+                ..unknown.clone()
+            },
+        ),
+        (
+            "no write access",
+            PrFacts {
+                viewer_can_write: false,
+                ..unknown.clone()
+            },
+        ),
+        (
+            "someone else's",
+            PrFacts {
+                author: Some("bob".into()),
+                ..unknown.clone()
+            },
+        ),
+    ] {
+        assert!(!merge_state_pending(&r, &facts), "{case}");
+    }
+}
+
 /// Ready to merge lists by display id, leaves out excluded authors and keeps the PRs in the ranking.
 #[test]
 fn merge_ready_by_display_id_without_excluded_authors() {
