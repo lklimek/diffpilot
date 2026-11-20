@@ -204,7 +204,7 @@ test.describe("My work (msw)", () => {
       .locator("details", { has: page.getByRole("heading", { name: "Waiting on others" }) });
     const copy = waiting.getByRole("button", { name: "Copy list of PRs waiting on others" });
     await copy.click();
-    await expect(waiting.getByRole("status")).toHaveText("Copied 3 lines.");
+    await expect(waiting.getByRole("status").filter({ hasText: /^Copied/ })).toHaveText("Copied 3 lines.");
     await expect(copy).toBeFocused();
     const copied = await page.evaluate(
       () => (window as unknown as { copied: { text: string; html: string } }).copied,
