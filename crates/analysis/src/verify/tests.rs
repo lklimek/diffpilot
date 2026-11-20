@@ -1358,3 +1358,40 @@ fn crate_notes_keep_only_plain_short_notes_on_listed_hunks() {
     assert_eq!(keep_crate_notes(&mut none, &diff), 0);
     assert_eq!(none.crate_notes, None);
 }
+
+#[test]
+fn review_crate_note_hunks_are_unique() {
+    let hunk = |id: &str| Hunk {
+        id: HunkId(id.to_owned()),
+        base: LineSpan { start: 1, len: 0 },
+        head: LineSpan { start: 1, len: 1 },
+        added: vec![1],
+        removed: Vec::new(),
+    };
+    let files = vec![FileDiff {
+        path: "src/lib.rs".to_owned(),
+        old_path: None,
+        status: FileStatus::Modified,
+        binary: false,
+        hunks: vec![hunk("h1"), hunk("h2")],
+    }];
+    let diff = DiffIndex::new(&files).expect("diff");
+    let mut output = PlanOutput {
+        flows: Vec::new(),
+        unassigned: Vec::new(),
+        crate_notes: Some(vec![contracts::agent::plan::PlanCrateNote {
+            note: "parsing".to_owned(),
+            hunks: ["h1", "h2", "h1"]
+                .iter()
+                .map(|h| HunkId((*h).to_owned()))
+                .collect(),
+        }]),
+    };
+    keep_crate_notes(&mut output, &diff);
+    let hunks: Vec<&str> = output.crate_notes.as_ref().expect("notes")[0]
+        .hunks
+        .iter()
+        .map(|h| h.0.as_str())
+        .collect();
+    assert_eq!(hunks, ["h1", "h2"]);
+}

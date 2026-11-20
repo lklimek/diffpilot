@@ -663,3 +663,149 @@ fn deps_definition_files_not_read_leave_definitions_not_searched() {
         "a definition found in a read file is located"
     );
 }
+
+// Independent review (GO9 part A): contract tests written from ADR-021 and Cargo semantics.
+
+#[test]
+fn review_conversion_candidates_stay_linear_in_the_tokens() {
+    // A hostile changed file: conversion-named functions without a body. Each signature must not run to the end
+    // of the file and name every later token (quadratic time and memory in the trusted server).
+    let n = 1000;
+    let text = format!("{}\n", "fn to_a ".repeat(n));
+    let got = tech::conversion_candidates(&text, &[1]);
+    assert!(
+        got.len() <= 2 * n,
+        "{} candidates for {n} functions",
+        got.len()
+    );
+    let text = format!("{}\n", "]impl a for b ".repeat(n));
+    let got = tech::conversion_candidates(&text, &[1]);
+    assert!(got.len() <= 2 * n, "{} candidates for {n} impls", got.len());
+}
+
+#[test]
+fn review_explicit_member_wins_over_exclude() {
+    // Cargo: a path in `members` stays a member even when an `exclude` entry covers it.
+    let root = "[workspace]\nmembers = [\"crates/a\"]\nexclude = [\"crates\"]\n\n[workspace.dependencies]\ndpp = { git = \"https://github.com/dashpay/platform\" }\n";
+    let a =
+        "[package]\nname = \"a\"\nversion = \"0.1.0\"\n\n[dependencies]\ndpp.workspace = true\n";
+    let map = map_of(&[("Cargo.toml", root), ("crates/a/Cargo.toml", a)]);
+    let dpp = external(&map, dependency(krate(&map, "a"), "dpp"));
+    assert_ne!(dpp.source, CrateSource::Unknown, "{:?}", map.limits);
+}
+
+#[test]
+fn review_package_workspace_pointer_is_not_a_missing_lock() {
+    // ADR-021 §1: `package.workspace` pointers are a reported gap, never guessed. The pointed-to workspace has a
+    // Cargo.lock, so "no Cargo.lock" is a false limit.
+    let ws = "[workspace]\nmembers = [\"../shared\"]\n";
+    let shared = "[package]\nname = \"shared\"\nversion = \"0.1.0\"\nworkspace = \"../ws\"\n";
+    let map = map_of(&[
+        ("ws/Cargo.toml", ws),
+        ("ws/Cargo.lock", "version = 4\n"),
+        ("shared/Cargo.toml", shared),
+    ]);
+    assert!(
+        !map.limits.contains(&MapLimit::NoLockFile {
+            workspace_dir: "shared".to_owned()
+        }),
+        "{:?}",
+        map.limits
+    );
+}
+
+#[test]
+fn review_unsearched_path_crate_is_not_claimed_not_located() {
+    // `NotLocated` means "searched in the defining crate and not found"; a crate whose manifest was not read was
+    // never searched.
+    let mut map = map_of(&[
+        ("Cargo.toml", ROOT),
+        ("Cargo.lock", LOCK),
+        ("crates/a/Cargo.toml", CRATE_A),
+        ("crates/b/Cargo.toml", "[package\nname = "),
+    ]);
+    map.add_facts(
+        "crates/a/src/lib.rs",
+        Some("use b::Height;\nstruct L;\nimpl From<Height> for L {}\n"),
+        &[1, 2, 3],
+    );
+    let fact = map.facts.first().expect("a fact for b::Height");
+    assert_ne!(fact.definition, Definition::NotLocated);
+}
+
+#[test]
+fn review_absolute_path_dependency_is_not_a_repository_path() {
+    let a = "[package]\nname = \"a\"\n\n[dependencies]\nx = { path = \"/opt/x\" }\n";
+    let map = map_of(&[("crates/a/Cargo.toml", a)]);
+    let x = external(&map, dependency(krate(&map, "a"), "x"));
+    assert_ne!(
+        x.source,
+        CrateSource::Path {
+            path: "crates/a/opt/x".to_owned(),
+            repo: None
+        },
+        "an absolute path shown as a path inside the repository"
+    );
+}
+
+#[test]
+fn review_lock_version_of_a_crate_without_version() {
+    // Cargo >= 1.75: a package without `version` is 0.0.0 in Cargo.lock.
+    let a = "[package]\nname = \"a\"\n\n[dependencies]\nserde = \"1\"\n";
+    let lock = "version = 4\n\n[[package]]\nname = \"a\"\nversion = \"0.0.0\"\ndependencies = [\n \"serde 1.0.200\",\n]\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.200\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n\n[[package]]\nname = \"serde\"\nversion = \"0.9.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n";
+    let map = map_of(&[("Cargo.toml", a), ("Cargo.lock", lock)]);
+    let serde = external(&map, dependency(krate(&map, "a"), "serde"));
+    assert_eq!(serde.version.as_deref(), Some("1.0.200"));
+}
+
+#[test]
+fn review_import_in_another_module_does_not_name_a_local_type() {
+    let text =
+        "mod tests {\n    use dpp::Foo;\n}\nstruct Foo;\nstruct L;\nimpl From<Foo> for L {}\n";
+    let got = tech::conversion_candidates(text, &[6]);
+    assert!(
+        got.iter().all(
+            |c| !matches!(&c.origin, TypeOrigin::Crate { code_name, .. } if code_name == "dpp")
+        ),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn review_macro_call_on_the_impl_line_does_not_hide_the_impl() {
+    let text = "struct L;\nimpl From<dpp::X> for L { fn from(_: dpp::X) -> Self { todo!() } }\n";
+    let got = tech::conversion_candidates(text, &[2]);
+    assert!(
+        got.iter()
+            .any(|c| c.type_name == "X" && c.kind == tech::CandidateKind::FromImpl),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn review_deep_toml_does_not_overflow_a_worker_stack() {
+    let deep_array = format!(
+        "[package]\nname = \"a\"\nx = {}1{}\n",
+        "[".repeat(100_000),
+        "]".repeat(100_000)
+    );
+    let deep_inline = format!(
+        "[package]\nname = \"a\"\nx = {}1{}\n",
+        "{a = ".repeat(50_000),
+        "}".repeat(50_000)
+    );
+    let dotted = format!(
+        "[package]\nname = \"a\"\n{} = 1\n",
+        vec!["a"; 200_000].join(".")
+    );
+    let header = format!("[{}]\n", vec!["a"; 200_000].join("."));
+    let handle = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            for text in [deep_array, deep_inline, dotted, header] {
+                let _ = map_of(&[("Cargo.toml", text.as_str())]);
+            }
+        })
+        .expect("thread");
+    assert!(handle.join().is_ok());
+}
