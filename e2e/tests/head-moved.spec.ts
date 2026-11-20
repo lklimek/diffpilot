@@ -77,15 +77,14 @@ test("head moved: comment refused with pr_head_changed, Start analysis, the supe
   await expect(heading(page)).toBeVisible();
   await openStep(page, 1, 5);
   await page.keyboard.press("a");
-  await inspector(page)
-    .getByRole("textbox", { name: /^Ask the LLM about / })
-    .fill("Is this still current?");
-  await inspector(page).getByRole("button", { name: "Ask", exact: true }).click();
+  const chat = page.getByRole("dialog", { name: "Ask" });
+  await chat.getByRole("textbox", { name: "Your question" }).fill("Is this still current?");
+  await chat.getByRole("button", { name: "Ask", exact: true }).click();
   // The PR keeps its agent session over a fresh analysis: the old analysis still takes questions (refused only when the
   // PR's data was explicitly removed, http-api.md Ask) and the question is answered on it.
-  await expect(inspector(page).getByRole("alert")).toHaveCount(0);
-  const asked = inspector(page).getByRole("list", { name: "Ask conversation" });
-  await expect(asked).toContainText("Asked by you: Is this still current?");
+  await expect(chat.getByRole("alert")).toHaveCount(0);
+  const asked = chat.getByRole("listitem", { name: "Question: Is this still current?", exact: true });
+  await expect(asked).toContainText("Asked by you");
   await expect(asked).toContainText("Answered on the superseded analysis.", { timeout: 60_000 });
   await checkScreen(page);
 });

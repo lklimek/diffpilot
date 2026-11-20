@@ -20,7 +20,7 @@ test("PR context: facts are computed from GitHub and the diff, apart from the LL
   await expect(facts).toContainText("From GitHub and the diff; no LLM.");
   for (const fact of [
     "Check runs: 3 passed, 1 failed, 1 skipped, 1 neutral. Statuses: 1 pending.",
-    "test (integration): sync_headers::slow_peer_2000_headers",
+    "test (integration) (opens on GitHub in a new tab): sync_headers::slow_peer_2000_headers",
     "3 review threads on GitHub",
     "12 test lines changed or removed, 30 added",
     "3 dependencies changed: tokio, tracing, url",
@@ -33,7 +33,7 @@ test("PR context: facts are computed from GitHub and the diff, apart from the LL
   await expect(banner).toContainText(
     "Check runs: 3 passed, 1 failed, 1 skipped, 1 neutral. Statuses: 1 pending.",
   );
-  await expect(banner).toContainText("flows reviewed 0 / 5");
+  await expect(banner).toContainText("Your progress 0 / 5");
   await expect(page.getByRole("main").locator('[data-provenance="llm"]').first()).toBeVisible();
   await expect(inspector(page)).toContainText(
     "Unexplained: 85 changed lines in 2 files — read these yourself",
@@ -50,9 +50,9 @@ test("flows by importance, then quiet rows with Unexplained first; flow introduc
     .evaluateAll((buttons) =>
       buttons.map((b) => (b.getAttribute("aria-label") ?? b.textContent ?? "").trim()),
     );
-  // The remark pills are their own buttons beside their flow or step (they lead to the first remark).
+  // The remark pills, flag markers and flow tick toggles are their own buttons beside their flow or step.
   const pill =
-    /^(\d+ LLM remarks? (in flow|on step) \d+|LLM flags (in flow|on step) \d+:|LLM rated step \d+)/;
+    /^(\d+ LLM remarks? (in flow|on step) \d+|LLM flags (in flow|on step) \d+:|LLM rated step \d+|Go to the first .* (in flow|on step) \d+$|Mark flow \d+ reviewed$)/;
   expect(
     items.filter((name) => /^(\d+ LLM remarks?|LLM flags) in flow \d+/.test(name)).length,
   ).toBeGreaterThan(0);

@@ -111,7 +111,7 @@ export async function finishedReview(page: Page): Promise<string> {
   await checkPr(page);
   const card = page.getByRole("region", { name: "Pull request check" });
   // An existing analysis may or may not have been opened by this user before.
-  const resume = card.getByRole("link", { name: /^(Resume|Open) review$/ });
+  const resume = card.getByRole("link", { name: "Open", exact: true });
   const start = card.getByRole("button", { name: /^Start analysis( anyway)?$/ });
   await expect(resume.or(start).first()).toBeVisible();
   if (await resume.isVisible()) {
@@ -222,19 +222,24 @@ export const REQUIRED_TIPS: RequiredTip[] = [
   { screen: "body", what: "top bar: PR number", selector: 'header a[href*="/pull/"]', min: 0 },
   {
     screen: "body",
-    what: "top bar: label (head SHA, CI, flows reviewed)",
+    what: "top bar: label (head SHA, CI)",
     selector: 'header [tabindex="0"]',
     min: 0,
   },
-  { screen: "body", what: "top bar: button (pending review, help)", selector: "header button", min: 0 },
+  {
+    screen: "body",
+    what: "top bar: button (your progress, pending review, help)",
+    selector: "header button",
+    min: 0,
+  },
   { screen: "body", what: "top bar: user", selector: 'header a[href="/settings"]', min: 0 },
   { screen: REVIEW, what: "top bar: PR number", selector: 'header a[href*="/pull/"]', min: 1 },
   { screen: REVIEW, what: "top bar: head SHA", selector: 'header code[tabindex="0"]', min: 1 },
   {
     screen: REVIEW,
-    what: "top bar: flows reviewed",
-    selector: 'header [tabindex="0"]',
-    name: "^flows reviewed",
+    what: "top bar: your progress",
+    selector: "header button",
+    name: "^Your progress \\d+ / \\d+: flows reviewed",
     min: 1,
   },
   {

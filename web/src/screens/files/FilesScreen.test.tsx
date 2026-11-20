@@ -162,7 +162,8 @@ describe("Files view (brief §4.5)", () => {
       "true",
     );
     await waitFor(() => expect(fileHeading()).toHaveTextContent("src/rpc/client.rs"));
-    expect(fileHeading()).toHaveFocus();
+    // The focus moves in an effect after the next file renders.
+    await waitFor(() => expect(fileHeading()).toHaveFocus());
     expect(
       screen.getByText("Marked lib.rs as viewed on GitHub. Opened the next file, client.rs."),
     ).toHaveAttribute("role", "status");

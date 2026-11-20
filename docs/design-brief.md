@@ -782,9 +782,9 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
 - A step or flow with LLM flags shows a flag marker with its strongest level written in that level's colour
   ("⚑ red", "⚑ yellow"; "⚑" for a flag without a level) next to its rating pill: in the navigation (step rows and
   flow rows, also while a flow is collapsed), above the step's code and above the flow introduction. Its name and
-  tooltip count the flags by level ("LLM flags on step 2: 1 red flag"). A click goes to the first flag at the
-  strongest level (for a flow: the first step holding one) and flashes it in the code and the Inspector ("Go to the
-  first red flag in flow 4"). It is not a rating and stays apart from the pill; no marker without flags. The flag
+  tooltip counts the flags by level ("LLM flags on step 2: 1 red flag"); its name says what a click does ("Go to
+  the first red flag in flow 4"). A click goes to the first flag at the strongest level (for a flow: the first step
+  holding one) and flashes it in the code and the Inspector. It is not a rating and stays apart from the pill; no marker without flags. The flag
   cards stay in the Inspector. Amends "their tooltips count flags by level" in the 2026-11-18 flags addendum.
 - Each analysed flow row in the navigation has a tick toggle ("Mark flow 2 reviewed", pressed when all its steps
   are ticked): it ticks every step of the flow, or unticks them all when all are ticked, like "Mark flow reviewed"
@@ -822,6 +822,24 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   comment (file comment, not in the diff). The draft starts with "LLM-suggested — review before posting", then
   the flag's title, numbered scenario and not-checked line, or the answer as written; a draft already there keeps
   its text and gets this after a blank line. It stays an editable draft; nothing is posted until the user adds it.
+
+### Owner-approved amendment — 2026-11-19: floating Ask chat
+
+- **Ask chat.** Ask is a floating private chat per analysis and user, in the layout shared by Flows and Files, so it
+  survives their navigation. A bottom-right launcher (with the count of new outcomes, failed answers included) or `a`
+  opens it; hidden until the first question, then its state is remembered. It is anchored over the Inspector above
+  its dock, never over the centre by default; resizable, Full height, Hide (Esc).
+- **Subjects.** A question is about a step, selected lines, a whole file, a flow or the whole pull request. The
+  composer's subject follows where the reader is (a chip; × makes it the whole pull request); `Enter` sends,
+  `Shift+Enter` breaks the line. Threads run oldest first, each with a subject chip that navigates.
+- **Follow-ups.** Reply under an answer: one level deep, every reply joins the thread of its first question, keeps
+  its subject and remembers the earlier questions of the thread. Ask again replaces the failed entry.
+- **Inspector copy.** The Inspector keeps a read-only copy of the questions about the shown place (question, state or
+  answer, follow-ups, Open in chat) with an "Ask about this step" button; the dock has no Ask field.
+- A new analysis (moved head) starts a new chat; the old analysis keeps its own. Answers appear whole.
+- Supersedes, in the 2026-11-18 amendments, the collapsible Inspector Ask section, "Ask as a chat" (its place and
+  filters), "Resizable Ask" (the dock handle) and the "Your questions and answers" block; "Ask about a line" opens
+  the chat with the line as its subject.
 
 ### Owner-approved amendment — 2026-11-18: GitHub work dashboard
 

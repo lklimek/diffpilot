@@ -150,7 +150,7 @@ test("MemCan down: the refresh finishes, TODO rows are kept and a note says they
     expect(done.failure).toBeNull();
     await expect(page.getByText(/^Refreshed manually at /)).toBeVisible();
     expect(await rowIds(page)).toEqual(expect.arrayContaining(TODOS));
-    await page.getByRole("button", { name: /^« More · waiting on others/ }).click();
+    await page.getByRole("button", { name: /^« More · waiting \d+ · ready \d+$/ }).click();
     await expect(
       page.getByText(
         /^MemCan TODOs not refreshed \(MemCan unreachable at \d\d:\d\d\); the TODO rows are from an earlier scan\.$/,
