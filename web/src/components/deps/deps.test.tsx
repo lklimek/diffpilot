@@ -72,6 +72,10 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
       expect.stringMatching(/No Cargo\.lock in the workspace at the repository root/),
       expect.stringMatching(/src\/rpc\/generated_codes\.rs.*conversions are not checked/),
       expect.stringContaining("first 200 conversion facts"),
+      expect.stringContaining("tools/xtask/Cargo.toml: its workspace is not determined"),
+      expect.stringContaining("Cargo.toml has target-specific dependency tables"),
+      expect.stringMatching(/src\/rpc\/generated_codes\.rs has more conversion candidates/),
+      expect.stringContaining("2 files of the crate in crates/node-sdk"),
     ]);
     expect(document.body).not.toHaveTextContent(/\bcomplete\b/);
     expectTrustWording(document.body.textContent ?? "");
@@ -122,7 +126,42 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
     { kind: "no_lock_file", workspace_dir: "" },
     { kind: "source_unread", path: "src/rpc/client.rs" },
     { kind: "facts_cut", kept: 200 },
+    { kind: "workspace_unresolved", manifest: "tools/x/Cargo.toml" },
+    { kind: "target_specific", manifest: "Cargo.toml" },
+    { kind: "source_cut", path: "src/huge.rs" },
+    { kind: "definitions_unread", dir: "crates/core", files: 3 },
   ];
+
+  it.each([
+    [
+      { kind: "workspace_unresolved", manifest: "tools/x/Cargo.toml" },
+      "tools/x/Cargo.toml: its workspace is not determined, so its lock file and inherited dependencies are not resolved.",
+    ],
+    [
+      { kind: "target_specific", manifest: "Cargo.toml" },
+      "Cargo.toml has target-specific dependency tables; they are listed for every target (cfg is not evaluated).",
+    ],
+    [
+      { kind: "source_cut", path: "src/huge.rs" },
+      "src/huge.rs has more conversion candidates than are checked; the rest are not checked.",
+    ],
+    [
+      { kind: "definitions_unread", dir: "", files: 1 },
+      "1 file of the crate in the repository root that may define a searched type was not read; those definitions are not searched.",
+    ],
+  ] as [DependencyView["limits"][number], string][])(
+    "limit %j is named in the incomplete-map notice",
+    (limit, text) => {
+      render(
+        <DependencyNotices
+          prOwner="acme"
+          view={{ ...mockDependenciesMulti(), limits: [limit] }}
+          links={links()}
+        />,
+      );
+      expect(screen.getByRole("region", { name: "This map is incomplete" })).toHaveTextContent(text);
+    },
+  );
 
   it.each(LIMITS.map((l) => [l.kind, l] as const))(
     "available with no repositories and %s: not checked, never an absence claim; the PR owner stays implicit",

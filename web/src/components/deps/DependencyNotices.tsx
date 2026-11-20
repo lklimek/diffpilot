@@ -22,6 +22,14 @@ function limitText(limit: DependencyLimit): string {
       return `${limit.path} was not read: its conversions are not checked.`;
     case "facts_cut":
       return `Only the first ${limit.kept} conversion facts in file order are kept.`;
+    case "workspace_unresolved":
+      return `${limit.manifest}: its workspace is not determined, so its lock file and inherited dependencies are not resolved.`;
+    case "target_specific":
+      return `${limit.manifest} has target-specific dependency tables; they are listed for every target (cfg is not evaluated).`;
+    case "source_cut":
+      return `${limit.path} has more conversion candidates than are checked; the rest are not checked.`;
+    case "definitions_unread":
+      return `${limit.files === 1 ? "1 file" : `${limit.files} files`} of the crate in ${limit.dir === "" ? "the repository root" : limit.dir} that may define a searched type ${limit.files === 1 ? "was" : "were"} not read; those definitions are not searched.`;
   }
 }
 

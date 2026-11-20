@@ -216,6 +216,10 @@ export function mockDependenciesLimits(): DependencyView {
       { kind: "no_lock_file", workspace_dir: "" },
       { kind: "source_unread", path: "src/rpc/generated_codes.rs" },
       { kind: "facts_cut", kept: 200 },
+      { kind: "workspace_unresolved", manifest: "tools/xtask/Cargo.toml" },
+      { kind: "target_specific", manifest: "Cargo.toml" },
+      { kind: "source_cut", path: "src/rpc/generated_codes.rs" },
+      { kind: "definitions_unread", dir: "crates/node-sdk", files: 2 },
     ],
   };
 }
