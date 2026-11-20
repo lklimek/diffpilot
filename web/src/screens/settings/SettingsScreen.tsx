@@ -14,6 +14,7 @@ import {
   useRepoSettings,
   useSaveDashboardSettings,
   useSetAskEffort,
+  useSetControlledOwners,
   useSetJudgeEffort,
   useSetLanguage,
   useSettings,
@@ -27,6 +28,7 @@ import { JudgeEffortSelect } from "../../components/dashboard/settings-judge-eff
 import { AskEffortSelect } from "../../components/settings/AskEffortSelect";
 import { AccountCard } from "../../components/settings/AccountCard";
 import { AppInstallationsCard } from "../../components/settings/AppInstallationsCard";
+import { ControlledOwnersCard } from "../../components/settings/ControlledOwnersCard";
 import { LanguageCard } from "../../components/settings/LanguageCard";
 import { NotificationsCard } from "../../components/settings/NotificationsCard";
 import { LlmStatusCard } from "../../components/settings/LlmStatusCard";
@@ -185,6 +187,7 @@ function SettingsContent({
   const setAskEffort = useSetAskEffort();
   const settings = useSettings();
   const setLanguage = useSetLanguage();
+  const setControlledOwners = useSetControlledOwners();
   const notify = useNotifySetting();
   if (settings.isPending) return <StatusMessage kind="loading">Loading the settings…</StatusMessage>;
   if (settings.isError) return <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>;
@@ -234,6 +237,15 @@ function SettingsContent({
           />
           <NotificationsCard {...notify} />
           <AppInstallationsCard installations={app_installations} signInHref={routes.authLogin.path} />
+          {settings.data.controlled_owners && (
+            <ControlledOwnersCard
+              owners={settings.data.controlled_owners}
+              busy={setControlledOwners.isPending}
+              saved={setControlledOwners.isSuccess}
+              error={setControlledOwners.isError ? errorText(setControlledOwners.error) : undefined}
+              onSave={(owners) => setControlledOwners.mutate(owners)}
+            />
+          )}
         </div>
         <RepoSection repos={repos} userId={userId} />
       </div>
