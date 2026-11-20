@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
+use contracts::agent::analyse_flow::{AgentIncidental, AgentStep, FlowAnalysisOutput};
 use contracts::api::tour::{FlowGraph, GraphEdge, GraphNode};
 use contracts::common::{
     AnnotationType, Basis, Blocking, Flag, FlagLevel, FragmentKind, LineRange, LineSide, RiskBand,
@@ -212,6 +212,7 @@ pub(super) fn flow(
                 .collect(),
         )
     };
+    let mut incidental_lines = 0u32;
     for (index, incidental) in output.incidentals.iter().enumerate() {
         let at = format!("incidentals[{index}]");
         issues.text(&format!("{at}.text"), &incidental.text);
@@ -233,6 +234,7 @@ pub(super) fn flow(
             issues.push(VerifyIssueKind::IncidentalOutsideFlow, message);
         }
         let count: u32 = changed.iter().map(|&(first, last)| last - first + 1).sum();
+        incidental_lines = incidental_lines.saturating_add(count);
         if count > MAX_INCIDENTAL_LINES {
             let message = format!(
                 "{at}: lines {}-{} of {file} hold {count} changed lines; an incidental change covers at most \
@@ -255,6 +257,32 @@ pub(super) fn flow(
                 lines.0, lines.1
             );
             issues.push(VerifyIssueKind::IncidentalOverlapsStep, message);
+        }
+    }
+    if incidental_lines > MAX_FLOW_INCIDENTAL_LINES {
+        let message = format!(
+            "incidentals: they hold {incidental_lines} changed lines in all; the incidental changes of a flow cover at \
+             most {MAX_FLOW_INCIDENTAL_LINES}: explain larger changes in steps"
+        );
+        issues.push(VerifyIssueKind::IncidentalTooLarge, message);
+    }
+    let mut sections: Vec<(usize, &AgentIncidental)> =
+        output.incidentals.iter().enumerate().collect();
+    sections.sort_by_key(|(_, item)| (item.side, item.file.as_str(), item.start_line));
+    for pair in sections.windows(2) {
+        let [(_, before), (index, after)] = pair else {
+            continue;
+        };
+        if before.side == after.side
+            && before.file == after.file
+            && after.start_line <= before.end_line.saturating_add(1)
+        {
+            let message = format!(
+                "incidentals[{index}]: lines {}-{} of {} are adjacent to or overlap lines {}-{}; merge them into one \
+                 incidental change of at most {MAX_INCIDENTAL_LINES} changed lines, or explain them in a step",
+                after.start_line, after.end_line, after.file, before.start_line, before.end_line
+            );
+            issues.push(VerifyIssueKind::IncidentalTooLarge, message);
         }
     }
     let mut answered = BTreeSet::new();
@@ -291,6 +319,8 @@ pub(super) fn flow(
 
 /// Most changed lines one incidental change covers.
 const MAX_INCIDENTAL_LINES: u32 = 15;
+/// Most changed lines all incidental changes of one flow cover.
+const MAX_FLOW_INCIDENTAL_LINES: u32 = 40;
 /// Most characters of an incidental change's sentence.
 const MAX_INCIDENTAL_TEXT: usize = 240;
 
@@ -1827,10 +1857,6 @@ mod tests {
                 VerifyIssueKind::IncidentalOverlapsStep,
             ),
             (
-                incidental("src/gone.rs", LineSide::Base, (1, 4), " "),
-                VerifyIssueKind::EmptyText,
-            ),
-            (
                 incidental("src/a.rs", LineSide::Head, (41, 41), "Past the end."),
                 VerifyIssueKind::LineOutOfRange,
             ),
@@ -1845,6 +1871,12 @@ mod tests {
                 "{issues:#?}"
             );
         }
+        let mut empty = with_incidental();
+        empty.incidentals[0].text = " ".to_owned();
+        assert_eq!(
+            kinds(&Setup::new().issues(&empty)),
+            [VerifyIssueKind::EmptyText]
+        );
         // Incidentals alone are no flow: the steps carry its rating.
         let mut only = with_incidental();
         only.steps.clear();
@@ -1879,64 +1911,97 @@ mod tests {
         );
     }
 
+    /// The messages of `IncidentalTooLarge` issues.
+    fn too_large(issues: &[VerifyIssue]) -> Vec<String> {
+        issues
+            .iter()
+            .filter(|issue| issue.kind == VerifyIssueKind::IncidentalTooLarge)
+            .map(|issue| issue.message.clone())
+            .collect()
+    }
+
     #[test]
     fn incidental_changes_are_small_and_said_in_one_short_sentence() {
-        // 16 changed lines: the deleted file's lines 1-16 (no step there).
+        let setup = setup_with_deleted_lines(16);
+        let mut output = with_incidental();
+        output.incidentals[0].end_line = 15;
+        assert_eq!(
+            too_large(&setup.issues(&output)),
+            Vec::<String>::new(),
+            "15 changed lines"
+        );
+        output.incidentals[0].end_line = 16;
+        let messages = too_large(&setup.issues(&output));
+        assert_eq!(messages.len(), 1, "{messages:#?}");
+        assert!(messages[0].contains("16 changed lines"), "{messages:#?}");
+        // The sentence: at most 240 characters.
+        output.incidentals[0].end_line = 15;
+        output.incidentals[0].text = "a".repeat(240);
+        assert_eq!(
+            too_large(&setup.issues(&output)),
+            Vec::<String>::new(),
+            "240 characters"
+        );
+        output.incidentals[0].text.push('b');
+        let messages = too_large(&setup.issues(&output));
+        assert_eq!(messages.len(), 1, "{messages:#?}");
+        assert!(messages[0].contains("241 characters"), "{messages:#?}");
+    }
+
+    /// `Setup` whose deleted file `src/gone.rs` has `lines` removed lines, all planned in the flow.
+    fn setup_with_deleted_lines(lines: u32) -> Setup {
         let mut setup = Setup::new();
-        setup.files[1].hunks = vec![hunk("h2", (1, 16), (0, 0))];
+        setup.files[1].hunks = vec![hunk("h2", (1, lines), (0, 0))];
         setup.plan.flow_lines.insert(
             FlowId("f1".to_owned()),
             vec![
                 ranges("src/a.rs", LineSide::Head, 10, 12),
                 ranges("src/a.rs", LineSide::Base, 10, 11),
-                ranges("src/gone.rs", LineSide::Base, 1, 16),
+                ranges("src/gone.rs", LineSide::Base, 1, lines),
             ],
         );
         setup.facts.insert(
             LineSide::Base,
             "src/gone.rs",
             FileFacts {
-                line_count: 16,
+                line_count: lines,
                 blank_lines: Vec::new(),
             },
         );
-        let mut output = with_incidental();
-        output.incidentals[0].end_line = 15;
-        output.incidentals.push(incidental(
-            "src/gone.rs",
-            LineSide::Base,
-            (16, 16),
-            "Drops the last helper.",
-        ));
         setup
-            .run(&output)
-            .expect("15 changed lines and one more: accepted");
-        output.incidentals.pop();
-        output.incidentals[0].end_line = 16;
+    }
+
+    #[test]
+    fn incidental_changes_of_one_flow_stay_apart_and_small_in_total() {
+        let gone = |first, last| {
+            incidental(
+                "src/gone.rs",
+                LineSide::Base,
+                (first, last),
+                "Drops a helper.",
+            )
+        };
+        // Adjacent sections on one file side: one section split to pass its cap.
+        let setup = setup_with_deleted_lines(16);
+        let mut output = with_incidental();
+        output.incidentals = vec![gone(1, 8), gone(9, 16)];
         let issues = setup.issues(&output);
         assert_eq!(
             kinds(&issues),
             [VerifyIssueKind::IncidentalTooLarge],
             "{issues:#?}"
         );
-        assert!(
-            issues[0].message.contains("16 changed lines"),
-            "{issues:#?}"
-        );
-        // The sentence: at most 240 characters.
-        output.incidentals[0].end_line = 15;
-        output.incidentals.push(incidental(
-            "src/gone.rs",
-            LineSide::Base,
-            (16, 16),
-            &"a".repeat(240),
-        ));
-        setup.run(&output).expect("240 characters");
-        output.incidentals[1].text.push('b');
-        assert_eq!(
-            kinds(&setup.issues(&output)),
-            [VerifyIssueKind::IncidentalTooLarge]
-        );
+        assert!(issues[0].message.contains("adjacent"), "{issues:#?}");
+        output.incidentals = vec![gone(1, 8), gone(5, 16)];
+        assert_eq!(too_large(&setup.issues(&output)).len(), 1, "overlapping");
+        // At most 40 changed lines in all incidental changes of the flow (gaps of one line each stay uncovered).
+        let setup = setup_with_deleted_lines(47);
+        output.incidentals = vec![gone(1, 15), gone(17, 31), gone(33, 42)];
+        assert!(too_large(&setup.issues(&output)).is_empty(), "40 lines");
+        output.incidentals = vec![gone(1, 15), gone(17, 31), gone(33, 47)];
+        let messages = too_large(&setup.issues(&output));
+        assert_eq!(messages.len(), 1, "{messages:#?}");
+        assert!(messages[0].contains("45 changed lines"), "{messages:#?}");
     }
 
     #[test]
