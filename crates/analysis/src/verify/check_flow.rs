@@ -203,6 +203,50 @@ pub(super) fn flow(
             issues.location(context.facts, &at, site.side, &site.file, lines);
         }
     }
+    let planned_of = |side: LineSide, file: &str| -> Vec<Span> {
+        let planned = context.plan.flow_lines.get(flow_id).into_iter().flatten();
+        let ranges = planned.filter(|lines| lines.side == side && lines.file == file);
+        spans::merge(
+            ranges
+                .flat_map(|lines| spans::from_ranges(&lines.ranges))
+                .collect(),
+        )
+    };
+    for (index, incidental) in output.incidentals.iter().enumerate() {
+        let at = format!("incidentals[{index}]");
+        issues.text(&format!("{at}.text"), &incidental.text);
+        let (side, file) = (incidental.side, incidental.file.as_str());
+        let lines = (incidental.start_line, incidental.end_line);
+        if !issues.location(context.facts, &at, side, file, lines) {
+            continue;
+        }
+        let changed: Vec<Span> = spans::overlapping(changes.lines(side, file), lines)
+            .iter()
+            .map(|&(first, last)| (first.max(lines.0), last.min(lines.1)))
+            .collect();
+        if changed.is_empty() || !spans::subtract(&changed, &planned_of(side, file)).is_empty() {
+            let message = format!(
+                "{at}: lines {}-{} of {file} hold no changed lines of this flow, or changed lines of another flow; an \
+                 incidental change names changed lines of this flow",
+                lines.0, lines.1
+            );
+            issues.push(VerifyIssueKind::IncidentalOutsideFlow, message);
+        }
+        let on_step = output.steps.iter().find(|step| {
+            step.side == side
+                && step.file == file
+                && step.start_line <= lines.1
+                && lines.0 <= step.end_line
+        });
+        if let Some(step) = on_step {
+            let message = format!(
+                "{at}: lines {}-{} of {file} lie inside step {}; a changed line is in a step or an incidental change, \
+                 not both",
+                lines.0, lines.1, step.id
+            );
+            issues.push(VerifyIssueKind::IncidentalOverlapsStep, message);
+        }
+    }
     let mut answered = BTreeSet::new();
     for (index, thread) in output.thread_statuses.iter().enumerate() {
         let at = format!("thread_statuses[{index}]");
@@ -599,8 +643,8 @@ fn step_lines(step: &AgentStep) -> LineRange {
     }
 }
 
-/// Planned changed lines of the flow outside every step; blank lines need no step, and removed lines of a
-/// confirmed move's original belong to the moved step. Interval arithmetic over the planned ranges, the merged
+/// Planned changed lines of the flow outside every step and incidental change; blank lines need no step, and removed
+/// lines of a confirmed move's original belong to the moved step. Interval arithmetic over the planned ranges, the merged
 /// step ranges and binary searches into the file's removed spans and blank lines: O((P + S + M) log n + k) for P
 /// planned ranges, S steps, M covered move lines and k removed spans and blank lines inside the planned lines.
 fn uncovered(
@@ -616,6 +660,11 @@ fn uncovered(
             .entry(key)
             .or_default()
             .push((step.start_line, step.end_line));
+    }
+    for incidental in &output.incidentals {
+        let key = (incidental.side, incidental.file.clone());
+        let lines = (incidental.start_line, incidental.end_line);
+        steps.entry(key).or_default().push(lines);
     }
     for confirmed in confirmed.iter().flatten() {
         let key = (LineSide::Base, confirmed.fact.from.file.clone());
@@ -838,8 +887,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use contracts::agent::analyse_flow::{
-        AgentAnnotation, AgentEdge, AgentImpactRef, AgentPatternRepetition, AgentPatternSite,
-        AgentThreadStatus, Assessment, FlowIntroduction, MovedFrom,
+        AgentAnnotation, AgentEdge, AgentImpactRef, AgentIncidental, AgentPatternRepetition,
+        AgentPatternSite, AgentThreadStatus, Assessment, FlowIntroduction, MovedFrom,
     };
     use contracts::agent::plan::{HunkSelection, PlannedFlow};
     use contracts::api::tour::{FlowGroup, MoveFact};
@@ -1130,7 +1179,28 @@ mod tests {
                 status: ThreadLlmStatus::StillValid,
                 reason: "Still retries every method.".to_owned(),
             }],
+            incidentals: Vec::new(),
         }
+    }
+
+    fn incidental(file: &str, side: LineSide, lines: (u32, u32), text: &str) -> AgentIncidental {
+        AgentIncidental {
+            file: file.to_owned(),
+            side,
+            start_line: lines.0,
+            end_line: lines.1,
+            text: text.to_owned(),
+        }
+    }
+
+    /// `output()` with the removed file's step replaced by an incidental change over its lines.
+    fn with_incidental() -> FlowAnalysisOutput {
+        let mut output = output();
+        output.steps.pop();
+        output.edges.pop();
+        let text = "Deletes the unused helper module.";
+        output.incidentals = vec![incidental("src/gone.rs", LineSide::Base, (1, 4), text)];
+        output
     }
 
     struct Setup {
@@ -1663,6 +1733,97 @@ mod tests {
         assert_eq!(
             issues[1].message,
             "edges[2]: s9 is not a step id of this output"
+        );
+    }
+
+    #[test]
+    fn incidental_changes_cover_their_lines_without_a_step() {
+        let output = with_incidental();
+        let verified = Setup::new().run(&output).expect("accepted");
+        assert_eq!(verified.output.incidentals, output.incidentals);
+        assert_eq!(verified.step_ids.len(), 2);
+        assert!(
+            verified
+                .covered
+                .contains(&ranges("src/gone.rs", LineSide::Base, 1, 5))
+        );
+        // Without it the deleted lines are uncovered.
+        let mut bare = output.clone();
+        bare.incidentals.clear();
+        assert_eq!(
+            kinds(&Setup::new().issues(&bare)),
+            [VerifyIssueKind::ChangedLineUncovered]
+        );
+    }
+
+    #[test]
+    fn incidental_changes_stay_inside_the_flow_and_off_its_steps() {
+        let cases = [
+            // Unchanged lines only: nothing of this flow.
+            (
+                incidental("src/a.rs", LineSide::Head, (30, 31), "Renames a helper."),
+                VerifyIssueKind::IncidentalOutsideFlow,
+            ),
+            // Inside step s2 (8-14): a line has one owner.
+            (
+                incidental("src/a.rs", LineSide::Head, (12, 12), "Makes `send` public."),
+                VerifyIssueKind::IncidentalOverlapsStep,
+            ),
+            (
+                incidental("src/gone.rs", LineSide::Base, (1, 4), " "),
+                VerifyIssueKind::EmptyText,
+            ),
+            (
+                incidental("src/a.rs", LineSide::Head, (41, 41), "Past the end."),
+                VerifyIssueKind::LineOutOfRange,
+            ),
+        ];
+        for (extra, kind) in cases {
+            let mut output = with_incidental();
+            output.incidentals.push(extra.clone());
+            let issues = Setup::new().issues(&output);
+            assert_eq!(kinds(&issues), [kind], "{extra:?}: {issues:#?}");
+            assert!(
+                issues[0].message.starts_with("incidentals[1]"),
+                "{issues:#?}"
+            );
+        }
+        // Incidentals alone are no flow: the steps carry its rating.
+        let mut only = with_incidental();
+        only.steps.clear();
+        only.edges.clear();
+        only.impact_refs.clear();
+        only.pattern_repetitions.clear();
+        only.incidentals
+            .push(incidental("src/a.rs", LineSide::Head, (10, 12), "Retries."));
+        only.incidentals
+            .push(incidental("src/a.rs", LineSide::Base, (10, 11), "Retries."));
+        let issues = Setup::new().issues(&only);
+        assert!(
+            kinds(&issues).contains(&VerifyIssueKind::AssessmentMissing),
+            "{issues:#?}"
+        );
+    }
+
+    #[test]
+    fn incidental_text_gets_the_wording_rules() {
+        let mut output = with_incidental();
+        output.incidentals[0].text = "Removes a verified helper.".to_owned();
+        let verified = Setup::new()
+            .run(&output)
+            .expect("a wording hit is a warning");
+        assert!(
+            verified
+                .warnings
+                .iter()
+                .any(|warning| warning.location == "incidentals[0].text"),
+            "{:?}",
+            verified.warnings
+        );
+        output.incidentals[0].text = "As an AI I only list this change.".to_owned();
+        assert_eq!(
+            kinds(&Setup::new().issues(&output)),
+            [VerifyIssueKind::AgentLimitation]
         );
     }
 

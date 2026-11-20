@@ -164,6 +164,10 @@ pub enum VerifyIssueKind {
     FlagInvalid,
     /// A step with a red flag rated low.
     RedFlagOnLowStep,
+    /// An incidental change on no changed line of the flow, or on changed lines of another flow.
+    IncidentalOutsideFlow,
+    /// An incidental change on lines of a step: each line has one owner.
+    IncidentalOverlapsStep,
 }
 
 impl VerifyIssueKind {
@@ -198,6 +202,8 @@ impl VerifyIssueKind {
             Self::UnconfirmedStack => "unconfirmed_stack",
             Self::FlagInvalid => "flag_invalid",
             Self::RedFlagOnLowStep => "red_flag_on_low_step",
+            Self::IncidentalOutsideFlow => "incidental_outside_flow",
+            Self::IncidentalOverlapsStep => "incidental_overlaps_step",
         }
     }
 }

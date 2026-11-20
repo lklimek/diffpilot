@@ -796,6 +796,7 @@ fn covering_output(id: &FlowId, lines: &[FileRanges]) -> FlowAnalysisOutput {
         impact_refs: Vec::new(),
         pattern_repetitions: Vec::new(),
         thread_statuses: Vec::new(),
+        incidentals: Vec::new(),
     }
 }
 
