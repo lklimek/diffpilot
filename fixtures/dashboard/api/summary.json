@@ -196,6 +196,34 @@
         "total_tenths": null
       }
     ],
+    "ready_to_merge": [
+      {
+        "id": "WUI-311",
+        "repo": {
+          "owner": "acme",
+          "name": "wallet-ui"
+        },
+        "number": 311,
+        "title": "feat(wallet): show pending withdrawals",
+        "url": "https://github.com/acme/wallet-ui/pull/311",
+        "tags": [
+          {
+            "text": "CI failing",
+            "tip": "Failing: test (e2e)"
+          },
+          {
+            "text": "non-required checks not passing",
+            "tip": "GitHub allows the merge while a check that is not required has not passed (merge state unstable)"
+          }
+        ],
+        "change_size": {
+          "size": "small",
+          "additions": 266,
+          "deletions": 114
+        }
+      }
+    ],
+    "merge_state_pending": 0,
     "history": [
       {
         "kind": "pr_opened",

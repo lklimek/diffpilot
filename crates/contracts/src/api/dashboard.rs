@@ -272,6 +272,11 @@ pub struct SnapshotMeta {
     pub excluded: u32,
     /// The user's pull requests waiting on other people.
     pub awaiting: Vec<AwaitingItem>,
+    /// The user's pull requests GitHub let the user merge at the scan, by display id; also ranked.
+    pub ready_to_merge: Vec<ReadyToMergeItem>,
+    /// The user's pull requests whose merge state GitHub had not computed by the scan (read again by the next
+    /// refresh); null when the snapshot did not record merge states (stored before they were).
+    pub merge_state_pending: Option<u32>,
     /// Dated pull request and review events of the chart window (12 weeks), across the scanned logins.
     pub history: Vec<HistoryEvent>,
     /// State of the MemCan TODOs.
@@ -427,6 +432,28 @@ pub struct AwaitingItem {
     pub change_size: Option<ChangeSizeMark>,
     /// Always null: a pull request waiting only on others is not ranked (kept for compatibility).
     pub total_tenths: Option<i32>,
+}
+
+/// A pull request of the user that GitHub lets the user merge now: not a draft, write access to the base
+/// repository, merge state clean, has hooks or unstable.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ReadyToMergeItem {
+    /// Display alias, e.g. `PLAT-1176`.
+    pub id: String,
+    /// Repository.
+    pub repo: RepoRef,
+    /// Pull request number.
+    pub number: u32,
+    /// Title.
+    pub title: String,
+    /// GitHub link, built by the server.
+    pub url: String,
+    /// Deterministic tags from scan facts (CI state; checks not passing that are not required).
+    pub tags: Vec<FactTag>,
+    /// Size mark of its full diff (display only); absent when the totals are unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub change_size: Option<ChangeSizeMark>,
 }
 
 /// A dated event for the charts.

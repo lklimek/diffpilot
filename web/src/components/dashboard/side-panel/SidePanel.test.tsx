@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ageBuckets, QueueAge } from "../queue-age/QueueAge";
 import { ScanNotes } from "../scan-notes/ScanNotes";
+import { ReadyToMerge } from "../ready-to-merge/ReadyToMerge";
 import { NOW, SUMMARY } from "../test-fixtures";
 import { ThroughputMinis } from "../throughput-minis/ThroughputMinis";
 import { WaitingOnOthers } from "../waiting-on-others/WaitingOnOthers";
@@ -88,6 +89,94 @@ describe("side panel sections", () => {
     expect(link).toHaveAttribute("href", first.url);
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAccessibleDescription("Open PLAT-1176 on GitHub (new tab)");
+  });
+
+  it("lists the user's PRs ready to merge with their size and CI tags; none: a plain line, no copy button", () => {
+    const { unmount } = render(<ReadyToMerge items={SUMMARY.snapshot!.ready_to_merge} pending={0} />);
+    expect(screen.getByText("Ready to merge").closest("summary")).toHaveTextContent("1 PRs");
+    const [item] = screen.getAllByRole("listitem");
+    expect(item).toHaveTextContent("WUI-311");
+    expect(item).toHaveTextContent("feat(wallet): show pending withdrawals");
+    expect(item).toHaveTextContent("CI failing");
+    expect(within(item!).getByRole("img", { name: /Change size: small/ })).toBeInTheDocument();
+    expect(within(item!).getByRole("link", { name: "Open WUI-311 on GitHub (new tab)" })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/wallet-ui/pull/311",
+    );
+    expect(screen.getByText(/By id; they stay in the ranking too/)).toBeInTheDocument();
+    unmount();
+    render(<ReadyToMerge items={[]} pending={0} />);
+    expect(
+      screen.getByText("None of your PRs could be merged on GitHub at the last scan."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Copy list/ })).toBeNull();
+    expect(screen.queryByText(/not computed/)).toBeNull();
+  });
+
+  it("Ready to merge counts merge states GitHub had not computed, and says when a snapshot did not record them", () => {
+    const { unmount } = render(<ReadyToMerge items={[]} pending={2} />);
+    expect(
+      screen.getByText("2 PRs: GitHub had not computed the merge state yet; the next refresh checks again."),
+    ).toBeInTheDocument();
+    unmount();
+    render(<ReadyToMerge items={[]} pending={null} />);
+    expect(screen.getByText("Ready to merge").closest("summary")).toHaveTextContent("not recorded");
+    expect(screen.getByText("Not recorded for this snapshot — refresh to see it.")).toBeInTheDocument();
+    expect(screen.queryByText(/None of your PRs/)).toBeNull();
+  });
+
+  describe("copy list", () => {
+    let written: Record<string, Blob>[] = [];
+    beforeEach(() => {
+      written = [];
+      vi.stubGlobal("isSecureContext", true);
+      vi.stubGlobal(
+        "ClipboardItem",
+        class {
+          constructor(items: Record<string, Blob>) {
+            written.push(items);
+          }
+        },
+      );
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(navigator, "clipboard");
+    });
+    const clipboard = (write: () => Promise<void>) =>
+      Object.defineProperty(navigator, "clipboard", { value: { write }, configurable: true });
+
+    it("copies Waiting on others as linked lines in the shown order, with who and for how long", async () => {
+      clipboard(() => Promise.resolve());
+      render(<WaitingOnOthers items={SUMMARY.snapshot!.awaiting} now={NOW} />);
+      const button = screen.getByRole("button", { name: "Copy list of PRs waiting on others" });
+      expect(button).toHaveTextContent(/^Copy list$/);
+      await userEvent.click(button);
+      const lines = (await written[0]!["text/plain"]!.text()).split("\n");
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toBe(
+        "[acme/platform#1176](https://github.com/acme/platform/pull/1176) feat(sync): parallel header download - large (+3200 / -400) — waits on @jun-park, team:core for 11 d",
+      );
+      expect(await written[0]!["text/html"]!.text()).toContain(
+        '<a href="https://github.com/acme/platform/pull/1176">acme/platform#1176</a>',
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("Copied 3 lines.");
+    });
+
+    it("copies Ready to merge without a wait part and says when copying did not work", async () => {
+      clipboard(() => Promise.resolve());
+      render(<ReadyToMerge items={SUMMARY.snapshot!.ready_to_merge} pending={0} />);
+      await userEvent.click(screen.getByRole("button", { name: "Copy list of PRs ready to merge" }));
+      expect(await written[0]!["text/plain"]!.text()).toBe(
+        "[acme/wallet-ui#311](https://github.com/acme/wallet-ui/pull/311) feat(wallet): show pending withdrawals - small (+266 / -114)",
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("Copied 1 line.");
+      clipboard(() => Promise.reject(new Error("denied")));
+      Object.defineProperty(document, "execCommand", { value: () => false, configurable: true });
+      await userEvent.click(screen.getByRole("button", { name: "Copy list of PRs ready to merge" }));
+      expect(screen.getByRole("status")).toHaveTextContent("Copying did not work in this browser.");
+      Reflect.deleteProperty(document, "execCommand");
+    });
   });
 
   it("shows yesterday's PRs and reviews only", async () => {

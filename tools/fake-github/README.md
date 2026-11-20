@@ -88,7 +88,9 @@ fills `__typename`, `id`, `url`, `repository`, `baseRepository` and empty connec
 milestones, contents, pull request files keyed `owner/name#n`, user events). Recorded endpoints win over the
 world (`/repos/acme/node-client/pulls/482/files` stays the recording); the world's `acme/node-client#482`
 follows `POST /_fake/head`. Private repositories need a valid token; a present invalid token gets 401,
-a missing `User-Agent` 403.
+a missing `User-Agent` 403. A pull request with `"computedMergeStateStatus": "<value>"` (stripped at load) has a lazily
+computed merge state, as on GitHub: the first `pullRequest` lookup selecting `mergeStateStatus` answers the
+fixture's `mergeStateStatus` (`UNKNOWN`), later lookups `<value>`.
 
 | Endpoint | Behaviour |
 |---|---|

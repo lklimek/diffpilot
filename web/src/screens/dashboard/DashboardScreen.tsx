@@ -13,6 +13,7 @@ import { ExcludedItems } from "../../components/dashboard/excluded-items/Exclude
 import { Mentions } from "../../components/dashboard/mentions/Mentions";
 import { EmptyWork } from "../../components/dashboard/work-list/EmptyWork";
 import { SidePanel } from "../../components/dashboard/side-panel/SidePanel";
+import { ReadyToMerge } from "../../components/dashboard/ready-to-merge/ReadyToMerge";
 import { WaitingOnOthers } from "../../components/dashboard/waiting-on-others/WaitingOnOthers";
 import { Yesterday } from "../../components/dashboard/yesterday/Yesterday";
 import { ThroughputMinis } from "../../components/dashboard/throughput-minis/ThroughputMinis";
@@ -35,7 +36,7 @@ import {
 } from "./history";
 import { REVIEW_START_PATH, SETTINGS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
-import { reviewHref } from "./state";
+import { railText, reviewHref } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
 const errorText = (error: unknown) =>
@@ -247,8 +248,9 @@ export function DashboardScreen() {
       )}
       {main &&
         (snapshot && charts ? (
-          <SidePanel main={main} railText={`More · waiting on others ${snapshot.awaiting.length}`}>
+          <SidePanel main={main} railText={railText(snapshot)}>
             <WaitingOnOthers items={snapshot.awaiting} now={now} />
+            <ReadyToMerge items={snapshot.ready_to_merge} pending={snapshot.merge_state_pending} />
             <Yesterday
               label={fullDayLabel(charts.yesterday.day)}
               prs={charts.yesterday.prs}

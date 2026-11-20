@@ -12,15 +12,16 @@ use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use futures::future::join_all;
 use jiff::tz::TimeZone;
+use tokio::time::{Instant, sleep_until};
 
 use super::RunError;
 use super::facts::{self, PrContext};
 use super::owned;
 use super::progress::{Ended, Progress};
 use super::{history, mentions};
-use crate::dashboard::score::{MilestoneContext, OwnedChange, ScoreRules, TodoFacts};
+use crate::dashboard::score::{self, MilestoneContext, OwnedChange, ScoreRules, TodoFacts};
 use crate::dashboard::settings::memcan_projects;
-use crate::dashboard::snapshot::{SNAPSHOT_VERSION, Snapshot, StoredTodo};
+use crate::dashboard::snapshot::{SNAPSHOT_VERSION, Snapshot, StoredPr, StoredTodo};
 use crate::github::work::{
     Fetched, ItemRef, PR_BATCH, PullDetail, TokenSource, WorkClient, WorkError, repo_name,
 };
@@ -28,6 +29,8 @@ use crate::memcan::todos::{self, TodosRead};
 
 /// Pull requests per details step: four batches, read concurrently by the client.
 const DETAIL_CHUNK: usize = PR_BATCH * 4;
+/// The user's pull requests whose merge state is read again (Q17): one batch.
+const MERGE_RECHECK_LIMIT: usize = PR_BATCH;
 
 /// What a scan reads besides GitHub.
 pub(super) struct ScanInput<'a> {
@@ -185,6 +188,7 @@ pub(super) async fn scan<T: TokenSource>(
     };
     let refs = async { client.open_pr_refs(&repos).await.map_err(RunError::from) };
     let (mut details, listing) = tokio::try_join!(details, refs)?;
+    let details_read = Instant::now();
     notes.append(&mut details.notes);
     notes.extend(listing.notes.iter().cloned());
     details.found.retain(|_, detail| detail.state == "OPEN");
@@ -298,7 +302,7 @@ pub(super) async fn scan<T: TokenSource>(
         .map(|(item, _)| &item.repo)
         .chain(&reach.private_repositories)
         .collect();
-    let pull_requests: Vec<_> = details
+    let mut pull_requests: Vec<_> = details
         .found
         .iter()
         .filter_map(|(item, detail)| {
@@ -320,6 +324,14 @@ pub(super) async fn scan<T: TokenSource>(
             ))
         })
         .collect();
+    recheck_merge_states(
+        client,
+        input.rules,
+        &mut pull_requests,
+        details_read,
+        progress,
+    )
+    .await?;
     let issues: Vec<_> = candidates
         .issues
         .iter()
@@ -356,8 +368,50 @@ pub(super) async fn scan<T: TokenSource>(
         notes,
         unreachable,
         checked,
+        merge_states_recorded: true,
         todos_hidden: false,
     })
+}
+
+/// Reads once more the merge state of the user's pull requests GitHub had not computed at the details read (it
+/// computes it in the background; plan §A.2 Q17), at most [`MERGE_RECHECK_LIMIT`], one pacing interval after that
+/// read at the earliest. What stays unknown is counted where Ready to merge is shown.
+async fn recheck_merge_states<T: TokenSource>(
+    client: &WorkClient<T>,
+    rules: &ScoreRules,
+    pulls: &mut [StoredPr],
+    details_read: Instant,
+    progress: &mut Progress,
+) -> Result<(), RunError> {
+    let item = |pr: &StoredPr| ItemRef {
+        repo: pr.facts.repo.clone(),
+        number: pr.facts.number,
+    };
+    let pending: Vec<ItemRef> = pulls
+        .iter()
+        .filter(|pr| score::merge_state_pending(rules, &pr.facts))
+        .take(MERGE_RECHECK_LIMIT)
+        .map(item)
+        .collect();
+    if pending.is_empty() {
+        return Ok(());
+    }
+    sleep_until(details_read + client.search_interval).await;
+    let states = client.merge_states(&pending).await?;
+    for pr in pulls.iter_mut() {
+        if let Some(state) = states.get(&item(pr)) {
+            pr.facts.merge_state = facts::merge_state(state);
+        }
+    }
+    let unknown = pulls
+        .iter()
+        .filter(|pr| score::merge_state_pending(rules, &pr.facts))
+        .count();
+    progress.log(format!(
+        "merge states: {} read again, {unknown} not computed by GitHub yet",
+        pending.len()
+    ));
+    Ok(())
 }
 
 /// Ownership verdicts of the pull requests in repositories with an ownership policy (Q3, Q4); a policy or file

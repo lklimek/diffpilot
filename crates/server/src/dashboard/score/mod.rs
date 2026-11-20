@@ -25,9 +25,9 @@ use contracts::time::Timestamp;
 
 pub use ci::{CheckContext, CheckRollup, CiSummary, classify_ci};
 pub use facts::{
-    CiEffective, EligibilityJudgement, Freshness, IssueFacts, JudgedPart, Judgement, Mergeable,
-    Milestone, MilestoneContext, OwnedChange, PrFacts, Relation, ReviewDecision, TodoFacts,
-    TodoStatus,
+    CiEffective, EligibilityJudgement, Freshness, IssueFacts, JudgedPart, Judgement, MergeState,
+    Mergeable, Milestone, MilestoneContext, OwnedChange, PrFacts, Relation, ReviewDecision,
+    TodoFacts, TodoStatus,
 };
 pub use parts::{
     ESTIMATE, SIZE_MARKS, change_size_points, recency_points, size_mark, unblocks_points,
@@ -523,8 +523,9 @@ pub fn ready_for_others(rules: &ScoreRules, pr: &PrFacts) -> bool {
 /// The user's PR waits only on others (B10; skill `digest.awaiting_others` narrowed): ready, not a draft, not by
 /// an excluded author, a pending request to others, and nothing is the user's move: no review pending for a
 /// scanned login, no change request, no comment awaiting the reply, no conflicts, and no merge the user can make
-/// (review decision approved; without a decision, an approval by a human outside the scanned logins). Such a PR is
-/// listed under Waiting on others only: not ranked, not excluded, not judged.
+/// (review decision approved; without a decision, an approval by a human outside the scanned logins; or GitHub
+/// lets the user merge it, [`ready_to_merge`]). Such a PR is listed under Waiting on others only: not ranked, not
+/// excluded, not judged.
 pub fn waits_on_others(rules: &ScoreRules, pr: &PrFacts) -> bool {
     let merge_is_ours = match pr.review_decision {
         Some(decision) => decision == ReviewDecision::Approved,
@@ -545,6 +546,7 @@ pub fn waits_on_others(rules: &ScoreRules, pr: &PrFacts) -> bool {
         && !pr.awaiting_our_reply
         && pr.mergeable != Mergeable::Conflicting
         && !merge_is_ours
+        && !ready_to_merge(rules, pr)
 }
 
 /// The PRs that wait only on others ([`waits_on_others`]), longest wait first by the oldest open request; an
@@ -562,6 +564,44 @@ pub fn awaiting_others<'a>(rules: &ScoreRules, prs: &'a [PrFacts]) -> Vec<&'a Pr
         wait(a)
             .cmp(&wait(b))
             .then_with(|| text::compare_ids(&id(a), &id(b)))
+    });
+    rows
+}
+
+/// The user's PR the user could merge, merge state aside: by a scanned login that is not an excluded author, not a
+/// draft, and the user can write to the base repository.
+fn mergeable_by_user(rules: &ScoreRules, pr: &PrFacts) -> bool {
+    pr.author
+        .as_deref()
+        .is_some_and(|a| rules.is_scanned(a) && !rules.is_skipped_author(a))
+        && !pr.is_draft
+        && pr.viewer_can_write
+}
+
+/// The user's PR GitHub lets the user merge now (Ready to merge, K17): [`mergeable_by_user`] and the merge state is
+/// clean, has hooks or unstable (a check that is not required has not passed). Such a PR is ranked, never waiting
+/// only on others.
+pub fn ready_to_merge(rules: &ScoreRules, pr: &PrFacts) -> bool {
+    mergeable_by_user(rules, pr)
+        && matches!(
+            pr.merge_state,
+            MergeState::Clean | MergeState::HasHooks | MergeState::Unstable
+        )
+}
+
+/// The user's PR whose merge state GitHub had not computed by the scan: it would be checked for Ready to merge.
+pub fn merge_state_pending(rules: &ScoreRules, pr: &PrFacts) -> bool {
+    mergeable_by_user(rules, pr) && pr.merge_state == MergeState::Unknown
+}
+
+/// The PRs [`ready_to_merge`], by display id.
+pub fn merge_ready<'a>(rules: &ScoreRules, prs: &'a [PrFacts]) -> Vec<&'a PrFacts> {
+    let mut rows: Vec<&PrFacts> = prs.iter().filter(|pr| ready_to_merge(rules, pr)).collect();
+    rows.sort_by(|a, b| {
+        text::compare_ids(
+            &rules.display_id(&a.repo, a.number),
+            &rules.display_id(&b.repo, b.number),
+        )
     });
     rows
 }

@@ -11,6 +11,7 @@ mod schema;
 mod search;
 mod world;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -239,6 +240,8 @@ impl Rate {
 #[derive(Default)]
 struct Live {
     faults: Vec<Fault>,
+    /// Pull requests whose lazily computed merge state was read once.
+    merge_reads: HashSet<(String, u64)>,
     requests: Vec<RequestRecord>,
     search: Window,
     core: Window,
@@ -629,7 +632,14 @@ impl Dashboard {
         let rate_limit = json!({"__typename": "RateLimit", "cost": cost, "limit": rate.limit,
             "remaining": rate.remaining, "used": rate.used, "nodeCount": record.lookups,
             "resetAt": Timestamp::from_second(rate.reset).map(|t| format!("{:.0}", t.get()))});
-        let body = execute::execute(doc, &self.world, rate_limit, &self.moved_head());
+        let moved_head = self.moved_head();
+        let body = execute::execute(
+            doc,
+            &self.world,
+            rate_limit,
+            &moved_head,
+            &mut self.live().merge_reads,
+        );
         let mut response = (StatusCode::OK, Json(body)).into_response();
         rate.apply(response.headers_mut());
         response

@@ -125,6 +125,7 @@ prop_compose! {
             base_ref: branches.0, default_branch: branches.1,
             dependents: relations.0, stacked_on: relations.1,
             milestone, milestone_context, ci, mergeable,
+            merge_state: MergeState::Unknown, viewer_can_write: false,
             review_decision: decision, unresolved_threads,
             review_pending_for_us: pending,
             review_requested_at: requested.map(ago),

@@ -5,7 +5,7 @@ import itemsJson from "../../../../fixtures/dashboard/api/items.json";
 import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
 import rankingJson from "../../../../fixtures/dashboard/api/refresh-ranking.json";
 import failedJson from "../../../../fixtures/dashboard/api/refresh-failed.json";
-import { dashboardView, reviewHref } from "./state";
+import { dashboardView, railText, reviewHref } from "./state";
 
 const SUMMARY = summaryJson as unknown as DashboardSummary;
 const FINISHED = SUMMARY.latest_refresh!;
@@ -191,5 +191,13 @@ describe("reviewHref (plan §F.1 PR row actions)", () => {
 
   it("no analysis: the review start page with the PR", () => {
     expect(reviewHref({ ...nc482, review: null })).toBe(start);
+  });
+});
+
+describe("railText", () => {
+  it("counts the PRs waiting on others and ready to merge; ready is left out when not recorded", () => {
+    const snapshot = SUMMARY.snapshot!;
+    expect(railText(snapshot)).toBe("More · waiting 3 · ready 1");
+    expect(railText({ ...snapshot, ready_to_merge: [], merge_state_pending: null })).toBe("More · waiting 3");
   });
 });

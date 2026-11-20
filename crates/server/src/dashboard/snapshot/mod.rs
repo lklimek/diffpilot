@@ -57,6 +57,10 @@ pub struct Snapshot {
     pub unreachable: Vec<String>,
     /// What the scan read before exclusion.
     pub checked: KindCounts,
+    /// The pull requests carry GitHub's merge state and the user's write access; false in snapshots stored before
+    /// they were recorded.
+    #[serde(default)]
+    pub merge_states_recorded: bool,
     /// TODO rows hidden because the current settings hide TODOs (read time only, never stored).
     #[serde(skip)]
     pub todos_hidden: bool,

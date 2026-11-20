@@ -650,6 +650,22 @@
             "$ref": "#/$defs/AwaitingItem"
           }
         },
+        "ready_to_merge": {
+          "description": "The user's pull requests GitHub let the user merge at the scan, by display id; also ranked.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReadyToMergeItem"
+          }
+        },
+        "merge_state_pending": {
+          "description": "The user's pull requests whose merge state GitHub had not computed by the scan (read again by the next\nrefresh); null when the snapshot did not record merge states (stored before they were).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "history": {
           "description": "Dated pull request and review events of the chart window (12 weeks), across the scanned logins.",
           "type": "array",
@@ -697,6 +713,7 @@
         "item_counts",
         "excluded",
         "awaiting",
+        "ready_to_merge",
         "history",
         "todos",
         "notes",
@@ -924,6 +941,60 @@
           "type": "string",
           "const": "huge"
         }
+      ]
+    },
+    "ReadyToMergeItem": {
+      "description": "A pull request of the user that GitHub lets the user merge now: not a draft, write access to the base\nrepository, merge state clean, has hooks or unstable.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Display alias, e.g. `PLAT-1176`.",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "Pull request number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "title": {
+          "description": "Title.",
+          "type": "string"
+        },
+        "url": {
+          "description": "GitHub link, built by the server.",
+          "type": "string"
+        },
+        "tags": {
+          "description": "Deterministic tags from scan facts (CI state; checks not passing that are not required).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FactTag"
+          }
+        },
+        "change_size": {
+          "description": "Size mark of its full diff (display only); absent when the totals are unknown.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChangeSizeMark"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "repo",
+        "number",
+        "title",
+        "url",
+        "tags"
       ]
     },
     "HistoryEvent": {

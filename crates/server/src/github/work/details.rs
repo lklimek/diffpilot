@@ -22,7 +22,7 @@ const REACH_BATCH: usize = 50;
 const PULL_FRAGMENT: &str = " fragment Pull on PullRequest { number title url state isDraft \
 isCrossRepository body additions deletions createdAt updatedAt mergeable mergeStateStatus reviewDecision \
 baseRefName headRefName headRefOid milestone { title number state } \
-baseRepository { nameWithOwner isPrivate defaultBranchRef { name } } author { __typename login } \
+baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { name } } author { __typename login } \
 labels(first: 20) { nodes { name } } participants { totalCount } \
 closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nodes { name } } } } \
 assignees(first: 10) { nodes { login } } \
@@ -37,6 +37,9 @@ createdAt requestedReviewer { __typename ... on User { login } ... on Bot { logi
 commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { \
 pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt \
 checkSuite { workflowRun { workflow { name } } } } ... on StatusContext { context state createdAt } } } } } } } }";
+
+/// `mergeStateStatus` per pull request, as GitHub answered it (Q17).
+pub type MergeStates = BTreeMap<ItemRef, String>;
 
 /// A GraphQL connection's nodes.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -93,6 +96,9 @@ pub struct PullRepository {
     pub is_private: bool,
     /// Default branch.
     pub default_branch_ref: Option<Name>,
+    /// The signed-in user's permission (`ADMIN`, `MAINTAIN`, `WRITE`, `TRIAGE`, `READ`); null when unknown.
+    #[serde(default)]
+    pub viewer_permission: Option<String>,
 }
 
 /// An issue a pull request closes.
@@ -420,6 +426,29 @@ impl<T: TokenSource> WorkClient<T> {
             fetched.notes.push(left_out(&pr, "Details", false));
         }
         Ok(fetched)
+    }
+
+    /// `mergeStateStatus` of open pull requests, read again (Q17), ten per query. A pull request GitHub does not
+    /// resolve, or whose batch fails, is absent (its first answer stands).
+    pub async fn merge_states(&self, pulls: &[ItemRef]) -> Result<MergeStates, WorkError> {
+        let answers = self
+            .batched(pulls, PR_BATCH, "", |pr| {
+                repository(
+                    &pr.repo,
+                    &format!("pullRequest(number: {}) {{ mergeStateStatus }}", pr.number),
+                )
+            })
+            .await?;
+        Ok(answers
+            .resolved
+            .into_iter()
+            .filter_map(|(pr, value)| {
+                let state = value["pullRequest"]["mergeStateStatus"]
+                    .as_str()?
+                    .to_owned();
+                Some((pr, state))
+            })
+            .collect())
     }
 
     /// Milestones of issues (Q9), fifty per query; `None` for an issue without one.

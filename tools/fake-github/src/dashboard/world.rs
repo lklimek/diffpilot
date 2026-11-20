@@ -20,6 +20,8 @@ const REPOSITORIES: &str = "repositories.json";
 const PULL_REQUESTS: &str = "pull-requests.json";
 const ISSUES: &str = "issues.json";
 const REST: &str = "rest.json";
+/// Fixture key of a pull request whose merge state GitHub computes lazily (stripped at load).
+const COMPUTED_MERGE_STATE: &str = "computedMergeStateStatus";
 
 /// Connections every pull request answers (empty unless the fixture lists nodes).
 const PULL_CONNECTIONS: &[&str] = &[
@@ -91,6 +93,9 @@ pub(crate) struct World {
     pub(crate) pull_requests: Vec<Value>,
     pub(crate) issues: Vec<Value>,
     pub(crate) rest: RestData,
+    /// Lazily computed merge states by (`owner/name` lowercased, number): the first read selecting
+    /// `mergeStateStatus` answers the fixture's value (`UNKNOWN`), later reads this one.
+    pub(crate) computed_merge_states: HashMap<(String, u64), Value>,
     /// Types and fields of the nodes, for document validation.
     pub(crate) schema: Schema,
 }
@@ -133,6 +138,16 @@ impl World {
                 .entry("__typename")
                 .or_insert_with(|| json!("Repository"));
         }
+        let mut computed_merge_states = HashMap::new();
+        for node in &mut pull_requests {
+            if let Some(computed) = node
+                .as_object_mut()
+                .and_then(|object| object.remove(COMPUTED_MERGE_STATE))
+            {
+                let key = (name_with_owner(node).to_ascii_lowercase(), number(node));
+                computed_merge_states.insert(key, computed);
+            }
+        }
         for (file, nodes, typename, path, connections) in [
             (
                 PULL_REQUESTS,
@@ -161,6 +176,7 @@ impl World {
             pull_requests,
             issues,
             rest,
+            computed_merge_states,
             schema,
         })
     }
