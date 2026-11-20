@@ -85,7 +85,7 @@ Cheap polling (plan §E.5 E5-5):
    (at most 200: id, URL, title, author, reason; no LLM text, but `judged_not_eligible` and `merged_into_another` are LLM decisions, the other reasons
    deterministic rules). `snapshot.awaiting` lists the user's PRs that
    wait only on others; they are not in the items below (no tier, nothing to do now). `snapshot.ready_to_merge`
-   lists the user's PRs GitHub let the user merge at the scan; they are in the items too
+   lists the user's PRs ready to merge at the scan (into the default branch, checks passed, nothing to answer); they are in the items too
    (`snapshot.merge_state_pending`: how many merge states GitHub had not computed yet). Pull request items carry
    `change_size` (`tiny` … `huge` with `additions`/`deletions`); filter by it on the client.
 2. Only when `revision` differs from the last one seen: read the items (step 3). The snapshot changes after a

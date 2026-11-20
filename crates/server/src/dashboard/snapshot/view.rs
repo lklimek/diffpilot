@@ -41,7 +41,7 @@ pub struct View {
     pub exclusions: Exclusions,
     /// The user's pull requests waiting on others.
     pub awaiting: Vec<AwaitingItem>,
-    /// The user's pull requests GitHub lets the user merge now.
+    /// The user's pull requests ready to merge (K17).
     pub ready_to_merge: Vec<ReadyToMergeItem>,
     /// `SnapshotMeta.merge_state_pending`.
     pub merge_state_pending: Option<u32>,
@@ -176,7 +176,7 @@ pub fn build(
         let pending = snapshot
             .pull_requests
             .iter()
-            .filter(|pr| score::merge_state_pending(&rules, &pr.facts))
+            .filter(|pr| score::merge_state_pending_for_ready(&rules, &pr.facts))
             .count();
         u32::try_from(pending).unwrap_or(u32::MAX)
     });
@@ -647,7 +647,7 @@ fn waiting_since(requested: Option<Timestamp>, created: Timestamp) -> Timestamp 
     requested.unwrap_or(created)
 }
 
-/// The user's pull requests GitHub lets the user merge now ([`merge_ready`]); they stay ranked.
+/// The user's pull requests ready to merge ([`merge_ready`]); they stay ranked.
 fn ready_to_merge(rules: &ScoreRules, snapshot: &Snapshot) -> Vec<ReadyToMergeItem> {
     let facts: Vec<_> = snapshot
         .pull_requests

@@ -272,10 +272,10 @@ pub struct SnapshotMeta {
     pub excluded: u32,
     /// The user's pull requests waiting on other people.
     pub awaiting: Vec<AwaitingItem>,
-    /// The user's pull requests GitHub let the user merge at the scan, by display id; also ranked.
+    /// The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked.
     pub ready_to_merge: Vec<ReadyToMergeItem>,
-    /// The user's pull requests whose merge state GitHub had not computed by the scan (read again by the next
-    /// refresh); null when the snapshot did not record merge states (stored before they were).
+    /// The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read
+    /// again by the next refresh); null when the snapshot did not record merge states (stored before they were).
     pub merge_state_pending: Option<u32>,
     /// Dated pull request and review events of the chart window (12 weeks), across the scanned logins.
     pub history: Vec<HistoryEvent>,
@@ -434,8 +434,8 @@ pub struct AwaitingItem {
     pub total_tenths: Option<i32>,
 }
 
-/// A pull request of the user that GitHub lets the user merge now: not a draft, write access to the base
-/// repository, merge state clean, has hooks or unstable.
+/// A pull request of the user ready to merge: into the default branch, not a draft, write access, every check passed
+/// and nothing left to answer (plan K17).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ReadyToMergeItem {
     /// Display alias, e.g. `PLAT-1176`.

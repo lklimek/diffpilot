@@ -2973,8 +2973,8 @@ resumes_at: string | null,
 message: string | null, };
 
 /**
- * A pull request of the user that GitHub lets the user merge now: not a draft, write access to the base
- * repository, merge state clean, has hooks or unstable.
+ * A pull request of the user ready to merge: into the default branch, not a draft, write access, every check passed
+ * and nothing left to answer (plan K17).
  */
 export type ReadyToMergeItem = {
 /**
@@ -3588,12 +3588,12 @@ excluded: number,
  */
 awaiting: Array<AwaitingItem>,
 /**
- * The user's pull requests GitHub let the user merge at the scan, by display id; also ranked.
+ * The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked.
  */
 ready_to_merge: Array<ReadyToMergeItem>,
 /**
- * The user's pull requests whose merge state GitHub had not computed by the scan (read again by the next
- * refresh); null when the snapshot did not record merge states (stored before they were).
+ * The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read
+ * again by the next refresh); null when the snapshot did not record merge states (stored before they were).
  */
 merge_state_pending: number | null,
 /**
