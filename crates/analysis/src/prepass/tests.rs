@@ -277,8 +277,8 @@ fn generated_file_never_in_agent_input() {
             "src/gen.rs",
             &[header, "", "pub const A: u32 = 2;"],
         ),
-        text(LineSide::Base, "src/lib.rs", &["use a::x;"]),
-        text(LineSide::Head, "src/lib.rs", &["use a::y;"]),
+        text(LineSide::Base, "src/lib.rs", &["pub use a::x;"]),
+        text(LineSide::Head, "src/lib.rs", &["pub use a::y;"]),
     ]
     .into_iter()
     .collect();
@@ -379,8 +379,8 @@ fn agent_files_quiet_lines_and_binaries_split_the_diff() {
             "api/service.pb.go",
             &["package api", "func A() {}"],
         ),
-        text(LineSide::Base, "src/lib.rs", &["use a::x;"]),
-        text(LineSide::Head, "src/lib.rs", &["use a::y;"]),
+        text(LineSide::Base, "src/lib.rs", &["pub use a::x;"]),
+        text(LineSide::Head, "src/lib.rs", &["pub use a::y;"]),
     ]
     .into_iter()
     .collect();
@@ -902,7 +902,7 @@ fn whitespace_only_lines_read_as_unchanged_code_and_stay_context() {
 
 #[test]
 fn rust_comment_import_context_stays_with_agent_but_needs_no_coverage() {
-    let text = "// heading\nuse std::fmt;\nfn work() {}\n/* explanation */\n";
+    let text = "// heading\nuse std::fmt;\nfn work(_: fmt::Error) {}\n/* explanation */\n";
     let files = vec![FileDiff {
         path: "src/lib.rs".into(),
         old_path: None,
@@ -1180,7 +1180,12 @@ fn inline_rust_tests_are_not_analysed_but_stay_shown() {
 
 #[test]
 fn a_hunk_of_only_context_lines_is_context_only() {
-    let head = ["// heading", "use std::fmt;", "", "fn work() {}"];
+    let head = [
+        "// heading",
+        "use std::fmt;",
+        "",
+        "fn work(_: fmt::Error) {}",
+    ];
     let files = vec![file(
         "src/lib.rs",
         None,
@@ -1209,7 +1214,8 @@ fn a_hunk_of_only_context_lines_is_context_only() {
 /// so no plan job spends tokens on an empty listing.
 #[test]
 fn a_change_of_only_context_lines_has_no_plan_batch() {
-    let head = ["// heading", "use std::fmt;", ""];
+    // A re-export: a private import its own side never names stays with the agent (a trait for its methods).
+    let head = ["// heading", "pub use std::fmt;", ""];
     let files = vec![file(
         "src/lib.rs",
         None,

@@ -393,17 +393,14 @@ fn is_test_attribute(
     from: usize,
     to: usize,
 ) -> bool {
-    let tokens = &code[from..to];
-    let kinds: Vec<TokenKind> = tokens.iter().map(|t| t.kind).collect();
-    if kinds
-        == [
-            TokenKind::Ident,
-            TokenKind::OpenParen,
-            TokenKind::Ident,
-            TokenKind::CloseParen,
-        ]
-        && tokens[0].text == "cfg"
-        && tokens[2].text == "test"
+    let kind = |at: usize| code[at].kind;
+    if to.checked_sub(from) == Some(4)
+        && kind(from) == TokenKind::Ident
+        && kind(from + 1) == TokenKind::OpenParen
+        && kind(from + 2) == TokenKind::Ident
+        && kind(from + 3) == TokenKind::CloseParen
+        && code[from].text == "cfg"
+        && code[from + 2].text == "test"
     {
         return true;
     }
@@ -894,7 +891,12 @@ struct UseTree<'a> {
 
 /// The `use` tree after the `use` keyword at code token `start - 1`, iterative; `None` when it is not a tree the rules
 /// read with certainty (macro variables, nesting deeper than [`MAX_USE_DEPTH`], anything unexpected).
-fn parse_use<'a>(code: &[&Token<'a>], start: usize, paths: &mut Paths<'a>) -> Option<UseTree<'a>> {
+fn parse_use<'a>(
+    code: &[&Token<'a>],
+    start: usize,
+    paths: &mut Paths<'a>,
+    reached: &mut usize,
+) -> Option<UseTree<'a>> {
     let mut tree = UseTree {
         bindings: Vec::new(),
         glob: false,
@@ -908,6 +910,7 @@ fn parse_use<'a>(code: &[&Token<'a>], start: usize, paths: &mut Paths<'a>) -> Op
     let mut alias: Option<&str> = None;
     let mut index = start;
     loop {
+        *reached = index;
         let token = code.get(index)?;
         let top = marks.last().copied().unwrap_or(0);
         let mut end_item = |segments: &mut Vec<&'a str>,
@@ -953,7 +956,10 @@ fn parse_use<'a>(code: &[&Token<'a>], start: usize, paths: &mut Paths<'a>) -> Op
                 } else if expect_alias {
                     alias = Some(word);
                     expect_alias = false;
-                } else if want_segment && !closed {
+                } else if want_segment
+                    && !closed
+                    && !(token.kind == TokenKind::Ident && word == "use")
+                {
                     let parent = *ids.last()?;
                     ids.push(paths.id(parent, word));
                     segments.push(word);
@@ -1040,6 +1046,8 @@ struct Scope<'a> {
 struct Plain<'a> {
     first: u32,
     last: u32,
+    /// Has a visibility: a re-export.
+    public: bool,
     bindings: Vec<(&'a str, u32)>,
 }
 
@@ -1083,6 +1091,8 @@ fn scan<'a>(
     mut plain: Option<&mut Vec<Plain<'a>>>,
 ) {
     let code = code_tokens(lexed);
+    // Tokens before this index were read by an earlier `use` tree: a `use` among them is not a declaration.
+    let mut consumed = 0;
     for (index, token) in code.iter().enumerate() {
         // A test item's imports and items are seen only by test code.
         if token.kind != TokenKind::Ident || tests.inside.get(index).copied().unwrap_or(false) {
@@ -1090,8 +1100,11 @@ fn scan<'a>(
         }
         let next = |offset: usize| code.get(index + offset).copied();
         match token.text {
-            "use" => {
-                let Some(tree) = parse_use(&code, index + 1, paths) else {
+            "use" if index >= consumed => {
+                let mut reached = index;
+                let parsed = parse_use(&code, index + 1, paths, &mut reached);
+                consumed = reached;
+                let Some(tree) = parsed else {
                     scope.unsure = true;
                     continue;
                 };
@@ -1130,6 +1143,7 @@ fn scan<'a>(
                     plain.push(Plain {
                         first,
                         last,
+                        public: start != index,
                         bindings: tree.bindings,
                     });
                 }
@@ -1155,7 +1169,8 @@ fn scan<'a>(
 /// Changed lines of plain `use` declarations: alone on their lines at the top level of the file after `;`, `}` or the
 /// start (nothing but a visibility before them on their line, no attribute), no `as` or `*`, and every bound name bound
 /// to this one path on both sides, not declared as an item in the file, not a prelude name, and either bound by a plain
-/// `use` of the same path on the other side (a moved import) or used nowhere there except as a `use` binding. Test
+/// `use` of the same path on the other side (a moved import) or used nowhere there except as a `use` binding while a
+/// private import's own side names it (an import named nowhere may be a trait imported for its methods). Test
 /// items are left out on both sides (their names reach only test code). A glob or an unreadable tree outside them on
 /// either side covers nothing.
 fn import_lines<'a>(
@@ -1193,23 +1208,30 @@ fn import_lines<'a>(
     // A name the side without the import already uses resolved to something else there (extern prelude, macro
     // prelude, a derive, a constant in a pattern): the import re-points it. Its own binding there (a reordered
     // import, bound to the same path on both sides) is no use.
-    let used_without: HashSet<&str> = match (other, &other_tests) {
-        (Other::Lexed(lexed), Some(other_tests)) => code_tokens(lexed)
+    // Names a side uses outside `use` bindings and test items.
+    let used = |lexed: &Lexed<'a>, tests: &TestItems| -> HashSet<&'a str> {
+        code_tokens(lexed)
             .into_iter()
-            .zip(&other_tests.inside)
+            .zip(&tests.inside)
             .filter(|(token, inside)| is_ident(token.kind) && !**inside)
             .map(|(token, _)| name(token.text))
             .filter(|word| !scope.binding_tokens.contains(&word.as_ptr().addr()))
-            .collect(),
+            .collect()
+    };
+    let used_without: HashSet<&str> = match (other, &other_tests) {
+        (Other::Lexed(lexed), Some(other_tests)) => used(lexed, other_tests),
         _ => HashSet::new(),
     };
+    let used_here = used(this, tests);
     let mut out: Vec<u32> = plain
         .into_iter()
         .filter(|plain| {
             plain.bindings.iter().all(|&(bound, id)| {
+                // A private import its own side never names (a trait for its methods) can re-point an unchanged call.
+                let named = plain.public || used_here.contains(bound);
                 !scope.items.contains(bound)
                     && !PRELUDE.contains(&bound)
-                    && (moved.contains(&(bound, id)) || !used_without.contains(bound))
+                    && (moved.contains(&(bound, id)) || (named && !used_without.contains(bound)))
                     && scope.bound.get(bound) == Some(&Some(id))
             })
         })
@@ -1379,7 +1401,7 @@ mod tests {
             "use crate::a::{X, Y};",
             "use ::b::c;",
             "/// Doc of f.",
-            "fn f() {}",
+            "fn f(_: fmt::Error, _: X, _: Y) { c() }",
             "/*",
             " * A block.",
             " */",
@@ -1389,7 +1411,11 @@ mod tests {
         let reordered = ["use std::sync::Mutex;", "use std::fmt;", "fn f() {}"];
         assert_eq!(head(&base_file, &reordered), [1], "a reordered import");
         let grouped = ["use std::fmt;", "use std::sync::{Arc, Mutex};", "fn f() {}"];
-        assert_eq!(head(&base_file, &grouped), [2], "same paths");
+        assert_eq!(
+            head(&base_file, &grouped),
+            NONE,
+            "a new name the file never names may be a trait for its methods"
+        );
         // The same with the names in use: a moved import binds the same path on both sides, it re-points nothing.
         let used = [
             "use std::fmt;",
@@ -1402,7 +1428,11 @@ mod tests {
             [1],
             "a reordered import of a used name"
         );
-        let grouped = ["use std::fmt;", "use std::sync::{Arc, Mutex};", used[2]];
+        let grouped = [
+            "use std::fmt;",
+            "use std::sync::{Arc, Mutex};",
+            "fn f(m: Mutex<fmt::Error>, a: Arc<u8>) {}",
+        ];
         assert_eq!(
             head(&used, &grouped),
             [2],
@@ -1465,6 +1495,7 @@ mod tests {
             "    }",
             "}",
             "use std::fmt;",
+            "fn g(_: fmt::Error) {}",
         ];
         assert_eq!(added(&gate), [6]);
         let raw = [
@@ -1623,7 +1654,13 @@ mod tests {
     #[test]
     fn an_unread_other_side_covers_nothing() {
         let base_file = ["fn f() {}"];
-        let head_file = ["use std::fmt;", "/* note */", "// line", "fn f() {}"];
+        let head_file = [
+            "use std::fmt;",
+            "/* note */",
+            "// line",
+            "fn f() {}",
+            "fn g(_: fmt::Error) {}",
+        ];
         assert_eq!(head(&base_file, &head_file), [1, 2, 3]);
         assert_eq!(
             covered_with(LineSide::Head, Some(&base_file), Some(&head_file), true),
@@ -1857,7 +1894,7 @@ mod tests {
             "    Arc,",
             "    Mutex,",
             "};",
-            "fn f() {}",
+            "fn f(a: Arc<Mutex<u8>>) {}",
         ];
         assert_eq!(added_by(IMPORT_RULE, &group), [1, 2, 3, 4]);
         let base_file = ["use std::sync::{", "    Arc,", "};", "fn f(a: Arc<u8>) {}"];
@@ -1866,7 +1903,7 @@ mod tests {
             "    Arc,",
             "    Mutex,",
             "};",
-            "fn f(a: Arc<u8>) {}",
+            "fn f(a: Arc<u8>, m: Mutex<u8>) {}",
         ];
         assert_eq!(head_by(IMPORT_RULE, &base_file, &head_file), [3]);
         assert_eq!(base_by(IMPORT_RULE, &head_file, &base_file), [3]);
@@ -2013,6 +2050,28 @@ mod tests {
     }
 
     #[test]
+    fn use_keywords_inside_a_use_tree_are_read_once() {
+        let levels = 20_000;
+        for hostile in [
+            format!("use a{};\n", "::use".repeat(levels)),
+            format!(
+                "use a::{}x{};\n",
+                "{use, ".repeat(levels),
+                "}".repeat(levels)
+            ),
+        ] {
+            let lines: Vec<&str> = hostile.lines().collect();
+            let started = Instant::now();
+            assert_eq!(added(&lines), NONE);
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "{:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    #[test]
     fn hostile_use_trees_neither_overflow_nor_take_quadratic_time() {
         let deep = format!("use a::{}b{};\n", "{".repeat(10_000), "}".repeat(10_000));
         let found = std::thread::Builder::new()
@@ -2038,7 +2097,9 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
-        let many: Vec<String> = (0..20_000).map(|i| format!("use m::n{i:06};")).collect();
+        let many: Vec<String> = (0..20_000)
+            .map(|i| format!("pub use m::n{i:06};"))
+            .collect();
         let lines: Vec<&str> = many.iter().map(String::as_str).collect();
         let started = Instant::now();
         assert_eq!(added(&lines).len(), 20_000);
@@ -2052,7 +2113,6 @@ mod tests {
     /// Attributes nested inside a first attribute, each starting a line after `;`: every start reads its own
     /// attribute once, so the test rule must stay linear in the tokens (a 500 KB file, well under the blob limit).
     #[test]
-    #[ignore = "repro: is_test_attribute collects every token of a first attribute per start, quadratic on nesting"]
     fn hostile_nested_attributes_do_not_take_quadratic_time() {
         let levels = 100_000;
         let nested = format!("{}{}", "#[\n;\n".repeat(levels), "]\n".repeat(levels));
@@ -2070,7 +2130,6 @@ mod tests {
     /// the receiver beats an inherent method of its `Deref` target); its hunk is no longer listed to the agent, so
     /// the rule must leave it visible.
     #[test]
-    #[ignore = "repro: an import used by no name on its own side (a trait for method resolution) is cut"]
     fn an_import_used_by_no_name_on_its_side_is_not_cut() {
         let base = [
             "use crate::wrap::Wrapper;",
