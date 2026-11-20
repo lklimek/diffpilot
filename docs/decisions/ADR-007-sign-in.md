@@ -50,11 +50,13 @@ deployment admitted the maintainers' logins until someone deleted them by SQL.
   is the default tenant's allowlist. No `_FILE` variant: the list is not secret. At every start, before serving,
   the server reconciles the table with it in one transaction (`Tenants::reconcile_logins`): missing logins are
   added unbound, listed entries keep their binding, the others are removed; one `info` line names the logins added
-  and removed. A missing or empty list, an invalid or a repeated login stops the start; `check-production-config.sh`
-  refuses an empty value.
+  and removed. A missing or empty list, an invalid or a repeated login, or the `.env.example` placeholder
+  (`REPLACE…`) stops the start; `check-production-config.sh` refuses an empty value too.
 - **Removing a bound entry** ends its user's access in the tenant at once and for good: its sessions and GitHub
   token pair are deleted and its personal access tokens revoked in the same transaction. The liveness rule above
   already ends access while the entry is missing; the deletion also keeps a later re-listing (rebound to the same
-  GitHub id) from reviving old sessions or tokens. Dashboard settings and other user data stay.
+  GitHub id) from reviving old sessions or tokens. The same transaction ends the credentials of any user left
+  without a bound entry (an entry removed by hand before v1.2), so no re-listing revives them either. Dashboard
+  settings and other user data stay.
 - **Migration 0016** deletes the 0001 seed rows `lklimek` and `Claudius-Maginificent` only while unbound, so a
   fresh database allows nobody until the variable is applied; a bound row stays for the start to keep or remove.

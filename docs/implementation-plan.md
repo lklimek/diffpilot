@@ -246,7 +246,7 @@ tooling breaks: penny's 5.9 line, recorded in an ADR). `github-mcp-server`: vers
 - Deterministic facts (gutter marks, badges, counters, "N lines differ", changed-line sets) are server-set API
   fields in types separate from LLM content.
 - Storage: validated agent output as JSON documents (PR context; one per flow); relational tables only for
-  queue and mutable state: tenants, tenant settings (allowed sign-in logins; seeded `default` → `lklimek`),
+  queue and mutable state: tenants, tenant settings (allowed sign-in logins; since v1.2 from `SR_ALLOWED_LOGINS`),
   users, memberships, sessions, encrypted tokens, repos, pull requests, analyses (incl. agent-session id),
   jobs (+ bounded event log), threads/checks snapshot, review state, questions, feedback, comment idempotency
   keys, settings, last LLM call outcome. Every table has `tenant_id`; tenant `default` seeded (brief §5).
@@ -499,7 +499,7 @@ is opened; the owner decides about merging after deployment.
 |---|---|---|
 | §2 Four screens; loading/empty/error states | SCREENS, TOUR, GUI | Playwright per screen and state; WP4-GUI |
 | §2 Input: PR URL, public repos only; errors | INGEST, SCREENS | `resolve_rejects_non_pr_url`, `resolve_rejects_private_repo`, Home error Playwright |
-| §2 GitHub login; single tenant `default`; allowed logins as tenant setting (seeded `lklimek`) | AUTH (2+3), WP1-A | login e2e; `tenant_default_seeded`; `allowlist_rejects_unlisted_login` |
+| §2 GitHub login; single tenant `default`; allowed logins as tenant setting (since v1.2 from `SR_ALLOWED_LOGINS`) | AUTH (2+3), WP1-A | login e2e; `tenant_default_seeded`; `allowlist_rejects_unlisted_login` |
 | §2 Review opens only when finished | PIPE, SCREENS | Playwright: no Open before finished |
 | §2/§3 PR context (problem, related work, fit questions, CI, counters, profile status) | PIPE, PROMPTS, PREPASS, BLOCKS | pipeline fixture test; PR-context component test |
 | §2 GitHub threads at steps with LLM status (from `analyse_flow`; others none); CI status | REVIEW, PIPE, INSPECTOR | thread placement and status tests; top-bar CI test |
@@ -687,7 +687,7 @@ WPs), reporting channel. Brief WHAT, not HOW. WPs over ~1,000 lines are split be
 | Quota | No cap on the Pro plan; real runs purposeful | §6.1 |
 | Test targets | `dashpay/dash-evo-tool` and `dashpay/platform` PRs by `lklimek` / `Claudius-Maginificent` (P-CAP, P-CAP2, P-REV, P-REF, P-LARGE, P-XREPO); on real PRs only pending comments, deleted afterwards, never submitted | §6.1, S3, S7, M2, M3b, WP4-REAL, WP4-GUI |
 | Comment outside the diff | File-level comment in the pending review, body links to the line (S3 confirms) | S3, WP3-REVIEW, WP3-INSPECTOR |
-| Sign-in | Allowed GitHub logins are a tenant setting; v1 has no UI or config for it; seeded tenant `default` allows exactly `lklimek` | §5.3, WP1-A, WP2-AUTH |
+| Sign-in | Allowed GitHub logins are a tenant setting; v1 seeded tenant `default` with `lklimek`; since v1.2 the list comes from `SR_ALLOWED_LOGINS` (ADR-007 addendum) | §5.3, WP1-A, WP2-AUTH |
 | Progress before n is known | Indeterminate bar, "Planning flows…" | WP3-SCREENS |
 | Failure before any flow | Failed state with a plain description and Retry | WP3-PIPE, WP3-SCREENS |
 | Cancel | Partial results discarded; Home shows "Analysis cancelled — analyze again" | WP3-PIPE, WP3-SCREENS |

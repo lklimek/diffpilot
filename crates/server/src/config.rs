@@ -202,6 +202,16 @@ pub enum ConfigError {
         /// The rejected entry (not secret).
         entry: String,
     },
+    /// An entry still holds the `.env.example` placeholder.
+    #[error(
+        "environment variable {key} still holds the placeholder '{entry}'; list the GitHub logins allowed to sign in"
+    )]
+    PlaceholderLogin {
+        /// Variable name.
+        key: &'static str,
+        /// The placeholder entry.
+        entry: String,
+    },
     /// A login is listed twice (logins are case-insensitive).
     #[error("environment variable {key} lists '{entry}' twice; GitHub logins are case-insensitive")]
     DuplicateLogin {
@@ -453,6 +463,13 @@ fn parse_allowed_logins(value: &str) -> Result<Vec<String>, ConfigError> {
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
     {
+        // Checked as check-production-config.sh does: a start with the example value would drop every bound entry.
+        if entry.contains("REPLACE") {
+            return Err(ConfigError::PlaceholderLogin {
+                key: ALLOWED_LOGINS,
+                entry: entry.to_owned(),
+            });
+        }
         if !is_github_login(entry) {
             return Err(ConfigError::InvalidLogin {
                 key: ALLOWED_LOGINS,
@@ -630,6 +647,20 @@ pub(crate) mod tests {
         let mut env = required_env();
         env.insert(ALLOWED_LOGINS, "a".repeat(39));
         assert!(parse(&env).is_ok(), "39 characters is GitHub's maximum");
+    }
+
+    #[test]
+    fn allowed_login_still_holding_the_example_placeholder_is_refused() {
+        for value in ["REPLACE_WITH_GITHUB_LOGINS", "alice,REPLACE_ME"] {
+            let mut env = required_env();
+            env.insert(ALLOWED_LOGINS, value.to_owned());
+            match parse(&env) {
+                Err(error @ ConfigError::PlaceholderLogin { .. }) => {
+                    assert!(error.to_string().contains("placeholder"), "{error}");
+                }
+                other => panic!("{value}: expected PlaceholderLogin, got {other:?}"),
+            }
+        }
     }
 
     #[test]

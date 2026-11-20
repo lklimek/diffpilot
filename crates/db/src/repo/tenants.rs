@@ -38,6 +38,14 @@ macro_rules! of_user {
     };
 }
 
+/// SQL condition: a row of tenant `?1` whose user has no bound allowlist entry in that tenant.
+macro_rules! without_binding {
+    () => {
+        "tenant_id = ?1 AND user_id NOT IN (SELECT u.id FROM users u JOIN tenant_allowed_logins a \
+         ON a.github_id = u.github_id WHERE a.tenant_id = ?1)"
+    };
+}
+
 /// Outcome of [`Tenants::reconcile_logins`]; logins as stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AllowlistChange {
@@ -50,8 +58,8 @@ pub struct AllowlistChange {
 impl Tenants<'_> {
     /// Makes the tenant's allowlist equal `logins` (case-insensitive) in one transaction: adds missing logins
     /// unbound, keeps listed entries with their binding, and removes the others. A removed bound entry also ends
-    /// its user's access in the tenant: sessions and GitHub token pair deleted, access tokens revoked at `now`, so
-    /// listing the login again revives none of them (ADR-007).
+    /// its user's access in the tenant, as does any user left without a bound entry: sessions and GitHub token pair
+    /// deleted, access tokens revoked at `now`, so listing the login again revives none of them (ADR-007).
     pub async fn reconcile_logins(
         &self,
         tenant_id: &str,
@@ -102,6 +110,22 @@ impl Tenants<'_> {
                 .await?;
             change.removed.push(login);
         }
+        // A user without a bound entry has no access (an entry removed outside this function, then listed again,
+        // is unbound): end whatever credential such a user still holds.
+        for sql in [
+            concat!("DELETE FROM sessions WHERE ", without_binding!()),
+            concat!("DELETE FROM user_tokens WHERE ", without_binding!()),
+        ] {
+            sqlx::query(sql).bind(tenant_id).execute(&mut *tx).await?;
+        }
+        sqlx::query(concat!(
+            "UPDATE access_tokens SET revoked_at = ?2 WHERE revoked_at IS NULL AND ",
+            without_binding!()
+        ))
+        .bind(tenant_id)
+        .bind(timestamp(now))
+        .execute(&mut *tx)
+        .await?;
         for login in logins {
             let inserted = sqlx::query(
                 "INSERT INTO tenant_allowed_logins (tenant_id, login) VALUES (?, ?)
@@ -345,11 +369,8 @@ mod tests {
     /// adding the login again later revives none of them.
     #[tokio::test]
     async fn reconcile_removing_a_bound_login_ends_its_access_for_good() {
-        use crate::repo::access_tokens::NewAccessToken;
-        use crate::repo::sessions::{Liveness, NewSession};
-        use crate::repo::tokens::EncryptedTokens;
-        use crate::repo::users::GithubProfile;
-        use contracts::api::access_tokens::{AccessTokenId, TokenScope};
+        use crate::repo::sessions::Liveness;
+        use contracts::api::access_tokens::AccessTokenId;
         use jiff::SignedDuration;
 
         let db = Db::in_memory().await.expect("db");
@@ -360,16 +381,7 @@ mod tests {
             .await
             .expect("allow");
         for (user, login, github_id) in [("u-alice", "alice", 7), ("u-bob", "bob", 8)] {
-            let profile = GithubProfile {
-                github_id,
-                login: login.to_owned(),
-                name: None,
-                avatar_url: None,
-            };
-            db.users()
-                .upsert_member(DEFAULT_TENANT, user, &profile, now)
-                .await
-                .expect("user");
+            member(&db, user, login, github_id, now).await;
             assert_eq!(
                 tenants
                     .admit_login(DEFAULT_TENANT, login, github_id, now)
@@ -377,52 +389,8 @@ mod tests {
                     .expect("admit"),
                 LoginAdmission::Allowed
             );
-            db.sessions()
-                .create(
-                    &NewSession {
-                        token_hash: user.as_bytes(),
-                        tenant_id: DEFAULT_TENANT,
-                        user_id: user,
-                        csrf_token: "csrf",
-                        expires_at: now + SignedDuration::from_hours(1),
-                    },
-                    now,
-                )
-                .await
-                .expect("session");
-            db.user_tokens()
-                .put(
-                    user,
-                    DEFAULT_TENANT,
-                    &EncryptedTokens {
-                        access_ct: vec![1],
-                        access_expires_at: now + SignedDuration::from_hours(8),
-                        refresh_ct: vec![2],
-                        refresh_expires_at: now + SignedDuration::from_hours(24),
-                    },
-                    now,
-                )
-                .await
-                .expect("pair");
-            let mut hash = [0u8; 32];
-            hash[..user.len()].copy_from_slice(user.as_bytes());
-            db.access_tokens()
-                .create(
-                    DEFAULT_TENANT,
-                    user,
-                    &NewAccessToken {
-                        id: AccessTokenId(format!("{:0>8}", &user[2..])),
-                        name: "agent".to_owned(),
-                        token_hash: hash,
-                        scopes: vec![TokenScope::Read],
-                        expires_at: now + SignedDuration::from_hours(24),
-                    },
-                    now,
-                )
-                .await
-                .expect("access token");
+            give_credentials(&db, user, now).await;
         }
-
         let change = tenants
             .reconcile_logins(DEFAULT_TENANT, &logins(&["bob"]), Timestamp::now())
             .await
@@ -476,5 +444,158 @@ mod tests {
         );
         let bob_token = credential("00000bob").await.expect("bob's token");
         assert!(bob_token.record.revoked_at.is_none());
+    }
+
+    async fn member(db: &Db, user: &str, login: &str, github_id: i64, now: Timestamp) {
+        use crate::repo::users::GithubProfile;
+
+        let profile = GithubProfile {
+            github_id,
+            login: login.to_owned(),
+            name: None,
+            avatar_url: None,
+        };
+        db.users()
+            .upsert_member(DEFAULT_TENANT, user, &profile, now)
+            .await
+            .expect("user");
+    }
+
+    /// A session, a GitHub token pair and an access token (id `user` zero-padded to 8) for `user`.
+    async fn give_credentials(db: &Db, user: &str, now: Timestamp) {
+        use crate::repo::access_tokens::NewAccessToken;
+        use crate::repo::sessions::NewSession;
+        use crate::repo::tokens::EncryptedTokens;
+        use contracts::api::access_tokens::{AccessTokenId, TokenScope};
+        use jiff::SignedDuration;
+        db.sessions()
+            .create(
+                &NewSession {
+                    token_hash: user.as_bytes(),
+                    tenant_id: DEFAULT_TENANT,
+                    user_id: user,
+                    csrf_token: "csrf",
+                    expires_at: now + SignedDuration::from_hours(1),
+                },
+                now,
+            )
+            .await
+            .expect("session");
+        db.user_tokens()
+            .put(
+                user,
+                DEFAULT_TENANT,
+                &EncryptedTokens {
+                    access_ct: vec![1],
+                    access_expires_at: now + SignedDuration::from_hours(8),
+                    refresh_ct: vec![2],
+                    refresh_expires_at: now + SignedDuration::from_hours(24),
+                },
+                now,
+            )
+            .await
+            .expect("pair");
+        let mut hash = [0u8; 32];
+        hash[..user.len()].copy_from_slice(user.as_bytes());
+        db.access_tokens()
+            .create(
+                DEFAULT_TENANT,
+                user,
+                &NewAccessToken {
+                    id: AccessTokenId(format!("{:0>8}", &user[2..])),
+                    name: "agent".to_owned(),
+                    token_hash: hash,
+                    scopes: vec![TokenScope::Read],
+                    expires_at: now + SignedDuration::from_hours(24),
+                },
+                now,
+            )
+            .await
+            .expect("access token");
+    }
+
+    /// A listed login that is not bound (its entry was removed and listed again outside this function, as manual SQL
+    /// did before v1.2) gets no access back: reconcile ends any credential of a user without a bound entry.
+    #[tokio::test]
+    async fn reconcile_ends_the_credentials_of_users_without_a_bound_entry() {
+        use crate::repo::sessions::Liveness;
+        use contracts::api::access_tokens::AccessTokenId;
+        use jiff::SignedDuration;
+
+        let db = Db::in_memory().await.expect("db");
+        let now = Timestamp::now();
+        let tenants = db.tenants();
+        tenants
+            .reconcile_logins(DEFAULT_TENANT, &logins(&["alice", "bob"]), now)
+            .await
+            .expect("allow");
+        member(&db, "u-alice", "alice", 7, now).await;
+        member(&db, "u-bob", "bob", 8, now).await;
+        assert_eq!(
+            tenants
+                .admit_login(DEFAULT_TENANT, "bob", 8, now)
+                .await
+                .expect("admit"),
+            LoginAdmission::Allowed
+        );
+        // alice's entry stays unbound while she holds credentials.
+        give_credentials(&db, "u-alice", now).await;
+        give_credentials(&db, "u-bob", now).await;
+
+        tenants
+            .reconcile_logins(DEFAULT_TENANT, &logins(&["alice", "bob"]), now)
+            .await
+            .expect("reconcile");
+        // alice signs in again: her old credentials stay ended.
+        assert_eq!(
+            tenants
+                .admit_login(DEFAULT_TENANT, "alice", 7, now)
+                .await
+                .expect("admit"),
+            LoginAdmission::Allowed
+        );
+
+        let live = Liveness {
+            now,
+            seen_after: now - SignedDuration::from_hours(1),
+        };
+        assert!(
+            db.sessions()
+                .live(b"u-alice", live)
+                .await
+                .expect("read")
+                .is_none()
+        );
+        assert!(
+            db.sessions()
+                .live(b"u-bob", live)
+                .await
+                .expect("read")
+                .is_some()
+        );
+        assert!(
+            db.user_tokens()
+                .get("u-alice")
+                .await
+                .expect("read")
+                .is_none()
+        );
+        assert!(db.user_tokens().get("u-bob").await.expect("read").is_some());
+        let revoked = |id: &str| {
+            let id = AccessTokenId(id.to_owned());
+            let tokens = db.access_tokens();
+            async move {
+                tokens
+                    .credential(&id)
+                    .await
+                    .expect("read")
+                    .expect("token")
+                    .record
+                    .revoked_at
+                    .is_some()
+            }
+        };
+        assert!(revoked("000alice").await);
+        assert!(!revoked("00000bob").await);
     }
 }
