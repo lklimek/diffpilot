@@ -5,8 +5,9 @@ import { LlmLine } from "../common/LlmLine";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 import type { Navigate } from "../common/navigate";
 import { FactTags, SizePill } from "../common/Tags";
+import { ScoreBreakdown } from "../score-breakdown/ScoreBreakdown";
 import { ItemAction } from "../work-item/ItemAction";
-import { itemPlace, provisionalPill } from "../work-item/WorkItemRow";
+import { itemPlace, provisionalPill, ScoreButton } from "../work-item/WorkItemRow";
 
 interface AlarmRowProps {
   /** A P0 item. */
@@ -18,11 +19,28 @@ interface AlarmRowProps {
   current?: boolean;
   /** The alarm's frame, focused by `j`/`k`. */
   focusRef?: Ref<HTMLDivElement>;
+  /** The score breakdown is open. */
+  expanded: boolean;
+  onToggle: () => void;
+  now: Date;
 }
 
-/** A P0 alarm above the tiers (mockup `.alarm`): the LLM's alarm reason and next action, independent of the score. */
-export function AlarmRow({ item, reviewHref, onNavigate, current = false, focusRef }: AlarmRowProps) {
+/**
+ * A P0 alarm above the tiers (mockup `.alarm`): the LLM's alarm reason and next action, independent of the score;
+ * its points open the same score breakdown as a ranked row.
+ */
+export function AlarmRow({
+  item,
+  reviewHref,
+  onNavigate,
+  current = false,
+  focusRef,
+  expanded,
+  onToggle,
+  now,
+}: AlarmRowProps) {
   const points = Math.round(item.score.total_tenths / 10);
+  const detailId = `detail-${item.key}`;
   return (
     <div
       ref={focusRef}
@@ -59,7 +77,13 @@ export function AlarmRow({ item, reviewHref, onNavigate, current = false, focusR
         {item.llm?.alarm && <LlmLine text={item.llm.alarm} />}
         {item.llm && <LlmLine text={item.llm.next} label="Next" />}
       </div>
-      <ItemAction item={item} reviewHref={reviewHref} onNavigate={onNavigate} />
+      <div className="flex items-center justify-end gap-2">
+        <ScoreButton item={item} expanded={expanded} onToggle={onToggle} controls={detailId} />
+        <ItemAction item={item} reviewHref={reviewHref} onNavigate={onNavigate} />
+      </div>
+      <div id={detailId} hidden={!expanded} className="col-span-3 border-t border-dashed border-high-bd pt-1">
+        {expanded && <ScoreBreakdown item={item} now={now} />}
+      </div>
     </div>
   );
 }
