@@ -76,6 +76,7 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
       expect.stringContaining("Cargo.toml has target-specific dependency tables"),
       expect.stringMatching(/src\/rpc\/generated_codes\.rs has more conversion candidates/),
       expect.stringContaining("2 files of the crate in crates/node-sdk"),
+      expect.stringContaining("Cargo.toml lists more workspace members or exclusions than are read"),
     ]);
     expect(document.body).not.toHaveTextContent(/\bcomplete\b/);
     expectTrustWording(document.body.textContent ?? "");
