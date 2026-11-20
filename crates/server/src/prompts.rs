@@ -67,7 +67,17 @@ pub const MAX_THREADS: usize = 50;
 
 const MAX_TITLE_CHARS: usize = 300;
 /// Most bytes of the per-crate dependency entries in a `pr_context` prompt.
-const MAX_DEPENDENCY_BYTES: usize = 12 * 1024;
+const MAX_DEPENDENCY_BYTES: usize = 16 * 1024;
+/// Most characters of a PR-controlled name or path in a dependency entry.
+const MAX_DEPENDENCY_NAME_CHARS: usize = 80;
+/// Most facts of one crate in its dependency entry; the rest are counted.
+const MAX_PROMPT_FACTS: usize = 15;
+/// Most used crates of one crate in its dependency entry; the rest are counted.
+const MAX_PROMPT_USES: usize = 20;
+/// Most controlled dependency repositories the agent is given to look in (ADR-005 addendum).
+const MAX_LOOKUP_REPOS: usize = 5;
+/// Most crate names listed per lookup repository.
+const MAX_LOOKUP_CRATES: usize = 10;
 const MAX_DESCRIPTION_CHARS: usize = 16_000;
 const MAX_PROFILE_CHARS: usize = 16_000;
 const MAX_EXCERPT_CHARS: usize = 2_000;
@@ -1180,52 +1190,76 @@ fn pr_context_task(input: &PrContextInput<'_>) -> Result<String, PromptError> {
 }
 
 /// The changed crates of `view` as one-line JSON entries, and the controlled dependency repositories to look in;
-/// empty without a Cargo map.
+/// empty without a Cargo map. PR-controlled names are clipped; entries, facts and repositories are bounded.
 fn dependencies(view: Option<&DependencyView>) -> Result<String, PromptError> {
     let Some(view) = view.filter(|view| view.status == DependencyStatus::Available) else {
         return Ok(String::new());
     };
-    let line = |at: &contracts::api::deps::HeadLine| format!("{}:{}", at.file, at.line);
-    let mut entries = Vec::new();
-    let mut lookups = Vec::new();
-    let all = || {
-        view.repositories
-            .iter()
-            .flat_map(|r| r.crates.iter().map(move |c| (r, c)))
-    };
-    for repository in &view.repositories {
-        match (&repository.kind, &repository.repo) {
-            (RepositoryKind::This, _) => {}
-            (_, Some(repo)) => {
-                let names: Vec<&str> = repository.crates.iter().map(|c| c.name.as_str()).collect();
-                lookups.push(format!(
-                    "{}/{} (crates: {})",
-                    repo.owner,
-                    repo.name,
-                    names.join(", ")
-                ));
-            }
-            (_, None) => {}
+    let short = |text: &str| -> String {
+        let (shown, omitted) = clip(text, MAX_DEPENDENCY_NAME_CHARS);
+        if omitted == 0 {
+            shown
+        } else {
+            format!("{shown}…")
         }
+    };
+    let line = |at: &contracts::api::deps::HeadLine| short(&format!("{}:{}", at.file, at.line));
+    let controlled: Vec<_> = view.repositories.iter().filter(|r| r.controlled).collect();
+    let mut lookups = Vec::new();
+    for repository in controlled.iter().filter(|r| r.kind != RepositoryKind::This) {
+        let Some(repo) = &repository.repo else {
+            continue;
+        };
+        let mut names: Vec<String> = repository
+            .crates
+            .iter()
+            .take(MAX_LOOKUP_CRATES)
+            .map(|c| short(&c.name))
+            .collect();
+        if repository.crates.len() > MAX_LOOKUP_CRATES {
+            names.push(format!(
+                "+{} more",
+                repository.crates.len() - MAX_LOOKUP_CRATES
+            ));
+        }
+        lookups.push(format!(
+            "{}/{} (crates: {})",
+            short(&repo.owner),
+            short(&repo.name),
+            names.join(", ")
+        ));
     }
-    for (_, krate) in all() {
+    let mut entries = Vec::new();
+    for krate in view.repositories.iter().flat_map(|r| &r.crates) {
         let Some(changes) = &krate.changes else {
             continue;
         };
-        let uses: Vec<serde_json::Value> = all()
-            .filter(|(_, other)| other.used_by.contains(&krate.name))
-            .map(|(repository, other)| {
+        let mut uses = Vec::new();
+        let mut uncontrolled = 0;
+        for repository in &view.repositories {
+            for other in repository
+                .crates
+                .iter()
+                .filter(|c| c.used_by.contains(&krate.name))
+            {
+                if !repository.controlled {
+                    uncontrolled += 1;
+                    continue;
+                }
                 let from = match (&repository.kind, &repository.repo) {
                     (RepositoryKind::This, _) => "this repository".to_owned(),
-                    (_, Some(repo)) => format!("{}/{}", repo.owner, repo.name),
+                    (_, Some(repo)) => short(&format!("{}/{}", repo.owner, repo.name)),
                     (_, None) => "other".to_owned(),
                 };
-                serde_json::json!({"crate": other.name, "from": from})
-            })
-            .collect();
+                uses.push(serde_json::json!({"crate": short(&other.name), "from": from}));
+            }
+        }
+        let uses_not_listed = uses.len().saturating_sub(MAX_PROMPT_USES);
+        uses.truncate(MAX_PROMPT_USES);
         let facts: Vec<serde_json::Value> = changes
             .facts
             .iter()
+            .take(MAX_PROMPT_FACTS)
             .map(|fact| {
                 let definition = match &fact.definition {
                     TypeDefinition::Located { at } => line(at),
@@ -1236,23 +1270,28 @@ fn dependencies(view: Option<&DependencyView>) -> Result<String, PromptError> {
                 serde_json::json!({
                     "at": line(&fact.at),
                     "kind": fact.kind,
-                    "type": fact.written,
-                    "type_crate": fact.type_crate,
+                    "type": short(&fact.written),
+                    "type_crate": short(&fact.type_crate),
                     "definition": definition,
                 })
             })
             .collect();
+        let facts_not_listed = u64::from(changes.facts_hidden)
+            + u64::from(changes.other_facts)
+            + (changes.facts.len() - facts.len()) as u64;
         let flows: Vec<&str> = changes.flows.iter().map(|f| f.id.0.as_str()).collect();
-        let notes: Vec<&str> = changes.notes.iter().map(|n| n.text.as_str()).collect();
+        let notes: Vec<String> = changes.notes.iter().map(|n| short(&n.text)).collect();
         let entry = serde_json::json!({
-            "crate": krate.name,
-            "manifest": krate.manifest,
+            "crate": short(&krate.name),
+            "manifest": krate.manifest.as_deref().map(short),
             "changed_lines": changes.changed_lines,
             "flows": flows,
             "uses": uses,
-            "other_dependencies": changes.other_dependencies,
+            "other_dependencies": u64::from(changes.other_dependencies)
+                + uncontrolled
+                + uses_not_listed as u64,
             "facts": facts,
-            "facts_not_listed": changes.facts_hidden + changes.other_facts,
+            "facts_not_listed": facts_not_listed,
             "notes": notes,
         });
         entries.push(entry.to_string());
@@ -1265,8 +1304,11 @@ fn dependencies(view: Option<&DependencyView>) -> Result<String, PromptError> {
     out.push_str(&path_list(
         "dependency_repos",
         "dependency repositories",
-        &lookups,
+        &lookups[..lookups.len().min(MAX_LOOKUP_REPOS)],
     )?);
+    if lookups.len() > MAX_LOOKUP_REPOS {
+        out.push_str(&omitted_note(lookups.len() - MAX_LOOKUP_REPOS)?);
+    }
     Ok(out)
 }
 
@@ -1557,12 +1599,13 @@ fn listed(label: &str, items: &[String], max: usize) -> Result<String, PromptErr
     Ok(out)
 }
 
-/// A data block of one-line JSON entries, filled up to `max_bytes`, with a note on the omitted entries.
+/// A data block of one-line JSON entries, filled up to `max_bytes` (an entry that does not fit is skipped, later ones
+/// may still fit), with a note on the omitted entries.
 fn lines_block(label: &str, entries: Vec<String>, max_bytes: usize) -> Result<String, PromptError> {
     let mut content = String::new();
     let mut omitted = 0;
     for entry in entries {
-        if omitted == 0 && content.len() + entry.len() < max_bytes {
+        if content.len() + entry.len() < max_bytes {
             content.push_str(&entry);
             content.push('\n');
         } else {

@@ -2029,3 +2029,53 @@ fn the_most_changed_crate_with_fifty_facts_reaches_the_pr_context_prompt() {
         block.content
     );
 }
+
+/// The agent is given at most 5 dependency repositories to look in, all controlled.
+#[test]
+fn dependency_lookups_are_controlled_repositories_at_most_five() {
+    use contracts::api::deps::{DependencyRepository, RepositoryKind};
+    let mut view = dependency_view_with("node-client", "upstream-types");
+    let template = view.repositories[1].clone();
+    for (n, controlled) in [
+        (1, true),
+        (2, true),
+        (3, true),
+        (4, true),
+        (5, true),
+        (6, false),
+    ] {
+        view.repositories.push(DependencyRepository {
+            repo: Some(contracts::common::RepoRef {
+                owner: if controlled { "acme" } else { "stranger" }.to_owned(),
+                name: format!("repo{n}"),
+            }),
+            controlled,
+            kind: RepositoryKind::Github,
+            ..template.clone()
+        });
+    }
+    let prompt = pr_context_with(&view).expect("pr_context");
+    let (_, blocks) = split(&prompt);
+    let block = blocks
+        .iter()
+        .find(|block| block.label == "dependency repositories")
+        .expect("lookup block");
+    let lines: Vec<&str> = block.content.lines().collect();
+    assert_eq!(lines.len(), 5, "{lines:?}");
+    assert!(lines.iter().all(|l| l.starts_with("acme/")), "{lines:?}");
+    assert!(prompt.contains("omitted 1 more entries"), "{prompt}");
+}
+
+/// An entry too large for its block is skipped; the entries after it still reach the agent.
+#[test]
+fn lines_block_skips_an_oversized_entry_and_keeps_the_rest() {
+    let block = lines_block(
+        "list",
+        vec!["x".repeat(100), "small".to_owned(), "tiny".to_owned()],
+        50,
+    )
+    .expect("block");
+    assert!(block.contains("small\ntiny\n"), "{block}");
+    assert!(!block.contains("xxxx"), "{block}");
+    assert!(block.contains("omitted 1 more entries"), "{block}");
+}
