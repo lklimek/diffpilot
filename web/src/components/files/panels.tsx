@@ -95,7 +95,9 @@ function hunkOwners(ctx: FilesPanelContext, hunk: FileHunk): string {
   const flows = flowsAt(ctx.tour, hunk.parts).map((f) =>
     f.steps.length > 0
       ? `flow ${f.flow.position} · ${f.steps.length} ${f.steps.length === 1 ? "step" : "steps"}`
-      : `flow ${f.flow.position} · not analysed yet`,
+      : f.incidentals.length > 0
+        ? `flow ${f.flow.position} · incidental change`
+        : `flow ${f.flow.position} · not analysed yet`,
   );
   // Each part in no flow with its own lines: a whitespace line never reads as the whole hunk.
   const quiet = noFlowParts(hunk.parts).map((p) => {
@@ -104,12 +106,16 @@ function hunkOwners(ctx: FilesPanelContext, hunk: FileHunk): string {
     return `${where}: ${
       {
         unexplained: "Unexplained",
-        not_analysed: "not analysed (path rule)",
+        not_analysed:
+          p.owner.kind === "not_analysed" && p.owner.badge === "classified_by_line_rule"
+            ? "not analysed (line rule)"
+            : "not analysed (path rule)",
         context_rule: "line rule",
         identical_move: "moved, text identical",
         whitespace_only: "whitespace only",
         step: "",
         flow: "",
+        incidental: "",
       }[p.owner.kind]
     }`;
   });

@@ -67,7 +67,7 @@ export const partsIn = (file: PrFile, side: LineSide, from: number, to: number):
 
 /** Parts in no flow (Unexplained, Not analysed, a line rule, an identical move, whitespace only). */
 export const noFlowParts = (parts: readonly HunkPart[]) =>
-  parts.filter((p) => p.owner.kind !== "step" && p.owner.kind !== "flow");
+  parts.filter((p) => p.owner.kind !== "step" && p.owner.kind !== "flow" && p.owner.kind !== "incidental");
 
 /** The step owning every changed line of `from..=to` on `side`; null with none or with several owners (A4). */
 export function selectionStep(file: PrFile, side: LineSide, from: number, to: number): StepId | null {
@@ -93,11 +93,22 @@ export interface StepAtLines extends StepPlace {
   removed: LineRange[];
 }
 
-/** A flow at some lines: its steps there, or (`planned`) lines its plan holds before it was analysed. */
+/** Lines a flow's analysis names an incidental change off its control flow, with the LLM's sentence. */
+export interface IncidentalAtLines {
+  text: string;
+  lines: LineRange[];
+  removed: LineRange[];
+}
+
+/**
+ * A flow at some lines: its steps there, its incidental changes there, or (`planned`) lines its plan holds before
+ * it was analysed.
+ */
 export interface FlowAtLines {
   flow: Flow;
   planned: boolean;
   steps: StepAtLines[];
+  incidentals: IncidentalAtLines[];
 }
 
 /** The tour's step `id` with its flow. */
@@ -113,6 +124,7 @@ export function stepPlace(tour: Tour, id: StepId): StepPlace | undefined {
 export function flowsAt(tour: Tour, parts: readonly HunkPart[]): FlowAtLines[] {
   const steps = new Map<StepId, StepAtLines>();
   const planned = new Set<string>();
+  const incidentals = new Map<string, Map<string, IncidentalAtLines>>();
   const add = (id: StepId, role: StepAtLines["role"], part: HunkPart) => {
     const place = stepPlace(tour, id);
     if (!place) return;
@@ -124,6 +136,13 @@ export function flowsAt(tour: Tour, parts: readonly HunkPart[]): FlowAtLines[] {
   for (const part of parts) {
     if (part.owner.kind === "step") add(part.owner.step_id, "explained", part);
     if (part.owner.kind === "flow") planned.add(part.owner.flow_id);
+    if (part.owner.kind === "incidental") {
+      const byText = incidentals.get(part.owner.flow_id) ?? new Map<string, IncidentalAtLines>();
+      const at = byText.get(part.owner.text) ?? { text: part.owner.text, lines: [], removed: [] };
+      (part.side === "base" ? at.removed : at.lines).push(part.range);
+      byText.set(part.owner.text, at);
+      incidentals.set(part.owner.flow_id, byText);
+    }
     for (const id of part.also_in) add(id, "also", part);
   }
   return tour.flows.flatMap((flow) => {
@@ -131,8 +150,13 @@ export function flowsAt(tour: Tour, parts: readonly HunkPart[]): FlowAtLines[] {
       const at = steps.get(s.id);
       return at ? [{ ...at, lines: mergeRanges(at.lines), removed: mergeRanges(at.removed) }] : [];
     });
-    return here.length > 0 || planned.has(flow.id)
-      ? [{ flow, planned: planned.has(flow.id), steps: here }]
+    const notes = [...(incidentals.get(flow.id)?.values() ?? [])].map((at) => ({
+      ...at,
+      lines: mergeRanges(at.lines),
+      removed: mergeRanges(at.removed),
+    }));
+    return here.length > 0 || notes.length > 0 || planned.has(flow.id)
+      ? [{ flow, planned: planned.has(flow.id), steps: here, incidentals: notes }]
       : [];
   });
 }

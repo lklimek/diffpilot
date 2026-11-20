@@ -235,12 +235,50 @@ describe("FlowsAtLines", () => {
   });
 });
 
+describe("Incidental changes", () => {
+  it("lists them under their flow as LLM text, not as steps; the flow is analysed, not pending", () => {
+    render(
+      <FlowsAtLines
+        flows={flowsAt(tour, [
+          {
+            side: "head",
+            range: { start_line: 3, end_line: 4 },
+            owner: { kind: "incidental", flow_id: "f1", text: "Makes `send` public for the new caller." },
+            also_in: [],
+          },
+        ])}
+        ticked={[]}
+        analysis={tour.analysis.state}
+        onDetails={() => {}}
+        onOpenInFlows={() => {}}
+      />,
+    );
+    const flow = screen.getByRole("group", { name: /^Flow 1/ });
+    const item = within(flow).getByRole("listitem");
+    expect(item).toHaveTextContent("Incidental change (LLM)");
+    expect(item).toHaveTextContent("lines 3–4");
+    expect(item).toHaveTextContent("Makes send public for the new caller.");
+    expect(within(item).queryByRole("button")).toBeNull();
+    expect(flow).not.toHaveTextContent("not analysed yet");
+    expectTrustWording(document.body.textContent ?? "");
+  });
+});
+
 describe("NoFlowPart", () => {
   it.each([
     [{ kind: "unexplained" } as const, "In no flow. Unexplained — read these yourself."],
     [
       { kind: "not_analysed", category: "tests", badge: "classified_by_path", rule: "tests/**" } as const,
       "In no flow. Not analysed: recognised by file path (rule tests/**)",
+    ],
+    [
+      {
+        kind: "not_analysed",
+        category: "tests",
+        badge: "classified_by_line_rule",
+        rule: "#[cfg(test)] and #[test] items",
+      } as const,
+      "In no flow. Not analysed: recognised by a line rule (rule #[cfg(test)] and #[test] items)",
     ],
     [
       { kind: "context_rule", badge: "classified_by_line_rule", rule: "comment" } as const,
