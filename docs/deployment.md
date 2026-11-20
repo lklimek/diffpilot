@@ -47,7 +47,9 @@ emptied at every start. `<project>` is the compose project name: `diffpilot` by 
 - On the host for backups and checks: `bash`, `openssl`, `sqlite3` 3.27+ (`deploy/backup.sh`), `jq` (rendering
   check of `deploy/check-production-config.sh`).
 
-The shell blocks below use three variables; set them in every shell first (placeholders, any paths you choose):
+Run the shell blocks below in a root shell (`sudo -i`): `.env`, the App key and the secret files are readable by
+root only, and `docker compose` reads `.env`. They use three variables; set them in that shell first (placeholders,
+any paths you choose):
 
 ```sh
 DP_DIR=<deployment-directory>       # holds .env and, by default, the secrets directory and backups
@@ -79,10 +81,12 @@ Published images carry OCI labels (`org.opencontainers.image.version`, `.revisio
 docker image inspect -f '{{json .Config.Labels}}' docker.io/lklimek/diffpilot:<X.Y.Z>
 ```
 
-Licences: diffpilot is [FSL-1.1-ALv2](../LICENSE.md). The server and runner images contain the licence text and the
-notices of all bundled third-party software in `/usr/share/doc/diffpilot/` (layout:
-[`deploy/notices/README.md`](../deploy/notices/README.md)); Ubuntu packages, the whole egress proxy included, keep
-theirs in `/usr/share/doc/<package>/copyright`.
+Licences: diffpilot is [FSL-1.1-ALv2](../LICENSE.md). Every image contains the licence text, the list of its Ubuntu
+packages with their source packages (`packages.txt`) and the notices of the bundled third-party software in
+`/usr/share/doc/diffpilot/` (layout, sources and known gaps: [`deploy/notices/README.md`](../deploy/notices/README.md));
+Ubuntu packages keep their copyright files in `/usr/share/doc/<package>/copyright`. The source code of the Ubuntu
+packages, GPL-licensed ones (Squid, git, bash) included, is published by Ubuntu for exactly the versions listed in
+`packages.txt`.
 
 The compose file takes the image names from `SR_SERVER_IMAGE`, `SR_RUNNER_IMAGE` and `SR_PROXY_IMAGE`; set them to
 the published names (section 5).
@@ -129,8 +133,8 @@ Then:
    only:
 
    ```sh
-   sudo install -d -m 0755 "$DP_SECRETS"
-   sudo install -o 10010 -g 10010 -m 0400 <downloaded-key>.pem "$DP_SECRETS/github-app.pem"
+   install -d -m 0755 "$DP_SECRETS"
+   install -o 10010 -g 10010 -m 0400 <downloaded-key>.pem "$DP_SECRETS/github-app.pem"
    ```
 
 4. Install the App on the repositories to review. v1 analyses public repositories; without an installation on a
@@ -138,16 +142,16 @@ Then:
 
 ## 5. Configuration
 
-Start from the template and generate the two server secrets (root; the file holds secrets, mode 0600):
+Start from the template and generate the two server secrets (the file holds secrets: owner root, mode 0600):
 
 ```sh
-sudo install -d -m 0755 "$DP_DIR"
-sudo install -m 0600 "$DP_REPO/.env.example" "$DP_DIR/.env"
-sudo sed -i \
+install -d -m 0755 "$DP_DIR"
+install -m 0600 "$DP_REPO/.env.example" "$DP_DIR/.env"
+sed -i \
   -e "s|^SR_SECRET_KEY=.*|SR_SECRET_KEY=$(openssl rand -base64 32)|" \
   -e "s|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=$(openssl rand -hex 32)|" \
   "$DP_DIR/.env"
-sudoedit "$DP_DIR/.env"
+"${EDITOR:-vi}" "$DP_DIR/.env"
 ```
 
 `SR_SECRET_KEY` encrypts stored GitHub tokens and cannot be rotated: keep a copy with the backups. Losing it means
@@ -222,14 +226,14 @@ refuses to start otherwise):
 
 ```sh
 cd "$DP_SECRETS"
-sudo sh -c 'umask 077; openssl rand -base64 32 > sr-secret-key; openssl rand -hex 32 > sr-runner-secret'
-sudo sh -c 'umask 077; cat > sr-github-client-secret'   # paste the value, Enter, Ctrl-D
-sudo sh -c 'umask 077; cat > sr-memcan-token'           # paste the value, Enter, Ctrl-D
-sudo chown 10010:10010 sr-secret-key sr-github-client-secret sr-memcan-token
-sudo chmod 0400 sr-secret-key sr-github-client-secret sr-memcan-token
-sudo chown 10001:10010 sr-runner-secret && sudo chmod 0440 sr-runner-secret
-sudo sed -i -E 's/^(SR_SECRET_KEY|SR_RUNNER_SECRET|SR_GITHUB_CLIENT_SECRET|SR_MEMCAN_TOKEN)=.*/\1=/' "$DP_DIR/.env"
-echo "SR_SECRETS_DIR=$DP_SECRETS" | sudo tee -a "$DP_DIR/.env" > /dev/null
+sh -c 'umask 077; openssl rand -base64 32 > sr-secret-key; openssl rand -hex 32 > sr-runner-secret'
+sh -c 'umask 077; cat > sr-github-client-secret'   # paste the value, Enter, Ctrl-D
+sh -c 'umask 077; cat > sr-memcan-token'           # paste the value, Enter, Ctrl-D
+chown 10010:10010 sr-secret-key sr-github-client-secret sr-memcan-token
+chmod 0400 sr-secret-key sr-github-client-secret sr-memcan-token
+chown 10001:10010 sr-runner-secret && chmod 0440 sr-runner-secret
+sed -i -E 's/^(SR_SECRET_KEY|SR_RUNNER_SECRET|SR_GITHUB_CLIENT_SECRET|SR_MEMCAN_TOKEN)=.*/\1=/' "$DP_DIR/.env"
+echo "SR_SECRETS_DIR=$DP_SECRETS" | tee -a "$DP_DIR/.env" > /dev/null
 ```
 
 ### Checking the configuration
@@ -240,8 +244,8 @@ that is not `https://`, `$` interpolation and development switches; an unpinned 
 `SR_TRUSTED_PROXIES` are warnings.
 
 ```sh
-sudo "$DP_REPO/deploy/check-production-config.sh" --env-file "$DP_DIR/.env"                  # secrets in .env
-sudo "$DP_REPO/deploy/check-production-config.sh" --env-file "$DP_DIR/.env" --secret-files   # secrets as files
+"$DP_REPO/deploy/check-production-config.sh" --env-file "$DP_DIR/.env"                  # secrets in .env
+"$DP_REPO/deploy/check-production-config.sh" --env-file "$DP_DIR/.env" --secret-files   # secrets as files
 ```
 
 ## 6. Deploying
@@ -283,13 +287,39 @@ the deployment fails instead of building. `compose.secrets.yaml` cannot be added
 stack variables: visible to Portainer users with access to the stack and in `docker inspect`.
 
 Portainer stores stack variables in its own database: keep a copy of `SR_SECRET_KEY` with your backups. For the
-commands in sections 8 to 12, use the Docker CLI on the host (`docker exec`, `docker run` against the volumes) or
-the container console in Portainer (Containers → `<container>` → Console, with the user named there).
+commands below and in sections 8 to 12, use the Docker CLI on the host (`docker exec`, `docker run` against the
+volumes) or the container console in Portainer (Containers → `<container>` → Console, with the user named there).
+
+### Sign-in allow-list (before the server is reachable)
+
+> **Warning:** the database is created with the project maintainers' GitHub logins `lklimek` and
+> `Claudius-Maginificent` on its sign-in allow-list. Until you replace them, those accounts can sign in to your
+> instance as soon as it is reachable. Do this step before the reverse proxy routes to the server (section 7); the
+> HTTP port is published on loopback only by default (`SR_PUBLISH_ADDR`).
+
+Only allow-listed GitHub logins can sign in. Once `server` is `healthy` (it creates and migrates the database at its
+first start), replace the seeded logins with your own: server stopped, the helper container needs Internet for
+`apt`; replace `<your-login>` and add one `VALUES` row per login. The last line lists the allow-list; it must show
+only your logins.
+
+```sh
+docker stop <project>-server-1
+docker run --rm -v <project>_server-data:/data ubuntu:26.04 sh -c \
+  "apt-get update -qq && apt-get install -y -qq sqlite3 > /dev/null &&
+   sqlite3 /data/diffpilot.sqlite \"DELETE FROM tenant_allowed_logins WHERE tenant_id = 'default' AND login IN ('lklimek', 'Claudius-Maginificent');
+     INSERT OR IGNORE INTO tenant_allowed_logins (tenant_id, login) VALUES ('default', '<your-login>');
+     SELECT login FROM tenant_allowed_logins;\" &&
+   chown -R 10010:10010 /data"
+docker start <project>-server-1
+```
+
+A login is bound to its GitHub account at its first sign-in.
 
 ## 7. Reverse proxy and TLS
 
-The server speaks plain HTTP on `SR_PUBLISH_ADDR:SR_HTTP_PORT` (default `127.0.0.1:3000`); TLS terminates at a
-reverse proxy you run in front of it, for the host name of `SR_PUBLIC_URL`. Requirements:
+Route to the server only after the allow-list step of section 6. The server speaks plain HTTP on
+`SR_PUBLISH_ADDR:SR_HTTP_PORT` (default `127.0.0.1:3000`); TLS terminates at a reverse proxy you run in front of it,
+for the host name of `SR_PUBLIC_URL`. Requirements:
 
 - Forward everything under `/` to the server; the server routes `/`, `/api/`, `/auth/` and `/healthz` itself.
 - Append the client address to `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For
@@ -306,27 +336,10 @@ reverse proxy you run in front of it, for the host name of `SR_PUBLIC_URL`. Requ
 
 ## 8. First start
 
-1. **Start** (section 6) and wait until `server`, `runner` and `egress-proxy` are `healthy`. The server creates
-   and migrates the database at its first start.
+1. **Start** (section 6, allow-list step included) and wait until `server`, `runner` and `egress-proxy` are
+   `healthy`.
 
-2. **Sign-in allow-list.** Only allow-listed GitHub logins can sign in, and the database starts with the project
-   maintainers' logins `lklimek` and `Claudius-Maginificent`. Replace them with your own (server stopped; the helper
-   container needs Internet for `apt`; replace `<your-login>`, add one `VALUES` row per login):
-
-   ```sh
-   docker stop <project>-server-1
-   docker run --rm -v <project>_server-data:/data ubuntu:26.04 sh -c \
-     "apt-get update -qq && apt-get install -y -qq sqlite3 > /dev/null &&
-      sqlite3 /data/diffpilot.sqlite \"DELETE FROM tenant_allowed_logins WHERE tenant_id = 'default' AND login IN ('lklimek', 'Claudius-Maginificent');
-        INSERT OR IGNORE INTO tenant_allowed_logins (tenant_id, login) VALUES ('default', '<your-login>');
-        SELECT login FROM tenant_allowed_logins;\" &&
-      chown -R 10010:10010 /data"
-   docker start <project>-server-1
-   ```
-
-   A login is bound to its GitHub account at its first sign-in.
-
-3. **Codex sign-in** (once per `runner-state` volume). The runner keeps one Codex credential in its state volume;
+2. **Codex sign-in** (once per `runner-state` volume). The runner keeps one Codex credential in its state volume;
    sign in inside the running runner container as the runner uid (10001). Codex reaches the Internet through the
    egress proxy. Never mount or copy a host's `~/.codex`, and never copy a credential another Codex installation
    still uses (refresh tokens are single-use).
@@ -342,8 +355,13 @@ reverse proxy you run in front of it, for the host name of `SR_PUBLIC_URL`. Requ
    The device login prints a URL and a code: open the URL, enter the code, approve. In Portainer: runner container →
    Console, user `10001`, command `/bin/bash`, then the same commands with `CODEX_HOME=...` prefixed.
 
-4. **First sign-in.** Open `<public-url>`, choose "Sign in with GitHub", approve the App. Then Settings: model and
+3. **First sign-in.** Open `<public-url>`, choose "Sign in with GitHub", approve the App. Then Settings: model and
    effort, dashboard and the other options ([settings.md](settings.md); in the app: Settings → "Settings help").
+
+4. **Known bots.** Every user's dashboard starts with the project's review bots `thepastaclaw`,
+   `Claudius-Maginificent` and `DCG-Claude` as known bots (their review requests and comments do not count as a
+   person waiting for you). Each user changes or clears the list in Settings → Dashboard → "Known bots"; GitHub Apps
+   (`...[bot]`) are bots without being listed.
 
 ## 9. MemCan (optional service, required variables)
 
@@ -383,7 +401,7 @@ or the secret files, or in Portainer) and the App key. Online backup while runni
 host):
 
 ```sh
-sudo SR_COMPOSE_PROJECT=<project> SR_BACKUP_DIR="$DP_DIR/backup" SR_ENV_FILE="$DP_DIR/.env" \
+SR_COMPOSE_PROJECT=<project> SR_BACKUP_DIR="$DP_DIR/backup" SR_ENV_FILE="$DP_DIR/.env" \
   SR_SECRETS_DIR="$DP_SECRETS" "$DP_REPO/deploy/backup.sh"
 ```
 
@@ -425,9 +443,9 @@ Never delete the database to get past a migration error.
 | Egress proxy exits 64 or 65 | `SR_MEMCAN_URL` is not `http(s)://host[:port][/path]` (64), or its host name does not resolve (65). |
 | Server exits 1 | The last log line names the variable (configuration), or `the schema migration failed` (section 11). |
 | Runner `unhealthy`, jobs stay queued | Less free disk than `SR_RUNNER_DISK_RESERVE_MIB`; free space, e.g. remove the `tmp-*` volumes with the stack stopped ([runbook.md](runbook.md), "Temporary volumes"). |
-| Sign-in fails with `login_not_allowed` | The login is not on the allow-list (section 8, step 2). |
+| Sign-in shows "This GitHub login is not allowed." (`login_error=login_not_allowed` in the URL) | The login is not on the allow-list (section 6, "Sign-in allow-list"). |
 | GitHub says the redirect URI is not associated | The App's callback URL differs from `<SR_PUBLIC_URL>/auth/github/callback`. |
-| Settings shows "Sign-in to the LLM provider is needed" | The Codex credential is missing or was rejected: sign in again (section 8, step 3). |
+| Settings shows "Sign-in to the LLM provider is needed" | The Codex credential is missing or was rejected: sign in again (section 8, step 2). |
 | Analyses stop with live updates missing | The reverse proxy buffers or cuts event streams (section 7). |
 | Agents cannot reach MemCan | MemCan's host or address allow-list (section 9); proxy started before a MemCan address change: restart it. |
 
@@ -437,17 +455,27 @@ detail: `RUST_LOG=debug`, then `dp up -d server runner`.
 ## 13. Publishing images (maintainers)
 
 The workflow [`release-images.yml`](../.github/workflows/release-images.yml) runs on a pushed tag `vX.Y.Z` of this
-repository (never on forks or pull requests). It builds the three images (linux/amd64) with their licence notices
-and OCI labels, checks the notices, runs the egress proxy test and the stack test against exactly these images, and
-pushes the tags of section 3. A manual run (Actions → Release images → Run workflow, with a version) is a dry run:
-it builds, tests and prints the tags a release would push, without credentials and without pushing.
+repository (never on forks or pull requests), in two jobs:
+
+1. `build`, without credentials: builds the three images (linux/amd64) with their licence notices and OCI labels,
+   checks the notices, runs the runner container suite, the egress proxy test and the stack test against exactly
+   these images, and hands them to the next job as a workflow artifact (kept one day).
+2. `publish`, in the environment `docker-hub`, one at a time across releases: loads the tested images, computes the
+   tags of section 3 from the release tags present at that moment, logs in, refuses to continue when `X.Y.Z` of any
+   of the three images already exists (a release version is published once), pushes tag by tag across the three
+   images (`X.Y.Z` first, then `X.Y`, `X`, `latest`) and logs out.
+
+A manual run (Actions → Release images → Run workflow, with a version) is a dry run: `build` only, printing the
+tags a release would push, without credentials and without pushing. A failed publish can be re-run while no
+`X.Y.Z` was pushed; after a partial push, release the next patch version.
 
 Setup on GitHub, once:
 
 1. Docker Hub: create the repositories `lklimek/diffpilot`, `lklimek/diffpilot-runner` and
-   `lklimek/diffpilot-egress-proxy` (public), and a personal access token with **Read & Write** scope.
+   `lklimek/diffpilot-egress-proxy` (public; the publish job stops when one is missing), and a personal access token
+   with **Read & Write** scope.
 2. GitHub → Settings → Environments → New environment `docker-hub`; under "Deployment branches and tags" allow only
-   tags matching `v*`. Add the environment secrets:
+   tags matching `v*`; optionally add yourself as a required reviewer. Add the environment secrets:
    - `DOCKERHUB_USERNAME`: the Docker Hub user that owns the token;
    - `DOCKERHUB_TOKEN`: the access token.
 
