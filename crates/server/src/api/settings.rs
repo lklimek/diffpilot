@@ -158,7 +158,7 @@ async fn set_controlled_owners(
         .get(&session.user_id)
         .await
         .map_err(failure)?;
-    let saved = state
+    let (old, saved) = state
         .db
         .settings()
         .set_controlled_owners(
@@ -169,7 +169,8 @@ async fn set_controlled_owners(
         )
         .await
         .map_err(failure)?;
-    tracing::info!(user_id = %session.user_id, owners = saved.owners.len(), "controlled owners saved");
+    tracing::info!(login = %user.profile.login, old_owners = ?old.owners, new_owners = ?saved.owners,
+        "installation controlled owners changed");
     Ok(Json(saved))
 }
 

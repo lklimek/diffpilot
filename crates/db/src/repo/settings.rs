@@ -144,15 +144,16 @@ impl SettingsRepo<'_> {
     }
 
     /// Replaces the tenant's controlled owners (duplicates differing only in case are kept once) and records the
-    /// editor; returns the saved list.
+    /// editor; returns the previous and the saved list.
     pub async fn set_controlled_owners(
         &self,
         tenant_id: &str,
         owners: &[String],
         login: &str,
         now: Timestamp,
-    ) -> Result<ControlledOwners, DbError> {
+    ) -> Result<(ControlledOwners, ControlledOwners), DbError> {
         let mut tx = super::write_tx(self.pool).await?;
+        let old = read_controlled_owners(&mut tx, tenant_id).await?;
         sqlx::query("DELETE FROM controlled_owners WHERE tenant_id = ?")
             .bind(tenant_id)
             .execute(&mut *tx)
@@ -178,7 +179,7 @@ impl SettingsRepo<'_> {
         .await?;
         let saved = read_controlled_owners(&mut tx, tenant_id).await?;
         tx.commit().await?;
-        Ok(saved)
+        Ok((old, saved))
     }
 
     /// Installation-wide choice, independent of tenant or requesting user.
@@ -468,11 +469,12 @@ mod tests {
         assert_eq!(empty, ControlledOwners::default(), "nothing saved yet");
         let now = Timestamp::now();
         let owners = ["dashpay", "Acme", "DashPay", "lklimek"].map(str::to_owned);
-        let saved = db
+        let (old, saved) = db
             .settings()
             .set_controlled_owners(DEFAULT_TENANT, &owners, "lklimek", now)
             .await
             .expect("save");
+        assert_eq!(old, ControlledOwners::default());
         assert_eq!(
             saved.owners,
             ["Acme", "dashpay", "lklimek"],
@@ -480,11 +482,12 @@ mod tests {
         );
         assert_eq!(saved.changed_by.as_deref(), Some("lklimek"));
         assert!(saved.changed_at.is_some());
-        let replaced = db
+        let (old, replaced) = db
             .settings()
             .set_controlled_owners(DEFAULT_TENANT, &["x".to_owned()], "other", now)
             .await
             .expect("replace");
+        assert_eq!(old, saved, "the previous list is returned");
         assert_eq!(replaced.owners, ["x"]);
         assert_eq!(replaced.changed_by.as_deref(), Some("other"));
         assert_eq!(
