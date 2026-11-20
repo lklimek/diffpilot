@@ -268,6 +268,19 @@ impl Prepass {
             .collect()
     }
 
+    /// [`Prepass::agent_files`] without the context-only hunks ([`Prepass::context_only_hunks`]): the plan batches
+    /// input, so a change made only of context lines queues no plan job. Files left without hunks are dropped.
+    pub fn plan_files(&self, files: &[FileDiff]) -> Vec<FileDiff> {
+        let context_only = self.context_only_hunks(files);
+        self.agent_files(files)
+            .into_iter()
+            .filter_map(|mut file| {
+                file.hunks.retain(|hunk| !context_only.contains(&hunk.id));
+                (!file.hunks.is_empty()).then_some(file)
+            })
+            .collect()
+    }
+
     /// Hunks of `files` the pre-pass knows where a context rule covers some changed lines and none is left for the
     /// agent (the rest are blank): comments, imports, test code, whitespace-only lines, identical moves. Prompts do
     /// not list them.

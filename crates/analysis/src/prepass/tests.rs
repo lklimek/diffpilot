@@ -1208,7 +1208,6 @@ fn a_hunk_of_only_context_lines_is_context_only() {
 /// A change made only of context lines (imports, comments, inline tests) leaves nothing to plan: no plan batch,
 /// so no plan job spends tokens on an empty listing.
 #[test]
-#[ignore = "repro: agent_files keeps context-only hunks, so plan_batches still yields a batch and a plan job runs"]
 fn a_change_of_only_context_lines_has_no_plan_batch() {
     let head = ["// heading", "use std::fmt;", ""];
     let files = vec![file(
@@ -1223,6 +1222,8 @@ fn a_change_of_only_context_lines_has_no_plan_batch() {
         result.context_only_hunks(&files),
         BTreeSet::from([files[0].hunks[0].id.clone()])
     );
-    let batches = crate::prepass::batches::plan_batches(&result.agent_files(&files));
+    let batches = crate::prepass::batches::plan_batches(&result.plan_files(&files));
     assert!(batches.is_empty(), "{batches:?}");
+    // Verification still knows the hunk: a plan stored before today's rules may name it.
+    assert_eq!(result.agent_files(&files).len(), 1);
 }

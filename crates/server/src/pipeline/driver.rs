@@ -169,7 +169,7 @@ pub(super) async fn drive(
             number: u32::MAX,
             total: u32::MAX,
         };
-        batching::fit(plan_batches(&listed), &|files| {
+        batching::fit(plan_batches(&prepass.plan_files(&files)), &|files| {
             prompts::plan(&PlanInput {
                 job,
                 files,

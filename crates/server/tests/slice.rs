@@ -2911,7 +2911,7 @@ async fn huge_analysis(h: &Harness, mut plan_script: impl FnMut(usize, Value) ->
         name: "huge".to_owned(),
     };
     let prepass = analysis::prepass::prepass(&pr_repo, &files, &[], &|_, _| None).expect("prepass");
-    let batches = analysis::prepass::batches::plan_batches(&prepass.agent_files(&files));
+    let batches = analysis::prepass::batches::plan_batches(&prepass.plan_files(&files));
     assert_eq!(batches.len(), 2, "one batch per directory");
     for (index, batch) in batches.iter().enumerate() {
         let hunks: Vec<Value> = batch
