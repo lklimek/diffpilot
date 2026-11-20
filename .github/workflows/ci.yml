@@ -89,6 +89,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends python3-pytest python3-jsonschema sqlite3
       - name: Script tests
         run: python3 -m pytest -q scripts/tests
+      - name: Release image tags self-test
+        run: scripts/release-image-tags.sh --self-test
       - name: Backup script self-test (online snapshot under a live writer, restore)
         run: deploy/backup.sh --self-test
       - name: Architecture check self-test

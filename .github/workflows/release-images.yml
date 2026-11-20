@@ -1,0 +1,96 @@
+name: Release images
+
+# Publishes the server, runner and egress proxy images to Docker Hub when a release tag vX.Y.Z is pushed
+# (docs/deployment.md, "Published images"). A manual run is a dry run: it builds and tests the images and prints the
+# tags it would push, without credentials and without pushing. linux/amd64 only (the runner image pins x86_64 Codex
+# and github-mcp-server archives).
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version X.Y.Z to build and compute the tags for (dry run, nothing is pushed)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_SERVER: docker.io/lklimek/diffpilot
+  IMAGE_RUNNER: docker.io/lklimek/diffpilot-runner
+  IMAGE_PROXY: docker.io/lklimek/diffpilot-egress-proxy
+
+jobs:
+  dry-run:
+    name: Dry run (build and test, no push)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: build
+        uses: ./.github/actions/release-images
+        with:
+          version: ${{ inputs.version }}
+      - name: Tags a release would push
+        env:
+          TAGS: ${{ steps.build.outputs.tags }}
+        run: |
+          for tag in $TAGS; do
+            echo "$IMAGE_SERVER:$tag $IMAGE_RUNNER:$tag $IMAGE_PROXY:$tag"
+          done
+
+  # Only a tag pushed to this repository (never a fork or a pull request). The Docker Hub credentials come from the
+  # environment docker-hub (environment or repository secrets); nothing runs after the login but tagging and pushing.
+  publish:
+    name: Publish to Docker Hub
+    if: github.event_name == 'push' && github.repository == 'lklimek/diffpilot' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: docker-hub
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: version
+        name: Version from the tag
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: ./.github/actions/release-images
+        with:
+          version: ${{ steps.version.outputs.version }}
+      - name: Log in to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ] || [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::set the secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (docs/deployment.md, \"Published images\")"
+            exit 1
+          fi
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+      - name: Push
+        env:
+          TAGS: ${{ steps.build.outputs.tags }}
+        run: |
+          for pair in "diffpilot-server:local=$IMAGE_SERVER" "diffpilot-runner:local=$IMAGE_RUNNER" \
+            "diffpilot-egress-proxy:local=$IMAGE_PROXY"; do
+            for tag in $TAGS; do
+              docker tag "${pair%%=*}" "${pair#*=}:$tag"
+              docker push --quiet "${pair#*=}:$tag"
+            done
+            docker image inspect -f '{{join .RepoDigests "\n"}}' "${pair%%=*}"
+          done
+      - name: Log out
+        if: always()
+        run: docker logout docker.io
