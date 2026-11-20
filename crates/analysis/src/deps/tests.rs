@@ -1,0 +1,504 @@
+use std::collections::HashMap;
+
+use proptest::prelude::*;
+
+use super::*;
+
+fn repo(owner: &str, name: &str) -> RepoRef {
+    RepoRef {
+        owner: owner.to_owned(),
+        name: name.to_owned(),
+    }
+}
+
+fn pr_repo() -> RepoRef {
+    repo("dashpay", "dash-evo-tool")
+}
+
+/// Builds the map of `files` (path → text); every path is in the head tree.
+fn map_of(files: &[(&str, &str)]) -> DependencyMap {
+    let texts: HashMap<&str, &str> = files.iter().copied().collect();
+    let mut paths: Vec<String> = files.iter().map(|(path, _)| (*path).to_owned()).collect();
+    paths.push("README.md".to_owned());
+    paths.push("crates/a/src/lib.rs".to_owned());
+    map(&pr_repo(), &paths, &|path| texts.get(path).copied())
+}
+
+fn krate<'m>(map: &'m DependencyMap, name: &str) -> &'m RepoCrate {
+    map.crates
+        .iter()
+        .find(|c| c.name == name)
+        .expect("crate listed")
+}
+
+fn dependency<'m>(krate: &'m RepoCrate, package: &str) -> &'m Dependency {
+    krate
+        .dependencies
+        .iter()
+        .find(|d| d.package == package)
+        .expect("dependency listed")
+}
+
+fn external<'m>(map: &'m DependencyMap, dependency: &Dependency) -> &'m ExternalCrate {
+    match dependency.target {
+        Target::External { index } => &map.external[index as usize],
+        Target::Repo { .. } => panic!("expected an external crate"),
+    }
+}
+
+const ROOT: &str = r#"[workspace]
+members = ["crates/*"]
+exclude = ["crates/excluded"]
+
+[workspace.package]
+version = "1.4.0"
+
+[workspace.dependencies]
+dpp = { git = "https://github.com/dashpay/platform", tag = "v2.0.0" }
+serde = "1"
+"#;
+
+const CRATE_A: &str = r#"[package]
+name = "a-app"
+version = "0.1.0"
+
+[dependencies]
+dpp = { workspace = true }
+b = { path = "../b" }
+serde.workspace = true
+my-json = { package = "serde_json", version = "1" }
+dashcore = { path = "../../../rust-dashcore/dash" }
+
+[dev-dependencies]
+tokio = "1"
+
+[target.'cfg(unix)'.build-dependencies]
+cc = "1"
+"#;
+
+const CRATE_B: &str = r#"[package]
+name = "b"
+version.workspace = true
+
+[lib]
+name = "bee"
+"#;
+
+const LOCK: &str = r#"version = 4
+
+[[package]]
+name = "a-app"
+version = "0.1.0"
+dependencies = [
+ "b",
+ "dpp",
+ "serde 1.0.200",
+ "serde_json",
+]
+
+[[package]]
+name = "b"
+version = "1.4.0"
+
+[[package]]
+name = "dpp"
+version = "2.0.0"
+source = "git+https://github.com/dashpay/platform?tag=v2.0.0#0123abcd"
+
+[[package]]
+name = "serde"
+version = "1.0.200"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "serde"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "serde_json"
+version = "1.0.1"
+source = "sparse+https://index.crates.io/"
+"#;
+
+fn workspace() -> DependencyMap {
+    map_of(&[
+        ("Cargo.toml", ROOT),
+        ("Cargo.lock", LOCK),
+        ("crates/a/Cargo.toml", CRATE_A),
+        ("crates/b/Cargo.toml", CRATE_B),
+    ])
+}
+
+#[test]
+fn deps_repository_without_cargo_is_not_rust() {
+    let map = map_of(&[]);
+    assert_eq!(map.status, MapStatus::NotRust);
+    assert!(map.crates.is_empty());
+    assert!(map.limits.is_empty());
+}
+
+#[test]
+fn deps_workspace_crates_with_names_versions_and_code_names() {
+    let map = workspace();
+    assert_eq!(map.status, MapStatus::Available);
+    let names: Vec<&str> = map.crates.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["a-app", "b"], "the virtual root is no crate");
+    let a = krate(&map, "a-app");
+    assert_eq!(a.dir, "crates/a");
+    assert_eq!(a.manifest, "crates/a/Cargo.toml");
+    assert_eq!(a.code_name, "a_app");
+    let b = krate(&map, "b");
+    assert_eq!(b.code_name, "bee", "`[lib] name`");
+    assert_eq!(b.version.as_deref(), Some("1.4.0"), "inherited version");
+    assert!(map.limits.is_empty(), "{:?}", map.limits);
+}
+
+#[test]
+fn deps_sources_come_from_the_lock_file() {
+    let map = workspace();
+    let a = krate(&map, "a-app");
+
+    let dpp = dependency(a, "dpp");
+    assert_eq!(dpp.code_name, "dpp");
+    assert_eq!(dpp.kind, DependencyKind::Normal);
+    assert_eq!(dpp.line, 6);
+    let dpp = external(&map, dpp);
+    assert_eq!(dpp.version.as_deref(), Some("2.0.0"));
+    assert_eq!(
+        dpp.source,
+        CrateSource::Git {
+            url: "https://github.com/dashpay/platform?tag=v2.0.0".to_owned(),
+            repo: Some(repo("dashpay", "platform")),
+            rev: Some("0123abcd".to_owned()),
+        }
+    );
+    assert_eq!(
+        dpp.evidence,
+        Some(FileLine {
+            file: "Cargo.lock".to_owned(),
+            line: 17
+        })
+    );
+
+    let serde = external(&map, dependency(a, "serde"));
+    assert_eq!(
+        serde.version.as_deref(),
+        Some("1.0.200"),
+        "the version the crate's lock record names, not the other one"
+    );
+    assert_eq!(
+        serde.source,
+        CrateSource::Registry {
+            registry: CRATES_IO.to_owned()
+        }
+    );
+
+    let json = dependency(a, "serde_json");
+    assert_eq!(
+        json.code_name, "my_json",
+        "a renamed dependency is used by its key"
+    );
+    let json = external(&map, json);
+    assert_eq!(json.version.as_deref(), Some("1.0.1"));
+    assert_eq!(
+        json.source,
+        CrateSource::Registry {
+            registry: CRATES_IO.to_owned()
+        },
+        "the sparse index is crates.io"
+    );
+}
+
+#[test]
+fn deps_path_dependencies_inside_and_outside_the_repository() {
+    let map = workspace();
+    let a = krate(&map, "a-app");
+    let b = dependency(a, "b");
+    assert_eq!(
+        b.code_name, "bee",
+        "a workspace crate is used by its lib name"
+    );
+    let Target::Repo { index } = b.target else {
+        panic!("a workspace crate");
+    };
+    assert_eq!(map.crates[index as usize].name, "b");
+
+    let dashcore = external(&map, dependency(a, "dashcore"));
+    assert_eq!(
+        dashcore.source,
+        CrateSource::Path {
+            path: "../rust-dashcore/dash".to_owned(),
+            repo: Some(repo("dashpay", "rust-dashcore")),
+        },
+        "a sibling repository of the same owner"
+    );
+}
+
+#[test]
+fn deps_kinds_and_crates_missing_from_the_lock_file() {
+    let map = workspace();
+    let a = krate(&map, "a-app");
+    let tokio = dependency(a, "tokio");
+    assert_eq!(tokio.kind, DependencyKind::Dev);
+    let tokio = external(&map, tokio);
+    assert_eq!(
+        tokio.version, None,
+        "not resolved: absent from the lock file"
+    );
+    assert_eq!(
+        tokio.evidence,
+        Some(FileLine {
+            file: "crates/a/Cargo.toml".to_owned(),
+            line: 13
+        }),
+        "the manifest declaration says where it comes from"
+    );
+    assert_eq!(dependency(a, "cc").kind, DependencyKind::Build);
+}
+
+#[test]
+fn deps_without_lock_file_take_sources_from_manifests() {
+    let map = map_of(&[("Cargo.toml", ROOT), ("crates/a/Cargo.toml", CRATE_A)]);
+    assert!(
+        map.limits.contains(&MapLimit::NoLockFile {
+            workspace_dir: String::new()
+        }),
+        "{:?}",
+        map.limits
+    );
+    let a = krate(&map, "a-app");
+    let dpp = external(&map, dependency(a, "dpp"));
+    assert_eq!(dpp.version, None);
+    assert_eq!(
+        dpp.source,
+        CrateSource::Git {
+            url: "https://github.com/dashpay/platform".to_owned(),
+            repo: Some(repo("dashpay", "platform")),
+            rev: None,
+        },
+        "the workspace declaration"
+    );
+    assert_eq!(
+        dpp.evidence,
+        Some(FileLine {
+            file: "Cargo.toml".to_owned(),
+            line: 9
+        }),
+        "the declaration in the workspace manifest"
+    );
+}
+
+#[test]
+fn deps_unreadable_manifest_is_a_limit_not_an_absence() {
+    let map = map_of(&[
+        ("Cargo.toml", ROOT),
+        ("Cargo.lock", LOCK),
+        ("crates/a/Cargo.toml", CRATE_A),
+        ("crates/b/Cargo.toml", "[package\nname = "),
+    ]);
+    assert!(map.limits.contains(&MapLimit::ManifestUnreadable {
+        path: "crates/b/Cargo.toml".to_owned()
+    }));
+    assert_eq!(map.crates.len(), 1);
+    let b = dependency(krate(&map, "a-app"), "b");
+    let b = external(&map, b);
+    assert_eq!(
+        b.source,
+        CrateSource::Path {
+            path: "crates/b".to_owned(),
+            repo: None
+        },
+        "a path inside the repository whose manifest was not read"
+    );
+}
+
+#[test]
+fn deps_unparseable_lock_is_a_limit() {
+    let map = map_of(&[
+        ("Cargo.toml", ROOT),
+        ("Cargo.lock", "[[package"),
+        ("crates/a/Cargo.toml", CRATE_A),
+    ]);
+    assert!(map.limits.contains(&MapLimit::LockUnreadable {
+        path: "Cargo.lock".to_owned()
+    }));
+}
+
+#[test]
+fn deps_excluded_crate_inherits_nothing() {
+    let excluded = r#"[package]
+name = "x"
+
+[dependencies]
+dpp = { workspace = true }
+"#;
+    let map = map_of(&[
+        ("Cargo.toml", ROOT),
+        ("crates/excluded/Cargo.toml", excluded),
+    ]);
+    let x = krate(&map, "x");
+    let dpp = external(&map, dependency(x, "dpp"));
+    assert_eq!(dpp.source, CrateSource::Unknown);
+}
+
+#[test]
+fn deps_nested_workspaces_use_their_own_root() {
+    let nested_root = r#"[workspace]
+members = ["inner"]
+
+[workspace.dependencies]
+dpp = { git = "https://github.com/acme/other" }
+"#;
+    let inner = r#"[package]
+name = "inner"
+
+[dependencies]
+dpp.workspace = true
+"#;
+    let map = map_of(&[
+        ("Cargo.toml", ROOT),
+        ("tools/Cargo.toml", nested_root),
+        ("tools/inner/Cargo.toml", inner),
+    ]);
+    let inner = krate(&map, "inner");
+    let dpp = external(&map, dependency(inner, "dpp"));
+    assert_eq!(
+        dpp.source,
+        CrateSource::Git {
+            url: "https://github.com/acme/other".to_owned(),
+            repo: Some(repo("acme", "other")),
+            rev: None
+        }
+    );
+    assert!(map.limits.contains(&MapLimit::NoLockFile {
+        workspace_dir: "tools".to_owned()
+    }));
+}
+
+#[test]
+fn deps_crate_of_a_path_is_the_deepest_crate() {
+    let root_package = r#"[package]
+name = "root"
+
+[workspace]
+members = ["crates/*"]
+"#;
+    let map = map_of(&[
+        ("Cargo.toml", root_package),
+        ("crates/a/Cargo.toml", CRATE_A),
+        ("crates/ab/Cargo.toml", "[package]\nname = \"ab\"\n"),
+    ]);
+    let name = |path: &str| map.crate_of(path).map(|i| map.crates[i].name.as_str());
+    assert_eq!(name("crates/a/src/lib.rs"), Some("a-app"));
+    assert_eq!(
+        name("crates/ab/src/lib.rs"),
+        Some("ab"),
+        "not a prefix match"
+    );
+    assert_eq!(name("src/main.rs"), Some("root"));
+    assert_eq!(name("crates/c/src/lib.rs"), Some("root"));
+}
+
+#[test]
+fn deps_crate_of_without_root_crate_is_none() {
+    let map = workspace();
+    assert_eq!(map.crate_of("docs/x.md"), None);
+}
+
+#[test]
+fn deps_manifests_beyond_the_cap_are_a_limit() {
+    let paths: Vec<String> = (0..MAX_MANIFESTS + 3)
+        .map(|i| format!("c{i:04}/Cargo.toml"))
+        .collect();
+    let wanted = cargo_files_to_read(&paths);
+    assert_eq!(wanted.len(), MAX_MANIFESTS);
+    let text = "[package]\nname = \"c\"\n";
+    let built = map(&pr_repo(), &paths, &|_| Some(text));
+    assert_eq!(built.crates.len(), MAX_MANIFESTS);
+    assert!(built.limits.contains(&MapLimit::ManifestsCut {
+        total: u32::try_from(MAX_MANIFESTS + 3).unwrap_or(u32::MAX),
+        read: u32::try_from(MAX_MANIFESTS).unwrap_or(u32::MAX),
+    }));
+}
+
+#[test]
+fn deps_files_to_read_are_manifests_and_lock_files() {
+    let paths: Vec<String> = [
+        "Cargo.toml",
+        "Cargo.lock",
+        "src/lib.rs",
+        "crates/a/Cargo.toml",
+        "crates/a/Cargo.toml.orig",
+        "docs/Cargo.lock.md",
+    ]
+    .iter()
+    .map(|p| (*p).to_owned())
+    .collect();
+    assert_eq!(
+        cargo_files_to_read(&paths),
+        ["Cargo.lock", "Cargo.toml", "crates/a/Cargo.toml"]
+    );
+}
+
+#[test]
+fn deps_text_beyond_the_total_budget_is_a_limit() {
+    let big = format!(
+        "[package]\nname = \"big\"\ndescription = \"{}\"\n",
+        "x".repeat(MAX_CARGO_TEXT_BYTES / 5)
+    );
+    let names = ["a", "b", "c", "d", "e", "f"];
+    let paths: Vec<String> = names.iter().map(|n| format!("{n}/Cargo.toml")).collect();
+    let files: Vec<(&str, &str)> = paths.iter().map(|p| (p.as_str(), big.as_str())).collect();
+    let built = map_of(&files);
+    assert_eq!(built.crates.len(), 4, "{:?}", built.limits);
+    for path in ["e/Cargo.toml", "f/Cargo.toml"] {
+        assert!(
+            built.limits.contains(&MapLimit::ManifestUnreadable {
+                path: path.to_owned()
+            }),
+            "{path}: {:?}",
+            built.limits
+        );
+    }
+}
+
+#[test]
+fn deps_lock_dependency_entries_parse() {
+    assert_eq!(lock_entry("serde"), ("serde", None, None));
+    assert_eq!(lock_entry("serde 1.0.1"), ("serde", Some("1.0.1"), None));
+    assert_eq!(
+        lock_entry("dpp 2.0.0 (git+https://x#ab)"),
+        ("dpp", Some("2.0.0"), Some("git+https://x#ab"))
+    );
+}
+
+#[test]
+fn deps_source_strings_classify() {
+    assert_eq!(
+        source_of("registry+https://example.com/index"),
+        CrateSource::Registry {
+            registry: "https://example.com/index".to_owned()
+        }
+    );
+    assert_eq!(
+        source_of("git+ssh://git@github.com/DashPay/grovedb.git?branch=develop#ff"),
+        CrateSource::Git {
+            url: "ssh://git@github.com/DashPay/grovedb.git?branch=develop".to_owned(),
+            repo: Some(repo("DashPay", "grovedb")),
+            rev: Some("ff".to_owned()),
+        }
+    );
+    assert_eq!(source_of("path+file:///x"), CrateSource::Unknown);
+}
+
+proptest! {
+    #[test]
+    fn deps_never_panic_on_arbitrary_manifests(manifest in ".{0,400}", lock in ".{0,400}") {
+        let _ = map_of(&[
+            ("Cargo.toml", manifest.as_str()),
+            ("Cargo.lock", lock.as_str()),
+            ("x/Cargo.toml", manifest.as_str()),
+        ]);
+    }
+}
