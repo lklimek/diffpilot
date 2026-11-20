@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -1176,4 +1176,31 @@ fn inline_rust_tests_are_not_analysed_but_stay_shown() {
     // Counted as test lines.
     let count = u32::try_from(changed.len()).expect("small");
     assert_eq!(result.counters.counters.lines_added_to_tests, Some(count));
+}
+
+#[test]
+fn a_hunk_of_only_context_lines_is_context_only() {
+    let head = ["// heading", "use std::fmt;", "", "fn work() {}"];
+    let files = vec![file(
+        "src/lib.rs",
+        None,
+        FileStatus::Added,
+        vec![hunk(1, (0, 0), (1, 3)), hunk(2, (0, 0), (4, 1))],
+    )];
+    let texts = Texts::from([text(LineSide::Head, "src/lib.rs", &head)]);
+    let result = run(&files, &[], &texts);
+    let [context, code] = files[0].hunks.as_slice() else {
+        panic!("two hunks")
+    };
+    let mut with_unknown = files.clone();
+    // A hunk the pre-pass does not know is never context only.
+    with_unknown[0].hunks.push(Hunk {
+        id: HunkId("h99".into()),
+        ..context.clone()
+    });
+    assert_eq!(
+        result.context_only_hunks(&with_unknown),
+        BTreeSet::from([context.id.clone()]),
+        "comment, import, blank: not {code:?}"
+    );
 }

@@ -268,6 +268,49 @@ impl Prepass {
             .collect()
     }
 
+    /// Hunks of `files` the pre-pass knows where a context rule covers some changed lines and none is left for the
+    /// agent (the rest are blank): comments, imports, test code, whitespace-only lines, identical moves. Prompts do
+    /// not list them.
+    pub fn context_only_hunks(&self, files: &[FileDiff]) -> BTreeSet<HunkId> {
+        let known: BTreeSet<&HunkId> = self.hunks.iter().map(|hunk| &hunk.id).collect();
+        let context = self.context();
+        let agent: BTreeMap<(LineSide, &str), Vec<u32>> = self
+            .agent_lines
+            .iter()
+            .map(|lines| {
+                let numbers = lines
+                    .ranges
+                    .iter()
+                    .flat_map(|r| r.start_line..=r.end_line)
+                    .collect();
+                ((lines.side, lines.file.as_str()), numbers)
+            })
+            .collect();
+        let mut out = BTreeSet::new();
+        for file in files {
+            let sides = [LineSide::Head, LineSide::Base].map(|side| {
+                let path = file.path_on(side);
+                let context = path.and_then(|path| context.get(&(side, path.to_owned())));
+                let agent = path.and_then(|path| agent.get(&(side, path)));
+                (context, agent)
+            });
+            let has = |lines: Option<&Vec<u32>>, line: &u32| {
+                lines.is_some_and(|lines| lines.binary_search(line).is_ok())
+            };
+            for hunk in file.hunks.iter().filter(|hunk| known.contains(&hunk.id)) {
+                let changed = [&hunk.added, &hunk.removed];
+                let some_context =
+                    (0..2).any(|at| changed[at].iter().any(|line| has(sides[at].0, line)));
+                let some_agent =
+                    (0..2).any(|at| changed[at].iter().any(|line| has(sides[at].1, line)));
+                if some_context && !some_agent {
+                    out.insert(hunk.id.clone());
+                }
+            }
+        }
+        out
+    }
+
     /// Changed lines without coverage duty, the coverage check's quiet input: the hunks the pre-pass took from the
     /// agent (Not analysed files) and the context lines.
     pub fn quiet_lines(&self, files: &[FileDiff]) -> Vec<FileRanges> {
