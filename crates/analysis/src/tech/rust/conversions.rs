@@ -1,13 +1,16 @@
 //! Conversion candidates of a Rust file (ADR-021), read from `rustc_lexer` tokens: `impl From/TryFrom<A> for B`,
 //! an `impl` of another trait for a type, and functions named like conversions, with where each named type comes
-//! from (a `use` declaration, a qualified path, the file itself). Glob imports, macro bodies and re-exports are not
-//! followed: such a type's origin is not determined, never guessed.
+//! from (a `use` declaration in scope, a qualified path, the file itself). Glob imports, macro bodies and re-exports
+//! are not followed: such a type's origin is not determined, never guessed. Work is linear in the tokens: an item
+//! header longer than [`MAX_HEADER_TOKENS`] or without `{`/`;` is skipped, and candidates stop at [`MAX_CANDIDATES`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ra_ap_rustc_lexer::TokenKind;
 
-use super::{Lexed, PRELUDE, Paths, Scope, Token, is_comment, is_ident, lex, name, scan};
+use super::{
+    PRELUDE, Paths, Scope, Token, is_close, is_comment, is_ident, is_open, lex, name, scan,
+};
 
 /// Function name prefixes read as conversions.
 pub const CONVERSION_PREFIXES: &[&str] = &[
@@ -22,10 +25,21 @@ pub const CONVERSION_PREFIXES: &[&str] = &[
     "encode_",
 ];
 
+/// Most candidates of one file; the rest are cut.
+pub const MAX_CANDIDATES: usize = 4096;
+/// Most code tokens of one `impl` or `fn` header; a longer header is skipped.
+pub const MAX_HEADER_TOKENS: usize = 512;
+
 /// Keywords that are never a type path.
 const NOT_TYPES: &[&str] = &[
     "as", "async", "const", "crate", "dyn", "extern", "fn", "for", "impl", "move", "mut", "ref",
     "Self", "self", "static", "super", "unsafe", "where",
+];
+
+/// Keywords a `!` may follow without a macro call (`return !x`, `if !(a)`).
+const NOT_MACROS: &[&str] = &[
+    "return", "if", "while", "match", "in", "break", "yield", "else", "let", "mut", "as", "move",
+    "loop", "for", "await",
 ];
 
 /// Item keywords whose following name is a type definition.
@@ -57,7 +71,8 @@ pub enum TypeOrigin {
     },
     /// The file's own crate (`crate::`, `self::`, `super::`, an item of the file).
     Local,
-    /// Not determined with certainty (a glob import, an ambiguous or missing binding, a generic parameter).
+    /// Not determined with certainty (a glob import, an ambiguous or missing binding, a name both imported and
+    /// declared in the file, a generic parameter).
     NotDetermined,
 }
 
@@ -77,25 +92,29 @@ pub struct Candidate {
 }
 
 /// Conversion candidates whose `impl` or `fn` keyword is on one of the sorted `added` lines of `text`, outside macro
-/// bodies; empty when the file does not lex.
+/// bodies, at most [`MAX_CANDIDATES`]; empty when the file does not lex.
 pub fn conversion_candidates(text: &str, added: &[u32]) -> Vec<Candidate> {
+    conversion_candidates_bounded(text, added).0
+}
+
+/// [`conversion_candidates`] and whether candidates were cut at [`MAX_CANDIDATES`].
+pub fn conversion_candidates_bounded(text: &str, added: &[u32]) -> (Vec<Candidate>, bool) {
     let Some(lexed) = lex(text) else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let mut paths = Paths::default();
     let mut scope = Scope::default();
     scan(&lexed, &mut paths, &mut scope, None);
-    let resolver = Resolver::new(&lexed, &paths, &scope);
     let code: Vec<&Token<'_>> = lexed
         .tokens
         .iter()
         .filter(|t| !is_comment(t.kind))
         .collect();
+    let in_macro = macro_tokens(&code);
+    let resolver = Resolver::new(&code, &in_macro, &paths, &scope);
     let mut out = Vec::new();
     for (index, token) in code.iter().enumerate() {
-        if token.kind != TokenKind::Ident
-            || lexed.in_macro.get(token.first).copied().unwrap_or(true)
-        {
+        if token.kind != TokenKind::Ident || in_macro[index] {
             continue;
         }
         let Some(line) = u32::try_from(token.first + 1)
@@ -113,49 +132,106 @@ pub fn conversion_candidates(text: &str, added: &[u32]) -> Vec<Candidate> {
             let Some(type_name) = path.last().copied() else {
                 continue;
             };
+            if out.len() >= MAX_CANDIDATES {
+                return (out, true);
+            }
             out.push(Candidate {
                 kind,
                 line,
                 type_name: type_name.to_owned(),
                 written: path.join("::").replace("::::", "::"),
-                origin: resolver.origin(&path),
+                origin: resolver.origin(&path, token.start),
             });
         }
     }
-    out
+    (out, false)
 }
 
 /// Line of the definition (`struct`, `enum`, `union`, `trait`, then `type`) of `type_name` in `text`, outside macro
 /// bodies; `None` when absent or the file does not lex.
 pub fn definition_line(text: &str, type_name: &str) -> Option<u32> {
-    let lexed = lex(text)?;
+    definition_lines(text, &[type_name]).remove(type_name)
+}
+
+/// [`definition_line`] of each of `names`, from one pass over the file; names without a definition are absent.
+pub fn definition_lines(text: &str, names: &[&str]) -> HashMap<String, u32> {
+    let Some(lexed) = lex(text) else {
+        return HashMap::new();
+    };
+    let wanted: HashSet<&str> = names.iter().copied().collect();
     let code: Vec<&Token<'_>> = lexed
         .tokens
         .iter()
         .filter(|t| !is_comment(t.kind))
         .collect();
-    let mut alias = None;
+    let in_macro = macro_tokens(&code);
+    let mut items: HashMap<String, u32> = HashMap::new();
+    let mut aliases: HashMap<String, u32> = HashMap::new();
     for (index, token) in code.iter().enumerate() {
-        if token.kind != TokenKind::Ident
-            || !TYPE_ITEMS.contains(&token.text)
-            || lexed.in_macro.get(token.first).copied().unwrap_or(true)
-        {
+        if token.kind != TokenKind::Ident || !TYPE_ITEMS.contains(&token.text) || in_macro[index] {
             continue;
         }
         let Some(next) = code.get(index + 1).filter(|t| is_ident(t.kind)) else {
             continue;
         };
-        if name(next.text) != type_name {
+        let found = name(next.text);
+        let Ok(line) = u32::try_from(token.first + 1) else {
+            continue;
+        };
+        if !wanted.contains(found) {
             continue;
         }
-        let line = u32::try_from(token.first + 1).ok()?;
-        if token.text == "type" {
-            alias = alias.or(Some(line));
+        let into = if token.text == "type" {
+            &mut aliases
         } else {
-            return Some(line);
-        }
+            &mut items
+        };
+        into.entry(found.to_owned()).or_insert(line);
     }
-    alias
+    for (alias, line) in aliases {
+        items.entry(alias).or_insert(line);
+    }
+    items
+}
+
+/// Per code token: inside a macro token tree (the delimited group after `name!` or `macro_rules! name`, delimiters
+/// included). Linear: each tree is skipped once marked.
+fn macro_tokens(code: &[&Token<'_>]) -> Vec<bool> {
+    let mut inside = vec![false; code.len()];
+    let mut index = 0;
+    while index < code.len() {
+        let token = code[index];
+        let bang = code
+            .get(index + 1)
+            .is_some_and(|t| t.kind == TokenKind::Bang);
+        if !is_ident(token.kind) || !bang || NOT_MACROS.contains(&name(token.text)) {
+            index += 1;
+            continue;
+        }
+        let open_at = if name(token.text) == "macro_rules"
+            && code.get(index + 2).is_some_and(|t| is_ident(t.kind))
+        {
+            index + 3
+        } else {
+            index + 2
+        };
+        let Some(open) = code.get(open_at).filter(|t| is_open(t.kind)) else {
+            index += 1;
+            continue;
+        };
+        let close_depth = open.depth + 1;
+        let end = code
+            .iter()
+            .enumerate()
+            .skip(open_at + 1)
+            .find(|(_, t)| is_close(t.kind) && t.depth == close_depth)
+            .map_or(code.len() - 1, |(at, _)| at);
+        for flag in &mut inside[open_at..=end] {
+            *flag = true;
+        }
+        index = end + 1;
+    }
+    inside
 }
 
 /// Whether the `impl` at code token `index` starts an item (not `impl Trait` in a type position).
@@ -173,14 +249,20 @@ fn item_start(code: &[&Token<'_>], index: usize) -> bool {
     }
 }
 
-/// The candidates of the impl header at code token `index`.
+/// The candidates of the impl header at code token `index`: the type paths of `From`/`TryFrom` arguments and the
+/// outermost path of the self type (its generic arguments do not make it another crate's type); impl generic
+/// parameters are never candidates.
 fn impl_header<'a>(code: &[&Token<'a>], index: usize) -> Vec<(CandidateKind, Vec<&'a str>)> {
-    let header = header_tokens(code, index + 1);
+    let Some(header) = header_tokens(code, index + 1) else {
+        return Vec::new();
+    };
     let mut rest: &[&Token<'a>] = &header;
+    let mut generics: Vec<&str> = Vec::new();
     if rest.first().is_some_and(|t| t.kind == TokenKind::Lt) {
         let Some(end) = angle_end(rest, 0) else {
             return Vec::new();
         };
+        generics = generic_names(&rest[..end]);
         rest = rest.get(end + 1..).unwrap_or_default();
     }
     let mut depth = 0usize;
@@ -200,14 +282,13 @@ fn impl_header<'a>(code: &[&Token<'a>], index: usize) -> Vec<(CandidateKind, Vec
         return Vec::new();
     };
     let (trait_part, self_part) = (&rest[..split], &rest[split + 1..]);
-    let self_part = match self_part
-        .iter()
-        .position(|t| t.kind == TokenKind::Ident && t.text == "where")
-    {
-        Some(end) => &self_part[..end],
-        None => self_part,
-    };
-    let self_types = type_paths(self_part);
+    let self_part = until_where(self_part);
+    let not_generic =
+        |path: &Vec<&str>| !(path.len() == 1 && generics.contains(path.first().unwrap_or(&"")));
+    let self_type: Vec<Vec<&'a str>> = outer_path(self_part)
+        .into_iter()
+        .filter(not_generic)
+        .collect();
     let generic_at = trait_part.iter().position(|t| t.kind == TokenKind::Lt);
     let trait_name = trait_part
         .get(..generic_at.unwrap_or(trait_part.len()))
@@ -217,7 +298,7 @@ fn impl_header<'a>(code: &[&Token<'a>], index: usize) -> Vec<(CandidateKind, Vec
         Some("From") => CandidateKind::FromImpl,
         Some("TryFrom") => CandidateKind::TryFromImpl,
         _ => {
-            return self_types
+            return self_type
                 .into_iter()
                 .map(|path| (CandidateKind::ImplOnType, path))
                 .collect();
@@ -229,13 +310,36 @@ fn impl_header<'a>(code: &[&Token<'a>], index: usize) -> Vec<(CandidateKind, Vec
         .unwrap_or_default();
     arguments
         .into_iter()
-        .chain(self_types)
+        .filter(not_generic)
+        .chain(self_type)
         .map(|path| (kind, path))
         .collect()
 }
 
+/// The outermost path of a type (after `&`, lifetimes, `mut` and `dyn`), if it is a path and not a prelude or
+/// primitive name: `Wrapper` for `Wrapper<dpp::X>`, nothing for `Vec<dpp::X>`, `[X; 2]` or `(A, B)`.
+fn outer_path<'a>(tokens: &[&Token<'a>]) -> Option<Vec<&'a str>> {
+    let start = tokens.iter().position(|t| match t.kind {
+        TokenKind::And | TokenKind::Lifetime { .. } => false,
+        TokenKind::Ident => !matches!(t.text, "mut" | "dyn"),
+        _ => true,
+    })?;
+    let first = tokens[start];
+    if !(is_ident(first.kind) || double_colon(tokens, start)) {
+        return None;
+    }
+    let path = type_paths(&tokens[start..]).into_iter().next()?;
+    let expected = if is_ident(first.kind) {
+        name(first.text)
+    } else {
+        "::"
+    };
+    (path.first() == Some(&expected)).then_some(path)
+}
+
 /// The candidates of the function at code token `index` when its name is a conversion name: the type paths of its
-/// signature, error types (`…Error`) left out.
+/// parameters and return type, without generic parameters and their bounds (in `<…>` or `where`) and without the
+/// error type of a `Result<T, E>`.
 fn conversion_fn<'a>(code: &[&Token<'a>], index: usize) -> Vec<(CandidateKind, Vec<&'a str>)> {
     let Some(fn_name) = code
         .get(index + 1)
@@ -250,41 +354,120 @@ fn conversion_fn<'a>(code: &[&Token<'a>], index: usize) -> Vec<(CandidateKind, V
     {
         return Vec::new();
     }
-    let mut signature: &[&Token<'a>] = &header_tokens(code, index + 2);
-    let owned;
+    let Some(header) = header_tokens(code, index + 2) else {
+        return Vec::new();
+    };
+    let mut signature: &[&Token<'a>] = &header;
     let mut generics: Vec<&str> = Vec::new();
     if signature.first().is_some_and(|t| t.kind == TokenKind::Lt) {
         let Some(end) = angle_end(signature, 0) else {
             return Vec::new();
         };
-        generics = signature[..end]
-            .iter()
-            .filter(|t| is_ident(t.kind))
-            .map(|t| name(t.text))
-            .collect();
-        owned = signature.get(end + 1..).unwrap_or_default().to_vec();
-        signature = &owned;
+        generics = generic_names(&signature[..end]);
+        signature = signature.get(end + 1..).unwrap_or_default();
     }
-    type_paths(signature)
+    let signature = without_error_types(until_where(signature));
+    type_paths(&signature)
         .into_iter()
-        .filter(|path| {
-            let last = path.last().copied().unwrap_or_default();
-            !last.ends_with("Error") && !(path.len() == 1 && generics.contains(&last))
-        })
+        .filter(|path| !(path.len() == 1 && generics.contains(path.first().unwrap_or(&""))))
         .map(|path| (CandidateKind::ConversionFn, path))
         .collect()
 }
 
-/// Code tokens from `from` up to (not including) the first `{` or `;` at the starting depth.
-fn header_tokens<'t, 'a>(code: &[&'t Token<'a>], from: usize) -> Vec<&'t Token<'a>> {
-    let depth = code.get(from).map_or(0, |t| t.depth);
-    code.iter()
-        .skip(from)
-        .take_while(|t| {
-            !(t.depth == depth && matches!(t.kind, TokenKind::OpenBrace | TokenKind::Semi))
-        })
-        .copied()
+/// Names declared in a generic parameter list (`<T: Bound, 'a, const N: usize>` gives `T`, `N`).
+fn generic_names<'a>(list: &[&Token<'a>]) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut angle = 0usize;
+    let mut expect_name = true;
+    for (i, token) in list.iter().enumerate() {
+        match token.kind {
+            TokenKind::Lt => {
+                angle += 1;
+                if angle > 1 {
+                    expect_name = false;
+                }
+            }
+            TokenKind::Gt if !arrow(list, i) => angle = angle.saturating_sub(1),
+            TokenKind::Comma if angle == 1 => expect_name = true,
+            TokenKind::Ident if angle == 1 && expect_name && token.text == "const" => {}
+            TokenKind::Ident | TokenKind::RawIdent if angle == 1 && expect_name => {
+                out.push(name(token.text));
+                expect_name = false;
+            }
+            _ if angle == 1 => expect_name = false,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `tokens` up to a `where` clause at their own depth.
+fn until_where<'t, 'a>(tokens: &'t [&'t Token<'a>]) -> &'t [&'t Token<'a>] {
+    let depth = tokens.first().map_or(0, |t| t.depth);
+    let mut angle = 0usize;
+    for (i, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::Lt => angle += 1,
+            TokenKind::Gt if !arrow(tokens, i) => angle = angle.saturating_sub(1),
+            TokenKind::Ident if token.text == "where" && token.depth == depth && angle == 0 => {
+                return &tokens[..i];
+            }
+            _ => {}
+        }
+    }
+    tokens
+}
+
+/// `tokens` without the error argument of each `Result<T, E>`.
+fn without_error_types<'t, 'a>(tokens: &[&'t Token<'a>]) -> Vec<&'t Token<'a>> {
+    let mut skip = vec![false; tokens.len()];
+    for (i, token) in tokens.iter().enumerate() {
+        if !(is_ident(token.kind) && name(token.text) == "Result")
+            || tokens.get(i + 1).is_none_or(|t| t.kind != TokenKind::Lt)
+        {
+            continue;
+        }
+        let Some(end) = angle_end(tokens, i + 1) else {
+            continue;
+        };
+        let mut angle = 0usize;
+        let comma = (i + 1..end).find(|&at| {
+            match tokens[at].kind {
+                TokenKind::Lt => angle += 1,
+                TokenKind::Gt if !arrow(tokens, at) => angle = angle.saturating_sub(1),
+                _ => {}
+            }
+            tokens[at].kind == TokenKind::Comma && angle == 1 && tokens[at].depth == tokens[i].depth
+        });
+        if let Some(comma) = comma {
+            for flag in &mut skip[comma..end] {
+                *flag = true;
+            }
+        }
+    }
+    tokens
+        .iter()
+        .zip(skip)
+        .filter(|(_, skip)| !skip)
+        .map(|(t, _)| *t)
         .collect()
+}
+
+/// Code tokens from `from` up to (not including) the first `{` or `;` at the starting depth; `None` when the
+/// enclosing group closes or the file ends first, or after [`MAX_HEADER_TOKENS`] tokens (no item header).
+fn header_tokens<'t, 'a>(code: &[&'t Token<'a>], from: usize) -> Option<Vec<&'t Token<'a>>> {
+    let depth = code.get(from)?.depth;
+    let mut out = Vec::new();
+    for token in code.iter().skip(from) {
+        if token.depth == depth && matches!(token.kind, TokenKind::OpenBrace | TokenKind::Semi) {
+            return Some(out);
+        }
+        if (token.depth <= depth && is_close(token.kind)) || out.len() >= MAX_HEADER_TOKENS {
+            return None;
+        }
+        out.push(*token);
+    }
+    None
 }
 
 /// Index of the `>` closing the `<` at `start`.
@@ -358,34 +541,82 @@ fn double_colon(tokens: &[&Token<'_>], i: usize) -> bool {
     )
 }
 
-/// Resolves the first segment of a path through the file's `use` declarations and items.
+/// A `use` binding's reach: the byte span of the block or module holding the `use` (`None` = the whole file).
+type Reach = Option<(usize, usize)>;
+
+/// Resolves the first segment of a path through the `use` declarations in scope and the file's items.
 struct Resolver<'s, 'a> {
     scope: &'s Scope<'a>,
     /// Path id → (parent id, segment).
     parents: HashMap<u32, (u32, &'a str)>,
-    /// Bound name → line of its binding token (first one).
-    binding_lines: HashMap<&'a str, u32>,
+    /// Bound name → (line of its binding token, its reach), in file order.
+    bindings: HashMap<&'a str, Vec<(u32, Reach)>>,
 }
 
 impl<'s, 'a> Resolver<'s, 'a> {
-    fn new(lexed: &Lexed<'a>, paths: &Paths<'a>, scope: &'s Scope<'a>) -> Self {
+    fn new(
+        code: &[&Token<'a>],
+        in_macro: &[bool],
+        paths: &Paths<'a>,
+        scope: &'s Scope<'a>,
+    ) -> Self {
         let parents = paths
             .ids
             .iter()
             .map(|(&(parent, segment), &id)| (id, (parent, segment)))
             .collect();
-        let mut binding_lines = HashMap::new();
-        for token in &lexed.tokens {
-            if scope.binding_tokens.contains(&token.text.as_ptr().addr())
-                && let Ok(line) = u32::try_from(token.first + 1)
-            {
-                binding_lines.entry(name(token.text)).or_insert(line);
+        // Byte span of each `{ … }` group, by the index of its `{`.
+        let mut open: Vec<usize> = Vec::new();
+        let mut spans: HashMap<usize, (usize, usize)> = HashMap::new();
+        for (index, token) in code.iter().enumerate() {
+            match token.kind {
+                TokenKind::OpenBrace => open.push(index),
+                TokenKind::CloseBrace => {
+                    if let Some(start) = open.pop() {
+                        spans.insert(start, (code[start].start, token.start));
+                    }
+                }
+                _ => {}
             }
+        }
+        let mut bindings: HashMap<&'a str, Vec<(u32, Reach)>> = HashMap::new();
+        let mut enclosing: Vec<usize> = Vec::new();
+        let mut index = 0;
+        while index < code.len() {
+            let token = code[index];
+            match token.kind {
+                TokenKind::OpenBrace => enclosing.push(index),
+                TokenKind::CloseBrace => {
+                    enclosing.pop();
+                }
+                TokenKind::Ident if token.text == "use" && !in_macro[index] => {
+                    let reach: Reach = enclosing.last().and_then(|at| spans.get(at).copied());
+                    let mut at = index + 1;
+                    while let Some(t) = code.get(at) {
+                        if t.kind == TokenKind::Semi && t.depth == token.depth {
+                            break;
+                        }
+                        if scope.binding_tokens.contains(&t.text.as_ptr().addr())
+                            && let Ok(line) = u32::try_from(t.first + 1)
+                        {
+                            bindings
+                                .entry(name(t.text))
+                                .or_default()
+                                .push((line, reach));
+                        }
+                        at += 1;
+                    }
+                    index = at;
+                    continue;
+                }
+                _ => {}
+            }
+            index += 1;
         }
         Self {
             scope,
             parents,
-            binding_lines,
+            bindings,
         }
     }
 
@@ -400,7 +631,8 @@ impl<'s, 'a> Resolver<'s, 'a> {
         segments
     }
 
-    fn origin(&self, path: &[&'a str]) -> TypeOrigin {
+    /// Where `path`, written at byte `at`, comes from.
+    fn origin(&self, path: &[&'a str], at: usize) -> TypeOrigin {
         let Some(&first) = path.first() else {
             return TypeOrigin::NotDetermined;
         };
@@ -416,30 +648,37 @@ impl<'s, 'a> Resolver<'s, 'a> {
             }
             _ => {}
         }
-        match self.scope.bound.get(first) {
-            Some(Some(id)) => {
-                let import_line = self.binding_lines.get(first).copied();
-                match self.use_path(*id).as_slice() {
-                    ["crate" | "self" | "super", ..] => TypeOrigin::Local,
-                    ["::", krate, ..] | [krate, _, ..] => TypeOrigin::Crate {
-                        code_name: (*krate).to_owned(),
-                        import_line,
-                    },
-                    // `use dpp;` binds a crate name: the path names that crate.
-                    [krate] if path.len() > 1 => TypeOrigin::Crate {
-                        code_name: (*krate).to_owned(),
-                        import_line,
-                    },
-                    _ => TypeOrigin::NotDetermined,
-                }
-            }
-            Some(None) => TypeOrigin::NotDetermined,
-            None if self.scope.items.contains(first) => TypeOrigin::Local,
-            None if path.len() > 1 => TypeOrigin::Crate {
+        let in_reach = self.bindings.get(first).and_then(|bindings| {
+            bindings
+                .iter()
+                .find(|(_, reach)| reach.is_none_or(|(start, end)| start < at && at < end))
+        });
+        let declared = self.scope.items.contains(first);
+        match (in_reach, self.scope.bound.get(first)) {
+            // Imported and declared in the file under the same name: which one applies is not certain.
+            (Some(_), _) if declared => TypeOrigin::NotDetermined,
+            (Some(&(line, _)), Some(Some(id))) => match self.use_path(*id).as_slice() {
+                ["crate" | "self" | "super", ..] => TypeOrigin::Local,
+                ["::", krate, ..] | [krate, _, ..] => TypeOrigin::Crate {
+                    code_name: (*krate).to_owned(),
+                    import_line: Some(line),
+                },
+                // `use dpp;` binds a crate name: the path names that crate.
+                [krate] if path.len() > 1 => TypeOrigin::Crate {
+                    code_name: (*krate).to_owned(),
+                    import_line: Some(line),
+                },
+                _ => TypeOrigin::NotDetermined,
+            },
+            (Some(_), _) => TypeOrigin::NotDetermined,
+            // Bound only in a block or module out of reach, or not bound.
+            (None, _) if declared => TypeOrigin::Local,
+            (None, _) if self.scope.unsure && path.len() == 1 => TypeOrigin::NotDetermined,
+            (None, _) if path.len() > 1 => TypeOrigin::Crate {
                 code_name: first.to_owned(),
                 import_line: None,
             },
-            None => TypeOrigin::NotDetermined,
+            (None, _) => TypeOrigin::NotDetermined,
         }
     }
 }
@@ -675,5 +914,110 @@ mod tests {
         assert_eq!(definition_line(text, "Bar"), None, "inside a macro");
         assert_eq!(definition_line(text, "Baz"), None);
         assert_eq!(definition_line("type Only = u8;\n", "Only"), Some(1));
+    }
+
+    #[test]
+    fn conversions_generic_arguments_of_the_self_type_are_not_the_impl_type() {
+        let text = "struct Wrapper<T>(T);\nimpl std::fmt::Display for Wrapper<dpp::X> {}\nimpl Ext for Vec<dpp::X> {}\n";
+        let got = found(text);
+        assert!(got.iter().all(|(_, _, name, _)| name != "X"), "{got:?}");
+    }
+
+    #[test]
+    fn conversions_bounds_in_where_and_generics_are_not_signature_types() {
+        let text = "fn to_x<T>(t: T) -> X where T: dpp::Tr { todo() }\nfn to_y<T: dpp::Tr>(t: T) -> Y { todo() }\n";
+        let names: Vec<String> = candidates(text).into_iter().map(|c| c.type_name).collect();
+        assert_eq!(names, ["X", "Y"]);
+    }
+
+    #[test]
+    fn conversions_error_types_count_except_the_error_of_a_result() {
+        let text = "fn into_consensus_error(e: E) -> dpp::ConsensusError { todo() }\nfn parse_x(s: &str) -> Result<dpp::X, dpp::ParseError> { todo() }\n";
+        let names: Vec<String> = candidates(text).into_iter().map(|c| c.written).collect();
+        assert_eq!(names, ["E", "dpp::ConsensusError", "dpp::X"]);
+    }
+
+    #[test]
+    fn conversions_impl_generic_parameters_shadow_imports() {
+        let text = "use dpp::Identity;\nstruct L;\nimpl<Identity> From<Identity> for L {}\n";
+        assert!(
+            candidates(text).iter().all(|c| c.type_name != "Identity"),
+            "{:?}",
+            candidates(text)
+        );
+    }
+
+    #[test]
+    fn conversions_raw_identifiers_are_names() {
+        let text = "use dpp::r#type::Kind;\nstruct L;\nimpl From<r#Kind> for L {}\n";
+        let got = found(text);
+        assert!(
+            got.contains(&(
+                CandidateKind::FromImpl,
+                3,
+                "Kind".to_owned(),
+                krate("dpp", Some(1))
+            )),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn conversions_not_operator_after_a_keyword_is_no_macro() {
+        let text =
+            "fn f() -> bool {\n    return !(true);\n}\nstruct L;\nimpl From<dpp::X> for L {}\n";
+        assert!(
+            candidates(text).iter().any(|c| c.type_name == "X"),
+            "{:?}",
+            candidates(text)
+        );
+    }
+
+    #[test]
+    fn conversions_imports_reach_their_module_only() {
+        let text = "mod a {\n    use dpp::Foo;\n    struct L;\n    impl From<Foo> for L {}\n}\nstruct M;\nimpl From<Foo> for M {}\n";
+        let got = found(text);
+        assert!(
+            got.contains(&(
+                CandidateKind::FromImpl,
+                4,
+                "Foo".to_owned(),
+                krate("dpp", Some(2))
+            )),
+            "inside the module: {got:?}"
+        );
+        assert!(
+            got.contains(&(
+                CandidateKind::FromImpl,
+                7,
+                "Foo".to_owned(),
+                TypeOrigin::NotDetermined
+            )),
+            "outside it: {got:?}"
+        );
+    }
+
+    #[test]
+    fn conversions_a_name_imported_and_declared_is_not_determined() {
+        let text = "use dpp::Foo;\nmod m { pub struct Foo; }\nstruct L;\nimpl From<Foo> for L {}\n";
+        let got = found(text);
+        assert!(
+            got.contains(&(
+                CandidateKind::FromImpl,
+                4,
+                "Foo".to_owned(),
+                TypeOrigin::NotDetermined
+            )),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn conversions_definition_lines_in_one_pass() {
+        let text = "type A = u8;\nstruct A;\nenum B {}\nmacro_rules! m { () => { struct C; } }\n";
+        let lines = definition_lines(text, &["A", "B", "C", "D"]);
+        assert_eq!(lines.get("A"), Some(&2));
+        assert_eq!(lines.get("B"), Some(&3));
+        assert_eq!(lines.len(), 2);
     }
 }

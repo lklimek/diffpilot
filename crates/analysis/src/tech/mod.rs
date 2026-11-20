@@ -11,8 +11,8 @@ use crate::lines::ranges;
 mod rust;
 
 pub use rust::conversions::{
-    CONVERSION_PREFIXES, Candidate, CandidateKind, TypeOrigin, conversion_candidates,
-    definition_line,
+    CONVERSION_PREFIXES, Candidate, CandidateKind, MAX_CANDIDATES, TypeOrigin,
+    conversion_candidates, conversion_candidates_bounded, definition_line, definition_lines,
 };
 
 /// A language plugin.
