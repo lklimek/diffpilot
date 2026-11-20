@@ -9,11 +9,13 @@ FROM node:26-trixie-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN --mount=type=cache,id=diffpilot-npm,target=/root/.npm npm ci --no-audit --no-fund
-# Notices of the UI's production npm dependencies, by the generator pinned in its own lockfile.
-COPY deploy/notices/npm /src/notices-npm
-RUN --mount=type=cache,id=diffpilot-npm,target=/root/.npm npm ci --prefix /src/notices-npm --no-audit --no-fund \
+# Licence gate (deploy/notices/about.toml's accepted list) and notices of the UI's production npm dependencies, by
+# the generator pinned in its own lockfile.
+COPY deploy/notices /src/notices
+RUN --mount=type=cache,id=diffpilot-npm,target=/root/.npm npm ci --prefix /src/notices/npm --no-audit --no-fund \
+    && node /src/notices/npm/check-licenses.mjs . /src/notices/about.toml \
     && mkdir -p /out/notices \
-    && /src/notices-npm/node_modules/.bin/generate-license-file --input package.json --ci --no-spinner --eol lf \
+    && /src/notices/npm/node_modules/.bin/generate-license-file --input package.json --ci --no-spinner --eol lf \
         --output /out/notices/third-party-npm-web.txt \
     && test -s /out/notices/third-party-npm-web.txt
 COPY web/ ./
@@ -73,7 +75,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10010 diffpilot \
     && useradd --uid 10010 --gid 10010 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin diffpilot \
-    && install -d -o 10010 -g 10010 -m 0700 /var/lib/diffpilot
+    && install -d -o 10010 -g 10010 -m 0700 /var/lib/diffpilot \
+    && install -d -m 0755 /usr/share/doc/diffpilot \
+    && dpkg-query -W -f='${Package} ${Version} ${source:Package} ${source:Version}\n' \
+        > /usr/share/doc/diffpilot/packages.txt
 COPY --from=build /out/diffpilot-server /usr/local/bin/diffpilot-server
 COPY --from=web /out/notices/ /usr/share/doc/diffpilot/
 COPY --from=build /out/notices/ /usr/share/doc/diffpilot/

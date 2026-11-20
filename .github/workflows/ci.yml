@@ -107,6 +107,8 @@ jobs:
           node-version: 26
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: npm licence gate self-test
+        run: node deploy/notices/npm/check-licenses.mjs --self-test
       # The wording checker loads the TypeScript 6 compiler API from web/node_modules (ADR-012); self-tested on
       # every run, so a broken checker cannot pass silently.
       - name: Install web dependencies for the wording check
@@ -136,7 +138,7 @@ jobs:
           deploy/check-production-config.sh --self-test
           deploy/check-production-config.sh
       - name: Build the egress proxy image
-        run: docker build -t diffpilot-egress-proxy:local deploy/egress-proxy
+        run: docker build --build-context workspace=. -t diffpilot-egress-proxy:local deploy/egress-proxy
       - name: Egress proxy test (SSRF guard, MemCan exception, no request data in logs)
         run: PROXY_SKIP_BUILD=1 deploy/egress-proxy/test.sh "$RUNNER_TEMP/egress-proxy-test.log"
       # Builds the runner image (targets base and runner) and the test image; the real-Codex job needs a login and

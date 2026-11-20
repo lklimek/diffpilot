@@ -59,10 +59,12 @@ ARG CODEX_PACKAGE_SHA256=3bbf75e83de6b58aed28f2cf6e33ad423ec31fd4700a1457b94be55
 ARG GITHUB_MCP_VERSION=2.1.0
 # github-mcp-server_2.1.0_checksums.txt, Linux_x86_64 (S5).
 ARG GITHUB_MCP_SHA256=a442f9db287cea01008bcb55fe6bc0292270301046c3edbd1a8b22d6e4157b2b
-# Notices the release archives lack, from the same tags: Codex LICENSE and NOTICE, github-mcp-server's dependency list.
+# Notices the release archives lack, from the same tags: Codex LICENSE and NOTICE; github-mcp-server's dependency
+# list and the licence texts of its Go modules (third-party/ of the tag's source archive).
 ARG CODEX_LICENSE_SHA256=d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc
 ARG CODEX_NOTICE_SHA256=9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915
 ARG GITHUB_MCP_THIRD_PARTY_SHA256=7caad4bd6a08cdb9079f5ac9eb2783857569522dfb4b3a52f3d414ff37fb258f
+ARG GITHUB_MCP_SOURCE_SHA256=fb85acd573def7a0a5d35739a52da51f1d42fe281e3a044b58776c33d8e0705e
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
@@ -86,19 +88,29 @@ RUN mkdir -p /opt/notices/codex /opt/notices/github-mcp-server \
     && curl -fsSL -o /opt/notices/codex/NOTICE "$raw/openai/codex/rust-v${CODEX_VERSION}/NOTICE" \
     && curl -fsSL -o /opt/notices/github-mcp-server/third-party-licenses.linux.md \
         "$raw/github/github-mcp-server/v${GITHUB_MCP_VERSION}/third-party-licenses.linux.md" \
+    && curl -fsSL -o /tmp/github-mcp-src.tar.gz \
+        "https://codeload.github.com/github/github-mcp-server/tar.gz/refs/tags/v${GITHUB_MCP_VERSION}" \
     && tar -xzf /tmp/github-mcp.tar.gz -C /opt/notices/github-mcp-server --no-same-owner LICENSE \
     && printf '%s  %s\n' "${CODEX_LICENSE_SHA256}" /opt/notices/codex/LICENSE \
         "${CODEX_NOTICE_SHA256}" /opt/notices/codex/NOTICE \
         "${GITHUB_MCP_THIRD_PARTY_SHA256}" /opt/notices/github-mcp-server/third-party-licenses.linux.md \
+        "${GITHUB_MCP_SOURCE_SHA256}" /tmp/github-mcp-src.tar.gz \
         | sha256sum -c - \
+    && tar -xzf /tmp/github-mcp-src.tar.gz -C /opt/notices/github-mcp-server --no-same-owner --strip-components 1 \
+        "github-mcp-server-${GITHUB_MCP_VERSION}/third-party" \
     && test -s /opt/notices/github-mcp-server/LICENSE \
+    && test -n "$(find /opt/notices/github-mcp-server/third-party -type f -name 'LICENSE*')" \
     && chmod -R a+rX,go-w /opt/notices
 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS base
 
+# The package list (with source packages) is written before strip-image.sh removes the dpkg database.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git ripgrep \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && install -d -m 0755 /usr/share/doc/diffpilot \
+    && dpkg-query -W -f='${Package} ${Version} ${source:Package} ${source:Version}\n' \
+        > /usr/share/doc/diffpilot/packages.txt
 
 COPY --from=fetch /opt/codex /opt/codex
 COPY --from=fetch /opt/github-mcp/github-mcp-server /usr/local/bin/github-mcp-server
