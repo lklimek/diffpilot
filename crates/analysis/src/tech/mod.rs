@@ -140,15 +140,35 @@ impl TechPlugin for Generic {
             return Ok(Vec::new());
         }
         let covered = rust::covered(file, text);
+        // A line of a test item is test code first.
+        let not_test = |lines: Vec<u32>| -> Vec<u32> {
+            lines
+                .into_iter()
+                .filter(|line| covered.tests.binary_search(line).is_err())
+                .collect()
+        };
         Ok([
-            (LINE_COMMENT_RULE, covered.comments),
-            (IMPORT_RULE, covered.imports),
+            (
+                LINE_COMMENT_RULE,
+                NotAnalysedCategory::DocsComments,
+                not_test(covered.comments.clone()),
+            ),
+            (
+                IMPORT_RULE,
+                NotAnalysedCategory::DocsComments,
+                not_test(covered.imports.clone()),
+            ),
+            (
+                TEST_ITEM_RULE,
+                NotAnalysedCategory::Tests,
+                covered.tests.clone(),
+            ),
         ]
         .into_iter()
-        .filter(|(_, lines)| !lines.is_empty())
-        .map(|(rule, lines)| {
+        .filter(|(_, _, lines)| !lines.is_empty())
+        .map(|(rule, category, lines)| {
             item(
-                NotAnalysedCategory::DocsComments,
+                category,
                 ProvenanceBadge::ClassifiedByLineRule,
                 rule,
                 Some(ranges(&lines)),
@@ -163,8 +183,13 @@ impl TechPlugin for Generic {
     }
 }
 
-/// Plain private single-line Rust `use` declarations (brief amendment 2026-11-18).
-pub const IMPORT_RULE: &str = "plain private use declarations (Rust, by the compiler's lexer)";
+/// Plain Rust `use` declarations and re-exports (brief amendments 2026-11-18 and 2026-11-20).
+pub const IMPORT_RULE: &str =
+    "plain use declarations and re-exports (Rust, by the compiler's lexer)";
+/// The import rule's text in analyses stored before re-exports were covered.
+const IMPORT_RULE_PRIVATE: &str = "plain private use declarations (Rust, by the compiler's lexer)";
+/// Rust items under `#[cfg(test)]` or a `#[test]` attribute (brief amendment 2026-11-20).
+pub const TEST_ITEM_RULE: &str = "#[cfg(test)] and #[test] items (Rust, by the compiler's lexer)";
 /// Comment-only lines, including block and doc comments.
 pub const LINE_COMMENT_RULE: &str = "comment-only lines (Rust, by the compiler's lexer)";
 /// Rule of a generated-file header in the first lines.
@@ -262,6 +287,7 @@ pub fn rules() -> Vec<NotAnalysedRule> {
             LINE_COMMENT_RULE,
             NotAnalysedCategory::DocsComments,
         ),
+        (RuleKind::Lexer, TEST_ITEM_RULE, NotAnalysedCategory::Tests),
         (
             RuleKind::Binary,
             "binary content (git diff)",
@@ -371,7 +397,13 @@ pub fn is_line_rule(item: &Classified) -> bool {
 
 /// Whether `rule` names a line rule: its lines are context for the agent without coverage duty.
 pub fn is_line_rule_name(rule: &str) -> bool {
-    rule == LINE_COMMENT_RULE || rule == IMPORT_RULE
+    [
+        LINE_COMMENT_RULE,
+        IMPORT_RULE,
+        IMPORT_RULE_PRIVATE,
+        TEST_ITEM_RULE,
+    ]
+    .contains(&rule)
 }
 
 /// Pairs (base line, head line) of changed lines of `hunks` whose only change is whitespace, in a Rust file whose head
@@ -857,8 +889,16 @@ mod tests {
                 .iter()
                 .any(|rule| rule.kind == RuleKind::Lexer && rule.pattern == LINE_COMMENT_RULE)
         );
-        assert_eq!(listed.len(), PATH_RULES.len() + 4);
+        assert!(listed.iter().any(|rule| rule.kind == RuleKind::Lexer
+            && rule.pattern == TEST_ITEM_RULE
+            && rule.category == NotAnalysedCategory::Tests));
+        assert_eq!(listed.len(), PATH_RULES.len() + 5);
         assert!(!is_line_rule(&item("*.md")));
+        assert!(is_line_rule(&item(TEST_ITEM_RULE)));
+        // Analyses stored under the earlier import rule text still read as line rules.
+        assert!(is_line_rule_name(
+            "plain private use declarations (Rust, by the compiler's lexer)"
+        ));
     }
 
     #[test]

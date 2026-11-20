@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet};
 use ra_ap_rustc_lexer::TokenKind;
 
 use super::{
-    PRELUDE, Paths, Scope, Token, is_close, is_comment, is_ident, is_open, lex, name, scan,
+    PRELUDE, Paths, Scope, TestItems, Token, is_close, is_comment, is_ident, is_open, lex, name,
+    scan,
 };
 
 /// Function name prefixes read as conversions.
@@ -104,7 +105,7 @@ pub fn conversion_candidates_bounded(text: &str, added: &[u32]) -> (Vec<Candidat
     };
     let mut paths = Paths::default();
     let mut scope = Scope::default();
-    scan(&lexed, &mut paths, &mut scope, None);
+    scan(&lexed, &TestItems::none(), &mut paths, &mut scope, None);
     let code: Vec<&Token<'_>> = lexed
         .tokens
         .iter()

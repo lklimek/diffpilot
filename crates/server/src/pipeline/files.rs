@@ -240,16 +240,27 @@ impl<'a> SideOwners<'a> {
         }
         let whitespace = ranges(&input.prepass.whitespace_lines(side, path));
         layers.push((spans(&whitespace), Layer::Fixed(PartOwner::WhitespaceOnly)));
-        for item in input.not_analysed.iter().flat_map(|section| &section.items) {
-            if let (true, Some(lines)) = (is_line_rule_name(&item.rule), &item.ranges)
-                && item.side == side
-                && item.file == path
-            {
-                let owner = PartOwner::ContextRule {
-                    badge: item.badge,
-                    rule: item.rule.clone(),
-                };
-                layers.push((spans(lines), Layer::Fixed(owner)));
+        for section in input.not_analysed {
+            for item in &section.items {
+                if let (true, Some(lines)) = (is_line_rule_name(&item.rule), &item.ranges)
+                    && item.side == side
+                    && item.file == path
+                {
+                    // Test code is not analysed at all; comments and imports are context for the agent.
+                    let owner = if section.category == NotAnalysedCategory::Tests {
+                        PartOwner::NotAnalysed {
+                            category: section.category,
+                            badge: item.badge,
+                            rule: item.rule.clone(),
+                        }
+                    } else {
+                        PartOwner::ContextRule {
+                            badge: item.badge,
+                            rule: item.rule.clone(),
+                        }
+                    };
+                    layers.push((spans(lines), Layer::Fixed(owner)));
+                }
             }
         }
         for row in input.unexplained {

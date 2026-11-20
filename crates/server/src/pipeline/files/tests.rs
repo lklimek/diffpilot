@@ -727,3 +727,68 @@ async fn owners_of_covered_lines_follow_the_verification_on_fixture_pr_482() {
         );
     }
 }
+
+/// Inline test code a line rule takes from the agent stays listed in Files under Tests, not as context.
+#[test]
+fn inline_test_lines_read_as_not_analysed_tests() {
+    let rule = analysis::tech::TEST_ITEM_RULE.to_owned();
+    let case = Case {
+        files: vec![file(A, FileStatus::Added, vec![hunk("h1", (0, 0), (1, 4))])],
+        prepass: prepass(&[], json!([]), &[]),
+        covered: Vec::new(),
+        flows: Vec::new(),
+        unexplained: vec![UnexplainedRanges {
+            file: A.to_owned(),
+            side: LineSide::Head,
+            ranges: vec![lines(1, 1)],
+            reason: None,
+        }],
+        not_analysed: vec![NotAnalysedSection {
+            category: NotAnalysedCategory::Tests,
+            file_count: 1,
+            items: vec![NotAnalysedItem {
+                renderable: Some(true),
+                rule_kind: None,
+                file: A.to_owned(),
+                side: LineSide::Head,
+                ranges: Some(vec![lines(2, 4)]),
+                badge: ProvenanceBadge::ClassifiedByLineRule,
+                rule: rule.clone(),
+            }],
+        }],
+    };
+    let files = case.run();
+    let [file] = files.as_slice() else {
+        panic!("one file: {files:?}")
+    };
+    assert_eq!(
+        file.group,
+        FileGroup::Code,
+        "a line rule keeps the file in code"
+    );
+    let [hunk] = file.hunks.as_slice() else {
+        panic!("one hunk")
+    };
+    let head = LineSide::Head;
+    assert_eq!(
+        hunk.parts,
+        [
+            part(
+                head,
+                lines(1, 1),
+                PartOwner::Unexplained { reason: None },
+                &[]
+            ),
+            part(
+                head,
+                lines(2, 4),
+                PartOwner::NotAnalysed {
+                    category: NotAnalysedCategory::Tests,
+                    badge: ProvenanceBadge::ClassifiedByLineRule,
+                    rule,
+                },
+                &[]
+            ),
+        ]
+    );
+}

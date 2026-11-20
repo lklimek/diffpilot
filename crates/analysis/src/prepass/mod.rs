@@ -206,13 +206,19 @@ impl Prepass {
             .collect()
     }
 
-    /// Changed lines of `path` on `side` a line rule covers: the main code view may hide them.
+    /// Changed lines of `path` on `side` a comment or import rule covers: the main code view may hide them (test code
+    /// stays shown).
     pub fn view_context(&self, side: LineSide, path: &str) -> Vec<u32> {
         let mut lines: Vec<u32> = self
             .not_analysed
             .iter()
             .flat_map(|s| &s.items)
-            .filter(|item| item.side == side && item.file == path && is_line_rule_item(item))
+            .filter(|item| {
+                item.side == side
+                    && item.file == path
+                    && is_line_rule_item(item)
+                    && item.rule != tech::TEST_ITEM_RULE
+            })
             .flat_map(|item| item.ranges.iter().flatten())
             .flat_map(|r| r.start_line..=r.end_line)
             .collect();
