@@ -312,9 +312,8 @@ export function NoFlowPart({ part }: { part: HunkPart }) {
     case "context_rule":
       text = (
         <>
-          In no flow. Covered by a line rule (<code>{owner.rule}</code>){" "}
-          <ProvenanceBadge badge={owner.badge} />: sent to the LLM as context, with no duty to explain it.
-          Hidden in the code by default.
+          In no flow. Recognised by a line rule (<code>{owner.rule}</code>){" "}
+          <ProvenanceBadge badge={owner.badge} />; not explained by the LLM. Hidden in the code by default.
         </>
       );
       break;

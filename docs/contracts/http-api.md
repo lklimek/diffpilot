@@ -230,7 +230,8 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   covered the line), `flow` (a flow not analysed yet whose plan holds the line), `incidental` (the accepted flow's
   analysis names the line an incidental change off its control flow: `flow_id` and the LLM's one-sentence `text`),
   `unexplained` (with the Tour's reason), `not_analysed` (also inline test code a line rule recognised),
-  `context_rule` (a comment or import line rule), `identical_move` (with both ranges) or `whitespace_only`;
+  `context_rule` (a comment or import line rule; context for the LLM only when its hunk also has other changes),
+  `identical_move` (with both ranges) or `whitespace_only`;
   `also_in` lists the other steps whose lines include the run. Owners come from the coverage the Tour uses: the
   `unexplained` parts are exactly the Tour's Unexplained rows. `viewed` is the user's GitHub state (`viewed`,
   `unviewed`, `dismissed`: viewed before a later commit changed the file) read as the user;
@@ -612,7 +613,7 @@ including when a verified flow becomes available; no extra polling is needed.
 
 #### Deterministic context and replacement lines
 
-The lines response may include `context_only`, the changed line numbers on its returned side that the stored pre-pass covers by a line rule (Rust comments and plain private imports, brief amendment 2026-11-18); route and pre-pass use the same decision. Rust lines whose only change is whitespace are not in `changed` and not in a removed block: they read as unchanged code. These lines remain in the response and classic diff; the browser may hide them in the main view. A deleted block's optional `replacement` identifies the head range from the same diff hunk. Without it the block is a pure deletion. Example:
+The lines response may include `context_only`, the changed line numbers on its returned side that the stored pre-pass covers by a comment or import line rule (Rust comments, plain imports, re-exports and multi-line `use` declarations, brief amendments 2026-11-18 and 2026-11-20; inline test code is not among them and stays shown); route and pre-pass use the same decision. Rust lines whose only change is whitespace are not in `changed` and not in a removed block: they read as unchanged code. These lines remain in the response and classic diff; the browser may hide them in the main view. A deleted block's optional `replacement` identifies the head range from the same diff hunk. Without it the block is a pure deletion. Example:
 
 ```json
 {"context_only":[10,11],"deleted":[{"after_line":12,"base_start":13,"lines":["old();"],"total_lines":1,"replacement":{"start_line":13,"end_line":13}}]}

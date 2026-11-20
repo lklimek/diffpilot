@@ -265,6 +265,21 @@ describe("Incidental changes", () => {
 });
 
 describe("NoFlowPart", () => {
+  it("never claims a line-rule line reached the LLM: its hunk may not have been sent", () => {
+    render(
+      <NoFlowPart
+        part={{
+          side: "head",
+          range: { start_line: 2, end_line: 2 },
+          owner: { kind: "context_rule", badge: "classified_by_line_rule", rule: "imports" },
+          also_in: [],
+        }}
+      />,
+    );
+    expect(document.body).toHaveTextContent("not explained by the LLM.");
+    expect(document.body).not.toHaveTextContent(/sent to the LLM/);
+  });
+
   it.each([
     [{ kind: "unexplained" } as const, "In no flow. Unexplained — read these yourself."],
     [
@@ -282,7 +297,7 @@ describe("NoFlowPart", () => {
     ],
     [
       { kind: "context_rule", badge: "classified_by_line_rule", rule: "comment" } as const,
-      "In no flow. Covered by a line rule (comment)",
+      "In no flow. Recognised by a line rule (comment)",
     ],
     [
       {
