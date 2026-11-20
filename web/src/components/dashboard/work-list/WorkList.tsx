@@ -147,7 +147,6 @@ export function WorkList({
       } else if (action === "toggle") {
         // A focused control handles Enter itself.
         if (event.target instanceof HTMLElement && event.target.closest("a, button, summary")) return;
-        if (current.score.tier === "p0") return;
         event.preventDefault();
         toggle(current.key);
       } else if (action === "review" && current.kind === "pr") {
@@ -266,6 +265,9 @@ export function WorkList({
                 focusRef={register(item.key)}
                 reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
                 onNavigate={onNavigate}
+                expanded={expanded.has(item.key)}
+                onToggle={() => toggle(item.key)}
+                now={now}
               />
             ))}
           </div>
