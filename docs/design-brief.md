@@ -851,3 +851,27 @@ with a personal access token. The review start page moves to `/review`. §1 trus
 module; on the dashboard LLM text carries the "LLM" tag and every score part names its source. Supersedes "No
 dashboard" in §2 v1 and the v3+ dashboard item in §2 Later. Decision: `docs/decisions/ADR-016-dashboard-start-page.md`;
 plan: `docs/v1.1-dashboard-plan.md`.
+
+### Owner-approved amendment — 2026-11-20: Dependencies view
+
+- **Purpose.** Avoid the local optimum across crates: the reviewer sees at a glance "in this crate we added parsing
+  of type X" and notices that X lives in another crate or repository the organisation controls.
+- **Place.** A third view of the review beside Flows and Files ("Flows / Files / Dependencies"). One tree with
+  levels opened on click: repository (this repository first; "yours" for repositories of controlled
+  organisations) → crate (changed crates first, with changed lines and flows; dependency crates with who uses them
+  and the `Cargo.lock` line) → per changed crate the deterministic conversion facts and the LLM's keyword notes
+  ("parsing of `TransitionType`", "new `impl TryFrom<Foo>`", "retry around `sdk.fetch`").
+- **Facts.** Read from `Cargo.toml`/`Cargo.lock` at head and from Rust tokens, never by running `cargo`: a new
+  `From`/`TryFrom` impl, an impl on another crate's type, or a `parse_`/`validate_`/… function for a type defined
+  in another crate, each with its line, the import line and the type's definition when it is in this repository.
+  Badges name the check. Under the facts one line says what the token rules cover and that no finding is not
+  evidence of absence. No verdict ("should move") is ever shown; fit questions in the PR context may ask it.
+- **Notes.** Short LLM notes per crate from the plan, labelled LLM, the first three by changed lines and "+N more".
+- **Large pull requests.** Changed crates and their direct dependencies inside the workspace or in controlled
+  organisations; other dependencies are a count.
+- **Not available.** A repository without `Cargo.toml` shows "Dependencies: not available — this view reads Cargo
+  (Rust) workspaces only; nothing was checked". Limits (too many manifests, unreadable manifests, no lock file)
+  are listed; a cut map is never shown as complete.
+- **Settings.** "Controlled organisations": an installation-wide list of GitHub owners; the pull request's owner is
+  always controlled. The PR-context agent receives the map and looks up upstream issues and pull requests in
+  controlled dependency repositories (ADR-005 addendum 2026-11-20). Decision: ADR-021.

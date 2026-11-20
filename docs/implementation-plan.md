@@ -725,6 +725,38 @@ Viewed against wiremock and fake-github, anchored Ask validation and prompts (go
 `context_pack-ask_lines`). Web: Playwright and axe for the Files view at a viewport of at least 1600 px wide (the
 side panel needs it).
 
+## 18. Stage v1.2 — Dependencies view
+
+Design: `/data/artifacts/diffpilot/2026-11-20/go9/plan.md`, brief amendment 2026-11-20 "Dependencies view",
+ADR-021, ADR-005 addendum 2026-11-20. Branch `feat/deps-map` into `feat/v1.2`; rules as in §1–§5.
+
+| ID | Change request | Contract |
+|---|---|---|
+| D1 | `contracts::api::deps` (`DependencyView` and its parts), `Settings.controlled_owners`, `SetControlledOwnersRequest` | R15 `getDependencies`, R16 `setControlledOwners` (http-api.md) |
+| D2 | `PlanOutput.crate_notes` (nullable, `serde(default)`) | agent-output.md `plan`; `schemas/agent/plan.schema.json` |
+| D3 | Migration 0015: `documents.kind` gains `dependencies` (widened in place), tables `controlled_owners`, `controlled_owners_changed` | db-schema.md |
+| D4 | `DocumentKind::Dependencies`; `SettingsRepo::{controlled_owners, set_controlled_owners}` | crates/db |
+
+Work packages: W1 `analysis::deps` (Cargo map); W2 `analysis::tech::rust` conversion facts and definition
+confirmation; W3 contracts, routes, generated types, msw handlers; W4 migration and db; W5 server (`mirror` grep,
+`pipeline::deps`, projection, routes); W6 plan notes and the `pr_context` prompt; W7 web view and Settings card;
+W8 independent review.
+
+**Tests.** Analysis: multi-workspace manifests (globs, exclude, inheritance, renames, git sources, no lock file,
+unreadable manifests, caps), detector cases per pattern and `use` form, only added lines. Server: grep argument
+safety and limits, projection (ranking, `+N`, controlled marking at read, old plans), fixture PR 482 and a
+multi-crate repository, tenant check, CSRF on R16. Prompts: goldens of `plan` and `pr_context`. Web: component
+states, wording, Playwright and axe.
+
+**Follow-ups (not in v1.2).**
+- L1 Definitions of types in other repositories (fetch the dependency repository at the locked revision, bounded).
+- L2 crates.io `repository` lookup for registry dependencies, labelled "declared on crates.io".
+- L3 Patterns: newtype wrappers with `FromStr`/`Deserialize`, `serde(with/deserialize_with)` helpers.
+- L4 Conversion-fact markers in the Files and Flows code view.
+- L5 Installation token covering controlled dependency repositories, with private repositories (ADR-005 addendum).
+- L6 Other ecosystems (`go.mod`, `package.json`).
+- L7 Owning-layer heuristics and automated upstream search beyond the prompt.
+
 ## Appendix A. Review dispositions (`/data/artifacts/diffpilot/2026-11-16/reviews/plan-review-fable.md`)
 
 | Finding | Disposition |
