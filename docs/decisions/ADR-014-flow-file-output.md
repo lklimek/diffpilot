@@ -90,7 +90,10 @@ scenario. Only new agent output must carry the object, and the grammar enforces 
 Owner decision (brief amendment 2026-11-20): steps follow control flow, and changed lines off it need a place
 other than a step. `## incidental <hunk-id|file-id:side:first-last>` with one required `text` names such lines of
 the flow; no other field, annotation or assessment is accepted after it. The verifier keeps an incidental change
-on changed lines of this flow, off every step, and applies the text, agent-limitation and wording rules; its
-lines count as covered. A flow still needs a step. `FlowAnalysisOutput` gains `incidentals` (empty when absent, so
+on changed lines of this flow, off every step (by the coverage rule: a step's range, removed lines at a deletion
+marker inside a head step, a moved step's original), at most 15 changed lines per section and a `text` of at most
+240 characters, and applies the text, agent-limitation and wording rules; its lines count as covered. The bounds
+are deterministic: a behaviour change cannot leave the walk-through under one sentence; over them is a repairable
+issue (`incidental_too_large`). A flow still needs a step. `FlowAnalysisOutput` gains `incidentals` (empty when absent, so
 stored flows read unchanged); the Files contract gains the owner `incidental` with the flow and the sentence. The
 context version is 3: server and runner images are rebuilt together.

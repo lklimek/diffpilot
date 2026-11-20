@@ -232,17 +232,27 @@ pub(super) fn flow(
             );
             issues.push(VerifyIssueKind::IncidentalOutsideFlow, message);
         }
-        let on_step = output.steps.iter().find(|step| {
-            step.side == side
-                && step.file == file
-                && step.start_line <= lines.1
-                && lines.0 <= step.end_line
-        });
-        if let Some(step) = on_step {
+        let count: u32 = changed.iter().map(|&(first, last)| last - first + 1).sum();
+        if count > MAX_INCIDENTAL_LINES {
             let message = format!(
-                "{at}: lines {}-{} of {file} lie inside step {}; a changed line is in a step or an incidental change, \
-                 not both",
-                lines.0, lines.1, step.id
+                "{at}: lines {}-{} of {file} hold {count} changed lines; an incidental change covers at most \
+                 {MAX_INCIDENTAL_LINES}: explain larger changes in steps",
+                lines.0, lines.1
+            );
+            issues.push(VerifyIssueKind::IncidentalTooLarge, message);
+        }
+        let length = incidental.text.chars().count();
+        if length > MAX_INCIDENTAL_TEXT {
+            let message = format!(
+                "{at}.text has {length} characters; write one sentence of at most {MAX_INCIDENTAL_TEXT}"
+            );
+            issues.push(VerifyIssueKind::IncidentalTooLarge, message);
+        }
+        if owned_by_step(output, &changes, &confirmed, side, file, lines) {
+            let message = format!(
+                "{at}: lines {}-{} of {file} belong to a step (its lines, removed lines at its deletion marker or a \
+                 moved step's original); a changed line is in a step or an incidental change, not both",
+                lines.0, lines.1
             );
             issues.push(VerifyIssueKind::IncidentalOverlapsStep, message);
         }
@@ -277,6 +287,53 @@ pub(super) fn flow(
     }
     issues.finish(())?;
     Ok(verified(output, context, &changes, confirmed))
+}
+
+/// Most changed lines one incidental change covers.
+const MAX_INCIDENTAL_LINES: u32 = 15;
+/// Most characters of an incidental change's sentence.
+const MAX_INCIDENTAL_TEXT: usize = 240;
+
+/// Whether a step owns a changed line of `file` on `side` in `lines`, by the coverage rule of [`uncovered`]: inside
+/// the step's range, a confirmed move's original, or removed lines at a deletion marker inside a head step.
+fn owned_by_step(
+    output: &FlowAnalysisOutput,
+    changes: &Changes<'_>,
+    confirmed: &[Option<ConfirmedMove>],
+    side: LineSide,
+    file: &str,
+    lines: Span,
+) -> bool {
+    let holds = |side: LineSide, file: &str, span: Span| {
+        output.steps.iter().any(|step| {
+            step.side == side
+                && step.file == file
+                && step.start_line <= span.1
+                && span.0 <= step.end_line
+        })
+    };
+    if holds(side, file, lines) {
+        return true;
+    }
+    if side == LineSide::Head {
+        return false;
+    }
+    let moved = confirmed.iter().flatten().any(|moved| {
+        moved.fact.from.file == file
+            && moved
+                .covered_base_lines
+                .iter()
+                .any(|&line| lines.0 <= line && line <= lines.1)
+    });
+    let removed = changes.removed.get(file).map_or(&[][..], Vec::as_slice);
+    let from = removed.partition_point(|&((_, end), _, _)| end < lines.0);
+    moved
+        || removed[from..]
+            .iter()
+            .take_while(|&&((start, _), _, _)| start <= lines.1)
+            .any(|&(_, marker, head)| {
+                head.is_some_and(|head| holds(LineSide::Head, head, spans::marker_gap(marker)))
+            })
 }
 
 /// The flow's planned changed lines outside every step of `output`.
@@ -1808,7 +1865,6 @@ mod tests {
     /// Removed lines at a deletion marker inside a head step belong to that step; an incidental change on the same
     /// removed lines gives them two owners (the Tour's step and Files' incidental row).
     #[test]
-    #[ignore = "repro: a base-side incidental on removed lines a head step covers by its deletion marker is accepted"]
     fn incidental_changes_on_removed_lines_of_a_head_step_are_refused() {
         let mut output = with_incidental();
         output.incidentals.push(incidental(
@@ -1820,6 +1876,66 @@ mod tests {
         assert_eq!(
             kinds(&Setup::new().issues(&output)),
             [VerifyIssueKind::IncidentalOverlapsStep]
+        );
+    }
+
+    #[test]
+    fn incidental_changes_are_small_and_said_in_one_short_sentence() {
+        // 16 changed lines: the deleted file's lines 1-16 (no step there).
+        let mut setup = Setup::new();
+        setup.files[1].hunks = vec![hunk("h2", (1, 16), (0, 0))];
+        setup.plan.flow_lines.insert(
+            FlowId("f1".to_owned()),
+            vec![
+                ranges("src/a.rs", LineSide::Head, 10, 12),
+                ranges("src/a.rs", LineSide::Base, 10, 11),
+                ranges("src/gone.rs", LineSide::Base, 1, 16),
+            ],
+        );
+        setup.facts.insert(
+            LineSide::Base,
+            "src/gone.rs",
+            FileFacts {
+                line_count: 16,
+                blank_lines: Vec::new(),
+            },
+        );
+        let mut output = with_incidental();
+        output.incidentals[0].end_line = 15;
+        output.incidentals.push(incidental(
+            "src/gone.rs",
+            LineSide::Base,
+            (16, 16),
+            "Drops the last helper.",
+        ));
+        setup
+            .run(&output)
+            .expect("15 changed lines and one more: accepted");
+        output.incidentals.pop();
+        output.incidentals[0].end_line = 16;
+        let issues = setup.issues(&output);
+        assert_eq!(
+            kinds(&issues),
+            [VerifyIssueKind::IncidentalTooLarge],
+            "{issues:#?}"
+        );
+        assert!(
+            issues[0].message.contains("16 changed lines"),
+            "{issues:#?}"
+        );
+        // The sentence: at most 240 characters.
+        output.incidentals[0].end_line = 15;
+        output.incidentals.push(incidental(
+            "src/gone.rs",
+            LineSide::Base,
+            (16, 16),
+            &"a".repeat(240),
+        ));
+        setup.run(&output).expect("240 characters");
+        output.incidentals[1].text.push('b');
+        assert_eq!(
+            kinds(&setup.issues(&output)),
+            [VerifyIssueKind::IncidentalTooLarge]
         );
     }
 

@@ -168,6 +168,8 @@ pub enum VerifyIssueKind {
     IncidentalOutsideFlow,
     /// An incidental change on lines of a step: each line has one owner.
     IncidentalOverlapsStep,
+    /// An incidental change over more changed lines, or with a longer text, than allowed.
+    IncidentalTooLarge,
 }
 
 impl VerifyIssueKind {
@@ -204,6 +206,7 @@ impl VerifyIssueKind {
             Self::RedFlagOnLowStep => "red_flag_on_low_step",
             Self::IncidentalOutsideFlow => "incidental_outside_flow",
             Self::IncidentalOverlapsStep => "incidental_overlaps_step",
+            Self::IncidentalTooLarge => "incidental_too_large",
         }
     }
 }

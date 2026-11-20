@@ -65,9 +65,10 @@ at most 80 bytes. Violations are reported with their line.
   `<file-id>:<side>:<first>-<last>` locations).
 - `## thread <alias> <status>`; required `reason` for every thread listed in the job.
 - `## incidental <hunk-id>` or `## incidental <file-id>:<head|base>:<first>-<last>`; required
-  `text`: one sentence on what changed there, shown in the Files view. For changed lines of
-  this flow off its control flow (an import, a visibility change, a re-export, a rename of glue
-  code): they need no step. Its lines lie in no step. No other fields and no annotation or
+  `text`: one sentence of at most 240 characters on what changed there, shown in the Files
+  view. For at most 15 changed lines of this flow off its control flow (an import, a visibility
+  change, a re-export, a rename of glue code): they need no step. Its lines lie in no step (nor
+  removed lines at a deletion marker inside a step). No other fields and no annotation or
   assessment: a change with a risk to flag or rate is a step, never incidental.
 
 All ranges are inclusive and one-based. References must exist at the pinned commit.
