@@ -2083,18 +2083,36 @@ fn awaiting_others_leaves_out_excluded_authors() {
     assert_eq!(numbers, [1]);
 }
 
-/// GitHub's merge button is active for the user: the user's own PR, not a draft, write access to the base
-/// repository and a merge state of clean, has hooks or unstable; a stored snapshot without these facts lists none.
+/// Ready to merge: the user's own PR into the default branch, not a draft, write access, every check passed (merge
+/// state clean or has hooks, CI not red) and nothing left to answer (no unresolved thread, change request or reply
+/// awaited); a stored snapshot without these facts lists none.
 #[test]
 fn ready_to_merge_when_github_lets_the_user_merge() {
     let r = rules();
     let ready = PrFacts {
         merge_state: MergeState::Clean,
         viewer_can_write: true,
+        base_ref: Some("main".into()),
         ..pr()
     };
     let cases = [
         ("clean", ready.clone(), true),
+        (
+            "targets a branch other than the default branch",
+            PrFacts {
+                base_ref: Some("v1.0-dev".into()),
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "default branch not known",
+            PrFacts {
+                default_branch: None,
+                ..ready.clone()
+            },
+            false,
+        ),
         (
             "pre-receive hooks",
             PrFacts {
@@ -2104,13 +2122,45 @@ fn ready_to_merge_when_github_lets_the_user_merge() {
             true,
         ),
         (
-            "a check that is not required fails",
+            "a check that is not required fails (GitHub would allow the merge)",
             PrFacts {
                 merge_state: MergeState::Unstable,
                 ci: CiEffective::Red,
                 ..ready.clone()
             },
-            true,
+            false,
+        ),
+        (
+            "red CI",
+            PrFacts {
+                ci: CiEffective::Red,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "an unresolved review thread",
+            PrFacts {
+                unresolved_threads: 1,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "a bot requests changes",
+            PrFacts {
+                changes_requested_by: vec!["thepastaclaw".into()],
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "a comment awaits the user's reply",
+            PrFacts {
+                awaiting_our_reply: true,
+                ..ready.clone()
+            },
+            false,
         ),
         (
             "a linked login's PR",
@@ -2213,6 +2263,7 @@ fn merge_state_pending_only_for_the_users_mergeable_prs() {
     let unknown = PrFacts {
         merge_state: MergeState::Unknown,
         viewer_can_write: true,
+        base_ref: Some("main".into()),
         ..pr()
     };
     assert!(merge_state_pending(&r, &unknown));
@@ -2266,6 +2317,7 @@ fn merge_ready_by_display_id_without_excluded_authors() {
         author: Some(author.into()),
         merge_state: MergeState::Clean,
         viewer_can_write: true,
+        base_ref: Some("main".into()),
         ..pr()
     };
     let prs = vec![
@@ -2296,6 +2348,7 @@ fn a_pr_ready_to_merge_does_not_wait_only_on_others() {
         review_decision: None,
         merge_state: MergeState::Clean,
         viewer_can_write: true,
+        base_ref: Some("main".into()),
         ..pr()
     };
     assert!(
