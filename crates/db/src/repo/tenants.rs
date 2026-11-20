@@ -598,4 +598,108 @@ mod tests {
         assert!(revoked("000alice").await);
         assert!(!revoked("00000bob").await);
     }
+
+    /// The cleanup of users without a bound entry stays in the reconciled tenant: it keeps a bound user's
+    /// credentials and every credential of another tenant, bound there or not.
+    #[tokio::test]
+    async fn reconcile_cleanup_spares_bound_users_and_other_tenants() {
+        use jiff::SignedDuration;
+
+        let db = Db::in_memory().await.expect("db");
+        let now = Timestamp::now();
+        let at = timestamp(now);
+        let later = timestamp(now + SignedDuration::from_hours(24));
+        let tenants = db.tenants();
+        tenants
+            .reconcile_logins(DEFAULT_TENANT, &logins(&["carol"]), now)
+            .await
+            .expect("allow");
+        member(&db, "u-carol", "carol", 9, now).await;
+        member(&db, "u-dave", "dave", 10, now).await;
+        member(&db, "u-erin", "erin", 11, now).await;
+        assert_eq!(
+            tenants
+                .admit_login(DEFAULT_TENANT, "carol", 9, now)
+                .await
+                .expect("admit"),
+            LoginAdmission::Allowed
+        );
+        give_credentials(&db, "u-carol", now).await;
+        sqlx::query("INSERT INTO tenants (id, name, created_at) VALUES ('t2', 'Two', ?)")
+            .bind(&at)
+            .execute(&db.pool)
+            .await
+            .expect("tenant");
+        sqlx::query(
+            "INSERT INTO tenant_allowed_logins (tenant_id, login, github_id, bound_at) VALUES ('t2', 'dave', 10, ?)",
+        )
+        .bind(&at)
+        .execute(&db.pool)
+        .await
+        .expect("dave bound in t2");
+        // t2 credentials: dave (bound in t2), erin (bound nowhere), carol (bound only in default).
+        for (user, id) in [
+            ("u-dave", "t2-dave0"),
+            ("u-erin", "t2-erin0"),
+            ("u-carol", "t2-carol"),
+        ] {
+            sqlx::query(
+                "INSERT INTO sessions (token_hash, tenant_id, user_id, csrf_token, created_at, last_seen_at, expires_at)
+                 VALUES (?1, 't2', ?2, 'csrf', ?3, ?3, ?4)",
+            )
+            .bind(id.as_bytes())
+            .bind(user)
+            .bind(&at)
+            .bind(&later)
+            .execute(&db.pool)
+            .await
+            .expect("t2 session");
+            let mut hash = [7u8; 32];
+            hash[..id.len()].copy_from_slice(id.as_bytes());
+            sqlx::query(
+                "INSERT INTO access_tokens (id, tenant_id, user_id, name, token_hash, scopes, created_at, expires_at)
+                 VALUES (?1, 't2', ?2, 'agent-t2', ?3, '[]', ?4, ?5)",
+            )
+            .bind(id)
+            .bind(user)
+            .bind(&hash[..])
+            .bind(&at)
+            .bind(&later)
+            .execute(&db.pool)
+            .await
+            .expect("t2 access token");
+        }
+        for user in ["u-dave", "u-erin"] {
+            sqlx::query(
+                "INSERT INTO user_tokens (user_id, tenant_id, access_ct, access_expires_at, refresh_ct,
+                                          refresh_expires_at, updated_at)
+                 VALUES (?1, 't2', x'01', ?3, x'02', ?3, ?2)",
+            )
+            .bind(user)
+            .bind(&at)
+            .bind(&later)
+            .execute(&db.pool)
+            .await
+            .expect("t2 pair");
+        }
+
+        tenants
+            .reconcile_logins(DEFAULT_TENANT, &logins(&["CAROL"]), now)
+            .await
+            .expect("reconcile");
+
+        let counts: (i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM sessions),
+                    (SELECT COUNT(*) FROM user_tokens),
+                    (SELECT COUNT(*) FROM access_tokens WHERE revoked_at IS NULL)",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("counts");
+        assert_eq!(
+            counts,
+            (4, 3, 4),
+            "carol's default credentials and all of t2 stay (sessions, pairs, live access tokens)"
+        );
+    }
 }
