@@ -1,0 +1,721 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DependencyView",
+  "description": "Response of `GET /api/v1/analyses/{id}/dependencies`.",
+  "type": "object",
+  "properties": {
+    "status": {
+      "description": "Whether the head commit has Cargo manifests.",
+      "$ref": "#/$defs/DependencyStatus"
+    },
+    "controlled_owners": {
+      "description": "Owners whose repositories are \"yours\": the pull request's owner and the Settings list, sorted.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limits": {
+      "description": "What the map does not cover.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DependencyLimit"
+      }
+    },
+    "files_outside_crates": {
+      "description": "Changed files in no crate (not checked).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "notes": {
+      "description": "Whether the LLM's notes exist for this analysis.",
+      "$ref": "#/$defs/NotesState"
+    },
+    "repositories": {
+      "description": "This repository first, then other repositories (controlled first), registries and other sources.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DependencyRepository"
+      }
+    }
+  },
+  "required": [
+    "status",
+    "controlled_owners",
+    "limits",
+    "files_outside_crates",
+    "notes",
+    "repositories"
+  ],
+  "$defs": {
+    "DependencyStatus": {
+      "description": "Whether the map exists.",
+      "oneOf": [
+        {
+          "description": "The head commit has at least one `Cargo.toml`.",
+          "type": "string",
+          "const": "available"
+        },
+        {
+          "description": "No `Cargo.toml` at the head commit: nothing was checked (\"not available\", never \"no dependencies\").",
+          "type": "string",
+          "const": "not_rust"
+        }
+      ]
+    },
+    "DependencyLimit": {
+      "description": "Something the map does not cover.",
+      "oneOf": [
+        {
+          "description": "More manifests than the server reads; the first `read` in path order were read.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "manifests_cut"
+            },
+            "total": {
+              "description": "Manifests at the head commit.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "read": {
+              "description": "Manifests read.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "total",
+            "read"
+          ]
+        },
+        {
+          "description": "A manifest that was not read, is too large or does not parse.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "manifest_unreadable"
+            },
+            "path": {
+              "description": "Its path.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ]
+        },
+        {
+          "description": "A `Cargo.lock` that was not read, is too large or does not parse.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "lock_unreadable"
+            },
+            "path": {
+              "description": "Its path.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ]
+        },
+        {
+          "description": "A workspace without `Cargo.lock`: versions are not resolved, sources come from the manifests.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "no_lock_file"
+            },
+            "workspace_dir": {
+              "description": "Directory of its root manifest (`\"\"` = repository root).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "workspace_dir"
+          ]
+        },
+        {
+          "description": "A changed Rust file that was not read: its conversions are not checked.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "source_unread"
+            },
+            "path": {
+              "description": "Its path.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ]
+        },
+        {
+          "description": "More conversion facts than the server keeps; the first ones in file order are kept.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "facts_cut"
+            },
+            "kept": {
+              "description": "Facts kept.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "kept"
+          ]
+        }
+      ]
+    },
+    "NotesState": {
+      "description": "Whether the LLM's crate notes exist.",
+      "oneOf": [
+        {
+          "description": "The plan is stored with notes (possibly none for a crate).",
+          "type": "string",
+          "const": "produced"
+        },
+        {
+          "description": "The plan is not stored yet.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "The plan was stored without notes (analysed before notes existed).",
+          "type": "string",
+          "const": "not_produced"
+        }
+      ]
+    },
+    "DependencyRepository": {
+      "description": "A repository or other source of crates.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "What kind of source it is.",
+          "$ref": "#/$defs/RepositoryKind"
+        },
+        "repo": {
+          "description": "The GitHub repository, when known.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RepoRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "location": {
+          "description": "The registry name, git URL or path as Cargo names it; null for this repository.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "controlled": {
+          "description": "The repository's owner is controlled (\"yours\").",
+          "type": "boolean"
+        },
+        "crates": {
+          "description": "Its crates: changed crates first (by changed lines), then by name.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DependencyCrate"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "controlled",
+        "crates"
+      ]
+    },
+    "RepositoryKind": {
+      "description": "Kind of a crate source.",
+      "oneOf": [
+        {
+          "description": "The pull request's repository.",
+          "type": "string",
+          "const": "this"
+        },
+        {
+          "description": "A GitHub repository (git dependency or sibling path).",
+          "type": "string",
+          "const": "github"
+        },
+        {
+          "description": "Another git URL.",
+          "type": "string",
+          "const": "other_git"
+        },
+        {
+          "description": "A registry (crates.io or another); the repository is not looked up.",
+          "type": "string",
+          "const": "registry"
+        },
+        {
+          "description": "A path the server did not read.",
+          "type": "string",
+          "const": "path"
+        },
+        {
+          "description": "Not determined (an inherited dependency without a workspace declaration, an unknown source).",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "DependencyCrate": {
+      "description": "A crate.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Package name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Version, if known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "manifest": {
+          "description": "Manifest path of a crate of this repository.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_at": {
+          "description": "The `Cargo.lock` record or manifest declaration naming its source (head commit).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HeadLine"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "revision": {
+          "description": "Locked git commit, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "used_by": {
+          "description": "Changed crates depending on it directly.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "facts_about": {
+          "description": "Conversion facts naming its types.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "changes": {
+          "description": "What the pull request changes in it; null for an unchanged crate.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CrateChanges"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "used_by",
+        "facts_about"
+      ]
+    },
+    "HeadLine": {
+      "description": "A line of a file at the head commit.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path.",
+          "type": "string"
+        },
+        "line": {
+          "description": "1-based line.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "file",
+        "line"
+      ]
+    },
+    "CrateChanges": {
+      "description": "What the pull request changes in a crate.",
+      "type": "object",
+      "properties": {
+        "changed_lines": {
+          "description": "Changed lines (added and removed) in its files.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "files": {
+          "description": "Changed files.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "flows": {
+          "description": "Flows with lines in it, in Tour order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CrateFlow"
+          }
+        },
+        "facts": {
+          "description": "Conversions added for types of workspace or controlled crates (deterministic), at most 50.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConversionFact"
+          }
+        },
+        "facts_hidden": {
+          "description": "Facts beyond those listed.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "other_facts": {
+          "description": "Facts about types of other crates (counted, not listed).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "notes": {
+          "description": "The LLM's notes, at most 3, most changed lines first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CrateNote"
+          }
+        },
+        "notes_hidden": {
+          "description": "Notes beyond those listed.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "other_dependencies": {
+          "description": "Direct dependencies not listed (neither in this repository nor controlled).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "changed_lines",
+        "files",
+        "flows",
+        "facts",
+        "facts_hidden",
+        "other_facts",
+        "notes",
+        "notes_hidden",
+        "other_dependencies"
+      ]
+    },
+    "CrateFlow": {
+      "description": "A flow with lines in a crate.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Flow id.",
+          "$ref": "#/$defs/FlowId"
+        },
+        "title": {
+          "description": "Its title (LLM).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ]
+    },
+    "FlowId": {
+      "description": "Identifier of a flow, assigned by the `plan` job: `f1`, `f2`, ….",
+      "type": "string",
+      "pattern": "^f[0-9]+$"
+    },
+    "ConversionFact": {
+      "description": "A conversion added for a type of another crate: a deterministic fact (Rust tokens), never a verdict.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "What the line adds.",
+          "$ref": "#/$defs/ConversionKind"
+        },
+        "at": {
+          "description": "The `impl` or `fn` line.",
+          "$ref": "#/$defs/HeadLine"
+        },
+        "type_name": {
+          "description": "The type's name.",
+          "type": "string"
+        },
+        "written": {
+          "description": "The type's path as written.",
+          "type": "string"
+        },
+        "type_crate": {
+          "description": "The crate the type comes from.",
+          "type": "string"
+        },
+        "imported_at": {
+          "description": "The `use` line importing it, if any.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HeadLine"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "definition": {
+          "description": "Where the type is defined.",
+          "$ref": "#/$defs/TypeDefinition"
+        }
+      },
+      "required": [
+        "kind",
+        "at",
+        "type_name",
+        "written",
+        "type_crate",
+        "definition"
+      ]
+    },
+    "ConversionKind": {
+      "description": "What a conversion fact's line adds.",
+      "oneOf": [
+        {
+          "description": "`impl From<A> for B`.",
+          "type": "string",
+          "const": "from_impl"
+        },
+        {
+          "description": "`impl TryFrom<A> for B`.",
+          "type": "string",
+          "const": "try_from_impl"
+        },
+        {
+          "description": "A trait implemented on the other crate's type.",
+          "type": "string",
+          "const": "impl_on_foreign_type"
+        },
+        {
+          "description": "A function named like a conversion (`parse_`, `validate_`, …) whose signature names the type.",
+          "type": "string",
+          "const": "conversion_fn"
+        }
+      ]
+    },
+    "TypeDefinition": {
+      "description": "Where a fact's type is defined.",
+      "oneOf": [
+        {
+          "description": "Found in the defining crate of this repository.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "located"
+            },
+            "at": {
+              "description": "The definition line.",
+              "$ref": "#/$defs/HeadLine"
+            }
+          },
+          "required": [
+            "kind",
+            "at"
+          ]
+        },
+        {
+          "description": "Searched in the defining crate of this repository, not found (generated, a macro, a re-export).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "not_located"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Not searched (search limit reached or the search failed).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "not_searched"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "In another repository; not looked up.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "other_repository"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "CrateNote": {
+      "description": "A keyword note of the LLM on what changed in a crate.",
+      "type": "object",
+      "properties": {
+        "text": {
+          "description": "The note (LLM).",
+          "type": "string"
+        },
+        "lines": {
+          "description": "The changed lines of the hunks it describes, in this crate (head side when present).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileRange"
+          }
+        },
+        "changed_lines": {
+          "description": "Changed lines of those hunks: the ranking key.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "text",
+        "lines",
+        "changed_lines"
+      ]
+    },
+    "FileRange": {
+      "description": "A line range of one file.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path on that side.",
+          "type": "string"
+        },
+        "side": {
+          "description": "Commit the lines refer to.",
+          "$ref": "#/$defs/LineSide"
+        },
+        "range": {
+          "description": "The lines.",
+          "$ref": "#/$defs/LineRange"
+        }
+      },
+      "required": [
+        "file",
+        "side",
+        "range"
+      ]
+    },
+    "LineSide": {
+      "description": "Commit a line number refers to. Head is the common case (final code); base only for code that no longer\nexists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).",
+      "oneOf": [
+        {
+          "description": "Lines of the head commit.",
+          "type": "string",
+          "const": "head"
+        },
+        {
+          "description": "Lines of the base commit (removed code).",
+          "type": "string",
+          "const": "base"
+        }
+      ]
+    },
+    "LineRange": {
+      "description": "Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.",
+      "type": "object",
+      "properties": {
+        "start_line": {
+          "description": "First line, 1-based.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_line": {
+          "description": "Last line, inclusive.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start_line",
+        "end_line"
+      ]
+    }
+  }
+}

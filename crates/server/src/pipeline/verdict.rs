@@ -331,6 +331,7 @@ mod tests {
                 flow("f2", vec![selection(Some(12), Some(14))]),
             ],
             unassigned: Vec::new(),
+            crate_notes: None,
         };
         let threads = [
             thread("src/a.rs", Some(13), LineSide::Head),

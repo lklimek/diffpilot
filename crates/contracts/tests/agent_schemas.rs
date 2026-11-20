@@ -265,7 +265,8 @@ fn samples() -> Vec<(JobKind, Value)> {
                               {"hunk_id": "h2", "head_start": 21, "head_end": 25}],
                     "depends_on": []
                 }],
-                "unassigned": [{"hunk_id": "h3", "head_start": null, "head_end": null, "reason": "import order only"}]
+                "unassigned": [{"hunk_id": "h3", "head_start": null, "head_end": null, "reason": "import order only"}],
+                "crate_notes": [{"note": "retry around `RpcClient::send`", "hunks": ["h1", "h2"]}]
             }),
         ),
         (

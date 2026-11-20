@@ -264,6 +264,7 @@ impl Driver<'_> {
             let empty = PlanOutput {
                 flows: Vec::new(),
                 unassigned: Vec::new(),
+                crate_notes: None,
             };
             let plan = self.with_unfit(empty);
             self.plan_known(plan, PlanFrom::Agent).await?;

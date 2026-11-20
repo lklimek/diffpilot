@@ -21,6 +21,7 @@ use crate::api::dashboard::{
     DashboardEvent, DashboardSettings, DashboardSettingsView, DashboardSummary, ItemPage,
     ItemQuery, RefreshStatus, SetTimeZoneRequest, SummaryQuery,
 };
+use crate::api::deps::DependencyView;
 use crate::api::error::{ApiError, LoginError};
 use crate::api::events::AnalysisEvent;
 use crate::api::feedback::{Feedback, FeedbackRequest};
@@ -29,7 +30,8 @@ use crate::api::pr::{ResolvePrRequest, ResolvePrResponse};
 use crate::api::questions::{AnchoredAskRequest, AskQuestion, AskRequest};
 use crate::api::review::ReviewState;
 use crate::api::settings::{
-    RepoSettings, SetAskEffortRequest, SetJudgeEffortRequest, SetLanguageRequest, Settings,
+    RepoSettings, SetAskEffortRequest, SetControlledOwnersRequest, SetJudgeEffortRequest,
+    SetLanguageRequest, Settings,
 };
 use crate::api::tour::Tour;
 use crate::routes::{self, Listener, ROUTES, Route};
@@ -88,6 +90,7 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<ReviewState>("review_state", &[routes::GET_REVIEW_STATE]),
     api_schema::<Vec<AskQuestion>>("ask_question_list", &[routes::LIST_QUESTIONS]),
     api_schema::<FilesResponse>("files_response", &[routes::GET_FILES]),
+    api_schema::<DependencyView>("dependency_view", &[routes::GET_DEPENDENCIES]),
     api_schema::<Vec<Feedback>>("feedback_list", &[routes::LIST_FEEDBACK]),
     api_schema::<PendingReview>("pending_review", &[routes::GET_PENDING_REVIEW]),
     api_schema::<Settings>("settings", &[routes::GET_SETTINGS]),
@@ -215,6 +218,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<AnchoredAskRequest>();
     collector.visit::<FilesResponse>();
     collector.visit::<SetViewedRequest>();
+    collector.visit::<DependencyView>();
     collector.visit::<FeedbackRequest>();
     collector.visit::<Feedback>();
     collector.visit::<PendingReview>();
@@ -223,6 +227,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<UpdateCommentRequest>();
     collector.visit::<Settings>();
     collector.visit::<SetLanguageRequest>();
+    collector.visit::<SetControlledOwnersRequest>();
     collector.visit::<RepoSettings>();
     collector.visit::<SetJudgeEffortRequest>();
     collector.visit::<SetAskEffortRequest>();

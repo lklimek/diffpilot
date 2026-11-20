@@ -31,6 +31,7 @@ import { deleteComment } from "./delete-comment";
 import { deleteFeedback } from "./delete-feedback";
 import { getAnalysis } from "./get-analysis";
 import { getDiff } from "./get-diff";
+import { getDependencies } from "./get-dependencies";
 import { getFiles } from "./get-files";
 import { getLines } from "./get-lines";
 import { authLogout, getMe } from "./get-me";
@@ -46,6 +47,7 @@ import { postFeedback } from "./post-feedback";
 import { putReviewState } from "./put-review-state";
 import { resolvePr } from "./resolve-pr";
 import { retryAnalysis } from "./retry-analysis";
+import { setControlledOwners } from "./set-controlled-owners";
 import { setFileViewed } from "./set-file-viewed";
 import { setLanguage } from "./set-language";
 import { updateComment } from "./update-comment";
@@ -73,6 +75,7 @@ export const handlers = [
   askAnchored,
   getFiles,
   setFileViewed,
+  getDependencies,
   listFeedback,
   postFeedback,
   deleteFeedback,
@@ -85,6 +88,7 @@ export const handlers = [
   retryAnalysis,
   getSettings,
   setLanguage,
+  setControlledOwners,
   getRepoSettings,
   getDashboard,
   hideDashboardMention,

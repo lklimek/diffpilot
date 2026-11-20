@@ -918,6 +918,7 @@ fn settings_lists_known_repositories() {
             owner: "acme".to_owned(),
             name: "node-client".to_owned(),
         }],
+        controlled_owners: None,
     };
     let json = serde_json::to_value(&settings).expect("serialises");
     assert_eq!(
@@ -943,6 +944,7 @@ fn settings_installations_not_checked_is_null_not_empty() {
         language: LlmLanguage::En,
         app_installations: None,
         repos: Vec::new(),
+        controlled_owners: None,
     };
     let json = serde_json::to_value(&settings).expect("serialises");
     assert_eq!(json["app_installations"], serde_json::Value::Null);

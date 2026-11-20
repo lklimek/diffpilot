@@ -692,6 +692,7 @@ fn each_output_is_verified_with_its_own_bounded_read() {
             })
             .collect(),
         unassigned: Vec::new(),
+        crate_notes: None,
     };
     let diff = DiffIndex::new(&files).expect("diff");
     let verified_plan = plan(&plan_output, &diff).expect("plan");
@@ -875,6 +876,7 @@ proptest::proptest! {
                 })
                 .collect(),
             unassigned: Vec::new(),
+            crate_notes: None,
         };
         let mut assign = |owner: u8, hunk_id: &HunkId, range: Option<(u32, u32)>| {
             let (head_start, head_end) = (range.map(|r| r.0), range.map(|r| r.1));

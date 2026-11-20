@@ -48,6 +48,7 @@ pub fn unfit_lines(
     let plan = PlanOutput {
         flows: Vec::new(),
         unassigned: unfit.to_vec(),
+        crate_notes: None,
     };
     Ok(match verdict::plan(&plan, &files)? {
         Ok(verified) => verified.unassigned,

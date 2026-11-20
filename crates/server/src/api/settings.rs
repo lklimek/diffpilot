@@ -270,6 +270,7 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
             .settings()
             .analysed_repos(&session.tenant_id)
             .await?,
+        controlled_owners: None,
     })
 }
 
