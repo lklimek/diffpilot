@@ -139,6 +139,8 @@ test("resizing persists across steps and reload; hiding inspector gives code spa
   );
 });
 
+// Screenshots only with SCREENSHOT_DIR set, e.g. /data/artifacts/diffpilot/<date>/wp3-tour-10.
+const shots = process.env.SCREENSHOT_DIR;
 for (const width of [1280, 1440]) {
   test(`real tour light screenshots at ${width}`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: "light" });
@@ -153,14 +155,14 @@ for (const width of [1280, 1440]) {
       .getByRole("button", { name: /^Step 2:/ })
       .click();
     await expect(page.locator("main [data-code-slot] [data-line='43'][data-side=head]")).toBeInViewport();
-    await page.screenshot({ path: `/data/artifacts/diffpilot/2026-11-17/wp3-tour-10/step-${width}.png` });
+    if (shots) await page.screenshot({ path: `${shots}/step-${width}.png` });
     await page
       .getByRole("navigation")
       .getByRole("button", { name: /Docs & comments/ })
       .click();
     await page.getByRole("button", { name: "Show lines 24–27" }).click();
     await expect(page.getByRole("button", { name: "Comment on line 24" })).toBeVisible();
-    await page.screenshot({ path: `/data/artifacts/diffpilot/2026-11-17/wp3-tour-10/docs-${width}.png` });
+    if (shots) await page.screenshot({ path: `${shots}/docs-${width}.png` });
   });
 }
 

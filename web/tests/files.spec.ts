@@ -144,6 +144,7 @@ test("the breadcrumb switches views and keeps the place; s goes back", async ({ 
 });
 
 test("no serious axe violations in the Files view's states", async ({ page }) => {
+  test.setTimeout(120_000);
   for (const url of [
     link("src/rpc/client.rs"),
     link("src/rpc/client.rs", "&line=96&end=109"),

@@ -71,6 +71,7 @@ test("GitHub down: the refresh fails with a plain message and the previous list 
 }) => {
   test.skip(!stack.github, "needs fake GitHub's test controls (a local stack)");
   await signIn(page);
+  await expect(workList(page).locator("li[data-item]").first()).toBeVisible();
   const before = await rowIds(page);
   // More failures than the scan tries (last test of this stack: leftovers do not matter).
   await githubFaults(page, stack, [
