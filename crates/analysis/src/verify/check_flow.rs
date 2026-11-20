@@ -1805,6 +1805,24 @@ mod tests {
         );
     }
 
+    /// Removed lines at a deletion marker inside a head step belong to that step; an incidental change on the same
+    /// removed lines gives them two owners (the Tour's step and Files' incidental row).
+    #[test]
+    #[ignore = "repro: a base-side incidental on removed lines a head step covers by its deletion marker is accepted"]
+    fn incidental_changes_on_removed_lines_of_a_head_step_are_refused() {
+        let mut output = with_incidental();
+        output.incidentals.push(incidental(
+            "src/a.rs",
+            LineSide::Base,
+            (10, 11),
+            "Renames the retry helper.",
+        ));
+        assert_eq!(
+            kinds(&Setup::new().issues(&output)),
+            [VerifyIssueKind::IncidentalOverlapsStep]
+        );
+    }
+
     #[test]
     fn incidental_text_gets_the_wording_rules() {
         let mut output = with_incidental();

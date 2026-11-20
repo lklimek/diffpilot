@@ -2048,4 +2048,37 @@ mod tests {
             started.elapsed()
         );
     }
+
+    /// Attributes nested inside a first attribute, each starting a line after `;`: every start reads its own
+    /// attribute once, so the test rule must stay linear in the tokens (a 500 KB file, well under the blob limit).
+    #[test]
+    #[ignore = "repro: is_test_attribute collects every token of a first attribute per start, quadratic on nesting"]
+    fn hostile_nested_attributes_do_not_take_quadratic_time() {
+        let levels = 100_000;
+        let nested = format!("{}{}", "#[\n;\n".repeat(levels), "]\n".repeat(levels));
+        let lines: Vec<&str> = nested.lines().collect();
+        let started = Instant::now();
+        assert_eq!(added_by(TEST_ITEM_RULE, &lines), NONE);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A trait import whose name the file never uses changes which method a call resolves to (a trait method on
+    /// the receiver beats an inherent method of its `Deref` target); its hunk is no longer listed to the agent, so
+    /// the rule must leave it visible.
+    #[test]
+    #[ignore = "repro: an import used by no name on its own side (a trait for method resolution) is cut"]
+    fn an_import_used_by_no_name_on_its_side_is_not_cut() {
+        let base = [
+            "use crate::wrap::Wrapper;",
+            "fn show(w: &Wrapper) -> &str {",
+            "    w.name()",
+            "}",
+        ];
+        let head = ["use crate::ext::Named;", base[0], base[1], base[2], base[3]];
+        assert_eq!(head_by(IMPORT_RULE, &base, &head), NONE);
+    }
 }
