@@ -265,7 +265,8 @@ fn samples() -> Vec<(JobKind, Value)> {
                               {"hunk_id": "h2", "head_start": 21, "head_end": 25}],
                     "depends_on": []
                 }],
-                "unassigned": [{"hunk_id": "h3", "head_start": null, "head_end": null, "reason": "import order only"}]
+                "unassigned": [{"hunk_id": "h3", "head_start": null, "head_end": null, "reason": "import order only"}],
+                "crate_notes": [{"note": "retry around `RpcClient::send`", "hunks": ["h1", "h2"]}]
             }),
         ),
         (
@@ -318,7 +319,9 @@ fn samples() -> Vec<(JobKind, Value)> {
                                  "symbol": null, "reason": "Calls send.", "basis": "fact"}],
                 "pattern_repetitions": [{"description": "Timeout mapping", "explained_in_step_id": "s1",
                                          "sites": [{"file": "src/rpc/client.rs", "side": "head", "start_line": 120, "end_line": 121}]}],
-                "thread_statuses": [{"thread_alias": "t1", "status": "still_valid", "reason": "Still retries."}]
+                "thread_statuses": [{"thread_alias": "t1", "status": "still_valid", "reason": "Still retries."}],
+                "incidentals": [{"file": "src/lib.rs", "side": "head", "start_line": 3, "end_line": 3,
+                    "text": "Re-exports `RetryPolicy` for the new caller."}]
             }),
         ),
         (
@@ -603,4 +606,16 @@ fn plan_schema_and_decoder_exclude_test_classification() {
         serde_json::from_str(include_str!("../../../fixtures/pr-482/agent/plan.json")).unwrap();
     plan["flows"][0]["classification"] = json!("test");
     assert!(serde_json::from_value::<PlanOutput>(plan).is_err());
+}
+
+#[test]
+fn flows_stored_before_incidental_changes_read_with_none() {
+    let (_, mut flow) = samples()
+        .into_iter()
+        .find(|(kind, _)| *kind == JobKind::AnalyseFlow)
+        .expect("flow");
+    flow.as_object_mut().expect("object").remove("incidentals");
+    let stored: contracts::agent::analyse_flow::FlowAnalysisOutput =
+        serde_json::from_value(flow).expect("a stored flow without incidentals");
+    assert!(stored.incidentals.is_empty());
 }

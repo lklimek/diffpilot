@@ -1,4 +1,5 @@
-//! Ask: private questions about a step, answered in the asker's working session for this PR.
+//! Ask: private questions about a step, lines or a file, a flow or the whole PR, with follow-ups in threads, answered
+//! in the asker's working session for this PR.
 
 use crate::time::Timestamp;
 use schemars::JsonSchema;
@@ -6,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::agent::ask::AskOutput;
-use crate::ids::{QuestionId, StepId};
+use crate::common::{LineRange, LineSide};
+use crate::ids::{FlowId, QuestionId, StepId};
 
 /// Body of `POST /api/v1/analyses/{id}/steps/{step_id}/questions`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -20,7 +22,63 @@ impl AskRequest {
     pub const MAX_TEXT_CHARS: usize = 2000;
 }
 
-/// A private question and its LLM answer, pinned to the step; returned only to its asker.
+/// Body of `POST /api/v1/analyses/{id}/questions`: a question with what it is about.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct AnchoredAskRequest {
+    /// The question, at most `AskRequest::MAX_TEXT_CHARS` characters.
+    pub text: String,
+    /// What the question is about; a follow-up repeats its thread's anchor.
+    pub anchor: AskAnchor,
+    /// A follow-up: a question of the thread it continues (the thread's first question is stored); absent for a new
+    /// thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent_id: Option<QuestionId>,
+}
+
+/// What a question is about.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AskAnchor {
+    /// A step of the Tour, optionally narrowed to some of its lines.
+    Step {
+        /// The step.
+        step_id: StepId,
+        /// Lines inside the step, on its side and file; null for the whole step.
+        lines: Option<LineRange>,
+    },
+    /// Lines of a file of the pull request that lie in no single step (or a whole file).
+    Lines {
+        /// Repository-relative path on `side`.
+        path: String,
+        /// Commit the lines refer to.
+        side: LineSide,
+        /// The lines, at most `AskAnchor::MAX_LINES`; null for the whole file.
+        range: Option<LineRange>,
+    },
+    /// An analysed flow as a whole.
+    Flow {
+        /// The flow.
+        flow_id: FlowId,
+    },
+    /// The whole pull request.
+    Pr,
+}
+
+impl AskAnchor {
+    /// Longest line range of an anchor, in lines: the longest range the API serves.
+    pub const MAX_LINES: u32 = crate::api::code::RangeQuery::MAX_LINES;
+
+    /// The step of a step anchor.
+    pub fn step_id(&self) -> Option<&StepId> {
+        match self {
+            Self::Step { step_id, .. } => Some(step_id),
+            Self::Lines { .. } | Self::Flow { .. } | Self::Pr => None,
+        }
+    }
+}
+
+/// A private question and its LLM answer, pinned to its anchor; returned only to its asker.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AskQuestion {
     /// Question id.
@@ -33,8 +91,16 @@ pub struct AskQuestion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub mine: Option<bool>,
-    /// The step.
-    pub step_id: StepId,
+    /// What the question is about.
+    pub anchor: AskAnchor,
+    /// The step of a step anchor; absent for other anchors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub step_id: Option<StepId>,
+    /// A follow-up: the first question of its thread; absent for a first question.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parent_id: Option<QuestionId>,
     /// The question.
     pub text: String,
     /// State.

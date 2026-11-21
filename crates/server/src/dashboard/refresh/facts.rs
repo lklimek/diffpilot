@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 use contracts::time::Timestamp;
 
 use crate::dashboard::score::{
-    CheckContext, CheckRollup, IssueFacts, Mergeable, Milestone, MilestoneContext, OwnedChange,
-    PrFacts, Relation, ReviewDecision, ScoreRules, classify_ci,
+    CheckContext, CheckRollup, IssueFacts, MergeState, Mergeable, Milestone, MilestoneContext,
+    OwnedChange, PrFacts, Relation, ReviewDecision, ScoreRules, classify_ci,
 };
 use crate::dashboard::snapshot::{StoredIssue, StoredLinkedIssue, StoredPr};
 use crate::github::work::{
@@ -268,6 +268,12 @@ pub(super) fn pr(
             "CONFLICTING" => Mergeable::Conflicting,
             _ => Mergeable::Unknown,
         },
+        merge_state: merge_state(&detail.merge_state_status),
+        viewer_can_write: detail
+            .base_repository
+            .as_ref()
+            .and_then(|r| r.viewer_permission.as_deref())
+            .is_some_and(|p| matches!(p, "WRITE" | "MAINTAIN" | "ADMIN")),
         review_decision: match detail.review_decision.as_deref() {
             Some("CHANGES_REQUESTED") => Some(ReviewDecision::ChangesRequested),
             Some("APPROVED") => Some(ReviewDecision::Approved),
@@ -332,14 +338,29 @@ pub(super) fn pr(
     }
 }
 
+/// GitHub's `mergeStateStatus`; an unknown value is [`MergeState::Unknown`].
+pub(super) fn merge_state(status: &str) -> MergeState {
+    match status {
+        "CLEAN" => MergeState::Clean,
+        "HAS_HOOKS" => MergeState::HasHooks,
+        "UNSTABLE" => MergeState::Unstable,
+        "BEHIND" => MergeState::Behind,
+        "BLOCKED" => MergeState::Blocked,
+        "DIRTY" => MergeState::Dirty,
+        "DRAFT" => MergeState::Draft,
+        _ => MergeState::Unknown,
+    }
+}
+
 fn pr_relations(candidate: &PrCandidate) -> Vec<Relation> {
     let found: BTreeSet<PrRelation> = candidate.relations.values().flatten().copied().collect();
     found
         .into_iter()
-        .map(|relation| match relation {
-            PrRelation::Authored => Relation::Authored,
-            PrRelation::Assigned => Relation::Assigned,
-            PrRelation::ReviewRequested => Relation::ReviewRequested,
+        .filter_map(|relation| match relation {
+            PrRelation::Authored => Some(Relation::Authored),
+            PrRelation::Assigned => Some(Relation::Assigned),
+            PrRelation::ReviewRequested => Some(Relation::ReviewRequested),
+            PrRelation::Mentioned => None,
         })
         .collect()
 }
@@ -395,11 +416,8 @@ mod tests {
 
     use super::*;
 
-    /// A GitHub App approver without the `[bot]` suffix keeps its Bot type in the facts, so its approval is not a
-    /// human's (B10 "a merge the user can make").
-    #[test]
-    fn a_bot_typed_approver_is_recorded_as_a_bot() {
-        let node = serde_json::json!({
+    fn node() -> serde_json::Value {
+        serde_json::json!({
             "number": 1199, "title": "feat(api): paginate identity lookups",
             "url": "https://github.com/acme/platform/pull/1199", "state": "OPEN", "isDraft": false,
             "isCrossRepository": false, "additions": 10, "deletions": 2,
@@ -419,10 +437,13 @@ mod tests {
             ]},
             "comments": {"nodes": []}, "reviewThreads": {"nodes": []},
             "timelineItems": {"nodes": []}, "commits": {"nodes": []}
-        });
-        let detail: PullDetail = serde_json::from_value(node).expect("detail");
+        })
+    }
+
+    fn stored(detail: &PullDetail) -> StoredPr {
         let rules = ScoreRules::new("alice", &DashboardSettings::default());
         let candidate = PrCandidate {
+            updated_at: None,
             title: detail.title.clone(),
             url: detail.url.clone(),
             relations: BTreeMap::new(),
@@ -434,17 +455,25 @@ mod tests {
             },
             number: 1199,
         };
-        let stored = pr(
+        pr(
             &rules,
             &item,
-            &detail,
+            detail,
             PrContext {
                 candidate: &candidate,
                 blockers: None,
                 owned: OwnedChange::NoPolicy,
                 milestones: MilestoneContext::default(),
             },
-        );
+        )
+    }
+
+    /// A GitHub App approver without the `[bot]` suffix keeps its Bot type in the facts, so its approval is not a
+    /// human's (B10 "a merge the user can make").
+    #[test]
+    fn a_bot_typed_approver_is_recorded_as_a_bot() {
+        let detail: PullDetail = serde_json::from_value(node()).expect("detail");
+        let stored = stored(&detail);
         assert_eq!(
             (
                 stored.facts.approved_by.as_slice(),
@@ -455,5 +484,44 @@ mod tests {
                 ["review-helper".to_owned()].as_slice()
             )
         );
+    }
+
+    /// GitHub's merge state and the user's write access to the base repository are kept (Ready to merge); an
+    /// unknown state or permission, or none, is not mergeable.
+    #[test]
+    fn merge_state_and_write_access_are_recorded() {
+        let with = |state: &str, permission: Option<&str>| {
+            let mut node = node();
+            node["mergeStateStatus"] = state.into();
+            node["baseRepository"] = serde_json::json!({
+                "nameWithOwner": "acme/platform", "isPrivate": false, "defaultBranchRef": {"name": "main"},
+                "viewerPermission": permission,
+            });
+            let detail: PullDetail = serde_json::from_value(node).expect("detail");
+            let facts = stored(&detail).facts;
+            (facts.merge_state, facts.viewer_can_write)
+        };
+        assert_eq!(with("CLEAN", Some("WRITE")), (MergeState::Clean, true));
+        assert_eq!(
+            with("HAS_HOOKS", Some("MAINTAIN")),
+            (MergeState::HasHooks, true)
+        );
+        assert_eq!(
+            with("UNSTABLE", Some("ADMIN")),
+            (MergeState::Unstable, true)
+        );
+        assert_eq!(
+            with("BLOCKED", Some("TRIAGE")),
+            (MergeState::Blocked, false)
+        );
+        assert_eq!(with("BEHIND", Some("READ")), (MergeState::Behind, false));
+        assert_eq!(with("DIRTY", None), (MergeState::Dirty, false));
+        assert_eq!(with("DRAFT", Some("WRITE")), (MergeState::Draft, true));
+        assert_eq!(
+            with("SOMETHING_NEW", Some("NEW")),
+            (MergeState::Unknown, false)
+        );
+        let detail: PullDetail = serde_json::from_value(node()).expect("no base repository");
+        assert!(!stored(&detail).facts.viewer_can_write);
     }
 }

@@ -141,11 +141,42 @@
         "additionalProperties": false
       },
       "description": "Hunks or hunk sub-ranges that belong to no flow, each with a reason."
+    },
+    "crate_notes": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "description": "A short keyword note on what changed (\"parsing of `TransitionType`\"), anchored by hunk ids.",
+        "type": "object",
+        "properties": {
+          "note": {
+            "description": "The note, at most [`PlanCrateNote::MAX_CHARS`] characters, plain text.",
+            "type": "string"
+          },
+          "hunks": {
+            "description": "Ids of the listed hunks it describes.",
+            "type": "array",
+            "items": {
+              "description": "Identifier of a diff hunk from the server's pre-pass: `h1`, `h2`, ….",
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "note",
+          "hunks"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Keyword notes on what changed per crate, each anchored by the hunks it describes; null in plans stored\nbefore notes existed (ADR-021)."
     }
   },
   "required": [
     "flows",
-    "unassigned"
+    "unassigned",
+    "crate_notes"
   ],
   "description": "The flows of the pull request and the hunks left unassigned.",
   "additionalProperties": false

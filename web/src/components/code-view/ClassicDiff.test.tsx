@@ -137,8 +137,14 @@ describe("ClassicDiff", () => {
     const base = screen.getByRole("button", { name: "Your pending comment at removed line 54" });
     expect(base.closest("[data-diff-line]")).toHaveAttribute("data-diff-line", "removed");
     await userEvent.click(head);
+    await userEvent.click(screen.getByRole("button", { name: "Open the comment here" }));
     const panel = screen.getByRole("list", { name: "Your pending comments at line 96" });
     expect(within(panel).getByText("Bounded?")).toBeVisible();
+    // Hide in the panel's top-right corner closes it and gives the focus back to the line's marker.
+    screen.getByRole("button", { name: "Hide your pending comment" }).focus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.queryByRole("list", { name: "Your pending comments at line 96" })).toBeNull();
+    expect(head).toHaveFocus();
   });
 
   it("keeps a row with a 24 px comment marker aligned with its line numbers", () => {

@@ -27,6 +27,12 @@ pub const SNAPSHOT_VERSION: u32 = 1;
 /// One refresh's scan, as stored (`dashboard_refreshes.snapshot`). Untrusted text is capped at scan time.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Unanswered mentions from the scan, independent of scoring.
+    #[serde(default)]
+    pub mentions: Vec<contracts::api::dashboard::Mention>,
+    /// Structured gaps in mention reads for this snapshot.
+    #[serde(default)]
+    pub mention_coverage: contracts::api::dashboard::MentionCoverage,
     /// [`SNAPSHOT_VERSION`].
     pub version: u32,
     /// The signed-in login at scan time.
@@ -51,6 +57,14 @@ pub struct Snapshot {
     pub unreachable: Vec<String>,
     /// What the scan read before exclusion.
     pub checked: KindCounts,
+    /// The pull requests carry GitHub's merge state and the user's write access; false in snapshots stored before
+    /// they were recorded.
+    #[serde(default)]
+    pub merge_states_recorded: bool,
+    /// When pull requests of this snapshot were last re-read after a plug-in's change signal (ADR-022); absent
+    /// while none was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prs_reread_at: Option<Timestamp>,
     /// TODO rows hidden because the current settings hide TODOs (read time only, never stored).
     #[serde(skip)]
     pub todos_hidden: bool,
@@ -141,6 +155,14 @@ pub async fn load(
     {
         hide_todos(&mut snapshot);
     }
+    let hidden = state
+        .db
+        .dashboard()
+        .hidden_mentions(tenant_id, user_id)
+        .await?;
+    snapshot
+        .mentions
+        .retain(|mention| !hidden.contains(&mention.id));
     Ok(Some((record, snapshot)))
 }
 
@@ -157,7 +179,7 @@ fn hide_todos(snapshot: &mut Snapshot) {
 }
 
 /// The snapshot in `document`, if it has this version and shape.
-fn readable(document: Value) -> Option<Snapshot> {
+pub(crate) fn readable(document: Value) -> Option<Snapshot> {
     let version = document.get("version").and_then(Value::as_u64);
     if version != Some(u64::from(SNAPSHOT_VERSION)) {
         tracing::warn!(

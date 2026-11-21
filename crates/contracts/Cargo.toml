@@ -4,6 +4,7 @@ description = "diffpilot wire types: agent output, HTTP API, SSE events, runner 
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 jiff.workspace = true

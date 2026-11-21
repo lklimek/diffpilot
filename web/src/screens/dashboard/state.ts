@@ -137,3 +137,9 @@ export function reviewHref(item: WorkItem): string {
   if (review && !review.head_moved) return `/analyses/${review.analysis_id}`;
   return `${REVIEW_START_PATH}?pr=${encodeURIComponent(item.url ?? "")}`;
 }
+
+/** Text of the collapsed side panel's rail: `More · waiting 3 · ready 2` (ready left out when not recorded). */
+export function railText(snapshot: SnapshotMeta): string {
+  const ready = snapshot.merge_state_pending === null ? "" : ` · ready ${snapshot.ready_to_merge.length}`;
+  return `More · waiting ${snapshot.awaiting.length}${ready}`;
+}

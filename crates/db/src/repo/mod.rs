@@ -92,7 +92,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The schema migrations in order, as `(version, description, SQL)`: the initial schema, then additive
 /// changes that upgrade an existing database in place.
-const MIGRATIONS: [(i64, &str, &str); 10] = [
+const MIGRATIONS: [(i64, &str, &str); 16] = [
     (1, "init", include_str!("../../migrations/0001_init.sql")),
     (
         2,
@@ -138,6 +138,36 @@ const MIGRATIONS: [(i64, &str, &str); 10] = [
         10,
         "language_ru",
         include_str!("../../migrations/0010_language_ru.sql"),
+    ),
+    (
+        11,
+        "hidden_mentions",
+        include_str!("../../migrations/0011_hidden_mentions.sql"),
+    ),
+    (
+        12,
+        "question_anchors",
+        include_str!("../../migrations/0012_question_anchors.sql"),
+    ),
+    (
+        13,
+        "question_touched_steps",
+        include_str!("../../migrations/0013_question_touched_steps.sql"),
+    ),
+    (
+        14,
+        "question_threads",
+        include_str!("../../migrations/0014_question_threads.sql"),
+    ),
+    (
+        15,
+        "dependencies",
+        include_str!("../../migrations/0015_dependencies.sql"),
+    ),
+    (
+        16,
+        "unbound_seed_logins",
+        include_str!("../../migrations/0016_unbound_seed_logins.sql"),
     ),
 ];
 

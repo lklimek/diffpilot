@@ -1,5 +1,6 @@
 import type { AppInstallation } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
+import { GithubMark } from "../github/GithubMark";
 import { Tooltip } from "../tooltip/Tooltip";
 import { SettingsCard } from "./Card";
 import { HelpTip } from "./HelpTip";
@@ -45,7 +46,8 @@ export function AppInstallationsCard({
             rel="noopener noreferrer"
             className={buttonClass("plain")}
           >
-            Manage on GitHub ↗
+            Manage on GitHub
+            <GithubMark />
           </a>
         </Tooltip>
       </p>

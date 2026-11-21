@@ -59,10 +59,10 @@ test("sign in → My work → Refresh → progress → provisional list → rank
   await expect(page).toHaveTitle("diffpilot My work: busy", { timeout: 30_000 });
 
   // The scan is stored: every item is provisional ("Not judged yet") until the first judged batch lands.
-  // 12 pull requests (the ownership policy keeps PLAT-1203 and PLAT-1199, directed at alice), 6 issues, 2 TODOs;
+  // 12 pull requests (the ownership policy keeps PLAT-1203 and PLAT-1199, directed at alice), 5 issues, 2 TODOs;
   // the list opens with every kind shown.
-  const banner = page.getByText(/^Ranking with the LLM: \d+ of 20 items judged\.$/);
-  await expect(workList(page).getByRole("heading", { name: /^Not judged yet.*·\s*20$/ })).toBeVisible({
+  const banner = page.getByText(/^Ranking with the LLM: \d+ of 19 items judged\.$/);
+  await expect(workList(page).getByRole("heading", { name: /^Not judged yet.*·\s*19$/ })).toBeVisible({
     timeout: 90_000,
   });
   expect((await groupIds(page, "Not judged yet")).slice(0, 3)).toEqual(["PLAT-1203", "WUI-320", "NC-482"]);
@@ -72,13 +72,16 @@ test("sign in → My work → Refresh → progress → provisional list → rank
   await screens(page, "dashboard-provisional");
 
   const done = await waitForRefresh(page, ranked, 150_000);
-  expect([done.judged, done.reused]).toEqual([20, 0]);
+  expect([done.judged, done.reused]).toEqual([19, 0]);
+  // Mention-only WUI-305 is a quick reply outside the ranking.
+  await page.getByRole("region", { name: "Mentions" }).getByRole("button", { name: /^Mentions/ }).click();
+  await expect(page.getByRole("link", { name: "Open mention on acme/wallet-ui#305 on GitHub" })).toBeVisible();
   await expect(banner).toHaveCount(0);
   await expect(page).toHaveTitle("diffpilot My work: ready");
   await expect(page.getByRole("heading", { name: /^Not judged yet/ })).toHaveCount(0);
   expect(await groupIds(page, "P1")).toEqual(["PLAT-1203", "WUI-320", "NC-482"]);
   expect((await groupIds(page, "P2"))[0]).toBe("WUI-311");
-  await expect(page.getByText(/^Refreshed manually at \d\d:\d\d · .* · judged 20 · reused 0$/)).toBeVisible();
+  await expect(page.getByText(/^Refreshed manually at \d\d:\d\d · .* · judged 19 · reused 0$/)).toBeVisible();
   await checkScreen(page);
   await screens(page, "dashboard-ranked");
 });
@@ -104,7 +107,7 @@ test("TODO rows: hidden when MemCan TODOs are switched off, back when on", async
 test("a PR row's Review opens /review with the PR checked; /?pr= moves there", async ({ page }) => {
   await signIn(page);
   const row = workList(page).locator('li[data-item="acme~node-client~pr~482"]');
-  await row.getByRole("link", { name: "Review", exact: true }).click();
+  await row.getByRole("link", { name: /^Review pull request /, exact: false }).click();
   await expect(page).toHaveURL(`/review?pr=${encodeURIComponent(PR_URL)}`);
   await expect(page.getByLabel("GitHub pull request URL")).toHaveValue(PR_URL);
   await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();
@@ -147,7 +150,7 @@ test("MemCan down: the refresh finishes, TODO rows are kept and a note says they
     expect(done.failure).toBeNull();
     await expect(page.getByText(/^Refreshed manually at /)).toBeVisible();
     expect(await rowIds(page)).toEqual(expect.arrayContaining(TODOS));
-    await page.getByRole("button", { name: /^« More · waiting on others/ }).click();
+    await page.getByRole("button", { name: /^« More · waiting \d+ · ready \d+$/ }).click();
     await expect(
       page.getByText(
         /^MemCan TODOs not refreshed \(MemCan unreachable at \d\d:\d\d\); the TODO rows are from an earlier scan\.$/,

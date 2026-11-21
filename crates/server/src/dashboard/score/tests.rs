@@ -59,6 +59,8 @@ fn pr() -> PrFacts {
         milestone_context: MilestoneContext::default(),
         ci: CiEffective::Green,
         mergeable: Mergeable::Mergeable,
+        merge_state: MergeState::Unknown,
+        viewer_can_write: false,
         review_decision: None,
         unresolved_threads: 0,
         review_pending_for_us: false,
@@ -2079,6 +2081,328 @@ fn awaiting_others_leaves_out_excluded_authors() {
         .map(|p| p.number)
         .collect();
     assert_eq!(numbers, [1]);
+}
+
+/// Ready to merge: the user's own PR into the default branch, not a draft, write access, every check passed (merge
+/// state clean or has hooks, CI not red) and nothing left to answer (no unresolved thread, change request or reply
+/// awaited); a stored snapshot without these facts lists none.
+#[test]
+fn ready_to_merge_when_github_lets_the_user_merge() {
+    let r = rules();
+    let ready = PrFacts {
+        merge_state: MergeState::Clean,
+        viewer_can_write: true,
+        base_ref: Some("main".into()),
+        ..pr()
+    };
+    let cases = [
+        ("clean", ready.clone(), true),
+        (
+            "targets a branch other than the default branch",
+            PrFacts {
+                base_ref: Some("v1.0-dev".into()),
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "default branch not known",
+            PrFacts {
+                default_branch: None,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "pre-receive hooks",
+            PrFacts {
+                merge_state: MergeState::HasHooks,
+                ..ready.clone()
+            },
+            true,
+        ),
+        (
+            "a check that is not required fails (GitHub would allow the merge)",
+            PrFacts {
+                merge_state: MergeState::Unstable,
+                ci: CiEffective::Red,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "red CI",
+            PrFacts {
+                ci: CiEffective::Red,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "an unresolved review thread",
+            PrFacts {
+                unresolved_threads: 1,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "a bot requests changes",
+            PrFacts {
+                changes_requested_by: vec!["thepastaclaw".into()],
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "a comment awaits the user's reply",
+            PrFacts {
+                awaiting_our_reply: true,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "more reviews than were fetched (an older change request may be hidden)",
+            PrFacts {
+                reviews_truncated: true,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "a linked login's PR",
+            PrFacts {
+                author: Some("alice-ci".into()),
+                ..ready.clone()
+            },
+            true,
+        ),
+        (
+            "still waiting on others' review",
+            PrFacts {
+                labels: vec!["ready-for-human".into()],
+                review_requested_from_others: vec!["bob".into()],
+                ..ready.clone()
+            },
+            true,
+        ),
+        (
+            "blocked",
+            PrFacts {
+                merge_state: MergeState::Blocked,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "behind",
+            PrFacts {
+                merge_state: MergeState::Behind,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "conflicts",
+            PrFacts {
+                merge_state: MergeState::Dirty,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "not determined",
+            PrFacts {
+                merge_state: MergeState::Unknown,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "draft",
+            PrFacts {
+                is_draft: true,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "no write access",
+            PrFacts {
+                viewer_can_write: false,
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "someone else's PR",
+            PrFacts {
+                author: Some("bob".into()),
+                ..ready.clone()
+            },
+            false,
+        ),
+        (
+            "a deleted author",
+            PrFacts {
+                author: None,
+                ..ready.clone()
+            },
+            false,
+        ),
+    ];
+    for (case, facts, expected) in cases {
+        assert_eq!(ready_to_merge(&r, &facts), expected, "{case}");
+    }
+    let mut stored = serde_json::to_value(&ready).expect("json");
+    let fields = stored.as_object_mut().expect("object");
+    fields.remove("merge_state");
+    fields.remove("viewer_can_write");
+    let old: PrFacts = serde_json::from_value(stored).expect("an old stored pull request loads");
+    assert!(!ready_to_merge(&r, &old));
+}
+
+/// A merge state GitHub had not computed is pending only for a PR that would otherwise be checked for Ready to
+/// merge.
+#[test]
+fn merge_state_pending_only_for_the_users_mergeable_prs() {
+    let r = rules();
+    let unknown = PrFacts {
+        merge_state: MergeState::Unknown,
+        viewer_can_write: true,
+        base_ref: Some("main".into()),
+        ..pr()
+    };
+    assert!(merge_state_pending(&r, &unknown));
+    assert!(!ready_to_merge(&r, &unknown));
+    for (case, facts) in [
+        (
+            "computed",
+            PrFacts {
+                merge_state: MergeState::Blocked,
+                ..unknown.clone()
+            },
+        ),
+        (
+            "draft",
+            PrFacts {
+                is_draft: true,
+                ..unknown.clone()
+            },
+        ),
+        (
+            "no write access",
+            PrFacts {
+                viewer_can_write: false,
+                ..unknown.clone()
+            },
+        ),
+        (
+            "someone else's",
+            PrFacts {
+                author: Some("bob".into()),
+                ..unknown.clone()
+            },
+        ),
+    ] {
+        assert!(!merge_state_pending(&r, &facts), "{case}");
+    }
+}
+
+/// Ready to merge lists by display id, leaves out excluded authors and keeps the PRs in the ranking.
+#[test]
+fn merge_ready_by_display_id_without_excluded_authors() {
+    let settings = DashboardSettings {
+        linked_logins: vec!["alice-ci".into()],
+        skip_authors: vec!["alice-ci".into()],
+        ..DashboardSettings::default()
+    };
+    let r = ScoreRules::new("alice", &settings);
+    let ready = |name: &str, number, author: &str| PrFacts {
+        repo: repo("acme", name),
+        number,
+        author: Some(author.into()),
+        merge_state: MergeState::Clean,
+        viewer_can_write: true,
+        base_ref: Some("main".into()),
+        ..pr()
+    };
+    let prs = vec![
+        ready("wallet-ui", 12, "alice"),
+        ready("wallet-ui", 9, "alice"),
+        ready("consensus", 40, "alice"),
+        ready("consensus", 41, "alice-ci"),
+    ];
+    let ids: Vec<String> = merge_ready(&r, &prs)
+        .iter()
+        .map(|p| r.display_id(&p.repo, p.number))
+        .collect();
+    assert_eq!(ids, ["consensus#40", "wallet-ui#9", "wallet-ui#12"]);
+    assert!(scored(&prs[0]).excluded.is_none(), "still ranked");
+}
+
+/// K15 says a PR waits only on others when "nothing is the user's move", including "no merge the user can make";
+/// K17 and the docs say a PR in Ready to merge stays ranked. A PR GitHub lets the user merge (no required review,
+/// so no review decision; a review requested from someone else) must therefore not be listed as waiting only on
+/// others.
+#[test]
+fn a_pr_ready_to_merge_does_not_wait_only_on_others() {
+    let r = rules();
+    let facts = PrFacts {
+        labels: vec!["ready-for-human".into()],
+        review_requested_from_others: vec!["bob".into()],
+        others_review_requested_at: Some(ago(2.0)),
+        review_decision: None,
+        merge_state: MergeState::Clean,
+        viewer_can_write: true,
+        base_ref: Some("main".into()),
+        ..pr()
+    };
+    assert!(
+        ready_to_merge(&r, &facts),
+        "precondition: GitHub lets the user merge it"
+    );
+    assert!(
+        !waits_on_others(&r, &facts),
+        "listed under Waiting on others (nothing is your move) and Ready to merge at once"
+    );
+}
+
+/// Waiting on others keeps GitHub's merge button as "a merge the user can make" (K15): a PR into a feature branch,
+/// or with a failed check that is not required, is the user's move although Ready to merge does not list it.
+#[test]
+fn a_pr_github_lets_the_user_merge_does_not_wait_only_on_others() {
+    let r = rules();
+    let mergeable = PrFacts {
+        labels: vec!["ready-for-human".into()],
+        review_requested_from_others: vec!["bob".into()],
+        others_review_requested_at: Some(ago(2.0)),
+        review_decision: None,
+        merge_state: MergeState::Clean,
+        viewer_can_write: true,
+        base_ref: Some("main".into()),
+        ..pr()
+    };
+    for (case, facts) in [
+        (
+            "into a feature branch",
+            PrFacts {
+                base_ref: Some("feat/x".into()),
+                ..mergeable.clone()
+            },
+        ),
+        (
+            "a check that is not required failed",
+            PrFacts {
+                merge_state: MergeState::Unstable,
+                ..mergeable.clone()
+            },
+        ),
+    ] {
+        assert!(!ready_to_merge(&r, &facts), "{case}: not ready to merge");
+        assert!(!waits_on_others(&r, &facts), "{case}: the user's move");
+    }
 }
 
 // --- text rules -------------------------------------------------------------------------------------------

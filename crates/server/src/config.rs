@@ -14,6 +14,8 @@ use url::Url;
 
 /// Public base URL of the instance, e.g. `https://review.klimek.ws`.
 pub const PUBLIC_URL: &str = "SR_PUBLIC_URL";
+/// Comma-separated GitHub logins allowed to sign in (default tenant), applied at every start (ADR-007).
+pub const ALLOWED_LOGINS: &str = "SR_ALLOWED_LOGINS";
 /// Address the HTTP server listens on.
 pub const LISTEN_ADDR: &str = "SR_LISTEN_ADDR";
 /// Address the runner-only listener (`/runner/v1/*`) listens on; never exposed through the reverse proxy.
@@ -46,6 +48,8 @@ pub const MEMCAN_URL: &str = "SR_MEMCAN_URL";
 pub const MEMCAN_TOKEN: &str = "SR_MEMCAN_TOKEN";
 /// MemCan web UI base including `/ui`; dashboard TODO links are `<base>/tasks/<uuid>` (optional).
 pub const MEMCAN_UI_URL: &str = "SR_MEMCAN_UI_URL";
+/// Base URL of the PR Hygiene service; set, the dashboard's PR Hygiene plug-in is on (optional, ADR-022).
+pub const PR_HYGIENE_URL: &str = "SR_PR_HYGIENE_URL";
 /// Path of a file holding `SR_SECRET_KEY`; exactly one of the two may be set.
 pub const SECRET_KEY_FILE: &str = "SR_SECRET_KEY_FILE";
 /// Path of a file holding `SR_RUNNER_SECRET`; exactly one of the two may be set.
@@ -63,6 +67,8 @@ const DEFAULT_DATA_DIR: &str = "data";
 const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
 const DEFAULT_GITHUB_WEB_URL: &str = "https://github.com";
 const SECRET_KEY_LEN: usize = 32;
+/// Longest GitHub login.
+const MAX_LOGIN_LEN: usize = 39;
 /// Largest secret file read.
 const MAX_SECRET_FILE_BYTES: u64 = 64 * 1024;
 
@@ -75,6 +81,8 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     /// Runner-only listen address (default `0.0.0.0:3001`); serves only the runner protocol.
     pub runner_listen_addr: SocketAddr,
+    /// GitHub logins allowed to sign in to the default tenant; at least one, unique ignoring ASCII case.
+    pub allowed_logins: Vec<String>,
     /// Reverse proxies whose forwarding headers are trusted (default: none).
     pub trusted_proxies: Vec<IpNet>,
     /// Directory for the database and the bare mirrors (default `data`).
@@ -89,6 +97,8 @@ pub struct Config {
     pub memcan: MemcanConfig,
     /// MemCan web UI base, no trailing slash; links are `<value>/tasks/<uuid>` (default: none, no links).
     pub memcan_ui_url: Option<String>,
+    /// PR Hygiene service base, the dashboard plug-in's source (default: none, plug-in off; ADR-022).
+    pub pr_hygiene_url: Option<Url>,
 }
 
 /// GitHub App credentials and GitHub base URLs (configurable for the fake GitHub).
@@ -179,6 +189,40 @@ pub enum ConfigError {
         /// Parse error.
         #[source]
         source: ipnet::AddrParseError,
+    },
+    /// The allowed-login list names no login.
+    #[error("environment variable {key} names no GitHub login, so nobody could sign in")]
+    NoAllowedLogins {
+        /// Variable name.
+        key: &'static str,
+    },
+    /// One entry of the allowed-login list is not a GitHub login.
+    #[error(
+        "environment variable {key} contains '{entry}', which is not a GitHub login (letters, digits, - or _, at most 39 characters)"
+    )]
+    InvalidLogin {
+        /// Variable name.
+        key: &'static str,
+        /// The rejected entry (not secret).
+        entry: String,
+    },
+    /// An entry still holds the `.env.example` placeholder.
+    #[error(
+        "environment variable {key} still holds the placeholder '{entry}'; list the GitHub logins allowed to sign in"
+    )]
+    PlaceholderLogin {
+        /// Variable name.
+        key: &'static str,
+        /// The placeholder entry.
+        entry: String,
+    },
+    /// A login is listed twice (logins are case-insensitive).
+    #[error("environment variable {key} lists '{entry}' twice; GitHub logins are case-insensitive")]
+    DuplicateLogin {
+        /// Variable name.
+        key: &'static str,
+        /// The repeated entry as written the second time.
+        entry: String,
     },
     /// The secret key is not base64.
     #[error("environment variable {key} is not valid base64")]
@@ -296,6 +340,7 @@ impl Config {
 
         Ok(Self {
             public_url: parse_http_url(PUBLIC_URL, &require(PUBLIC_URL)?)?,
+            allowed_logins: parse_allowed_logins(&require(ALLOWED_LOGINS)?)?,
             listen_addr,
             runner_listen_addr,
             trusted_proxies,
@@ -340,6 +385,9 @@ impl Config {
                     let url = String::from(url);
                     url.strip_suffix('/').map(str::to_owned).unwrap_or(url)
                 }),
+            pr_hygiene_url: get(PR_HYGIENE_URL)?
+                .map(|value| parse_http_url(PR_HYGIENE_URL, &value))
+                .transpose()?,
         })
     }
 }
@@ -407,6 +455,50 @@ fn parse_trusted_proxies(value: &str) -> Result<Vec<IpNet>, ConfigError> {
         .collect()
 }
 
+/// A GitHub login as the dashboard settings accept one: ASCII letters, digits, `-` or `_` (Enterprise Managed Users).
+fn is_github_login(entry: &str) -> bool {
+    entry.len() <= MAX_LOGIN_LEN
+        && entry
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn parse_allowed_logins(value: &str) -> Result<Vec<String>, ConfigError> {
+    let mut logins: Vec<String> = Vec::new();
+    for entry in value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        // Checked as check-production-config.sh does: a start with the example value would drop every bound entry.
+        if entry.contains("REPLACE") {
+            return Err(ConfigError::PlaceholderLogin {
+                key: ALLOWED_LOGINS,
+                entry: entry.to_owned(),
+            });
+        }
+        if !is_github_login(entry) {
+            return Err(ConfigError::InvalidLogin {
+                key: ALLOWED_LOGINS,
+                entry: entry.to_owned(),
+            });
+        }
+        if logins.iter().any(|login| login.eq_ignore_ascii_case(entry)) {
+            return Err(ConfigError::DuplicateLogin {
+                key: ALLOWED_LOGINS,
+                entry: entry.to_owned(),
+            });
+        }
+        logins.push(entry.to_owned());
+    }
+    if logins.is_empty() {
+        return Err(ConfigError::NoAllowedLogins {
+            key: ALLOWED_LOGINS,
+        });
+    }
+    Ok(logins)
+}
+
 fn parse_secret_key(value: &str) -> Result<SecretBox<[u8; SECRET_KEY_LEN]>, ConfigError> {
     let bytes =
         Zeroizing::new(
@@ -441,8 +533,9 @@ pub(crate) mod tests {
     const RUNNER_SECRET_VALUE: &str = "runner-secret-value-456";
     const MEMCAN_TOKEN_VALUE: &str = "memcan-token-value-789";
 
-    const REQUIRED: [&str; 9] = [
+    const REQUIRED: [&str; 10] = [
         PUBLIC_URL,
+        ALLOWED_LOGINS,
         SECRET_KEY,
         RUNNER_SECRET,
         GITHUB_APP_ID,
@@ -456,6 +549,7 @@ pub(crate) mod tests {
     fn required_env() -> HashMap<&'static str, String> {
         HashMap::from([
             (PUBLIC_URL, "https://review.example.test".to_owned()),
+            (ALLOWED_LOGINS, "lklimek,Claudius-Maginificent".to_owned()),
             (SECRET_KEY, KEY_B64.to_owned()),
             (RUNNER_SECRET, RUNNER_SECRET_VALUE.to_owned()),
             (GITHUB_APP_ID, "123456".to_owned()),
@@ -511,12 +605,88 @@ pub(crate) mod tests {
             "http://memcan.example.test:8190/mcp"
         );
         assert_eq!(config.memcan.token.expose_secret(), MEMCAN_TOKEN_VALUE);
+        assert_eq!(config.allowed_logins, ["lklimek", "Claudius-Maginificent"]);
+    }
+
+    #[test]
+    fn allowed_logins_are_trimmed_and_empty_entries_skipped() {
+        let mut env = required_env();
+        env.insert(ALLOWED_LOGINS, " alice , ,Bob-2,carol_acme,".to_owned());
+        let config = parse(&env).expect("valid");
+        assert_eq!(config.allowed_logins, ["alice", "Bob-2", "carol_acme"]);
+    }
+
+    #[test]
+    fn allowed_logins_must_name_at_least_one_login() {
+        let mut env = required_env();
+        env.insert(ALLOWED_LOGINS, " , ,".to_owned());
+        assert!(
+            matches!(
+                parse(&env),
+                Err(ConfigError::NoAllowedLogins {
+                    key: ALLOWED_LOGINS
+                })
+            ),
+            "only separators"
+        );
+    }
+
+    #[test]
+    fn allowed_login_that_is_not_a_github_login_is_named() {
+        let too_long = "a".repeat(40);
+        for entry in [
+            "@alice",
+            "alice smith",
+            "alice.smith",
+            "ąlice",
+            "alice;bob",
+            too_long.as_str(),
+        ] {
+            let mut env = required_env();
+            env.insert(ALLOWED_LOGINS, format!("bob,{entry}"));
+            match parse(&env) {
+                Err(error @ ConfigError::InvalidLogin { .. }) => {
+                    assert!(error.to_string().contains(&format!("'{entry}'")), "{error}");
+                }
+                other => panic!("{entry}: expected InvalidLogin, got {other:?}"),
+            }
+        }
+        let mut env = required_env();
+        env.insert(ALLOWED_LOGINS, "a".repeat(39));
+        assert!(parse(&env).is_ok(), "39 characters is GitHub's maximum");
+    }
+
+    #[test]
+    fn allowed_login_still_holding_the_example_placeholder_is_refused() {
+        for value in ["REPLACE_WITH_GITHUB_LOGINS", "alice,REPLACE_ME"] {
+            let mut env = required_env();
+            env.insert(ALLOWED_LOGINS, value.to_owned());
+            match parse(&env) {
+                Err(error @ ConfigError::PlaceholderLogin { .. }) => {
+                    assert!(error.to_string().contains("placeholder"), "{error}");
+                }
+                other => panic!("{value}: expected PlaceholderLogin, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn allowed_login_listed_twice_is_named_case_insensitively() {
+        let mut env = required_env();
+        env.insert(ALLOWED_LOGINS, "alice,bob,ALICE".to_owned());
+        match parse(&env) {
+            Err(error @ ConfigError::DuplicateLogin { .. }) => {
+                assert!(error.to_string().contains("'ALICE'"), "{error}");
+            }
+            other => panic!("expected DuplicateLogin, got {other:?}"),
+        }
     }
 
     #[test]
     fn required_variable_names_match_adr_001() {
         let env: HashMap<&str, &str> = HashMap::from([
             ("SR_PUBLIC_URL", "https://review.example.test"),
+            ("SR_ALLOWED_LOGINS", "octocat"),
             ("SR_SECRET_KEY", KEY_B64),
             ("SR_RUNNER_SECRET", "runner"),
             ("SR_GITHUB_APP_ID", "1"),
@@ -645,6 +815,33 @@ pub(crate) mod tests {
                 other => panic!("{key}: expected UnsupportedUrlScheme, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn pr_hygiene_url_is_optional_and_must_be_http() {
+        assert_eq!(parse(&required_env()).expect("valid").pr_hygiene_url, None);
+        let mut env = required_env();
+        env.insert(PR_HYGIENE_URL, "https://pr-hygiene.example.test".to_owned());
+        let url = parse(&env).expect("valid").pr_hygiene_url;
+        assert_eq!(
+            url.map(String::from).as_deref(),
+            Some("https://pr-hygiene.example.test/")
+        );
+        env.insert(PR_HYGIENE_URL, "pr-hygiene.example.test".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidUrl {
+                key: PR_HYGIENE_URL,
+                ..
+            })
+        ));
+        env.insert(PR_HYGIENE_URL, "ftp://pr-hygiene.example.test".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::UnsupportedUrlScheme {
+                key: PR_HYGIENE_URL
+            })
+        ));
     }
 
     #[test]

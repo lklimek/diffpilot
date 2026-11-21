@@ -1,4 +1,5 @@
-//! Ask (brief §5 Ask): a reviewer's question about one accepted step of a review-ready analysis becomes an `ask` job on
+//! Ask (brief §5 Ask): a reviewer's question about one accepted step (or about lines or a file, an analysed flow or
+//! the whole PR; a follow-up continues a thread with its anchor) of a review-ready analysis becomes an `ask` job on
 //! `JobExecutor` that resumes the user's private PR working session; a lost session falls back to the context pack built
 //! at claim with the asked step and its earlier answers ([`context_pack`]). The answer is checked like every agent
 //! output and stored as a `Question`; each state change is published on the analysis's event stream.
@@ -14,8 +15,10 @@ mod tests;
 use contracts::agent::ask::AskOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::events::AnalysisEvent;
-use contracts::api::questions::{AskQuestion, AskRequest};
-use contracts::ids::{AnalysisId, JobId, QuestionId, StepId};
+use contracts::api::questions::{AnchoredAskRequest, AskAnchor, AskQuestion, AskRequest};
+use contracts::api::tour::FlowAnalysisState;
+use contracts::common::LineRange;
+use contracts::ids::{AnalysisId, JobId, QuestionId};
 use db::error::DbError;
 use db::repo::analyses::{AnalysisRecord, SessionState};
 use db::repo::questions::{Asked, NewQuestion, QuestionLimits, QuestionUpdate};
@@ -27,6 +30,9 @@ use jiff::SignedDuration;
 
 pub use job::context_pack;
 
+use crate::github::mirror::{MirrorError, is_tree_path, read_blob};
+use crate::pipeline::tour::{self, TourLoadError};
+use crate::pipeline::{PrDiffError, pr_diff};
 use crate::state::AppState;
 
 /// Questions one analysis may hold (all users, every state).
@@ -59,6 +65,27 @@ pub enum AskError {
     /// The step id is not a canonical step id of the analysis's Tour.
     #[error("the step is not part of the analysis")]
     UnknownStep,
+    /// The flow has no stored analysis.
+    #[error("the flow is not analysed in the analysis")]
+    UnknownFlow,
+    /// The parent is not a question of this user on this analysis.
+    #[error("the question to follow up is not one of the user's on the analysis")]
+    UnknownParent,
+    /// A follow-up's anchor differs from its thread's.
+    #[error("a follow-up is not about its thread's anchor")]
+    FollowUpAnchor,
+    /// The anchor's lines are not lines of the step or of a file of the pull request, or too many.
+    #[error("the anchor is not lines of the analysis")]
+    InvalidAnchor,
+    /// The diff of the analysis is not available.
+    #[error("the diff of the analysis is not available")]
+    Diff(#[from] PrDiffError),
+    /// The Tour (which flows are analysed) could not be built from the stored documents or the pre-pass.
+    #[error("the Tour of the analysis is not available")]
+    Tour(#[source] TourLoadError),
+    /// A file could not be read from the mirror.
+    #[error("a file could not be read from the mirror")]
+    Mirror(#[from] MirrorError),
     /// The analysis holds [`MAX_QUESTIONS_PER_ANALYSIS`] questions.
     #[error("the analysis holds the most questions allowed")]
     AnalysisLimit,
@@ -70,14 +97,27 @@ pub enum AskError {
     Db(#[from] DbError),
 }
 
-/// Stores the user's question about `step` of the review-ready `analysis` as `pending`, publishes it and starts its
-/// follower, which submits the `ask` job.
+/// As on the Tour route: not finished, a missing document or a busy database, and an unprepared diff keep their own
+/// answers; the rest is a server error.
+impl From<TourLoadError> for AskError {
+    fn from(error: TourLoadError) -> Self {
+        match error {
+            TourLoadError::NotFinished => Self::NotFinished,
+            TourLoadError::Db(error) => Self::Db(error),
+            TourLoadError::Diff(error) => Self::Diff(error),
+            other @ (TourLoadError::Prepass(_) | TourLoadError::Tour(_)) => Self::Tour(other),
+        }
+    }
+}
+
+/// Stores the user's question about `request.anchor` (a step of the review-ready `analysis`, lines or a file, an
+/// analysed flow or the whole PR; a follow-up of `request.parent_id`'s thread) as `pending`, publishes it and starts
+/// its follower, which submits the `ask` job.
 pub async fn ask(
     state: &AppState,
     user_id: &str,
     analysis: &AnalysisSummary,
-    step: StepId,
-    request: AskRequest,
+    request: AnchoredAskRequest,
 ) -> Result<AskQuestion, AskError> {
     let text = request.text.trim();
     if text.is_empty() {
@@ -94,24 +134,37 @@ pub async fn ask(
     if superseded(&state.db.analyses().get(analysis.id).await?) {
         return Err(AskError::Superseded);
     }
-    if job::stored_step(&state.db, analysis.id, &step)
-        .await?
-        .is_none()
-    {
-        return Err(AskError::UnknownStep);
-    }
     let now = Timestamp::now();
-    let question = NewQuestion {
-        id: QuestionId::new_random(),
-        analysis_id: analysis.id,
-        step_id: step,
-        user_id: user_id.to_owned(),
-        text: text.to_owned(),
-    };
     let limits = QuestionLimits {
         per_analysis: MAX_QUESTIONS_PER_ANALYSIS,
         per_user: MAX_QUESTIONS_PER_USER_PER_HOUR,
         user_window_start: now - SignedDuration::from_hours(1),
+    };
+    // Refused requests do no diff or file work.
+    match state
+        .db
+        .questions()
+        .limit_reached(analysis.id, user_id, limits)
+        .await?
+    {
+        Some(Asked::AnalysisLimit) => return Err(AskError::AnalysisLimit),
+        Some(_) => return Err(AskError::UserLimit),
+        None => {}
+    }
+    let parent_id = match request.parent_id {
+        Some(parent) => {
+            Some(thread_of(state, user_id, analysis, parent, &request.anchor, now).await?)
+        }
+        None => None,
+    };
+    check_anchor(state, analysis, &request.anchor).await?;
+    let question = NewQuestion {
+        id: QuestionId::new_random(),
+        analysis_id: analysis.id,
+        anchor: request.anchor,
+        parent_id,
+        user_id: user_id.to_owned(),
+        text: text.to_owned(),
     };
     let db = &state.db;
     let event = state
@@ -131,10 +184,109 @@ pub async fn ask(
             column: "question event",
         }));
     };
-    tracing::info!(analysis = %analysis.id, question = %question.id, step = %question.step_id,
+    tracing::info!(analysis = %analysis.id, question = %question.id, step = ?question.step_id,
         "question asked");
     start(state, question.id);
     Ok(question)
+}
+
+/// The first question of `parent`'s thread (one level: a follow-up's parent is its thread's first question); not
+/// found unless `parent` is this user's question on `analysis`, and refused unless `anchor` is the thread's.
+async fn thread_of(
+    state: &AppState,
+    user_id: &str,
+    analysis: &AnalysisSummary,
+    parent: QuestionId,
+    anchor: &AskAnchor,
+    now: Timestamp,
+) -> Result<QuestionId, AskError> {
+    let record = match state.db.questions().get(parent, now).await {
+        Ok(record) => record,
+        Err(DbError::NotFound) => return Err(AskError::UnknownParent),
+        Err(error) => return Err(error.into()),
+    };
+    if record.analysis_id != analysis.id || record.user_id != user_id {
+        return Err(AskError::UnknownParent);
+    }
+    if record.question.anchor != *anchor {
+        return Err(AskError::FollowUpAnchor);
+    }
+    Ok(record.question.parent_id.unwrap_or(record.question.id))
+}
+
+/// A step anchor names a stored step (and lines inside it); a lines anchor names a file of the diff on its side and
+/// at most [`AskAnchor::MAX_LINES`] lines of it; a flow anchor names a flow the Tour shows analysed; the PR always
+/// exists.
+async fn check_anchor(
+    state: &AppState,
+    analysis: &AnalysisSummary,
+    anchor: &AskAnchor,
+) -> Result<(), AskError> {
+    let valid = |range: &LineRange| {
+        range.start_line >= 1
+            && range.start_line <= range.end_line
+            && range.end_line - range.start_line < AskAnchor::MAX_LINES
+    };
+    match anchor {
+        AskAnchor::Flow { flow_id } => {
+            // As the reviewer sees it: a stored analysis that fails today's checks is shown failed.
+            let tour = tour::load(state, analysis).await?;
+            let analysed = tour.flows.iter().any(|flow| {
+                flow.id == *flow_id
+                    && flow
+                        .analysis_status
+                        .as_ref()
+                        .is_some_and(|status| status.state == FlowAnalysisState::Analysed)
+            });
+            if !analysed {
+                return Err(AskError::UnknownFlow);
+            }
+        }
+        AskAnchor::Pr => {}
+        AskAnchor::Step { step_id, lines } => {
+            let Some((_, step)) = job::stored_step(&state.db, analysis.id, step_id).await? else {
+                return Err(AskError::UnknownStep);
+            };
+            let inside = |range: &LineRange| {
+                valid(range)
+                    && step.start_line <= range.start_line
+                    && range.end_line <= step.end_line
+            };
+            if lines.as_ref().is_some_and(|range| !inside(range)) {
+                return Err(AskError::InvalidAnchor);
+            }
+        }
+        AskAnchor::Lines { path, side, range } => {
+            if !is_tree_path(path) || range.as_ref().is_some_and(|range| !valid(range)) {
+                return Err(AskError::InvalidAnchor);
+            }
+            let (mirror, files) = pr_diff(state, analysis).await?;
+            if !files
+                .iter()
+                .any(|file| file.path_on(*side) == Some(path.as_str()))
+            {
+                return Err(AskError::InvalidAnchor);
+            }
+            if let Some(range) = range {
+                let commit = match side {
+                    contracts::common::LineSide::Head => &analysis.pr.head_sha,
+                    contracts::common::LineSide::Base => &analysis.pr.base_sha,
+                };
+                // A file too large to show has no line selection; a question can name the whole file.
+                let total = match read_blob(&mirror, commit, path).await {
+                    Ok(bytes) => bytes.map_or(0, |bytes| {
+                        analysis::lines::line_window(&bytes, 1, 0).total_lines
+                    }),
+                    Err(MirrorError::BlobTooLarge { .. }) => return Err(AskError::InvalidAnchor),
+                    Err(error) => return Err(error.into()),
+                };
+                if range.end_line > total {
+                    return Err(AskError::InvalidAnchor);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Starts the follower of `question` unless one runs already.

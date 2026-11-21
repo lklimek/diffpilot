@@ -313,7 +313,6 @@ async fn invalid_output_leaves_the_provisional_order() {
             ("CON-1520", Tier::P3, 243),
             ("CON-1525", Tier::P3, 191),
             ("PLAT-1215", Tier::P3, 177),
-            ("WUI-305", Tier::P3, 111),
             ("TODO-91bd0a44", Tier::P3, -10),
         ]
     );
@@ -360,7 +359,7 @@ async fn judged_refresh_ranks_the_fixture_world_as_the_scorer_expects() {
     );
     let applied: HashMap<ItemKey, ItemJudgement> =
         items.iter().map(|i| (i.key.clone(), expected(i))).collect();
-    let view = snapshot::build(&stored, &applied, None);
+    let view = snapshot::build(&stored, &applied, None, &Default::default());
     let want: Vec<(&str, Tier, i32)> = view
         .items
         .iter()

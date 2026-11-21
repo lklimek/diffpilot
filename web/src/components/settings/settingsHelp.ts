@@ -14,6 +14,7 @@ export const HELP_SECTIONS = [
   "LLM",
   "Memory",
   "Language",
+  "Notifications",
   "GitHub App",
   "Repository settings",
   "Dashboard",
@@ -131,6 +132,16 @@ const HELP = {
     limits: "English, Polski or Русский.",
     example: "Polski, then analyse the pull request again to get its texts in Polish.",
   },
+  notify_when_done: {
+    section: "Notifications",
+    title: "Notify me when work finishes",
+    what: "A browser notification when an Ask answer of yours arrives, a flow is analysed, or an analysis is ready to review, finishes or fails. It names the pull request and the flow or step, never the answer text; a click opens it.",
+    when: "While a diffpilot tab showing that review or its progress is open and you are in another tab or window. A tab you are looking at does not notify. Several open tabs notify once.",
+    empty: "Off. Turning it on asks the browser's permission; the choice is kept in this browser only.",
+    limits:
+      "Needs https (or localhost) and the browser's permission. Closed tabs do not notify. Mobile browsers show none.",
+    example: "Ask a question, switch to your editor, and get a notification when the answer is ready.",
+  },
   app_installations: {
     section: "GitHub App",
     title: "GitHub App",
@@ -146,6 +157,16 @@ const HELP = {
     when: "Shown for repositories that have an analysed pull request.",
     empty: "No repository is listed before the first analysis.",
     example: "dashpay/platform: related repositories found in Cargo.toml and Cargo.lock.",
+  },
+  controlled_owners: {
+    section: "Repository settings",
+    title: "Controlled organisations",
+    what: 'GitHub organisations or users whose repositories are yours. The Dependencies view marks their repositories and crates "yours", lists their crates among a changed crate\'s dependencies, and the PR-context agent looks up issues and pull requests in them.',
+    when: "Every time a Dependencies view or a PR context prompt is built; a change applies at once, without analysing again.",
+    empty: "Only the pull request's own owner is controlled; it always is.",
+    limits:
+      "Up to 50 GitHub logins (letters, digits and -, up to 39 characters), one list for the whole installation.",
+    example: "dashpay: a pull request in dashpay/dash-evo-tool shows dashpay/platform crates as yours.",
   },
   linked_logins: {
     section: "Dashboard",
@@ -235,7 +256,7 @@ const HELP = {
     section: "Dashboard",
     title: "Ready for a human label",
     what: "The label that marks a pull request ready for a human review.",
-    when: "Every ranking: a pull request with this label ranks higher, and one of yours with it, green checks and no open threads counts as ready for others. A ready pull request of yours with reviews requested from others, where nothing is your move (no review asked of you, no change request, no comment awaiting your reply, no conflicts, not approved for you to merge), is listed under Waiting on others only, not in Needs you.",
+    when: "Every ranking: a pull request with this label ranks higher, and one of yours with it, green checks and no open threads counts as ready for others. A ready pull request of yours with reviews requested from others, where nothing is your move (no review asked of you, no change request, no comment awaiting your reply, no conflicts, not approved for you to merge, no merge button active for you on GitHub), is listed under Waiting on others only, not in Needs you.",
     empty: "ready-for-human.",
     limits: "1 to 50 characters; compared without regard to case.",
     example: "needs-review.",
@@ -358,6 +379,7 @@ export const CONTRACT_HELP: {
     language: "language",
     app_installations: "app_installations",
     repos: "repository_settings",
+    controlled_owners: "controlled_owners",
   },
   llmSelection: {
     models: "llm_model",

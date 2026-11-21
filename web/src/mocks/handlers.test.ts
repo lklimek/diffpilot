@@ -2,7 +2,7 @@ import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { ApiError, createApiClient } from "../api/client";
 import { routes } from "../api/generated/routes";
-import type { AnalysisEvent } from "../api/generated/types";
+import type { AnalysisEvent, AnchoredAskRequest, AskQuestion } from "../api/generated/types";
 import { setFixtureState } from "./fixtures";
 import { handlers } from "./handlers";
 import { setMockLanguage } from "./handlers/get-settings";
@@ -319,5 +319,104 @@ describe("msw handlers of the screens", () => {
     expect(
       await api.getRepoSettings({ owner: "acme", name: "other" }).catch((e: unknown) => e),
     ).toMatchObject({ status: 404, code: "not_found" });
+  });
+
+  it("files (R12): every PR file with hunks; Viewed (R13) is set once GitHub confirmed and kept", async () => {
+    const api = createApiClient(BASE);
+    const files = await api.getFiles(ID);
+    expect(files.viewed_status).toBe("checked");
+    expect(files.files.map((f) => f.path)).toContain("src/rpc/client.rs");
+    expect(files.files.find((f) => f.path === "src/rpc/client.rs")?.viewed).toBe("unviewed");
+    await api.setFileViewed(ID, { path: "src/rpc/client.rs", viewed: true });
+    expect((await api.getFiles(ID)).files.find((f) => f.path === "src/rpc/client.rs")?.viewed).toBe("viewed");
+    expect(
+      await api.setFileViewed(ID, { path: "src/nope.rs", viewed: true }).catch((e: unknown) => e),
+    ).toMatchObject({ status: 400, code: "invalid_request" });
+    setScenario("viewed-refused");
+    expect(
+      await api.setFileViewed(ID, { path: "src/lib.rs", viewed: true }).catch((e: unknown) => e),
+    ).toMatchObject({ status: 422, code: "github_refused" });
+    setScenario("viewed-busy");
+    expect(
+      await api.setFileViewed(ID, { path: "src/lib.rs", viewed: true }).catch((e: unknown) => e),
+    ).toMatchObject({ status: 409, code: "conflict" });
+    setScenario("viewed-signed-out");
+    expect(
+      await api.setFileViewed(ID, { path: "src/lib.rs", viewed: true }).catch((e: unknown) => e),
+    ).toMatchObject({ status: 401, code: "unauthenticated" });
+    setScenario("viewed-head-unread");
+    expect(
+      await api.setFileViewed(ID, { path: "src/lib.rs", viewed: true }).catch((e: unknown) => e),
+    ).toMatchObject({
+      status: 502,
+      code: "github_unavailable",
+      message:
+        "Could not read the pull request from GitHub, so nothing was sent. Your mark is unchanged; try again.",
+    });
+    expect((await api.getFiles(ID)).files.find((f) => f.path === "src/lib.rs")?.viewed).toBe("unviewed");
+  });
+
+  it("files of a lazy tour: lines of a flow not analysed yet belong to that flow", async () => {
+    setScenario("lazy-flows");
+    const api = createApiClient(BASE);
+    const config = (await api.getFiles(ID)).files.find((f) => f.path === "src/config.rs")!;
+    expect(config.hunks[0]!.parts.map((p) => p.owner)).toContainEqual({ kind: "flow", flow_id: "f2" });
+  });
+
+  it("anchored Ask (R14): a lines question has no step", async () => {
+    const api = createApiClient(BASE);
+    const question = await api.askAnchored(ID, {
+      text: "Why?",
+      anchor: {
+        kind: "lines",
+        path: "src/rpc/metrics.rs",
+        side: "head",
+        range: { start_line: 41, end_line: 46 },
+      },
+    });
+    expect(question).toMatchObject({ state: "pending", anchor: { kind: "lines" } });
+    expect(question.step_id).toBeUndefined();
+  });
+
+  it("Ask chat: a follow-up keeps its thread (parent_id); flow and whole-PR questions are taken", async () => {
+    const api = createApiClient(BASE);
+    const ask = (body: AnchoredAskRequest) => api.askAnchored(ID, body);
+    const root = (await ask({ text: "Why?", anchor: { kind: "pr" } })) as AskQuestion;
+    expect(root).toMatchObject({ state: "pending", anchor: { kind: "pr" } });
+    expect(root.parent_id).toBeUndefined();
+    const follow = (await ask({
+      text: "And then?",
+      anchor: { kind: "pr" },
+      parent_id: root.id,
+    })) as AskQuestion;
+    expect(follow.parent_id).toBe(root.id);
+    const flow = (await ask({ text: "What?", anchor: { kind: "flow", flow_id: "f2" } })) as AskQuestion;
+    expect(flow.anchor).toEqual({ kind: "flow", flow_id: "f2" });
+    const listed = (await api.listQuestions(ID)) as AskQuestion[];
+    expect(listed.find((q) => q.id === follow.id)?.parent_id).toBe(root.id);
+    // Like the server: a follow-up of a follow-up joins the thread's first question; its anchor must match it.
+    const deeper = (await ask({ text: "And?", anchor: { kind: "pr" }, parent_id: follow.id })) as AskQuestion;
+    expect(deeper.parent_id).toBe(root.id);
+    await expect(
+      ask({ text: "?", anchor: { kind: "flow", flow_id: "f2" }, parent_id: root.id }),
+    ).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(ask({ text: "?", anchor: { kind: "pr" }, parent_id: "nope" })).rejects.toMatchObject({
+      status: 404,
+    });
+    await expect(ask({ text: "?", anchor: { kind: "flow", flow_id: "f99" } })).rejects.toMatchObject({
+      status: 404,
+    });
+    // Step lines must lie inside the step (f1.5 is head line 99), as on the server.
+    await expect(
+      ask({ text: "?", anchor: { kind: "step", step_id: "f1.5", lines: { start_line: 98, end_line: 99 } } }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(
+      await ask({
+        text: "?",
+        anchor: { kind: "step", step_id: "f1.5", lines: { start_line: 99, end_line: 99 } },
+      }),
+    ).toMatchObject({ state: "pending" });
   });
 });

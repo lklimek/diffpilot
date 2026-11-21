@@ -1,6 +1,7 @@
 import { HttpResponse } from "msw";
 import type {
   DashboardEvent,
+  Mention,
   DashboardSummary,
   ItemPage,
   RefreshStatus,
@@ -22,6 +23,20 @@ import { apiError, route } from "./common";
 // selects a scenario (the mockup states, DASHBOARD_SCENARIOS); a refresh started with R2 (or a ranking restarted
 // with R4) then follows a short script through scanning, ranking and finished, read alike by R1, R2b and the SSE.
 
+const MENTIONS: Mention[] = Array.from({ length: 5 }, (_, i) => ({
+  id: `mention-${i}`,
+  item_key: "acme~platform~pr~1203",
+  repo: { owner: "acme", name: "platform" },
+  number: 1203,
+  kind: "pr",
+  title: "A quick question",
+  author: i === 4 ? "helper" : "bob",
+  partly_read: false,
+  is_bot: i === 4,
+  created_at: `2026-11-18T0${i}:00:00Z`,
+  text: "@alice <script>please respond</script>",
+  url: `https://github.com/acme/platform/pull/1203#issuecomment-${i + 1}`,
+}));
 const SUMMARY = summaryJson as unknown as DashboardSummary;
 const ITEMS = itemsJson as unknown as ItemPage;
 const PROVISIONAL = provisionalJson as unknown as ItemPage;
@@ -92,7 +107,7 @@ const SCENARIOS = {
     const started_at = new Date(LOADED - 47_000).toISOString();
     return { summary: { ...SUMMARY, latest_refresh: { ...SCANNING, started_at } }, items: ITEMS };
   },
-  /** The scan finished at 09:24; the LLM ranks (10 of 14); changed and new items are provisional. */
+  /** The scan finished at 09:24; the LLM ranks (10 of 13); changed and new items are provisional. */
   provisional: () => ranking("running"),
   /** As provisional, but the ranking waits for a review analysis holding the LLM credential. */
   waiting: () => ranking("waiting_for_analysis"),
@@ -105,10 +120,17 @@ const SCENARIOS = {
     return {
       summary: {
         ...SUMMARY,
+        mentions: [],
         revision: "r-1029-empty",
         snapshot: { ...SUMMARY.snapshot!, item_counts: zero, checked: { pr: 38, issue: 21, todo: 29 } },
       },
-      items: { revision: "r-1029-empty", items: [], next_cursor: null },
+      items: {
+        mention_coverage: SUMMARY.mention_coverage,
+        mentions: [],
+        revision: "r-1029-empty",
+        items: [],
+        next_cursor: null,
+      },
     };
   },
   /** The last scan stopped on GitHub's rate limit; the 08:12 snapshot stays; Refresh waits for the reset. */
@@ -138,10 +160,40 @@ const SCENARIOS = {
       items: ITEMS,
     };
   },
+  /** Quick replies, including one bot, independent of ranked items. */
+  mentions: (): Base => ({
+    summary: { ...SUMMARY, mentions: MENTIONS },
+    items: { ...ITEMS, mentions: MENTIONS },
+  }),
+  "mention-coverage": (): Base => ({
+    summary: {
+      ...SUMMARY,
+      mention_coverage: {
+        unchecked_items: 5,
+        unchecked_logins: ["alice-helper"],
+        timed_out_logins: ["slow"],
+      },
+    },
+    items: ITEMS,
+  }),
+  "mention-hide-gone": (): Base => ({
+    summary: { ...SUMMARY, mentions: MENTIONS },
+    items: ITEMS,
+  }),
+  "mention-hide-fails": (): Base => ({
+    summary: { ...SUMMARY, mentions: MENTIONS },
+    items: { ...ITEMS, mentions: MENTIONS },
+  }),
   /** No refresh yet: no snapshot, no items. */
   "first-run": (): Base => ({
-    summary: { ...SUMMARY, revision: "r-none", latest_refresh: null, snapshot: null },
-    items: { revision: "r-none", items: [], next_cursor: null },
+    summary: { ...SUMMARY, mentions: [], revision: "r-none", latest_refresh: null, snapshot: null },
+    items: {
+      mention_coverage: SUMMARY.mention_coverage,
+      mentions: [],
+      revision: "r-none",
+      items: [],
+      next_cursor: null,
+    },
   }),
   /** First dashboard visit: no time zone stored, so the schedule cannot run yet (R6b stores it). */
   "no-time-zone": noTimeZone,
@@ -175,6 +227,8 @@ let run: Run | null = null;
 let previous: RefreshStatus | null = null;
 /** Refreshes changed by cancel or supersede, by id (they no longer follow the script). */
 const changed = new Map<string, RefreshStatus>();
+/** Hides persist across mock refreshes. */
+const hiddenMentions = new Set<string>();
 /** The time zone stored through R6b. */
 let timeZone: string | null = null;
 let runCount = 0;
@@ -185,6 +239,7 @@ export function resetDashboard(): void {
   run = null;
   previous = null;
   changed.clear();
+  hiddenMentions.clear();
   timeZone = null;
 }
 
@@ -255,11 +310,17 @@ function scripted(r: Run, now: number): RefreshStatus {
     ...b,
     state: done ? "finished" : "ranking",
     percent: 100,
-    steps: stepsAt(done ? 7 : 6, null, judged, 14),
+    steps: stepsAt(done ? 7 : 6, null, judged, ITEMS.items.length),
     scanned_at: scannedAt,
     judged,
     reused: 23,
-    ranking: { state: done ? "finished" : "running", judged, total: 14, resumes_at: null, message: null },
+    ranking: {
+      state: done ? "finished" : "running",
+      judged,
+      total: ITEMS.items.length,
+      resumes_at: null,
+      message: null,
+    },
   });
   switch (at) {
     case 0:
@@ -277,7 +338,7 @@ function scripted(r: Run, now: number): RefreshStatus {
     case 6:
       return rank(false, 7);
     default:
-      return rank(true, 14);
+      return rank(true, ITEMS.items.length);
   }
 }
 
@@ -335,7 +396,11 @@ export const getDashboard = route("getDashboard", () => {
   const { summary } = current();
   const time_zone = timeZone ?? summary.schedule.time_zone;
   const next_run_at = summary.schedule.next_run_at ?? (time_zone ? SUMMARY.schedule.next_run_at : null);
-  return HttpResponse.json({ ...summary, schedule: { ...summary.schedule, time_zone, next_run_at } });
+  return HttpResponse.json({
+    ...summary,
+    mentions: (summary.mentions ?? []).filter((m) => !hiddenMentions.has(m.id)),
+    schedule: { ...summary.schedule, time_zone, next_run_at },
+  });
 });
 
 /** Weak ETag of a body: a short hash of its JSON. */
@@ -351,7 +416,7 @@ function etagOf(body: unknown): string {
  * matching `If-None-Match`.
  */
 export const listDashboardItems = route("listDashboardItems", ({ request }) => {
-  const { items: page } = current();
+  const { items: page, summary } = current();
   const query = new URL(request.url).searchParams;
   const limit = Math.min(Number(query.get("limit") ?? 100), 500);
   const cursor = query.get("cursor");
@@ -371,6 +436,8 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
   const matching = page.items.filter(keep);
   const next = offset + limit < matching.length ? `${page.revision}:${offset + limit}` : null;
   const body: ItemPage = {
+    mention_coverage: summary.mention_coverage,
+    mentions: cursor ? [] : (page.mentions ?? []).filter((m) => !hiddenMentions.has(m.id)),
     revision: page.revision,
     items: matching.slice(offset, offset + limit),
     next_cursor: next,
@@ -504,4 +571,13 @@ export const dashboardRefreshEvents = route("dashboardRefreshEvents", ({ params,
   return new HttpResponse(body, {
     headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-store" },
   });
+});
+
+/** Session-only hide, persisted for the mock session. */
+export const hideDashboardMention = route("hideDashboardMention", ({ params }) => {
+  if (scenarioName === "mention-hide-fails") return apiError(500, "internal", "Could not hide this mention");
+  hiddenMentions.add(String(params.id));
+  if (scenarioName === "mention-hide-gone")
+    return apiError(404, "not_found", "The requested item was not found.");
+  return new HttpResponse(null, { status: 204 });
 });

@@ -579,3 +579,75 @@ fn flags_round_trip_and_need_a_red_or_yellow_level_a_scenario_and_what_was_not_c
         );
     }
 }
+
+#[test]
+fn incidental_changes_round_trip_by_location_or_planned_hunk() {
+    let (mut doc, _) = fixture();
+    let step = doc.steps[0].clone();
+    doc.incidentals = vec![contracts::agent::analyse_flow::AgentIncidental {
+        file: step.file.clone(),
+        side: step.side,
+        start_line: step.start_line,
+        end_line: step.start_line,
+        text: "Makes `send` public for the new caller.".into(),
+    }];
+    let text = encode(&doc, &Catalog::default()).unwrap();
+    let heading = text
+        .lines()
+        .find(|line| line.starts_with("## incidental "))
+        .expect("incidental section");
+    assert!(heading.ends_with(&format!(":head:{0}-{0}", step.start_line)));
+    assert!(text.contains(&format!("{heading}\ntext: Makes `send` public")));
+    assert_eq!(parse(&text, &Catalog::default()).unwrap(), doc);
+    // A planned hunk names its whole planned span.
+    let mut catalog = Catalog::default();
+    catalog.hunks.insert(
+        "h9".into(),
+        Anchor {
+            file: step.file.clone(),
+            side: "head".into(),
+            start: step.start_line,
+            end: step.start_line,
+            kind: "modified".into(),
+        },
+    );
+    let by_hunk = text.replace(heading, "## incidental h9");
+    assert_eq!(parse(&by_hunk, &catalog).unwrap(), doc);
+}
+
+#[test]
+fn incidental_changes_carry_only_a_text_never_a_flag_or_assessment() {
+    let (_, text) = fixture();
+    let at = "\n## incidental p1:head:1-1\n";
+    let cases = [
+        (format!("{text}{at}"), "has no `text:` line"),
+        (
+            format!("{text}{at}text: x\nlevel: red\n"),
+            "unknown or misplaced field `level`",
+        ),
+        (
+            format!("{text}{at}text: x\n\n### annotation flag inference 1-1\nlevel: red\n"),
+            "annotation must follow its step",
+        ),
+        (
+            format!("{text}{at}text: x\n\n### assessment\nrisk: high\nreason: y\n"),
+            "assessment must follow its step",
+        ),
+        (
+            format!("{text}\n## incidental\ntext: x\n"),
+            "wrong number of arguments",
+        ),
+        (
+            format!("{text}\n## incidental h404\ntext: x\n"),
+            "unknown planned hunk",
+        ),
+    ];
+    for (bad, message) in cases {
+        let error = parse(&bad, &Catalog::default()).unwrap_err();
+        assert!(error.message.contains(message), "{message}: {error}");
+    }
+    assert_eq!(
+        VERSION, 3,
+        "the grammar gained a section: checkers of older images refuse"
+    );
+}

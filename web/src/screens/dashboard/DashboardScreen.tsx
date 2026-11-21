@@ -10,8 +10,10 @@ import { RefreshError } from "../../components/dashboard/refresh-error/RefreshEr
 import { Headline, type ChartUnit } from "../../components/dashboard/headline/Headline";
 import { WorkList } from "../../components/dashboard/work-list/WorkList";
 import { ExcludedItems } from "../../components/dashboard/excluded-items/ExcludedItems";
+import { Mentions } from "../../components/dashboard/mentions/Mentions";
 import { EmptyWork } from "../../components/dashboard/work-list/EmptyWork";
 import { SidePanel } from "../../components/dashboard/side-panel/SidePanel";
+import { ReadyToMerge } from "../../components/dashboard/ready-to-merge/ReadyToMerge";
 import { WaitingOnOthers } from "../../components/dashboard/waiting-on-others/WaitingOnOthers";
 import { Yesterday } from "../../components/dashboard/yesterday/Yesterday";
 import { ThroughputMinis } from "../../components/dashboard/throughput-minis/ThroughputMinis";
@@ -21,7 +23,9 @@ import { KeyboardHelp } from "../../components/dashboard/keyboard-help/KeyboardH
 import { clockText } from "../../components/format/time";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
+import { Tooltip } from "../../components/tooltip/Tooltip";
 import {
+  barPullRequests,
   chartPoints,
   dailySeries,
   fullDayLabel,
@@ -32,7 +36,7 @@ import {
 } from "./history";
 import { REVIEW_START_PATH, SETTINGS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
-import { reviewHref } from "./state";
+import { railText, reviewHref } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
 const errorText = (error: unknown) =>
@@ -45,13 +49,15 @@ export function DashboardScreen() {
   const go = (href: string) => void navigate(href);
   const [helpOpen, setHelpOpen] = useState(false);
   const [unit, setUnit] = useState<ChartUnit>("day");
+  // The chart bar whose pull requests are listed, by its first day; it belongs to one unit.
+  const [bar, setBar] = useState<{ unit: ChartUnit; day: string } | null>(null);
   const { me, user, view, now } = page;
   const summary = page.summary.data;
   const snapshot = summary?.snapshot ?? null;
   useDashboardTabStatus(summary?.latest_refresh);
   // The shell (layout route) shows My work's count, this page's help and its refresh control.
   const { setCount, setHelp } = useShellSlots();
-  const count = snapshot?.item_counts.total ?? null;
+  const count = snapshot ? (summary?.mentions ?? []).filter((m) => !m.is_bot).length : null;
   useEffect(() => setCount(count), [count, setCount]);
   const signedIn = user !== null;
   useEffect(() => {
@@ -71,6 +77,21 @@ export function DashboardScreen() {
       yesterday: yesterday(events, now),
     };
   }, [snapshot, now]);
+
+  const points = charts && (unit === "day" ? charts.days : charts.weeks);
+  const selectedIndex = bar?.unit === unit ? (points?.findIndex((p) => p.day === bar.day) ?? -1) : -1;
+  const listed = useMemo(() => {
+    if (!snapshot || !bar) return null;
+    const titles = new Map<string, string>();
+    for (const item of [
+      ...(page.allItems ?? []),
+      ...snapshot.awaiting,
+      ...(snapshot.exclusions?.items ?? []),
+    ])
+      if (item.repo && item.number !== null)
+        titles.set(`${item.repo.owner}/${item.repo.name}#${item.number}`, item.title);
+    return barPullRequests(snapshot.history, bar.day, bar.unit, titles);
+  }, [snapshot, bar, page.allItems]);
 
   const snapshotAt = snapshot?.scanned_at ?? null;
   const excluded = snapshot && <ExcludedItems exclusions={snapshot.exclusions} onNavigate={go} />;
@@ -135,8 +156,32 @@ export function DashboardScreen() {
           weeks={charts.weeks}
           unit={unit}
           onUnitChange={setUnit}
+          selected={selectedIndex >= 0 ? selectedIndex : null}
+          onSelect={(i) => setBar(i === null || !points?.[i] ? null : { unit, day: points[i].day })}
+          listed={listed}
           staleNote={stale && `From the ${stale} snapshot.`}
         />
+      )}
+      <Mentions
+        items={summary.mentions ?? []}
+        coverage={summary.mention_coverage}
+        withBots={page.withBots}
+        onWithBotsChange={page.setWithBots}
+        onHide={(id) => page.hideMention.mutate(id)}
+        hidingIds={page.hideMention.pendingIds}
+        expanded={page.mentionsExpanded}
+        onExpandedChange={page.setMentionsExpanded}
+        now={now}
+      />
+      {page.hideMention.isError && (
+        <StatusMessage kind="error">
+          Could not hide this mention. Try again. {errorText(page.hideMention.error)}{" "}
+          <Tooltip tip="Dismiss this error message">
+            <button type="button" className="underline" onClick={page.hideMention.dismissError}>
+              Dismiss
+            </button>
+          </Tooltip>
+        </StatusMessage>
       )}
       {snapshot && view.empty && (
         <EmptyWork
@@ -144,6 +189,7 @@ export function DashboardScreen() {
           checked={snapshot.checked}
           excluded={excluded}
           awaiting={snapshot.awaiting.length}
+          hasMentions={(summary.mentions ?? []).length > 0}
           reviewStartHref={REVIEW_START_PATH}
           onNavigate={go}
           now={now}
@@ -202,8 +248,14 @@ export function DashboardScreen() {
       )}
       {main &&
         (snapshot && charts ? (
-          <SidePanel main={main} railText={`More · waiting on others ${snapshot.awaiting.length}`}>
+          <SidePanel main={main} railText={railText(snapshot)}>
             <WaitingOnOthers items={snapshot.awaiting} now={now} />
+            <ReadyToMerge
+              items={snapshot.ready_to_merge}
+              pending={snapshot.merge_state_pending}
+              held={snapshot.ready_to_merge_held}
+              plugins={summary?.plugins}
+            />
             <Yesterday
               label={fullDayLabel(charts.yesterday.day)}
               prs={charts.yesterday.prs}

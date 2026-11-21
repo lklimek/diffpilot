@@ -67,67 +67,82 @@ function ShowInInspector({
 const linesWord = (a: Annotation) =>
   `${a.range.start_line === a.range.end_line ? "line" : "lines"} ${rangeText(a.range)}`;
 
-/** `◆` on the first line of an LLM highlight: its popover holds the full text of the highlight's remarks. */
+/**
+ * `◆` of one LLM remark, on the remark's first displayed line (two remarks there, two markers): its popover holds
+ * the remark's full text; `owner` names the remark's step when the code mixes steps ("flow 1 · step 2").
+ */
 export function RemarkMarker({
-  annotations,
+  annotation: a,
   line,
+  owner,
+  unrated = false,
   onShowInInspector,
 }: {
-  annotations: readonly Annotation[];
+  annotation: Annotation;
   line: number;
+  owner?: string | null;
+  /** The remark carries no risk rating; the popover says so. */
+  unrated?: boolean;
   onShowInInspector?: (target: MarkerTarget) => void;
 }) {
-  const n = annotations.length;
+  const name = `LLM remark at line ${line}: ${annotationName(a)}${owner ? ` (${owner})` : ""}`;
+  const title = `${annotationName(a)} · ${linesWord(a)}`;
+  const level = flagLevel(a);
   return (
     <Popover
-      label={`LLM remarks at line ${line}`}
+      label={name}
       tag="llm"
-      content={(pinned) =>
-        annotations.map((a) => {
-          const title = `${annotationName(a)} · ${linesWord(a)}`;
-          const level = flagLevel(a);
-          return (
-            <span key={a.id} className="block">
-              <span className={`block font-semibold ${level ? FLAG_LOOK[level].text : "text-llm"}`}>
-                {level && <span aria-hidden>⚑ </span>}
-                {title}
-              </span>
-              {a.type === "behaviour" ? (
-                <>
-                  <span className="block">Was: {a.was}</span> <span className="block">Is: {a.is}</span>
-                </>
-              ) : (
-                <span className="block whitespace-pre-wrap">
-                  <CodeText text={a.text ?? ""} />
-                </span>
-              )}
-              {a.flag && a.flag.scenario.length > 0 && (
-                <span role="list" className="block pl-1">
-                  {a.flag.scenario.map((line, i) => (
-                    <span role="listitem" key={i} className="block">
-                      {i + 1}. <CodeText text={line} />
-                    </span>
-                  ))}
-                </span>
-              )}{" "}
-              <span className="text-muted">({a.basis})</span>
-              {pinned && onShowInInspector && (
-                <span className="block">
-                  <ShowInInspector
-                    name={title}
-                    onClick={() => onShowInInspector({ kind: "annotation", id: a.id })}
-                  />
-                </span>
-              )}
+      hint="LLM remark. Hover or click for its text."
+      content={(pinned) => (
+        <>
+          {unrated && <span className="block text-muted">Risk not rated by the LLM.</span>}
+          <span className="block">
+            <span className={`block font-semibold ${level ? FLAG_LOOK[level].text : "text-llm"}`}>
+              {level && <span aria-hidden>⚑ </span>}
+              {title}
+              {owner && <span className="font-normal text-muted"> · {owner}</span>}
             </span>
-          );
-        })
-      }
+            {a.type === "behaviour" ? (
+              <>
+                <span className="block">
+                  <span className="font-semibold">Was:</span> {a.was}
+                </span>
+                <span className="mt-1 block">
+                  <span className="font-semibold">Is:</span> {a.is}
+                </span>
+              </>
+            ) : (
+              <span className="block whitespace-pre-wrap">
+                <CodeText text={a.text ?? ""} />
+              </span>
+            )}
+            {a.flag && a.flag.scenario.length > 0 && (
+              <span role="list" className="block pl-1">
+                {a.flag.scenario.map((line, i) => (
+                  <span role="listitem" key={i} className="block">
+                    {i + 1}. <CodeText text={line} />
+                  </span>
+                ))}
+              </span>
+            )}{" "}
+            <span className="text-muted">({a.basis})</span>
+            {pinned && onShowInInspector && (
+              <span className="block">
+                <ShowInInspector
+                  name={title}
+                  onClick={() => onShowInInspector({ kind: "annotation", id: a.id })}
+                />
+              </span>
+            )}
+          </span>
+        </>
+      )}
     >
       <button
         type="button"
         data-mark="remark"
-        aria-label={`${n === 1 ? "LLM remark" : `${n} LLM remarks`} at line ${line}`}
+        data-annotation={a.id}
+        aria-label={name}
         className={`${MARKER} text-[15px] text-llm hover:text-text`}
       >
         <span aria-hidden>◆</span>
@@ -154,6 +169,7 @@ export function ThreadMarker({
     <Popover
       label={`${n === 1 ? "GitHub thread" : "GitHub threads"} at line ${line}`}
       tag="github"
+      hint="GitHub review thread. Hover or click for its text."
       content={(pinned) =>
         threads.map((t) => (
           <span key={t.id} className="block">

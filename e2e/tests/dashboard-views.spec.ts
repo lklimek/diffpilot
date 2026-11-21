@@ -17,7 +17,7 @@ import { expect, test } from "../support/fixtures";
 
 test.describe.configure({ mode: "serial" });
 
-const ISSUES = ["PLAT-1187", "PLAT-1210", "CON-1520", "CON-1525", "PLAT-1215", "WUI-305"];
+const ISSUES = ["PLAT-1187", "PLAT-1210", "CON-1520", "CON-1525", "PLAT-1215"];
 
 test("a ranked snapshot of the world", async ({ page, stack }) => {
   test.skip(!stack.memcan || !stack.github, "needs fake GitHub and fake MemCan (a local stack)");
@@ -27,7 +27,7 @@ test("a ranked snapshot of the world", async ({ page, stack }) => {
   await seedTodos(page, stack);
   await refreshButton(page).click();
   await waitForRefresh(page, ranked);
-  await expect(workList(page).locator("li[data-item]")).toHaveCount(20);
+  await expect(workList(page).locator("li[data-item]")).toHaveCount(19);
 });
 
 test("Excluded lists the excluded author's pull request with its reason", async ({ page }) => {
@@ -51,7 +51,7 @@ test("a PR waiting only on others is not in Needs you but in Waiting on others",
   await signIn(page);
   await expect(workList(page).locator("li[data-item]").first()).toBeVisible();
   expect(await rowIds(page)).not.toContain("PLAT-1176");
-  await page.getByRole("button", { name: /^« More · waiting on others 1$/ }).click();
+  await page.getByRole("button", { name: /^« More · waiting 1 · ready 1$/ }).click();
   const waiting = page.getByRole("listitem").filter({ hasText: "PLAT-1176" });
   await expect(waiting).toHaveCount(1);
   await expect(waiting).toContainText("@jun-park");

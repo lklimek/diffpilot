@@ -27,6 +27,7 @@ struct Fixture {
     pr_context: PrContextOutput,
     flows: Vec<FlowAnalysisOutput>,
     threads: Vec<GithubThread>,
+    dependencies: contracts::api::deps::DependencyView,
 }
 
 fn fixture_dir() -> PathBuf {
@@ -89,11 +90,41 @@ static FIXTURE: LazyLock<Fixture> = LazyLock::new(|| {
     })
     .expect("prepass");
     let tour: serde_json::Value = read_json("api-seed/default/tour.json");
+    let head_paths: Vec<String> = git(&repo, &["ls-tree", "-r", "--name-only", &pr.head_sha.0])
+        .expect("ls-tree")
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let head_text = |path: &str| git(&repo, &["show", &format!("{}:{path}", pr.head_sha.0)]);
+    let cargo: HashMap<String, String> = analysis::deps::cargo_files_to_read(&head_paths)
+        .into_iter()
+        .filter_map(|path| head_text(&path).map(|text| (path, text)))
+        .collect();
+    let mut map = analysis::deps::map(&pr.repo, &head_paths, &|path| {
+        cargo.get(path).map(String::as_str)
+    });
+    for file in files.iter().filter(|file| file.path.ends_with(".rs")) {
+        let added: Vec<u32> = file
+            .hunks
+            .iter()
+            .flat_map(|h| h.added.iter().copied())
+            .collect();
+        map.add_facts(&file.path, head_text(&file.path).as_deref(), &added);
+    }
+    let plan: PlanOutput = read_json("agent/plan.json");
+    let dependencies = crate::pipeline::deps::project(&crate::pipeline::deps::ProjectionInput {
+        map: &map,
+        pr_repo: &pr.repo,
+        files: &files,
+        plan: Some(&plan),
+        controlled: &[],
+    });
     Fixture {
         pr,
         files,
         prepass,
-        plan: read_json("agent/plan.json"),
+        plan,
+        dependencies,
         pr_context: read_json("agent/pr_context.json"),
         flows: (1..=5)
             .map(|n| read_json(&format!("agent/flow-{n}.json")))
@@ -178,6 +209,7 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
         job,
         description: Some(DESCRIPTION),
         profile: profile(f),
+        dependencies: Some(&f.dependencies),
     };
     let threads = flow_threads(f);
     let examples = calibration_examples();
@@ -194,7 +226,9 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
         job,
         step_id: &step_id,
         step: &f.flows[0].steps[4],
+        lines: None,
         question: QUESTION,
+        thread: &[],
         profile: profile(f),
     };
     let issues = issues();
@@ -215,8 +249,10 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
         pr_context: Some(&f.pr_context),
         flows: &f.flows,
         ask: Some(AskContext {
-            step_id: &step_id,
-            flow: &f.flows[0],
+            asked: Asked::Step {
+                step_id: &step_id,
+                flow: &f.flows[0],
+            },
             earlier: &earlier,
         }),
     };
@@ -232,8 +268,43 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
         ),
         (format!("ask.{lang}"), ask(&ask_input).expect("ask")),
         (
+            format!("ask_lines.{lang}"),
+            ask_lines(&ask_lines_input(job, f)).expect("ask_lines"),
+        ),
+        (
             format!("repair-analyse_flow-f1.{lang}"),
             repair(&repair_input).expect("repair"),
+        ),
+        (
+            format!("ask_flow.{lang}"),
+            ask_flow(&AskFlowInput {
+                job,
+                flow: &f.flows[1],
+                question: QUESTION,
+                thread: &[],
+                profile: profile(f),
+            })
+            .expect("ask_flow"),
+        ),
+        (
+            format!("ask_pr.{lang}"),
+            ask_pr(&AskPrInput {
+                job,
+                plan: Some(&f.plan),
+                pr_context: Some(&f.pr_context),
+                question: QUESTION,
+                thread: &[],
+                profile: profile(f),
+            })
+            .expect("ask_pr"),
+        ),
+        (
+            format!("ask_follow_up.{lang}"),
+            ask(&AskInput {
+                thread: &THREAD,
+                ..ask_input
+            })
+            .expect("ask follow-up"),
         ),
     ];
     if language == LlmLanguage::En {
@@ -241,8 +312,115 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
             "context_pack-ask".to_owned(),
             context_pack(&pack_input).expect("pack"),
         ));
+        let touched = [(StepId("f1.6".to_owned()), &f.flows[0].steps[5])];
+        let lines_pack = ContextPackInput {
+            ask: Some(AskContext {
+                asked: Asked::Lines {
+                    lines: asked_lines(),
+                    steps: &touched,
+                },
+                earlier: &earlier,
+            }),
+            ..pack_input
+        };
+        out.push((
+            "context_pack-ask_lines".to_owned(),
+            context_pack(&lines_pack).expect("pack"),
+        ));
+        let flow_pack = ContextPackInput {
+            ask: Some(AskContext {
+                asked: Asked::Flow { flow: &f.flows[1] },
+                earlier: &earlier,
+            }),
+            ..pack_input
+        };
+        out.push((
+            "context_pack-ask_flow".to_owned(),
+            context_pack(&flow_pack).expect("pack"),
+        ));
     }
     out
+}
+
+/// A follow-up's thread: the first question answered, a follow-up still waiting.
+const THREAD: [ThreadQuestion<'static>; 2] = [
+    ThreadQuestion {
+        question: "Which callers reach send?",
+        state: contracts::api::questions::AskState::Answered,
+        answer: Some("mempool::broadcast_tx and wallet::send_payment (src/mempool/mod.rs:41)."),
+    },
+    ThreadQuestion {
+        question: "Does either retry on its own?",
+        state: contracts::api::questions::AskState::Failed,
+        answer: None,
+    },
+];
+
+/// Lines 100–102 of the head of `src/rpc/client.rs`, as the Files view asks about them.
+fn asked_lines() -> AskedLines<'static> {
+    AskedLines {
+        path: "src/rpc/client.rs",
+        side: LineSide::Head,
+        range: Some(contracts::common::LineRange {
+            start_line: 100,
+            end_line: 102,
+        }),
+    }
+}
+
+/// An `ask` about lines of the fixture: two owners, one overlapping step and a short classic diff.
+fn ask_lines_input<'a>(job: JobContext<'a>, f: &'a Fixture) -> AskLinesInput<'a> {
+    use contracts::api::files::{HunkPart, PartOwner};
+    static FACTS: LazyLock<Vec<HunkPart>> = LazyLock::new(|| {
+        let range = |start_line, end_line| contracts::common::LineRange {
+            start_line,
+            end_line,
+        };
+        vec![
+            HunkPart {
+                side: LineSide::Head,
+                range: range(100, 101),
+                owner: PartOwner::Step {
+                    flow_id: FlowId("f1".to_owned()),
+                    step_id: StepId("f1.6".to_owned()),
+                },
+                also_in: Vec::new(),
+            },
+            HunkPart {
+                side: LineSide::Head,
+                range: range(102, 102),
+                owner: PartOwner::Unexplained { reason: None },
+                also_in: Vec::new(),
+            },
+        ]
+    });
+    static STEP: LazyLock<(StepId, FlowId)> =
+        LazyLock::new(|| (StepId("f1.6".to_owned()), FlowId("f1".to_owned())));
+    static STEPS: LazyLock<Vec<TouchedStep<'static>>> = LazyLock::new(|| {
+        vec![TouchedStep {
+            step_id: &STEP.0,
+            flow_id: &STEP.1,
+            flow_title: "Retry of a broadcast",
+            step: StepSummary {
+                title: "Retry allowed?",
+                file: "src/rpc/client.rs",
+                side: LineSide::Head,
+                start_line: 96,
+                end_line: 101,
+                kind: contracts::common::FragmentKind::Modified,
+            },
+        }]
+    });
+    AskLinesInput {
+        job,
+        lines: asked_lines(),
+        diff: "@@ -98,3 +98,5 @@\n         if attempts > MAX {\n+            return Err(Error::Exhausted);\n+        }\n",
+        facts: &FACTS,
+        steps: &STEPS,
+        question: QUESTION,
+        thread: &[],
+        profile: profile(f),
+    }
 }
 
 fn all_prompts() -> Vec<(String, String)> {
@@ -342,7 +520,7 @@ fn ask_and_flow_analysis_state_suspected_defects_as_risk_scenarios() {
         if name.starts_with("context_pack") {
             continue;
         }
-        let ask = name.starts_with("ask.");
+        let ask = name.starts_with("ask");
         let flow = name.contains("analyse_flow");
         assert_eq!(prompt.contains(statement_form), ask, "{name}");
         assert_eq!(prompt.contains(flag_form), flow, "{name}");
@@ -366,6 +544,7 @@ fn every_prompt_starts_with_its_job_line_and_names_the_pull_request() {
         let expected = match name.split('.').next().unwrap_or_default() {
             "analyse_flow-f1" => "Job: analyse_flow f1.".to_owned(),
             "repair-analyse_flow-f1" => "Job: repair analyse_flow f1.".to_owned(),
+            "ask_lines" | "ask_flow" | "ask_pr" | "ask_follow_up" => "Job: ask.".to_owned(),
             kind => format!("Job: {kind}."),
         };
         assert_eq!(first, expected, "{name}");
@@ -414,7 +593,7 @@ fn every_prompt_contains_the_rules_block() {
             "{name} lacks {output_rule}"
         );
         // Ask and flow analysis state risks as scenarios (brief §1 addenda 2026-11-18); plan and PR context ask.
-        let defect_form = if name.starts_with("ask.") {
+        let defect_form = if name.starts_with("ask") {
             "A suspected defect is an LLM statement of risk: a short title naming the risk class, prefixed \"Potential\""
         } else if name.contains("analyse_flow") {
             "A suspected defect is a `flag` annotation: a concrete risk scenario, never a question or a verdict."
@@ -551,6 +730,7 @@ fn hostile_pr_text_stays_inside_its_block() {
             job,
             description: Some(description),
             profile: profile(f),
+            dependencies: None,
         };
         pr_context(&input).expect("pr_context")
     };
@@ -663,6 +843,7 @@ fn instruction_files_get_the_t14_notice_in_every_prompt() {
         job,
         description: None,
         profile: profile(f),
+        dependencies: None,
     };
     let flow_input = FlowInput {
         job,
@@ -677,7 +858,9 @@ fn instruction_files_get_the_t14_notice_in_every_prompt() {
         job,
         step_id: &step_id,
         step: &f.flows[0].steps[0],
+        lines: None,
         question: QUESTION,
+        thread: &[],
         profile: profile(f),
     };
     let issues = issues();
@@ -876,6 +1059,7 @@ fn profile_union_file_wins() {
             job: job(f, LlmLanguage::En),
             description: None,
             profile,
+            dependencies: None,
         };
         split(&pr_context(&input).expect("pr_context"))
     };
@@ -941,13 +1125,21 @@ fn generated_and_quiet_hunks_are_never_given_to_the_agent() {
         .lines()
         .filter_map(|line| line.strip_prefix("  ")?.split(' ').next())
         .collect();
-    let expected: Vec<&str> = f
+    let agent: Vec<&HunkId> = f
         .prepass
         .hunks
         .iter()
         .filter(|hunk| hunk.disposition == prepass::Disposition::Agent)
-        .map(|hunk| hunk.id.0.as_str())
+        .map(|hunk| &hunk.id)
         .collect();
+    // Hunks of context lines only (h17: a comment line on each side) are not listed either.
+    let context_only = f.prepass.context_only_hunks(&f.files);
+    let expected: Vec<&str> = agent
+        .into_iter()
+        .filter(|id| !context_only.contains(id))
+        .map(|id| id.0.as_str())
+        .collect();
+    assert!(!expected.contains(&"h17"), "{expected:?}");
     assert_eq!(listed, expected);
     assert!(
         listed.len() < f.prepass.hunks.len(),
@@ -1006,7 +1198,7 @@ fn plan_ranks_flows_by_expected_risk_and_bounds_flow_size() {
 }
 
 #[test]
-fn plan_lists_context_lines_per_hunk_and_every_moved_block() {
+fn plan_lists_context_lines_per_hunk_leaves_out_context_hunks_and_lists_every_moved_block() {
     let f = &*FIXTURE;
     let input = PlanInput {
         job: job(f, LlmLanguage::En),
@@ -1015,9 +1207,11 @@ fn plan_lists_context_lines_per_hunk_and_every_moved_block() {
         batch: None,
     };
     let task = plan(&input).expect("plan");
-    // h17 changes one comment line on each side: listed, its lines marked as context.
+    // h17 changes one comment line on each side and nothing else: not listed, it costs no tokens.
+    assert!(!task.contains("h17 "), "{task}");
+    // h24 also changes code: listed, its comment lines marked as context.
     assert!(
-        task.contains("h17 base 99,1 head 89,1; context only: base 99, head 89"),
+        task.contains("h24 base 22,2 head 49,2; context only: base 22, head 49"),
         "{task}"
     );
     // The function moved within src/rpc/client.rs is listed with its move fact.
@@ -1152,6 +1346,7 @@ fn sub_agents_are_a_parameter_default_off() {
             job,
             description: None,
             profile: profile(f),
+            dependencies: None,
         })
         .expect("pr_context")
     };
@@ -1255,8 +1450,10 @@ fn context_pack_stays_within_budget() {
         pr_context: Some(&f.pr_context),
         flows: &flows,
         ask: Some(AskContext {
-            step_id: &step_id,
-            flow: &big,
+            asked: Asked::Step {
+                step_id: &step_id,
+                flow: &big,
+            },
             earlier: &earlier,
         }),
     };
@@ -1370,8 +1567,10 @@ fn ask_keeps_the_full_asked_step_after_a_lost_session() {
         pr_context: Some(&f.pr_context),
         flows: &f.flows,
         ask: Some(AskContext {
-            step_id: &step_id,
-            flow: &flow,
+            asked: Asked::Step {
+                step_id: &step_id,
+                flow: &flow,
+            },
             earlier: &[],
         }),
     })
@@ -1395,7 +1594,9 @@ fn ask_keeps_the_full_asked_step_after_a_lost_session() {
         job: job(f, LlmLanguage::En),
         step_id: &step_id,
         step: flow.steps.last().expect("step"),
+        lines: None,
         question,
+        thread: &[],
         profile: Profile::default(),
     })
     .expect("ask");
@@ -1414,8 +1615,10 @@ fn ask_keeps_the_full_asked_step_after_a_lost_session() {
         pr_context: None,
         flows: &[],
         ask: Some(AskContext {
-            step_id: &unknown,
-            flow: &flow,
+            asked: Asked::Step {
+                step_id: &unknown,
+                flow: &flow,
+            },
             earlier: &[],
         }),
     };
@@ -1580,8 +1783,10 @@ fn context_pack_reserves_the_asked_step_before_the_other_sections() {
         pr_context: Some(&context),
         flows: &flows,
         ask: Some(AskContext {
-            step_id: &step_id,
-            flow: &flow,
+            asked: Asked::Step {
+                step_id: &step_id,
+                flow: &flow,
+            },
             earlier: &earlier,
         }),
     })
@@ -1605,8 +1810,10 @@ fn context_pack_reserves_the_asked_step_before_the_other_sections() {
         pr_context: None,
         flows: &[],
         ask: Some(AskContext {
-            step_id: &step_id,
-            flow: &flow,
+            asked: Asked::Step {
+                step_id: &step_id,
+                flow: &flow,
+            },
             earlier: &[],
         }),
     };
@@ -1633,4 +1840,317 @@ fn flow_jobs_write_check_and_edit_a_file_instead_of_returning_json() {
             );
         }
     }
+}
+
+/// A follow-up's thread keeps its first question and the latest follow-ups, oldest first, each answer clipped; the
+/// rest is counted in a note. A first question has no thread block.
+#[test]
+fn a_thread_keeps_its_first_question_and_latest_follow_ups() {
+    assert_eq!(thread_block(&[]).expect("empty"), "");
+    let texts: Vec<String> = (0..10).map(|n| format!("question {n}")).collect();
+    let long = "a".repeat(MAX_THREAD_ANSWER_CHARS + 500);
+    let thread: Vec<ThreadQuestion<'_>> = texts
+        .iter()
+        .map(|text| ThreadQuestion {
+            question: text,
+            state: contracts::api::questions::AskState::Answered,
+            answer: Some(&long),
+        })
+        .collect();
+    let block = thread_block(&thread).expect("thread");
+    let (_, blocks) = split(&block);
+    let content = &blocks[0].content;
+    let kept: Vec<&str> = content
+        .lines()
+        .map(|line| {
+            let entry: serde_json::Value = serde_json::from_str(line).expect("entry");
+            assert_eq!(
+                entry["answer"]
+                    .as_str()
+                    .map(|answer| answer.chars().count()),
+                Some(MAX_THREAD_ANSWER_CHARS),
+                "{line}"
+            );
+            texts
+                .iter()
+                .find(|text| line.contains(&format!("\"{text}\"")))
+                .map(String::as_str)
+                .expect("a question")
+        })
+        .collect();
+    let expected: Vec<&str> = std::iter::once(0)
+        .chain(10 - MAX_THREAD_FOLLOW_UPS..10)
+        .map(|n| texts[n].as_str())
+        .collect();
+    assert_eq!(kept, expected);
+    assert!(
+        block.contains(&omitted_note(9 - MAX_THREAD_FOLLOW_UPS).expect("note")),
+        "{block}"
+    );
+}
+
+/// Long earlier answers: each entry is bounded (the first always fits), a clipped one says how much is missing and
+/// the block carries the usual clipped note; the 32 KiB budget keeps the newest follow-ups and counts the rest.
+#[test]
+fn a_long_thread_stays_within_its_budget_and_says_what_it_clipped() {
+    let texts: Vec<String> = (0..6).map(|n| format!("question {n}")).collect();
+    // Three bytes per character: 6000 characters are about 18 KB.
+    let long = "ж".repeat(MAX_THREAD_ANSWER_CHARS + 2_000);
+    let thread: Vec<ThreadQuestion<'_>> = texts
+        .iter()
+        .map(|text| ThreadQuestion {
+            question: text,
+            state: contracts::api::questions::AskState::Answered,
+            answer: Some(&long),
+        })
+        .collect();
+    let block = thread_block(&thread).expect("thread");
+    let (_, blocks) = split(&block);
+    let content = &blocks[0].content;
+    assert!(content.len() <= MAX_ASK_THREAD_BYTES, "{}", content.len());
+    let entries: Vec<serde_json::Value> = content
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("entry"))
+        .collect();
+    assert_eq!(
+        entries[0]["question"], "question 0",
+        "the first question stays"
+    );
+    assert_eq!(
+        entries.last().map(|entry| entry["question"].clone()),
+        Some(serde_json::json!("question 5")),
+        "the newest follow-up stays"
+    );
+    for entry in &entries {
+        let shown = entry["answer"].as_str().expect("answer").chars().count();
+        assert_eq!(
+            entry["clipped_chars"].as_u64(),
+            Some((long.chars().count() - shown) as u64),
+            "{entry}"
+        );
+    }
+    let omitted = texts.len() - entries.len();
+    assert!(omitted > 0, "the budget, not the count, stops here");
+    assert!(
+        block.contains(&omitted_note(omitted).expect("note")),
+        "{block}"
+    );
+    assert!(
+        block.contains("(The server clipped the block above:"),
+        "{block}"
+    );
+}
+
+/// The fixture's Dependencies view with one controlled dependency repository whose crate is named `dependency`
+/// and used by the changed crate, which is renamed to `changed`.
+fn dependency_view_with(changed: &str, dependency: &str) -> contracts::api::deps::DependencyView {
+    use contracts::api::deps::{DependencyCrate, DependencyRepository, RepositoryKind};
+    let mut view = FIXTURE.dependencies.clone();
+    let this = &mut view.repositories[0];
+    this.crates[0].name = changed.to_owned();
+    view.repositories.push(DependencyRepository {
+        kind: RepositoryKind::Github,
+        repo: Some(contracts::common::RepoRef {
+            owner: "acme".to_owned(),
+            name: "upstream".to_owned(),
+        }),
+        location: Some("https://github.com/acme/upstream".to_owned()),
+        controlled: true,
+        crates: vec![DependencyCrate {
+            name: dependency.to_owned(),
+            version: None,
+            manifest: None,
+            source_at: None,
+            revision: None,
+            used_by: vec![changed.to_owned()],
+            facts_about: 0,
+            changes: None,
+        }],
+    });
+    view
+}
+
+fn pr_context_with(view: &contracts::api::deps::DependencyView) -> Result<String, PromptError> {
+    let f = &*FIXTURE;
+    pr_context(&PrContextInput {
+        job: job(f, LlmLanguage::En),
+        description: None,
+        profile: profile(f),
+        dependencies: Some(view),
+    })
+}
+
+/// Cargo package names are PR-controlled: in the crate entries and in the lookup list they stay quoted data.
+#[test]
+fn hostile_crate_names_stay_inside_their_blocks() {
+    let benign = pr_context_with(&dependency_view_with("plain", "plain-dep")).expect("benign");
+    let hostile = pr_context_with(&dependency_view_with(HOSTILE, HOSTILE)).expect("hostile");
+    assert_contained(&benign, &hostile, "pr_context dependencies");
+}
+
+/// A PR-controlled package name of a controlled git dependency must not push the PR-context prompt over its budget
+/// (the analysis would fail with a server error on every retry).
+#[test]
+fn an_oversized_dependency_crate_name_keeps_the_pr_context_prompt_within_budget() {
+    let view = dependency_view_with("node-client", &"a".repeat(PROMPT_BUDGET_BYTES));
+    let prompt = pr_context_with(&view);
+    assert!(prompt.is_ok(), "{:?}", prompt.err());
+}
+
+/// The most changed crate with the projection's maximum of 50 facts (realistic workspace paths) still reaches the
+/// PR-context prompt.
+#[test]
+fn the_most_changed_crate_with_fifty_facts_reaches_the_pr_context_prompt() {
+    use contracts::api::deps::{ConversionFact, ConversionKind, HeadLine, TypeDefinition};
+    let mut view = dependency_view_with("node-client", "upstream-types");
+    let changes = view.repositories[0].crates[0]
+        .changes
+        .as_mut()
+        .expect("changed crate");
+    let line = |file: &str, line| HeadLine {
+        file: file.to_owned(),
+        line,
+    };
+    changes.facts = (0..50)
+        .map(|n| ConversionFact {
+            kind: ConversionKind::TryFromImpl,
+            at: line(
+                "packages/rs-drive-abci/src/execution/platform_events/state_transition_processing/v0/mod.rs",
+                100 + n,
+            ),
+            type_name: format!("StateTransitionType{n}"),
+            written: format!("dpp::state_transition::StateTransitionType{n}"),
+            type_crate: "dpp".to_owned(),
+            imported_at: None,
+            definition: TypeDefinition::Located {
+                at: line("packages/rs-dpp/src/state_transition/state_transition_types.rs", n),
+            },
+        })
+        .collect();
+    let prompt = pr_context_with(&view).expect("pr_context");
+    let (_, blocks) = split(&prompt);
+    let block = blocks
+        .iter()
+        .find(|block| block.label == "dependencies")
+        .expect("dependencies block");
+    assert!(
+        block.content.contains(r#""crate":"node-client""#),
+        "the most changed crate is missing: {}",
+        block.content
+    );
+}
+
+/// The agent is given at most 5 dependency repositories to look in, all controlled.
+#[test]
+fn dependency_lookups_are_controlled_repositories_at_most_five() {
+    use contracts::api::deps::{DependencyRepository, RepositoryKind};
+    let mut view = dependency_view_with("node-client", "upstream-types");
+    let template = view.repositories[1].clone();
+    for (n, controlled) in [
+        (1, true),
+        (2, true),
+        (3, true),
+        (4, true),
+        (5, true),
+        (6, false),
+    ] {
+        view.repositories.push(DependencyRepository {
+            repo: Some(contracts::common::RepoRef {
+                owner: if controlled { "acme" } else { "stranger" }.to_owned(),
+                name: format!("repo{n}"),
+            }),
+            controlled,
+            kind: RepositoryKind::Github,
+            ..template.clone()
+        });
+    }
+    let prompt = pr_context_with(&view).expect("pr_context");
+    let (_, blocks) = split(&prompt);
+    let block = blocks
+        .iter()
+        .find(|block| block.label == "dependency repositories")
+        .expect("lookup block");
+    let lines: Vec<&str> = block.content.lines().collect();
+    assert_eq!(lines.len(), 5, "{lines:?}");
+    assert!(lines.iter().all(|l| l.starts_with("acme/")), "{lines:?}");
+    assert!(prompt.contains("omitted 1 more entries"), "{prompt}");
+}
+
+/// An entry too large for its block is skipped; the entries after it still reach the agent.
+#[test]
+fn lines_block_skips_an_oversized_entry_and_keeps_the_rest() {
+    let block = lines_block(
+        "list",
+        vec!["x".repeat(100), "small".to_owned(), "tiny".to_owned()],
+        50,
+    )
+    .expect("block");
+    assert!(block.contains("small\ntiny\n"), "{block}");
+    assert!(!block.contains("xxxx"), "{block}");
+    assert!(block.contains("omitted 1 more entries"), "{block}");
+}
+
+/// A fact's line is evidence the agent cites: a deep workspace path keeps its line number in the prompt.
+#[test]
+fn a_fact_on_a_deep_workspace_path_keeps_its_line_in_the_pr_context_prompt() {
+    use contracts::api::deps::{ConversionFact, ConversionKind, HeadLine, TypeDefinition};
+    let path = "packages/rs-drive-abci/src/execution/platform_events/state_transition_processing/v0/mod.rs";
+    let mut view = dependency_view_with("node-client", "upstream-types");
+    let changes = view.repositories[0].crates[0]
+        .changes
+        .as_mut()
+        .expect("changed crate");
+    changes.facts = vec![ConversionFact {
+        kind: ConversionKind::TryFromImpl,
+        at: HeadLine {
+            file: path.to_owned(),
+            line: 123,
+        },
+        type_name: "StateTransitionType".to_owned(),
+        written: "dpp::state_transition::StateTransitionType".to_owned(),
+        type_crate: "dpp".to_owned(),
+        imported_at: None,
+        definition: TypeDefinition::NotLocated,
+    }];
+    let prompt = pr_context_with(&view).expect("pr_context");
+    assert!(
+        prompt.contains(&format!("{path}:123")),
+        "the fact's evidence line is cut: {prompt}"
+    );
+}
+
+#[test]
+fn middle_clipping_keeps_both_ends_within_the_bound() {
+    assert_eq!(middle_clipped("short/path.rs", 300), "short/path.rs");
+    let long = format!("start/{}/end.rs", "x".repeat(400));
+    let clipped = middle_clipped(&long, 300);
+    assert_eq!(clipped.chars().count(), 300);
+    assert!(clipped.starts_with("start/") && clipped.ends_with("/end.rs") && clipped.contains('…'));
+}
+
+#[test]
+fn flow_steps_follow_control_flow_and_incidental_changes_go_to_files() {
+    let prompts = render_all(LlmLanguage::En);
+    let instructions = |name: &str| {
+        let (_, prompt) = prompts
+            .iter()
+            .find(|(found, _)| found == name)
+            .expect("prompt");
+        split(prompt).0
+    };
+    let flow = instructions("analyse_flow-f1.en");
+    for rule in [
+        "Steps follow control flow: the trigger, the calls, the state changes, the result",
+        "never one step per changed line",
+        "`## incidental`",
+        "shown in the Files view",
+        "A change with a risk to flag or rate is a step, never incidental",
+    ] {
+        assert!(flow.contains(rule), "analyse_flow lacks: {rule}");
+    }
+    let plan = instructions("plan.en");
+    assert!(
+        plan.contains("incidental changes there, not steps"),
+        "plan lacks the incidental hint"
+    );
 }

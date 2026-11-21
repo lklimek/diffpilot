@@ -153,6 +153,14 @@ pub fn plan(
     checked(verify::plan(output, &DiffIndex::new(batch)?))
 }
 
+/// Keeps the plan's crate notes a reviewer may see; returns how many were dropped (`analysis::verify::keep_crate_notes`).
+pub fn keep_crate_notes(
+    output: &mut PlanOutput,
+    batch: &[FileDiff],
+) -> Result<usize, VerdictError> {
+    Ok(verify::keep_crate_notes(output, &DiffIndex::new(batch)?))
+}
+
 /// [`plan`] for a plan accepted and stored earlier, read again (`analysis::verify::stored_plan`).
 pub fn stored_plan(
     output: &PlanOutput,
@@ -331,6 +339,7 @@ mod tests {
                 flow("f2", vec![selection(Some(12), Some(14))]),
             ],
             unassigned: Vec::new(),
+            crate_notes: None,
         };
         let threads = [
             thread("src/a.rs", Some(13), LineSide::Head),

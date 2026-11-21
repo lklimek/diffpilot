@@ -23,6 +23,8 @@ it("the guide lists every option by section, each with an anchor, its lines and 
   }
   expect(screen.getByRole("heading", { level: 2, name: "Dashboard" })).toBeVisible();
   expect(
-    screen.getAllByRole("link", { name: "https://github.com/dashpay/stale_prs_are_bad" })[0],
+    screen.getAllByRole("link", {
+      name: "https://github.com/dashpay/stale_prs_are_bad (opens on GitHub in a new tab)",
+    })[0],
   ).toHaveAttribute("href", "https://github.com/dashpay/stale_prs_are_bad");
 });

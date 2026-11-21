@@ -246,7 +246,7 @@ tooling breaks: penny's 5.9 line, recorded in an ADR). `github-mcp-server`: vers
 - Deterministic facts (gutter marks, badges, counters, "N lines differ", changed-line sets) are server-set API
   fields in types separate from LLM content.
 - Storage: validated agent output as JSON documents (PR context; one per flow); relational tables only for
-  queue and mutable state: tenants, tenant settings (allowed sign-in logins; seeded `default` → `lklimek`),
+  queue and mutable state: tenants, tenant settings (allowed sign-in logins; since v1.2 from `SR_ALLOWED_LOGINS`),
   users, memberships, sessions, encrypted tokens, repos, pull requests, analyses (incl. agent-session id),
   jobs (+ bounded event log), threads/checks snapshot, review state, questions, feedback, comment idempotency
   keys, settings, last LLM call outcome. Every table has `tenant_id`; tenant `default` seeded (brief §5).
@@ -377,7 +377,7 @@ the wording rules. Fixture ownership afterwards: §4.3.
 
 ## 8. Stage 2 — thin vertical slice
 
-Goal: URL → analysis with fixture agent output → Tour renders flow 1 through real server, runner and browser.
+Goal: URL → analysis with fixture agent output → Flows view renders flow 1 through real server, runner and browser.
 Scope is deliberately thin: no pre-pass rules, no repair, no comments, no Ask, no session resume (each job
 starts a session), no agent GitHub token; one happy path. All WPs run in parallel; Rust WPs queue their cargo
 runs. All agents: `claudius:developer-bilby`, opus.
@@ -406,7 +406,7 @@ Acceptance (named tests):
 
 **M2 merge point**: merge all; dispatch **WP2-E2E** (developer-bilby, opus, ~250; owns `e2e/**`,
 `deploy/dev/**`): full-stack Playwright — server (`embed-ui`) + runner (fake provider) + fake GitHub + fixture
-remote: sign in, paste URL, progress reaches finished, Open review, flow 1 step 1 shows the fixture code. Then:
+remote: sign in, paste URL, progress reaches finished, Open, flow 1 step 1 shows the fixture code. Then:
 - **Real-Codex smoke** (WP2-E2E agent, coordinator grants the slot): the slice with the Codex provider on
   P-CAP; analysis finishes or fails visibly; outputs archived; prompt or schema problems become stage-3 inputs.
 - **Visual conformance check 1** (§12.5): screenshots of the slice against the mockups.
@@ -428,15 +428,15 @@ agents fill the gaps. Every WP's acceptance items are named tests; trust tests p
 | WP3-RUN | Codex provider complete per S1b/S2/S5: `resume` without forced compaction, analytic session store per PR and working forks per PR/user (copy in/out, explicit removal, retention), typed `SessionUnavailable`, per-job `CODEX_HOME` with `github-mcp-server` (read-only, installation token), server-only MemCan, repo-config neutralisation, sub-agent setting per S1b, proxy env per research table, normalised events, typed usage-limit error with `resumes_at`, `cancel`, claudius refresh (interval, ref), T1–T6, T8 | `crates/runner/**` | S1b, S2, S5, WP1-T | yes | ~1,000 |
 | WP3-PIPE | Orchestration: pre-pass + verify integration, one analytic session per PR and private working sessions per PR/user (ADR-004; context-pack fallback after loss, retained on re-analysis), installation token per job (via WP3-APPTOKEN), huge-PR plan, `pr_context`, one `analyse_flow` per flow, ≤2 repairs, progress `k of n`, pause/resume, cancel (partial results discarded, PR sessions retained), retry, failure before any flow (plain description + Retry), resume of an existing analysis, LLM status of threads located in a flow's steps (others: none); context-pack builder shared with Ask (§5 Agent sessions, Pipeline, §2 Resume, §4.2) | `server/src/pipeline/**`, `server/src/api/analyses.rs` | PREPASS, VERIFY, APPTOKEN merged first | — | ~1,000 |
 | WP3-PROMPTS | Prompt per job kind: review lenses, project profile union (file wins), LLM-text language, trust wording, "read ranges, never whole large files", generated files never given; no numeric likelihoods; test code inside production files classified `test`; related work via `github-mcp-server`; sub-agents permitted for large PRs at the agent's discretion (if S1b supports them) (§5 Agent context, Agent sessions, §3, §7) | `prompts/**`, `server/src/prompts.rs` | S5, S7 | — | ~500 |
-| WP3-ASK | Ask job on `JobExecutor` using a private working session per PR/user (analytic fork, then own-history context pack on loss); questions API; answer streamed via SSE and stored as `Question`; `ask` claimed before the next batch job, no pre-emption (§5 Ask) | `server/src/ask/**`, `server/src/api/questions.rs`, `server/src/jobs/claim.rs`, `db/src/repo/questions.rs` | WP3-PIPE (context-pack builder) | — | ~500 |
+| WP3-ASK | Ask job on `JobExecutor` using a private working session per PR/user (analytic fork, then own-history context pack on loss); questions API; answer streamed via SSE and stored as `Question`; `ask` claimed before every other queued job (dashboard ranking, then batch), no pre-emption (§5 Ask) | `server/src/ask/**`, `server/src/api/questions.rs`, `server/src/jobs/claim.rs`, `db/src/repo/questions.rs` | WP3-PIPE (context-pack builder) | — | ~500 |
 | WP3-MEMCAN | MemCan rmcp client with bearer token (feedback; calibration examples for overrated/underrated; `project` = analysed repository short name), feedback API (§5 Calibration memory) | `server/src/memcan/**`, `server/src/api/feedback.rs`, `db/src/repo/feedback.rs` | — | — | ~500 |
 | WP3-STATE | Review-state API (ticks, last viewed block), settings API (language, LLM status from the most recent LLM call, per-repo read-only rules, related repos, profile source), `diff` endpoint (§2 Progress, §4.4) | `server/src/api/{review_state,settings,diff}.rs`, `db/src/repo/{review_state,settings}.rs` | — | — | ~600 |
-| WP3-CODEVIEW | Line renderer: Shiki on displayed lines only; neutral mark on every changed line; LLM bar solid/dashed/dotted only on annotated ranges; `≠` moved; markers (remark, deleted site, thread, own comment); hover was → is only; comment-line highlight; inline old code (§4.3 Code view) | `web/src/components/code-view/**` | — | — | ~800 |
+| WP3-CODEVIEW | Line renderer: Shiki on displayed lines only; neutral mark on every changed line; LLM bar solid/dashed/dotted only on annotated ranges; `≠` moved; markers (remark, deleted site, thread, own comment); no hover tooltip on highlights, was → is in the remark popover; comment-line highlight; inline old code (§4.3 Code view) | `web/src/components/code-view/**` | — | — | ~800 |
 | WP3-DIAGRAM | Flow diagram from graph data (layout lib chosen and verified: `elkjs` 0.12.1 or `@dagrejs/dagre` 3.1.3); kind by colour AND border/marker; branch labels; current step; click → step (§4.3 Centre) | `web/src/components/flow-diagram/**` | — | — | ~500 |
 | WP3-BLOCKS | Navigation list (labels for LLM-classified refactors and tests), PR context, flow introduction, step block (four facts + code slot), quiet-row blocks (moves, Not analysed, Unexplained, pending-review list), badge + tooltip primitives, help dialog (legend, shortcuts) (§4.3) | `web/src/components/{nav,pr-context,flow-intro,step,quiet,badge,tooltip,help}/**` | — | — | ~1,000 |
 | WP3-INSPECTOR | Inspector (never empty; current block or selected annotation; Back to step) with 8 collapsible sections (state in localStorage; call hierarchy "n/a — needs a language plugin"); dock: Ask, feedback buttons, comment composer on any line (outside the diff: note "posted as a file comment") (§4.3 Inspector) | `web/src/components/{inspector,ask,feedback,comment}/**` | — | — | ~1,000 |
 | WP3-SCREENS | Home (sign-in, URL, resume, head-moved banner, errors incl. login not allowed, "Analysis cancelled — analyze again"), Analysis progress (SSE; planning with indeterminate bar "Planning flows…", running, paused, failed incl. before any flow, finished), Settings with LLM status of the last call (§4.1, §4.2, §4.4) | `web/src/screens/{home,progress,settings}/**` | — | — | ~700 |
-| WP3-TOUR | Tour assembly: top bar, 3 resizable/hideable/full-screen columns remembered, block sequence and flow order, keyboard map, ticks + "flows reviewed k / n", last viewed block, light/dark theme, six fixture states (§4.3) | `web/src/screens/tour/**`, `web/src/app/**` | BLOCKS, INSPECTOR, CODEVIEW, DIAGRAM | — | ~900 |
+| WP3-TOUR | Flows view assembly: top bar, 3 resizable/hideable/full-screen columns remembered, block sequence and flow order, keyboard map, ticks + "flows reviewed k / n", last viewed block, light/dark theme, six fixture states (§4.3) | `web/src/screens/tour/**`, `web/src/app/**` | BLOCKS, INSPECTOR, CODEVIEW, DIAGRAM | — | ~900 |
 | WP3-OPS | Dockerfiles (server: web build + Rust with `embed-ui`, `CARGO_BUILD_JOBS=2`; runner: pinned Codex CLI and `github-mcp-server`, git, ripgrep, two uids, no Docker socket); `deploy/egress-proxy/` from the research Dockerfile with a v1 config (explicit proxy, allow-all, host-name log, SSRF guard; no SSL-Bump, no CA, no cache); compose (server, runner, egress-proxy, named volumes incl. session store, internal runner network, pinned proxy subnet, healthchecks, no runtime containers, plain services for Portainer); `.env.example` with all §5.2 variables; proxy log retention and the later interception/allowlist step (reference to the research) in the runbook; CI image builds and web jobs; release builds without fakes (§5 Packaging, T1–T4, T8, T9) | `deploy/**`, `.github/**`, `.dockerignore`, `docs/runbook.md` | S6, WP1-T | yes | ~900 |
 | WP3-E2E | Fake MemCan; full-stack Playwright extended: comments (create/reuse/edit/delete, outside the diff), Ask, feedback, resume, head moved, cancel, the three hard cases, rendered-text wording in all states; compose-based run in CI | `e2e/**`, `tools/fake-memcan/**` | M3a + M3b | — | ~700 |
 
@@ -485,7 +485,7 @@ Key acceptance tests (in addition to the brief items in §11):
 | WP4-PERF | Synthetic large PR (10k-line diff, 15k-line file, 140k-line generated file): range limits, bounded event log, SQLite WAL under SSE + runner posts | developer-bilby, opus | ~300 |
 | WP4-DOCS | README, runbook (GitHub App, Codex device login into the runner volume, `SR_SECRET_KEY`, proxy log retention, MemCan allowlist entry, later TLS interception and allowlist, backups, upgrade), CLAUDE.md commands | technical-writer-trillian, opus | docs |
 | WP4-DEPLOY | Deploy the compose stack on the deployment host behind the owner's reverse proxy (O6) with `SR_PUBLIC_URL=https://review.klimek.ws`; check login with the real App, cookies, SSE through the proxy | developer-bilby, opus (coordinator grants the slot) | config |
-| WP4-GUI | Exploratory + scripted GUI testing of the REAL deployed stack in a real browser (`playwright-cli` skill): the whole path on a real analysis of P-CAP (sign in, analyse, progress, Tour, Ask, feedback, pending comment created and deleted), comparison with `docs/mockups/` and the brief, keyboard map, light and dark theme, wide (21:9) and narrow viewports, error states; findings go back to implementers; report archived | qa-engineer-marvin, opus | review |
+| WP4-GUI | Exploratory + scripted GUI testing of the REAL deployed stack in a real browser (`playwright-cli` skill): the whole path on a real analysis of P-CAP (sign in, analyse, progress, Flows view, Ask, feedback, pending comment created and deleted), comparison with `docs/mockups/` and the brief, keyboard map, light and dark theme, wide (21:9) and narrow viewports, error states; findings go back to implementers; report archived | qa-engineer-marvin, opus | review |
 
 Exit (coordinator): acceptance run against §13; WP4-GUI findings fixed or recorded; one **full**
 `claudius:review-changes` of `feat/v1` (Codex Astra, xhigh) with all findings resolved or recorded;
@@ -499,8 +499,8 @@ is opened; the owner decides about merging after deployment.
 |---|---|---|
 | §2 Four screens; loading/empty/error states | SCREENS, TOUR, GUI | Playwright per screen and state; WP4-GUI |
 | §2 Input: PR URL, public repos only; errors | INGEST, SCREENS | `resolve_rejects_non_pr_url`, `resolve_rejects_private_repo`, Home error Playwright |
-| §2 GitHub login; single tenant `default`; allowed logins as tenant setting (seeded `lklimek`) | AUTH (2+3), WP1-A | login e2e; `tenant_default_seeded`; `allowlist_rejects_unlisted_login` |
-| §2 Review opens only when finished | PIPE, SCREENS | Playwright: no Open review before finished |
+| §2 GitHub login; single tenant `default`; allowed logins as tenant setting (since v1.2 from `SR_ALLOWED_LOGINS`) | AUTH (2+3), WP1-A | login e2e; `tenant_default_seeded`; `allowlist_rejects_unlisted_login` |
+| §2 Review opens only when finished | PIPE, SCREENS | Playwright: no Open before finished |
 | §2/§3 PR context (problem, related work, fit questions, CI, counters, profile status) | PIPE, PROMPTS, PREPASS, BLOCKS | pipeline fixture test; PR-context component test |
 | §2 GitHub threads at steps with LLM status (from `analyse_flow`; others none); CI status | REVIEW, PIPE, INSPECTOR | thread placement and status tests; top-bar CI test |
 | §2/§5 Ask (resumes the analysis session, pinned LLM answer, priority at claim) | ASK, RUN, INSPECTOR, E2E | `ask_resumes_analysis_session`, `ask_claimed_before_batch`, `ask_answer_stored_and_streamed`; Playwright Ask |
@@ -576,8 +576,8 @@ WP3-APPTOKEN, WP3-REVIEW, WP3-RUN, WP3-OPS; audit at the end (WP4-SEC).
 - **Agent output**: prompts forbid the banned phrases and numeric likelihoods; WP3-VERIFY logs a warning when
   LLM text contains them (no hard rejection); schema forbids confidence fields; facts need evidence.
 - **Components**: provenance tags per brief amendment 2026-11-18 ("LLM" on LLM-written explanatory text,
-  "GitHub" on thread content; no panel caption); Assessment collapsed by default; highlight tooltip = was → is
-  only; an empty Questions section is hidden like any empty explanatory section; LLM-classified refactors as normal flows with the label; green tick only on deterministic badges;
+  "GitHub" on thread content; no panel caption); Assessment collapsed by default; remark popover = was → is
+  only (no hover tooltip on highlights); an empty Questions section is hidden like any empty explanatory section; LLM-classified refactors as normal flows with the label; green tick only on deterministic badges;
   every badge, status, button and column header has a tooltip (Playwright sweep); inspector never empty.
 - **Ordering**: behavioural flows, then LLM-classified refactors, then LLM-classified tests, then quiet rows;
   quiet rows never above a rated flow; Unexplained first among quiet rows.
@@ -617,12 +617,12 @@ private repositories; per-job containers (`ContainerExecutor`, one-shot runner e
 with the job); TLS interception in the proxy (full-URL logs, splice list for `chatgpt.com`/`openai.com`, own CA
 in the runner image, caching) and the host allowlist — later configuration of the same Squid per
 `research/egress-proxy.md`; per-client MemCan tokens; built-in TLS/ACME;
-versioning, changelog and schema migrations (before deployment); Groups workspace, overview, files tree;
+versioning, changelog and schema migrations (before deployment); Groups workspace, overview;
 partial review while running; re-review with carried ticks; recent-reviews list; dashboard; LLM auto-comment;
-PR-description-vs-code check; static-analysis actions; GitHub "Viewed" sync; custom "not analysed" rules;
+PR-description-vs-code check; static-analysis actions; custom "not analysed" rules;
 tenant UI, real tenants, billing; automatic approve/reject; comment drafts beyond the browser tab (brief
 amendment 2026-11-18 keeps them per tab); PR-level risk or size
-statistics; numeric confidence.
+statistics; numeric confidence. The files tree and per-file GitHub "Viewed" sync moved to v1.2 (§17).
 
 ## 14. Risks and mitigations
 
@@ -687,14 +687,14 @@ WPs), reporting channel. Brief WHAT, not HOW. WPs over ~1,000 lines are split be
 | Quota | No cap on the Pro plan; real runs purposeful | §6.1 |
 | Test targets | `dashpay/dash-evo-tool` and `dashpay/platform` PRs by `lklimek` / `Claudius-Maginificent` (P-CAP, P-CAP2, P-REV, P-REF, P-LARGE, P-XREPO); on real PRs only pending comments, deleted afterwards, never submitted | §6.1, S3, S7, M2, M3b, WP4-REAL, WP4-GUI |
 | Comment outside the diff | File-level comment in the pending review, body links to the line (S3 confirms) | S3, WP3-REVIEW, WP3-INSPECTOR |
-| Sign-in | Allowed GitHub logins are a tenant setting; v1 has no UI or config for it; seeded tenant `default` allows exactly `lklimek` | §5.3, WP1-A, WP2-AUTH |
+| Sign-in | Allowed GitHub logins are a tenant setting; v1 seeded tenant `default` with `lklimek`; since v1.2 the list comes from `SR_ALLOWED_LOGINS` (ADR-007 addendum) | §5.3, WP1-A, WP2-AUTH |
 | Progress before n is known | Indeterminate bar, "Planning flows…" | WP3-SCREENS |
 | Failure before any flow | Failed state with a plain description and Retry | WP3-PIPE, WP3-SCREENS |
 | Cancel | Partial results discarded; Home shows "Analysis cancelled — analyze again" | WP3-PIPE, WP3-SCREENS |
 | First Codex login | Manual one-time command in the runner container (runbook); no UI | §6.1 O3, WP4-DOCS |
 | "LLM working" in Settings | Outcome of the most recent LLM call (time; plain message on error); no on-demand check | §5.3, WP2-JOBS, WP3-STATE |
 | LLM status of threads | From `analyse_flow` for threads located in its steps; other threads have no status | WP3-PIPE, WP3-PROMPTS |
-| Ask during re-analysis | Claimed before the next batch job; a running job is not pre-empted | WP3-ASK |
+| Ask during re-analysis | Claimed before every other queued job (dashboard ranking, then batch); a running job is not pre-empted | WP3-ASK |
 | Numbers like "80% likely" | Forbidden in the prompt; no hard rejection | WP3-PROMPTS, WP3-VERIFY |
 | Test code inside production files | LLM-classified; own flow at the end labelled "LLM-classified tests"; never hidden. Rust/Go plugins in v2 | WP3-PROMPTS, WP3-VERIFY, WP3-BLOCKS, §13 |
 | Git and releases | Branch `feat/v1` only; no pull requests until v1 is deployed; append-only migrations (applied files such as `0001_init.sql` are never edited; changes are new numbered files); contracts reshaped by CCR without compatibility; no versioning or changelog; handover in `docs/v1-handover.md` | §1 Git flow, §4.3, §10 |
@@ -702,6 +702,60 @@ WPs), reporting channel. Brief WHAT, not HOW. WPs over ~1,000 lines are split be
 | Visual checks | Delegated to a UX agent against the mockups; no owner wait | §12.5 |
 | GUI tests | Mandatory exploratory + scripted tests of the real deployed stack in a real browser at the end | §10 WP4-GUI, §12.6 |
 | Owner availability | Away during implementation; all owner input collected once before dispatch; coordinator authority in §1 | §1, §6.1 |
+
+## 17. Stage v1.2 — Files view
+
+Design: `/data/artifacts/diffpilot/2026-11-19/files-view/proposal.md` (owner decisions §14 there) and brief §4.5.
+Branch `feat/v1.2`; rules as in §1–§5.
+
+| ID | Change request | Contract |
+|---|---|---|
+| C1 | File list with hunks (zero-context runs) and, per hunk part, the owning step, flow or reason and the steps also showing it; computed by the server from the same coverage as Unexplained (one source of truth); a step may cover lines of another flow. | R12 `getFiles` (http-api.md) |
+| C2 | Per-file Viewed as the user on GitHub: read `viewerViewedState` (null when not read), mark and unmark with `markFileAsViewed` / `unmarkFileAsViewed`; 409 when the head moved; a GitHub refusal is `github_refused`. | R13 `setFileViewed` |
+| C3 | Ask anchor `step` (optionally lines of it) or `lines` (a range or a whole file of one side); `AskQuestion.anchor`; step route kept. | R14 `askAnchored`, migration 0012 |
+| C4 | The ask prompt and the context pack carry the anchor: for lines, the classic diff, the owners of their changed lines and the overlapping steps; ADR-004 sessions unchanged. | prompts `ask_lines` |
+
+**U1 spike.** Whether a GitHub App user access token may call `markFileAsViewed` (the App has no documented
+permission for it). Until a real call answers it, a refusal is typed (`github_refused`) and the UI offers "mark it
+on GitHub" (proposal Q15). Run once against a real pull request with the owner's sign-in; record the answer here.
+
+**Tests.** Server: projection unit tests (owners, also-in, removed lines, path rules, no quadratic work), an
+integration test on fixture PR 482 (every changed line in exactly one part; Unexplained parts equal the Tour's),
+Viewed against wiremock and fake-github, anchored Ask validation and prompts (goldens `ask_lines.*`,
+`context_pack-ask_lines`). Web: Playwright and axe for the Files view at a viewport of at least 1600 px wide (the
+side panel needs it).
+
+## 18. Stage v1.2 — Dependencies view
+
+Design: `/data/artifacts/diffpilot/2026-11-20/go9/plan.md`, brief amendment 2026-11-20 "Dependencies view",
+ADR-021, ADR-005 addendum 2026-11-20. Branch `feat/deps-map` into `feat/v1.2`; rules as in §1–§5.
+
+| ID | Change request | Contract |
+|---|---|---|
+| D1 | `contracts::api::deps` (`DependencyView` and its parts), `Settings.controlled_owners`, `SetControlledOwnersRequest` | R15 `getDependencies`, R16 `setControlledOwners` (http-api.md) |
+| D2 | `PlanOutput.crate_notes` (nullable, `serde(default)`) | agent-output.md `plan`; `schemas/agent/plan.schema.json` |
+| D3 | Migration 0015: `documents.kind` gains `dependencies` (widened in place), tables `controlled_owners`, `controlled_owners_changed` | db-schema.md |
+| D4 | `DocumentKind::Dependencies`; `SettingsRepo::{controlled_owners, set_controlled_owners}` | crates/db |
+
+Work packages: W1 `analysis::deps` (Cargo map); W2 `analysis::tech::rust` conversion facts and definition
+confirmation; W3 contracts, routes, generated types, msw handlers; W4 migration and db; W5 server (`mirror` grep,
+`pipeline::deps`, projection, routes); W6 plan notes and the `pr_context` prompt; W7 web view and Settings card;
+W8 independent review.
+
+**Tests.** Analysis: multi-workspace manifests (globs, exclude, inheritance, renames, git sources, no lock file,
+unreadable manifests, caps), detector cases per pattern and `use` form, only added lines. Server: grep argument
+safety and limits, projection (ranking, `+N`, controlled marking at read, old plans), fixture PR 482 and a
+multi-crate repository, tenant check, CSRF on R16. Prompts: goldens of `plan` and `pr_context`. Web: component
+states, wording, Playwright and axe.
+
+**Follow-ups (not in v1.2).**
+- L1 Definitions of types in other repositories (fetch the dependency repository at the locked revision, bounded).
+- L2 crates.io `repository` lookup for registry dependencies, labelled "declared on crates.io".
+- L3 Patterns: newtype wrappers with `FromStr`/`Deserialize`, `serde(with/deserialize_with)` helpers.
+- L4 Conversion-fact markers in the Files and Flows code view.
+- L5 Installation token covering controlled dependency repositories, with private repositories (ADR-005 addendum).
+- L6 Other ecosystems (`go.mod`, `package.json`).
+- L7 Owning-layer heuristics and automated upstream search beyond the prompt.
 
 ## Appendix A. Review dispositions (`/data/artifacts/diffpilot/2026-11-16/reviews/plan-review-fable.md`)
 

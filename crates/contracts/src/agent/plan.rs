@@ -13,6 +13,24 @@ pub struct PlanOutput {
     pub flows: Vec<PlannedFlow>,
     /// Hunks or hunk sub-ranges that belong to no flow, each with a reason.
     pub unassigned: Vec<UnassignedHunk>,
+    /// Keyword notes on what changed per crate, each anchored by the hunks it describes; null in plans stored
+    /// before notes existed (ADR-021).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crate_notes: Option<Vec<PlanCrateNote>>,
+}
+
+/// A short keyword note on what changed ("parsing of `TransitionType`"), anchored by hunk ids.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PlanCrateNote {
+    /// The note, at most [`PlanCrateNote::MAX_CHARS`] characters, plain text.
+    pub note: String,
+    /// Ids of the listed hunks it describes.
+    pub hunks: Vec<HunkId>,
+}
+
+impl PlanCrateNote {
+    /// Longest note.
+    pub const MAX_CHARS: usize = 80;
 }
 
 /// One flow: a logical change following control flow across files.

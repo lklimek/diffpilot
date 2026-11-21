@@ -1,0 +1,1363 @@
+{
+  "files": [
+    {
+      "path": "Cargo.lock",
+      "old_path": null,
+      "status": "modified",
+      "binary": false,
+      "added": 6,
+      "removed": 6,
+      "group": {
+        "kind": "not_analysed",
+        "category": "generated_mechanical",
+        "badge": "classified_by_path",
+        "rule": "Cargo.lock"
+      },
+      "not_rendered": "generated",
+      "viewed": "unviewed",
+      "hunks": [
+        {
+          "id": "h1",
+          "base": {
+            "start_line": 30,
+            "end_line": 30
+          },
+          "head": {
+            "start_line": 30,
+            "end_line": 30
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 30,
+                "end_line": 30
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 30,
+                "end_line": 30
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h2",
+          "base": {
+            "start_line": 32,
+            "end_line": 32
+          },
+          "head": {
+            "start_line": 32,
+            "end_line": 32
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 32,
+                "end_line": 32
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 32,
+                "end_line": 32
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h3",
+          "base": {
+            "start_line": 36,
+            "end_line": 36
+          },
+          "head": {
+            "start_line": 36,
+            "end_line": 36
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 36,
+                "end_line": 36
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 36,
+                "end_line": 36
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h4",
+          "base": {
+            "start_line": 38,
+            "end_line": 38
+          },
+          "head": {
+            "start_line": 38,
+            "end_line": 38
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 38,
+                "end_line": 38
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 38,
+                "end_line": 38
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h5",
+          "base": {
+            "start_line": 42,
+            "end_line": 42
+          },
+          "head": {
+            "start_line": 42,
+            "end_line": 42
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 42,
+                "end_line": 42
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 42,
+                "end_line": 42
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h6",
+          "base": {
+            "start_line": 44,
+            "end_line": 44
+          },
+          "head": {
+            "start_line": 44,
+            "end_line": 44
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 44,
+                "end_line": 44
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 44,
+                "end_line": 44
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "generated_mechanical",
+                "badge": "classified_by_path",
+                "rule": "Cargo.lock"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "README.md",
+      "old_path": null,
+      "status": "modified",
+      "binary": false,
+      "added": 6,
+      "removed": 0,
+      "group": {
+        "kind": "not_analysed",
+        "category": "docs_comments",
+        "badge": "classified_by_path",
+        "rule": "*.md"
+      },
+      "not_rendered": null,
+      "viewed": "viewed",
+      "hunks": [
+        {
+          "id": "h7",
+          "base": null,
+          "head": {
+            "start_line": 15,
+            "end_line": 20
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "head",
+              "range": {
+                "start_line": 15,
+                "end_line": 20
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "docs_comments",
+                "badge": "classified_by_path",
+                "rule": "*.md"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "docs/rpc.md",
+      "old_path": null,
+      "status": "modified",
+      "binary": false,
+      "added": 4,
+      "removed": 5,
+      "group": {
+        "kind": "not_analysed",
+        "category": "docs_comments",
+        "badge": "classified_by_path",
+        "rule": "docs/**"
+      },
+      "not_rendered": null,
+      "viewed": "unviewed",
+      "hunks": [
+        {
+          "id": "h8",
+          "base": {
+            "start_line": 3,
+            "end_line": 3
+          },
+          "head": {
+            "start_line": 3,
+            "end_line": 3
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 3,
+                "end_line": 3
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "docs_comments",
+                "badge": "classified_by_path",
+                "rule": "docs/**"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 3,
+                "end_line": 3
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "docs_comments",
+                "badge": "classified_by_path",
+                "rule": "docs/**"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h9",
+          "base": {
+            "start_line": 7,
+            "end_line": 9
+          },
+          "head": {
+            "start_line": 7,
+            "end_line": 7
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 7,
+                "end_line": 9
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "docs_comments",
+                "badge": "classified_by_path",
+                "rule": "docs/**"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 7,
+                "end_line": 7
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "docs_comments",
+                "badge": "classified_by_path",
+                "rule": "docs/**"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h10",
+          "base": {
+            "start_line": 13,
+            "end_line": 13
+          },
+          "head": {
+            "start_line": 11,
+            "end_line": 12
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 13,
+                "end_line": 13
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "docs_comments",
+                "badge": "classified_by_path",
+                "rule": "docs/**"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 11,
+                "end_line": 12
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "docs_comments",
+                "badge": "classified_by_path",
+                "rule": "docs/**"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/config.rs",
+      "old_path": null,
+      "status": "modified",
+      "binary": false,
+      "added": 1,
+      "removed": 1,
+      "group": {
+        "kind": "code"
+      },
+      "not_rendered": null,
+      "viewed": "viewed",
+      "hunks": [
+        {
+          "id": "h11",
+          "base": {
+            "start_line": 23,
+            "end_line": 23
+          },
+          "head": {
+            "start_line": 23,
+            "end_line": 23
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 23,
+                "end_line": 23
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f2",
+                "step_id": "f2.1"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 23,
+                "end_line": 23
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f2",
+                "step_id": "f2.1"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/lib.rs",
+      "old_path": null,
+      "status": "modified",
+      "binary": false,
+      "added": 1,
+      "removed": 1,
+      "group": {
+        "kind": "code"
+      },
+      "not_rendered": null,
+      "viewed": "unviewed",
+      "hunks": [
+        {
+          "id": "h12",
+          "base": null,
+          "head": {
+            "start_line": 13,
+            "end_line": 13
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "head",
+              "range": {
+                "start_line": 13,
+                "end_line": 13
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f5",
+                "step_id": "f5.2"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h13",
+          "base": {
+            "start_line": 18,
+            "end_line": 18
+          },
+          "head": null,
+          "after_line": 18,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 18,
+                "end_line": 18
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f5",
+                "step_id": "f5.2"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/rpc/client.rs",
+      "old_path": null,
+      "status": "modified",
+      "binary": false,
+      "added": 62,
+      "removed": 57,
+      "group": {
+        "kind": "code"
+      },
+      "not_rendered": null,
+      "viewed": "unviewed",
+      "hunks": [
+        {
+          "id": "h14",
+          "base": null,
+          "head": {
+            "start_line": 35,
+            "end_line": 35
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "head",
+              "range": {
+                "start_line": 35,
+                "end_line": 35
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.9"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h15",
+          "base": {
+            "start_line": 41,
+            "end_line": 41
+          },
+          "head": {
+            "start_line": 42,
+            "end_line": 42
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 41,
+                "end_line": 41
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.9"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 42,
+                "end_line": 42
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.9"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h16",
+          "base": {
+            "start_line": 52,
+            "end_line": 62
+          },
+          "head": null,
+          "after_line": 52,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 52,
+                "end_line": 61
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f4",
+                "step_id": "f4.1"
+              },
+              "also_in": []
+            },
+            {
+              "side": "base",
+              "range": {
+                "start_line": 62,
+                "end_line": 62
+              },
+              "owner": {
+                "kind": "whitespace_only"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h17",
+          "base": {
+            "start_line": 99,
+            "end_line": 99
+          },
+          "head": {
+            "start_line": 89,
+            "end_line": 89
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 99,
+                "end_line": 99
+              },
+              "owner": {
+                "kind": "context_rule",
+                "badge": "classified_by_line_rule",
+                "rule": "comment-only lines (Rust, by the compiler's lexer)"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 89,
+                "end_line": 89
+              },
+              "owner": {
+                "kind": "context_rule",
+                "badge": "classified_by_line_rule",
+                "rule": "comment-only lines (Rust, by the compiler's lexer)"
+              },
+              "also_in": ["f1.2"]
+            }
+          ]
+        },
+        {
+          "id": "h18",
+          "base": null,
+          "head": {
+            "start_line": 91,
+            "end_line": 94
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "head",
+              "range": {
+                "start_line": 91,
+                "end_line": 94
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.2"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h19",
+          "base": {
+            "start_line": 102,
+            "end_line": 103
+          },
+          "head": {
+            "start_line": 96,
+            "end_line": 109
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 102,
+                "end_line": 103
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.2"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 96,
+                "end_line": 96
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.2"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 97,
+                "end_line": 97
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.3"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 98,
+                "end_line": 98
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.4"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 99,
+                "end_line": 99
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.5"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 100,
+                "end_line": 103
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.6"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 104,
+                "end_line": 106
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.7"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 107,
+                "end_line": 109
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.8"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h20",
+          "base": null,
+          "head": {
+            "start_line": 112,
+            "end_line": 152
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "head",
+              "range": {
+                "start_line": 112,
+                "end_line": 152
+              },
+              "owner": {
+                "kind": "identical_move",
+                "from": {
+                  "file": "src/rpc/client.rs",
+                  "side": "base",
+                  "range": {
+                    "start_line": 173,
+                    "end_line": 213
+                  }
+                },
+                "to": {
+                  "file": "src/rpc/client.rs",
+                  "side": "head",
+                  "range": {
+                    "start_line": 112,
+                    "end_line": 152
+                  }
+                }
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h21",
+          "base": {
+            "start_line": 173,
+            "end_line": 214
+          },
+          "head": null,
+          "after_line": 219,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 173,
+                "end_line": 213
+              },
+              "owner": {
+                "kind": "identical_move",
+                "from": {
+                  "file": "src/rpc/client.rs",
+                  "side": "base",
+                  "range": {
+                    "start_line": 173,
+                    "end_line": 213
+                  }
+                },
+                "to": {
+                  "file": "src/rpc/client.rs",
+                  "side": "head",
+                  "range": {
+                    "start_line": 112,
+                    "end_line": 152
+                  }
+                }
+              },
+              "also_in": []
+            },
+            {
+              "side": "base",
+              "range": {
+                "start_line": 214,
+                "end_line": 214
+              },
+              "owner": {
+                "kind": "whitespace_only"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/rpc/error.rs",
+      "old_path": null,
+      "status": "modified",
+      "binary": false,
+      "added": 2,
+      "removed": 0,
+      "group": {
+        "kind": "code"
+      },
+      "not_rendered": null,
+      "viewed": "dismissed",
+      "hunks": [
+        {
+          "id": "h22",
+          "base": null,
+          "head": {
+            "start_line": 12,
+            "end_line": 13
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "head",
+              "range": {
+                "start_line": 12,
+                "end_line": 13
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f3",
+                "step_id": "f3.1"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/rpc/metrics.rs",
+      "old_path": null,
+      "status": "modified",
+      "binary": false,
+      "added": 7,
+      "removed": 0,
+      "group": {
+        "kind": "code"
+      },
+      "not_rendered": null,
+      "viewed": "unviewed",
+      "hunks": [
+        {
+          "id": "h23",
+          "base": null,
+          "head": {
+            "start_line": 40,
+            "end_line": 46
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "head",
+              "range": {
+                "start_line": 40,
+                "end_line": 40
+              },
+              "owner": {
+                "kind": "whitespace_only"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 41,
+                "end_line": 46
+              },
+              "owner": {
+                "kind": "unexplained"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "src/rpc/retry.rs",
+      "old_path": "src/util/backoff.rs",
+      "status": "renamed",
+      "binary": false,
+      "added": 31,
+      "removed": 4,
+      "group": {
+        "kind": "code"
+      },
+      "not_rendered": null,
+      "viewed": "unviewed",
+      "hunks": [
+        {
+          "id": "h24",
+          "base": {
+            "start_line": 5,
+            "end_line": 6
+          },
+          "head": {
+            "start_line": 5,
+            "end_line": 33
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 5,
+                "end_line": 6
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.10"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 5,
+                "end_line": 32
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f1",
+                "step_id": "f1.10"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 33,
+                "end_line": 33
+              },
+              "owner": {
+                "kind": "whitespace_only"
+              },
+              "also_in": []
+            }
+          ]
+        },
+        {
+          "id": "h25",
+          "base": {
+            "start_line": 22,
+            "end_line": 23
+          },
+          "head": {
+            "start_line": 49,
+            "end_line": 50
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 22,
+                "end_line": 23
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f5",
+                "step_id": "f5.1"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 49,
+                "end_line": 50
+              },
+              "owner": {
+                "kind": "step",
+                "flow_id": "f5",
+                "step_id": "f5.1"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/common/mod.rs",
+      "old_path": null,
+      "status": "modified",
+      "binary": false,
+      "added": 2,
+      "removed": 1,
+      "group": {
+        "kind": "not_analysed",
+        "category": "tests",
+        "badge": "classified_by_path",
+        "rule": "tests/**"
+      },
+      "not_rendered": null,
+      "viewed": "unviewed",
+      "hunks": [
+        {
+          "id": "h26",
+          "base": {
+            "start_line": 14,
+            "end_line": 14
+          },
+          "head": {
+            "start_line": 14,
+            "end_line": 15
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 14,
+                "end_line": 14
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "tests",
+                "badge": "classified_by_path",
+                "rule": "tests/**"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 14,
+                "end_line": 15
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "tests",
+                "badge": "classified_by_path",
+                "rule": "tests/**"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/rpc_retry.rs",
+      "old_path": null,
+      "status": "added",
+      "binary": false,
+      "added": 27,
+      "removed": 0,
+      "group": {
+        "kind": "not_analysed",
+        "category": "tests",
+        "badge": "classified_by_path",
+        "rule": "tests/**"
+      },
+      "not_rendered": null,
+      "viewed": "unviewed",
+      "hunks": [
+        {
+          "id": "h27",
+          "base": null,
+          "head": {
+            "start_line": 1,
+            "end_line": 27
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "head",
+              "range": {
+                "start_line": 1,
+                "end_line": 27
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "tests",
+                "badge": "classified_by_path",
+                "rule": "tests/**"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/send_once.rs",
+      "old_path": null,
+      "status": "deleted",
+      "binary": false,
+      "added": 0,
+      "removed": 10,
+      "group": {
+        "kind": "not_analysed",
+        "category": "tests",
+        "badge": "classified_by_path",
+        "rule": "tests/**"
+      },
+      "not_rendered": null,
+      "viewed": "unviewed",
+      "hunks": [
+        {
+          "id": "h28",
+          "base": {
+            "start_line": 1,
+            "end_line": 10
+          },
+          "head": null,
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 1,
+                "end_line": 10
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "tests",
+                "badge": "classified_by_path",
+                "rule": "tests/**"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/sync_headers.rs",
+      "old_path": null,
+      "status": "modified",
+      "binary": false,
+      "added": 1,
+      "removed": 1,
+      "group": {
+        "kind": "not_analysed",
+        "category": "tests",
+        "badge": "classified_by_path",
+        "rule": "tests/**"
+      },
+      "not_rendered": null,
+      "viewed": "viewed",
+      "hunks": [
+        {
+          "id": "h29",
+          "base": {
+            "start_line": 19,
+            "end_line": 19
+          },
+          "head": {
+            "start_line": 19,
+            "end_line": 19
+          },
+          "after_line": null,
+          "parts": [
+            {
+              "side": "base",
+              "range": {
+                "start_line": 19,
+                "end_line": 19
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "tests",
+                "badge": "classified_by_path",
+                "rule": "tests/**"
+              },
+              "also_in": []
+            },
+            {
+              "side": "head",
+              "range": {
+                "start_line": 19,
+                "end_line": 19
+              },
+              "owner": {
+                "kind": "not_analysed",
+                "category": "tests",
+                "badge": "classified_by_path",
+                "rule": "tests/**"
+              },
+              "also_in": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "viewed_status": "checked",
+  "current_head": "52d2da140191a9d47becf6a446310be803c007fc"
+}

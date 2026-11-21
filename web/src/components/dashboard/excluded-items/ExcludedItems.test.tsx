@@ -44,6 +44,21 @@ describe("ExcludedItems", () => {
     expect(screen.queryByRole("list")).toBeNull();
   });
 
+  it("the open list has Hide in its top-right corner; it closes the list and returns the focus", async () => {
+    render(<ExcludedItems exclusions={EXCLUSIONS} />);
+    const toggle = screen.getByRole("button", { name: /Excluded: 14/ });
+    expect(screen.queryByRole("button", { name: "Hide excluded items" })).toBeNull();
+    await userEvent.click(toggle);
+    const hide = screen.getByRole("button", { name: "Hide excluded items" });
+    expect(hide).toHaveTextContent(/^Hide$/);
+    expect(hide).toHaveAccessibleDescription(/Hides the list/);
+    hide.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryAllByRole("group")).toHaveLength(0);
+    expect(toggle).toHaveFocus();
+  });
+
   it("the disclosure lists the items by reason with links to GitHub; titles stay plain text", async () => {
     const onNavigate = vi.fn();
     render(<ExcludedItems exclusions={EXCLUSIONS} onNavigate={onNavigate} />);
@@ -58,7 +73,7 @@ describe("ExcludedItems", () => {
       "Drafts: 2",
     ]);
     const authors = within(groups[1]!);
-    const link = authors.getByRole("link", { name: "Open PLAT-1 on GitHub" });
+    const link = authors.getByRole("link", { name: "Open PLAT-1 on GitHub (new tab)" });
     expect(link.getAttribute("href")).toBe("https://github.com/acme/platform/pull/1");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(authors.getByText("<b>bump</b> serde")).toBeTruthy();

@@ -780,7 +780,11 @@ def sweep_failure_scenario(sup):
     spawn(sup, ["/bin/sleep", "1000"], key)
     print("SCENARIO sweep-failure: sweep requested", flush=True)
     reply = sup.call("sweep")
-    print(f"CHECK sweep_failure_terminates_container FAIL the supervisor answered {reply}", flush=True)
+    if reply.get("ok") is False:
+        # The supervisor reports the failed sweep, then ends the container: wait to be killed.
+        print(f"SCENARIO sweep-failure: the supervisor reported {reply}", flush=True)
+        time.sleep(60)
+    print(f"CHECK sweep_failure_terminates_container FAIL the supervisor answered {reply} and kept running", flush=True)
     raise SystemExit(1)
 
 
@@ -952,7 +956,7 @@ def plain_git_job(sup):
     file_diff = {"path": "README.md", "old_path": None, "status": "Modified", "binary": False,
                  "hunks": [{"id": "h1", "base": {"start": 1, "len": 0},
                             "head": {"start": 2, "len": 1}, "added": [2], "removed": []}]}
-    context = {"version": 2, "base": base, "head": head, "files": [file_diff], "listed": [file_diff],
+    context = {"version": 3, "base": base, "head": head, "files": [file_diff], "listed": [file_diff],
                "plan": {"flows": [{"id": "f1", "title": "Update readme", "classification": "docs_comments",
                                     "importance_rank": 1, "intent": "Describe the head", "depends_on": [],
                                     "hunks": [{"hunk_id": "h1", "head_start": None, "head_end": None}]}],

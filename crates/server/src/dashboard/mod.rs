@@ -3,6 +3,7 @@
 
 pub mod hub;
 pub mod judge;
+pub mod plugin;
 pub mod refresh;
 pub mod schedule;
 pub mod score;
@@ -11,3 +12,5 @@ pub mod snapshot;
 pub mod zone;
 
 pub use hub::DashboardHub;
+
+pub(crate) mod mentions;

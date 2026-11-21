@@ -123,5 +123,34 @@
       "head_end": null,
       "reason": "Adds a metrics helper that nothing in this pull request calls."
     }
+  ],
+  "crate_notes": [
+    {
+      "note": "retry with backoff around `RpcClient::send`",
+      "hunks": [
+        "h14",
+        "h15",
+        "h18",
+        "h23"
+      ]
+    },
+    {
+      "note": "default request timeout 30 s → 5 s",
+      "hunks": [
+        "h11"
+      ]
+    },
+    {
+      "note": "new error variant `RpcError::Exhausted`",
+      "hunks": [
+        "h21"
+      ]
+    },
+    {
+      "note": "removed `send_once()`",
+      "hunks": [
+        "h16"
+      ]
+    }
   ]
 }

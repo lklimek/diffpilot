@@ -290,6 +290,14 @@ pub const GET_DASHBOARD: Route = route("getDashboard", Get, "/api/v1/dashboard",
 /// R1b: ranked items of the latest snapshot (`ItemQuery`).
 pub const LIST_DASHBOARD_ITEMS: Route =
     route("listDashboardItems", Get, "/api/v1/dashboard/items", READ);
+/// R11: hides one mention for the signed-in browser user.
+pub const HIDE_DASHBOARD_MENTION: Route = route(
+    "hideDashboardMention",
+    Post,
+    "/api/v1/dashboard/mentions/{id}/hide",
+    SessionCsrf,
+);
+
 /// R2: starts a refresh.
 pub const START_DASHBOARD_REFRESH: Route = route(
     "startDashboardRefresh",
@@ -382,6 +390,38 @@ pub const REVOKE_ACCESS_TOKEN: Route = route(
     SessionCsrf,
 );
 
+/// R12: the files of the pull request with their hunks, owners and the user's GitHub Viewed marks.
+pub const GET_FILES: Route = route("getFiles", Get, "/api/v1/analyses/{id}/files", READ);
+/// R13: marks a file as viewed on GitHub, or removes the mark, as the user.
+pub const SET_FILE_VIEWED: Route = route(
+    "setFileViewed",
+    Put,
+    "/api/v1/analyses/{id}/files/viewed",
+    SessionCsrf,
+);
+/// R14: asks a question about a step or about lines of a file.
+pub const ASK_ANCHORED: Route = route(
+    "askAnchored",
+    Post,
+    "/api/v1/analyses/{id}/questions",
+    SessionCsrf,
+);
+
+/// R15: the Cargo map of the head commit with conversion facts and crate notes (ADR-021).
+pub const GET_DEPENDENCIES: Route = route(
+    "getDependencies",
+    Get,
+    "/api/v1/analyses/{id}/dependencies",
+    READ,
+);
+/// R16: replaces the installation-wide list of controlled GitHub owners.
+pub const SET_CONTROLLED_OWNERS: Route = route(
+    "setControlledOwners",
+    Put,
+    "/api/v1/settings/controlled-owners",
+    SessionCsrf,
+);
+
 /// Every route.
 pub const ROUTES: &[Route] = &[
     REQUEST_FLOW,
@@ -407,6 +447,10 @@ pub const ROUTES: &[Route] = &[
     PUT_REVIEW_STATE,
     LIST_QUESTIONS,
     ASK_QUESTION,
+    ASK_ANCHORED,
+    GET_FILES,
+    SET_FILE_VIEWED,
+    GET_DEPENDENCIES,
     LIST_FEEDBACK,
     POST_FEEDBACK,
     DELETE_FEEDBACK,
@@ -416,11 +460,13 @@ pub const ROUTES: &[Route] = &[
     DELETE_COMMENT,
     GET_SETTINGS,
     SET_LANGUAGE,
+    SET_CONTROLLED_OWNERS,
     SET_LLM,
     SET_ASK_EFFORT,
     GET_REPO_SETTINGS,
     GET_DASHBOARD,
     LIST_DASHBOARD_ITEMS,
+    HIDE_DASHBOARD_MENTION,
     START_DASHBOARD_REFRESH,
     GET_DASHBOARD_REFRESH,
     CANCEL_DASHBOARD_REFRESH,

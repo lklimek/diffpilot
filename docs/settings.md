@@ -85,6 +85,16 @@ Personal access tokens keep working after Sign out.
 - **Limits:** English, Polski or Русский.
 - **Example:** Polski, then analyse the pull request again to get its texts in Polish.
 
+## Notifications
+
+### Notify me when work finishes
+
+- **What:** A browser notification when an Ask answer of yours arrives, a flow is analysed, or an analysis is ready to review, finishes or fails. It names the pull request and the flow or step, never the answer text; a click opens it.
+- **When used:** While a diffpilot tab showing that review or its progress is open and you are in another tab or window. A tab you are looking at does not notify. Several open tabs notify once.
+- **Empty or default:** Off. Turning it on asks the browser's permission; the choice is kept in this browser only.
+- **Limits:** Needs https (or localhost) and the browser's permission. Closed tabs do not notify. Mobile browsers show none.
+- **Example:** Ask a question, switch to your editor, and get a notification when the answer is ready.
+
 ## GitHub App
 
 ### GitHub App
@@ -102,6 +112,14 @@ Personal access tokens keep working after Sign out.
 - **When used:** Shown for repositories that have an analysed pull request.
 - **Empty or default:** No repository is listed before the first analysis.
 - **Example:** dashpay/platform: related repositories found in Cargo.toml and Cargo.lock.
+
+### Controlled organisations
+
+- **What:** GitHub organisations or users whose repositories are yours. The Dependencies view marks their repositories and crates "yours", lists their crates among a changed crate's dependencies, and the PR-context agent looks up issues and pull requests in them.
+- **When used:** Every time a Dependencies view or a PR context prompt is built; a change applies at once, without analysing again.
+- **Empty or default:** Only the pull request's own owner is controlled; it always is.
+- **Limits:** Up to 50 GitHub logins (letters, digits and -, up to 39 characters), one list for the whole installation.
+- **Example:** dashpay: a pull request in dashpay/dash-evo-tool shows dashpay/platform crates as yours.
 
 ## Dashboard
 
@@ -181,7 +199,7 @@ How you find out: after a refresh, What the scan missed names the accounts searc
 ### Ready for a human label
 
 - **What:** The label that marks a pull request ready for a human review.
-- **When used:** Every ranking: a pull request with this label ranks higher, and one of yours with it, green checks and no open threads counts as ready for others. A ready pull request of yours with reviews requested from others, where nothing is your move (no review asked of you, no change request, no comment awaiting your reply, no conflicts, not approved for you to merge), is listed under Waiting on others only, not in Needs you.
+- **When used:** Every ranking: a pull request with this label ranks higher, and one of yours with it, green checks and no open threads counts as ready for others. A ready pull request of yours with reviews requested from others, where nothing is your move (no review asked of you, no change request, no comment awaiting your reply, no conflicts, not approved for you to merge, no merge button active for you on GitHub), is listed under Waiting on others only, not in Needs you.
 - **Empty or default:** ready-for-human.
 - **Limits:** 1 to 50 characters; compared without regard to case.
 - **Example:** needs-review.

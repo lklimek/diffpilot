@@ -17,9 +17,12 @@ use contracts::agent::analyse_flow::{
 };
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
+use contracts::api::deps::{DependencyStatus, DependencyView, RepositoryKind, TypeDefinition};
+use contracts::api::files::HunkPart;
 use contracts::api::pr::PrSummary;
+use contracts::api::questions::AskState;
 use contracts::api::tour::GithubThread;
-use contracts::common::{Classification, FragmentKind, LineSide, LlmLanguage};
+use contracts::common::{Classification, FragmentKind, LineRange, LineSide, LlmLanguage};
 use contracts::ids::{FlowId, HunkId, StepId};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -31,6 +34,9 @@ const PLAN: &str = include_str!("../../../prompts/plan.md");
 const PR_CONTEXT: &str = include_str!("../../../prompts/pr_context.md");
 const ANALYSE_FLOW: &str = include_str!("../../../prompts/analyse_flow.md");
 const ASK: &str = include_str!("../../../prompts/ask.md");
+const ASK_LINES: &str = include_str!("../../../prompts/ask_lines.md");
+const ASK_FLOW: &str = include_str!("../../../prompts/ask_flow.md");
+const ASK_PR: &str = include_str!("../../../prompts/ask_pr.md");
 const REPAIR: &str = include_str!("../../../prompts/repair.md");
 const CONTEXT_PACK: &str = include_str!("../../../prompts/context_pack.md");
 
@@ -60,10 +66,37 @@ pub const MAX_CALIBRATION_CHARS: usize = 1000;
 pub const MAX_THREADS: usize = 50;
 
 const MAX_TITLE_CHARS: usize = 300;
+/// Most bytes of the per-crate dependency entries in a `pr_context` prompt.
+const MAX_DEPENDENCY_BYTES: usize = 16 * 1024;
+/// Most characters of a PR-controlled name or path in a dependency entry.
+const MAX_DEPENDENCY_NAME_CHARS: usize = 80;
+/// Most characters of a path in a dependency entry (cut in the middle; a line number is never cut).
+const MAX_DEPENDENCY_PATH_CHARS: usize = 300;
+/// Most facts of one crate in its dependency entry; the rest are counted.
+const MAX_PROMPT_FACTS: usize = 15;
+/// Most used crates of one crate in its dependency entry; the rest are counted.
+const MAX_PROMPT_USES: usize = 20;
+/// Most controlled dependency repositories the agent is given to look in (ADR-005 addendum).
+const MAX_LOOKUP_REPOS: usize = 5;
+/// Most crate names listed per lookup repository.
+const MAX_LOOKUP_CRATES: usize = 10;
 const MAX_DESCRIPTION_CHARS: usize = 16_000;
 const MAX_PROFILE_CHARS: usize = 16_000;
 const MAX_EXCERPT_CHARS: usize = 2_000;
 const MAX_QUESTION_CHARS: usize = 4_000;
+/// Classic diff quoted in an `ask` prompt about lines, at most.
+const MAX_ASK_DIFF_BYTES: usize = 32 * 1024;
+/// Line owners and overlapping steps quoted in an `ask` prompt about lines, at most (each).
+const MAX_ASK_FACTS_BYTES: usize = 16 * 1024;
+/// A flow quoted in an `ask` prompt about it, and the plan's flows and the PR context in one about the whole PR, at
+/// most (each).
+const MAX_ASK_CONTEXT_BYTES: usize = 32 * 1024;
+/// Earlier questions of a thread quoted in a follow-up's prompt, at most; the first question always stays.
+const MAX_ASK_THREAD_BYTES: usize = 32 * 1024;
+/// Latest follow-ups quoted after a thread's first question, at most.
+const MAX_THREAD_FOLLOW_UPS: usize = 6;
+/// Characters quoted per earlier answer of a thread, at most.
+const MAX_THREAD_ANSWER_CHARS: usize = 4_000;
 const MAX_ISSUE_CHARS: usize = 1_000;
 const MAX_LISTED_PATHS: usize = 50;
 const MAX_LISTED_MOVES: usize = 100;
@@ -167,6 +200,8 @@ pub struct PrContextInput<'a> {
     pub description: Option<&'a str>,
     /// Project profile.
     pub profile: Profile<'a>,
+    /// The Dependencies view of the head (ADR-021), if computed.
+    pub dependencies: Option<&'a DependencyView>,
 }
 
 /// A GitHub review thread listed for a flow under its alias (`t1`, …).
@@ -222,8 +257,133 @@ pub struct AskInput<'a> {
     pub step_id: &'a StepId,
     /// The step from its flow analysis.
     pub step: &'a AgentStep,
+    /// Lines of the step the question is about; `None` for the whole step.
+    pub lines: Option<LineRange>,
     /// The reviewer's question.
     pub question: &'a str,
+    /// Earlier questions of its thread, oldest first; empty for a first question.
+    pub thread: &'a [ThreadQuestion<'a>],
+    /// Project profile.
+    pub profile: Profile<'a>,
+}
+
+/// An earlier question of a follow-up's thread with its answer, if any.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct ThreadQuestion<'a> {
+    /// The reviewer's question.
+    pub question: &'a str,
+    /// Its state when the follow-up was submitted.
+    pub state: AskState,
+    /// The answer text, once answered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<&'a str>,
+}
+
+/// Input of the `ask` prompt about an analysed flow as a whole.
+#[derive(Clone, Copy, Debug)]
+pub struct AskFlowInput<'a> {
+    /// Common context.
+    pub job: JobContext<'a>,
+    /// The flow's analysis.
+    pub flow: &'a FlowAnalysisOutput,
+    /// The reviewer's question.
+    pub question: &'a str,
+    /// Earlier questions of its thread, oldest first.
+    pub thread: &'a [ThreadQuestion<'a>],
+    /// Project profile.
+    pub profile: Profile<'a>,
+}
+
+/// Input of the `ask` prompt about the whole pull request.
+#[derive(Clone, Copy, Debug)]
+pub struct AskPrInput<'a> {
+    /// Common context.
+    pub job: JobContext<'a>,
+    /// The stored plan.
+    pub plan: Option<&'a PlanOutput>,
+    /// The stored PR context.
+    pub pr_context: Option<&'a PrContextOutput>,
+    /// The reviewer's question.
+    pub question: &'a str,
+    /// Earlier questions of its thread, oldest first.
+    pub thread: &'a [ThreadQuestion<'a>],
+    /// Project profile.
+    pub profile: Profile<'a>,
+}
+
+/// Lines a question is about without a single step (Files view): a range of a file, or the whole file.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct AskedLines<'a> {
+    /// Repository-relative path on `side`.
+    pub path: &'a str,
+    /// Commit the lines refer to.
+    pub side: LineSide,
+    /// The lines; `None` for the whole file.
+    #[serde(flatten)]
+    pub range: Option<LineRange>,
+}
+
+/// A step in summary, as every prompt lists steps (title, place, kind).
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct StepSummary<'a> {
+    /// The step's title.
+    pub title: &'a str,
+    /// Repository-relative path on `side`.
+    pub file: &'a str,
+    /// Side of the step's lines.
+    pub side: LineSide,
+    /// First line.
+    pub start_line: u32,
+    /// Last line.
+    pub end_line: u32,
+    /// Step kind.
+    pub kind: FragmentKind,
+}
+
+impl<'a> StepSummary<'a> {
+    fn of(step: &'a AgentStep) -> Self {
+        Self {
+            title: &step.title,
+            file: &step.file,
+            side: step.side,
+            start_line: step.start_line,
+            end_line: step.end_line,
+            kind: step.kind,
+        }
+    }
+}
+
+/// A step of the analysis the asked lines touch, in summary, with its server id and flow.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct TouchedStep<'a> {
+    /// Server id of the step.
+    pub step_id: &'a StepId,
+    /// Its flow.
+    pub flow_id: &'a FlowId,
+    /// The flow's title.
+    pub flow_title: &'a str,
+    /// The step.
+    #[serde(flatten)]
+    pub step: StepSummary<'a>,
+}
+
+/// Input of the `ask` prompt about lines without a single step.
+#[derive(Clone, Copy, Debug)]
+pub struct AskLinesInput<'a> {
+    /// Common context.
+    pub job: JobContext<'a>,
+    /// The lines.
+    pub lines: AskedLines<'a>,
+    /// Their classic diff as text, or why it is not included.
+    pub diff: &'a str,
+    /// Owners of their changed lines (server facts).
+    pub facts: &'a [HunkPart],
+    /// Steps overlapping them.
+    pub steps: &'a [TouchedStep<'a>],
+    /// The reviewer's question.
+    pub question: &'a str,
+    /// Earlier questions of its thread, oldest first.
+    pub thread: &'a [ThreadQuestion<'a>],
     /// Project profile.
     pub profile: Profile<'a>,
 }
@@ -264,12 +424,36 @@ pub struct AnsweredQuestion<'a> {
 /// What an `ask` job's context pack adds.
 #[derive(Clone, Copy, Debug)]
 pub struct AskContext<'a> {
-    /// The step asked about.
-    pub step_id: &'a StepId,
-    /// The flow analysis containing the step.
-    pub flow: &'a FlowAnalysisOutput,
-    /// Earlier questions of the step, oldest first.
+    /// What the question is about.
+    pub asked: Asked<'a>,
+    /// Earlier questions of this pull request, oldest first.
     pub earlier: &'a [AnsweredQuestion<'a>],
+}
+
+/// What an asked question is about, for its context pack.
+#[derive(Clone, Copy, Debug)]
+pub enum Asked<'a> {
+    /// A step, given in full with the rest of its flow analysis.
+    Step {
+        /// The step asked about.
+        step_id: &'a StepId,
+        /// The flow analysis containing the step.
+        flow: &'a FlowAnalysisOutput,
+    },
+    /// An analysed flow as a whole, given in full.
+    Flow {
+        /// The flow analysis.
+        flow: &'a FlowAnalysisOutput,
+    },
+    /// The whole pull request: the pack's plan, PR context and flows are the context.
+    Pr,
+    /// Lines without a single step, given with the steps overlapping them in full.
+    Lines {
+        /// The lines.
+        lines: AskedLines<'a>,
+        /// The overlapping steps with their server ids.
+        steps: &'a [(StepId, &'a AgentStep)],
+    },
 }
 
 /// Input of the context pack that seeds a new session after a lost one (brief §5 Agent sessions).
@@ -313,24 +497,15 @@ impl<'a> FlowEntry<'a> {
 #[derive(Serialize)]
 struct StepEntry<'a> {
     id: &'a str,
-    title: &'a str,
-    file: &'a str,
-    side: LineSide,
-    start_line: u32,
-    end_line: u32,
-    kind: FragmentKind,
+    #[serde(flatten)]
+    step: StepSummary<'a>,
 }
 
 impl<'a> StepEntry<'a> {
     fn of(id: &'a str, step: &'a AgentStep) -> Self {
         Self {
             id,
-            title: &step.title,
-            file: &step.file,
-            side: step.side,
-            start_line: step.start_line,
-            end_line: step.end_line,
-            kind: step.kind,
+            step: StepSummary::of(step),
         }
     }
 }
@@ -406,18 +581,243 @@ pub fn ask(input: &AskInput<'_>) -> Result<String, PromptError> {
         step: input.step,
     })?;
     let question = clipped_data("question", input.question, MAX_QUESTION_CHARS)?;
+    let mut about = plain(&input.step_id.0);
+    if let Some(lines) = input.lines {
+        about.push_str(&format!(
+            " (its lines {}-{})",
+            lines.start_line, lines.end_line
+        ));
+    }
     let task = fill(
         ASK,
         &[
-            ("step_id", &plain(&input.step_id.0)),
+            ("step_id", &about),
+            ("ask_rules", part("ask_rules")?),
             ("lenses", part("lenses")?),
             ("profile", &profile(input.profile)?),
             ("step", &data("step", &step)),
             ("question", &question),
+            ("thread", &thread_block(input.thread)?),
         ],
     )?;
     let prompt = frame("ask", input.job, &task)?;
     within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+/// The `ask` prompt about lines without a single step (Files view): the lines, their classic diff, the server's
+/// owners of their changed lines and the overlapping steps in summary; no other flow analysis.
+pub fn ask_lines(input: &AskLinesInput<'_>) -> Result<String, PromptError> {
+    let lines = &input.lines;
+    let place = match lines.range {
+        Some(range) => format!(
+            "lines {}-{} of the file named in the lines block, on {}",
+            range.start_line,
+            range.end_line,
+            side_label(lines.side)
+        ),
+        None => format!(
+            "the whole file named in the lines block, on {}",
+            side_label(lines.side)
+        ),
+    };
+    let question = clipped_data("question", input.question, MAX_QUESTION_CHARS)?;
+    let task = fill(
+        ASK_LINES,
+        &[
+            ("place", &place),
+            ("ask_rules", part("ask_rules")?),
+            ("lenses", part("lenses")?),
+            ("profile", &profile(input.profile)?),
+            ("lines", &data("lines", &serde_json::to_string(lines)?)),
+            (
+                "diff",
+                &json_block("classic diff", input.diff, MAX_ASK_DIFF_BYTES)?,
+            ),
+            (
+                "facts",
+                &json_block(
+                    "owners of the changed lines",
+                    &serde_json::to_string(input.facts)?,
+                    MAX_ASK_FACTS_BYTES,
+                )?,
+            ),
+            (
+                "steps",
+                &lines_block(
+                    "overlapping steps",
+                    input
+                        .steps
+                        .iter()
+                        .map(serde_json::to_string)
+                        .collect::<Result<_, _>>()?,
+                    MAX_ASK_FACTS_BYTES,
+                )?,
+            ),
+            ("question", &question),
+            ("thread", &thread_block(input.thread)?),
+        ],
+    )?;
+    let prompt = frame("ask", input.job, &task)?;
+    within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+/// The `ask` prompt about an analysed flow as a whole: its introduction and its steps in summary, with server ids.
+pub fn ask_flow(input: &AskFlowInput<'_>) -> Result<String, PromptError> {
+    let flow = input.flow;
+    let ids: Vec<String> = (1..=flow.steps.len())
+        .map(|number| format!("{}.{number}", flow.flow_id.0))
+        .collect();
+    let entry = AnalysedFlowEntry {
+        flow_id: &flow.flow_id,
+        introduction: &flow.introduction,
+        steps: flow
+            .steps
+            .iter()
+            .zip(&ids)
+            .map(|(step, id)| StepEntry::of(id, step))
+            .collect(),
+    };
+    let question = clipped_data("question", input.question, MAX_QUESTION_CHARS)?;
+    let task = fill(
+        ASK_FLOW,
+        &[
+            ("flow_id", &plain(&flow.flow_id.0)),
+            ("ask_rules", part("ask_rules")?),
+            ("lenses", part("lenses")?),
+            ("profile", &profile(input.profile)?),
+            (
+                "flow",
+                &json_block(
+                    "flow",
+                    &serde_json::to_string(&entry)?,
+                    MAX_ASK_CONTEXT_BYTES,
+                )?,
+            ),
+            ("question", &question),
+            ("thread", &thread_block(input.thread)?),
+        ],
+    )?;
+    let prompt = frame("ask", input.job, &task)?;
+    within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+/// The `ask` prompt about the whole pull request: the plan's flows and the PR context, each bounded.
+pub fn ask_pr(input: &AskPrInput<'_>) -> Result<String, PromptError> {
+    let flows = input
+        .plan
+        .map(|plan| {
+            plan.flows
+                .iter()
+                .map(|flow| serde_json::to_string(&FlowEntry::of(flow)))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let context = input
+        .pr_context
+        .map(serde_json::to_string)
+        .transpose()?
+        .unwrap_or_default();
+    let question = clipped_data("question", input.question, MAX_QUESTION_CHARS)?;
+    let task = fill(
+        ASK_PR,
+        &[
+            ("ask_rules", part("ask_rules")?),
+            ("lenses", part("lenses")?),
+            ("profile", &profile(input.profile)?),
+            (
+                "flows",
+                &lines_block("planned flows", flows, MAX_ASK_CONTEXT_BYTES)?,
+            ),
+            (
+                "context",
+                &json_block("PR context", &context, MAX_ASK_CONTEXT_BYTES)?,
+            ),
+            ("question", &question),
+            ("thread", &thread_block(input.thread)?),
+        ],
+    )?;
+    let prompt = frame("ask", input.job, &task)?;
+    within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+/// The earlier questions of a follow-up's thread with an introduction, or nothing for a first question: the first
+/// question, then the latest follow-ups that fit [`MAX_ASK_THREAD_BYTES`] (at most [`MAX_THREAD_FOLLOW_UPS`]), with a
+/// note on the omitted ones. Each entry is clipped to at most half the budget, so the first always fits; a clipped
+/// entry gives `clipped_chars` and the block the usual clipped note.
+fn thread_block(thread: &[ThreadQuestion<'_>]) -> Result<String, PromptError> {
+    let entries = thread
+        .iter()
+        .map(thread_entry)
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(((first, first_clipped), rest)) = entries.split_first() else {
+        return Ok(String::new());
+    };
+    let mut used = first.len();
+    let mut clipped = *first_clipped;
+    let mut latest = Vec::new();
+    for (entry, entry_clipped) in rest.iter().rev().take(MAX_THREAD_FOLLOW_UPS) {
+        if used + entry.len() > MAX_ASK_THREAD_BYTES {
+            break;
+        }
+        used += entry.len();
+        clipped += entry_clipped;
+        latest.push(entry.as_str());
+    }
+    let omitted = rest.len() - latest.len();
+    let mut content = format!("{first}\n");
+    for entry in latest.iter().rev() {
+        content.push_str(entry);
+        content.push('\n');
+    }
+    let mut out = format!("{}\n", part("thread")?);
+    out.push_str(&data("earlier questions of this thread", &content));
+    out.push_str(&clipped_note(clipped)?);
+    if omitted > 0 {
+        out.push_str(&omitted_note(omitted)?);
+    }
+    Ok(out)
+}
+
+/// One entry of a thread block as a JSON line and the characters clipped from it: the question and the answer cut
+/// to their limits, then the answer shortened until the line fits half of [`MAX_ASK_THREAD_BYTES`].
+fn thread_entry(asked: &ThreadQuestion<'_>) -> Result<(String, usize), PromptError> {
+    #[derive(Serialize)]
+    struct Entry<'e> {
+        question: &'e str,
+        state: AskState,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        answer: Option<&'e str>,
+        #[serde(skip_serializing_if = "is_zero")]
+        clipped_chars: usize,
+    }
+    fn is_zero(chars: &usize) -> bool {
+        *chars == 0
+    }
+    let (question, question_clipped) = clip(asked.question, MAX_QUESTION_CHARS);
+    let answer = asked.answer.unwrap_or_default();
+    let mut keep = MAX_THREAD_ANSWER_CHARS;
+    loop {
+        let (shown, answer_clipped) = clip(answer, keep);
+        let clipped_chars = question_clipped + answer_clipped;
+        let line = serde_json::to_string(&Entry {
+            question: &question,
+            state: asked.state,
+            answer: asked.answer.map(|_| shown.as_str()),
+            clipped_chars,
+        })?;
+        if line.len() <= MAX_ASK_THREAD_BYTES / 2 || keep == 0 {
+            return Ok((line, clipped_chars));
+        }
+        keep /= 2;
+    }
+}
+
+fn side_label(side: LineSide) -> &'static str {
+    match side {
+        LineSide::Head => "the head commit",
+        LineSide::Base => "the base commit (removed code)",
+    }
 }
 
 /// The repair prompt: exactly the verify issues, the whole rejected output and the original task. A rejected
@@ -512,9 +912,16 @@ pub fn context_pack(input: &ContextPackInput<'_>) -> Result<String, PromptError>
     let mut blocks = String::new();
     let mut sections: Vec<(String, Vec<String>, usize, bool)> = Vec::new();
     if let Some(ask) = &input.ask {
-        let (asked, label, rest) = asked_flow(ask)?;
-        blocks.push_str(&asked);
-        sections.push((label, rest, PACK_ASK_FLOW_BYTES, true));
+        let asked = match ask.asked {
+            Asked::Step { step_id, flow } => Some(asked_flow(step_id, flow)?),
+            Asked::Flow { flow } => Some(asked_whole_flow(flow)?),
+            Asked::Lines { lines, steps } => Some(asked_lines(lines, steps)?),
+            Asked::Pr => None,
+        };
+        if let Some((asked, label, rest)) = asked {
+            blocks.push_str(&asked);
+            sections.push((label, rest, PACK_ASK_FLOW_BYTES, true));
+        }
         let earlier = ask
             .earlier
             .iter()
@@ -592,25 +999,79 @@ pub fn context_pack(input: &ContextPackInput<'_>) -> Result<String, PromptError>
     within_budget("context pack", pack(&blocks)?, CONTEXT_PACK_BUDGET_BYTES)
 }
 
+/// The asked lines (a data block), and the label and entries of the steps overlapping them, in full.
+fn asked_lines(
+    lines: AskedLines<'_>,
+    steps: &[(StepId, &AgentStep)],
+) -> Result<(String, String, Vec<String>), PromptError> {
+    let asked = data("asked lines", &serde_json::to_string(&lines)?);
+    let entries = steps
+        .iter()
+        .map(|(step_id, step)| {
+            serde_json::to_string(&AskedStep {
+                step_id: &step_id.0,
+                step,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let label = "steps overlapping the asked lines (full analysis)".to_owned();
+    Ok((asked, label, entries))
+}
+
+/// The asked flow's introduction (a data block), and the label and entries of its steps in full and the rest of its
+/// analysis.
+fn asked_whole_flow(
+    flow: &FlowAnalysisOutput,
+) -> Result<(String, String, Vec<String>), PromptError> {
+    let flow_id = plain(&flow.flow_id.0);
+    let introduction = serde_json::to_string(&AnalysedFlowEntry {
+        flow_id: &flow.flow_id,
+        introduction: &flow.introduction,
+        steps: Vec::new(),
+    })?;
+    let asked = data(
+        &format!("asked flow {flow_id} (introduction)"),
+        &introduction,
+    );
+    let mut entries = Vec::with_capacity(flow.steps.len() + 1);
+    for (at, step) in flow.steps.iter().enumerate() {
+        let step_id = format!("{}.{}", flow.flow_id.0, at + 1);
+        entries.push(serde_json::to_string(&AskedStep {
+            step_id: &step_id,
+            step,
+        })?);
+    }
+    entries.push(serde_json::to_string(&FlowRest {
+        edges: &flow.edges,
+        impact_refs: &flow.impact_refs,
+        pattern_repetitions: &flow.pattern_repetitions,
+        thread_statuses: &flow.thread_statuses,
+    })?);
+    let label = format!("steps and rest of the asked flow {flow_id}");
+    Ok((asked, label, entries))
+}
+
 /// The asked step in full (a data block), and the label and entries of the rest of its flow analysis: introduction,
 /// the other steps in full, then edges, impact references, pattern repetitions and thread statuses.
-fn asked_flow(ask: &AskContext<'_>) -> Result<(String, String, Vec<String>), PromptError> {
-    let flow = ask.flow;
+fn asked_flow(
+    step_id: &StepId,
+    flow: &FlowAnalysisOutput,
+) -> Result<(String, String, Vec<String>), PromptError> {
     let unknown = || PromptError::UnknownStep {
-        step_id: ask.step_id.0.clone(),
+        step_id: step_id.0.clone(),
     };
-    let (flow_id, number) = ask.step_id.0.rsplit_once('.').ok_or_else(unknown)?;
+    let (flow_id, number) = step_id.0.rsplit_once('.').ok_or_else(unknown)?;
     let index = number
         .parse::<usize>()
         .ok()
         .and_then(|number| number.checked_sub(1))
         .filter(|index| flow_id == flow.flow_id.0 && *index < flow.steps.len())
         .ok_or_else(unknown)?;
-    let step_id = plain(&ask.step_id.0);
     let asked = serde_json::to_string(&AskedStep {
-        step_id: &ask.step_id.0,
+        step_id: &step_id.0,
         step: &flow.steps[index],
     })?;
+    let step_id = plain(&step_id.0);
     let asked = data(&format!("asked step {step_id} (full analysis)"), &asked);
     let mut entries = vec![serde_json::to_string(&AnalysedFlowEntry {
         flow_id: &flow.flow_id,
@@ -642,6 +1103,7 @@ fn plan_task(input: &PlanInput<'_>) -> Result<String, PromptError> {
         .map(|hunk| (&hunk.id, hunk.disposition))
         .collect();
     let context = prepass.context();
+    let context_only = prepass.context_only_hunks(input.files);
     let mut listing = String::new();
     for file in input.files {
         // A hunk the pre-pass does not know is listed: only a deterministic rule takes material out.
@@ -652,6 +1114,7 @@ fn plan_task(input: &PlanInput<'_>) -> Result<String, PromptError> {
                 dispositions
                     .get(&hunk.id)
                     .is_none_or(|kind| *kind == Disposition::Agent)
+                    && !context_only.contains(&hunk.id)
             })
             .collect();
         if hunks.is_empty() {
@@ -725,13 +1188,148 @@ fn pr_context_task(input: &PrContextInput<'_>) -> Result<String, PromptError> {
                 &path_list("related_repos", "related repositories", &related)?,
             ),
             ("dependency_files", &dependency_files),
+            ("dependencies", &dependencies(input.dependencies)?),
         ],
     )
+}
+
+/// The changed crates of `view` as one-line JSON entries, and the controlled dependency repositories to look in;
+/// empty without a Cargo map. PR-controlled names are clipped; entries, facts and repositories are bounded.
+fn dependencies(view: Option<&DependencyView>) -> Result<String, PromptError> {
+    let Some(view) = view.filter(|view| view.status == DependencyStatus::Available) else {
+        return Ok(String::new());
+    };
+    let short = |text: &str| -> String {
+        let (shown, omitted) = clip(text, MAX_DEPENDENCY_NAME_CHARS);
+        if omitted == 0 {
+            shown
+        } else {
+            format!("{shown}…")
+        }
+    };
+    // A cited line keeps its number: only the path is bounded, cut in its middle.
+    let line = |at: &contracts::api::deps::HeadLine| {
+        format!(
+            "{}:{}",
+            middle_clipped(&at.file, MAX_DEPENDENCY_PATH_CHARS),
+            at.line
+        )
+    };
+    let controlled: Vec<_> = view.repositories.iter().filter(|r| r.controlled).collect();
+    let mut lookups = Vec::new();
+    for repository in controlled.iter().filter(|r| r.kind != RepositoryKind::This) {
+        let Some(repo) = &repository.repo else {
+            continue;
+        };
+        let mut names: Vec<String> = repository
+            .crates
+            .iter()
+            .take(MAX_LOOKUP_CRATES)
+            .map(|c| short(&c.name))
+            .collect();
+        if repository.crates.len() > MAX_LOOKUP_CRATES {
+            names.push(format!(
+                "+{} more",
+                repository.crates.len() - MAX_LOOKUP_CRATES
+            ));
+        }
+        lookups.push(format!(
+            "{}/{} (crates: {})",
+            short(&repo.owner),
+            short(&repo.name),
+            names.join(", ")
+        ));
+    }
+    let mut entries = Vec::new();
+    for krate in view.repositories.iter().flat_map(|r| &r.crates) {
+        let Some(changes) = &krate.changes else {
+            continue;
+        };
+        let mut uses = Vec::new();
+        let mut uncontrolled = 0;
+        for repository in &view.repositories {
+            for other in repository
+                .crates
+                .iter()
+                .filter(|c| c.used_by.contains(&krate.name))
+            {
+                if !repository.controlled {
+                    uncontrolled += 1;
+                    continue;
+                }
+                let from = match (&repository.kind, &repository.repo) {
+                    (RepositoryKind::This, _) => "this repository".to_owned(),
+                    (_, Some(repo)) => short(&format!("{}/{}", repo.owner, repo.name)),
+                    (_, None) => "other".to_owned(),
+                };
+                uses.push(serde_json::json!({"crate": short(&other.name), "from": from}));
+            }
+        }
+        let uses_not_listed = uses.len().saturating_sub(MAX_PROMPT_USES);
+        uses.truncate(MAX_PROMPT_USES);
+        let facts: Vec<serde_json::Value> = changes
+            .facts
+            .iter()
+            .take(MAX_PROMPT_FACTS)
+            .map(|fact| {
+                let definition = match &fact.definition {
+                    TypeDefinition::Located { at } => line(at),
+                    TypeDefinition::NotLocated => "not located".to_owned(),
+                    TypeDefinition::NotSearched => "not searched".to_owned(),
+                    TypeDefinition::OtherRepository => "in another repository".to_owned(),
+                };
+                serde_json::json!({
+                    "at": line(&fact.at),
+                    "kind": fact.kind,
+                    "type": short(&fact.written),
+                    "type_crate": short(&fact.type_crate),
+                    "definition": definition,
+                })
+            })
+            .collect();
+        let facts_not_listed = u64::from(changes.facts_hidden)
+            + u64::from(changes.other_facts)
+            + (changes.facts.len() - facts.len()) as u64;
+        let flows: Vec<&str> = changes.flows.iter().map(|f| f.id.0.as_str()).collect();
+        let notes: Vec<String> = changes.notes.iter().map(|n| short(&n.text)).collect();
+        let entry = serde_json::json!({
+            "crate": short(&krate.name),
+            "manifest": krate
+                .manifest
+                .as_deref()
+                .map(|path| middle_clipped(path, MAX_DEPENDENCY_PATH_CHARS)),
+            "changed_lines": changes.changed_lines,
+            "flows": flows,
+            "uses": uses,
+            "other_dependencies": u64::from(changes.other_dependencies)
+                + uncontrolled
+                + uses_not_listed as u64,
+            "facts": facts,
+            "facts_not_listed": facts_not_listed,
+            "notes": notes,
+        });
+        entries.push(entry.to_string());
+    }
+    if entries.is_empty() {
+        return Ok(String::new());
+    }
+    let mut out = format!("{}\n", part("dependencies")?);
+    out.push_str(&lines_block("dependencies", entries, MAX_DEPENDENCY_BYTES)?);
+    out.push_str(&path_list(
+        "dependency_repos",
+        "dependency repositories",
+        &lookups[..lookups.len().min(MAX_LOOKUP_REPOS)],
+    )?);
+    if lookups.len() > MAX_LOOKUP_REPOS {
+        out.push_str(&omitted_note(lookups.len() - MAX_LOOKUP_REPOS)?);
+    }
+    Ok(out)
 }
 
 fn flow_task(input: &FlowInput<'_>) -> Result<String, PromptError> {
     let flow = input.flow;
     let context = input.job.prepass.context();
+    let context_only = input.job.prepass.context_only_hunks(input.files);
     let mut hunks = String::new();
     let mut paths: Vec<&str> = Vec::new();
     for selection in &flow.hunks {
@@ -749,6 +1347,9 @@ fn flow_task(input: &FlowInput<'_>) -> Result<String, PromptError> {
             ));
             continue;
         };
+        if context_only.contains(&hunk.id) {
+            continue;
+        }
         paths.extend(file.old_path.as_deref());
         paths.push(&file.path);
         let id = plain(&hunk.id.0);
@@ -1016,12 +1617,13 @@ fn listed(label: &str, items: &[String], max: usize) -> Result<String, PromptErr
     Ok(out)
 }
 
-/// A data block of one-line JSON entries, filled up to `max_bytes`, with a note on the omitted entries.
+/// A data block of one-line JSON entries, filled up to `max_bytes` (an entry that does not fit is skipped, later ones
+/// may still fit), with a note on the omitted entries.
 fn lines_block(label: &str, entries: Vec<String>, max_bytes: usize) -> Result<String, PromptError> {
     let mut content = String::new();
     let mut omitted = 0;
     for entry in entries {
-        if omitted == 0 && content.len() + entry.len() < max_bytes {
+        if content.len() + entry.len() < max_bytes {
             content.push_str(&entry);
             content.push('\n');
         } else {
@@ -1234,6 +1836,18 @@ fn clip(text: &str, max_chars: usize) -> (String, usize) {
         return (text.to_owned(), 0);
     }
     (text.chars().take(max_chars).collect(), total - max_chars)
+}
+
+/// `text` of at most `max_chars` characters: a longer one keeps its start and end around `…`.
+fn middle_clipped(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_owned();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let head: String = text.chars().take(keep / 2).collect();
+    let tail: String = text.chars().skip(total - (keep - keep / 2)).collect();
+    format!("{head}…{tail}")
 }
 
 /// `text` cut to at most `max_bytes` bytes on a character boundary and the number of bytes cut.

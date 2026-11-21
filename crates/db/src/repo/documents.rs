@@ -34,6 +34,8 @@ pub enum DocumentKind {
     /// The MemCan project profile lookup of the analysis, made once per round (key `""`; body `{"memcan":
     /// "not_checked"}` or `{"memcan": "checked", "text": …}`; a Retry deletes a `not_checked` one).
     MemcanProfile,
+    /// The Cargo map and conversion facts of the head commit (key `""`; ADR-021).
+    Dependencies,
 }
 
 impl DocumentKind {
@@ -47,6 +49,7 @@ impl DocumentKind {
             Self::GithubSnapshot => "github_snapshot",
             Self::Unsent => "unsent",
             Self::MemcanProfile => "memcan_profile",
+            Self::Dependencies => "dependencies",
         }
     }
 }

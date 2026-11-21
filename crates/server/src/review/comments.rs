@@ -193,11 +193,9 @@ fn github_error(error: PendingReviewError) -> CommentError {
     }
 }
 
-/// Maps a failure of a thread write. Only answers that prove nothing was written are definite: GitHub refused
-/// the request before executing it (GraphQL errors without `data` or with `data: null`; HTTP 401, 4xx or a rate
-/// limit without resolved data; a client that sent nothing), `FORBIDDEN` with the mutation field null, or
-/// `thread: null` without errors. Anything else (no answer, 5xx, an unreadable answer, any error next to
-/// resolved data, any other error of a failed mutation field) leaves the outcome unknown.
+/// Maps a failure of a thread write. Only answers that prove nothing was written are definite
+/// ([`GraphqlError::proves_not_applied`], or `thread: null` without errors); anything else leaves the outcome
+/// unknown.
 fn write_error(error: PendingReviewError) -> CommentError {
     match error {
         PendingReviewError::ThreadRejected => CommentError::PositionRejected,
@@ -205,13 +203,7 @@ fn write_error(error: PendingReviewError) -> CommentError {
             GraphqlError::FieldFailed(GraphqlErrorType::Forbidden)
             | GraphqlError::NotExecuted(GraphqlErrorType::Forbidden),
         ) => CommentError::AppNotInstalled,
-        PendingReviewError::Graphql(
-            GraphqlError::NotExecuted(_)
-            | GraphqlError::Client(_)
-            | GraphqlError::Unauthorized
-            | GraphqlError::RateLimited,
-        ) => CommentError::Github(error),
-        PendingReviewError::Graphql(GraphqlError::Status(status)) if status.is_client_error() => {
+        PendingReviewError::Graphql(ref graphql) if graphql.proves_not_applied() => {
             CommentError::Github(error)
         }
         error => CommentError::OutcomeUnknown(error),
@@ -668,27 +660,20 @@ mod tests {
 #[cfg(test)]
 mod github_tests {
     use std::path::Path;
-    use std::process::Command;
 
     use contracts::api::comments::CommentKind;
-    use contracts::api::pr::PrSummary;
-    use contracts::ids::{AnalysisId, CommitSha};
     use db::repo::DEFAULT_TENANT;
-    use db::repo::analyses::NewAnalysis;
     use serde_json::{Value, json};
-    use tempfile::TempDir;
     use uuid::Uuid;
-    use wiremock::matchers::{body_partial_json, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::ResponseTemplate;
 
     use super::*;
     use crate::github::review::{
         ADD_THREAD, COMMENT_BY_ID, DELETE_COMMENT, MAX_COMMENT_PAGES, PENDING_REVIEW,
-        PULL_REQUEST_HEAD, REVIEW_COMMENTS_PAGE, UPDATE_COMMENT,
+        REVIEW_COMMENTS_PAGE, UPDATE_COMMENT,
     };
-    use crate::review::tests::github_state_with;
+    use crate::test_support::github::{HEAD, Pr482 as Fixture, pr482 as fixture};
 
-    const HEAD: &str = "52d2da140191a9d47becf6a446310be803c007fc";
     const CLIENT: &str = "src/rpc/client.rs";
 
     fn fixtures() -> std::path::PathBuf {
@@ -701,119 +686,7 @@ mod github_tests {
         serde_json::from_str::<Value>(&text).expect("JSON")["response"].clone()
     }
 
-    struct Fixture {
-        state: AppState,
-        summary: AnalysisSummary,
-        server: MockServer,
-        _dir: TempDir,
-    }
-
-    /// A finished analysis of the fixture PR (flow documents stored) with its mirror, for user `u1`.
-    async fn fixture() -> Fixture {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let built = Command::new(fixtures().join("repo/build-repo.sh"))
-            .arg(dir.path().join("remotes/acme/node-client.git"))
-            .output()
-            .expect("build-repo.sh");
-        assert!(built.status.success(), "{built:?}");
-        let server = MockServer::start().await;
-        let (state, _) = github_state_with(&server, true, |config| {
-            config.data_dir = dir.path().join("data");
-            config.github.clone_url =
-                Url::parse(&format!("file://{}", dir.path().join("remotes").display()))
-                    .expect("url");
-        })
-        .await;
-        let text = std::fs::read_to_string(fixtures().join("api-seed/default/pr-resolve.json"))
-            .expect("seed");
-        let pr: PrSummary = serde_json::from_value(
-            serde_json::from_str::<Value>(&text).expect("JSON")["pr"].clone(),
-        )
-        .expect("pr");
-        let repo = state
-            .db
-            .repos()
-            .upsert(DEFAULT_TENANT, &pr.repo, None)
-            .await
-            .expect("repo");
-        let pr_id = state
-            .db
-            .pull_requests()
-            .upsert(DEFAULT_TENANT, repo.id, &pr, Timestamp::now())
-            .await
-            .expect("pr");
-        let id = state
-            .db
-            .analyses()
-            .create(
-                NewAnalysis {
-                    id: AnalysisId::new_random(),
-                    tenant_id: DEFAULT_TENANT.to_owned(),
-                    pull_request_id: pr_id,
-                    base_sha: pr.base_sha.clone(),
-                    head_sha: pr.head_sha.clone(),
-                    language: Default::default(),
-                    created_by: "u1".to_owned(),
-                },
-                Timestamp::now(),
-            )
-            .await
-            .expect("analysis")
-            .id;
-        for n in 1..=5 {
-            let text = std::fs::read_to_string(fixtures().join(format!("agent/flow-{n}.json")))
-                .expect("flow");
-            let flow: Value = serde_json::from_str(&text).expect("JSON");
-            state
-                .db
-                .documents()
-                .put(
-                    id,
-                    DocumentKind::Flow,
-                    &format!("f{n}"),
-                    &flow,
-                    Timestamp::now(),
-                )
-                .await
-                .expect("flow document");
-        }
-        state
-            .db
-            .analyses()
-            .set_state(id, &AnalysisState::Finished { total: 5 }, Timestamp::now())
-            .await
-            .expect("finished");
-        let summary = state.db.analyses().summary(id).await.expect("summary");
-        assert_eq!(summary.pr.head_sha, CommitSha(HEAD.to_owned()));
-        Fixture {
-            state,
-            summary,
-            server,
-            _dir: dir,
-        }
-    }
-
     impl Fixture {
-        async fn mock(&self, request: Value, response: ResponseTemplate, calls: u64) {
-            Mock::given(method("POST"))
-                .and(path("/api/graphql"))
-                .and(body_partial_json(request))
-                .respond_with(response)
-                .expect(calls)
-                .mount(&self.server)
-                .await;
-        }
-
-        async fn head_is(&self, head: &str, calls: u64) {
-            let response = json!({"data": {"repository": {"pullRequest": {"id": "PR_fixture482", "headRefOid": head}}}});
-            self.mock(
-                json!({"query": PULL_REQUEST_HEAD}),
-                ResponseTemplate::new(200).set_body_json(response),
-                calls,
-            )
-            .await;
-        }
-
         async fn add_thread_answers(&self, input: Value, response: ResponseTemplate, calls: u64) {
             self.mock(
                 json!({"query": ADD_THREAD, "variables": {"in": input}}),
@@ -852,17 +725,6 @@ mod github_tests {
                 body: body.to_owned(),
             };
             create(&self.state, "u1", &self.summary, &request).await
-        }
-
-        async fn graphql_bodies(&self) -> Vec<Value> {
-            self.server
-                .received_requests()
-                .await
-                .unwrap_or_default()
-                .iter()
-                .filter(|request| request.url.path() == "/api/graphql")
-                .map(|request| serde_json::from_slice(&request.body).expect("JSON body"))
-                .collect()
         }
     }
 

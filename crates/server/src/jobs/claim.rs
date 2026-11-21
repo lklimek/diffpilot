@@ -578,7 +578,8 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(ClaimError::StaleFlowContext { found: Some(1), .. })
+                Err(ClaimError::StaleFlowContext { found: Some(found), .. })
+                    if found + 1 == u64::from(analysis::tagged::VERSION)
             ),
             "{result:?}"
         );

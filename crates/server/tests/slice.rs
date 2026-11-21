@@ -368,6 +368,7 @@ fn config(dir: &Path, github: &MockServer, app_key: Option<&Path>) -> Config {
     let remotes = dir.join("remotes");
     let env: HashMap<&str, String> = HashMap::from([
         ("SR_PUBLIC_URL", "http://review.example.test".to_owned()),
+        ("SR_ALLOWED_LOGINS", "alice".to_owned()),
         ("SR_DATA_DIR", dir.join("data").display().to_string()),
         (
             "SR_SECRET_KEY",
@@ -1139,6 +1140,53 @@ async fn restart_keeps_demand_and_background_off_with_partial_results() {
     assert_eq!(
         *h.executor.submitted.lock().unwrap(),
         ["flow:f4", "flow:f2", "flow:f5"]
+    );
+}
+
+/// The pipeline stores the Cargo map before planning and gives the PR-context job the changed crates with the
+/// plan's crate notes, fenced as data; the plan prompt asks for the notes.
+#[tokio::test]
+async fn dependency_map_is_stored_and_reaches_the_pr_context_prompt() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    h.background_on(id).await;
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    h.wait_until_finished(&id.to_string()).await;
+    let stored: Option<Value> = h
+        .state
+        .db
+        .documents()
+        .get(id, DocumentKind::Dependencies, "")
+        .await
+        .expect("read");
+    assert_eq!(stored.expect("map stored")["status"], json!("available"));
+    let plan = h
+        .executor
+        .specs_of("plan:1")
+        .first()
+        .expect("plan:1")
+        .1
+        .prompt
+        .clone();
+    assert!(plan.contains("`crate_notes`"), "{plan}");
+    let context = h
+        .executor
+        .specs_of("pr_context")
+        .first()
+        .expect("pr_context")
+        .1
+        .prompt
+        .clone();
+    let fenced = context
+        .split("<<<DATA ")
+        .find(|block| block.contains(" dependencies>>>"))
+        .unwrap_or_default();
+    assert!(fenced.contains(r#""crate":"node-client""#), "{context}");
+    assert!(
+        fenced.contains("retry with backoff around `RpcClient::send`"),
+        "{context}"
     );
 }
 
@@ -2863,7 +2911,7 @@ async fn huge_analysis(h: &Harness, mut plan_script: impl FnMut(usize, Value) ->
         name: "huge".to_owned(),
     };
     let prepass = analysis::prepass::prepass(&pr_repo, &files, &[], &|_, _| None).expect("prepass");
-    let batches = analysis::prepass::batches::plan_batches(&prepass.agent_files(&files));
+    let batches = analysis::prepass::batches::plan_batches(&prepass.plan_files(&files));
     assert_eq!(batches.len(), 2, "one batch per directory");
     for (index, batch) in batches.iter().enumerate() {
         let hunks: Vec<Value> = batch
@@ -2876,7 +2924,8 @@ async fn huge_analysis(h: &Harness, mut plan_script: impl FnMut(usize, Value) ->
                 "id": "f1", "title": format!("batch {}", index + 1), "classification": "behavioural",
                 "importance_rank": 1, "intent": "adds lines", "hunks": hunks, "depends_on": []
             }],
-            "unassigned": []
+            "unassigned": [],
+            "crate_notes": null
         });
         h.executor
             .script(&format!("plan:{}", index + 1), plan_script(index + 1, plan));
@@ -3217,7 +3266,8 @@ async fn flow_too_large_for_a_prompt_stays_failed_with_its_reason() {
                 "intent": "x".repeat(140 * 1024), "hunks": hunk_of("b/two.txt"), "depends_on": []
             }
         ],
-        "unassigned": []
+        "unassigned": [],
+        "crate_notes": null
     });
     h.executor.script("plan:1", Script::Output(plan));
     let mut context = agent_output("pr_context");

@@ -28,7 +28,8 @@ In diffpilot the runner must not hold user tokens (T3, ADR-005) or contain GitHu
    skill's conventional-commit estimates (approved code constants), named as estimates in the basis text.
 4. **Judgement is a runner job** of kind `judge_work`, submitted through `JobExecutor` in batches of up to 8
    items. The `JobSpec` embeds the items' scan facts in its prompt (self-contained, A4); no checkout, GitHub token,
-   MemCan endpoint, session or skills; priority interactive. `select_model(JobKind::JudgeWork, …)` returns the
+   MemCan endpoint, session or skills; priority interactive (claimed after queued Ask jobs, before pipeline jobs).
+   `select_model(JobKind::JudgeWork, …)` returns the
    installation model with the installation-wide dashboard ranking effort (default low, set in Settings next to
    the model/effort choice; other kinds keep the saved effort). The server validates output against closed value
    sets and stores judgements per (user, item). While an analysis job holds the credential the ranking waits and
@@ -74,3 +75,37 @@ such items still count in the history. Being listed does not make a login a bot.
 (migration 0009; default `thepastaclaw`, `Claudius-Maginificent`, `DCG-Claude`, the former built-in list); nothing
 else is hard-coded. Bot classification reaches the judge only through the scan facts and scorer signals, so editing
 either list re-judges just the items whose judged inputs change.
+
+## Addendum (2026-11-19): unanswered mentions
+Owner-approved. My work has a compact Mentions strip above Needs you, outside P0–P3, scores and judgement.
+Discovery adds `mentions:<login>` to open-PR searches; enumeration also discovers otherwise unranked issues with real text mentions
+of refused logins. These share the 40-conversation budget and the same quote, answer and excluded-author rules;
+only these items match their refused logins. Unrelated or ranked enumerated items stay out.
+Mention search for refused logins remains unavailable, so coverage is limited.
+Mention-only PRs and issues never enter the ranked snapshot; issues also assigned or in watched repositories remain ranked.
+A post counts while newer than every scanned login's latest comment or submitted review on that item. The
+scan uses separate bounded conversation queries for PRs and issues. Issue enumeration retains comment bodies
+for the ranking's existing mention relation and mention-only strip candidates.
+Q2's selection and batch size are unchanged. Only mention-search hits and mention-only fallback issues get conversation reads; the explicit
+request/time/window budgets are in plan §K. Truncated conversations keep mentions found in the read windows,
+with a factual `partly_read` row marker. Budget overflow, failed reads and deadline expiry leave one count of
+unchecked candidates in `mention_coverage.unchecked_items`; completed results remain.
+`unchecked_logins` names unavailable login searches and `timed_out_logins` names timed-out PR searches.
+Both read APIs expose the structured coverage; the strip shows it inside the collapsed summary.
+PR enumeration selects no conversation bodies and
+cannot lose ranked items because a mention read fails. Ownership reuses ranking's eligibility rule and a
+refresh-local policy cache; unreadable policies keep mentions with ownership unverified and log a warning
+with the repository, policy location and error once per repository per refresh.
+
+Each post has a stable identity derived from item key and GitHub anchor. Migration 0011 stores hides per tenant,
+user and identity, independently of refresh history. A later post has a different identity. Session + CSRF is
+required to hide; read tokens receive the same unanswered, unhidden posts with bot classification. Both read
+responses expose `mentions`; they are independent of item filters and ranking; items cursor pages return an empty list.
+
+The browser initially excludes bots (GitHub Bot type, `[bot]` suffix or the user's known bots), remembers its
+choice in `sr.dashboard.mentions.with-bots`. The strip starts collapsed to a one-line count and remembers
+expansion in `sr.dashboard.mentions.expanded`; expanded, it shows three oldest posts (two lines each) and
+expands the rest with “+N more”. Excluded authors and ownership rules also apply to mentions; quoted lines
+do not count. Bots-only lists explain the active filter. The
+navigation count counts only unhidden human mentions. All external text stays plain text;
+GitHub links are rebuilt from validated repository/number and a fixed post-anchor grammar.

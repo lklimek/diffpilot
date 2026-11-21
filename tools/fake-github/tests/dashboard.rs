@@ -600,6 +600,37 @@ fragment Detail on PullRequest {
     nodes { __typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } } } } } }
 }"#;
 
+/// GitHub computes a merge state lazily: the first lookup selecting it answers `UNKNOWN`, later ones the
+/// computed value; lookups that do not select it do not count, and the fixture key is not a field.
+#[tokio::test]
+async fn a_lazily_computed_merge_state_is_unknown_on_the_first_read() {
+    let fake = spawn().await;
+    let state = |pr: u32| {
+        format!(
+            "query {{ rateLimit {{ cost }} p: repository(owner: \"acme\", name: \"wallet-ui\") {{ \
+             pullRequest(number: {pr}) {{ mergeStateStatus }} }} }}"
+        )
+    };
+    let title = "query { rateLimit { cost } p: repository(owner: \"acme\", name: \"wallet-ui\") { \
+                 pullRequest(number: 298) { title } } }";
+    assert_eq!(
+        fake.graphql(title).await["data"]["p"]["pullRequest"]["title"],
+        "feat(wallet): export transactions as CSV"
+    );
+    let read = |body: Value| body["data"]["p"]["pullRequest"]["mergeStateStatus"].clone();
+    assert_eq!(read(fake.graphql(&state(298)).await), "UNKNOWN");
+    assert_eq!(read(fake.graphql(&state(298)).await), "CLEAN");
+    assert_eq!(read(fake.graphql(&state(298)).await), "CLEAN");
+    assert_eq!(
+        read(fake.graphql(&state(311)).await),
+        "BLOCKED",
+        "no computed state: the fixture's"
+    );
+    let hidden = "query { rateLimit { cost } p: repository(owner: \"acme\", name: \"wallet-ui\") { \
+                  pullRequest(number: 298) { computedMergeStateStatus } } }";
+    assert!(!refused(&fake.graphql(hidden).await).is_empty());
+}
+
 #[tokio::test]
 async fn pr_detail_batches_answer_each_alias_with_the_selected_fields() {
     let fake = spawn().await;

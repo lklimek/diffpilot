@@ -24,7 +24,7 @@ use contracts::api::error::ApiErrorCode;
 use contracts::ids::RefreshId;
 use contracts::routes::{
     CANCEL_DASHBOARD_REFRESH, DASHBOARD_REFRESH_EVENTS, GET_DASHBOARD, GET_DASHBOARD_REFRESH,
-    LIST_DASHBOARD_ITEMS, RANK_DASHBOARD_REFRESH, START_DASHBOARD_REFRESH,
+    HIDE_DASHBOARD_MENTION, LIST_DASHBOARD_ITEMS, RANK_DASHBOARD_REFRESH, START_DASHBOARD_REFRESH,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -153,6 +153,7 @@ type DashboardResult<T> = Result<T, DashboardError>;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(GET_DASHBOARD.path, get(summary))
+        .route(HIDE_DASHBOARD_MENTION.path, post(hide_mention))
         .route(LIST_DASHBOARD_ITEMS.path, get(items))
         .route(START_DASHBOARD_REFRESH.path, post(start))
         .route(GET_DASHBOARD_REFRESH.path, get(refresh_status))
@@ -165,6 +166,16 @@ fn scope(session: &Session) -> Scope {
     Scope {
         tenant_id: session.tenant_id.clone(),
         user_id: session.user_id.clone(),
+    }
+}
+
+/// Counts a dashboard read in a browser session as the user's presence for the plug-in poller (ADR-022 §3); a
+/// personal access token read is an automated client, not a user in the session.
+fn mark_present(state: &AppState, session: &Session) {
+    if !session.is_access_token() {
+        state
+            .plugins
+            .mark_active(&session.tenant_id, &session.user_id);
     }
 }
 
@@ -197,9 +208,10 @@ async fn current_view(
         &snapshot,
         &judgements,
         state.config.memcan_ui_url.as_deref(),
+        &state.plugins.overlay(state.dashboard.now()),
     );
     Ok(Some((
-        snapshot::revision(&record, &snapshot),
+        snapshot::revision(&record, &snapshot, &view),
         snapshot,
         view,
         record,
@@ -215,6 +227,7 @@ async fn summary(
     let Query(query) = query?;
     let list_excluded = query.excluded.unwrap_or(false);
     let scope = scope(&session);
+    mark_present(&state, &session);
     let dashboard = state.db.dashboard();
     let latest_refresh = match dashboard
         .latest_refresh(&scope.tenant_id, &scope.user_id)
@@ -223,23 +236,35 @@ async fn summary(
         Some(record) => Some(judge::status(&state, &record).await),
         None => None,
     };
-    let (revision, meta, older_prompt_judgements, scanned_at) =
+    let (revision, meta, older_prompt_judgements, scanned_at, mentions, mention_coverage) =
         match current_view(&state, &scope).await? {
             Some((revision, snapshot, view, record, older)) => (
                 revision,
                 Some(view.meta(&snapshot, &record, list_excluded)),
                 older,
                 record.scanned_at,
+                snapshot.mentions,
+                snapshot.mention_coverage,
             ),
-            None => (snapshot::NO_SNAPSHOT.to_owned(), None, 0, None),
+            None => (
+                snapshot::NO_SNAPSHOT.to_owned(),
+                None,
+                0,
+                None,
+                Vec::new(),
+                Default::default(),
+            ),
         };
     let stored = dashboard.settings(&scope.tenant_id, &scope.user_id).await?;
     Ok(Json(DashboardSummary {
+        mentions,
+        mention_coverage,
         revision,
         latest_refresh,
         snapshot: meta,
         schedule: schedule_status(stored.as_ref(), state.dashboard.now(), scanned_at),
         older_prompt_judgements,
+        plugins: state.plugins.statuses(state.dashboard.now()),
     }))
 }
 
@@ -282,17 +307,29 @@ async fn items(
 ) -> DashboardResult<Response> {
     let Query(query) = query?;
     let scope = scope(&session);
-    let (revision, page, next_cursor) = match current_view(&state, &scope).await? {
-        Some((revision, _, view, _, _)) => {
-            let (page, next) = snapshot::page(&view.items, &query, &revision)?;
-            (revision, page, next)
-        }
-        None => {
-            let revision = snapshot::NO_SNAPSHOT.to_owned();
-            let (page, next) = snapshot::page(&[], &query, &revision)?;
-            (revision, page, next)
-        }
-    };
+    mark_present(&state, &session);
+    let (revision, page, next_cursor, mentions, mention_coverage) =
+        match current_view(&state, &scope).await? {
+            Some((revision, snapshot, view, _, _)) => {
+                let (page, next) = snapshot::page(&view.items, &query, &revision)?;
+                (
+                    revision,
+                    page,
+                    next,
+                    if query.cursor.is_none() {
+                        snapshot.mentions
+                    } else {
+                        Vec::new()
+                    },
+                    snapshot.mention_coverage,
+                )
+            }
+            None => {
+                let revision = snapshot::NO_SNAPSHOT.to_owned();
+                let (page, next) = snapshot::page(&[], &query, &revision)?;
+                (revision, page, next, Vec::new(), Default::default())
+            }
+        };
     let mut items: Vec<WorkItem> = Vec::with_capacity(page.len());
     let mut heads = Vec::with_capacity(page.len());
     for item in page {
@@ -301,6 +338,8 @@ async fn items(
     }
     review_links(&state, &session, &mut items, &heads).await?;
     let body = ItemPage {
+        mentions,
+        mention_coverage,
         revision,
         items,
         next_cursor,
@@ -544,4 +583,52 @@ fn sse_event(event: &DashboardEvent) -> Option<Event> {
             None
         }
     }
+}
+
+/// Session + CSRF only; the identity must belong to this user's current snapshot.
+async fn hide_mention(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    Path(id): Path<String>,
+) -> DashboardResult<StatusCode> {
+    hide_mention_inner(&state, &session, &id)
+        .await
+        .inspect_err(|error| {
+            tracing::warn!(%error, user_id = %session.user_id, "dashboard mention hide failed");
+        })
+}
+
+async fn hide_mention_inner(
+    state: &AppState,
+    session: &Session,
+    id: &str,
+) -> DashboardResult<StatusCode> {
+    let Some((_, snapshot)) = snapshot::load(state, &session.tenant_id, &session.user_id).await?
+    else {
+        return Err(DbError::NotFound.into());
+    };
+    if !snapshot.mentions.iter().any(|m| m.id == id) {
+        if state
+            .db
+            .dashboard()
+            .hidden_mentions(&session.tenant_id, &session.user_id)
+            .await?
+            .iter()
+            .any(|hidden| hidden == id)
+        {
+            return Ok(StatusCode::NO_CONTENT);
+        }
+        return Err(DbError::NotFound.into());
+    }
+    state
+        .db
+        .dashboard()
+        .hide_mention(
+            &session.tenant_id,
+            &session.user_id,
+            id,
+            state.dashboard.now(),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }

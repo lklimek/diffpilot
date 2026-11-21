@@ -83,4 +83,22 @@ describe("buildSegments", () => {
     ]);
     expect(rows.map((r) => r.index)).toEqual([0, 1, 2, 3]);
   });
+
+  it("pairs replacing lines only while they carry the block's remarks; other remarks start their own run", () => {
+    const view = lines(1, 5, {
+      deleted: [
+        {
+          after_line: 0,
+          base_start: 1,
+          lines: ["old"],
+          total_lines: 1,
+          replacement: { start_line: 1, end_line: 5 },
+        },
+      ],
+    });
+    // Line 1 has no remark; 2-3 and 4-5 belong to two different steps' remarks.
+    const segments = buildSegments(view, [annotation("s3", 2, 3), annotation("s4", 4, 5)]);
+    expect(shape(segments)).toEqual(["deleted@0", "highlight:2-3[s3]", "highlight:4-5[s4]"]);
+    expect((segments[0] as Extract<Segment, { kind: "deleted" }>).paired.map((r) => r.line)).toEqual([1]);
+  });
 });

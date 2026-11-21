@@ -10,6 +10,7 @@ import { ALL_KINDS, type ItemKind } from "../../components/dashboard/work-list/W
 import {
   SUMMARY_KEY,
   useCancelRefresh,
+  useHideMention,
   useDashboardItems,
   useDashboardSummary,
   useRankAgain,
@@ -18,6 +19,7 @@ import {
   useSnapshotRefresh,
   useStartRefresh,
 } from "./queries";
+import { useMentionBots, useMentionsExpanded } from "./mentions";
 import { dashboardView } from "./state";
 
 /** localStorage key of the kinds shown (a JSON array such as `["pr","todo"]`). */
@@ -149,6 +151,9 @@ function actionError(error: unknown, action: "refresh" | "cancel" | "rank"): str
 
 /** The dashboard page: signed-in user, summary, items, view state, filter and actions. */
 export function useDashboardPage() {
+  const hideMention = useHideMention();
+  const [withBots, setWithBots] = useMentionBots();
+  const [mentionsExpanded, setMentionsExpanded] = useMentionsExpanded();
   const client = useQueryClient();
   const me = useMe();
   const user = me.data?.user ?? null;
@@ -193,6 +198,11 @@ export function useDashboardPage() {
   const nowDate = useMemo(() => new Date(now), [now]);
 
   return {
+    hideMention,
+    mentionsExpanded,
+    setMentionsExpanded,
+    withBots,
+    setWithBots,
     me,
     user,
     summary,

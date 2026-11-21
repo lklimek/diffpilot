@@ -454,14 +454,19 @@ impl<T: TokenSource> WorkClient<T> {
 
     /// Every page of `GET /search/issues?q=<q>`, up to GitHub's 1000 results.
     pub(crate) async fn search<D: DeserializeOwned>(&self, q: &str) -> Result<Page<D>, WorkError> {
+        self.search_capped(q, SEARCH_CAP).await
+    }
+
+    /// Search with an explicit result budget (mention discovery uses one page).
+    pub(crate) async fn search_capped<D: DeserializeOwned>(
+        &self,
+        q: &str,
+        cap: usize,
+    ) -> Result<Page<D>, WorkError> {
         let query = [("q", q.to_owned())];
-        self.pages(
-            CallKind::Search,
-            "search/issues",
-            &query,
-            SEARCH_CAP,
-            |bytes| serde_json::from_slice::<Page<D>>(bytes),
-        )
+        self.pages(CallKind::Search, "search/issues", &query, cap, |bytes| {
+            serde_json::from_slice::<Page<D>>(bytes)
+        })
         .await
     }
 

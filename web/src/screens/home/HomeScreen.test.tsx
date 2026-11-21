@@ -125,7 +125,7 @@ describe("Home (brief §4.1)", () => {
     expect(screen.queryByRole("region", { name: "Pull request check" })).toBeNull();
   });
 
-  it("an existing analysis in another language: tagged, Open review first, Analyse again in English", async () => {
+  it("an existing analysis in another language: tagged, Open first, Analyse again in English", async () => {
     setScenario("existing-other-language");
     let created = 0;
     server.events.on("request:start", ({ request }) => {
@@ -137,7 +137,7 @@ describe("Home (brief §4.1)", () => {
     expect(within(result).getByText("PL")).toHaveAccessibleDescription(
       "LLM texts of this analysis are in Polish.",
     );
-    const open = within(result).getByRole("link", { name: "Open review" });
+    const open = within(result).getByRole("link", { name: "Open" });
     await waitFor(() => expect(open).toHaveFocus());
     const again = within(result).getByRole("button", { name: "Analyse again in English" });
     expect(again).toHaveAccessibleDescription(/English/);
@@ -225,9 +225,8 @@ describe("Home (brief §4.1)", () => {
     await analyze();
     const found = await banner("Analysis found.", "status");
     expect(found).toHaveTextContent("This PR head is already analysed.");
-    // Not started by this user: nothing to resume.
-    expect(within(found).queryByRole("link", { name: "Resume review" })).toBeNull();
-    expect(within(found).getByRole("link", { name: "Open review" })).toHaveAttribute(
+    expect(within(found).queryByRole("link", { name: /resume/i })).toBeNull();
+    expect(within(found).getByRole("link", { name: "Open" })).toHaveAttribute(
       "href",
       `/analyses/${analysis.id}`,
     );
@@ -241,6 +240,9 @@ describe("Home (brief §4.1)", () => {
     const moved = await banner("The PR has moved.", "alert");
     expect(moved).toHaveTextContent(
       `This analysis is for ${analysis.pr.head_sha.slice(0, 7)}; the PR is now at ${MOVED_HEAD.slice(0, 7)}.`,
+    );
+    expect(within(moved).getByRole("link", { name: "Open the old analysis" })).toHaveAccessibleDescription(
+      "Opens the analysis of the older head. Starts nothing.",
     );
     expect(within(moved).getByRole("link", { name: "Open the old analysis" })).toHaveAttribute(
       "href",
@@ -382,39 +384,46 @@ it("only promises personal state when the server confirms it exists", async () =
   await analyze();
   const found = await banner("Analysis found.", "status");
   expect(found).toHaveTextContent("Your ticks, answers and last viewed block are kept");
-  expect(within(found).getByRole("link", { name: "Resume review" })).toHaveAttribute(
+  expect(within(found).getByRole("link", { name: "Open" })).toHaveAttribute(
     "href",
     `/analyses/${analysis.id}`,
   );
 });
 
 it.each([
-  [true, "Resume review"],
-  [false, "Open review"],
-])("a review-ready analysis in progress (started: %s) offers %s", async (started, label) => {
-  server.use(
-    http.post("/api/v1/pr/resolve", () =>
-      HttpResponse.json({
-        pr: analysis.pr,
-        commenting_available: true,
-        head_moved: false,
-        analysis: {
-          ...analysis,
-          state: { state: "running", done: 2, total: 5 },
-          review_ready: true,
-          has_my_state: started,
-        },
-      }),
-    ),
-  );
-  renderRoute("/review");
-  await analyze();
-  const found = await banner("An analysis of this PR is in progress.", "status");
-  expect(within(found).getByRole("link", { name: label })).toHaveAttribute(
-    "href",
-    `/analyses/${analysis.id}`,
-  );
-});
+  [true, true],
+  [false, false],
+])(
+  "a review-ready analysis in progress (started: %s): Open, tooltip keeps ticks only if started",
+  async (started, kept) => {
+    server.use(
+      http.post("/api/v1/pr/resolve", () =>
+        HttpResponse.json({
+          pr: analysis.pr,
+          commenting_available: true,
+          head_moved: false,
+          analysis: {
+            ...analysis,
+            state: { state: "running", done: 2, total: 5 },
+            review_ready: true,
+            has_my_state: started,
+          },
+        }),
+      ),
+    );
+    renderRoute("/review");
+    await analyze();
+    const found = await banner("An analysis of this PR is in progress.", "status");
+    const open = within(found).getByRole("link", { name: "Open" });
+    expect(open).toHaveAttribute("href", `/analyses/${analysis.id}`);
+    expect(open).toHaveAccessibleDescription(/Starts nothing\.$/);
+    const description = open.getAttribute("aria-describedby") ?? "";
+    expect(document.getElementById(description)?.textContent?.includes("ticks and answers are kept")).toBe(
+      kept,
+    );
+    expect(document.getElementById(description)?.textContent).not.toMatch(/continues/);
+  },
+);
 
 describe("Recent reviews", () => {
   it("lists the user's own analyses under the form; a row opens its analysis", async () => {

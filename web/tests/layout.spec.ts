@@ -139,6 +139,22 @@ test("resizing persists across steps and reload; hiding inspector gives code spa
   );
 });
 
+// At 1280 px the bar leaves the PR line about 160 px: the title (at least 8ch) and the head commit stay; the language
+// tag and the CI chip return with room.
+test("the PR line keeps its title and head commit at 1280 px and everything at 1600 px", async ({ page }) => {
+  for (const width of [1280, 1600]) {
+    await page.setViewportSize({ width, height: 800 });
+    await open(page, "real-tiny");
+    const banner = page.getByRole("banner");
+    const items = [banner.locator("strong").first(), banner.locator("code").first()];
+    if (width === 1600)
+      items.push(banner.getByText(/^EN$/), banner.getByRole("link", { name: /^Check runs/ }));
+    for (const item of items) await expect(item).toBeInViewport();
+  }
+});
+
+// Screenshots only with SCREENSHOT_DIR set, e.g. /data/artifacts/diffpilot/<date>/wp3-tour-10.
+const shots = process.env.SCREENSHOT_DIR;
 for (const width of [1280, 1440]) {
   test(`real tour light screenshots at ${width}`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: "light" });
@@ -153,14 +169,14 @@ for (const width of [1280, 1440]) {
       .getByRole("button", { name: /^Step 2:/ })
       .click();
     await expect(page.locator("main [data-code-slot] [data-line='43'][data-side=head]")).toBeInViewport();
-    await page.screenshot({ path: `/data/artifacts/diffpilot/2026-11-17/wp3-tour-10/step-${width}.png` });
+    if (shots) await page.screenshot({ path: `${shots}/step-${width}.png` });
     await page
       .getByRole("navigation")
       .getByRole("button", { name: /Docs & comments/ })
       .click();
     await page.getByRole("button", { name: "Show lines 24–27" }).click();
     await expect(page.getByRole("button", { name: "Comment on line 24" })).toBeVisible();
-    await page.screenshot({ path: `/data/artifacts/diffpilot/2026-11-17/wp3-tour-10/docs-${width}.png` });
+    if (shots) await page.screenshot({ path: `${shots}/docs-${width}.png` });
   });
 }
 
@@ -200,22 +216,26 @@ test("deep links survive reload and browser history, and evidence opens the cite
 
 test("Ask evidence opens code on its cited step or in the standalone range", async ({ page }) => {
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=real-small#f1.5`);
-  const answers = page.getByRole("list", { name: "Ask conversation" });
+  await expect(page.locator("main h2:not([data-column-title])").first()).toBeVisible();
+  await page.keyboard.press("a");
+  const answers = page.getByRole("dialog", { name: "Ask" });
   await answers.getByText(/Evidence ·/).click();
   await answers.getByRole("button", { name: "Show internal/statesync/reactor.go:1171" }).click();
   await expect(page).toHaveURL(/#f1\.3\?file=/);
   await expect(page.locator("main [data-code-slot] [data-line='1171']")).toBeInViewport();
+  // The chat stays open across the navigation, its evidence list still unfolded.
   await page.goBack();
-  await answers.getByText(/Evidence ·/).click();
   await answers.getByRole("button", { name: "Show internal/statesync/reactor.go:1286" }).click();
   await expect(page).toHaveURL(/#lines\?file=/);
   await expect(page.getByRole("button", { name: "Comment on line 1286" })).toBeVisible();
 });
 
-test("long Ask prose and fenced code wrap inside the inspector", async ({ page }) => {
+test("long Ask prose and fenced code wrap inside the Ask chat", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=long-answer#f1.5`);
-  const answers = page.getByRole("list", { name: "Ask conversation" });
+  await expect(page.locator("main h2:not([data-column-title])").first()).toBeVisible();
+  await page.keyboard.press("a");
+  const answers = page.getByRole("dialog", { name: "Ask" });
   const prose = answers.getByText("longword".repeat(100));
   await expect(prose).toBeVisible();
   await expect(prose).toHaveCSS("overflow-wrap", "anywhere");
@@ -226,3 +246,61 @@ test("long Ask prose and fenced code wrap inside the inspector", async ({ page }
     expect(size.scroll).toBeLessThanOrEqual(size.width + 1);
   }
 });
+
+// Owner review: the flow rows' tick toggle and markers must not squeeze the titles into mid-word breaks.
+// Room of a flow title (button content width) at each menu width: what the risk label beside it leaves.
+const TITLE_ROOM = { 240: 105, 200: 70 } as const;
+for (const navWidth of [240, 200] as const) {
+  test(`menu at ${navWidth} px: flow titles keep their room and break only between words (unless one word is wider)`, async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      ([key, width]) =>
+        window.localStorage.setItem(
+          key,
+          JSON.stringify({
+            hidden: { nav: false, main: false, inspector: false },
+            full: null,
+            widths: { nav: width, inspector: null },
+            diagram: false,
+            diagramHeight: null,
+            askHeight: null,
+          }),
+        ),
+      ["diffpilot.tour.layout", navWidth] as const,
+    );
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/analyses/${ANALYSIS_ID}`);
+    const nav = page.getByRole("navigation", { name: "Flows and steps" });
+    await expect(nav.getByRole("button", { name: /^Flow 1:/ })).toBeVisible();
+    const broken = await nav.evaluate((root, least) => {
+      const found: string[] = [];
+      for (const button of root.querySelectorAll<HTMLElement>("button[data-row='menu']")) {
+        if (!button.getAttribute("aria-label")?.startsWith("Flow ")) continue;
+        const style = getComputedStyle(button);
+        const room = button.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+        if (room < least) found.push(`${button.getAttribute("aria-label")}: ${Math.round(room)} px of room`);
+        const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          for (const word of node.textContent!.matchAll(/\S+/g)) {
+            const range = document.createRange();
+            range.setStart(node, word.index);
+            range.setEnd(node, word.index + word[0].length);
+            const lines = new Set([...range.getClientRects()].map((r) => Math.round(r.top)));
+            if (lines.size < 2) continue;
+            const probe = document.createElement("span");
+            probe.style.cssText = `position:absolute;white-space:nowrap;font:${getComputedStyle(node.parentElement!).font}`;
+            probe.textContent = word[0];
+            document.body.append(probe);
+            const natural = probe.getBoundingClientRect().width;
+            probe.remove();
+            if (natural <= room)
+              found.push(`${word[0]} (${Math.round(natural)} px in ${Math.round(room)} px)`);
+          }
+        }
+      }
+      return found;
+    }, TITLE_ROOM[navWidth]);
+    expect(broken).toEqual([]);
+  });
+}

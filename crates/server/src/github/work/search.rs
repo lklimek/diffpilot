@@ -2,6 +2,8 @@
 //! login GitHub search refuses is reported as unsearchable (enumeration fallback, Q11).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
+use tokio::time::timeout;
 
 use contracts::api::dashboard::ScanNote;
 use contracts::time::Timestamp;
@@ -22,16 +24,24 @@ pub enum PrRelation {
     Assigned,
     /// Review requested from the login (directly; GitHub search also counts team requests).
     ReviewRequested,
+    /// Potential mention from search; never a ranking relation.
+    Mentioned,
 }
 
 impl PrRelation {
-    const ALL: [Self; 3] = [Self::Authored, Self::Assigned, Self::ReviewRequested];
+    const ALL: [Self; 4] = [
+        Self::Authored,
+        Self::Assigned,
+        Self::ReviewRequested,
+        Self::Mentioned,
+    ];
 
     fn qualifier(self) -> &'static str {
         match self {
             Self::Authored => "author",
             Self::Assigned => "assignee",
             Self::ReviewRequested => "review-requested",
+            Self::Mentioned => "mentions",
         }
     }
 }
@@ -54,13 +64,36 @@ pub struct PrCandidate {
     pub title: String,
     /// Web URL.
     pub url: String,
+    /// Most recent update reported by discovery.
+    pub updated_at: Option<Timestamp>,
     /// Relations per scanned login.
     pub relations: BTreeMap<String, BTreeSet<PrRelation>>,
+}
+
+impl PrCandidate {
+    /// Has a ranking relation beyond mention discovery.
+    pub fn ranked(&self) -> bool {
+        self.relations
+            .values()
+            .flatten()
+            .any(|r| *r != PrRelation::Mentioned)
+    }
+
+    /// Needs a conversation read to find mentions of scanned logins.
+    pub fn mentioned(&self) -> bool {
+        self.relations
+            .values()
+            .any(|r| r.contains(&PrRelation::Mentioned))
+    }
 }
 
 /// An open issue found by search or enumeration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IssueCandidate {
+    /// Found by mention search.
+    pub mention_candidate: bool,
+    /// Refused logins with real text mentions; checked only if the issue has no ranking relation.
+    pub fallback_mention_logins: BTreeSet<String>,
     /// Title.
     pub title: String,
     /// Web URL.
@@ -87,6 +120,15 @@ pub struct IssueCandidate {
     pub relations: BTreeSet<IssueRelation>,
 }
 
+impl IssueCandidate {
+    /// Has a ranking relation beyond mention discovery.
+    pub fn ranked(&self) -> bool {
+        self.relations
+            .iter()
+            .any(|r| *r != IssueRelation::Mentioned)
+    }
+}
+
 /// Candidates of the scan, keyed by item, relations merged across searches and enumeration.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Candidates {
@@ -109,6 +151,7 @@ impl Candidates {
         self.pull_requests
             .entry(item)
             .or_insert_with(|| PrCandidate {
+                updated_at: None,
                 title: title.to_owned(),
                 url: url.to_owned(),
                 relations: BTreeMap::new(),
@@ -122,7 +165,13 @@ impl Candidates {
     /// Adds an issue, merging its relations into an already found one.
     pub fn add_issue(&mut self, item: ItemRef, issue: IssueCandidate) {
         match self.issues.get_mut(&item) {
-            Some(found) => found.relations.extend(issue.relations),
+            Some(found) => {
+                found.relations.extend(issue.relations);
+                found.mention_candidate |= issue.mention_candidate;
+                found
+                    .fallback_mention_logins
+                    .extend(issue.fallback_mention_logins);
+            }
             None => {
                 self.issues.insert(item, issue);
             }
@@ -132,10 +181,14 @@ impl Candidates {
     /// Merges `other` into these candidates.
     pub fn merge(&mut self, other: Self) {
         for (item, pr) in other.pull_requests {
+            let updated_at = pr.updated_at;
             for (login, relations) in pr.relations {
                 for relation in relations {
                     self.add_pr(item.clone(), &pr.title, &pr.url, &login, relation);
                 }
+            }
+            if let Some(found) = self.pull_requests.get_mut(&item) {
+                found.updated_at = found.updated_at.max(updated_at);
             }
         }
         for (item, issue) in other.issues {
@@ -151,6 +204,8 @@ pub struct PrSearch {
     pub candidates: Candidates,
     /// Logins search refused; the caller enumerates the configured owners for them (Q11).
     pub unsearchable: Vec<String>,
+    /// PR mention searches that exceeded their request budget.
+    pub timed_out_mention_logins: Vec<String>,
     /// Searches that failed otherwise.
     pub notes: Vec<ScanNote>,
     /// Searches GitHub answered.
@@ -230,6 +285,8 @@ impl SearchItem {
 
     fn issue(self, relation: IssueRelation) -> IssueCandidate {
         IssueCandidate {
+            mention_candidate: relation == IssueRelation::Mentioned,
+            fallback_mention_logins: BTreeSet::new(),
             title: self.title,
             url: self.html_url,
             author: self.user.map(|user| user.login),
@@ -281,11 +338,12 @@ fn invalid_login(login: &str) -> ScanNote {
 }
 
 impl<T: TokenSource> WorkClient<T> {
-    /// Searches open, non-archived pull requests each login authored, is assigned or asked to review (Q1). The
+    /// Searches open, non-archived PRs each login authored, is assigned, asked to review or mentioned in (Q1). The
     /// first refusal marks a login unsearchable and skips its remaining searches. An invalid login is skipped
     /// with a note (it never reaches `q`).
     pub async fn search_pull_requests(&self, logins: &[String]) -> Result<PrSearch, WorkError> {
         let mut found = PrSearch::default();
+
         for login in logins {
             if !valid_login(login) {
                 found.notes.push(invalid_login(login));
@@ -297,7 +355,24 @@ impl<T: TokenSource> WorkClient<T> {
                     relation.qualifier()
                 );
                 let what = format!("pull requests of {login}");
-                let page = match self.search::<SearchItem>(&q).await {
+                let read = if relation == PrRelation::Mentioned {
+                    // Each login gets its own request allowance plus the paced start.
+                    let read = timeout(
+                        Duration::from_secs(15) + self.search_interval,
+                        self.search_capped::<SearchItem>(&q, 100),
+                    )
+                    .await;
+                    match read {
+                        Ok(read) => read,
+                        Err(_) => {
+                            found.timed_out_mention_logins.push(login.clone());
+                            continue;
+                        }
+                    }
+                } else {
+                    self.search::<SearchItem>(&q).await
+                };
+                let page = match read {
                     Ok(page) => page,
                     Err(WorkError::Unsearchable) => {
                         tracing::info!(
@@ -314,12 +389,28 @@ impl<T: TokenSource> WorkClient<T> {
                     }
                 };
                 found.answered += 1;
+                if relation == PrRelation::Mentioned && page.total_count > 100 {
+                    found.notes.push(note(
+                        format!(
+                            "Only the first 100 PR mention matches for {login} were read; \
+                                 remaining matches are omitted"
+                        ),
+                        None,
+                    ));
+                }
                 found.notes.extend(cut_short(&what, &page));
                 for item in page.items {
                     if let Some(key) = item.item() {
-                        found
-                            .candidates
-                            .add_pr(key, &item.title, &item.html_url, login, relation);
+                        found.candidates.add_pr(
+                            key.clone(),
+                            &item.title,
+                            &item.html_url,
+                            login,
+                            relation,
+                        );
+                        if let Some(pr) = found.candidates.pull_requests.get_mut(&key) {
+                            pr.updated_at = Some(item.updated_at);
+                        }
                     }
                 }
             }

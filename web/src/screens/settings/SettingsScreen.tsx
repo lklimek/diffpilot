@@ -14,6 +14,7 @@ import {
   useRepoSettings,
   useSaveDashboardSettings,
   useSetAskEffort,
+  useSetControlledOwners,
   useSetJudgeEffort,
   useSetLanguage,
   useSettings,
@@ -27,7 +28,9 @@ import { JudgeEffortSelect } from "../../components/dashboard/settings-judge-eff
 import { AskEffortSelect } from "../../components/settings/AskEffortSelect";
 import { AccountCard } from "../../components/settings/AccountCard";
 import { AppInstallationsCard } from "../../components/settings/AppInstallationsCard";
+import { ControlledOwnersCard } from "../../components/settings/ControlledOwnersCard";
 import { LanguageCard } from "../../components/settings/LanguageCard";
+import { NotificationsCard } from "../../components/settings/NotificationsCard";
 import { LlmStatusCard } from "../../components/settings/LlmStatusCard";
 import { SettingsCard } from "../../components/settings/Card";
 import { HelpTip } from "../../components/settings/HelpTip";
@@ -38,6 +41,7 @@ import { RepoSettingsCard } from "../../components/settings/RepoSettingsCard";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { clearCommentDrafts } from "../tour/drafts";
+import { useNotifySetting } from "../../app/workNotifications";
 
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
@@ -183,6 +187,8 @@ function SettingsContent({
   const setAskEffort = useSetAskEffort();
   const settings = useSettings();
   const setLanguage = useSetLanguage();
+  const setControlledOwners = useSetControlledOwners();
+  const notify = useNotifySetting();
   if (settings.isPending) return <StatusMessage kind="loading">Loading the settings…</StatusMessage>;
   if (settings.isError) return <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>;
   const { llm_status, language, app_installations, repos } = settings.data;
@@ -229,7 +235,17 @@ function SettingsContent({
             busy={setLanguage.isPending}
             onChange={(l) => setLanguage.mutate(l)}
           />
+          <NotificationsCard {...notify} />
           <AppInstallationsCard installations={app_installations} signInHref={routes.authLogin.path} />
+          {settings.data.controlled_owners && (
+            <ControlledOwnersCard
+              owners={settings.data.controlled_owners}
+              busy={setControlledOwners.isPending}
+              saved={setControlledOwners.isSuccess}
+              error={setControlledOwners.isError ? errorText(setControlledOwners.error) : undefined}
+              onSave={(owners) => setControlledOwners.mutate(owners)}
+            />
+          )}
         </div>
         <RepoSection repos={repos} userId={userId} />
       </div>

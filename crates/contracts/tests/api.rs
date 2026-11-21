@@ -24,8 +24,12 @@ use contracts::api::events::AnalysisEvent;
 use contracts::api::feedback::{
     Feedback, FeedbackRequest, FeedbackTarget, FeedbackValue, UserFeedbackValue,
 };
+use contracts::api::files::{
+    FileGroup, FileHunk, FileViewedState, FilesResponse, HunkPart, PartOwner, SetViewedRequest,
+    ViewedStatus,
+};
 use contracts::api::pr::{PrSummary, ResolvePrResponse};
-use contracts::api::questions::{AskQuestion, AskRequest, AskState};
+use contracts::api::questions::{AnchoredAskRequest, AskAnchor, AskQuestion, AskRequest, AskState};
 use contracts::api::review::{BlockRef, QuietRowRef, ReviewState};
 use contracts::api::settings::{AppInstallation, RepoSettings, Settings};
 use contracts::api::tour::{
@@ -273,6 +277,7 @@ fn error_codes_map_to_statuses() {
         ("token_not_accepted", 403),
         ("token_limit_reached", 409),
         ("rate_limited", 429),
+        ("github_refused", 422),
     ];
     assert_eq!(ApiErrorCode::ALL.len(), expected.len());
     for (code, (name, status)) in ApiErrorCode::ALL.into_iter().zip(expected) {
@@ -477,12 +482,132 @@ fn tagged_wire_formats() {
 }
 
 #[test]
+fn ask_anchors_and_files_wire_formats() {
+    let lines = LineRange {
+        start_line: 100,
+        end_line: 102,
+    };
+    let cases = [
+        (
+            serde_json::to_value(AskAnchor::Step {
+                step_id: StepId("f1.6".to_owned()),
+                lines: Some(lines),
+            }),
+            json!({"kind": "step", "step_id": "f1.6", "lines": {"start_line": 100, "end_line": 102}}),
+        ),
+        (
+            serde_json::to_value(AnchoredAskRequest {
+                text: "q".to_owned(),
+                anchor: AskAnchor::Lines {
+                    path: "src/a.rs".to_owned(),
+                    side: LineSide::Head,
+                    range: None,
+                },
+                parent_id: None,
+            }),
+            json!({"text": "q", "anchor": {"kind": "lines", "path": "src/a.rs", "side": "head", "range": null}}),
+        ),
+        (
+            serde_json::to_value(AskAnchor::Flow {
+                flow_id: FlowId("f2".to_owned()),
+            }),
+            json!({"kind": "flow", "flow_id": "f2"}),
+        ),
+        (serde_json::to_value(AskAnchor::Pr), json!({"kind": "pr"})),
+        (
+            serde_json::to_value(AnchoredAskRequest {
+                text: "and then?".to_owned(),
+                anchor: AskAnchor::Pr,
+                parent_id: Some(QuestionId(uuid::Uuid::nil())),
+            }),
+            json!({"text": "and then?", "anchor": {"kind": "pr"}, "parent_id": "00000000-0000-0000-0000-000000000000"}),
+        ),
+        (
+            serde_json::to_value(PartOwner::Unexplained { reason: None }),
+            json!({"kind": "unexplained"}),
+        ),
+        (
+            serde_json::to_value(PartOwner::Step {
+                flow_id: FlowId("f1".to_owned()),
+                step_id: StepId("f1.2".to_owned()),
+            }),
+            json!({"kind": "step", "flow_id": "f1", "step_id": "f1.2"}),
+        ),
+        (
+            serde_json::to_value(PartOwner::WhitespaceOnly),
+            json!({"kind": "whitespace_only"}),
+        ),
+        (
+            serde_json::to_value(PartOwner::Incidental {
+                flow_id: FlowId("f1".to_owned()),
+                text: "Makes `send` public.".to_owned(),
+            }),
+            json!({"kind": "incidental", "flow_id": "f1", "text": "Makes `send` public."}),
+        ),
+        (
+            serde_json::to_value(FileGroup::Code),
+            json!({"kind": "code"}),
+        ),
+        (
+            serde_json::to_value(SetViewedRequest {
+                path: "src/a.rs".to_owned(),
+                viewed: true,
+            }),
+            json!({"path": "src/a.rs", "viewed": true}),
+        ),
+        (
+            serde_json::to_value(FilesResponse {
+                files: Vec::new(),
+                viewed_status: ViewedStatus::NotChecked,
+                current_head: None,
+            }),
+            json!({"files": [], "viewed_status": "not_checked", "current_head": null}),
+        ),
+        (
+            serde_json::to_value(FileViewedState::Dismissed),
+            json!("dismissed"),
+        ),
+    ];
+    for (actual, expected) in cases {
+        assert_eq!(actual.expect("serialises"), expected);
+    }
+    let hunk = FileHunk {
+        id: contracts::ids::HunkId("h3".to_owned()),
+        base: Some(lines),
+        head: None,
+        after_line: Some(99),
+        parts: vec![HunkPart {
+            side: LineSide::Base,
+            range: lines,
+            owner: PartOwner::Flow {
+                flow_id: FlowId("f5".to_owned()),
+            },
+            also_in: vec![StepId("f1.2".to_owned())],
+        }],
+    };
+    let json = serde_json::to_value(&hunk).expect("serialises");
+    assert_eq!(
+        json["parts"][0]["owner"],
+        json!({"kind": "flow", "flow_id": "f5"})
+    );
+    assert_eq!(
+        serde_json::from_value::<FileHunk>(json).expect("round trip"),
+        hunk
+    );
+}
+
+#[test]
 fn sse_event_name_is_the_tag() {
     let question = AskQuestion {
         asked_by: None,
         mine: None,
         id: QuestionId::new_random(),
-        step_id: StepId("f1.1".to_owned()),
+        anchor: AskAnchor::Step {
+            step_id: StepId("f1.1".to_owned()),
+            lines: None,
+        },
+        step_id: Some(StepId("f1.1".to_owned())),
+        parent_id: None,
         text: "q".to_owned(),
         state: AskState::Answered,
         answer: Some(AskOutput {
@@ -514,7 +639,12 @@ fn ask_question_resumes_at_only_while_waiting_for_the_usage_limit() {
         asked_by: None,
         mine: None,
         id: QuestionId::new_random(),
-        step_id: StepId("f1.1".to_owned()),
+        anchor: AskAnchor::Step {
+            step_id: StepId("f1.1".to_owned()),
+            lines: None,
+        },
+        step_id: Some(StepId("f1.1".to_owned())),
+        parent_id: None,
         text: "q".to_owned(),
         state: AskState::Pending,
         answer: None,
@@ -524,6 +654,10 @@ fn ask_question_resumes_at_only_while_waiting_for_the_usage_limit() {
     };
     let json = serde_json::to_value(&question).expect("serialises");
     assert!(json.get("resumes_at").is_none(), "{json}");
+    assert!(
+        json.get("parent_id").is_none(),
+        "a first question has no parent: {json}"
+    );
     assert_eq!(
         serde_json::from_value::<AskQuestion>(json).expect("deserialises"),
         question
@@ -791,6 +925,7 @@ fn settings_lists_known_repositories() {
             owner: "acme".to_owned(),
             name: "node-client".to_owned(),
         }],
+        controlled_owners: None,
     };
     let json = serde_json::to_value(&settings).expect("serialises");
     assert_eq!(
@@ -816,6 +951,7 @@ fn settings_installations_not_checked_is_null_not_empty() {
         language: LlmLanguage::En,
         app_installations: None,
         repos: Vec::new(),
+        controlled_owners: None,
     };
     let json = serde_json::to_value(&settings).expect("serialises");
     assert_eq!(json["app_installations"], serde_json::Value::Null);

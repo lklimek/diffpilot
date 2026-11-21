@@ -200,7 +200,7 @@ fn canonical_table(table: &dyn TableLike) -> String {
     format!("{{{}}}", parts.join(","))
 }
 
-fn parse(text: &str) -> Option<Document<&str>> {
+pub(crate) fn parse(text: &str) -> Option<Document<&str>> {
     (text.len() <= MAX_CARGO_BYTES)
         .then(|| Document::parse(text).ok())
         .flatten()
@@ -220,19 +220,19 @@ fn collect_spans(item: &Item, out: &mut Vec<Range<usize>>) {
 }
 
 /// Byte offset → 1-based line number.
-struct LineIndex {
+pub(crate) struct LineIndex {
     starts: Vec<usize>,
 }
 
 impl LineIndex {
-    fn new(text: &str) -> Self {
+    pub(crate) fn new(text: &str) -> Self {
         let starts = std::iter::once(0)
             .chain(text.match_indices('\n').map(|(at, _)| at + 1))
             .collect();
         Self { starts }
     }
 
-    fn line(&self, offset: usize) -> u32 {
+    pub(crate) fn line(&self, offset: usize) -> u32 {
         u32::try_from(self.starts.partition_point(|&start| start <= offset)).unwrap_or(u32::MAX)
     }
 

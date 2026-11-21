@@ -52,7 +52,7 @@
       "key": "ranking",
       "state": "running",
       "done": 10,
-      "total": 14,
+      "total": 13,
       "detail": null
     }
   ],
@@ -62,7 +62,7 @@
   "ranking": {
     "state": "running",
     "judged": 10,
-    "total": 14,
+    "total": 13,
     "resumes_at": null,
     "message": null
   },

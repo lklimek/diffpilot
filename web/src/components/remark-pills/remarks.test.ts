@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import type { Annotation, Step, Tour } from "../../api/generated/types";
 import { seedFor } from "../../mocks/fixtures";
-import { remarkTarget, summariseRemarks } from "./remarks";
+import { flagTarget, remarkTarget, summariseRemarks } from "./remarks";
 
 const tour = seedFor("default", "tour") as Tour;
 const steps = tour.flows.flatMap((f) => f.steps);
@@ -78,4 +78,13 @@ it("counts the flags among the remarks by level, a flag without a level as unkno
   Object.assign(b!, { type: "flag" });
   Object.assign(c!, { type: "flag", flag: { level: "yellow", scenario: ["x", "y"], not_checked: "z" } });
   expect(summariseRemarks([flagged], new Set())?.flags).toEqual({ red: 1, yellow: 1, unknown: 1 });
+});
+
+it("a flag target: the first flag at the strongest level, steps in order, then by line; none without flags", () => {
+  const flow = (id: string) => tour.flows.find((f) => f.id === id)!.steps;
+  expect(flagTarget(flow("f1"))).toMatchObject({ step: { id: "f1.5" }, annotation: { id: "f1.5.a3" } });
+  // A yellow flag on an earlier line does not win over the red one.
+  expect(flagTarget(flow("f4"))).toMatchObject({ step: { id: "f4.1" }, annotation: { id: "f4.1.a2" } });
+  expect(flagTarget(flow("f3"))).toMatchObject({ step: { id: "f3.1" }, annotation: { id: "f3.1.a3" } });
+  expect(flagTarget([rated("high", 2)])).toBeUndefined();
 });

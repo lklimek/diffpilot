@@ -10,12 +10,14 @@ import type {
   StepId,
 } from "../../api/generated/types";
 import { GroupLabel, RiskLabel } from "../badge/LlmLabel";
+import { FlagMarker } from "../flag/FlagMarker";
 import { isFlowReviewed } from "../flow-intro/progress";
 import { FlowWorkLabel } from "../flow-intro/status";
 import { NOT_ANALYSED_LABEL, fileCount, lineCount, plural } from "../quiet/labels";
 import { RemarkPill } from "../remark-pills/RemarkPills";
 import { summariseRemarks } from "../remark-pills/remarks";
 import { Tooltip } from "../tooltip/Tooltip";
+import { Kbd } from "../help/Kbd";
 
 interface NavListProps {
   /** Flows in tour order. */
@@ -34,12 +36,16 @@ interface NavListProps {
   onSelect: (block: BlockRef) => void;
   /** Number of the user's own questions per step; steps without one are omitted. */
   questionCounts?: Readonly<Record<StepId, number>>;
-  /** The entry of the user's questions page; no entry when omitted. */
-  questions?: { count: number | "loading" | "error"; open: boolean; onOpen: () => void };
+  /** The entry that opens the user's Ask chat; no entry when omitted. */
+  questions?: { count: number | "loading" | "error"; onOpen: () => void };
   /** Remarks with the user's feedback (their pills dim). */
   handledRemarks?: ReadonlySet<AnnotationId>;
   /** A rating/remark pill: go to the first remark among `steps`; without it no pills are shown. */
   onRemark?: (steps: Step[]) => void;
+  /** A flag marker: go to the first flag at the strongest level among `steps`; without it no markers are shown. */
+  onFlag?: (steps: Step[]) => void;
+  /** Ticks (`true`) or unticks (`false`) every step of a flow; no flow toggle without it. */
+  onSetFlowReviewed?: (flow: Flow, reviewed: boolean) => void;
 }
 
 // Spoken count of the questions entry while it has no number.
@@ -49,11 +55,8 @@ const ITEM =
   "block w-full cursor-pointer rounded-md border-l-4 border-transparent px-2 py-1.5 text-left text-text hover:bg-surface-2 aria-[current]:border-accent aria-[current]:bg-accent-bg aria-[current]:font-semibold";
 const QUIET_ITEM = `${ITEM} text-[12.5px] text-mv`;
 const SMALL = "block text-[11px] font-normal text-muted";
-const TICK = (
-  <span aria-hidden className="float-right font-bold text-accent">
-    ☑
-  </span>
-);
+const FLOW_TICK =
+  "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent font-bold text-muted hover:bg-surface-2 aria-pressed:text-accent";
 
 const currentFlowId = (flows: Flow[], current: BlockRef): string | undefined => {
   if (current.block === "flow_intro") return current.flow_id;
@@ -67,7 +70,7 @@ const sameRow = (current: BlockRef | undefined, row: QuietRowRef) =>
   current?.block === "quiet" && JSON.stringify(current.row) === JSON.stringify(row);
 
 function Heading({ children }: { children: ReactNode }) {
-  return <h2 className="mt-3 mb-1 text-[10.5px] font-bold tracking-wide text-muted uppercase">{children}</h2>;
+  return <h3 className="mt-3 mb-1 text-[10.5px] font-bold tracking-wide text-muted uppercase">{children}</h3>;
 }
 
 interface QuietRowProps {
@@ -115,10 +118,11 @@ export function NavList({
   questions,
   handledRemarks = new Set(),
   onRemark,
+  onFlag,
+  onSetFlowReviewed,
 }: NavListProps) {
   const openFlow = currentFlowId(flows, shown);
-  // The questions page replaces the block in the centre: no block row is current meanwhile.
-  const current = questions?.open ? undefined : shown;
+  const current = shown;
   const unexplainedLines = quiet.unexplained.reduce((n, f) => n + lineCount(f.ranges), 0);
   const sections = quiet.not_analysed.filter((s) => s.items.length > 0);
   const rowProps = { current, onSelect };
@@ -139,7 +143,7 @@ export function NavList({
           Problem, related work, fit questions, CI
         </span>
       </button>
-      <Heading>Flows · most important first</Heading>
+      <Heading>Flows</Heading>
       <ol className="m-0 list-none p-0">
         {flows.map((flow) => {
           const reviewed = isFlowReviewed(flow, ticked);
@@ -149,12 +153,16 @@ export function NavList({
                 <button
                   type="button"
                   data-row="menu"
-                  className={`${ITEM} flex-1`}
+                  className={`${ITEM} min-w-0 flex-1 break-words`}
                   aria-current={ariaCurrent(current?.block === "flow_intro" && current.flow_id === flow.id)}
                   onClick={() => onSelect({ block: "flow_intro", flow_id: flow.id })}
                   aria-label={`Flow ${flow.position}: ${flow.llm.title}${reviewed ? ", reviewed" : ""}`}
                 >
-                  {reviewed && TICK}
+                  {reviewed && !onSetFlowReviewed && (
+                    <span aria-hidden className="float-right font-bold text-accent">
+                      ☑
+                    </span>
+                  )}
                   <b>{flow.position}</b> {flow.llm.title}
                 </button>
                 <span className="flex flex-col items-end gap-0.5 pt-1.5">
@@ -164,16 +172,46 @@ export function NavList({
                     <RiskLabel risk={flow.llm.risk} />
                   )}
                   <GroupLabel group={flow.group} />
-                  {onRemark && (
-                    <RemarkPill
-                      summary={summariseRemarks(flow.steps, handledRemarks)}
-                      scope="flow"
-                      subject={`flow ${flow.position}`}
-                      withRating={false}
-                      onSelect={() => onRemark(flow.steps)}
-                    />
-                  )}
                 </span>
+              </div>
+              {/* Under the title, so the title keeps the row's width: tick toggle, flag marker, remark pill. */}
+              <div className="flex flex-wrap items-center gap-1 pl-3 empty:hidden">
+                {onSetFlowReviewed && flow.steps.length > 0 && (
+                  <Tooltip
+                    tip={
+                      reviewed
+                        ? `Unticks all ${plural(flow.steps.length, "step")} of flow ${flow.position}.`
+                        : `Ticks all ${plural(flow.steps.length, "step")} of flow ${flow.position} as reviewed by you; press again to untick them.`
+                    }
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={reviewed}
+                      aria-label={`Mark flow ${flow.position} reviewed`}
+                      className={FLOW_TICK}
+                      onClick={() => onSetFlowReviewed(flow, !reviewed)}
+                    >
+                      <span aria-hidden>{reviewed ? "☑" : "☐"}</span>
+                    </button>
+                  </Tooltip>
+                )}
+                {onFlag && (
+                  <FlagMarker
+                    annotations={flow.steps.flatMap((s) => s.llm.annotations)}
+                    scope="flow"
+                    subject={`flow ${flow.position}`}
+                    onSelect={() => onFlag(flow.steps)}
+                  />
+                )}
+                {onRemark && (
+                  <RemarkPill
+                    summary={summariseRemarks(flow.steps, handledRemarks)}
+                    scope="flow"
+                    subject={`flow ${flow.position}`}
+                    withRating={false}
+                    onSelect={() => onRemark(flow.steps)}
+                  />
+                )}
               </div>
               {flow.id === openFlow && (
                 <ol className="my-0.5 mb-1.5 ml-3.5 list-none border-l-2 border-border py-0 pl-1.5">
@@ -215,13 +253,21 @@ export function NavList({
                             </Tooltip>
                           )}
                         </button>
-                        <span className="pt-0.5">
+                        <span className="flex flex-col items-end gap-0.5 pt-0.5">
                           {onRemark && (
                             <RemarkPill
                               summary={summariseRemarks([step], handledRemarks)}
                               scope="step"
                               subject={`step ${step.number}`}
                               onSelect={() => onRemark([step])}
+                            />
+                          )}
+                          {onFlag && (
+                            <FlagMarker
+                              annotations={step.llm.annotations}
+                              scope="step"
+                              subject={`step ${step.number}`}
+                              onSelect={() => onFlag([step])}
                             />
                           )}
                         </span>
@@ -310,8 +356,8 @@ export function NavList({
           <Tooltip
             tip={
               questions.count === "error"
-                ? "Your questions could not be read; the page says why. Only you see them."
-                : "Every question you asked in this review, with its state and the LLM answer. Only you see them."
+                ? "Your questions could not be read; the Ask chat says why. Only you see them."
+                : "Opens your Ask chat: every question you asked in this review, with its state and the LLM answer. Only you see them."
             }
             className="block"
             placement="right"
@@ -320,7 +366,6 @@ export function NavList({
               type="button"
               data-row="menu"
               className={ITEM}
-              aria-current={questions.open ? "page" : undefined}
               aria-label={`Your questions and answers: ${QUESTIONS_COUNT[questions.count] ?? questions.count}`}
               onClick={questions.onOpen}
             >
@@ -337,8 +382,4 @@ export function NavList({
       </p>
     </div>
   );
-}
-
-function Kbd({ children }: { children: ReactNode }) {
-  return <kbd className="rounded border border-b-2 border-border px-1">{children}</kbd>;
 }

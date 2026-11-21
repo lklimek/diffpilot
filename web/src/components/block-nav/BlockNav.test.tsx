@@ -38,4 +38,15 @@ describe("BlockNav", () => {
     expect(next).toHaveAttribute("aria-disabled", "true");
     expect(next).toHaveAccessibleDescription("This is the last block; there is none after it.");
   });
+
+  it("says on Next that it marks a step reviewed only when asked to", () => {
+    const { rerender } = render(
+      <BlockNav previous="a" next="b" marksReviewed onPrevious={() => {}} onNext={() => {}} />,
+    );
+    expect(screen.getByRole("button", { name: /Next/ })).toHaveAccessibleDescription(
+      "Marks this step reviewed and goes to the next block (j).",
+    );
+    rerender(<BlockNav previous="a" next="b" onPrevious={() => {}} onNext={() => {}} />);
+    expect(screen.getByRole("button", { name: /Next/ })).toHaveAccessibleDescription("Next block (j)");
+  });
 });

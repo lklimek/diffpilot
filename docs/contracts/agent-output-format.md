@@ -1,4 +1,4 @@
-# Flow file format, version 2
+# Flow file format, version 3
 
 Write `out/flow.md` relative to the job directory (the parent of `repo`). Run
 `sr-check flow out/flow.md`, edit the file to fix every reported problem, and finish
@@ -64,6 +64,13 @@ at most 80 bytes. Violations are reported with their line.
 - `## repetition <explained-in-step>`; required `description`, `sites` (space-separated
   `<file-id>:<side>:<first>-<last>` locations).
 - `## thread <alias> <status>`; required `reason` for every thread listed in the job.
+- `## incidental <hunk-id>` or `## incidental <file-id>:<head|base>:<first>-<last>`; required
+  `text`: one sentence of at most 240 characters on what changed there, shown in the Files
+  view. For at most 15 changed lines of this flow off its control flow (an import, a visibility
+  change, a re-export, a rename of glue code): they need no step. Its lines lie in no step (nor
+  removed lines at a deletion marker inside a step). Sections of one file side never touch or
+  overlap (write one section); all incidental changes of the flow cover at most 40 changed lines. No other fields and no annotation or
+  assessment: a change with a risk to flag or rate is a step, never incidental.
 
 All ranges are inclusive and one-based. References must exist at the pinned commit.
 Enums (literal values, never translated):
@@ -81,7 +88,7 @@ All existing coverage, wording, evidence, annotation, assessment and thread rule
 ## Complete example
 
 This example assumes `h1` is the flow's planned head hunk in `p1`, lines 10–12,
-with no listed GitHub threads. No extra file declaration or repeated path is needed.
+and head line 3 is a planned changed line of the flow, with no listed GitHub threads. No extra file declaration or repeated path is needed.
 
 ```text
 # flow f1
@@ -117,6 +124,9 @@ evidence: p1:head:11
 ### assessment
 risk: low
 reason: The change affects only the closed-queue branch.
+
+## incidental p1:head:3-3
+text: Makes `Closed` public for the worker module.
 ```
 
 The parser reconstructs the canonical JSON document. Plan, PR context and Ask still

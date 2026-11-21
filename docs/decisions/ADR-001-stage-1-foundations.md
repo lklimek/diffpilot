@@ -39,6 +39,7 @@ Values are trimmed; an empty value counts as unset. Error messages name the vari
 | `SR_RUNNER_LISTEN_ADDR` | no | `0.0.0.0:3001` | Runner-only listener: serves `/runner/v1/*` and nothing else; never routed through the reverse proxy (threat model WP1-T). Must differ from `SR_LISTEN_ADDR`. |
 | `SR_TRUSTED_PROXIES` | no | none | Comma-separated IP addresses or networks of reverse proxies whose forwarding headers are trusted. |
 | `SR_DATA_DIR` | no | `data` | Directory for the SQLite database and the bare mirrors. |
+| `SR_ALLOWED_LOGINS` | yes | — | Comma-separated GitHub logins allowed to sign in, applied at every start (ADR-007 addendum, v1.2). |
 | `SR_SECRET_KEY` | yes | — | AES-GCM key, see Secrets. |
 | `SR_RUNNER_SECRET` | yes | — | Secret runners present on `POST /runner/v1/claim`. |
 | `SR_GITHUB_APP_ID` | yes | — | GitHub App id (number). |

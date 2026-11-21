@@ -1,17 +1,30 @@
 import { CodeText } from "../section/CodeText";
 import { useId, useState, type ReactNode } from "react";
-import type { ImpactRef, PatternRepetition, Step, StepId, ThreadsStatus } from "../../api/generated/types";
+import type {
+  FileViewedState,
+  ImpactRef,
+  PatternRepetition,
+  PatternSite,
+  Step,
+  StepId,
+  ThreadsStatus,
+} from "../../api/generated/types";
 import { KindLabel } from "../badge/LlmLabel";
+import { siteGithubLink, stepGithubLink, type GithubLineLink, type PrLinkBase } from "../github/links";
 import { GithubLink } from "../inspector/text";
 import { rangeText, threadsNote } from "../section/format";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Section } from "../section/Section";
+import { AskButton } from "../ask/chat/AskButton";
 import { Tooltip } from "../tooltip/Tooltip";
 import { ReviewToggle } from "./ReviewToggle";
+import { ViewedChip } from "../files/ViewedChip";
 
 interface StepBlockProps {
   /** The step. */
   step: Step;
+  /** The pull request; with it the header links the step's changed lines in the PR diff on GitHub. */
+  pr?: PrLinkBase;
   /** The code of the step (code view, or its loading / error state). */
   code: ReactNode;
   /** The flow's pattern repetitions; those explained in this step show as "Same pattern × N". */
@@ -28,8 +41,16 @@ interface StepBlockProps {
   oldCode?: { shown: boolean; onToggle: () => void };
   /** Opens another step (pattern sites that lie in a step). */
   onSelectStep?: (step: StepId) => void;
+  /** Looks up a step of the tour; with `pr`, pattern sites in a step's changed lines link the PR diff. */
+  stepOf?: (step: StepId) => Step | undefined;
   /** Whether the PR's review threads were read completely (`PrContextFacts.threads_status`). */
   threadsStatus?: ThreadsStatus;
+  /** The file's GitHub Viewed mark (null: not read); no chip while unknown (undefined). */
+  viewed?: FileViewedState | null;
+  /** Opens the Files view at this step; the file path stays plain text without it. */
+  onOpenFile?: () => void;
+  /** Opens the Ask chat about this step; no button without it. */
+  onAsk?: () => void;
 }
 
 const HATCH = "bg-[image:repeating-linear-gradient(135deg,transparent_0_6px,rgb(120_130_150/0.16)_6px_7px)]";
@@ -180,9 +201,11 @@ function Impact({
 function Pattern({
   pattern,
   onSelectStep,
+  linkOf,
 }: {
   pattern: PatternRepetition;
   onSelectStep?: (s: StepId) => void;
+  linkOf: (site: PatternSite) => GithubLineLink;
 }) {
   return (
     <details className="rounded-lg border border-border bg-surface px-4 py-2 text-[12.5px]">
@@ -193,9 +216,10 @@ function Pattern({
       <ul className="m-0 mt-1 list-disc pl-5">
         {pattern.sites.map((site) => {
           const where = `${site.file}:${rangeText(site.range)}`;
+          const link = linkOf(site);
           return (
             <li key={`${where}:${site.side}`}>
-              <GithubLink url={site.github_url} tip="Open these lines on GitHub (new tab)">
+              <GithubLink url={link.url} tip={link.tip}>
                 {where}
                 {site.side === "base" && " (base)"}
               </GithubLink>
@@ -222,6 +246,7 @@ function Pattern({
 /** Step title, decision, review actions and full-width code; details live in the Inspector. */
 export function StepBlock({
   step,
+  pr,
   code,
   patterns = [],
   impactCode,
@@ -230,12 +255,17 @@ export function StepBlock({
   ownComments = 0,
   oldCode,
   onSelectStep,
+  stepOf,
   threadsStatus = "checked",
+  viewed,
+  onOpenFile,
+  onAsk,
 }: StepBlockProps) {
   const headingId = useId();
   const { facts, llm } = step;
   const changed = facts.changed_lines.reduce((n, r) => n + r.end_line - r.start_line + 1, 0);
   const repeated = patterns.filter((p) => p.explained_in === step.id);
+  const github = stepGithubLink(pr, facts);
   return (
     <article aria-labelledby={headingId} className="@container rounded-lg border border-border bg-surface">
       <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
@@ -246,12 +276,22 @@ export function StepBlock({
           {llm.title}
         </h2>
         <KindLabel kind={llm.kind} />
-        <code className="font-semibold">{facts.file}</code>
+        {onOpenFile ? (
+          <Tooltip tip="Opens this file in the Files view at this step's lines (s).">
+            <button
+              type="button"
+              onClick={onOpenFile}
+              className="cursor-pointer border-0 bg-transparent p-0 font-mono font-semibold text-accent underline"
+            >
+              {facts.file}
+            </button>
+          </Tooltip>
+        ) : (
+          <code className="font-semibold">{facts.file}</code>
+        )}
+        {viewed !== undefined && <ViewedChip state={viewed} path={facts.file} />}
         {llm.symbol && <span className="text-muted">{llm.symbol}</span>}
-        <GithubLink
-          url={facts.github_url}
-          tip={`Open these lines on GitHub at the ${facts.side} commit (new tab)`}
-        >
+        <GithubLink url={github.url} tip={github.tip}>
           L{rangeText(facts.range)}
         </GithubLink>
         <Markers step={step} ownComments={ownComments} threadsStatus={threadsStatus} />
@@ -261,8 +301,9 @@ export function StepBlock({
               <CodeText text={llm.decides} /> <ProvenanceTag source="llm" />
             </div>
           )}
-          {(oldCode || onSetReviewed) && (
+          {(oldCode || onSetReviewed || onAsk) && (
             <div className="ml-auto flex shrink-0 flex-wrap gap-2">
+              {onAsk && <AskButton what="this step" onAsk={onAsk} />}
               {oldCode && (
                 <Tooltip tip="Show or hide the classic diff of this step (d)">
                   <button
@@ -295,7 +336,14 @@ export function StepBlock({
           <div className="grid min-w-0 gap-3">
             {llm.impact.length > 0 && <Impact key={step.id} impacts={llm.impact} impactCode={impactCode} />}
             {repeated.map((p) => (
-              <Pattern key={p.description} pattern={p} onSelectStep={onSelectStep} />
+              <Pattern
+                key={p.description}
+                pattern={p}
+                onSelectStep={onSelectStep}
+                linkOf={(site) =>
+                  siteGithubLink(pr, site, site.step_id ? stepOf?.(site.step_id)?.facts : undefined)
+                }
+              />
             ))}
           </div>
         )}

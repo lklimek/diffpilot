@@ -28,7 +28,7 @@ interface AppNavProps {
   current: AppSection | null;
   /** In-app hrefs. */
   hrefs: Record<AppSection, string>;
-  /** Ranked items of the latest snapshot; no count when null. */
+  /** Unhidden human mentions; no count when null. */
   myWorkCount: number | null;
   onNavigate?: Navigate;
 }
@@ -53,8 +53,9 @@ export function AppNav({ current, hrefs, myWorkCount, onNavigate }: AppNavProps)
       // Storage unavailable: the state lives for this page only.
     }
   };
+  const mentions = `${myWorkCount} unanswered ${myWorkCount === 1 ? "mention" : "mentions"} from people`;
   const item = (centered: boolean) =>
-    `flex min-h-[34px] w-full cursor-pointer items-center gap-2.5 rounded-md border-0 border-l-4 border-transparent bg-transparent px-2.5 py-1.5 text-left text-text no-underline hover:bg-surface-2 ${centered ? "justify-center px-0" : ""}`;
+    `flex min-h-[34px] w-full cursor-pointer items-center gap-2.5 rounded-md border-0 border-l-4 border-transparent bg-transparent py-1.5 text-left text-text no-underline hover:bg-surface-2 ${centered ? "justify-center px-0" : "px-2.5"}`;
   return (
     <nav
       aria-label="Main"
@@ -64,11 +65,15 @@ export function AppNav({ current, hrefs, myWorkCount, onNavigate }: AppNavProps)
       {ENTRIES.map(({ section, name, tip }) => (
         <div key={section} className="contents">
           {section === "settings" && <div role="presentation" className="mx-1 my-2 h-px bg-border" />}
-          <Tooltip tip={tip} placement="right" className="block">
+          <Tooltip
+            tip={section === "my-work" && myWorkCount !== null ? `${tip}; ${mentions}` : tip}
+            placement="right"
+            className="block"
+          >
             <a
               href={hrefs[section]}
               aria-current={current === section ? "page" : undefined}
-              aria-label={collapsed ? name : undefined}
+              aria-label={section === "my-work" && myWorkCount !== null ? `My work, ${mentions}` : name}
               onClick={navigateOnClick(hrefs[section], onNavigate)}
               className={`${item(collapsed)} aria-[current=page]:border-accent aria-[current=page]:bg-accent-bg aria-[current=page]:font-semibold`}
             >
@@ -76,6 +81,7 @@ export function AppNav({ current, hrefs, myWorkCount, onNavigate }: AppNavProps)
               {!collapsed && <span className="truncate">{name}</span>}
               {!collapsed && section === "my-work" && myWorkCount !== null && (
                 <span
+                  aria-hidden="true"
                   data-nav-count
                   className="ml-auto rounded-full border border-border bg-surface-2 px-1.5 text-[11px] font-bold"
                 >

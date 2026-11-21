@@ -196,7 +196,7 @@ export const groupIds = (page: Page, name: string) =>
 /** The top bar's Refresh button. */
 export const refreshButton = (page: Page) => page.getByRole("button", { name: "Refresh", exact: true });
 
-/** Puts `login` on the server's allow-list (as deploy/dev/stack.sh does for `alice`). */
+/** Puts `login` on the running server's allow-list until its next start (which applies SR_ALLOWED_LOGINS). */
 export function allowLogin(stack: Stack, login: string): void {
   if (!stack.stateDir) throw new Error("the database of a stack started elsewhere is out of reach");
   execFileSync("sqlite3", [

@@ -1,0 +1,9 @@
+{
+  "name": "diffpilot-notices",
+  "private": true,
+  "license": "FSL-1.1-ALv2",
+  "description": "Pinned licence-notice generator for the web UI's production dependencies (deploy/server/Dockerfile)",
+  "dependencies": {
+    "generate-license-file": "4.2.5"
+  }
+}
