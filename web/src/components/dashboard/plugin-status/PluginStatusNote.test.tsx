@@ -12,14 +12,13 @@ const PLUGIN: PluginStatus = {
 };
 
 describe("PluginStatusNote", () => {
-  it("names a plug-in not read yet or stale, attributed and linked to its home page", () => {
+  it("names a plug-in being read or stale, attributed and linked to its home page", () => {
     const { container, unmount } = render(
       <PluginStatusNote plugins={[PLUGIN]} what="Ready to merge is shown" />,
     );
     const line = container.querySelector("[data-plugin-status='waiting']") as HTMLElement;
-    expect(line).toHaveTextContent(
-      "PR Hygiene: not read yet; Ready to merge is shown without its statements.",
-    );
+    expect(line).toHaveTextContent("PR Hygiene: being read; Ready to merge is shown without its statements.");
+    expect(line).not.toHaveTextContent(/unavailable|out of date/);
     expect(within(line).getByRole("link", { name: "PR Hygiene home page (new tab)" })).toHaveAttribute(
       "href",
       PLUGIN.url,

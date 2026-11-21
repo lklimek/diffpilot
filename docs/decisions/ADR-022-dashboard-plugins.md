@@ -37,7 +37,9 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
    lists a plug-in and the tab is visible, which keeps an open dashboard active and shows new statements; while a
    listed plug-in is `waiting` or `stale` it re-reads every 5 s, at most 6 times in a row, so a returning reader
    sees the statements of the poll their visit started within seconds. Ready to merge names a plug-in whose
-   statements are not applied ("PR Hygiene: unavailable or out of date"); nothing is shown for a current one.
+   statements are not applied: `waiting` ("PR Hygiene: being read") when it was not read yet or its data only aged
+   while nobody used the dashboard, `stale` ("PR Hygiene: unavailable or out of date") only after a failed poll or
+   for data older than the 1 hour bound; nothing for a current one.
 4. **Freshness and failures.** A plug-in's data is used only while fresh: its last successful poll (200 or 304) is
    at most 5 minutes old and its `as_of` at most 1 hour old. A timeout, a non-2xx answer (503 before the source's
    first snapshot included), an answer over 8 MiB or malformed JSON is a failed poll: the previous data ages out, the

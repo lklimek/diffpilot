@@ -198,7 +198,13 @@ async fn statements_are_matched_ignoring_case_and_shown_only_while_fresh() {
     let status = &host.statuses(now())[0];
     assert_eq!(
         (status.state, status.as_of),
-        (PluginState::Stale, Some(now()))
+        (PluginState::Waiting, Some(now())),
+        "data that only aged while nobody polled is waiting for the next read, not stale"
+    );
+    assert_eq!(
+        host.statuses(late)[0].state,
+        PluginState::Stale,
+        "data older than an hour is stale"
     );
 }
 
@@ -233,6 +239,11 @@ async fn a_failing_source_is_logged_once_per_change_and_its_data_ages_out() {
         host.overlay(now())
             .notes(&repo("acme", "node-client"), 1)
             .is_empty()
+    );
+    assert_eq!(
+        host.statuses(now())[0].state,
+        PluginState::Stale,
+        "aged out after a failure: stale"
     );
     host.poll_once(now()).await;
     assert_eq!(

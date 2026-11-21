@@ -322,7 +322,9 @@ impl PluginHost {
         }
     }
 
-    /// The configured plug-ins and whether their statements are shown at `now`.
+    /// The configured plug-ins and whether their statements are shown at `now`. Data that only aged while nobody
+    /// was active (no failure since the last success, `as_of` within [`Timing::max_age`]) is `waiting`: the next
+    /// read refreshes it; `stale` means the source failed or its data is too old.
     pub fn statuses(&self, now: Timestamp) -> Vec<PluginStatus> {
         self.inner
             .slots
@@ -333,10 +335,14 @@ impl PluginHost {
                     plugin: slot.plugin.id().to_owned(),
                     source: slot.plugin.name().to_owned(),
                     url: slot.plugin.home().to_string(),
-                    state: if state.data.is_none() && state.failing.is_none() {
-                        PluginState::Waiting
-                    } else if self.fresh(&state, now).is_some() {
+                    state: if self.fresh(&state, now).is_some() {
                         PluginState::Current
+                    } else if state.failing.is_none()
+                        && state.data.as_ref().is_none_or(|data| {
+                            now.duration_since(data.as_of) <= self.inner.timing.max_age
+                        })
+                    {
+                        PluginState::Waiting
                     } else {
                         PluginState::Stale
                     },

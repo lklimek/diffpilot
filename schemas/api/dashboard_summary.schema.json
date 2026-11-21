@@ -1512,7 +1512,7 @@
       "description": "Whether a plug-in's statements are shown.",
       "oneOf": [
         {
-          "description": "Not read yet (it is read only while someone uses the dashboard).",
+          "description": "Not read yet, or not read recently because nobody used the dashboard (it is read only then); being read.",
           "type": "string",
           "const": "waiting"
         },
@@ -1522,7 +1522,7 @@
           "const": "current"
         },
         {
-          "description": "The last good read is too old or the source failed; nothing of it is shown.",
+          "description": "The source failed since its last good read, or its data is older than the freshness bound; nothing of it is\nshown.",
           "type": "string",
           "const": "stale"
         }

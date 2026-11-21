@@ -2,13 +2,14 @@ import type { PluginStatus } from "../../../api/generated/types";
 import { OpenExternal } from "../common/OpenExternal";
 
 const TEXT: Record<Exclude<PluginStatus["state"], "current">, string> = {
-  waiting: "not read yet",
+  waiting: "being read",
   stale: "unavailable or out of date",
 };
 
 /**
- * One attributed line per configured dashboard plug-in whose statements are not applied now (ADR-022): not read
- * yet, or unavailable or out of date; nothing for a current one. `what` names what goes without its statements.
+ * One attributed line per configured dashboard plug-in whose statements are not applied now (ADR-022): being read
+ * (not read yet, or not since the dashboard was last used), or unavailable or out of date (the source failed or its
+ * data is too old); nothing for a current one. `what` names what goes without its statements.
  */
 export function PluginStatusNote({ plugins, what }: { plugins: PluginStatus[] | undefined; what: string }) {
   const off = (plugins ?? []).filter(

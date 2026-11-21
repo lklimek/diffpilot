@@ -57,11 +57,12 @@ pub struct PluginStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginState {
-    /// Not read yet (it is read only while someone uses the dashboard).
+    /// Not read yet, or not read recently because nobody used the dashboard (it is read only then); being read.
     Waiting,
     /// Read recently; its statements are shown.
     Current,
-    /// The last good read is too old or the source failed; nothing of it is shown.
+    /// The source failed since its last good read, or its data is older than the freshness bound; nothing of it is
+    /// shown.
     Stale,
 }
 
