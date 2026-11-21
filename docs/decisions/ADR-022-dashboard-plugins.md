@@ -30,15 +30,19 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
    notes, a Ready to merge hold (point 6) and change signals (point 5).
 3. **Lifecycle.** The host (`PluginHost`, in `AppState`) is built from configuration at start-up; one in-process
    task polls every plug-in at most once per 60 s server-wide (never per browser tab or user), and **only while a
-   user is actively using the dashboard**: a summary (R1) or items (R1b) read marks the reader active for 3 minutes;
+   user is actively using the dashboard**: a summary (R1) or items (R1b) read in a browser session marks the reader
+   active for 3 minutes (a personal access token read does not: an automated client is not a user in the session);
    with nobody active the task sends no request at all. When a user becomes active and the last poll is older than
    the interval, the next poll starts at once. The browser re-reads the summary every 60 s only while the summary
-   lists a plug-in and the tab is visible, which keeps an open dashboard active and shows new statements.
+   lists a plug-in and the tab is visible, which keeps an open dashboard active and shows new statements; while a
+   listed plug-in is `waiting` or `stale` it re-reads every 5 s, at most 6 times in a row, so a returning reader
+   sees the statements of the poll their visit started within seconds. Ready to merge names a plug-in whose
+   statements are not applied ("PR Hygiene: unavailable or out of date"); nothing is shown for a current one.
 4. **Freshness and failures.** A plug-in's data is used only while fresh: its last successful poll (200 or 304) is
    at most 5 minutes old and its `as_of` at most 1 hour old. A timeout, a non-2xx answer (503 before the source's
    first snapshot included), an answer over 8 MiB or malformed JSON is a failed poll: the previous data ages out, the
    dashboard is otherwise unaffected. A failure, a recovery and a stale/fresh change are logged once per change of
-   state, never per poll. Stale data, an unconfigured plug-in and an uncovered pull request all behave exactly as
+   state, never per poll; so is the count of source records left out as unreadable (shape or repository name). Stale data, an unconfigured plug-in and an uncovered pull request all behave exactly as
    without the plug-in.
 5. **Change signal → targeted re-read.** After a poll with new data, the host compares each pull request's change
    mark with the previous poll's (a statement added, changed or removed; not on the first poll). For every active
@@ -56,8 +60,9 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
 7. **Trust and wording** (brief §1). Every statement is shown as an attributed external statement ("PR Hygiene: …"),
    never as a diffpilot badge, tag, fact or verdict; no numeric confidence, no "verified"/"no risk". Each note links to
    its evidence: the source's record of the pull request, built by the server from the configured base URL and the
-   validated repository and number. External text is plain text: control characters removed, summary and each detail
-   cut to 300 characters, at most 8 details and 6 facts (values 100 characters). The source is untrusted data.
+   validated repository and number. External text is plain text: control characters and invisible format characters
+   (bidi controls, zero-width) removed, summary and each detail cut to 300 characters, at most 8 details and 6 facts
+   (values 100 characters). The source is untrusted data.
 8. **Configuration.** One variable per plug-in, unset = off (today's behaviour exactly, no request, no new field on
    the wire). PR Hygiene: `SR_PR_HYGIENE_URL` = the service's base URL (`http`/`https`). No secret is involved and
    none is sent.
