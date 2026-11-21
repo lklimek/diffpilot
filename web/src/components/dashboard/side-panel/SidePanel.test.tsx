@@ -123,6 +123,31 @@ describe("side panel sections", () => {
     expect(screen.queryByText(/None of your PRs/)).toBeNull();
   });
 
+  it("Ready to merge lists the PRs a plug-in holds back apart, each with its source's reason and evidence", () => {
+    const [ready] = SUMMARY.snapshot!.ready_to_merge;
+    const held = {
+      item: ready!,
+      plugin: "pr-hygiene",
+      source: "PR Hygiene",
+      reason: "Author must post /self-reviewed 1a2b3c",
+      url: "https://pr-hygiene.example.test/api/v1/prs/acme/wallet-ui/311",
+    };
+    render(<ReadyToMerge items={[]} pending={0} held={[held]} />);
+    expect(screen.getByText("Ready to merge").closest("summary")).toHaveTextContent("0 PRs");
+    const list = screen.getByRole("list", { name: "Held back" });
+    const [row] = within(list).getAllByRole("listitem");
+    expect(row).toHaveTextContent("WUI-311");
+    expect(row).toHaveTextContent("PR Hygiene: Author must post /self-reviewed 1a2b3c");
+    expect(within(row!).getByRole("link", { name: "PR Hygiene data for WUI-311 (new tab)" })).toHaveAttribute(
+      "href",
+      held.url,
+    );
+    expect(within(row!).getByRole("link", { name: "Open WUI-311 on GitHub (new tab)" })).toHaveAttribute(
+      "href",
+      ready!.url,
+    );
+  });
+
   describe("copy list", () => {
     let written: Record<string, Blob>[] = [];
     beforeEach(() => {

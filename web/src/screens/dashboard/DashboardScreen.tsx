@@ -250,7 +250,11 @@ export function DashboardScreen() {
         (snapshot && charts ? (
           <SidePanel main={main} railText={railText(snapshot)}>
             <WaitingOnOthers items={snapshot.awaiting} now={now} />
-            <ReadyToMerge items={snapshot.ready_to_merge} pending={snapshot.merge_state_pending} />
+            <ReadyToMerge
+              items={snapshot.ready_to_merge}
+              pending={snapshot.merge_state_pending}
+              held={snapshot.ready_to_merge_held}
+            />
             <Yesterday
               label={fullDayLabel(charts.yesterday.day)}
               prs={charts.yesterday.prs}

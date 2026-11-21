@@ -5,6 +5,7 @@ import { Tooltip } from "../../tooltip/Tooltip";
 import { dayText, scoreText } from "../common/format";
 import { KIND_LABEL, KindIcon } from "../common/icons";
 import { LlmLine } from "../common/LlmLine";
+import { PluginNotes } from "../plugin-notes/PluginNotes";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 import type { Navigate } from "../common/navigate";
 import { FactTags, ProvisionalPill, SizePill } from "../common/Tags";
@@ -130,6 +131,7 @@ export function WorkItemRow({
             {provisionalPill(item)}
             {notRefreshedPill(item, todos, now)}
           </div>
+          <PluginNotes notes={item.plugin_notes} itemId={item.id} full={expanded} now={now} />
         </div>
         {llm ? (
           <>

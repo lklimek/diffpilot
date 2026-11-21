@@ -46,7 +46,18 @@ export function isOlderStatus(next: RefreshStatus, kept: RefreshStatus | null | 
   return at >= 0 && a[at]! < b[at]!;
 }
 
-/** The user's dashboard summary; disabled while signed out. A latest refresh older than the shown one is kept. */
+/** How often the summary is read again while it lists a dashboard plug-in (ADR-022) and the tab is visible. */
+export const PLUGIN_REFETCH_MS = 60_000;
+
+/** The summary's re-read interval: every minute while it lists a plug-in, else none. */
+export const summaryRefetchInterval = (summary: DashboardSummary | undefined): number | false =>
+  summary?.plugins?.length ? PLUGIN_REFETCH_MS : false;
+
+/**
+ * The user's dashboard summary; disabled while signed out. A latest refresh older than the shown one is kept. While
+ * the summary lists a dashboard plug-in it is read again every minute (visible tabs only), which keeps the
+ * plug-in's statements current and the reader counted as active.
+ */
 export function useDashboardSummary(enabled: boolean) {
   const client = useQueryClient();
   return useQuery({
@@ -59,6 +70,7 @@ export function useDashboardSummary(enabled: boolean) {
         : summary;
     },
     enabled,
+    refetchInterval: (query) => summaryRefetchInterval(query.state.data),
   });
 }
 

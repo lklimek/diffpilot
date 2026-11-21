@@ -18,6 +18,8 @@ import {
   SUMMARY_KEY,
   refreshKey,
   loadAllItems,
+  PLUGIN_REFETCH_MS,
+  summaryRefetchInterval,
   resetSentTimeZones,
   useDashboardSummary,
   useRefreshEvents,
@@ -234,6 +236,24 @@ describe("useStartRefresh (R2)", () => {
     await waitFor(() => expect(result.current.start.isError).toBe(true));
     expect(result.current.start.error).toMatchObject({ status: 409, code: "refresh_running" });
     await waitFor(() => expect(result.current.summary.data?.latest_refresh?.state).toBe("scanning"));
+  });
+});
+
+describe("summaryRefetchInterval (ADR-022)", () => {
+  const summary = { revision: "r", latest_refresh: null } as unknown as DashboardSummary;
+  it("reads the summary again every minute only while it lists a dashboard plug-in", () => {
+    expect(summaryRefetchInterval(undefined)).toBe(false);
+    expect(summaryRefetchInterval(summary)).toBe(false);
+    expect(summaryRefetchInterval({ ...summary, plugins: [] })).toBe(false);
+    const plugin = {
+      plugin: "pr-hygiene",
+      source: "PR Hygiene",
+      url: "https://pr-hygiene.example.test/",
+      state: "current" as const,
+      as_of: "2026-11-18T10:00:00Z",
+    };
+    expect(summaryRefetchInterval({ ...summary, plugins: [plugin] })).toBe(PLUGIN_REFETCH_MS);
+    expect(PLUGIN_REFETCH_MS).toBe(60_000);
   });
 });
 
