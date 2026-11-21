@@ -1,7 +1,8 @@
-import { type ReactNode, useId } from "react";
+import { type ReactNode, useId, useRef } from "react";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { netTone, signed } from "../common/format";
 import { Segmented } from "../common/Segmented";
+import { BarPullRequests, type BarPullRequest } from "../bar-pull-requests/BarPullRequests";
 import { NetChart, type NetPoint } from "../net-chart/NetChart";
 
 /** Pull requests closed and opened in a period (OD16: pull requests only). */
@@ -37,6 +38,12 @@ interface HeadlineProps {
   onUnitChange: (unit: ChartUnit) => void;
   /** Shown under the tiles while the numbers come from an older snapshot (`From the 08:12 snapshot.`). */
   staleNote?: string | null;
+  /** The bar of the shown chart whose pull requests are listed. */
+  selected?: number | null;
+  /** Lists a bar's pull requests (its index) or closes the list (null). */
+  onSelect?: (index: number | null) => void;
+  /** The pull requests of the selected bar. */
+  listed?: { opened: BarPullRequest[]; closed: BarPullRequest[] } | null;
 }
 
 const net = (period: PeriodCount) => period.closed - period.opened;
@@ -59,9 +66,22 @@ function Tile({ label, value, sub, tip }: { label: string; value: number; sub: R
  * The main metric "PRs closed minus PRs opened" (mockup `renderHeadline`): this week as the hero, tiles for
  * yesterday, last week and four weeks, and the net chart by days or weeks. Pull requests only; no scope switch.
  */
-export function Headline({ figures, days, weeks, unit, onUnitChange, staleNote }: HeadlineProps) {
+export function Headline({
+  figures,
+  days,
+  weeks,
+  unit,
+  onUnitChange,
+  staleNote,
+  selected = null,
+  onSelect,
+  listed,
+}: HeadlineProps) {
   const titleId = useId();
   const subId = useId();
+  const chart = useRef<SVGSVGElement>(null);
+  const points = unit === "day" ? days : weeks;
+  const bar = selected === null ? undefined : points[selected];
   const { week, yesterday, lastWeek, fourWeeks } = figures;
   return (
     <section
@@ -128,7 +148,16 @@ export function Headline({ figures, days, weeks, unit, onUnitChange, staleNote }
               ]}
             />
           </div>
-          <NetChart points={unit === "day" ? days : weeks} unit={unit} />
+          <NetChart points={points} unit={unit} selected={selected} onSelect={onSelect} chartRef={chart} />
+          {bar && listed && onSelect && (
+            <BarPullRequests
+              period={`${bar.full}${bar.partial ? " (so far)" : ""}`}
+              opened={listed.opened}
+              closed={listed.closed}
+              onHide={() => onSelect(null)}
+              focusAfter={() => chart.current}
+            />
+          )}
         </div>
       </div>
     </section>

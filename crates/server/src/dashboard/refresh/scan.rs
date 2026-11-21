@@ -5,22 +5,23 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use contracts::api::dashboard::{
-    DashboardSettings, KindCounts, PolicyRef, ScanNote, ScanStepKey, StepState, TodosState,
-    TodosStatus,
+    DashboardSettings, KindCounts, MentionCoverage, PolicyRef, ScanNote, ScanStepKey, StepState,
+    TodosState, TodosStatus,
 };
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use futures::future::join_all;
 use jiff::tz::TimeZone;
+use tokio::time::{Instant, sleep_until};
 
 use super::RunError;
 use super::facts::{self, PrContext};
-use super::history;
 use super::owned;
 use super::progress::{Ended, Progress};
-use crate::dashboard::score::{MilestoneContext, OwnedChange, ScoreRules, TodoFacts};
+use super::{history, mentions};
+use crate::dashboard::score::{self, MilestoneContext, OwnedChange, ScoreRules, TodoFacts};
 use crate::dashboard::settings::memcan_projects;
-use crate::dashboard::snapshot::{SNAPSHOT_VERSION, Snapshot, StoredTodo};
+use crate::dashboard::snapshot::{SNAPSHOT_VERSION, Snapshot, StoredPr, StoredTodo};
 use crate::github::work::{
     Fetched, ItemRef, PR_BATCH, PullDetail, TokenSource, WorkClient, WorkError, repo_name,
 };
@@ -28,6 +29,8 @@ use crate::memcan::todos::{self, TodosRead};
 
 /// Pull requests per details step: four batches, read concurrently by the client.
 const DETAIL_CHUNK: usize = PR_BATCH * 4;
+/// The user's pull requests whose merge state is read again (Q17): one batch.
+const MERGE_RECHECK_LIMIT: usize = PR_BATCH;
 
 /// What a scan reads besides GitHub.
 pub(super) struct ScanInput<'a> {
@@ -49,7 +52,7 @@ fn note(text: String) -> ScanNote {
     ScanNote { text, item: None }
 }
 
-fn same_repo(a: &RepoRef, b: &RepoRef) -> bool {
+pub(super) fn same_repo(a: &RepoRef, b: &RepoRef) -> bool {
     a.owner.eq_ignore_ascii_case(&b.owner) && a.name.eq_ignore_ascii_case(&b.name)
 }
 
@@ -96,7 +99,13 @@ pub(super) async fn scan<T: TokenSource>(
             candidates.merge(listed.candidates);
         }
     }
-    let prs = count(candidates.pull_requests.len());
+    let prs = count(
+        candidates
+            .pull_requests
+            .values()
+            .filter(|pr| pr.ranked())
+            .count(),
+    );
     progress.log(format!("search PRs: {prs} found ({} logins)", logins.len()));
     progress
         .step(
@@ -123,7 +132,7 @@ pub(super) async fn scan<T: TokenSource>(
     }
     notes.extend(issues.notes);
     candidates.merge(issues.candidates);
-    let issue_count = count(candidates.issues.len());
+    let issue_count = count(candidates.issues.values().filter(|i| i.ranked()).count());
     progress.log(format!("issues: {issue_count} found"));
     progress
         .step(
@@ -134,7 +143,12 @@ pub(super) async fn scan<T: TokenSource>(
         )
         .await?;
 
-    let pulls: Vec<ItemRef> = candidates.pull_requests.keys().cloned().collect();
+    let pulls: Vec<ItemRef> = candidates
+        .pull_requests
+        .iter()
+        .filter(|(_, c)| c.ranked())
+        .map(|(item, _)| item.clone())
+        .collect();
     let total = count(pulls.len());
     progress
         .step(
@@ -174,6 +188,7 @@ pub(super) async fn scan<T: TokenSource>(
     };
     let refs = async { client.open_pr_refs(&repos).await.map_err(RunError::from) };
     let (mut details, listing) = tokio::try_join!(details, refs)?;
+    let details_read = Instant::now();
     notes.append(&mut details.notes);
     notes.extend(listing.notes.iter().cloned());
     details.found.retain(|_, detail| detail.state == "OPEN");
@@ -194,6 +209,17 @@ pub(super) async fn scan<T: TokenSource>(
         .step(ScanStepKey::Context, StepState::Running, None, None)
         .await?;
     let owned = owned_changes(client, input, &details.found, &mut notes).await?;
+    let (mentions, mention_notes, unchecked_items) = mentions::collect(
+        client,
+        input.rules,
+        &searchable,
+        &candidates,
+        &details.found,
+        &owned,
+    )
+    .await?;
+    notes.extend(mention_notes);
+    candidates.issues.retain(|_, issue| issue.ranked());
     let with_milestone: BTreeSet<RepoRef> = details
         .found
         .iter()
@@ -232,7 +258,7 @@ pub(super) async fn scan<T: TokenSource>(
         .collect();
     progress.log(format!(
         "context: {} ownership verdicts, {} milestone lists, {} not visible",
-        owned.len(),
+        owned.verdicts.len(),
         milestones.len(),
         unreachable.len()
     ));
@@ -276,7 +302,7 @@ pub(super) async fn scan<T: TokenSource>(
         .map(|(item, _)| &item.repo)
         .chain(&reach.private_repositories)
         .collect();
-    let pull_requests: Vec<_> = details
+    let mut pull_requests: Vec<_> = details
         .found
         .iter()
         .filter_map(|(item, detail)| {
@@ -288,12 +314,24 @@ pub(super) async fn scan<T: TokenSource>(
                 PrContext {
                     candidate,
                     blockers: listing.blockers(item),
-                    owned: owned.get(item).copied().unwrap_or(OwnedChange::NoPolicy),
+                    owned: owned
+                        .verdicts
+                        .get(item)
+                        .copied()
+                        .unwrap_or(OwnedChange::NoPolicy),
                     milestones: milestones.get(&item.repo).cloned().unwrap_or_default(),
                 },
             ))
         })
         .collect();
+    recheck_merge_states(
+        client,
+        input.rules,
+        &mut pull_requests,
+        details_read,
+        progress,
+    )
+    .await?;
     let issues: Vec<_> = candidates
         .issues
         .iter()
@@ -312,6 +350,12 @@ pub(super) async fn scan<T: TokenSource>(
         todo: count(todos.len()),
     };
     Ok(Snapshot {
+        mention_coverage: MentionCoverage {
+            unchecked_items,
+            unchecked_logins: found.unsearchable,
+            timed_out_logins: found.timed_out_mention_logins,
+        },
+        mentions,
         version: SNAPSHOT_VERSION,
         own_login: input.own_login.to_owned(),
         settings: settings.clone(),
@@ -324,8 +368,51 @@ pub(super) async fn scan<T: TokenSource>(
         notes,
         unreachable,
         checked,
+        merge_states_recorded: true,
+        prs_reread_at: None,
         todos_hidden: false,
     })
+}
+
+/// Reads once more the merge state of the user's pull requests GitHub had not computed at the details read (it
+/// computes it in the background; plan §A.2 Q17), at most [`MERGE_RECHECK_LIMIT`], one pacing interval after that
+/// read at the earliest. What stays unknown is counted where Ready to merge is shown.
+async fn recheck_merge_states<T: TokenSource>(
+    client: &WorkClient<T>,
+    rules: &ScoreRules,
+    pulls: &mut [StoredPr],
+    details_read: Instant,
+    progress: &mut Progress,
+) -> Result<(), RunError> {
+    let item = |pr: &StoredPr| ItemRef {
+        repo: pr.facts.repo.clone(),
+        number: pr.facts.number,
+    };
+    let pending: Vec<ItemRef> = pulls
+        .iter()
+        .filter(|pr| score::merge_state_pending(rules, &pr.facts))
+        .take(MERGE_RECHECK_LIMIT)
+        .map(item)
+        .collect();
+    if pending.is_empty() {
+        return Ok(());
+    }
+    sleep_until(details_read + client.search_interval).await;
+    let states = client.merge_states(&pending).await?;
+    for pr in pulls.iter_mut() {
+        if let Some(state) = states.get(&item(pr)) {
+            pr.facts.merge_state = facts::merge_state(state);
+        }
+    }
+    let unknown = pulls
+        .iter()
+        .filter(|pr| score::merge_state_pending(rules, &pr.facts))
+        .count();
+    progress.log(format!(
+        "merge states: {} read again, {unknown} not computed by GitHub yet",
+        pending.len()
+    ));
+    Ok(())
 }
 
 /// Ownership verdicts of the pull requests in repositories with an ownership policy (Q3, Q4); a policy or file
@@ -335,8 +422,8 @@ async fn owned_changes<T: TokenSource>(
     input: &ScanInput<'_>,
     details: &BTreeMap<ItemRef, PullDetail>,
     notes: &mut Vec<ScanNote>,
-) -> Result<BTreeMap<ItemRef, OwnedChange>, WorkError> {
-    let mut verdicts = BTreeMap::new();
+) -> Result<owned::Ownership, WorkError> {
+    let mut ownership = owned::Ownership::new(input.settings);
     let rows: Vec<(RepoRef, PolicyRef, Vec<ItemRef>)> = input
         .settings
         .repositories
@@ -353,23 +440,19 @@ async fn owned_changes<T: TokenSource>(
         .collect();
     for (repo, policy, pulls) in rows {
         let where_ = format!("{}:{}", repo_name(&policy.repo), policy.path);
-        let paths = match client.file_contents(&policy.repo, &policy.path).await {
-            Ok(text) => owned::owned_paths(input.rules, &text)
-                .inspect_err(|error| tracing::debug!(%error, "ownership policy did not parse"))
-                .ok(),
-            Err(error) if error.ends_refresh() => return Err(error),
-            Err(error) => {
-                tracing::debug!(%error, policy = %where_, "ownership policy not read");
-                None
-            }
-        };
+        let paths = ownership
+            .paths(client, input.rules, &repo)
+            .await?
+            .map(<[String]>::to_vec);
         let Some(paths) = paths else {
             notes.push(note(format!(
                 "The ownership policy {where_} could not be read; pull requests of {} are ranked with \
                  ownership unverified",
                 repo_name(&repo)
             )));
-            verdicts.extend(pulls.into_iter().map(|pr| (pr, OwnedChange::Unknown)));
+            ownership
+                .verdicts
+                .extend(pulls.into_iter().map(|pr| (pr, OwnedChange::Unknown)));
             continue;
         };
         let mut reads = Vec::with_capacity(pulls.len());
@@ -391,10 +474,10 @@ async fn owned_changes<T: TokenSource>(
                     OwnedChange::Unknown
                 }
             };
-            verdicts.insert(pr, verdict);
+            ownership.verdicts.insert(pr, verdict);
         }
     }
-    Ok(verdicts)
+    Ok(ownership)
 }
 
 /// Release tags and milestone titles of each repository (Q8); a list that cannot be read stays unknown.

@@ -68,6 +68,17 @@
       "items": {
         "$ref": "#/$defs/RepoRef"
       }
+    },
+    "controlled_owners": {
+      "description": "Installation-wide controlled GitHub owners (Dependencies view, ADR-021); absent on older servers.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ControlledOwners"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -425,6 +436,37 @@
       "required": [
         "owner",
         "name"
+      ]
+    },
+    "ControlledOwners": {
+      "description": "The installation-wide list of controlled GitHub owners: their repositories are \"yours\" in the Dependencies\nview, besides the pull request's owner, which always is.",
+      "type": "object",
+      "properties": {
+        "owners": {
+          "description": "Owner logins, sorted case-insensitively, unique.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "changed_by": {
+          "description": "Who saved the list last; null before the first save.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "changed_at": {
+          "description": "When it was saved last.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "owners"
       ]
     }
   }

@@ -7,7 +7,7 @@
   },
   "$defs": {
     "AskQuestion": {
-      "description": "A private question and its LLM answer, pinned to the step; returned only to its asker.",
+      "description": "A private question and its LLM answer, pinned to its anchor; returned only to its asker.",
       "type": "object",
       "properties": {
         "id": {
@@ -28,9 +28,31 @@
             "null"
           ]
         },
+        "anchor": {
+          "description": "What the question is about.",
+          "$ref": "#/$defs/AskAnchor"
+        },
         "step_id": {
-          "description": "The step.",
-          "$ref": "#/$defs/StepId"
+          "description": "The step of a step anchor; absent for other anchors.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parent_id": {
+          "description": "A follow-up: the first question of its thread; absent for a first question.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuestionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "text": {
           "description": "The question.",
@@ -74,7 +96,7 @@
       },
       "required": [
         "id",
-        "step_id",
+        "anchor",
         "text",
         "state",
         "created_at"
@@ -85,9 +107,150 @@
       "type": "string",
       "format": "uuid"
     },
+    "AskAnchor": {
+      "description": "What a question is about.",
+      "oneOf": [
+        {
+          "description": "A step of the Tour, optionally narrowed to some of its lines.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "step"
+            },
+            "step_id": {
+              "description": "The step.",
+              "$ref": "#/$defs/StepId"
+            },
+            "lines": {
+              "description": "Lines inside the step, on its side and file; null for the whole step.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LineRange"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "step_id"
+          ]
+        },
+        {
+          "description": "Lines of a file of the pull request that lie in no single step (or a whole file).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "lines"
+            },
+            "path": {
+              "description": "Repository-relative path on `side`.",
+              "type": "string"
+            },
+            "side": {
+              "description": "Commit the lines refer to.",
+              "$ref": "#/$defs/LineSide"
+            },
+            "range": {
+              "description": "The lines, at most `AskAnchor::MAX_LINES`; null for the whole file.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LineRange"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "path",
+            "side"
+          ]
+        },
+        {
+          "description": "An analysed flow as a whole.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "flow"
+            },
+            "flow_id": {
+              "description": "The flow.",
+              "$ref": "#/$defs/FlowId"
+            }
+          },
+          "required": [
+            "kind",
+            "flow_id"
+          ]
+        },
+        {
+          "description": "The whole pull request.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "pr"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
     "StepId": {
       "description": "Identifier of a step, assigned by the server in step order: `\"<flow>.<n>\"`, e.g. `f2.3`.",
       "type": "string"
+    },
+    "LineRange": {
+      "description": "Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.",
+      "type": "object",
+      "properties": {
+        "start_line": {
+          "description": "First line, 1-based.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_line": {
+          "description": "Last line, inclusive.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start_line",
+        "end_line"
+      ]
+    },
+    "LineSide": {
+      "description": "Commit a line number refers to. Head is the common case (final code); base only for code that no longer\nexists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).",
+      "oneOf": [
+        {
+          "description": "Lines of the head commit.",
+          "type": "string",
+          "const": "head"
+        },
+        {
+          "description": "Lines of the base commit (removed code).",
+          "type": "string",
+          "const": "base"
+        }
+      ]
+    },
+    "FlowId": {
+      "description": "Identifier of a flow, assigned by the `plan` job: `f1`, `f2`, ….",
+      "type": "string",
+      "pattern": "^f[0-9]+$"
     },
     "AskState": {
       "description": "State of a question.",
@@ -158,21 +321,6 @@
         "file",
         "side",
         "line"
-      ]
-    },
-    "LineSide": {
-      "description": "Commit a line number refers to. Head is the common case (final code); base only for code that no longer\nexists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).",
-      "oneOf": [
-        {
-          "description": "Lines of the head commit.",
-          "type": "string",
-          "const": "head"
-        },
-        {
-          "description": "Lines of the base commit (removed code).",
-          "type": "string",
-          "const": "base"
-        }
       ]
     }
   }

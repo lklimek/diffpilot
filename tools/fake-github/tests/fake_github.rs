@@ -867,3 +867,52 @@ async fn ci_serves_skipped_neutral_and_pending_statuses() {
     let statuses: Value = response.json().await.unwrap();
     assert_eq!(statuses["statuses"][0]["state"], "pending");
 }
+
+const FILES_VIEWED: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){id headRefOid files(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{path viewerViewedState}}}}}";
+const MARK_VIEWED: &str =
+    "mutation($in:MarkFileAsViewedInput!){markFileAsViewed(input:$in){clientMutationId}}";
+const UNMARK_VIEWED: &str =
+    "mutation($in:UnmarkFileAsViewedInput!){unmarkFileAsViewed(input:$in){clientMutationId}}";
+
+async fn viewed_state(base: &str, token: &str, path: &str) -> Value {
+    let (status, body) = graphql(base, token, FILES_VIEWED, pull_variables()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let files = &body["data"]["repository"]["pullRequest"]["files"];
+    assert_eq!(files["pageInfo"]["hasNextPage"], false);
+    files["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["path"] == path)
+        .map_or(Value::Null, |node| node["viewerViewedState"].clone())
+}
+
+#[tokio::test]
+async fn graphql_viewed_marks_are_set_cleared_and_dismissed_by_a_head_move() {
+    let base = spawn(config()).await;
+    let token = token(&sign_in(&base).await, "access_token");
+    let client_rs = "src/rpc/client.rs";
+    assert_eq!(viewed_state(&base, &token, client_rs).await, "UNVIEWED");
+    let input =
+        |path: &str| serde_json::json!({"in": {"pullRequestId": "PR_fixture482", "path": path}});
+    let (_, body) = graphql(&base, &token, MARK_VIEWED, input(client_rs)).await;
+    assert_eq!(
+        body["data"]["markFileAsViewed"]["clientMutationId"],
+        Value::Null
+    );
+    assert!(body.get("errors").is_none(), "{body}");
+    assert_eq!(viewed_state(&base, &token, client_rs).await, "VIEWED");
+    let (_, body) = graphql(&base, &token, MARK_VIEWED, input("src/not-in-the-pr.rs")).await;
+    assert_eq!(body["errors"][0]["type"], "NOT_FOUND", "{body}");
+    graphql(&base, &token, UNMARK_VIEWED, input(client_rs)).await;
+    assert_eq!(viewed_state(&base, &token, client_rs).await, "UNVIEWED");
+    graphql(&base, &token, MARK_VIEWED, input(client_rs)).await;
+    let moved = client()
+        .post(format!("{base}/_fake/head"))
+        .json(&serde_json::json!({"sha": "d41b7a0d41b7a0d41b7a0d41b7a0d41b7a0d41b7"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(moved.status(), StatusCode::NO_CONTENT);
+    assert_eq!(viewed_state(&base, &token, client_rs).await, "DISMISSED");
+}

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ageBuckets, QueueAge } from "../queue-age/QueueAge";
 import { ScanNotes } from "../scan-notes/ScanNotes";
+import { ReadyToMerge } from "../ready-to-merge/ReadyToMerge";
 import { NOW, SUMMARY } from "../test-fixtures";
 import { ThroughputMinis } from "../throughput-minis/ThroughputMinis";
 import { WaitingOnOthers } from "../waiting-on-others/WaitingOnOthers";
@@ -42,7 +43,14 @@ describe("SidePanel", () => {
     viewport(3440);
     const { unmount } = panel();
     expect(screen.getByText("sections")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Collapse the side panel" }));
+    const hide = screen.getByRole("button", { name: "Hide side panel" });
+    expect(hide).toHaveTextContent(/^Hide$/);
+    expect(hide).toHaveClass("text-[11.5px]");
+    expect(hide).toHaveAccessibleDescription(/rail/);
+    hide.focus();
+    await userEvent.keyboard("{Enter}");
+    // By keyboard, the focus moves to the rail that opens the panel again.
+    expect(screen.getByRole("button", { name: /More · waiting on others 3/ })).toHaveFocus();
     unmount();
     panel();
     expect(screen.queryByText("sections")).toBeNull();
@@ -77,10 +85,164 @@ describe("side panel sections", () => {
     expect(items[2]).not.toHaveTextContent("—");
     expect(screen.queryByText(/Not ranked/)).toBeNull();
     const first = SUMMARY.snapshot!.awaiting.find((item) => item.id === "PLAT-1176")!;
-    const link = within(items[0]!).getByRole("link", { name: "Open PLAT-1176 on GitHub" });
+    const link = within(items[0]!).getByRole("link", { name: "Open PLAT-1176 on GitHub (new tab)" });
     expect(link).toHaveAttribute("href", first.url);
     expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAccessibleDescription("Open PLAT-1176 on GitHub");
+    expect(link).toHaveAccessibleDescription("Open PLAT-1176 on GitHub (new tab)");
+  });
+
+  it("lists the user's PRs ready to merge with their size and CI tags; none: a plain line, no copy button", () => {
+    const { unmount } = render(<ReadyToMerge items={SUMMARY.snapshot!.ready_to_merge} pending={0} />);
+    expect(screen.getByText("Ready to merge").closest("summary")).toHaveTextContent("1 PRs");
+    const [item] = screen.getAllByRole("listitem");
+    expect(item).toHaveTextContent("WUI-311");
+    expect(item).toHaveTextContent("feat(wallet): show pending withdrawals");
+    expect(item).toHaveTextContent("CI failing");
+    expect(within(item!).getByRole("img", { name: /Change size: small/ })).toBeInTheDocument();
+    expect(within(item!).getByRole("link", { name: "Open WUI-311 on GitHub (new tab)" })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/wallet-ui/pull/311",
+    );
+    expect(screen.getByText(/By id; they stay in the ranking too/)).toBeInTheDocument();
+    unmount();
+    render(<ReadyToMerge items={[]} pending={0} />);
+    expect(screen.getByText("None of your PRs was ready to merge at the last scan.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Copy list/ })).toBeNull();
+    expect(screen.queryByText(/not computed/)).toBeNull();
+  });
+
+  it("Ready to merge counts merge states GitHub had not computed, and says when a snapshot did not record them", () => {
+    const { unmount } = render(<ReadyToMerge items={[]} pending={2} />);
+    expect(
+      screen.getByText("2 PRs: GitHub had not computed the merge state yet; the next refresh checks again."),
+    ).toBeInTheDocument();
+    unmount();
+    render(<ReadyToMerge items={[]} pending={null} />);
+    expect(screen.getByText("Ready to merge").closest("summary")).toHaveTextContent("not recorded");
+    expect(screen.getByText("Not recorded for this snapshot — refresh to see it.")).toBeInTheDocument();
+    expect(screen.queryByText(/None of your PRs/)).toBeNull();
+  });
+
+  it("Ready to merge lists the PRs a plug-in holds back apart, each with its source's reason and evidence", () => {
+    const [ready] = SUMMARY.snapshot!.ready_to_merge;
+    const held = {
+      item: ready!,
+      plugin: "pr-hygiene",
+      source: "PR Hygiene",
+      reason: "Author must post /self-reviewed 1a2b3c",
+      url: "https://pr-hygiene.example.test/api/v1/prs/acme/wallet-ui/311",
+    };
+    const { unmount } = render(<ReadyToMerge items={[]} pending={0} held={[held]} />);
+    expect(screen.getByText("Ready to merge").closest("summary")).toHaveTextContent("0 PRs");
+    expect(screen.queryByText(/None of your PRs/)).toBeNull();
+    expect(
+      screen.getByText(
+        "All of your PRs that were ready to merge at the last scan are held back by another source:",
+      ),
+    ).toBeInTheDocument();
+    const list = screen.getByRole("list", { name: "Held back" });
+    const [row] = within(list).getAllByRole("listitem");
+    expect(row).toHaveTextContent("WUI-311");
+    expect(row).toHaveTextContent("PR Hygiene: Author must post /self-reviewed 1a2b3c");
+    expect(within(row!).getByRole("link", { name: "PR Hygiene data for WUI-311 (new tab)" })).toHaveAttribute(
+      "href",
+      held.url,
+    );
+    expect(within(row!).getByRole("link", { name: "Open WUI-311 on GitHub (new tab)" })).toHaveAttribute(
+      "href",
+      ready!.url,
+    );
+    unmount();
+    render(
+      <ReadyToMerge items={[ready!]} pending={0} held={[{ ...held, item: { ...ready!, id: "WUI-298" } }]} />,
+    );
+    expect(screen.getByText("Left out because another source holds them back:")).toBeInTheDocument();
+  });
+
+  it("Ready to merge names a plug-in whose statements are not applied, and nothing for a current one", () => {
+    const plugin = {
+      plugin: "pr-hygiene",
+      source: "PR Hygiene",
+      url: "https://pr-hygiene.example.test/",
+      state: "stale" as const,
+      as_of: "2026-11-18T08:00:00Z",
+    };
+    const { unmount } = render(<ReadyToMerge items={[]} pending={0} plugins={[plugin]} />);
+    expect(document.querySelector("[data-plugin-status='stale']")).toHaveTextContent(
+      "PR Hygiene: unavailable or out of date; Ready to merge is shown without its statements.",
+    );
+    unmount();
+    render(<ReadyToMerge items={[]} pending={0} plugins={[{ ...plugin, state: "current" }]} />);
+    expect(document.querySelector("[data-plugin-status]")).toBeNull();
+  });
+
+  describe("copy list", () => {
+    let written: Record<string, Blob>[] = [];
+    beforeEach(() => {
+      written = [];
+      vi.stubGlobal("isSecureContext", true);
+      vi.stubGlobal(
+        "ClipboardItem",
+        class {
+          constructor(items: Record<string, Blob>) {
+            written.push(items);
+          }
+        },
+      );
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(navigator, "clipboard");
+    });
+    const clipboard = (write: () => Promise<void>) =>
+      Object.defineProperty(navigator, "clipboard", { value: { write }, configurable: true });
+
+    it("copies Waiting on others as linked lines in the shown order, with who and for how long", async () => {
+      clipboard(() => Promise.resolve());
+      render(<WaitingOnOthers items={SUMMARY.snapshot!.awaiting} now={NOW} />);
+      const button = screen.getByRole("button", { name: "Copy list of PRs waiting on others" });
+      expect(button).toHaveTextContent(/^Copy list$/);
+      await userEvent.click(button);
+      const lines = (await written[0]!["text/plain"]!.text()).split("\n");
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toBe(
+        "[acme/platform#1176](https://github.com/acme/platform/pull/1176) feat(sync): parallel header download - large (+3200 / -400) — waits on @jun-park, team:core for 11 d",
+      );
+      expect(await written[0]!["text/html"]!.text()).toContain(
+        '<a href="https://github.com/acme/platform/pull/1176">acme/platform#1176</a>',
+      );
+      expect(screen.getByText("Copied 3 lines.")).toHaveAttribute("role", "status");
+    });
+
+    it("each Waiting on others row has a copy icon next to its GitHub link that copies that row's line", async () => {
+      clipboard(() => Promise.resolve());
+      render(<WaitingOnOthers items={SUMMARY.snapshot!.awaiting} now={NOW} />);
+      const github = screen.getByRole("link", { name: "Open PLAT-1176 on GitHub (new tab)" });
+      const copy = screen.getByRole("button", { name: "Copy line of PLAT-1176" });
+      // Same row line, right after the GitHub mark.
+      expect(github.closest("div")).toContainElement(copy);
+      expect(screen.getAllByRole("button", { name: /^Copy line of / })).toHaveLength(3);
+      await userEvent.click(copy);
+      expect(await written[0]!["text/plain"]!.text()).toBe(
+        "[acme/platform#1176](https://github.com/acme/platform/pull/1176) feat(sync): parallel header download - large (+3200 / -400) — waits on @jun-park, team:core for 11 d",
+      );
+      expect(screen.getByText("Copied the line of PLAT-1176.")).toBeInTheDocument();
+    });
+
+    it("copies Ready to merge without a wait part and says when copying did not work", async () => {
+      clipboard(() => Promise.resolve());
+      render(<ReadyToMerge items={SUMMARY.snapshot!.ready_to_merge} pending={0} />);
+      await userEvent.click(screen.getByRole("button", { name: "Copy list of PRs ready to merge" }));
+      expect(await written[0]!["text/plain"]!.text()).toBe(
+        "[acme/wallet-ui#311](https://github.com/acme/wallet-ui/pull/311) feat(wallet): show pending withdrawals - small (+266 / -114)",
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("Copied 1 line.");
+      clipboard(() => Promise.reject(new Error("denied")));
+      Object.defineProperty(document, "execCommand", { value: () => false, configurable: true });
+      await userEvent.click(screen.getByRole("button", { name: "Copy list of PRs ready to merge" }));
+      expect(screen.getByRole("status")).toHaveTextContent("Copying did not work in this browser.");
+      Reflect.deleteProperty(document, "execCommand");
+    });
   });
 
   it("shows yesterday's PRs and reviews only", async () => {

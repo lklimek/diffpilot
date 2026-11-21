@@ -1,5 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import type { Tour } from "../../api/generated/types";
 import { expectTrustWording } from "../../__tests__/wording";
 import { seedFor } from "../../mocks/fixtures";
@@ -11,7 +12,10 @@ describe("TopBar", () => {
   it("shows repo, PR number (new tab), title, head SHA and CI with failing checks in the tooltip", () => {
     render(<TopBar pr={tour.analysis.pr} ci={tour.pr_context.facts.ci} login="alice" />);
     const banner = screen.getByRole("banner");
-    const prLink = within(banner).getByRole("link", { name: /#482/ });
+    const prLink = within(banner).getByRole("link", { name: "#482 (opens on GitHub in a new tab)" });
+    expect(
+      within(banner).getByRole("link", { name: "acme/node-client (opens on GitHub in a new tab)" }),
+    ).toHaveAttribute("href", "https://github.com/acme/node-client");
     expect(prLink).toHaveAttribute("href", "https://github.com/acme/node-client/pull/482");
     expect(prLink).toHaveAttribute("target", "_blank");
     expect(prLink).toHaveAttribute("rel", expect.stringContaining("noopener"));
@@ -49,10 +53,76 @@ describe("TopBar", () => {
   it("links the CI summary to the checks page it is given, in a new tab, with its tooltip", () => {
     const href = "https://github.com/acme/node-client/pull/482/checks";
     render(<TopBar pr={tour.analysis.pr} ci={tour.pr_context.facts.ci} checksHref={href} login="alice" />);
-    const link = screen.getByRole("link", { name: /^Check runs: .*↗$/ });
+    const link = screen.getByRole("link", { name: /^Check runs: .* \(opens on GitHub in a new tab\)$/ });
+    expect(link.querySelector('svg[data-icon="github"]')).not.toBeNull();
     expect(link).toHaveAttribute("href", href);
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(link).toHaveAccessibleDescription(/^Open the checks on GitHub \(new tab\)/);
+  });
+
+  it("review views: breadcrumb diffpilot › repo #n (PR context) with its own GitHub link › view menu", async () => {
+    const onNavigate = vi.fn();
+    const view = {
+      current: "files" as const,
+      flowsHref: "/analyses/a",
+      filesHref: "/analyses/a/files",
+      depsHref: "/analyses/a/deps",
+      prContextHref: "/analyses/a#pr_context",
+      onNavigate,
+    };
+    render(<TopBar pr={tour.analysis.pr} login="alice" view={view} progress={{ reviewed: 1, total: 5 }} />);
+    const crumbs = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(within(crumbs).getByRole("link", { name: "diffpilot" })).toHaveAttribute("href", "/");
+    const repo = within(crumbs).getByRole("link", { name: "acme/node-client #482" });
+    expect(repo).toHaveAttribute("href", "/analyses/a#pr_context");
+    expect(repo).toHaveAccessibleDescription(/PR context/);
+    const github = within(crumbs).getByRole("link", {
+      name: "Pull request #482 on GitHub (opens on GitHub in a new tab)",
+    });
+    expect(github).toHaveAttribute("href", "https://github.com/acme/node-client/pull/482");
+    expect(github).toHaveAttribute("target", "_blank");
+    await userEvent.click(repo);
+    expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a#pr_context");
+    const menu = within(crumbs).getByRole("button", { name: "View: Files" });
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(menu);
+    expect(menu).toHaveAttribute("aria-expanded", "true");
+    expect(within(crumbs).getByRole("link", { name: "Files" })).toHaveAttribute("aria-current", "page");
+    const flows = within(crumbs).getByRole("link", { name: "Flows" });
+    expect(flows).not.toHaveAttribute("aria-current");
+    await userEvent.click(flows);
+    expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a");
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(menu);
+    await userEvent.click(within(crumbs).getByRole("link", { name: "Dependencies" }));
+    expect(onNavigate).toHaveBeenLastCalledWith("/analyses/a/deps");
+    await userEvent.click(menu);
+    await userEvent.keyboard("{Escape}");
+    expect(menu).toHaveAttribute("aria-expanded", "false");
+    expect(menu).toHaveFocus();
+    expect(screen.getByRole("banner")).toHaveTextContent("Your progress 1 / 5");
+  });
+
+  it("the Dependencies view is the third view: named in the menu button and its tooltip", async () => {
+    const view = {
+      current: "deps" as const,
+      flowsHref: "/analyses/a",
+      filesHref: "/analyses/a/files",
+      depsHref: "/analyses/a/deps",
+      prContextHref: "/analyses/a#pr_context",
+      onNavigate: vi.fn(),
+    };
+    render(<TopBar pr={tour.analysis.pr} login="alice" view={view} />);
+    const menu = screen.getByRole("button", { name: "View: Dependencies" });
+    expect(menu).toHaveAccessibleDescription(/Dependencies \(crates this pull request changes/);
+    await userEvent.click(menu);
+    const links = within(screen.getByRole("navigation", { name: "Breadcrumb" })).getAllByRole("link");
+    expect(links.slice(-3).map((l) => l.textContent)).toEqual(["Flows", "Files", "✓Dependencies"]);
+    expect(
+      within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("link", {
+        name: "Dependencies",
+      }),
+    ).toHaveAttribute("aria-current", "page");
   });
 });

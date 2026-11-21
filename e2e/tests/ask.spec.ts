@@ -15,17 +15,23 @@ import { expect, test } from "../support/fixtures";
 
 test.describe.configure({ mode: "serial" });
 
-const answers = (page: Page) => inspector(page).getByRole("list", { name: "Ask conversation" });
-/** The entry of `question` in the analysis's one conversation thread (questions of earlier tests stay in it). */
+const chat = (page: Page) => page.getByRole("dialog", { name: "Ask" });
+const answers = (page: Page) => chat(page).getByRole("list", { name: "Your questions, oldest first" });
+/** The thread of `question` in the user's one Ask chat (questions of earlier tests stay in it). */
 const entry = (page: Page, question: string) =>
-  answers(page).getByRole("listitem").filter({ hasText: question });
+  answers(page).getByRole("listitem", { name: `Question: ${question}`, exact: true });
+/** The Inspector's read-only copy of the chat's questions about the open step. */
+const stepCopy = (page: Page) =>
+  inspector(page).getByRole("region", { name: /^Your questions about this step/ });
 
-async function ask(page: Page, question: string): Promise<void> {
+/** Asks `question` in the floating chat (a opens it on the open step) and returns its thread. */
+async function ask(page: Page, question: string) {
   await page.keyboard.press("a");
-  const field = inspector(page).getByRole("textbox", { name: /^Ask the LLM about / });
+  const field = chat(page).getByRole("textbox", { name: "Your question" });
   await expect(field).toBeFocused();
   await field.fill(question);
-  await inspector(page).getByRole("button", { name: "Ask", exact: true }).click();
+  await chat(page).getByRole("button", { name: "Ask", exact: true }).click();
+  return entry(page, question);
 }
 
 const ANSWER =
@@ -50,18 +56,20 @@ test("a question on a step is answered, pinned to the step and kept over a reloa
   ]);
   await finishedReview(page);
   await openStep(page, 1, 5);
-  await ask(page, "Can broadcast_tx send the same transaction twice?");
-  await expect(answers(page)).toContainText(
-    "Asked by you: Can broadcast_tx send the same transaction twice?",
-  );
+  const question = "Can broadcast_tx send the same transaction twice?";
+  const thread = await ask(page, question);
+  await expect(thread).toContainText("Asked by you");
+  // Pinned to the step: the thread names it, and the Inspector of the step keeps a copy.
+  await expect(thread).toContainText("flow 1 · step 5");
+  await expect(stepCopy(page)).toContainText(question);
   // Backtick spans are drawn as code, without the backticks.
-  await expect(answers(page)).toContainText(ANSWER.replaceAll("`", ""), { timeout: 60_000 });
-  await expect(answers(page).locator("code", { hasText: /^broadcast_tx$/ })).toBeVisible();
-  await expect(answers(page)).toContainText("LLM answer");
-  await expect(answers(page)).toContainText("src/rpc/retry.rs");
+  await expect(thread).toContainText(ANSWER.replaceAll("`", ""), { timeout: 60_000 });
+  await expect(thread.locator("code", { hasText: /^broadcast_tx$/ })).toBeVisible();
+  await expect(thread).toContainText("LLM answer");
+  await expect(thread).toContainText("src/rpc/retry.rs");
   await checkScreen(page);
   await page.reload();
-  await expect(answers(page)).toContainText(ANSWER.replaceAll("`", ""));
+  await expect(stepCopy(page)).toContainText(ANSWER.replaceAll("`", ""));
 });
 
 test("usage limit: the question waits with the time it runs, then is answered", async ({ page, stack }) => {
@@ -102,7 +110,7 @@ test("usage limit: the question waits with the time it runs, then is answered", 
   expect(Date.parse(resumesAt), "the run time lies ahead").toBeGreaterThan(Date.now());
   await expect(
     answers(page).getByText(
-      `Waiting for the LLM usage limit to reset; the question resumes automatically at ${await clock(page, resumesAt)}.`,
+      `Waiting for the LLM usage limit to reset; resumes at ${await clock(page, resumesAt)}.`,
     ),
   ).toBeVisible();
   await checkScreen(page);
@@ -162,11 +170,9 @@ test("Ask again after a failed answer runs the question again and shows its answ
     (event) => event.event === "claimed" && event.kind === "ask",
   ).length;
   await entry(page, question).getByRole("button", { name: "Ask again" }).click();
-  // Asked again, the question is a new entry at the end of the thread.
-  await expect(entry(page, question)).toHaveCount(2);
-  await expect(entry(page, question).last()).toContainText("Answered on the second try.", {
-    timeout: 60_000,
-  });
+  // Asked again in the same place, the retry replaces the failed entry.
+  await expect(entry(page, question)).toContainText("Answered on the second try.", { timeout: 60_000 });
+  await expect(entry(page, question)).toHaveCount(1);
   expect(
     runnerEvents(stack).filter((event) => event.event === "claimed" && event.kind === "ask").length,
     "Ask again ran a new job",

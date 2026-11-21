@@ -73,7 +73,8 @@ export function countFlags(annotations: readonly Annotation[]): FlagCounts {
   return counts;
 }
 
-const WORD: Record<FlagLevel, string> = {
+/** A flag level in words: "red flag", "flag without a level". */
+export const FLAG_WORD: Record<FlagLevel, string> = {
   red: "red flag",
   yellow: "yellow flag",
   unknown: "flag without a level",
@@ -87,7 +88,7 @@ const WORDS: Record<FlagLevel, string> = {
 /** "1 red flag, 2 yellow flags"; null without flags (never an all-clear). */
 export function flagCountText(counts: FlagCounts): string | null {
   const parts = FLAG_ORDER.filter((level) => counts[level] > 0).map(
-    (level) => `${counts[level]} ${counts[level] === 1 ? WORD[level] : WORDS[level]}`,
+    (level) => `${counts[level]} ${counts[level] === 1 ? FLAG_WORD[level] : WORDS[level]}`,
   );
   return parts.length > 0 ? parts.join(", ") : null;
 }

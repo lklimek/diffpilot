@@ -692,6 +692,7 @@ fn each_output_is_verified_with_its_own_bounded_read() {
             })
             .collect(),
         unassigned: Vec::new(),
+        crate_notes: None,
     };
     let diff = DiffIndex::new(&files).expect("diff");
     let verified_plan = plan(&plan_output, &diff).expect("plan");
@@ -795,6 +796,7 @@ fn covering_output(id: &FlowId, lines: &[FileRanges]) -> FlowAnalysisOutput {
         impact_refs: Vec::new(),
         pattern_repetitions: Vec::new(),
         thread_statuses: Vec::new(),
+        incidentals: Vec::new(),
     }
 }
 
@@ -875,6 +877,7 @@ proptest::proptest! {
                 })
                 .collect(),
             unassigned: Vec::new(),
+            crate_notes: None,
         };
         let mut assign = |owner: u8, hunk_id: &HunkId, range: Option<(u32, u32)>| {
             let (head_start, head_end) = (range.map(|r| r.0), range.map(|r| r.1));
@@ -1293,4 +1296,103 @@ fn a_flow_may_claim_context_only_lines_without_owing_them() {
     let tour = verdict.tour.expect("tour");
     assert!(tour.flows.iter().any(|flow| flow.flow_id == id("f1")));
     assert_eq!(tour.coverage.double_covered, []);
+}
+
+#[test]
+fn crate_notes_keep_only_plain_short_notes_on_listed_hunks() {
+    let hunk = |id: &str| Hunk {
+        id: HunkId(id.to_owned()),
+        base: LineSpan { start: 1, len: 0 },
+        head: LineSpan { start: 1, len: 1 },
+        added: vec![1],
+        removed: Vec::new(),
+    };
+    let files = vec![FileDiff {
+        path: "src/lib.rs".to_owned(),
+        old_path: None,
+        status: FileStatus::Modified,
+        binary: false,
+        hunks: vec![hunk("h1"), hunk("h2")],
+    }];
+    let diff = DiffIndex::new(&files).expect("diff");
+    let note = |text: &str, hunks: &[&str]| contracts::agent::plan::PlanCrateNote {
+        note: text.to_owned(),
+        hunks: hunks.iter().map(|h| HunkId((*h).to_owned())).collect(),
+    };
+    let mut output = PlanOutput {
+        flows: Vec::new(),
+        unassigned: Vec::new(),
+        crate_notes: Some(vec![
+            note("  parsing of `TransitionType`  ", &["h1", "h9"]),
+            note("only unknown hunks", &["h9"]),
+            note(&"x".repeat(81), &["h1"]),
+            note("", &["h1"]),
+            note("see https://example.com/x", &["h2"]),
+            note("no risk here", &["h2"]),
+            note("retry around `sdk.fetch`", &["h2"]),
+        ]),
+    };
+    assert_eq!(keep_crate_notes(&mut output, &diff), 5);
+    let kept: Vec<(&str, Vec<&str>)> = output
+        .crate_notes
+        .as_ref()
+        .expect("notes")
+        .iter()
+        .map(|n| {
+            (
+                n.note.as_str(),
+                n.hunks.iter().map(|h| h.0.as_str()).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            ("parsing of `TransitionType`", vec!["h1"]),
+            ("retry around `sdk.fetch`", vec!["h2"]),
+        ]
+    );
+    let mut none = PlanOutput {
+        crate_notes: None,
+        ..output
+    };
+    assert_eq!(keep_crate_notes(&mut none, &diff), 0);
+    assert_eq!(none.crate_notes, None);
+}
+
+#[test]
+fn review_crate_note_hunks_are_unique() {
+    let hunk = |id: &str| Hunk {
+        id: HunkId(id.to_owned()),
+        base: LineSpan { start: 1, len: 0 },
+        head: LineSpan { start: 1, len: 1 },
+        added: vec![1],
+        removed: Vec::new(),
+    };
+    let files = vec![FileDiff {
+        path: "src/lib.rs".to_owned(),
+        old_path: None,
+        status: FileStatus::Modified,
+        binary: false,
+        hunks: vec![hunk("h1"), hunk("h2")],
+    }];
+    let diff = DiffIndex::new(&files).expect("diff");
+    let mut output = PlanOutput {
+        flows: Vec::new(),
+        unassigned: Vec::new(),
+        crate_notes: Some(vec![contracts::agent::plan::PlanCrateNote {
+            note: "parsing".to_owned(),
+            hunks: ["h1", "h2", "h1"]
+                .iter()
+                .map(|h| HunkId((*h).to_owned()))
+                .collect(),
+        }]),
+    };
+    keep_crate_notes(&mut output, &diff);
+    let hunks: Vec<&str> = output.crate_notes.as_ref().expect("notes")[0]
+        .hunks
+        .iter()
+        .map(|h| h.0.as_str())
+        .collect();
+    assert_eq!(hunks, ["h1", "h2"]);
 }

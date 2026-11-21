@@ -51,6 +51,77 @@ async function openStep(flow: string, step: string) {
 }
 
 describe("Tour screen (brief §4.3)", () => {
+  it("each step shows a collapsible Why this flow strip; collapsed it keeps one line and is remembered", async () => {
+    await open();
+    await openStep("1", "5");
+    const strip = within(main()).getByRole("region", { name: "Why this flow" });
+    const toggle = within(strip).getByRole("button", { name: /^Why this flow/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(strip).toHaveTextContent("Problem:");
+    await user().click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(strip).not.toHaveTextContent("→ Change:");
+    // Collapsed, the LLM's text still carries its tag.
+    expect(strip.querySelector("[data-provenance=llm]")).toHaveTextContent("LLM");
+    await openStep("1", "6");
+    expect(
+      within(within(main()).getByRole("region", { name: "Why this flow" })).getByRole("button", {
+        name: /^Why this flow/,
+      }),
+    ).toHaveAttribute("aria-expanded", "false");
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
+    expect(within(main()).queryByRole("region", { name: "Why this flow" })).toBeNull();
+  });
+
+  it("Your progress opens the flows with their analysis and review state; a flow opens its introduction", async () => {
+    await open();
+    await user().click(within(topBar()).getByRole("button", { name: /^Your progress 0 \/ 5/ }));
+    const flows = screen.getByRole("region", { name: "Flows: analysis and review" });
+    expect(within(flows).getAllByRole("listitem")).toHaveLength(5);
+    await user().click(within(flows).getByRole("link", { name: /^2 / }));
+    expect(blockHeading()).toHaveTextContent("Default timeout 30 s → 5 s");
+  });
+
+  it("the flows dropdown names a refused action; the next action that succeeds clears it", async () => {
+    setScenario("lazy-flows");
+    server.use(
+      http.post("/api/v1/analyses/:id/flows/:flow/request", () =>
+        HttpResponse.json({ code: "internal", message: "Down." }, { status: 500 }),
+      ),
+    );
+    await open();
+    await user().click(within(topBar()).getByRole("button", { name: /^Your progress/ }));
+    const flows = screen.getByRole("region", { name: "Flows: analysis and review" });
+    const play = within(flows).getAllByRole("button", { name: /^Analyse flow \d+$/ })[0]!;
+    const name = play.getAttribute("aria-label")!;
+    await user().click(play);
+    await waitFor(() => expect(flows).toHaveTextContent(`${name} not done: Down.`));
+    await user().click(within(flows).getByRole("button", { name: "Analyse all remaining flows" }));
+    await waitFor(() => expect(flows).not.toHaveTextContent("not done"));
+  });
+
+  it("the step header says when the file's Viewed mark was not read from GitHub", async () => {
+    setScenario("viewed-not-read");
+    await open();
+    await openStep("2", "1");
+    await waitFor(() =>
+      expect(within(main()).getByText(/Viewed not read/, { selector: "[data-viewed]" })).toBeVisible(),
+    );
+  });
+
+  it("s opens the Files view at the step's lines; the step header shows the file's GitHub Viewed mark", async () => {
+    const router = await open();
+    await openStep("2", "1");
+    await waitFor(() =>
+      expect(within(main()).getByText(/viewed/, { selector: "[data-viewed]" })).toHaveTextContent("☑ viewed"),
+    );
+    await user().keyboard("s");
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/analyses/${ID}/files`));
+    expect(decodeURIComponent(router.state.location.hash)).toBe(
+      "#lines?file=src/config.rs&side=head&line=23&step=f2.1",
+    );
+  });
+
   it("does not reveal a hidden comment just because it is the step's first changed line", async () => {
     server.use(
       http.get("/api/v1/analyses/:id/lines", () =>
@@ -108,7 +179,7 @@ describe("Tour screen (brief §4.3)", () => {
     await open();
     await openStep("1", "5");
     const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
-    await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
+    await user().click(within(code).getByRole("button", { name: "LLM remark at line 99: Red flag" }));
     await user().click(screen.getByRole("button", { name: /^Show in Inspector: Red flag/ }));
     const flags = within(inspector()).getByRole("region", { name: /^Flags/ });
     const item = flags.querySelector('[data-annotation-id="f1.5.a3"]');
@@ -131,7 +202,7 @@ describe("Tour screen (brief §4.3)", () => {
       await open();
       await openStep("1", "5");
       const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
-      await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
+      await user().click(within(code).getByRole("button", { name: "LLM remark at line 99: Red flag" }));
       await user().click(screen.getByRole("button", { name: /^Show in Inspector: Red flag/ }));
       const flashed = () => inspector().querySelector('[data-annotation-id="f1.5.a3"]');
       await waitFor(() => expect(flashed()).toHaveAttribute("data-flash"));
@@ -253,26 +324,115 @@ describe("Tour screen (brief §4.3)", () => {
   it("returns to the last viewed block with the stored ticks (interrupted review)", async () => {
     await open("resume");
     expect(blockHeading()).toHaveTextContent("5 Retry allowed?");
-    expect(topBar()).toHaveTextContent("flows reviewed 0 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 0 / 5");
   });
 
   it("x ticks the current step; a flow with every step ticked counts in the top bar", async () => {
     await open("resume");
     await openStep("2", "2");
     await act(() => user().keyboard("x"));
-    expect(topBar()).toHaveTextContent("flows reviewed 1 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 1 / 5");
     expect(within(nav()).getByRole("button", { name: /^Flow 2: .*, reviewed$/ })).toBeInTheDocument();
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f2.1", "f2.2"]));
     await user().click(within(main()).getByRole("button", { name: /Mark reviewed/ }));
-    expect(topBar()).toHaveTextContent("flows reviewed 0 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 0 / 5");
+  });
+
+  it("Next and j tick the current step and move on; Previous and the flow introduction never tick", async () => {
+    await open();
+    await openStep("1", "1");
+    await user().click(within(main()).getByRole("button", { name: /^Next: / }));
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1"]));
+    expect(blockHeading()).not.toHaveTextContent("Trigger: callers of send");
+    await user().keyboard("j");
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1", "f1.2"]));
+    const reviewedSteps = () => within(nav()).queryAllByRole("button", { name: /^Step \d+: .*, reviewed$/ });
+    expect(reviewedSteps()).toHaveLength(2);
+    await user().click(within(main()).getByRole("button", { name: /^← Previous/ }));
+    await user().keyboard("k");
+    expect(reviewedSteps()).toHaveLength(2);
+    expect(within(nav()).queryByRole("button", { name: /^Step 3: .*, reviewed$/ })).toBeNull();
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 3:/ }));
+    await user().keyboard("j");
+    expect(reviewedSteps()).toHaveLength(0);
+  });
+
+  it("the menu's questions entry opens the Ask chat and the block stays where it was", async () => {
+    await open();
+    await openStep("1", "5");
+    await user().click(within(nav()).getByRole("button", { name: /^Your questions and answers/ }));
+    expect(screen.getByRole("dialog", { name: "Ask" })).toBeVisible();
+    expect(blockHeading()).toHaveTextContent("5 Retry allowed?");
+  });
+
+  it("a failed save on Next still moves on, keeps the tick on the page and says it is not saved", async () => {
+    server.use(
+      http.put("/api/v1/analyses/:id/review-state", () =>
+        HttpResponse.json({ code: "internal", message: "Down." }, { status: 500 }),
+      ),
+    );
+    await open();
+    await openStep("1", "1");
+    await user().click(within(main()).getByRole("button", { name: /^Next: / }));
+    expect(blockHeading()).not.toHaveTextContent("Trigger: callers of send");
+    expect(await within(main()).findByRole("alert")).toHaveTextContent(
+      "Your ticks and last viewed block are not saved",
+    );
+    expect(within(nav()).getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeInTheDocument();
+  });
+
+  it("Next keeps an already ticked step ticked", async () => {
+    await open();
+    await openStep("1", "1");
+    await act(() => user().keyboard("x"));
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1"]));
+    await user().keyboard("j");
+    await user().keyboard("k");
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f1.1"]));
+    expect(within(nav()).getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeInTheDocument();
   });
 
   it("Mark flow reviewed ticks every step of the flow", async () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 3:/ }));
     await user().click(within(main()).getByRole("button", { name: /Mark flow reviewed/ }));
-    expect(topBar()).toHaveTextContent("flows reviewed 1 / 5");
+    expect(topBar()).toHaveTextContent("Your progress 1 / 5");
     await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f3.1", "f3.2"]));
+  });
+
+  it("the menu's flow toggle ticks every step of the flow, and unticks them when all are ticked", async () => {
+    await open();
+    const toggle = () => within(nav()).getByRole("button", { name: "Mark flow 3 reviewed" });
+    await user().click(toggle());
+    expect(topBar()).toHaveTextContent("Your progress 1 / 5");
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual(["f3.1", "f3.2"]));
+    expect(toggle()).toHaveAttribute("aria-pressed", "true");
+    await user().click(toggle());
+    expect(topBar()).toHaveTextContent("Your progress 0 / 5");
+    await waitFor(() => expect(readStore("reviewState").ticked_steps).toEqual([]));
+  });
+
+  it("shows the step's and the flow's LLM flags next to their rating pills above the block", async () => {
+    await open();
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 4:/ }));
+    expect(
+      within(main()).getByRole("button", { name: "Go to the first red flag in this flow" }),
+    ).toHaveTextContent("⚑ red");
+    await openStep("2", "1");
+    expect(
+      within(main()).getByRole("button", { name: "Go to the first red flag on this step" }),
+    ).toHaveTextContent("⚑ red");
+  });
+
+  it("a flow's flag marker in the menu opens the step of its first strongest flag and flashes that flag", async () => {
+    await open();
+    // Flow 4's one step has a yellow flag (line 52) before its red flag (line 53): the red one is the target.
+    await user().click(within(nav()).getByRole("button", { name: "Go to the first red flag in flow 4" }));
+    expect(await within(main()).findByRole("heading", { level: 2, name: /^1/ })).toBeVisible();
+    await waitFor(() =>
+      expect(inspector().querySelector('[data-annotation-id="f4.1.a2"]')).toHaveAttribute("data-flash"),
+    );
+    expect(inspector().querySelector('[data-annotation-id="f4.1.a3"]')).not.toHaveAttribute("data-flash");
   });
 
   it("j / k walk the blocks, n / p the flow introductions", async () => {
@@ -301,10 +461,10 @@ describe("Tour screen (brief §4.3)", () => {
   it("hides a column to a strip that restores it on click, and remembers it", async () => {
     await open();
     await user().click(screen.getByRole("button", { name: "Hide Inspector column" }));
-    expect(within(inspector()).queryByRole("group", { name: "Ask, feedback and comment" })).toBeNull();
+    expect(within(inspector()).queryByRole("group", { name: "Feedback and comment" })).toBeNull();
     expect(JSON.parse(window.localStorage.getItem(LAYOUT_STORAGE_KEY)!).hidden.inspector).toBe(true);
     await user().click(within(inspector()).getByRole("button", { name: "Show Inspector column" }));
-    expect(within(inspector()).getByRole("group", { name: "Ask, feedback and comment" })).toBeVisible();
+    expect(within(inspector()).getByRole("group", { name: "Feedback and comment" })).toBeVisible();
   });
 
   it("names the three columns with level-2 headings", async () => {
@@ -421,23 +581,34 @@ describe("Tour screen (brief §4.3)", () => {
     expect(within(inspector()).queryByRole("textbox", { name: /^Comment on/ })).toBeNull();
   });
 
-  it("a focuses Ask; the question is pinned and its answer arrives on the event stream", async () => {
+  it("a opens the Ask chat about the step; the question joins it and its answer arrives on the event stream", async () => {
     await open();
     await openStep("1", "5");
+    expect(screen.queryByRole("dialog", { name: "Ask" })).toBeNull();
     await user().keyboard("a");
-    const field = within(inspector()).getByRole("textbox", { name: /Ask the LLM about Step 5/ });
-    expect(field).toHaveFocus();
+    const chat = screen.getByRole("dialog", { name: "Ask" });
+    const field = within(chat).getByRole("textbox", { name: "Your question" });
+    await waitFor(() => expect(field).toHaveFocus());
+    expect(chat).toHaveTextContent(
+      /About:\s*Flows src\/rpc\/client\.rs:99 flow 1 · step 5 · Retry allowed\?/,
+    );
     await user().type(field, "Is the retry idempotent?{Enter}");
-    const answers = await within(inspector()).findByRole("list", { name: "Ask conversation" });
-    expect(answers).toHaveTextContent("Is the retry idempotent?");
+    const thread = await within(chat).findByRole("listitem", { name: "Question: Is the retry idempotent?" });
     const asked = readStore("questions").at(-1)!;
+    expect(asked.anchor).toEqual({ kind: "step", step_id: "f1.5", lines: null });
     const answered: AskQuestion = {
       ...asked,
       state: "answered",
       answer: { answer: "It is not.", evidence: [] },
     };
     act(() => FakeEventSource.latest().emit({ event: "question", question: answered }));
-    expect(await within(answers).findByText("It is not.")).toBeInTheDocument();
+    expect(await within(thread).findByText("It is not.")).toBeInTheDocument();
+    // The Inspector keeps a read-only copy of the step's threads.
+    const copy = within(inspector()).getByRole("region", { name: /^Your questions about this step \(\d+\)/ });
+    expect(copy).toHaveTextContent("Is the retry idempotent?");
+    expect(within(inspector()).queryByRole("textbox", { name: /Ask/ })).toBeNull();
+    // Right after the step's Flags (proposal AC11), not at the end of the Inspector.
+    expect(copy.previousElementSibling?.textContent).toMatch(/Flags \(\d+\)/);
   });
 
   it("rating pills: the flow intro and step show them; a pill jumps to the first remark and flashes it", async () => {
@@ -492,31 +663,41 @@ describe("Tour screen (brief §4.3)", () => {
     expect(await screen.findByText("No more steps with remarks")).toBeInTheDocument();
   });
 
-  it("a collapsed Ask stays collapsed across steps; a expands it and focuses the field", async () => {
+  it("the chat stays open across steps and its subject follows the step; × asks about the whole PR", async () => {
     await open();
     await openStep("1", "5");
-    const header = within(inspector()).getByRole("button", { name: /^Ask about/ });
-    await user().click(header);
-    expect(header).toHaveAttribute("aria-expanded", "false");
-    await openStep("1", "6");
-    expect(within(inspector()).getByRole("button", { name: /^Ask about/ })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
     await user().keyboard("a");
-    expect(within(inspector()).getByRole("button", { name: /^Ask about/ })).toHaveAttribute(
-      "aria-expanded",
-      "true",
+    const chat = screen.getByRole("dialog", { name: "Ask" });
+    await user().type(within(chat).getByRole("textbox", { name: "Your question" }), "draft");
+    await openStep("1", "6");
+    expect(screen.getByRole("dialog", { name: "Ask" })).toBe(chat);
+    expect(within(chat).getByRole("textbox", { name: "Your question" })).toHaveValue("draft");
+    expect(chat).toHaveTextContent(/About:\s*Flows src\/rpc\/client\.rs:100–103 flow 1 · step 6/);
+    await user().click(
+      within(chat).getByRole("button", { name: "Remove the subject: ask about the whole PR" }),
     );
-    expect(within(inspector()).getByRole("textbox", { name: /Ask the LLM about Step 6/ })).toHaveFocus();
+    expect(chat).toHaveTextContent(/About:\s*Whole PR/);
+    await user().click(within(chat).getByRole("button", { name: "about this step instead" }));
+    expect(chat).toHaveTextContent(/About:\s*Flows src\/rpc\/client\.rs:100–103/);
+    // Esc hides it; the launcher brings it back with the draft.
+    await user().click(within(chat).getByRole("textbox", { name: "Your question" }));
+    await user().keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Ask" })).toBeNull();
+    await user().click(screen.getByRole("button", { name: /^Ask: open your private chat/ }));
+    expect(
+      within(screen.getByRole("dialog", { name: "Ask" })).getByRole("textbox", { name: "Your question" }),
+    ).toHaveValue("draft");
   });
 
-  it("a lost answer stream is announced at the pinned answers", async () => {
+  it("a lost answer stream is announced in the chat", async () => {
     await open();
     await openStep("1", "5");
+    await user().keyboard("a");
     act(() => FakeEventSource.latest().fail());
     expect(
-      await within(inspector()).findByText(/The connection that delivers answers was lost/),
+      await within(screen.getByRole("dialog", { name: "Ask" })).findByText(
+        /The connection that delivers answers was lost/,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -699,19 +880,110 @@ describe("Tour screen (brief §4.3)", () => {
 });
 
 describe("Use as review comment (owner request F31): anchors and availability", () => {
-  const useButtons = () => within(inspector()).queryAllByRole("button", { name: "Use as review comment" });
-  const conversation = () => within(inspector()).findByRole("list", { name: "Ask conversation" });
+  const chat = () => screen.getByRole("dialog", { name: "Ask" });
+  const useButtons = () => within(chat()).queryAllByRole("button", { name: "Use as review comment" });
+  const thread = (id: string) =>
+    waitFor(() => {
+      const found = chat().querySelector(`[data-thread="${id}"]`);
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
   const composer = () => within(inspector()).getByRole("textbox", { name: /^Comment on / });
 
   it("an answer with no comment open goes on the step's first changed line", async () => {
     setScenario("ask-thread");
     await open();
     await openStep("1", "2");
-    await user().click(
-      within(await conversation()).getAllByRole("button", { name: "Use as review comment" })[0]!,
-    );
+    await user().keyboard("a");
+    await user().click(within(await thread("t2")).getByRole("button", { name: "Use as review comment" }));
     expect(composer()).toHaveAccessibleName("Comment on src/rpc/client.rs:89");
     expect((composer() as HTMLTextAreaElement).value).toContain("In `RpcConfig::default`.");
+  });
+
+  it("an answer about lines of a file opens them in the Files view and drafts there", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/questions", () =>
+        HttpResponse.json([
+          {
+            id: "l1",
+            mine: true,
+            anchor: {
+              kind: "lines",
+              path: "src/config.rs",
+              side: "head",
+              range: { start_line: 3, end_line: 4 },
+            },
+            text: "Why here?",
+            state: "answered",
+            answer: { answer: "Because.", evidence: [] },
+            failure: null,
+            created_at: "2026-11-16T10:00:00Z",
+          },
+        ]),
+      ),
+    );
+    const router = await open();
+    await openStep("1", "5");
+    await user().keyboard("a");
+    await user().click(within(await thread("l1")).getByRole("button", { name: "Use as review comment" }));
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/\/files$/));
+    expect(decodeURIComponent(router.state.location.hash)).toBe(
+      "#lines?file=src/config.rs&side=head&line=3&end=4",
+    );
+    // The draft is waiting there, focused, and the move is said.
+    const files = await screen.findByRole("textbox", { name: /^Comment on src\/config\.rs:3–4/ });
+    await waitFor(() => expect(files).toHaveFocus());
+    expect((files as HTMLTextAreaElement).value).toContain("Because.");
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("dialog", { name: "Ask" })).getByText(
+          /^Opened src\/config\.rs:3–4 to comment on its lines/,
+        ),
+      ).toBeVisible(),
+    );
+  });
+
+  it("an answer about another step opens that step and drafts there", async () => {
+    setScenario("ask-thread");
+    await open();
+    await openStep("1", "5");
+    await user().keyboard("a");
+    await user().click(within(await thread("t2")).getByRole("button", { name: "Use as review comment" }));
+    await waitFor(() => expect(blockHeading()).toHaveTextContent(/^2 /));
+    expect(screen.getByRole("dialog", { name: "Ask" })).toBeVisible();
+    // The draft goes on that step's first changed line, focused, and the move is said.
+    await waitFor(() => expect(composer()).toHaveFocus());
+    expect(composer()).toHaveAccessibleName("Comment on src/rpc/client.rs:89");
+    expect((composer() as HTMLTextAreaElement).value).toContain("In `RpcConfig::default`.");
+    // Said once the draft is there, aloud and visibly in the chat.
+    expect(
+      within(screen.getByRole("dialog", { name: "Ask" })).getByText(
+        /^Opened flow 1 · step 2 to comment on its lines/,
+      ),
+    ).toBeVisible();
+  });
+
+  it("an answer about another step whose lines cannot be read says so plainly", async () => {
+    setScenario("ask-thread");
+    await open();
+    await openStep("1", "5");
+    await screen.findAllByText(/should_retry/);
+    server.use(
+      http.get("/api/v1/analyses/:id/lines", () =>
+        HttpResponse.json(
+          { code: "internal", message: "Something went wrong on the server." },
+          { status: 500 },
+        ),
+      ),
+    );
+    await user().keyboard("a");
+    await user().click(within(await thread("t2")).getByRole("button", { name: "Use as review comment" }));
+    expect(
+      await within(screen.getByRole("dialog", { name: "Ask" })).findByText(
+        "The answer's lines could not be read: Something went wrong on the server.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/the draft is in the Comment composer/)).toBeNull();
   });
 
   it.each([
@@ -759,17 +1031,8 @@ describe("Use as review comment (owner request F31): anchors and availability", 
     );
     await open();
     await openStep("1", "5");
-    await conversation();
-    await waitFor(() => expect(inspector()).toHaveTextContent("Potential double broadcast on a late reply"));
-    expect(useButtons()).toHaveLength(0);
-  });
-
-  it("no buttons while the step's lines cannot be shown (no line to anchor on)", async () => {
-    setScenario("ask-thread");
-    server.use(http.get("/api/v1/analyses/:id/lines", () => HttpResponse.json({}, { status: 500 })));
-    await open();
-    await openStep("1", "5");
-    await conversation();
+    await user().keyboard("a");
+    await waitFor(() => expect(chat()).toHaveTextContent("Potential double send"));
     await waitFor(() => expect(inspector()).toHaveTextContent("Potential double broadcast on a late reply"));
     expect(useButtons()).toHaveLength(0);
   });

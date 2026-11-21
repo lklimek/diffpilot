@@ -1,4 +1,6 @@
-import { useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { HideButton } from "../../button/HideButton";
+import { keyboardModality } from "../../tooltip/modality";
 import { Tooltip } from "../../tooltip/Tooltip";
 
 /** localStorage key of the side panel: `{ open, width }`. */
@@ -47,7 +49,7 @@ interface SidePanelProps {
   main: ReactNode;
   /** The panel's sections. */
   children: ReactNode;
-  /** Text of the collapsed rail, e.g. `More · waiting on others 3`. */
+  /** Text of the collapsed rail, e.g. `More · waiting 3 · ready 2`. */
   railText: string;
 }
 
@@ -58,6 +60,9 @@ interface SidePanelProps {
 export function SidePanel({ main, children, railText }: SidePanelProps) {
   const [state, setState] = useState<Stored>(load);
   const aside = useRef<HTMLElement>(null);
+  const rail = useRef<HTMLButtonElement>(null);
+  // Set by Hide after keyboard use: the rail that replaces the panel takes the focus once it is drawn.
+  const focusRail = useRef(false);
   const open = state.open ?? wide();
   const update = (next: Partial<Stored>) =>
     setState((current) => {
@@ -65,6 +70,11 @@ export function SidePanel({ main, children, railText }: SidePanelProps) {
       save(merged);
       return merged;
     });
+  useEffect(() => {
+    if (open || !focusRail.current) return;
+    focusRail.current = false;
+    rail.current?.focus();
+  }, [open]);
   const resize = (px: number) => update({ width: Math.round(Math.max(MIN, Math.min(MAX, px))) });
   const current = () => aside.current?.offsetWidth || state.width || defaultWidth();
 
@@ -89,7 +99,7 @@ export function SidePanel({ main, children, railText }: SidePanelProps) {
 
   return (
     <div
-      className="grid items-start gap-x-3.5"
+      className="grid items-start gap-x-3.5 max-sm:grid-cols-1!"
       style={{
         gridTemplateColumns: open
           ? `minmax(0,1fr) 8px ${state.width ? `${state.width}px` : DEFAULT_WIDTH}`
@@ -119,34 +129,32 @@ export function SidePanel({ main, children, railText }: SidePanelProps) {
       )}
       <aside
         ref={aside}
-        aria-label="More: waiting on others, yesterday, charts, scan notes"
+        aria-label="More: waiting on others, ready to merge, yesterday, charts, scan notes"
         className="sticky top-16 grid max-h-[calc(100vh-80px)] min-w-0 content-start gap-2.5 overflow-auto"
       >
         {open ? (
           <>
             <div className="flex items-center gap-2">
               <h2 className="flex-1 text-[13px] font-semibold tracking-wide text-muted uppercase">More</h2>
-              <Tooltip tip="Collapse the side panel">
-                <button
-                  type="button"
-                  aria-expanded="true"
-                  aria-label="Collapse the side panel"
-                  onClick={() => update({ open: false })}
-                  className="h-7 min-w-7 cursor-pointer rounded-md border border-border bg-surface px-1.5 font-semibold hover:border-accent"
-                >
-                  »
-                </button>
-              </Tooltip>
+              <HideButton
+                name="Hide side panel"
+                tip="Collapses the side panel to a rail at the right; the rail opens it again."
+                onHide={() => {
+                  focusRail.current = keyboardModality();
+                  update({ open: false });
+                }}
+              />
             </div>
             {children}
           </>
         ) : (
-          <Tooltip tip="Open the side panel: waiting on others, yesterday, charts, scan notes">
+          <Tooltip tip="Open the side panel: waiting on others, ready to merge, yesterday, charts, scan notes">
             <button
+              ref={rail}
               type="button"
               aria-expanded="false"
               onClick={() => update({ open: true })}
-              className="flex min-h-[280px] w-9 cursor-pointer items-center gap-2 rounded-lg border border-border bg-surface py-3 text-[13px] font-semibold text-text [writing-mode:vertical-rl] hover:border-accent hover:bg-accent-bg"
+              className="flex min-h-[280px] w-9 cursor-pointer items-center gap-2 rounded-lg border border-border bg-surface py-3 text-[13px] font-semibold text-text [writing-mode:vertical-rl] max-sm:min-h-7 max-sm:w-full max-sm:py-1 max-sm:[writing-mode:horizontal-tb] hover:border-accent hover:bg-accent-bg"
             >
               « {railText}
             </button>

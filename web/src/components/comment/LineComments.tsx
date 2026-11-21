@@ -1,6 +1,7 @@
-import { Fragment, type MouseEvent } from "react";
+import { useRef } from "react";
 import type { LineSide, PendingComment } from "../../api/generated/types";
-import { Tooltip } from "../tooltip/Tooltip";
+import { HideButton } from "../button/HideButton";
+import { Popover } from "../popover/Popover";
 import { PendingCommentItem, type PendingCommentItemProps } from "./PendingCommentItem";
 
 /** Key of a displayed line: side and number. */
@@ -72,31 +73,44 @@ export function CommentMarker({
   const name = `Your ${n === 1 ? "" : `${n} `}pending ${what} ${file ? "on" : "at"} ${subject}`;
   const about =
     n === 1
-      ? "Your comment in your GitHub pending review; nothing is published. Opens its text here."
-      : "Your comments in your GitHub pending review; nothing is published. Opens their text here.";
-  const tip = (
-    <>
-      {comments.map((c) => (
-        <Fragment key={c.id}>
-          <span className="mb-1 line-clamp-6 whitespace-pre-wrap">{c.body}</span>{" "}
-        </Fragment>
-      ))}
-      <span className="block opacity-80">{about}</span>
-    </>
-  );
+      ? "Your comment in your GitHub pending review; nothing is published."
+      : "Your comments in your GitHub pending review; nothing is published.";
   return (
-    <Tooltip tip={tip} className="inline-flex">
+    <Popover
+      label={name}
+      hint={`${about} Hover or click for its text.`}
+      className="inline-flex"
+      content={(pinned, close) => (
+        <>
+          {comments.map((c) => (
+            <span key={c.id} className="line-clamp-6 whitespace-pre-wrap">
+              {c.body}
+            </span>
+          ))}{" "}
+          <span className="block text-muted">{about}</span>
+          {pinned && (
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-controls={panelId}
+              onClick={() => {
+                onToggle();
+                close();
+              }}
+              className="min-h-6 cursor-pointer justify-self-start rounded border border-border bg-surface px-2 text-text hover:border-accent"
+            >
+              {open
+                ? `Hide the ${n === 1 ? "comment" : "comments"} here`
+                : `Open the ${n === 1 ? "comment" : "comments"} here`}
+            </button>
+          )}
+        </>
+      )}
+    >
       <button
         type="button"
         data-mark="comment"
         aria-label={name}
-        aria-expanded={open}
-        aria-controls={panelId}
-        onClick={(event: MouseEvent) => {
-          // Inside an LLM highlight a click would also select its remark.
-          event.stopPropagation();
-          onToggle();
-        }}
         className={`${MARKER} text-[10px] font-bold text-accent hover:text-text`}
       >
         <SpeechBubble />
@@ -106,7 +120,7 @@ export function CommentMarker({
           </span>
         )}
       </button>
-    </Tooltip>
+    </Popover>
   );
 }
 
@@ -115,21 +129,37 @@ interface CommentPanelProps extends Pick<PendingCommentItemProps, "onEdit" | "on
   comments: readonly PendingComment[];
   /** Accessible name of the list. */
   label: string;
+  /** Hides the panel (Hide in its top-right corner); no Hide without it. */
+  onHide?: () => void;
 }
 
 /** The text of the user's pending comments where they are, with Edit and Delete as in the pending-review block. */
-export function CommentPanel({ id, comments, label, onEdit, onDelete }: CommentPanelProps) {
+export function CommentPanel({ id, comments, label, onEdit, onDelete, onHide }: CommentPanelProps) {
+  const panel = useRef<HTMLDivElement>(null);
+  const n = comments.length;
   return (
-    <ul
-      id={id}
-      aria-label={label}
+    <div
+      ref={panel}
       // Clicks and typing here belong to the comments, not to an LLM highlight around them.
       onClick={(event) => event.stopPropagation()}
-      className="sticky left-0 m-0 my-1 ml-[var(--ln)] grid w-[min(70ch,80vw)] list-none gap-1 p-0 font-sans text-[12.5px] whitespace-normal"
+      className="sticky left-0 my-1 ml-[var(--ln)] flex w-[min(70ch,80vw)] items-start gap-2 font-sans whitespace-normal"
     >
-      {comments.map((c) => (
-        <PendingCommentItem key={c.id} comment={c} onEdit={onEdit} onDelete={onDelete} />
-      ))}
-    </ul>
+      <ul id={id} aria-label={label} className="m-0 grid min-w-0 flex-1 list-none gap-1 p-0 text-[12.5px]">
+        {comments.map((c) => (
+          <PendingCommentItem key={c.id} comment={c} onEdit={onEdit} onDelete={onDelete} />
+        ))}
+      </ul>
+      {onHide && (
+        <HideButton
+          name={`Hide your pending ${n === 1 ? "comment" : "comments"}`}
+          tip={`Hides the text of your pending ${n === 1 ? "comment" : "comments"} here; the speech-bubble marker on the line shows it again.`}
+          onHide={onHide}
+          // The marker sits in the row just before the panel (the line, or the file comments strip).
+          focusAfter={() =>
+            panel.current?.previousElementSibling?.querySelector<HTMLElement>('[data-mark="comment"]')
+          }
+        />
+      )}
+    </div>
   );
 }

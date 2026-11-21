@@ -111,7 +111,7 @@ export async function finishedReview(page: Page): Promise<string> {
   await checkPr(page);
   const card = page.getByRole("region", { name: "Pull request check" });
   // An existing analysis may or may not have been opened by this user before.
-  const resume = card.getByRole("link", { name: /^(Resume|Open) review$/ });
+  const resume = card.getByRole("link", { name: "Open", exact: true });
   const start = card.getByRole("button", { name: /^Start analysis( anyway)?$/ });
   await expect(resume.or(start).first()).toBeVisible();
   if (await resume.isVisible()) {
@@ -120,7 +120,7 @@ export async function finishedReview(page: Page): Promise<string> {
     const id = await startAnalysis(page);
     await analyseAllRemainingFlows(page);
     await waitForState(page, id, "finished");
-    await page.getByRole("link", { name: "Open review" }).click();
+    await page.getByRole("link", { name: "Open", exact: true }).click();
   }
   await expect(page).toHaveURL(/\/analyses\/[0-9a-f-]+$/);
   await navTo(page, /^PR context$/);
@@ -222,19 +222,24 @@ export const REQUIRED_TIPS: RequiredTip[] = [
   { screen: "body", what: "top bar: PR number", selector: 'header a[href*="/pull/"]', min: 0 },
   {
     screen: "body",
-    what: "top bar: label (head SHA, CI, flows reviewed)",
+    what: "top bar: label (head SHA, CI)",
     selector: 'header [tabindex="0"]',
     min: 0,
   },
-  { screen: "body", what: "top bar: button (pending review, help)", selector: "header button", min: 0 },
+  {
+    screen: "body",
+    what: "top bar: button (your progress, pending review, help)",
+    selector: "header button",
+    min: 0,
+  },
   { screen: "body", what: "top bar: user", selector: 'header a[href="/settings"]', min: 0 },
   { screen: REVIEW, what: "top bar: PR number", selector: 'header a[href*="/pull/"]', min: 1 },
   { screen: REVIEW, what: "top bar: head SHA", selector: 'header code[tabindex="0"]', min: 1 },
   {
     screen: REVIEW,
-    what: "top bar: flows reviewed",
-    selector: 'header [tabindex="0"]',
-    name: "^flows reviewed",
+    what: "top bar: your progress",
+    selector: "header button",
+    name: "^Your progress \\d+ / \\d+: flows reviewed",
     min: 1,
   },
   {
@@ -295,7 +300,7 @@ export const REQUIRED_TIPS: RequiredTip[] = [
   // Progress (AnalysisProgress.tsx) and Home (PrUrlForm.tsx).
   {
     screen: PROGRESS,
-    what: "progress action (Cancel, Retry, Resume review)",
+    what: "progress action (Cancel, Retry, Open)",
     selector: `${PROGRESS} button, ${PROGRESS} a[href]`,
     min: 1,
   },
@@ -506,13 +511,9 @@ export function expectRetriedOnlyAfter(stack: Stack, resumesAt: number, kind: st
 /** Runs a read-only query on the server database of a local stack; rows as `|`-separated lines. */
 export function sql(stack: Stack, query: string): string[] {
   if (!stack.stateDir) throw new Error("the database of a stack started elsewhere is out of reach");
-  return execFileSync(
-    "sqlite3",
-    ["-readonly", join(stack.stateDir, "server", "diffpilot.sqlite"), query],
-    {
-      encoding: "utf8",
-    },
-  )
+  return execFileSync("sqlite3", ["-readonly", join(stack.stateDir, "server", "diffpilot.sqlite"), query], {
+    encoding: "utf8",
+  })
     .split("\n")
     .filter(Boolean);
 }

@@ -5,6 +5,7 @@ import type {
   AskQuestion,
   CreateCommentResponse,
   Feedback,
+  FileViewedState,
   PendingReview,
   ReviewState,
 } from "../api/generated/types";
@@ -24,6 +25,8 @@ interface Store {
   pendingReview: PendingReview;
   /** When the mock first listed each pending feedback entry (ms since epoch). */
   memorySeenAt: Record<string, number>;
+  /** GitHub Viewed marks set through the Files view, by path (over the files fixture). */
+  viewed: Record<string, FileViewedState>;
 }
 
 type QuestionListener = (question: AskQuestion) => void;
@@ -44,6 +47,7 @@ function seed(): Store {
       seedNow("pending-review") as PendingReview,
     ),
     memorySeenAt: {},
+    viewed: {},
   };
 }
 

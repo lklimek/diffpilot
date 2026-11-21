@@ -4,6 +4,23 @@
   "description": "Response of `GET /api/v1/dashboard`: the user's dashboard without its items.",
   "type": "object",
   "properties": {
+    "mentions": {
+      "description": "Unanswered, unhidden mentions, oldest first; independent of the ranking.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Mention"
+      },
+      "default": []
+    },
+    "mention_coverage": {
+      "description": "Mention reads omitted in this snapshot, independent of item filters and pagination.",
+      "$ref": "#/$defs/MentionCoverage",
+      "default": {
+        "unchecked_items": 0,
+        "unchecked_logins": [],
+        "timed_out_logins": []
+      }
+    },
     "revision": {
       "description": "Opaque; changes whenever the stored snapshot or its ranking changes (poll this, then fetch the items).",
       "type": "string"
@@ -39,6 +56,13 @@
       "type": "integer",
       "format": "uint32",
       "minimum": 0
+    },
+    "plugins": {
+      "description": "Configured dashboard plug-ins (ADR-022); absent when none is configured. While one is listed, the browser\nreads the summary again every minute.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PluginStatus"
+      }
     }
   },
   "required": [
@@ -47,6 +71,145 @@
     "older_prompt_judgements"
   ],
   "$defs": {
+    "Mention": {
+      "description": "A request addressed to a scanned login, outside the ranked list.",
+      "type": "object",
+      "properties": {
+        "partly_read": {
+          "description": "Only a bounded part of this conversation was read.",
+          "type": "boolean",
+          "default": false
+        },
+        "id": {
+          "description": "Stable opaque identity of this post on this item (used by Hide).",
+          "type": "string"
+        },
+        "item_key": {
+          "description": "The containing item.",
+          "$ref": "#/$defs/ItemKey"
+        },
+        "kind": {
+          "description": "Pull request or issue.",
+          "$ref": "#/$defs/GithubKind"
+        },
+        "repo": {
+          "description": "Repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "Item number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "title": {
+          "description": "Item title, plain text.",
+          "type": "string"
+        },
+        "author": {
+          "description": "Mentioning author; a deleted account is shown as `ghost`.",
+          "type": "string"
+        },
+        "is_bot": {
+          "description": "GitHub Bot type, [bot] suffix or the user's known bots.",
+          "type": "boolean"
+        },
+        "created_at": {
+          "description": "When the mentioning post was created.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "text": {
+          "description": "One line of the mentioning text, plain text only.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Server-built GitHub link to the mentioning post.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "item_key",
+        "kind",
+        "repo",
+        "number",
+        "title",
+        "author",
+        "is_bot",
+        "created_at",
+        "text",
+        "url"
+      ]
+    },
+    "ItemKey": {
+      "type": "string",
+      "pattern": "^(memcan~[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Za-z0-9_-]{1,39}~([A-Za-z0-9_-][A-Za-z0-9._-]{0,99}|\\.[A-Za-z0-9_-][A-Za-z0-9._-]{0,98}|\\.\\.[A-Za-z0-9._-]{1,98})~(pr|issue)~([1-9][0-9]{0,8}|[1-3][0-9]{9}|4[01][0-9]{8}|42[0-8][0-9]{7}|429[0-3][0-9]{6}|4294[0-8][0-9]{5}|42949[0-5][0-9]{4}|429496[0-6][0-9]{3}|4294967[01][0-9]{2}|42949672[0-8][0-9]|429496729[0-5]))$"
+    },
+    "GithubKind": {
+      "description": "GitHub item kinds of the list filter `kind`.",
+      "oneOf": [
+        {
+          "description": "Pull requests.",
+          "type": "string",
+          "const": "pr"
+        },
+        {
+          "description": "Issues.",
+          "type": "string",
+          "const": "issue"
+        }
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "MentionCoverage": {
+      "description": "Missing mention reads; zero items does not imply that every login was searched.",
+      "type": "object",
+      "properties": {
+        "unchecked_items": {
+          "description": "Real candidates not checked because of the read budget, deadline or read failure.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unchecked_logins": {
+          "description": "Logins whose mention search was unavailable; fallback covers only mention-only issues.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timed_out_logins": {
+          "description": "Logins whose PR mention search exceeded its request budget.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "unchecked_items",
+        "unchecked_logins",
+        "timed_out_logins"
+      ]
+    },
     "RefreshStatus": {
       "description": "One refresh: scan progress, ranking and outcome (`GET /api/v1/dashboard/refreshes/{id}`, SSE `refresh`).",
       "type": "object",
@@ -494,6 +657,29 @@
             "$ref": "#/$defs/AwaitingItem"
           }
         },
+        "ready_to_merge": {
+          "description": "The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReadyToMergeItem"
+          }
+        },
+        "ready_to_merge_held": {
+          "description": "Pull requests K17 would list that a current plug-in statement holds back (ADR-022), by display id.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeldBack"
+          }
+        },
+        "merge_state_pending": {
+          "description": "The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read\nagain by the next refresh); null when the snapshot did not record merge states (stored before they were).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "history": {
           "description": "Dated pull request and review events of the chart window (12 weeks), across the scanned logins.",
           "type": "array",
@@ -541,6 +727,7 @@
         "item_counts",
         "excluded",
         "awaiting",
+        "ready_to_merge",
         "history",
         "todos",
         "notes",
@@ -695,24 +882,6 @@
         "tags"
       ]
     },
-    "RepoRef": {
-      "description": "A GitHub repository.",
-      "type": "object",
-      "properties": {
-        "owner": {
-          "description": "Owner (user or organisation) login.",
-          "type": "string"
-        },
-        "name": {
-          "description": "Repository name.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "owner",
-        "name"
-      ]
-    },
     "FactTag": {
       "description": "A deterministic tag from scan facts.",
       "type": "object",
@@ -786,6 +955,93 @@
           "type": "string",
           "const": "huge"
         }
+      ]
+    },
+    "ReadyToMergeItem": {
+      "description": "A pull request of the user ready to merge: into the default branch, not a draft, write access, every check passed\nand nothing left to answer (plan K17).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Display alias, e.g. `PLAT-1176`.",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "Pull request number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "title": {
+          "description": "Title.",
+          "type": "string"
+        },
+        "url": {
+          "description": "GitHub link, built by the server.",
+          "type": "string"
+        },
+        "tags": {
+          "description": "Deterministic tags from scan facts (CI state; checks not passing that are not required).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FactTag"
+          }
+        },
+        "change_size": {
+          "description": "Size mark of its full diff (display only); absent when the totals are unknown.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChangeSizeMark"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "repo",
+        "number",
+        "title",
+        "url",
+        "tags"
+      ]
+    },
+    "HeldBack": {
+      "description": "A pull request Ready to merge would list, held back by a plug-in's statement (ADR-022).",
+      "type": "object",
+      "properties": {
+        "item": {
+          "description": "The pull request as Ready to merge would list it.",
+          "$ref": "#/$defs/ReadyToMergeItem"
+        },
+        "plugin": {
+          "description": "Plug-in id.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Name of the plug-in, shown before the reason.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "The plug-in's reason, plain text.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Evidence: the source's record of the pull request.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "plugin",
+        "source",
+        "reason",
+        "url"
       ]
     },
     "HistoryEvent": {
@@ -914,10 +1170,6 @@
       "required": [
         "text"
       ]
-    },
-    "ItemKey": {
-      "type": "string",
-      "pattern": "^(memcan~[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Za-z0-9_-]{1,39}~([A-Za-z0-9_-][A-Za-z0-9._-]{0,99}|\\.[A-Za-z0-9_-][A-Za-z0-9._-]{0,98}|\\.\\.[A-Za-z0-9._-]{1,98})~(pr|issue)~([1-9][0-9]{0,8}|[1-3][0-9]{9}|4[01][0-9]{8}|42[0-8][0-9]{7}|429[0-3][0-9]{6}|4294[0-8][0-9]{5}|42949[0-5][0-9]{4}|429496[0-6][0-9]{3}|4294967[01][0-9]{2}|42949672[0-8][0-9]|429496729[0-5]))$"
     },
     "KindCounts": {
       "description": "Counts by item kind.",
@@ -1217,6 +1469,62 @@
           "description": "The scheduled refresh failed; shown until a later refresh succeeds.",
           "type": "string",
           "const": "failed"
+        }
+      ]
+    },
+    "PluginStatus": {
+      "description": "A configured dashboard plug-in: an external source of statements about pull requests (ADR-022).",
+      "type": "object",
+      "properties": {
+        "plugin": {
+          "description": "Stable id, e.g. `pr-hygiene`.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Name shown before its statements, e.g. `PR Hygiene`.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The source's home page.",
+          "type": "string"
+        },
+        "state": {
+          "description": "Whether its statements are shown now.",
+          "$ref": "#/$defs/PluginState"
+        },
+        "as_of": {
+          "description": "When the source produced the data last read; null before the first successful read.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "plugin",
+        "source",
+        "url",
+        "state"
+      ]
+    },
+    "PluginState": {
+      "description": "Whether a plug-in's statements are shown.",
+      "oneOf": [
+        {
+          "description": "Not read yet, or not read recently because nobody used the dashboard (it is read only then); being read.",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "Read recently; its statements are shown.",
+          "type": "string",
+          "const": "current"
+        },
+        {
+          "description": "The source failed since its last good read, or its data is older than the freshness bound; nothing of it is\nshown.",
+          "type": "string",
+          "const": "stale"
         }
       ]
     }

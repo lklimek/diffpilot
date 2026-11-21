@@ -543,7 +543,7 @@ impl<'a> Ranking<'a> {
 
     /// Reads the job and its credential: `paused` while the usage limit holds, `waiting_for_analysis` while a
     /// review analysis job holds the credential, else `running`; `Unclaimed` once the job waited
-    /// [`UNCLAIMED_LIMIT`] for a runner in none of those states.
+    /// [`UNCLAIMED_LIMIT`] for a runner in none of those states while no other job (e.g. an Ask) held the credential.
     async fn observe(&mut self, job: JobId) -> Result<(), RankError> {
         let db = &self.state.db;
         let record = db.jobs().get(job).await?;
@@ -575,11 +575,16 @@ impl<'a> Ranking<'a> {
             | JobState::Failed
             | JobState::Cancelled => RankingState::Running,
         };
-        self.unclaimed_since = (record.state == JobState::Queued && live == RankingState::Running)
-            .then(|| {
-                self.unclaimed_since
-                    .unwrap_or_else(tokio::time::Instant::now)
-            });
+        let unclaimed = record.state == JobState::Queued
+            && live == RankingState::Running
+            && !db
+                .jobs()
+                .credential_busy(&record.spec.credential.id)
+                .await?;
+        self.unclaimed_since = unclaimed.then(|| {
+            self.unclaimed_since
+                .unwrap_or_else(tokio::time::Instant::now)
+        });
         if self
             .unclaimed_since
             .is_some_and(|since| since.elapsed() >= UNCLAIMED_LIMIT)

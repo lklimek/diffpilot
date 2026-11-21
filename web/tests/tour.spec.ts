@@ -10,7 +10,7 @@ test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ 
   await page.getByRole("button", { name: "Check" }).click();
   await page.getByRole("button", { name: "Start analysis", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}/progress$`));
-  await page.getByRole("link", { name: "Open review" }).click();
+  await page.getByRole("link", { name: "Open", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#pr_context$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
 
@@ -67,7 +67,9 @@ test("step block: gutter marks, one highlight with was → is, collapsed assessm
   const mark = page.locator("[role=mark]");
   await expect(mark).toHaveCount(1);
   await mark.hover();
-  await expect(page.getByRole("tooltip").filter({ visible: true })).toContainText("Was: ");
+  await expect(page.getByRole("tooltip").filter({ visible: true })).toHaveCount(0);
+  await page.locator('[data-mark="remark"]').first().hover();
+  await expect(page.getByRole("dialog", { name: /^LLM remarks? at line/ })).toContainText("Was: ");
   const summary = page.getByRole("button", { name: /Assessment$/ });
   await expect(summary).toHaveAttribute("aria-expanded", "false");
   await summary.click();
@@ -202,11 +204,13 @@ test("agent_output_xss_renders_as_text", async ({ page }) => {
   await expect(inspector.getByText(`${markup} answer`)).toBeVisible();
   await expectInert();
 
-  // Step 5: highlight tooltip (was → is) and the thread marker's popover.
+  // Step 5: the highlight has no tooltip (was → is is in the remark popover) and the thread marker's popover.
   await nav.getByRole("button", { name: /^Step 5:/ }).click();
   const mark = page.locator("[role=mark]").first();
   await mark.hover();
-  await expect(page.getByRole("tooltip").filter({ visible: true })).toContainText(`Was: ${markup}`);
+  await expect(page.getByRole("tooltip").filter({ visible: true })).toHaveCount(0);
+  await page.locator('[data-mark="remark"]').first().hover();
+  await expect(page.getByRole("dialog", { name: /^LLM remarks? at line/ })).toContainText(`Was: ${markup}`);
   await page.locator('[data-mark="thread"]').first().hover();
   await expect(page.getByRole("dialog", { name: /^GitHub threads? at line/ })).toContainText(
     markup.slice(0, 10),
@@ -239,7 +243,7 @@ test("columns: hide, full screen and widths are remembered; a click anywhere on 
   );
   const box = (await strip.boundingBox())!;
   await page.mouse.click(box.x + box.width / 2, box.y + box.height - 20);
-  await expect(page.getByRole("group", { name: "Ask, feedback and comment" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Feedback and comment" })).toBeVisible();
   await page.getByRole("button", { name: "Full screen Review column" }).click();
   await expect(page.getByRole("button", { name: "Show Flows column" })).toBeVisible();
   await page.keyboard.press("Escape");
@@ -289,9 +293,11 @@ test("keyboard map: x ticks, d old code, c comment, a ask, ? help, Esc closes", 
   await page.keyboard.press("Escape");
   await expect(inspector.getByRole("textbox", { name: /^Comment on / })).toHaveCount(0);
   await page.keyboard.press("a");
-  const ask = inspector.getByRole("textbox", { name: /^Ask the LLM about / });
+  const ask = page.getByRole("dialog", { name: "Ask" }).getByRole("textbox", { name: "Your question" });
   await expect(ask).toBeFocused();
-  await ask.blur();
+  // Esc hides the chat and gives the keys back to the page.
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Ask" })).toHaveCount(0);
   await page.keyboard.press("?");
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeVisible();
   await page.keyboard.press("Escape");
@@ -299,7 +305,7 @@ test("keyboard map: x ticks, d old code, c comment, a ask, ? help, Esc closes", 
   await page.keyboard.press("j");
   await expect(main.getByRole("region", { name: /^src\/sync\/mod\.rs, lines 61 to 67/ })).toBeVisible();
   await page.keyboard.press("x");
-  await expect(banner).toContainText("flows reviewed 1 / 5");
+  await expect(banner).toContainText("Your progress 1 / 5");
 });
 
 test("21:9: the three columns use the full width", async ({ browser }) => {
@@ -317,9 +323,21 @@ test("21:9: the three columns use the full width", async ({ browser }) => {
 test("every top-bar control explains itself in a tooltip", async ({ page }) => {
   await openTour(page);
   const banner = page.getByRole("banner").first();
-  await expect(banner.getByRole("link", { name: /#482/ })).toHaveAccessibleDescription(/GitHub/);
-  await expect(banner.getByText(/^Check runs:/).first()).toHaveAccessibleDescription(/Failing checks/);
-  await expect(banner.getByText(/^flows reviewed/)).toHaveAccessibleDescription(/No percentage/);
+  await expect(
+    banner.getByRole("link", { name: /^Pull request #482 on GitHub/ }),
+  ).toHaveAccessibleDescription(/GitHub/);
+  await expect(banner.getByRole("link", { name: "acme/node-client #482" })).toHaveAccessibleDescription(
+    /PR context/,
+  );
+  await expect(banner.getByRole("button", { name: "View: Flows" })).toHaveAccessibleDescription(/Files/);
+  // The chip (link or span) carries the tooltip; its text may sit in an inner truncating span.
+  await expect(
+    banner
+      .locator("[aria-describedby]")
+      .filter({ hasText: /^Check runs:/ })
+      .first(),
+  ).toHaveAccessibleDescription(/Failing checks/);
+  await expect(banner.getByText(/^Your progress/)).toHaveAccessibleDescription(/No percentage/);
   await expect(banner.getByRole("button", { name: /^Pending review/ })).toHaveAccessibleDescription(
     /pending review/,
   );
@@ -380,7 +398,7 @@ test("1440: while a comment is written its line reference stays in view", async 
     .getByRole("button", { name: /^Step 2:/ })
     .click();
   await page.getByRole("button", { name: "Comment on line 96" }).click();
-  const dock = page.getByRole("group", { name: "Ask, feedback and comment" });
+  const dock = page.getByRole("group", { name: "Feedback and comment" });
   await dock.evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
   await expect(dock.getByText("On src/rpc/client.rs:96")).toBeInViewport({ ratio: 1 });
   await dock.evaluate((el) => el.scrollTo({ top: 0 }));
@@ -491,4 +509,33 @@ test("at the first block, Previous is reachable by keyboard and its tip says why
   await expect(page.locator("main h2:not([data-column-title])").first()).toHaveText(
     "PR context: acme/node-client #482",
   );
+});
+
+test("Next and j tick the current step; Previous and the flow introduction do not", async ({ page }) => {
+  await openTour(page);
+  const nav = page.getByRole("navigation");
+  const putWith = (id: string) =>
+    page.waitForResponse(
+      (r) =>
+        r.url().endsWith("/review-state") &&
+        r.request().method() === "PUT" &&
+        r.status() === 204 &&
+        r.request().postDataJSON().ticked_steps.includes(id),
+    );
+  await nav.getByRole("button", { name: "Flow 1: Send an RPC request with retry" }).click();
+  await page.keyboard.press("j"); // from the introduction: no tick
+  await expect(heading(page)).toHaveText("1 Trigger: callers of send");
+  await expect(nav.getByRole("button", { name: "Step 1: Trigger: callers of send" })).toBeVisible();
+  const first = putWith("f1.1");
+  await page.getByRole("button", { name: /^Next: / }).click();
+  await first;
+  await expect(nav.getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeVisible();
+  const second = putWith("f1.2");
+  await page.keyboard.press("j");
+  await second;
+  await expect(nav.getByRole("button", { name: /^Step 2: .*, reviewed$/ })).toBeVisible();
+  await page.keyboard.press("k");
+  await page.keyboard.press("k");
+  await expect(nav.getByRole("button", { name: /^Step 1: .*, reviewed$/ })).toBeVisible();
+  await expect(nav.getByRole("button", { name: /^Step 3: .*, reviewed$/ })).toHaveCount(0);
 });

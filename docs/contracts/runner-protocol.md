@@ -19,7 +19,7 @@ the same attempt; 400 malformed body.
 - The runner polls `claim` every 1 s while idle (5 s after a failed claim), reporting the credentials it holds (`usable` false after a
   failed refresh, ADR-003) and the sessions it deleted (`dropped_sessions`).
 - The server picks the next runnable job: `queued`, credential usable, not paused and idle, no running job of
-  the same PR (claim exclusion and triggers), analysis or credential (partial unique indexes), Ask (`priority` 0) before batch (1), then oldest. It increments
+  the same PR (claim exclusion and triggers), analysis or credential (partial unique indexes), interactive (`priority` 0) before batch (1), Ask before dashboard ranking within interactive, then oldest; a claimed or running job is never pre-empted. It increments
   `attempt` (every claim, including after a pause or a lease expiry), mints a random job token (stored hashed),
   sets the lease, and fills `spec.access` at claim time:
   - `github`: an installation token for the **PR repository only** (explicit `repositories` and read-only

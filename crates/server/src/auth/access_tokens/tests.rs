@@ -558,7 +558,11 @@ async fn token_reads_as_its_user_only() {
                 NewQuestion {
                     id: QuestionId::new_random(),
                     analysis_id: s.analysis,
-                    step_id: StepId("f1.1".to_owned()),
+                    anchor: contracts::api::questions::AskAnchor::Step {
+                        step_id: StepId("f1.1".to_owned()),
+                        lines: None,
+                    },
+                    parent_id: None,
                     user_id: user.to_owned(),
                     text: format!("PRIVATE_{user}"),
                 },

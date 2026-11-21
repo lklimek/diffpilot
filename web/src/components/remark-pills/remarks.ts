@@ -1,5 +1,5 @@
 import type { Annotation, AnnotationId, RiskBand, Step } from "../../api/generated/types";
-import { countFlags, type FlagCounts } from "../flag/flags";
+import { countFlags, flagLevel, sortedFlags, strongestFlag, type FlagCounts } from "../flag/flags";
 
 /**
  * The LLM's rating of steps and their remark count, two separate facts: on the wire a remark has no severity of
@@ -66,4 +66,14 @@ export function remarkTarget(
   const found = all.find((r) => !handled.has(r.annotation.id)) ?? all[0];
   if (found) return found;
   return atTop[0] && { step: atTop[0], annotation: null };
+}
+
+/** Where a flag marker leads: the first flag at the strongest level, steps in order, then by line. */
+export function flagTarget(steps: readonly Step[]): { step: Step; annotation: Annotation } | undefined {
+  const level = strongestFlag(steps.flatMap((s) => s.llm.annotations));
+  for (const step of steps) {
+    const annotation = sortedFlags(step.llm.annotations).find((a) => flagLevel(a) === level);
+    if (annotation) return { step, annotation };
+  }
+  return undefined;
 }

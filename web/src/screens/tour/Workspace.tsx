@@ -7,6 +7,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import { HEAD_BUTTON } from "../../components/button/button";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import {
   MIN_WIDTH_PX,
@@ -32,9 +33,14 @@ interface WorkspaceProps {
   inspector: ReactNode;
   /** The scrolling centre (scrolled to the top on a new block). */
   mainRef: RefObject<HTMLDivElement | null>;
+  /** Column titles and the left column's landmark name (the Files view's "Files", "File"). */
+  titles?: Partial<Record<Column, string>>;
+  navLabel?: string;
 }
 
 const TITLE: Record<Column, string> = { nav: "Flows", main: "Review", inspector: "Inspector" };
+type Titles = Record<Column, string>;
+const DEFAULT_TITLES = TITLE;
 const DEFAULT_WIDTH = { nav: "clamp(240px, 17vw, 400px)", inspector: "clamp(400px, 27vw, 620px)" } as const;
 
 /** Width of the element in px, kept current on resize; 0 until measured. */
@@ -56,14 +62,13 @@ function useWidth(ref: RefObject<HTMLElement | null>): number {
   return width;
 }
 const KEY_STEP_PX = 24;
-const SMALL_BUTTON =
-  "cursor-pointer rounded border border-border bg-surface px-1.5 text-[11.5px] text-text hover:border-accent aria-pressed:border-accent aria-pressed:bg-accent-bg";
 
 function ColumnHead({
   column,
   layout,
   onChange,
-}: { column: Column } & Pick<WorkspaceProps, "layout" | "onChange">) {
+  TITLE,
+}: { column: Column; TITLE: Titles } & Pick<WorkspaceProps, "layout" | "onChange">) {
   const full = layout.full === column;
   const hideable = canHide(layout, column);
   return (
@@ -83,7 +88,7 @@ function ColumnHead({
           aria-label={`Hide ${TITLE[column]} column`}
           aria-disabled={!hideable || undefined}
           onClick={() => hideable && onChange(hideColumn(layout, column))}
-          className={`${SMALL_BUTTON} aria-disabled:cursor-not-allowed aria-disabled:opacity-60`}
+          className={`${HEAD_BUTTON} aria-disabled:cursor-not-allowed aria-disabled:opacity-60`}
         >
           Hide
         </button>
@@ -94,7 +99,7 @@ function ColumnHead({
           aria-pressed={full}
           aria-label={`Full screen ${TITLE[column]} column`}
           onClick={() => onChange(toggleFull(layout, column))}
-          className={SMALL_BUTTON}
+          className={HEAD_BUTTON}
         >
           {full ? "Exit full screen" : "Full screen"}
         </button>
@@ -107,7 +112,8 @@ function Strip({
   column,
   layout,
   onChange,
-}: { column: Column } & Pick<WorkspaceProps, "layout" | "onChange">) {
+  TITLE,
+}: { column: Column; TITLE: Titles } & Pick<WorkspaceProps, "layout" | "onChange">) {
   return (
     <Tooltip tip={`Click to show the ${TITLE[column]} column`} className="absolute inset-0">
       <button
@@ -124,7 +130,17 @@ function Strip({
 }
 
 /** The three columns of the review screen: hide, full screen, strips that restore, draggable widths. */
-export function Workspace({ layout, onChange, nav, main, inspector, mainRef }: WorkspaceProps) {
+export function Workspace({
+  layout,
+  onChange,
+  nav,
+  main,
+  inspector,
+  mainRef,
+  titles,
+  navLabel = "Flows and steps",
+}: WorkspaceProps) {
+  const TITLE: Titles = { ...DEFAULT_TITLES, ...titles };
   const grid = useRef<HTMLDivElement>(null);
   const dragging = useRef<"nav" | "inspector" | null>(null);
   const total = useWidth(grid);
@@ -194,21 +210,22 @@ export function Workspace({ layout, onChange, nav, main, inspector, mainRef }: W
   const body = (column: Column, content: ReactNode) =>
     shown[column] ? (
       <>
-        <ColumnHead column={column} layout={layout} onChange={onChange} />
+        <ColumnHead column={column} layout={layout} onChange={onChange} TITLE={TITLE} />
         {content}
       </>
     ) : (
-      <Strip column={column} layout={layout} onChange={onChange} />
+      <Strip column={column} layout={layout} onChange={onChange} TITLE={TITLE} />
     );
   return (
     <div
       ref={grid}
+      data-workspace
       className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] overflow-hidden"
       style={{ gridTemplateColumns: template }}
     >
       <nav
         data-column="nav"
-        aria-label="Flows and steps"
+        aria-label={navLabel}
         className="relative flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border bg-surface"
       >
         {body(
@@ -231,7 +248,8 @@ export function Workspace({ layout, onChange, nav, main, inspector, mainRef }: W
             ref={mainRef}
             tabIndex={0}
             data-scroll-column
-            className="relative min-h-0 flex-1 overflow-auto overscroll-contain px-5 pt-3 pb-10"
+            // With the Inspector hidden the Ask chat floats over the centre: its code can scroll out from under it.
+            className="relative min-h-0 flex-1 overflow-auto overscroll-contain px-5 pt-3 pb-[calc(2.5rem+var(--ask-chat-pad,0px))]"
           >
             {main}
           </div>,

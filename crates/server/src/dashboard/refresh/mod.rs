@@ -5,9 +5,11 @@
 
 mod facts;
 mod history;
-mod owned;
+pub(crate) mod mentions;
+pub(crate) mod owned;
 mod progress;
 pub mod rank;
+pub(crate) mod reread;
 mod scan;
 
 use std::future::Future;

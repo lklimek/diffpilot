@@ -21,7 +21,7 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   Model and effort come from `select_model`, a plain Rust function in the server using the stored
   installation-wide Settings choice (default Sol, high; Ask: stored Ask effort, default medium). Each new job reads the current choice.
 - Flow jobs write tagged `out/flow.md` and run `sr-check`; server and checker share `analysis::tagged` (ADR-014).
-  Format version 2 (flags): server and runner images are rebuilt together. Plan, PR context and Ask keep JSON.
+  Format version 3 (incidental changes): server and runner images are rebuilt together. Plan, PR context and Ask keep JSON.
 - Only `runner::provider` knows Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
   (`generic` returns `None` in v1).
 - Every UI block is a self-contained component in `web/src/components/`: props in, callbacks out, no fetching,
@@ -70,9 +70,10 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   test/clippy/nextest via the claudius `cargo-cached.sh` wrapper at the narrowest `-p`
   (`CLAUDIUS_MAX_PARALLEL_BUILDS=1`); never set `CARGO_TARGET_DIR`; long runs in the foreground with a timeout;
   Dockerfiles set `CARGO_BUILD_JOBS=2`; vitest and Playwright at most 2 workers, one Playwright run at a time.
-- Git: one feature branch `feat/v1`, no pull requests until v1 is deployed; conventional commits; agents
-  commit and never push; the coordinator integrates and pushes `feat/v1` (`ghsudo git push`); never push to
-  `main` (the owner pushes it); no force-push, no amend. Migrations are append-only: a schema change is a new
+- Git: one integration branch per version (`feat/vX.Y`, cut from `main`) and one pull request per version, no
+  small per-feature pull requests; work branches merge into the version branch; conventional commits; agents
+  commit and never push; the coordinator integrates and pushes the version branch; never push to `main` (the
+  owner merges it); no force-push, no amend. Migrations are append-only: a schema change is a new
   numbered file in `crates/db/migrations` that upgrades in place; never edit an applied migration (its checksum is
   verified at start; `scripts/check-migrations.sh`, `--add-new` records a new file). No versioning or changelog.
   Code-mutating agents work in pre-created worktrees

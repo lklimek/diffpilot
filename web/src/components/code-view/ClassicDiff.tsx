@@ -139,7 +139,7 @@ function Hunk({
                 <CodeText text={l.text} tokens={tokens?.[i]} />
                 {eol && <span className="ml-2 font-sans text-[11px] text-muted select-none">({eol})</span>}
                 {mine && (
-                  <span className="ml-2.5 align-middle">
+                  <span className="ml-2.5 align-middle select-none">
                     <CommentMarker
                       comments={mine[1]}
                       subject={lineName(mine[1], mine[2])}
@@ -158,6 +158,7 @@ function Hunk({
                 label={`Your pending comments at ${lineName(mine[1], mine[2])}`}
                 onEdit={comments.onEdit}
                 onDelete={comments.onDelete}
+                onHide={() => comments.toggle(mine[0])}
               />
             )}
           </Fragment>

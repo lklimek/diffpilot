@@ -33,3 +33,22 @@
   (`commenting_available = false`).
 - **MemCan for the agent** is restricted to search and `add_memory` by the runner's MCP configuration
   (`enabled_tools`), not by `JobSpec`; URL and token arrive in `JobSpec.access.memcan` at claim.
+
+## Addendum 2026-11-20: read-only token for dependency repositories
+- **Decision (owner-accepted).** The agent's read-only installation token is extended to the dependency
+  repositories of controlled organisations (the controlled orgs list in Settings, ADR-021), so the PR-context agent
+  can look up upstream issues and pull requests and ask whether a change belongs in the crate that defines a type.
+- **v1.2 mechanism: prompt and documentation, no mint change.** v1 analyses public repositories only, and an
+  installation token already reads every public repository (S4 §1, S5 §2: REST, GraphQL, search, CI). The
+  `pr_context` prompt names the controlled dependency repositories and the crates and types of the conversion
+  facts as lookup targets; findings use the existing `related_work` and `fit_questions` (`layer_or_repository`,
+  with evidence), phrased as questions, never verdicts. The mint request stays `repositories = [PR repo]`.
+- **Budget.** At most 5 dependency repositories and 3 searches each per job (prompt rule): the installation's
+  shared 5,450/h core and 10/min semantic-search budgets are unchanged.
+- **Later, with private repositories** (plan §18 L5): mint `repositories = [PR repo] ∪ (controlled dependency
+  repositories ∩ the same installation)`, at most 10, permissions unchanged (`read`); the minted set must equal
+  the requested set. Repositories of another installation stay public reads or "not checked" (one token per
+  `github-mcp-server`, never a token from another installation). Precondition: the T9 egress allowlist, because a
+  stolen token would then disclose private dependency code (AR-4 grows from public reads to private disclosure).
+- **Threat model.** B1 gains upstream issue and pull-request text as untrusted input (fenced like other related
+  work); AR-4 is unchanged in v1.2.

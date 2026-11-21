@@ -53,7 +53,11 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 | GET | `/api/v1/analyses/{id}/diff` | read | `RangeQuery` | `DiffResponse` (409 `analysis_not_finished` before the analysis is ready) |
 | GET / PUT | `/api/v1/analyses/{id}/review-state` | read / session_csrf | – / `ReviewState` | `ReviewState` / 204 (PUT: 409 `analysis_not_finished` before `finished`) |
 | GET | `/api/v1/analyses/{id}/questions` | read | – | `AskQuestion[]` |
-| POST | `/api/v1/analyses/{id}/steps/{step_id}/questions` | session_csrf | `AskRequest` | 202 `AskQuestion` |
+| POST | `/api/v1/analyses/{id}/steps/{step_id}/questions` | session_csrf | `AskRequest` | 202 `AskQuestion` (anchor `step` without lines) |
+| POST | `/api/v1/analyses/{id}/questions` | session_csrf | `AnchoredAskRequest` | 202 `AskQuestion` (R14 `askAnchored`, v1.2) |
+| GET | `/api/v1/analyses/{id}/files` | read | – | `FilesResponse` (R12 `getFiles`, v1.2; 409 `analysis_not_finished` until plan and PR context are accepted) |
+| PUT | `/api/v1/analyses/{id}/files/viewed` | session_csrf | `SetViewedRequest` | 204 (R13 `setFileViewed`, v1.2) |
+| GET | `/api/v1/analyses/{id}/dependencies` | read | – | `DependencyView` (R15 `getDependencies`, v1.2; 409 `analysis_not_finished` until the analysis base is stored) |
 | GET / POST | `/api/v1/analyses/{id}/feedback` | read / session_csrf | – / `FeedbackRequest` | `Feedback[]` / `Feedback` |
 | DELETE | `…/feedback/{feedback_id}` | session_csrf | – | 204 |
 | GET | `/api/v1/analyses/{id}/pending-review` | read | – | `PendingReview` |
@@ -62,6 +66,7 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 | DELETE | `…/pending-review/comments/{comment_id}` | session_csrf | – | 204 |
 | GET | `/api/v1/settings` | read | – | `Settings` |
 | PUT | `/api/v1/settings/language` | session_csrf | `SetLanguageRequest` | 204 |
+| PUT | `/api/v1/settings/controlled-owners` | session_csrf | `SetControlledOwnersRequest` | `ControlledOwners` (R16 `setControlledOwners`, v1.2; 400 `invalid_request` for an owner that is not a GitHub login, more than 50 owners) |
 | GET | `/api/v1/repos/{owner}/{name}/settings` | read | – | `RepoSettings` (read-only; 409 `analysis_not_finished` while not known) |
 
 ## Rules
@@ -178,7 +183,7 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   such as `f1.05` and unknown steps are `not_found`); `text` is trimmed, 1 to `AskRequest::MAX_TEXT_CHARS` (2000)
   characters, else `invalid_request`, and stored and shown as text. No idempotency key: each request is a new
   question. Limits (`conflict` with a plain message): 100 questions per user per analysis, 30 per user per hour. The
-  question runs as an `ask` job claimed before batch jobs; one job runs per PR and credential, so a second question waits
+  question runs as an `ask` job claimed before every other queued job (dashboard ranking, then batch; no pre-emption); one job runs per PR and credential, so a second question waits
   `pending` until the first ends. States: `pending` (queued; `resumes_at` set while it waits for the LLM usage
   limit), `answering`, `answered`, `failed` with a plain `failure` sentence (job failure by typed cause, an answer
   that did not pass the checks, a cancellation naming its cause: the analysis was cancelled, the PR session was
@@ -198,6 +203,73 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   question owned by its sender. Plain text:
   HTML-like tags (`<` followed by a letter, `/` or `!`) are allowed only inside code spans and closed fenced
   blocks; a GitHub URL carries no user info and no explicit port.
+- **Anchored Ask** (R14, v1.2). Same rules as the step route; the question is about `anchor`: `step` (a stored
+  step of the Tour, `not_found` otherwise; optional `lines` inside the step's range) or `lines` (`path` of a file
+  of the pull request on `side`; `range` within the file, or none for the whole file). Lines are 1-based,
+  `start_line ≤ end_line`, at most `AskAnchor::MAX_LINES` (2000); anything else is `invalid_request`. The step
+  route stores a `step` anchor without lines. Also `flow` (`flow_id` of a flow with a stored analysis, `not_found`
+  otherwise; the flow must be shown analysed in the Tour, so a stored analysis that fails today's checks is
+  `not_found` too) and `pr` (the whole pull request). `AskQuestion.anchor` is always set; `step_id` only for a step anchor.
+  A lines question's job gets the lines, their classic diff (three lines of context, clipped), the owners of their
+  changed lines from R12 and the overlapping steps in summary (chosen at submit and stored with the question); its
+  context pack those steps in full. A flow question's job gets the flow's introduction and steps in summary, its
+  pack the flow in full; a PR question's job gets the plan's flows and the PR context (each clipped), its pack the
+  usual stored results. Packs are built at claim from stored documents only. Sessions as ADR-004.
+  **Follow-ups** (v1.2): `parent_id` names a question of the same user on the same analysis (else `not_found`, as
+  for a foreign question); the follow-up joins the thread of that question's first question (one level:
+  `AskQuestion.parent_id` is always the first question) and must repeat its `anchor` (else `invalid_request`).
+  Limits count follow-ups like any question. The job's prompt carries the thread's earlier questions of this user
+  with their answers, oldest first: the first question and the latest follow-ups (at most 6), each answer clipped to
+  4000 characters and each entry to 16 KiB (a clipped entry says how many characters are missing, and the block
+  carries the clipped note), at most 32 KiB, with a note on omitted ones (ADR-004 addendum 2026-11-19).
+- **Files** (R12, v1.2). Every file of the pull request in diff order: `path`, `old_path` (renames), `status`,
+  `binary`, `added`/`removed`, `group` (`code`, or `not_analysed` with the path rule's category, badge and rule),
+  `not_rendered` (`too_large`, `generated`, `binary`: the code of that file is never shown), `viewed`, and `hunks` (the diff
+  without context: `base`/`head` ranges, `after_line` for a pure deletion). Each hunk's `parts` split its lines,
+  base side first, into runs with one `owner`: `step` (the first step of the accepted flow whose verification
+  covered the line), `flow` (a flow not analysed yet whose plan holds the line), `incidental` (the accepted flow's
+  analysis names the line an incidental change off its control flow: `flow_id` and the LLM's one-sentence `text`),
+  `unexplained` (with the Tour's reason), `not_analysed` (also inline test code a line rule recognised),
+  `context_rule` (a comment or import line rule; context for the LLM only when its hunk also has other changes),
+  `identical_move` (with both ranges) or `whitespace_only`;
+  `also_in` lists the other steps whose lines include the run. Owners come from the coverage the Tour uses: the
+  `unexplained` parts are exactly the Tour's Unexplained rows. `viewed` is the user's GitHub state (`viewed`,
+  `unviewed`, `dismissed`: viewed before a later commit changed the file) read as the user;
+  `viewed_status` says whether it was read (`checked`, `partial` beyond 3000 files, `not_checked` when GitHub did
+  not answer; then every `viewed` is null, never assumed) and `current_head` is the head GitHub reported. An ended
+  GitHub sign-in is 401 `unauthenticated` ("Sign in again"); a GitHub refusal of the read is logged at warn. An
+  access-token reader gets the Viewed read cached for a minute.
+- **Viewed** (R13, v1.2). `{path, viewed}` marks or unmarks one file of the pull request as the user on GitHub
+  (`markFileAsViewed` / `unmarkFileAsViewed`). A path outside the pull request is `invalid_request`; a head that
+  moved since the analysis is `pr_head_changed` (nothing is written; the head can still move between that check
+  and the write); GitHub refusing it (an answer that proves nothing was applied, as for pending-review writes: e.g.
+  the user token may not mark files, or a rate limit) is `github_refused`, nothing changed; a failed read of the
+  pull request before the write is `github_unavailable` with nothing sent; any other answer to the write is
+  `github_unavailable` (the mark may have changed; read again). One write per user and analysis runs at a time; a
+  second one meanwhile is `conflict` before any GitHub call. Nothing is stored locally.
+- **Dependencies** (R15, v1.2; ADR-021). The Cargo map of the head commit: `status` (`available`, or `not_rust`: no
+  `Cargo.toml` at head, nothing checked), `controlled_owners` (the pull
+  request's owner plus Settings, as applied to this response), `limits` (what was cut, not read or not resolved, with paths: `manifests_cut`,
+  `manifest_unreadable`, `lock_unreadable`, `no_lock_file`, `workspace_unresolved`, `workspace_entries_cut`, `target_specific`,
+  `source_unread`, `source_cut`, `facts_cut`, `definitions_unread`),
+  `files_outside_crates` (changed files in no crate, not checked), `notes` (`produced`, `pending` before the plan is
+  stored, `not_produced` for plans without notes) and `repositories`: this repository first, then controlled
+  GitHub repositories, other GitHub repositories, other git URLs, registries (`crates.io`: the repository is not
+  looked up), paths and unknown sources, holding the direct dependencies of the changed crates (at most 200 crates
+  outside this repository and controlled repositories). Each repository lists crates: name, version,
+  manifest path (workspace crates), the `Cargo.lock` or `Cargo.toml` line of its source, `used_by` (changed crates
+  depending on it directly), `facts_about` (facts naming its types) and, for a changed crate, `changes`: changed
+  lines and files, flows touching it, conversion `facts` (deterministic: kind, line, type, the type's crate, the
+  import line, the definition line, `not_located`, `not_searched` or `other_repository`), `facts_hidden`, `other_facts` (facts about
+  types of crates that are neither workspace members nor controlled, counted only), LLM `notes` (text, lines,
+  changed lines; at most 3, `notes_hidden` counts the rest) and `other_dependencies` (direct dependencies over the
+  view's cap, not listed). The map is computed once per analysis (older analyses at the first read) and stored; a
+  mirror error, a failed definition search included, answers like the other analysis reads, nothing is stored and
+  the next read computes it again. Definition files found but not read leave their facts `not_searched` with a
+  `definitions_unread {dir, files}` limit.
+- **Controlled owners** (R16, v1.2). Replaces the installation-wide list of controlled GitHub owners (case-insensitive,
+  deduplicated, sorted); `Settings.controlled_owners` reports it with who changed it and when. The pull request's
+  owner is controlled whether listed or not.
 - **MemCan status**: Settings and Tour PR-context facts expose `memcan_status {state, last_success_at}`,
   separate from `project_profile.memcan` (the stored analysis lookup). Read status never calls MemCan.
   `not_checked` means configured but no completed attempt since startup; `reachable` means the last attempt
@@ -255,12 +327,13 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `csrf_rejected` | 403 | missing or wrong `X-CSRF-Token` |
 | `not_found` | 404 | unknown or not visible |
 | `conflict` | 409 | state conflict (e.g. analysis already live for this head) |
-| `analysis_not_finished` | 409 | tour, questions, review-state writes before `finished`; lines, diff before the analysis is ready (stored base is the merge base); repository settings without a stored pre-pass |
-| `pr_head_changed` | 409 | comment write when the PR head moved (before or during the write) |
+| `analysis_not_finished` | 409 | tour, files, questions, review-state writes before `finished`; lines, diff before the analysis is ready (stored base is the merge base); repository settings without a stored pre-pass |
+| `pr_head_changed` | 409 | comment write when the PR head moved (before or during the write); Viewed write when the head moved since the analysis |
 | `comment_published` | 409 | edit or delete applied to a comment whose review was published meanwhile; or a new comment on a moved head removed from a review published meanwhile |
 | `private_repository` | 422 | v1 is public repositories only |
 | `app_not_installed` | 422 | comment routes without the App on the PR repo |
 | `position_rejected` | 422 | GitHub silently rejected (`thread: null`) or target not commentable |
+| `github_refused` | 422 | GitHub refused a change made as the user (the Viewed mark, R13: refused before executing it, a rate limit, or `FORBIDDEN`); nothing was changed |
 | `not_rendered` | 422 | file classified as not rendered; diff of a binary file |
 | `internal` | 500 | anything else (no detail) |
 | `github_unavailable` | 502 | GitHub error or unexpected answer |
@@ -497,7 +570,7 @@ Requesting it discards that document (only the version the server verified: a re
 requests the flow in one transaction: it runs in a new job round like a failed flow (the rejected output is
 never repaired), with the automatic retries of any requested flow. The same transaction removes what was said
 about its steps, whose ids the new run reuses: every user's ticks of `<flow>.` steps, the questions on its steps
-with their answers (their unfinished ask jobs are cancelled) and the feedback on its steps and annotations
+and on the flow as a whole (with their follow-ups) with their answers (their unfinished ask jobs are cancelled) and the feedback on its steps and annotations
 (removed as by its author, so its MemCan memory is deleted). Comments and pending review comments stay: they are
 anchored to code lines. Switching background analysis on ("Analyse all remaining flows") discards and requests
 every such flow the same way, in the transaction that switches it on. In a `finished` analysis any `failed` flow
@@ -540,7 +613,7 @@ including when a verified flow becomes available; no extra polling is needed.
 
 #### Deterministic context and replacement lines
 
-The lines response may include `context_only`, the changed line numbers on its returned side that the stored pre-pass covers by a line rule (Rust comments and plain private imports, brief amendment 2026-11-18); route and pre-pass use the same decision. Rust lines whose only change is whitespace are not in `changed` and not in a removed block: they read as unchanged code. These lines remain in the response and classic diff; the browser may hide them in the main view. A deleted block's optional `replacement` identifies the head range from the same diff hunk. Without it the block is a pure deletion. Example:
+The lines response may include `context_only`, the changed line numbers on its returned side that the stored pre-pass covers by a comment or import line rule (Rust comments, plain imports, re-exports and multi-line `use` declarations, brief amendments 2026-11-18 and 2026-11-20; inline test code is not among them and stays shown); route and pre-pass use the same decision. Rust lines whose only change is whitespace are not in `changed` and not in a removed block: they read as unchanged code. These lines remain in the response and classic diff; the browser may hide them in the main view. A deleted block's optional `replacement` identifies the head range from the same diff hunk. Without it the block is a pure deletion. Example:
 
 ```json
 {"context_only":[10,11],"deleted":[{"after_line":12,"base_start":13,"lines":["old();"],"total_lines":1,"replacement":{"start_line":13,"end_line":13}}]}
@@ -551,7 +624,7 @@ The lines response may include `context_only`, the changed line numbers on its r
 ## Dashboard (v1.1)
 
 Plan `docs/v1.1-dashboard-plan.md` §E (ADR-016, ADR-017, ADR-019, ADR-020). Types: `crates/contracts/src/api/dashboard.rs`
-and `api/access_tokens.rs`; routes R1–R10 in `routes.rs`; both generated into `web/src/api/generated/` like every
+and `api/access_tokens.rs`; routes R1–R11 in `routes.rs`; both generated into `web/src/api/generated/` like every
 HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README there).
 
 | ID | Method | Path | Auth | Request | Response |
@@ -569,6 +642,7 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 | R8 | GET | `/api/v1/settings/access-tokens` | session | – | `AccessToken[]` |
 | R9 | POST | `/api/v1/settings/access-tokens` | session_csrf | `CreateAccessToken` | 201 `CreatedAccessToken`; 409 `token_limit_reached` |
 | R10 | DELETE | `/api/v1/settings/access-tokens/{id}` | session_csrf | – | 204 (404 for an unknown, revoked or another user's token) |
+| R11 | POST | `/api/v1/dashboard/mentions/{id}/hide` | session_csrf | – | 204 (idempotent), 404 outside the user’s snapshot/hidden set |
 
 Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and shapes unchanged); only R8 stays
 `session`. How an agent reads with a token: `agent-api.md`.
@@ -595,7 +669,10 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   evidence; absent for issues, TODOs and unknown totals; clients show an unknown class by its name). There is no
   size filter on R1b. A pull request of the user that waits only on others (plan §C.2 K15) is not an
   item: it is listed in `SnapshotMeta.awaiting` only (`AwaitingItem.total_tenths` is null), never ranked, counted
-  or excluded, so no tier filter hands it out as work.
+  or excluded, so no tier filter hands it out as work. `SnapshotMeta.ready_to_merge` lists, by display id, the
+  user's pull requests ready to merge at the scan (plan §C.2 K17: into the default branch, every check passed,
+  nothing left to answer); they are ranked. `merge_state_pending` counts those of the user's pull requests into the
+  default branch whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
 - **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
   with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
   recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per
@@ -685,3 +762,22 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   (server-internal); a late result of an earlier attempt or of a superseded ranking is ignored.
 - **Tolerant readers** (plan §E.5 E5-3): clients ignore unknown fields and treat unknown values of `kind`,
   `component`, `status`, `tier`, `TokenScope` and history `kind` as opaque. Changes stay additive (ADR-011).
+
+### Unanswered mentions
+`GET /api/v1/dashboard` (`DashboardSummary`) and `/api/v1/dashboard/items` (`ItemPage`) include `mentions:
+Mention[]`, oldest first. This is a separate list, unaffected by ranked-item filters, returned only on the first items page
+(without a cursor); cursor pages return `[]`, available equally to sessions and read tokens. Fields: `id`, `item_key`, `kind` (`pr`/`issue`),
+`repo`, `number`, `title`, `author`, `is_bot`, `created_at`, `text`, `url`. Text is untrusted plain text; `url`
+is built by the server. `is_bot` uses the user's known bots plus GitHub Bot type / `[bot]`. An empty list means
+no unanswered, unhidden mentions found in the snapshot. `Mention.partly_read` is true when any bounded
+conversation window was truncated or its count unavailable; older snapshots default it to false.
+Both responses include `mention_coverage`: `unchecked_items` counts real candidates missed by budget, deadline or read failure;
+`unchecked_logins` names logins whose mention search was unavailable (limited fallback for mention-only issues);
+`timed_out_logins` names PR searches that exceeded their request budget. Coverage is independent of filters
+and present on every items page. The browser displays it in the collapsed summary, even without rows,
+without parsing or duplicating scan notes. Older snapshots default to an empty list and zero/empty coverage.
+
+`POST /api/v1/dashboard/mentions/{id}/hide` (R11) has no body. Session + CSRF only, no personal access tokens. Returns
+204 (including repeated hides), 404 for an identity outside the user's snapshot/hidden set. A hide changes the
+summary revision and items ETag, persists per user across devices/refreshes, and leaves ranking/judgement alone.
+New posts on the same item have independent identities. Hides are not an update to GitHub.

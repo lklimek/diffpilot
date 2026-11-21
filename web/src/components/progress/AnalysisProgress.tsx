@@ -33,12 +33,12 @@ interface AnalysisProgressProps {
   /** State of the analysis (brief §4.2). */
   state: AnalysisState;
   reviewReady?: boolean;
-  /** The user has started this review (`has_my_state`): "Resume review", else "Open review". */
+  /** The user has started this review (`has_my_state`): only the tooltip differs. */
   reviewStarted?: boolean;
   /** Whole-run facts; absent on older servers. */
   progress?: RunProgress;
   usage?: UsageTotals | null;
-  /** Where "Resume review" / "Open review" leads once planning and PR context are accepted. */
+  /** Where "Open" leads once planning and PR context are accepted. */
   reviewHref: string;
   /** A cancel or retry request is running: the actions are disabled. */
   busy: boolean;
@@ -236,7 +236,7 @@ export function AnalysisProgress({
   const stage = parked
     ? backgroundAnalysis === false
       ? "The plan is ready. Nothing is being analysed. Choose a flow to analyse, or analyse all remaining flows."
-      : `No flow job is running. ${reviewStarted ? "Resume" : "Open"} the review to choose a flow.`
+      : "No flow job is running. Open the review to choose a flow."
     : stageText(state);
   const started =
     (state.state === "planning" || state.state === "running") && state.stage ? state.stage.started_at : null;
@@ -255,26 +255,43 @@ export function AnalysisProgress({
       : null;
   return (
     <section aria-label="Analysis progress" className="w-3/5 max-w-[1400px] min-w-[min(100vw_-_4rem,480px)]">
-      {/* Changes with the server's state and stage, and the silence notice every tick at most; the time stays outside. */}
-      <div aria-live="polite" className="mb-2 grid gap-0.5">
-        <p className="text-[15px] font-semibold">
-          {reviewReady && state.state === "running"
-            ? `${state.done} of ${state.total} flows analysed. The review is open.`
-            : label(state, planned)}
+      {/* Live: the headline and the stage and silence lines (every tick at most); Open and the time stay outside. */}
+      <div className="mb-2 grid gap-0.5">
+        <p className="flex flex-wrap items-baseline gap-x-4 text-[15px] font-semibold">
+          <span aria-live="polite">
+            {reviewReady && state.state === "running"
+              ? `${state.done} of ${state.total} flows analysed. The review is open.`
+              : label(state, planned)}
+          </span>
+          {(state.state === "finished" || reviewReady) && (
+            <Tooltip
+              tip={
+                reviewStarted
+                  ? "Opens your review; ticks and answers are kept. Starts nothing."
+                  : "Opens the review. Starts nothing."
+              }
+            >
+              <a
+                href={reviewHref}
+                className="font-semibold whitespace-nowrap text-accent no-underline hover:underline"
+              >
+                Open <span aria-hidden="true">→</span>
+              </a>
+            </Tooltip>
+          )}
         </p>
-        {stage && <p className="text-[13px]">{stage}</p>}
-        {silent ? (
-          <p className="text-[13px]">{`No signal from the server for ${silenceText(silence)}; reconnecting…`}</p>
-        ) : (
-          activity && !activity.connected && <p className="text-[13px]">Connection lost; reconnecting…</p>
-        )}
+        <div aria-live="polite" className="grid gap-0.5">
+          {stage && <p className="text-[13px]">{stage}</p>}
+          {silent ? (
+            <p className="text-[13px]">{`No signal from the server for ${silenceText(silence)}; reconnecting…`}</p>
+          ) : (
+            activity && !activity.connected && <p className="text-[13px]">Connection lost; reconnecting…</p>
+          )}
+        </div>
       </div>
       {progress && <StageList progress={progress} />}
-      <div className="flex items-center gap-4">
-        <div className="min-w-0 flex-1">
-          {!uncounted && <Bar state={state} working={working} progress={progress} planned={planned} />}
-        </div>
-        <span className="flex flex-none flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <span role="group" aria-label="Analysis actions" className="flex flex-wrap gap-2">
           {live && state.state !== "failed" && (userPaused ? onResume : onPause) && (
             <Tooltip
               tip={busyTip(
@@ -318,19 +335,6 @@ export function AnalysisProgress({
               </button>
             </Tooltip>
           )}
-          {(state.state === "finished" || reviewReady) && (
-            <Tooltip
-              tip={
-                reviewStarted
-                  ? "Returns to your review of this analysis where you left it."
-                  : "Opens the review of this analysis."
-              }
-            >
-              <a href={reviewHref} className={buttonClass("primary")}>
-                {reviewStarted ? "Resume review" : "Open review"}
-              </a>
-            </Tooltip>
-          )}
           {reviewReady && state.state === "running" && onBackground && backgroundAnalysis !== undefined && (
             <span className="flex items-center gap-2">
               <AnalyseAllButton
@@ -344,6 +348,11 @@ export function AnalysisProgress({
           )}
         </span>
       </div>
+      {!uncounted && (
+        <div className="mt-3">
+          <Bar state={state} working={working} progress={progress} planned={planned} />
+        </div>
+      )}
       {progress && running && !uncounted && (
         <p className="mt-2 text-[12.5px] text-muted">
           {percentText && <span>{percentText}</span>}

@@ -1,6 +1,7 @@
 // Code of the review screen: ranges fetched here and drawn by the code-view components (rule A7).
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useState } from "react";
+import type { CodeViewProps } from "../../components/code-view/CodeView";
 import { ApiError } from "../../api/client";
 import type {
   AnalysisId,
@@ -24,6 +25,27 @@ import { CodeView } from "../../components/code-view/CodeView";
 import type { MarkerTarget } from "../../components/code-view/markers";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
+
+/** "Hide comment and import changes" of the review views, remembered per user (default on). */
+export function useHideContextChanges(login: string | null): [boolean, (hide: boolean) => void] {
+  const key = `diffpilot.hide-context-changes.${login ?? "anonymous"}`;
+  const [hide, setHide] = useState(() => {
+    try {
+      return localStorage.getItem(key) !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const change = (next: boolean) => {
+    setHide(next);
+    try {
+      localStorage.setItem(key, String(next));
+    } catch {
+      /* Storage unavailable; keep this view's preference. */
+    }
+  };
+  return [hide, change];
+}
 
 /** Plain text of a failed request. */
 export function errorText(error: unknown): string {
@@ -54,6 +76,8 @@ export interface CodeContext {
   activeLine: CommentTarget | null;
   /** A line number was activated: comment on it; `lines` are the displayed lines it belongs to. */
   onComment: (target: CommentTarget, lines: LinesResponse) => void;
+  /** A line number was activated in the Files view: select it (`extend`: Shift or drag); else `onComment`. */
+  onLineSelect?: (target: CommentTarget, how: { extend: boolean }, lines: LinesResponse) => void;
   /** "Ask about this line" (or the selected lines); not offered without it (no step open). */
   onAskLine?: (target: CommentTarget) => void;
   /** A pending comment to show open where its line is displayed. */
@@ -69,7 +93,19 @@ export interface CodeContext {
   otherThreadStep?: (thread: GithubThread) => string | null;
 }
 
-interface LinesCodeProps {
+interface LinesCodeProps extends Pick<
+  CodeViewProps,
+  | "bandOf"
+  | "remarkOwner"
+  | "selection"
+  | "hunkOf"
+  | "selectedHunk"
+  | "onSelectHunk"
+  | "removedAnnotations"
+  | "remarkStartOnly"
+  | "removedMarkerLine"
+  | "askLineHint"
+> {
   ctx: CodeContext;
   revealLine?: number;
   lines: UseQueryResult<LinesResponse>;
@@ -111,7 +147,9 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
         onDeleteComment={ctx.onDeleteComment}
         activeLine={active && { side: active.side, line: active.line }}
         highlight={highlight}
-        onLineAction={(target) => ctx.onComment(target, data)}
+        onLineAction={(target, how) =>
+          ctx.onLineSelect ? ctx.onLineSelect(target, how, data) : ctx.onComment(target, data)
+        }
         onAskLine={ctx.onAskLine}
         onLoadDeleted={(block) => setOpened((all) => [...all, block.base_start])}
         onShowInInspector={ctx.onShowInInspector}

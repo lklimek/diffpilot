@@ -3,7 +3,7 @@
 //! served from a `file://` clone base.
 #![expect(clippy::expect_used, reason = "test helpers outside #[test] functions")]
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -12,10 +12,11 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use contracts::api::analyses::AnalysisState;
+use contracts::api::files::{FilesResponse, PartOwner, ViewedStatus};
 use contracts::api::pr::PrSummary;
 use contracts::api::review::{BlockRef, QuietRowRef, ReviewState};
 use contracts::api::tour::Tour;
-use contracts::common::{LlmLanguage, NotAnalysedCategory};
+use contracts::common::{LineSide, LlmLanguage, NotAnalysedCategory};
 use contracts::ids::{AnalysisId, CommitSha, FlowId, StepId};
 use contracts::time::Timestamp;
 use db::repo::analyses::NewAnalysis;
@@ -54,6 +55,7 @@ struct Harness {
 fn config(dir: &Path) -> Config {
     let env: HashMap<&str, String> = HashMap::from([
         ("SR_PUBLIC_URL", "http://review.example.test".to_owned()),
+        ("SR_ALLOWED_LOGINS", "alice".to_owned()),
         ("SR_DATA_DIR", dir.join("data").display().to_string()),
         (
             "SR_SECRET_KEY",
@@ -72,6 +74,8 @@ fn config(dir: &Path) -> Config {
             format!("file://{}", dir.join("remotes").display()),
         ),
         ("SR_MEMCAN_URL", "http://memcan.example.test/mcp".to_owned()),
+        // Nothing listens there: a GitHub read with a user token fails at once, never reaching GitHub.
+        ("SR_GITHUB_API_URL", "http://127.0.0.1:9".to_owned()),
         ("SR_MEMCAN_TOKEN", "fake-memcan-token".to_owned()),
     ]);
     Config::from_lookup(|key| Ok(env.get(key).cloned())).expect("test configuration")
@@ -115,6 +119,26 @@ impl Harness {
             h.sign_in(DEFAULT_TENANT, user, github_id).await;
         }
         h
+    }
+
+    /// Stores a GitHub token pair for `user` (the API URL answers nothing, so its reads are "not checked").
+    async fn github_tokens(&self, user: &str) {
+        let lock = server::auth::lock_user(user).await;
+        let grant = server::github::oauth::TokenGrant {
+            access_token: secrecy::SecretString::from(format!("ghu_test_{user}")),
+            expires_in: 8 * 3600,
+            refresh_token: secrecy::SecretString::from(format!("ghr_test_{user}")),
+            refresh_token_expires_in: 180 * 86_400,
+        };
+        server::auth::store_sign_in_tokens(
+            &self.state,
+            &lock,
+            DEFAULT_TENANT,
+            &grant,
+            Timestamp::now(),
+        )
+        .await
+        .expect("tokens");
     }
 
     async fn sign_in(&self, tenant: &str, user: &str, github_id: i64) {
@@ -322,6 +346,18 @@ fn cookie_token(tenant: &str, user: &str) -> String {
 
 fn review_state(id: AnalysisId) -> String {
     format!("/api/v1/analyses/{id}/review-state")
+}
+
+fn files(id: AnalysisId) -> String {
+    format!("/api/v1/analyses/{id}/files")
+}
+
+fn dependencies(id: AnalysisId) -> String {
+    format!("/api/v1/analyses/{id}/dependencies")
+}
+
+fn files_viewed(id: AnalysisId) -> String {
+    format!("/api/v1/analyses/{id}/files/viewed")
 }
 
 fn diff(id: AnalysisId, path: &str, side: &str, from: u32, to: u32) -> String {
@@ -749,10 +785,21 @@ async fn analysis_routes_check_session_csrf_and_tenant() {
         .expect("tenant");
     h.sign_in("other", "u-carol", 3003).await;
     let get_diff = diff(id, "src/lib.rs", "head", 1, 5);
+    let viewed = || Some(json!({ "path": "src/lib.rs", "viewed": true }));
+    let ask_lines = || {
+        Some(
+            json!({ "text": "Why?", "anchor": { "kind": "lines", "path": "src/lib.rs", "side": "head", "range": null } }),
+        )
+    };
+    let questions = format!("/api/v1/analyses/{id}/questions");
     for (method, uri, csrf, body) in [
         ("GET", review_state(id), false, None),
         ("PUT", review_state(id), true, body()),
         ("GET", get_diff.clone(), false, None),
+        ("GET", files(id), false, None),
+        ("GET", dependencies(id), false, None),
+        ("PUT", files_viewed(id), true, viewed()),
+        ("POST", questions.clone(), true, ask_lines()),
     ] {
         let (status, error) = h.send(method, &uri, None, csrf, body.clone()).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
@@ -765,11 +812,15 @@ async fn analysis_routes_check_session_csrf_and_tenant() {
         );
         assert_eq!(error["code"], json!("not_found"));
     }
-    let (status, error) = h
-        .send("PUT", &review_state(id), Some(ALICE), false, body())
-        .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(error["code"], json!("csrf_rejected"));
+    for (method, uri, body) in [
+        ("PUT", review_state(id), body()),
+        ("PUT", files_viewed(id), viewed()),
+        ("POST", questions.clone(), ask_lines()),
+    ] {
+        let (status, error) = h.send(method, &uri, Some(ALICE), false, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(error["code"], json!("csrf_rejected"));
+    }
     let unknown = AnalysisId::new_random();
     for uri in [
         review_state(unknown),
@@ -932,4 +983,249 @@ async fn diff_keeps_line_endings_refuses_binary_files_and_waits_for_the_merge_ba
     let (status, body) = h.get(&diff(unprepared, "a.txt", "head", 1, 1)).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["code"], json!("analysis_not_finished"));
+}
+
+/// Lines of `side` in `range`, as a set of (path, line).
+fn line_set(path: &str, start: u32, end: u32) -> impl Iterator<Item = (String, u32)> + '_ {
+    (start..=end).map(move |line| (path.to_owned(), line))
+}
+
+/// C1 on fixture PR 482: every changed line is in exactly one part of its hunk, and the Unexplained parts are
+/// exactly the Tour's Unexplained rows (one source of truth). No user token: the Viewed marks are not read and no
+/// GitHub call is made.
+#[tokio::test]
+async fn files_own_every_changed_line_once_and_agree_with_the_tour() {
+    let h = Harness::new().await;
+    let id = h.analysis(true).await;
+    let tour = h.tour(id).await;
+    h.github_tokens("u-alice").await;
+    let (status, body) = h.get(&files(id)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let response: FilesResponse = serde_json::from_value(body).expect("files");
+    assert_eq!(response.viewed_status, ViewedStatus::NotChecked);
+    assert_eq!(response.current_head, None);
+    assert!(response.files.iter().all(|file| file.viewed.is_none()));
+    let mut unexplained: [BTreeSet<(String, u32)>; 2] = Default::default();
+    let mut changed_lines = 0;
+    for file in &response.files {
+        let base_path = file.old_path.as_deref().unwrap_or(&file.path);
+        let (mut added, mut removed) = (0, 0);
+        for hunk in &file.hunks {
+            for (side, range, path) in [
+                (LineSide::Base, hunk.base, base_path),
+                (LineSide::Head, hunk.head, file.path.as_str()),
+            ] {
+                let parts: Vec<_> = hunk.parts.iter().filter(|part| part.side == side).collect();
+                let Some(range) = range else {
+                    assert!(parts.is_empty(), "{}: {hunk:?}", file.path);
+                    continue;
+                };
+                let mut next = range.start_line;
+                for part in &parts {
+                    assert_eq!(
+                        part.range.start_line, next,
+                        "{}: gap or overlap in {hunk:?}",
+                        file.path
+                    );
+                    next = part.range.end_line + 1;
+                    if let PartOwner::Unexplained { .. } = part.owner {
+                        let set = &mut unexplained[usize::from(side == LineSide::Head)];
+                        set.extend(line_set(path, part.range.start_line, part.range.end_line));
+                    }
+                }
+                assert_eq!(
+                    next,
+                    range.end_line + 1,
+                    "{}: parts end early in {hunk:?}",
+                    file.path
+                );
+                let count = range.end_line - range.start_line + 1;
+                match side {
+                    LineSide::Base => removed += count,
+                    LineSide::Head => added += count,
+                }
+            }
+        }
+        if file.not_rendered.is_none() {
+            assert_eq!(
+                (file.added, file.removed),
+                (added, removed),
+                "{}",
+                file.path
+            );
+        }
+        changed_lines += added + removed;
+    }
+    assert!(changed_lines > 100, "{changed_lines}");
+    let mut expected: [BTreeSet<(String, u32)>; 2] = Default::default();
+    for row in &tour.quiet.unexplained {
+        let set = &mut expected[usize::from(row.side == LineSide::Head)];
+        for range in &row.ranges {
+            set.extend(line_set(&row.file, range.start_line, range.end_line));
+        }
+    }
+    assert_eq!(unexplained, expected);
+    // Every step with changed lines owns or shares at least one, so the Files view can open each one.
+    let owners: BTreeSet<&StepId> = response
+        .files
+        .iter()
+        .flat_map(|file| &file.hunks)
+        .flat_map(|hunk| &hunk.parts)
+        .flat_map(|part| {
+            let owner = match &part.owner {
+                PartOwner::Step { step_id, .. } => Some(step_id),
+                _ => None,
+            };
+            owner.into_iter().chain(&part.also_in)
+        })
+        .collect();
+    for step in tour.flows.iter().flat_map(|flow| &flow.steps) {
+        if !step.facts.changed_lines.is_empty() {
+            assert!(owners.contains(&step.id), "{} owns no line", step.id);
+        }
+    }
+}
+
+#[tokio::test]
+async fn files_wait_for_the_analysis_and_viewed_refuses_other_paths() {
+    let h = Harness::new().await;
+    let running = h.analysis(false).await;
+    let (status, body) = h.get(&files(running)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], json!("analysis_not_finished"));
+    let id = h.analysis(true).await;
+    let (status, body) = h
+        .send(
+            "PUT",
+            &files_viewed(id),
+            Some(ALICE),
+            true,
+            Some(json!({ "path": "src/not-in-the-pr.rs", "viewed": true })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], json!("invalid_request"));
+    let (status, body) = h
+        .send(
+            "PUT",
+            &files_viewed(id),
+            Some(ALICE),
+            true,
+            Some(json!({ "path": "src/rpc/client.rs" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // Without a GitHub sign-in the Viewed marks cannot be read: sign in again, not "not checked".
+    let (status, body) = h.send("GET", &files(id), Some(BOB), false, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["code"], json!("unauthenticated"));
+}
+
+/// R15 on fixture PR 482: one crate at the repository root, its five registry dependencies listed under the
+/// registry, the fixture plan's notes ranked by changed lines, no conversion facts.
+#[tokio::test]
+async fn dependencies_of_the_fixture_pull_request() {
+    let h = Harness::new().await;
+    let id = h.analysis(true).await;
+    let (status, body) = h.get(&dependencies(id)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let view: contracts::api::deps::DependencyView = serde_json::from_value(body).expect("view");
+    assert_eq!(
+        view.status,
+        contracts::api::deps::DependencyStatus::Available
+    );
+    assert_eq!(view.notes, contracts::api::deps::NotesState::Produced);
+    assert_eq!(view.repositories.len(), 2, "{view:?}");
+    let registry = &view.repositories[1];
+    assert_eq!(
+        registry.kind,
+        contracts::api::deps::RepositoryKind::Registry
+    );
+    assert_eq!(registry.crates.len(), 5, "{registry:?}");
+    let this = &view.repositories[0];
+    assert_eq!(this.kind, contracts::api::deps::RepositoryKind::This);
+    let [krate] = this.crates.as_slice() else {
+        panic!("one crate: {:?}", this.crates);
+    };
+    assert_eq!(krate.name, "node-client");
+    let changes = krate.changes.as_ref().expect("changed");
+    assert!(
+        changes.changed_lines > 0 && changes.files > 0,
+        "{changes:?}"
+    );
+    assert_eq!(changes.other_dependencies, 0);
+    assert!(changes.facts.is_empty(), "{:?}", changes.facts);
+    assert_eq!(changes.notes.len(), 3);
+    assert_eq!(changes.notes_hidden, 1);
+    assert!(
+        changes
+            .notes
+            .windows(2)
+            .all(|pair| pair[0].changed_lines >= pair[1].changed_lines),
+        "{:?}",
+        changes.notes
+    );
+    let (status, again) = h.get(&dependencies(id)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_value::<contracts::api::deps::DependencyView>(again).expect("view"),
+        view,
+        "stored and served again"
+    );
+}
+
+/// C1 contract: a `step` owner is a step of the named flow that holds the lines in the Tour, and head lines it owns
+/// are among that step's changed lines; a `flow` owner names a flow of the Tour.
+#[tokio::test]
+async fn files_step_owners_agree_with_the_tour_steps() {
+    let h = Harness::new().await;
+    let id = h.analysis(true).await;
+    h.github_tokens("u-alice").await;
+    let tour = h.tour(id).await;
+    let (status, body) = h.get(&files(id)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let response: FilesResponse = serde_json::from_value(body).expect("files");
+    let mut step_parts = 0;
+    for file in &response.files {
+        for part in file.hunks.iter().flat_map(|hunk| &hunk.parts) {
+            match &part.owner {
+                PartOwner::Step { flow_id, step_id } => {
+                    step_parts += 1;
+                    let flow = tour
+                        .flows
+                        .iter()
+                        .find(|flow| &flow.id == flow_id)
+                        .expect("owner flow in the Tour");
+                    let step = flow
+                        .steps
+                        .iter()
+                        .find(|step| &step.id == step_id)
+                        .expect("owner step in its flow");
+                    assert!(!part.also_in.contains(step_id), "{part:?}");
+                    if part.side == LineSide::Head {
+                        assert_eq!(step.facts.file, file.path, "{part:?}");
+                        assert_eq!(step.facts.side, LineSide::Head, "{part:?}");
+                        for line in part.range.start_line..=part.range.end_line {
+                            assert!(
+                                step.facts
+                                    .changed_lines
+                                    .iter()
+                                    .any(|r| r.start_line <= line && line <= r.end_line),
+                                "{}:{line} owned by {step_id} but not among its changed lines",
+                                file.path
+                            );
+                        }
+                    }
+                }
+                PartOwner::Flow { flow_id } => {
+                    assert!(
+                        tour.flows.iter().any(|flow| &flow.id == flow_id),
+                        "{part:?}"
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(step_parts > 5, "{step_parts}");
 }

@@ -33,6 +33,34 @@ pub struct Settings {
     pub app_installations: Option<Vec<AppInstallation>>,
     /// The tenant's known repositories (any pull request opened); each one's settings can be opened.
     pub repos: Vec<RepoRef>,
+    /// Installation-wide controlled GitHub owners (Dependencies view, ADR-021); absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub controlled_owners: Option<ControlledOwners>,
+}
+
+/// The installation-wide list of controlled GitHub owners: their repositories are "yours" in the Dependencies
+/// view, besides the pull request's owner, which always is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ControlledOwners {
+    /// Owner logins, sorted case-insensitively, unique.
+    pub owners: Vec<String>,
+    /// Who saved the list last; null before the first save.
+    pub changed_by: Option<String>,
+    /// When it was saved last.
+    pub changed_at: Option<Timestamp>,
+}
+
+/// Body of `PUT /api/v1/settings/controlled-owners`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SetControlledOwnersRequest {
+    /// GitHub owner logins (users or organisations), at most [`SetControlledOwnersRequest::MAX_OWNERS`].
+    pub owners: Vec<String>,
+}
+
+impl SetControlledOwnersRequest {
+    /// Most owners in the list.
+    pub const MAX_OWNERS: usize = 50;
 }
 
 /// A GitHub App installation.

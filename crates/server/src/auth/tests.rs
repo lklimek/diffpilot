@@ -28,7 +28,10 @@ use url::Url;
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{CSRF_HEADER, UserTokenError, lock_user, store_sign_in_tokens, user_access_token};
+use super::{
+    CSRF_HEADER, UserTokenError, apply_allowed_logins, lock_user, store_sign_in_tokens,
+    user_access_token,
+};
 use crate::api;
 use crate::config::tests::test_config;
 use crate::github::oauth::TokenGrant;
@@ -77,6 +80,10 @@ async fn harness_on(db: Db, public_url: &str, trusted_proxies: &[&str]) -> Harne
         .collect();
     config.github.oauth_url = Url::parse(&github.uri()).expect("oauth url");
     config.github.api_url = Url::parse(&format!("{}/api", github.uri())).expect("api url");
+    // As at server start.
+    apply_allowed_logins(&db, &config.allowed_logins)
+        .await
+        .expect("allowed logins");
     Harness {
         github,
         state: AppState::with_queue(config, db),
@@ -994,6 +1001,51 @@ async fn removed_login_loses_access_on_next_request() {
         .await
         .expect("entry bound to another account");
     assert_eq!(me_login(&h, &signed_in.cookie).await, None);
+}
+
+/// ADR-007 addendum: a start with another `SR_ALLOWED_LOGINS` ends a dropped login's access for good, admits a
+/// new one, and logs what changed.
+#[tokio::test]
+async fn allowed_logins_of_the_configuration_apply_at_start() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    let capture = LogCapture::start();
+    apply_allowed_logins(&h.state.db, &["octocat".to_owned()])
+        .await
+        .expect("restart without lklimek");
+    let logs = capture.text();
+    assert!(
+        logs.contains("INFO")
+            && logs.contains("added=1")
+            && logs.contains("removed=2")
+            && logs.contains("\"octocat\"")
+            && logs.contains("\"lklimek\""),
+        "{logs}"
+    );
+    assert_eq!(me_login(&h, &signed_in.cookie).await, None);
+    h.github.reset().await;
+    h.mock_github_user("lklimek", 1001).await;
+    let response = h.callback(&h.start_login().await).await;
+    assert_eq!(location(&response), "/?login_error=login_not_allowed");
+
+    apply_allowed_logins(&h.state.db, &["octocat".to_owned(), "lklimek".to_owned()])
+        .await
+        .expect("restart with lklimek again");
+    assert_eq!(
+        me_login(&h, &signed_in.cookie).await,
+        None,
+        "the old session stays ended"
+    );
+    let again = h.sign_in("lklimek", 1001).await;
+    assert_eq!(
+        me_login(&h, &again.cookie).await.as_deref(),
+        Some("lklimek")
+    );
+    let newcomer = h.sign_in("octocat", 3003).await;
+    assert_eq!(
+        me_login(&h, &newcomer.cookie).await.as_deref(),
+        Some("octocat")
+    );
 }
 
 #[tokio::test]

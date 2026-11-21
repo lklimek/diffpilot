@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -277,8 +277,8 @@ fn generated_file_never_in_agent_input() {
             "src/gen.rs",
             &[header, "", "pub const A: u32 = 2;"],
         ),
-        text(LineSide::Base, "src/lib.rs", &["use a::x;"]),
-        text(LineSide::Head, "src/lib.rs", &["use a::y;"]),
+        text(LineSide::Base, "src/lib.rs", &["pub use a::x;"]),
+        text(LineSide::Head, "src/lib.rs", &["pub use a::y;"]),
     ]
     .into_iter()
     .collect();
@@ -379,8 +379,8 @@ fn agent_files_quiet_lines_and_binaries_split_the_diff() {
             "api/service.pb.go",
             &["package api", "func A() {}"],
         ),
-        text(LineSide::Base, "src/lib.rs", &["use a::x;"]),
-        text(LineSide::Head, "src/lib.rs", &["use a::y;"]),
+        text(LineSide::Base, "src/lib.rs", &["pub use a::x;"]),
+        text(LineSide::Head, "src/lib.rs", &["pub use a::y;"]),
     ]
     .into_iter()
     .collect();
@@ -902,7 +902,7 @@ fn whitespace_only_lines_read_as_unchanged_code_and_stay_context() {
 
 #[test]
 fn rust_comment_import_context_stays_with_agent_but_needs_no_coverage() {
-    let text = "// heading\nuse std::fmt;\nfn work() {}\n/* explanation */\n";
+    let text = "// heading\nuse std::fmt;\nfn work(_: fmt::Error) {}\n/* explanation */\n";
     let files = vec![FileDiff {
         path: "src/lib.rs".into(),
         old_path: None,
@@ -1098,4 +1098,138 @@ fn reorder_within_a_file_stays_with_the_agent_cross_file_move_stays_quiet() {
         "the source file is gone"
     );
     assert!(result.quiet_lines(&files).is_empty());
+}
+
+#[test]
+fn inline_rust_tests_are_not_analysed_but_stay_shown() {
+    let base = ["fn f() -> u8 {", "    1", "}"];
+    let head = [
+        "fn f() -> u8 {",
+        "    2",
+        "}",
+        "",
+        "#[cfg(test)]",
+        "mod tests {",
+        "    #[test]",
+        "    fn two() {",
+        "        assert_eq!(super::f(), 2);",
+        "    }",
+        "}",
+    ];
+    let mut next_id = 0;
+    let files = vec![file(
+        "src/lib.rs",
+        None,
+        FileStatus::Modified,
+        hunks_between(&base, &head, &mut next_id),
+    )];
+    let texts = Texts::from([
+        text(LineSide::Base, "src/lib.rs", &base),
+        text(LineSide::Head, "src/lib.rs", &head),
+    ]);
+    let result = run(&files, &[], &texts);
+    // The diff may pair the module's closing `}` with the function's: the changed lines of the module.
+    let mut changed: Vec<u32> = files[0]
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.added.iter().copied())
+        .filter(|line| (5..=11).contains(line))
+        .collect();
+    changed.sort_unstable();
+    assert!(changed.starts_with(&[5, 6, 7, 8, 9, 10]), "{changed:?}");
+    let test_lines = crate::lines::ranges(&changed)[0];
+    // Listed under Tests with its lines, by the line rule.
+    let tests: Vec<&NotAnalysedItem> = result
+        .not_analysed
+        .iter()
+        .filter(|section| section.category == NotAnalysedCategory::Tests)
+        .flat_map(|section| &section.items)
+        .collect();
+    assert_eq!(tests.len(), 1, "{:?}", result.not_analysed);
+    assert_eq!(tests[0].rule, tech::TEST_ITEM_RULE);
+    assert_eq!(tests[0].badge, ProvenanceBadge::ClassifiedByLineRule);
+    assert_eq!(tests[0].ranges, Some(vec![test_lines]));
+    // Not for the agent, no coverage duty; the production line stays with the agent.
+    let agent: Vec<LineRange> = result
+        .agent_lines
+        .iter()
+        .filter(|lines| lines.side == LineSide::Head)
+        .flat_map(|lines| lines.ranges.clone())
+        .collect();
+    let agent_lines: Vec<u32> = agent
+        .iter()
+        .flat_map(|r| r.start_line..=r.end_line)
+        .collect();
+    assert!(agent_lines.contains(&2), "{agent_lines:?}");
+    assert!(
+        agent_lines.iter().all(|line| !changed.contains(line)),
+        "{agent_lines:?}"
+    );
+    let quiet = result.quiet_lines(&files);
+    assert!(
+        quiet
+            .iter()
+            .any(|lines| lines.side == LineSide::Head && lines.ranges.contains(&test_lines))
+    );
+    // Shown in the code views: test code is not hidden like comments and imports.
+    assert!(result.view_context(LineSide::Head, "src/lib.rs").is_empty());
+    // Counted as test lines.
+    let count = u32::try_from(changed.len()).expect("small");
+    assert_eq!(result.counters.counters.lines_added_to_tests, Some(count));
+}
+
+#[test]
+fn a_hunk_of_only_context_lines_is_context_only() {
+    let head = [
+        "// heading",
+        "use std::fmt;",
+        "",
+        "fn work(_: fmt::Error) {}",
+    ];
+    let files = vec![file(
+        "src/lib.rs",
+        None,
+        FileStatus::Added,
+        vec![hunk(1, (0, 0), (1, 3)), hunk(2, (0, 0), (4, 1))],
+    )];
+    let texts = Texts::from([text(LineSide::Head, "src/lib.rs", &head)]);
+    let result = run(&files, &[], &texts);
+    let [context, code] = files[0].hunks.as_slice() else {
+        panic!("two hunks")
+    };
+    let mut with_unknown = files.clone();
+    // A hunk the pre-pass does not know is never context only.
+    with_unknown[0].hunks.push(Hunk {
+        id: HunkId("h99".into()),
+        ..context.clone()
+    });
+    assert_eq!(
+        result.context_only_hunks(&with_unknown),
+        BTreeSet::from([context.id.clone()]),
+        "comment, import, blank: not {code:?}"
+    );
+}
+
+/// A change made only of context lines (imports, comments, inline tests) leaves nothing to plan: no plan batch,
+/// so no plan job spends tokens on an empty listing.
+#[test]
+fn a_change_of_only_context_lines_has_no_plan_batch() {
+    // A re-export: a private import its own side never names stays with the agent (a trait for its methods).
+    let head = ["// heading", "pub use std::fmt;", ""];
+    let files = vec![file(
+        "src/lib.rs",
+        None,
+        FileStatus::Added,
+        vec![hunk(1, (0, 0), (1, 3))],
+    )];
+    let texts = Texts::from([text(LineSide::Head, "src/lib.rs", &head)]);
+    let result = run(&files, &[], &texts);
+    assert_eq!(
+        result.context_only_hunks(&files),
+        BTreeSet::from([files[0].hunks[0].id.clone()])
+    );
+    let batches = crate::prepass::batches::plan_batches(&result.plan_files(&files));
+    assert!(batches.is_empty(), "{batches:?}");
+    // Verification still knows the hunk: a plan stored before today's rules may name it.
+    assert_eq!(result.agent_files(&files).len(), 1);
 }

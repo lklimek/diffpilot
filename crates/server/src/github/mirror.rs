@@ -235,6 +235,33 @@ pub async fn read_blobs(
     read_blobs_in_slot(&READ_PERMITS, READ_TIMEOUT, mirror, requests, limits).await
 }
 
+/// Runs CPU-bound `work` on the blocking pool in a read slot, so it is bounded together with the blob reads.
+pub async fn in_read_slot<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, MirrorError> {
+    let slot = read_slot(&READ_PERMITS, READ_TIMEOUT).await?;
+    tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        work()
+    })
+    .await
+    .map_err(MirrorError::Task)
+}
+
+/// One of the read slots, waiting at most `wait`.
+async fn read_slot(
+    permits: &Arc<tokio::sync::Semaphore>,
+    wait: Duration,
+) -> Result<tokio::sync::OwnedSemaphorePermit, MirrorError> {
+    tokio::time::timeout(wait, Arc::clone(permits).acquire_owned())
+        .await
+        .map_err(|_| MirrorError::Timeout {
+            operation: "read slot",
+            timeout: wait,
+        })?
+        .map_err(|_| MirrorError::ReadSlotsClosed)
+}
+
 /// [`read_blobs`] with its slots and slot wait given; the slot moves into the blocking task and is released
 /// when the read ends.
 async fn read_blobs_in_slot(
@@ -244,13 +271,7 @@ async fn read_blobs_in_slot(
     requests: Vec<(CommitSha, String)>,
     limits: Limits,
 ) -> Result<Vec<Blob>, MirrorError> {
-    let slot = tokio::time::timeout(wait, Arc::clone(permits).acquire_owned())
-        .await
-        .map_err(|_| MirrorError::Timeout {
-            operation: "read slot",
-            timeout: wait,
-        })?
-        .map_err(|_| MirrorError::ReadSlotsClosed)?;
+    let slot = read_slot(permits, wait).await?;
     let mirror = mirror.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let _slot = slot;
@@ -288,6 +309,65 @@ pub async fn tree_paths(mirror: &Path, commit: &CommitSha) -> Result<Vec<String>
         .filter(|path| !path.is_empty())
         .map(|path| String::from_utf8_lossy(path).into_owned())
         .collect())
+}
+
+/// The `.rs` files under `dir` (`""` = the whole tree) at `commit` that contain `struct`, `enum`, `union`, `trait` or
+/// `type` followed by one of `names` (`git grep -w`, literal pathspec), in path order; runs in a read slot. Names
+/// that are not plain identifiers are left out; none left means no search.
+pub async fn grep_definitions(
+    mirror: &Path,
+    commit: &CommitSha,
+    dir: &str,
+    names: &[String],
+) -> Result<Vec<String>, MirrorError> {
+    let names: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| is_identifier(name))
+        .collect();
+    if names.is_empty() || !(dir.is_empty() || is_tree_path(dir)) {
+        return Ok(Vec::new());
+    }
+    let pattern = format!(
+        "(struct|enum|union|trait|type)[[:space:]]+({})",
+        names.join("|")
+    );
+    let mut command = git(mirror);
+    command
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .args(["grep", "-l", "-z", "-I", "-w", "-E", "--no-color", "-e"])
+        .arg(&pattern)
+        .arg("--end-of-options")
+        .arg(&commit.0)
+        .arg("--")
+        .arg(if dir.is_empty() { "." } else { dir });
+    let _slot = read_slot(&READ_PERMITS, READ_TIMEOUT).await?;
+    let output = run(command, "grep", READ_TIMEOUT).await?;
+    // Exit 1 with no output: nothing matched.
+    if output.status.code() == Some(1) && output.stdout.is_empty() {
+        return Ok(Vec::new());
+    }
+    let output = check(output, "grep")?;
+    let prefix = format!("{}:", commit.0);
+    let mut paths: Vec<String> = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| std::str::from_utf8(entry).ok())
+        .filter_map(|entry| entry.strip_prefix(&prefix))
+        .filter(|path| path.ends_with(".rs") && is_tree_path(path))
+        .map(str::to_owned)
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+
+/// A plain Rust identifier (`[A-Za-z_][A-Za-z0-9_]*`).
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// The merge base of `base` and `head`: the commit a pull request's changes are compared with (GitHub's
@@ -416,6 +496,80 @@ mod tests {
         assert_eq!(
             tree_paths(dir.path(), &head).await.expect("tree"),
             ["a.txt"]
+        );
+    }
+
+    #[tokio::test]
+    async fn grep_definitions_finds_rust_definitions_inside_the_directory() {
+        let (dir, _) = repo_with_one_file();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.test")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.test")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        let write = |path: &str, text: &str| {
+            let file = dir.path().join(path);
+            std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+            std::fs::write(file, text).expect("write");
+        };
+        write("b/src/lib.rs", "pub struct Height(u64);\n");
+        write("b/src/other.rs", "pub struct HeightLimit;\n");
+        write("b/README.md", "struct Height\n");
+        write("a/src/lib.rs", "pub struct Height;\n");
+        write("*/x.rs", "enum Height {}\n");
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "more"]);
+        let head = CommitSha(git(&["rev-parse", "HEAD"]));
+        let names = |list: &[&str]| list.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            grep_definitions(dir.path(), &head, "b", &names(&["Height"]))
+                .await
+                .expect("grep"),
+            ["b/src/lib.rs"],
+            "whole words, Rust files, inside the directory"
+        );
+        assert_eq!(
+            grep_definitions(dir.path(), &head, "", &names(&["Height"]))
+                .await
+                .expect("grep"),
+            ["*/x.rs", "a/src/lib.rs", "b/src/lib.rs"]
+        );
+        assert_eq!(
+            grep_definitions(dir.path(), &head, "*", &names(&["Height"]))
+                .await
+                .expect("grep"),
+            ["*/x.rs"],
+            "a literal pathspec, not a glob"
+        );
+        assert!(
+            grep_definitions(dir.path(), &head, "b", &names(&["Missing"]))
+                .await
+                .expect("grep")
+                .is_empty()
+        );
+        assert!(
+            grep_definitions(dir.path(), &head, "b", &names(&["x|.*", "-e", "a b"]))
+                .await
+                .expect("grep")
+                .is_empty(),
+            "only identifiers reach the pattern"
+        );
+        assert!(
+            grep_definitions(dir.path(), &head, "../b", &names(&["Height"]))
+                .await
+                .expect("grep")
+                .is_empty()
         );
     }
 

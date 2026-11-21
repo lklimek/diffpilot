@@ -15,6 +15,12 @@ use crate::ids::{AnalysisId, CommitSha, RefreshId};
 /// Response of `GET /api/v1/dashboard`: the user's dashboard without its items.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct DashboardSummary {
+    /// Unanswered, unhidden mentions, oldest first; independent of the ranking.
+    #[serde(default)]
+    pub mentions: Vec<Mention>,
+    /// Mention reads omitted in this snapshot, independent of item filters and pagination.
+    #[serde(default)]
+    pub mention_coverage: MentionCoverage,
     /// Opaque; changes whenever the stored snapshot or its ranking changes (poll this, then fetch the items).
     pub revision: String,
     /// The newest refresh of the user, live or ended; null before the first.
@@ -25,6 +31,50 @@ pub struct DashboardSummary {
     pub schedule: ScheduleStatus,
     /// Items of the snapshot whose judgement came from an older ranking prompt (re-judged within the caps).
     pub older_prompt_judgements: u32,
+    /// Configured dashboard plug-ins (ADR-022); absent when none is configured. While one is listed, the browser
+    /// reads the summary again every minute.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<PluginStatus>>", optional)]
+    pub plugins: Vec<PluginStatus>,
+}
+
+/// A configured dashboard plug-in: an external source of statements about pull requests (ADR-022).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PluginStatus {
+    /// Stable id, e.g. `pr-hygiene`.
+    pub plugin: String,
+    /// Name shown before its statements, e.g. `PR Hygiene`.
+    pub source: String,
+    /// The source's home page.
+    pub url: String,
+    /// Whether its statements are shown now.
+    pub state: PluginState,
+    /// When the source produced the data last read; null before the first successful read.
+    pub as_of: Option<Timestamp>,
+}
+
+/// Whether a plug-in's statements are shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginState {
+    /// Not read yet, or not read recently because nobody used the dashboard (it is read only then); being read.
+    Waiting,
+    /// Read recently; its statements are shown.
+    Current,
+    /// The source failed since its last good read, or its data is older than the freshness bound; nothing of it is
+    /// shown.
+    Stale,
+}
+
+/// Missing mention reads; zero items does not imply that every login was searched.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MentionCoverage {
+    /// Real candidates not checked because of the read budget, deadline or read failure.
+    pub unchecked_items: u32,
+    /// Logins whose mention search was unavailable; fallback covers only mention-only issues.
+    pub unchecked_logins: Vec<String>,
+    /// Logins whose PR mention search exceeded its request budget.
+    pub timed_out_logins: Vec<String>,
 }
 
 /// What started a refresh.
@@ -255,6 +305,15 @@ pub struct SnapshotMeta {
     pub excluded: u32,
     /// The user's pull requests waiting on other people.
     pub awaiting: Vec<AwaitingItem>,
+    /// The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked.
+    pub ready_to_merge: Vec<ReadyToMergeItem>,
+    /// Pull requests K17 would list that a current plug-in statement holds back (ADR-022), by display id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<HeldBack>>", optional)]
+    pub ready_to_merge_held: Vec<HeldBack>,
+    /// The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read
+    /// again by the next refresh); null when the snapshot did not record merge states (stored before they were).
+    pub merge_state_pending: Option<u32>,
     /// Dated pull request and review events of the chart window (12 weeks), across the scanned logins.
     pub history: Vec<HistoryEvent>,
     /// State of the MemCan TODOs.
@@ -412,6 +471,43 @@ pub struct AwaitingItem {
     pub total_tenths: Option<i32>,
 }
 
+/// A pull request of the user ready to merge: into the default branch, not a draft, write access, every check passed
+/// and nothing left to answer (plan K17).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ReadyToMergeItem {
+    /// Display alias, e.g. `PLAT-1176`.
+    pub id: String,
+    /// Repository.
+    pub repo: RepoRef,
+    /// Pull request number.
+    pub number: u32,
+    /// Title.
+    pub title: String,
+    /// GitHub link, built by the server.
+    pub url: String,
+    /// Deterministic tags from scan facts (CI state; checks not passing that are not required).
+    pub tags: Vec<FactTag>,
+    /// Size mark of its full diff (display only); absent when the totals are unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub change_size: Option<ChangeSizeMark>,
+}
+
+/// A pull request Ready to merge would list, held back by a plug-in's statement (ADR-022).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct HeldBack {
+    /// The pull request as Ready to merge would list it.
+    pub item: ReadyToMergeItem,
+    /// Plug-in id.
+    pub plugin: String,
+    /// Name of the plug-in, shown before the reason.
+    pub source: String,
+    /// The plug-in's reason, plain text.
+    pub reason: String,
+    /// Evidence: the source's record of the pull request.
+    pub url: String,
+}
+
 /// A dated event for the charts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct HistoryEvent {
@@ -519,6 +615,12 @@ impl ItemQuery {
 /// Response of `GET /api/v1/dashboard/items`: ranked items of the latest snapshot, in rank order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ItemPage {
+    /// Unanswered, unhidden mentions on the first page only; empty on cursor pages.
+    #[serde(default)]
+    pub mentions: Vec<Mention>,
+    /// Mention reads omitted in this snapshot, independent of item filters and pagination.
+    #[serde(default)]
+    pub mention_coverage: MentionCoverage,
     /// The summary's `revision` the page belongs to.
     pub revision: String,
     /// Items of this page.
@@ -587,6 +689,30 @@ pub struct WorkItem {
     pub llm: Option<ItemText>,
     /// The user's diffpilot analysis of this pull request, read at request time; null when none.
     pub review: Option<ReviewLink>,
+    /// Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<PluginNote>>", optional)]
+    pub plugin_notes: Vec<PluginNote>,
+}
+
+/// An external statement of a dashboard plug-in about a pull request (ADR-022): attributed to its source, plain
+/// text, never a diffpilot fact or verdict.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PluginNote {
+    /// Plug-in id, e.g. `pr-hygiene`.
+    pub plugin: String,
+    /// Name shown before the statement, e.g. `PR Hygiene`.
+    pub source: String,
+    /// Evidence: the source's record of the pull request, built by the server.
+    pub url: String,
+    /// When the source produced the data.
+    pub as_of: Timestamp,
+    /// Headline (PR Hygiene: the next action).
+    pub summary: Option<String>,
+    /// Further points (PR Hygiene: the blockers).
+    pub details: Vec<String>,
+    /// Labelled values (PR Hygiene: stage, whose move, lateness).
+    pub facts: Vec<Fact>,
 }
 
 /// Size mark of a pull request: a fixed table of changed lines (additions + deletions), plan §C.2 K16.
@@ -1092,4 +1218,34 @@ impl fmt::Display for ItemKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+/// A request addressed to a scanned login, outside the ranked list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct Mention {
+    /// Only a bounded part of this conversation was read.
+    #[serde(default)]
+    pub partly_read: bool,
+    /// Stable opaque identity of this post on this item (used by Hide).
+    pub id: String,
+    /// The containing item.
+    pub item_key: ItemKey,
+    /// Pull request or issue.
+    pub kind: GithubKind,
+    /// Repository.
+    pub repo: RepoRef,
+    /// Item number.
+    pub number: u32,
+    /// Item title, plain text.
+    pub title: String,
+    /// Mentioning author; a deleted account is shown as `ghost`.
+    pub author: String,
+    /// GitHub Bot type, [bot] suffix or the user's known bots.
+    pub is_bot: bool,
+    /// When the mentioning post was created.
+    pub created_at: Timestamp,
+    /// One line of the mentioning text, plain text only.
+    pub text: String,
+    /// Server-built GitHub link to the mentioning post.
+    pub url: String,
 }

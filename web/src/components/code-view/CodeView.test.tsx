@@ -94,9 +94,9 @@ describe("CodeView", () => {
     );
     const label = screen.getByText(/LOW · LLM remark: note/);
     act(() => label.focus());
-    const tooltip = screen.getByRole("tooltip");
-    expect(tooltip).not.toHaveTextContent("Was:");
-    expect(tooltip).toHaveTextContent("No behaviour annotation on these lines.");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(label).not.toHaveAccessibleDescription(/Was:/);
+    expect(label).toHaveAccessibleDescription("No behaviour annotation on these lines.");
   });
 
   it("renders numbered lines of the range in a labelled, keyboard-scrollable region", () => {
@@ -188,7 +188,7 @@ describe("CodeView", () => {
     },
   );
 
-  it("draws an unrated remark with a thin neutral line, not the LOW pattern, and says so in the tooltip", () => {
+  it("draws an unrated remark with a thin neutral line, not the LOW pattern, and says so in its description and popover", () => {
     render(<CodeView lines={plain(1, ["a", "b"])} annotations={[note("x.a1", 2, 2)]} band={null} />);
     const highlight = document.querySelector("[data-highlight]")!;
     expect(highlight).toHaveAttribute("data-band", "none");
@@ -198,6 +198,10 @@ describe("CodeView", () => {
     expect(label).toHaveTextContent(/^LLM remark: note$/);
     expect(highlight).not.toHaveTextContent("◇");
     expect(label).toHaveAccessibleDescription(/Risk not rated by the LLM/);
+    act(() => screen.getByRole("button", { name: /^LLM remark at line 2:/ }).focus());
+    expect(screen.getByRole("dialog", { name: /^LLM remark at line 2:/ })).toHaveTextContent(
+      "Risk not rated by the LLM.",
+    );
   });
 
   it("keeps line numbers and code in the same columns inside and outside a highlight", () => {
@@ -216,37 +220,39 @@ describe("CodeView", () => {
     expect(marks[0]).toHaveAccessibleDescription(/Was: /);
   });
 
-  it("states only was → is in the hover tooltip of a highlight", async () => {
+  it("shows no tooltip on hovering or focusing a highlight; its was → is stays in the description", async () => {
     const props = stepProps("f1.5");
     render(<CodeView {...props} />);
     await userEvent.hover(document.querySelector("[data-highlight]")!);
-    const tip = screen.getByRole("tooltip");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    const label = screen.getByText(/HIGH · LLM remark/);
+    act(() => label.focus());
+    expect(screen.queryByRole("tooltip")).toBeNull();
     for (const a of props.annotations.filter((annotation) => annotation.type === "behaviour")) {
-      expect(tip).toHaveTextContent(`Was: ${a.was}`);
-      expect(tip).toHaveTextContent(`Is: ${a.is}`);
-      if (a.text) expect(tip).not.toHaveTextContent(a.text);
+      expect(label.getAttribute("aria-describedby")).toBeTruthy();
+      expect(label).toHaveAccessibleDescription(expect.stringContaining(`Was: ${a.was}`));
+      expect(label).toHaveAccessibleDescription(expect.stringContaining(`Is: ${a.is}`));
     }
-    expect(tip).not.toHaveTextContent(/HIGH|risk/i);
   });
 
-  it("reaches a highlight by keyboard, shows its tooltip and selects its annotations", async () => {
+  it("reaches a highlight by keyboard and selects its annotations", async () => {
     const onSelectAnnotation = vi.fn();
     const props = stepProps("f1.5");
     const { rerender } = render(<CodeView {...props} onSelectAnnotation={onSelectAnnotation} />);
     const label = screen.getByRole("button", { name: /HIGH · LLM remark/ });
     act(() => label.focus());
-    expect(screen.getByRole("tooltip")).toBeVisible();
+    expect(screen.queryByRole("tooltip")).toBeNull();
     await userEvent.keyboard("{Enter}");
     expect(onSelectAnnotation).toHaveBeenCalledWith(["f1.5.a1", "f1.5.a2", "f1.5.a3"]);
     rerender(<CodeView {...props} onSelectAnnotation={onSelectAnnotation} selectedAnnotation="f1.5.a2" />);
     expect(document.querySelector("[data-highlight]")).toHaveAttribute("data-selected");
   });
 
-  it("marks the first line of a highlight with an LLM remark marker", () => {
+  it("marks the first line of each LLM remark with its own marker (one ◆ per remark)", () => {
     render(<CodeView {...stepProps("f1.2")} />);
     const remarks = document.querySelectorAll("[data-mark=remark]");
-    expect([...remarks].map(rowOf)).toEqual([91]);
-    expect(remarks[0]).toHaveAccessibleName(/LLM remarks? at line 91/);
+    expect([...remarks].map(rowOf)).toEqual([91, 93]);
+    expect(remarks[0]).toHaveAccessibleName(/^LLM remark at line 91: /);
   });
 
   it("shows ≠ on moved lines that differ from the moved original, inside a moved block", () => {
@@ -271,6 +277,8 @@ describe("CodeView", () => {
     const threads = document.querySelectorAll("[data-mark=thread]");
     expect([...threads].map(rowOf)).toEqual([99]);
     expect(threads[0]).toHaveAccessibleName("GitHub thread by bob at line 99");
+    expect(threads[0]).toHaveAccessibleDescription(/GitHub review thread/);
+    act(() => (threads[0] as HTMLElement).focus());
     expect(threads[0]).toHaveAccessibleDescription(/Should we retry non-idempotent calls at all\?/);
     unmount();
     render(<CodeView {...stepProps("f1.2", "missed")} />);
@@ -321,8 +329,21 @@ describe("CodeView", () => {
     const block = { after_line: 1, base_start: 10, lines: ["x", "y"], total_lines: 7 };
     const lines = plain(1, ["a", "b"], { deleted: [block] });
     const { rerender } = render(<CodeView lines={lines} onLoadDeleted={onLoadDeleted} />);
-    await userEvent.click(screen.getByRole("button", { name: "5 more deleted lines" }));
+    // An icon: hover shows its popup, one click acts (no pin step, no second button).
+    const icon = screen.getByRole("button", { name: "Show 5 more deleted lines" });
+    expect(icon).not.toHaveAttribute("title");
+    await userEvent.hover(icon);
+    expect(screen.getByRole("dialog", { name: "5 more deleted lines" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Show the rest" })).toBeNull();
+    await userEvent.click(icon);
+    expect(onLoadDeleted).toHaveBeenCalledTimes(1);
     expect(onLoadDeleted).toHaveBeenCalledWith(block);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // Enter and Space act too.
+    icon.focus();
+    await userEvent.keyboard("{Enter}");
+    await userEvent.keyboard(" ");
+    expect(onLoadDeleted).toHaveBeenCalledTimes(3);
     rerender(<CodeView lines={lines} />);
     expect(screen.queryByRole("button", { name: /more deleted lines/ })).toBeNull();
     expect(screen.getByText("5 more deleted lines")).toBeInTheDocument();
@@ -368,19 +389,15 @@ describe("CodeView", () => {
     await userEvent.keyboard("{ArrowDown}");
     expect(screen.getByRole("button", { name: "Comment on removed line 99" })).toHaveFocus();
     await userEvent.keyboard("{ArrowDown}{Enter}");
-    expect(onLineAction).toHaveBeenLastCalledWith({
-      path: "src/rpc/client.rs",
-      side: "head",
-      start_line: null,
-      line: 89,
-    });
+    expect(onLineAction).toHaveBeenLastCalledWith(
+      { path: "src/rpc/client.rs", side: "head", start_line: null, line: 89 },
+      { extend: false },
+    );
     await userEvent.click(screen.getByRole("button", { name: "Comment on removed line 99" }));
-    expect(onLineAction).toHaveBeenLastCalledWith({
-      path: "src/rpc/client.rs",
-      side: "base",
-      start_line: null,
-      line: 99,
-    });
+    expect(onLineAction).toHaveBeenLastCalledWith(
+      { path: "src/rpc/client.rs", side: "base", start_line: null, line: 99 },
+      { extend: false },
+    );
     await userEvent.keyboard("{End}");
     expect(screen.getByRole("button", { name: "Comment on line 96" })).toHaveFocus();
     expect(
@@ -424,7 +441,7 @@ describe("CodeView", () => {
     await userEvent.hover(document.querySelector("[data-highlight]")!);
     expect(document.querySelector("img")).toBeNull();
     expect(document.querySelector("a")).toBeNull();
-    expect(screen.getByRole("tooltip")).toHaveTextContent(evil);
+    expect(document.querySelector("[data-highlight] [hidden]")).toHaveTextContent(evil);
   });
 
   describe("syntax highlighting", () => {
@@ -588,11 +605,15 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
     expect(rowOf(marker)).toBe(2);
     expect(marker.querySelector("svg")).not.toBeNull();
-    expect(marker).toHaveAccessibleDescription(
-      "Is the retry bounded? Your comment in your GitHub pending review; nothing is published. Opens its text here.",
-    );
     expect(marker).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("Is the retry bounded?")).not.toBeVisible();
+    expect(screen.queryByText("Is the retry bounded?")).toBeNull();
+    expect(marker).toHaveAccessibleDescription(
+      "Your comment in your GitHub pending review; nothing is published. Hover or click for its text.",
+    );
+    act(() => marker.focus());
+    expect(marker).toHaveAccessibleDescription(
+      "Is the retry bounded? Your comment in your GitHub pending review; nothing is published.",
+    );
   });
 
   it("shows the comment's own text on hover, on a target of at least 24 px", async () => {
@@ -601,7 +622,8 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const marker = screen.getByRole("button", { name: "Your 2 pending comments at line 2" });
     expect(marker.className).toMatch(/(^|\s)size-6(\s|$)/);
     await user.hover(marker);
-    const tip = screen.getByRole("tooltip");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    const tip = screen.getByRole("dialog", { name: "Your 2 pending comments at line 2" });
     expect(tip).toHaveTextContent("Is the retry bounded?");
     expect(tip).toHaveTextContent("And the backoff?");
     // A long comment is clamped; `block` would override the clamp's display.
@@ -615,16 +637,45 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     view([mine()]);
     const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
     await user.click(marker);
-    expect(marker).toHaveAttribute("aria-expanded", "true");
+    // The click pins the popover; opening the text is its labelled action.
+    expect(screen.queryByRole("list", { name: /^Your pending comments/ })).toBeNull();
+    const open = screen.getByRole("button", { name: "Open the comment here" });
+    expect(open).toHaveAttribute("aria-expanded", "false");
+    await user.click(open);
+    // The action closes the popup, which would cover the opened text.
+    expect(screen.queryByRole("dialog")).toBeNull();
     const panel = screen.getByRole("list", { name: "Your pending comments at line 2" });
-    expect(marker).toHaveAttribute("aria-controls", panel.id);
+    await user.click(marker);
+    expect(screen.getByRole("button", { name: "Hide the comment here" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Hide the comment here" })).toHaveAttribute(
+      "aria-controls",
+      panel.id,
+    );
     expect(within(panel).getByText("Is the retry bounded?")).toBeVisible();
     // Readable without edit mode; Edit and Delete only with their callbacks.
     expect(within(panel).queryByRole("textbox")).toBeNull();
     expect(within(panel).queryByRole("button")).toBeNull();
     expectTrustWording(panel.textContent ?? "");
-    await user.click(marker);
+    await user.click(screen.getByRole("button", { name: "Hide the comment here" }));
     expect(screen.queryByRole("list", { name: /^Your pending comments/ })).toBeNull();
+  });
+
+  it("an opened comment has Hide in its top-right corner; it closes the text and returns the focus to the marker", async () => {
+    const user = userEvent.setup();
+    view([mine()]);
+    const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
+    await user.click(marker);
+    await user.click(screen.getByRole("button", { name: "Open the comment here" }));
+    const hide = screen.getByRole("button", { name: "Hide your pending comment" });
+    expect(hide).toHaveTextContent(/^Hide$/);
+    expect(hide).toHaveAccessibleDescription(/marker/);
+    hide.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("list", { name: /^Your pending comments/ })).toBeNull();
+    expect(marker).toHaveFocus();
   });
 
   it("opens by keyboard: Enter and Space", async () => {
@@ -633,8 +684,17 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
     marker.focus();
     await user.keyboard("{Enter}");
+    await user.tab();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Open the comment here" })).toHaveFocus();
+    await user.keyboard("{Enter}");
     const panel = () => screen.queryByRole("list", { name: "Your pending comments at line 2" });
     expect(within(panel()!).getByText("Is the retry bounded?")).toBeVisible();
+    // The action closed the popup and handed the focus back to the marker; Space pins it again.
+    marker.focus();
+    await user.keyboard(" ");
+    await user.tab();
+    await user.tab();
     await user.keyboard(" ");
     expect(panel()).toBeNull();
   });
@@ -645,6 +705,7 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const onDeleteComment = vi.fn().mockResolvedValue(undefined);
     view([mine(), mine({ id: "c2", body: "And the backoff?" })], { onEditComment, onDeleteComment });
     await user.click(screen.getByRole("button", { name: "Your 2 pending comments at line 2" }));
+    await user.click(screen.getByRole("button", { name: "Open the comments here" }));
     const panel = screen.getByRole("list", { name: "Your pending comments at line 2" });
     expect(
       within(panel)
@@ -676,10 +737,6 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
 
   it("opens the comment asked for (from the pending-review list) without a click", () => {
     view([mine(), mine({ id: "c9", line: 3, body: "Other" })], { revealComment: "c9" });
-    expect(screen.getByRole("button", { name: "Your pending comment at line 3" })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
     const panel = screen.getByRole("list", { name: "Your pending comments at line 3" });
     expect(within(panel).getByText("Other")).toBeVisible();
     expect(screen.queryByRole("list", { name: "Your pending comments at line 2" })).toBeNull();
@@ -698,9 +755,14 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const top = screen.getByRole("button", { name: "Your 2 pending file comments on src/a.rs" });
     expect(top.closest("[data-line]")).toBeNull();
     await user.click(top);
+    await user.click(screen.getByRole("button", { name: "Open the comments here" }));
     const panel = screen.getByRole("list", { name: "Your pending file comments on src/a.rs" });
     expect(within(panel).getByText("File-level note.")).toBeVisible();
     expect(within(panel).getByText("No link.")).toBeVisible();
+    screen.getByRole("button", { name: "Hide your pending comments" }).focus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("list", { name: "Your pending file comments on src/a.rs" })).toBeNull();
+    expect(top).toHaveFocus();
   });
 });
 
@@ -770,7 +832,7 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     body: "Is the retry bounded?",
   };
 
-  it("an LLM remark marker is a 24 px button whose hover shows the full remark with an LLM tag, before was → is", async () => {
+  it("an LLM remark marker is a 24 px button whose popover shows the full remark with an LLM tag and was and is as separate blocks", async () => {
     const user = userEvent.setup();
     render(
       <CodeView
@@ -790,30 +852,44 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
         band="medium"
       />,
     );
-    const marker = screen.getByRole("button", { name: "2 LLM remarks at line 1" });
+    const marker = screen.getByRole("button", { name: "LLM remark at line 1: Behaviour" });
     expect(marker.className).toMatch(/(^|\s)size-6(\s|$)/);
     await user.hover(document.querySelector("[data-highlight] [data-line='2']")!);
-    expect(screen.getByRole("tooltip")).toHaveTextContent("Was: retries once → Is: retries all");
+    expect(screen.queryByRole("tooltip")).toBeNull();
     await user.hover(marker);
-    const popover = screen.getByRole("dialog", { name: "LLM remarks at line 1" });
+    const popover = screen.getByRole("dialog", { name: "LLM remark at line 1: Behaviour" });
     expect(popover).toHaveTextContent("Behaviour · lines 1–2");
-    expect(popover).toHaveTextContent("Was: retries once");
-    expect(popover).toHaveTextContent("Is: retries all");
-    expect(popover).toHaveTextContent("Red flag · line 1");
-    expect(popover).toHaveTextContent("Potential double broadcast:");
+    const wasLabel = within(popover).getByText("Was:");
+    const isLabel = within(popover).getByText("Is:");
+    const was = wasLabel.parentElement!;
+    const is = isLabel.parentElement!;
+    expect(was).toHaveTextContent("Was: retries once");
+    expect(is).toHaveTextContent("Is: retries all");
+    expect(was).not.toBe(is);
+    expect(was.parentElement).toBe(is.parentElement);
+    expect(was.className).toMatch(/(^|\s)block(\s|$)/);
+    expect(is.className).toMatch(/(^|\s)block(\s|$)/);
+    expect(is.className).toMatch(/(^|\s)mt-/);
+    expect(wasLabel).toHaveClass("font-semibold");
+    expect(isLabel).toHaveClass("font-semibold");
+    expect(popover).not.toHaveTextContent("Red flag");
+    await user.unhover(marker);
+    await user.hover(screen.getByRole("button", { name: "LLM remark at line 1: Red flag" }));
+    const flag = screen.getByRole("dialog", { name: "LLM remark at line 1: Red flag" });
+    expect(flag).toHaveTextContent("Red flag · line 1");
+    expect(flag).toHaveTextContent("Potential double broadcast:");
     expect(
-      within(popover)
+      within(flag)
         .getAllByRole("listitem")
         .map((i) => i.textContent),
     ).toEqual(["1. The reply arrives late.", "2. The client sends again."]);
-    expect(within(popover).getByText("LLM")).toHaveAttribute("data-provenance", "llm");
-    expect(within(popover).getByText("LLM")).toHaveAccessibleDescription(
+    expect(within(flag).getByText("LLM")).toHaveAttribute("data-provenance", "llm");
+    expect(within(flag).getByText("LLM")).toHaveAccessibleDescription(
       "This text was written by the LLM; it was not checked.",
     );
-    // The marker's own popover wins over the row's was → is tooltip while the pointer is on the marker.
     expect(screen.queryByRole("tooltip")).toBeNull();
-    expect(within(popover).queryByRole("button", { name: /Show in Inspector/ })).toBeNull();
-    expectTrustWording(popover.textContent ?? "");
+    expect(within(flag).queryByRole("button", { name: /Show in Inspector/ })).toBeNull();
+    expectTrustWording(flag.textContent ?? "");
   });
 
   it("a pinned remark offers Show in Inspector for each remark; clicking it does not select the highlight", async () => {
@@ -828,8 +904,8 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
         onSelectAnnotation={onSelectAnnotation}
       />,
     );
-    await user.click(screen.getByRole("button", { name: "LLM remark at line 1" }));
-    const popover = screen.getByRole("dialog", { name: "LLM remarks at line 1" });
+    await user.click(screen.getByRole("button", { name: "LLM remark at line 1: Note" }));
+    const popover = screen.getByRole("dialog", { name: "LLM remark at line 1: Note" });
     await user.click(within(popover).getByRole("button", { name: /^Show in Inspector/ }));
     expect(onShowInInspector).toHaveBeenCalledWith({ kind: "annotation", id: "n1" });
     expect(onSelectAnnotation).not.toHaveBeenCalled();

@@ -29,7 +29,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-[[ "${PROXY_SKIP_BUILD:-0}" == 1 ]] || docker build -q -t "$image" "$here" > /dev/null
+[[ "${PROXY_SKIP_BUILD:-0}" == 1 ]] || docker build -q --build-context "workspace=$here/../.." -t "$image" "$here" > /dev/null
 docker network create --internal --subnet 172.30.91.0/24 "$internal" > /dev/null
 docker network create --subnet 172.30.92.0/24 "$egress" > /dev/null
 echo "nameserver $dns_ip" > "$tmp/resolv.conf"

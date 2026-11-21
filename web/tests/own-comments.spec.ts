@@ -35,8 +35,10 @@ test("a comment added in a step is found again after Next and Previous: by mouse
   await page.getByRole("button", { name: "← Previous" }).click();
   const marker = code(page).getByRole("button", { name: "Your pending comment at line 96" });
   await expect(marker).toBeVisible();
+  await marker.hover();
   await expect(marker).toHaveAccessibleDescription(/pending review; nothing is published/);
   await marker.click();
+  await code(page).getByRole("button", { name: "Open the comment here" }).click();
   const panel = code(page).getByRole("list", { name: "Your pending comments at line 96" });
   await expect(panel.getByText(TEXT)).toBeVisible();
   await expect(panel.getByRole("button", { name: /^Edit comment on/ })).toBeVisible();
@@ -57,10 +59,17 @@ test("… by keyboard, and after a reload", async ({ page }) => {
   await expect(marker).toBeVisible();
   await marker.focus();
   await page.keyboard.press("Enter");
+  const open = code(page).getByRole("button", { name: /^(Open|Hide) the comment here$/ });
+  await open.focus();
+  await page.keyboard.press("Enter");
   await expect(
     code(page).getByRole("list", { name: "Your pending comments at line 96" }).getByText(TEXT),
   ).toBeVisible();
+  // The action closed the popup and returned the focus to the marker; Space pins it, its button hides the text.
+  await expect(marker).toBeFocused();
   await page.keyboard.press("Space");
+  await code(page).getByRole("button", { name: "Hide the comment here" }).focus();
+  await page.keyboard.press("Enter");
   await expect(code(page).getByRole("list", { name: "Your pending comments at line 96" })).toHaveCount(0);
 });
 
@@ -93,10 +102,7 @@ test("the pending-review block leads back to the step with the comment open", as
     .click();
   await page.getByRole("button", { name: /^Show in step 1\.2/ }).click();
   await expect(page.locator("main h2:not([data-column-title])").first()).toHaveText(/^2 /);
-  await expect(code(page).getByRole("button", { name: "Your pending comment at line 96" })).toHaveAttribute(
-    "aria-expanded",
-    "true",
-  );
+  await expect(code(page).getByRole("list", { name: "Your pending comments at line 96" })).toBeVisible();
 });
 
 // Light and dark at 1440 with SCREENSHOT_DIR set, e.g. /data/artifacts/diffpilot/<date>/wp3-tour-8.
@@ -111,9 +117,10 @@ for (const colorScheme of ["light", "dark"] as const) {
     await page.getByRole("button", { name: "← Previous" }).click();
     const marker = code(page).getByRole("button", { name: "Your pending comment at line 96" });
     await marker.hover();
-    await expect(page.getByRole("tooltip").filter({ hasText: "nothing is published" })).toBeVisible();
+    await expect(page.getByRole("dialog").filter({ hasText: "nothing is published" })).toBeVisible();
     await page.screenshot({ path: `${dir}/marker-tooltip-${colorScheme}-1440.png` });
     await marker.click();
+    await code(page).getByRole("button", { name: "Open the comment here" }).click();
     await page.mouse.move(0, 0);
     await expect(
       code(page).getByRole("list", { name: "Your pending comments at line 96" }).getByText(TEXT),
@@ -137,9 +144,12 @@ test("two readers of a shared analysis keep questions and comment drafts private
     await openTour(a);
     await openStep(a, 1, 2);
     const question = "PRIVATE_READER_A_QUESTION";
-    await a.getByRole("textbox", { name: /^Ask the LLM about / }).fill(question);
-    await a.getByRole("button", { name: "Ask", exact: true }).click();
-    await expect(a.getByRole("list", { name: "Ask conversation" }).getByText(question)).toBeVisible();
+    await a.keyboard.press("a");
+    const chatA = a.getByRole("dialog", { name: "Ask" });
+    await chatA.getByRole("textbox", { name: "Your question" }).fill(question);
+    await chatA.getByRole("button", { name: "Ask", exact: true }).click();
+    await expect(chatA.getByText(question)).toBeVisible();
+    await chatA.getByRole("textbox", { name: "Your question" }).press("Escape");
     await a.getByRole("button", { name: "Comment on line 96" }).click();
     await a
       .getByRole("textbox", { name: /^Comment on src\/rpc\/client\.rs:96/ })

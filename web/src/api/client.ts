@@ -5,6 +5,7 @@ import type {
   AnalysisEvent,
   AnalysisId,
   AnalysisSummary,
+  AnchoredAskRequest,
   MyAnalyses,
   MyAnalysesQuery,
   ApiErrorCode,
@@ -19,10 +20,12 @@ import type {
   DashboardSettings,
   DashboardSettingsView,
   DashboardSummary,
+  DependencyView,
   DiffResponse,
   Feedback,
   FeedbackId,
   FeedbackRequest,
+  FilesResponse,
   ItemPage,
   ItemQuery,
   LinesResponse,
@@ -39,8 +42,10 @@ import type {
   RepoRef,
   RepoSettings,
   ReviewState,
+  SetControlledOwnersRequest,
   SetLanguageRequest,
   SetTimeZoneRequest,
+  SetViewedRequest,
   Settings,
   StepId,
   Tour,
@@ -248,6 +253,12 @@ export function createApiClient(baseUrl = "") {
     listQuestions: (id: AnalysisId) => call<AskQuestion[]>("listQuestions", { params: { id } }),
     askQuestion: (id: AnalysisId, stepId: StepId, body: AskRequest) =>
       call<AskQuestion>("askQuestion", { params: { id, step_id: stepId }, body }),
+    askAnchored: (id: AnalysisId, body: AnchoredAskRequest) =>
+      call<AskQuestion>("askAnchored", { params: { id }, body }),
+    getFiles: (id: AnalysisId) => call<FilesResponse>("getFiles", { params: { id } }),
+    setFileViewed: (id: AnalysisId, body: SetViewedRequest) =>
+      call<void>("setFileViewed", { params: { id }, body }),
+    getDependencies: (id: AnalysisId) => call<DependencyView>("getDependencies", { params: { id } }),
     listFeedback: (id: AnalysisId) => call<Feedback[]>("listFeedback", { params: { id } }),
     postFeedback: (id: AnalysisId, body: FeedbackRequest) =>
       call<Feedback>("postFeedback", { params: { id }, body }),
@@ -272,6 +283,8 @@ export function createApiClient(baseUrl = "") {
     pauseAnalysis: (id: AnalysisId) => call<AnalysisSummary>("pauseAnalysis", { params: { id } }),
     resumeAnalysis: (id: AnalysisId) => call<AnalysisSummary>("resumeAnalysis", { params: { id } }),
     setLanguage: (body: SetLanguageRequest) => call<void>("setLanguage", { body }),
+    setControlledOwners: (body: SetControlledOwnersRequest) =>
+      call<import("./generated/types").ControlledOwners>("setControlledOwners", { body }),
     getRepoSettings: (repo: RepoRef) =>
       call<RepoSettings>("getRepoSettings", { params: { owner: repo.owner, name: repo.name } }),
     getDashboardSettings: () => call<DashboardSettingsView>("getDashboardSettings"),
@@ -299,6 +312,7 @@ export function createApiClient(baseUrl = "") {
     /** One page of ranked items; `etag` of the same request's previous answer makes a 304 `unchanged`. */
     listDashboardItems: (query: ItemQuery, etag: string | null = null) =>
       conditional<ItemPage>("listDashboardItems", { query: itemQueryParams(query) }, etag),
+    hideDashboardMention: (id: string) => call<void>("hideDashboardMention", { params: { id } }),
     startDashboardRefresh: () => call<RefreshStatus>("startDashboardRefresh"),
     getDashboardRefresh: (id: RefreshId) => call<RefreshStatus>("getDashboardRefresh", { params: { id } }),
     cancelDashboardRefresh: (id: RefreshId) =>

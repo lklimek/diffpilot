@@ -206,11 +206,13 @@ impl Prepass {
             .collect()
     }
 
-    /// Changed lines of `path` on `side` a line rule covers: the main code view may hide them.
+    /// Changed lines of `path` on `side` a line rule covers outside Tests: the main code view may hide them (test code
+    /// stays shown).
     pub fn view_context(&self, side: LineSide, path: &str) -> Vec<u32> {
         let mut lines: Vec<u32> = self
             .not_analysed
             .iter()
+            .filter(|section| section.category != NotAnalysedCategory::Tests)
             .flat_map(|s| &s.items)
             .filter(|item| item.side == side && item.file == path && is_line_rule_item(item))
             .flat_map(|item| item.ranges.iter().flatten())
@@ -260,6 +262,62 @@ impl Prepass {
                 })
             })
             .collect()
+    }
+
+    /// [`Prepass::agent_files`] without the context-only hunks ([`Prepass::context_only_hunks`]): the plan batches
+    /// input, so a change made only of context lines queues no plan job. Files left without hunks are dropped.
+    pub fn plan_files(&self, files: &[FileDiff]) -> Vec<FileDiff> {
+        let context_only = self.context_only_hunks(files);
+        self.agent_files(files)
+            .into_iter()
+            .filter_map(|mut file| {
+                file.hunks.retain(|hunk| !context_only.contains(&hunk.id));
+                (!file.hunks.is_empty()).then_some(file)
+            })
+            .collect()
+    }
+
+    /// Hunks of `files` the pre-pass knows where a context rule covers some changed lines and none is left for the
+    /// agent (the rest are blank): comments, imports, test code, whitespace-only lines, identical moves. Prompts do
+    /// not list them.
+    pub fn context_only_hunks(&self, files: &[FileDiff]) -> BTreeSet<HunkId> {
+        let known: BTreeSet<&HunkId> = self.hunks.iter().map(|hunk| &hunk.id).collect();
+        let context = self.context();
+        let agent: BTreeMap<(LineSide, &str), Vec<u32>> = self
+            .agent_lines
+            .iter()
+            .map(|lines| {
+                let numbers = lines
+                    .ranges
+                    .iter()
+                    .flat_map(|r| r.start_line..=r.end_line)
+                    .collect();
+                ((lines.side, lines.file.as_str()), numbers)
+            })
+            .collect();
+        let mut out = BTreeSet::new();
+        for file in files {
+            let sides = [LineSide::Head, LineSide::Base].map(|side| {
+                let path = file.path_on(side);
+                let context = path.and_then(|path| context.get(&(side, path.to_owned())));
+                let agent = path.and_then(|path| agent.get(&(side, path)));
+                (context, agent)
+            });
+            let has = |lines: Option<&Vec<u32>>, line: &u32| {
+                lines.is_some_and(|lines| lines.binary_search(line).is_ok())
+            };
+            for hunk in file.hunks.iter().filter(|hunk| known.contains(&hunk.id)) {
+                let changed = [&hunk.added, &hunk.removed];
+                let some_context =
+                    (0..2).any(|at| changed[at].iter().any(|line| has(sides[at].0, line)));
+                let some_agent =
+                    (0..2).any(|at| changed[at].iter().any(|line| has(sides[at].1, line)));
+                if some_context && !some_agent {
+                    out.insert(hunk.id.clone());
+                }
+            }
+        }
+        out
     }
 
     /// Changed lines without coverage duty, the coverage check's quiet input: the hunks the pre-pass took from the

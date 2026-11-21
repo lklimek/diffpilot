@@ -75,6 +75,8 @@ fn pr(number: u32, title: &str) -> StoredPr {
             milestone_context: MilestoneContext::default(),
             ci: CiEffective::Green,
             mergeable: Mergeable::Mergeable,
+            merge_state: crate::dashboard::score::MergeState::Unknown,
+            viewer_can_write: false,
             review_decision: None,
             unresolved_threads: 0,
             review_pending_for_us: false,
@@ -141,6 +143,8 @@ fn todo(title: &str) -> StoredTodo {
 
 fn snapshot(prs: Vec<StoredPr>, issues: Vec<StoredIssue>, todos: Vec<StoredTodo>) -> Snapshot {
     Snapshot {
+        mentions: Vec::new(),
+        mention_coverage: Default::default(),
         version: SNAPSHOT_VERSION,
         own_login: "alice".to_owned(),
         settings: DashboardSettings {
@@ -164,6 +168,8 @@ fn snapshot(prs: Vec<StoredPr>, issues: Vec<StoredIssue>, todos: Vec<StoredTodo>
             issue: 0,
             todo: 0,
         },
+        merge_states_recorded: true,
+        prs_reread_at: None,
         todos_hidden: false,
     }
 }
@@ -1140,7 +1146,12 @@ async fn judge_failure_finishes_with_provisional_order_and_a_note() {
     );
     assert!(done.log.iter().any(|l| l.contains("not ranked: ")));
     // Both items stay listed with their estimates.
-    let view = snapshot::build(&snap, &h.judgements("u1", &snap).await, None);
+    let view = snapshot::build(
+        &snap,
+        &h.judgements("u1", &snap).await,
+        None,
+        &Default::default(),
+    );
     assert_eq!(view.items.len(), 2);
     assert!(
         view.items
@@ -1186,7 +1197,7 @@ async fn also_ids_limited_to_suggestions() {
     h.ranked("u1", id).await;
     let judged = h.judgements("u1", &snap).await;
     assert_eq!(judged[&key(5)].judgement.also, vec![todo_key.clone()]);
-    let view = snapshot::build(&snap, &judged, None);
+    let view = snapshot::build(&snap, &judged, None, &Default::default());
     assert!(
         view.items.iter().all(|i| i.item.key != todo_key),
         "the TODO is merged into PR #5"
@@ -1229,7 +1240,7 @@ async fn alarm_raises_p0_only_for_asked_items() {
         .expect("save");
     let judged = h.judgements("u1", &snap).await;
     assert!(!judged.contains_key(&key(8)));
-    let view = snapshot::build(&snap, &judged, None);
+    let view = snapshot::build(&snap, &judged, None, &Default::default());
     assert_eq!(view.items.len(), 1);
     assert_eq!(view.items[0].item.score.tier, Tier::P0);
     assert_eq!(
@@ -1272,7 +1283,12 @@ async fn eligibility_answer_hides_an_item_only_when_asked() {
         [(key(1), true), (key(2), false)]
     );
     h.ranked("u1", id).await;
-    let view = snapshot::build(&snap, &h.judgements("u1", &snap).await, None);
+    let view = snapshot::build(
+        &snap,
+        &h.judgements("u1", &snap).await,
+        None,
+        &Default::default(),
+    );
     let ids: Vec<&str> = view.items.iter().map(|i| i.item.id.as_str()).collect();
     assert_eq!(ids, ["wallet-ui#2"]);
 }
@@ -1301,7 +1317,12 @@ async fn stored_not_eligible_answer_never_hides_a_pull_request_directed_at_the_u
     let directed = &mut snap.pull_requests[0].facts;
     directed.relations = vec![Relation::ReviewRequested];
     directed.review_pending_for_us = true;
-    let view = snapshot::build(&snap, &h.judgements("u1", &snap).await, None);
+    let view = snapshot::build(
+        &snap,
+        &h.judgements("u1", &snap).await,
+        None,
+        &Default::default(),
+    );
     let ids: Vec<&str> = view.items.iter().map(|i| i.item.id.as_str()).collect();
     assert!(
         ids.contains(&"wallet-ui#1"),
@@ -1434,7 +1455,12 @@ fn excluded_list_is_capped_and_counted_in_full() {
             item
         })
         .collect();
-    let view = snapshot::build(&snapshot(prs, vec![], vec![]), &HashMap::new(), None);
+    let view = snapshot::build(
+        &snapshot(prs, vec![], vec![]),
+        &HashMap::new(),
+        None,
+        &Default::default(),
+    );
     let exclusions = &view.exclusions;
     assert_eq!(
         (exclusions.total, exclusions.counts.as_slice()),
@@ -1470,7 +1496,7 @@ fn a_pull_request_waiting_only_on_others_is_not_in_needs_you() {
         .to_vec();
     f.others_review_requested_at = Some(now() - SignedDuration::from_hours(24));
     let snap = snapshot(vec![waiting, pr(2, "fix: other")], vec![], vec![]);
-    let view = snapshot::build(&snap, &HashMap::new(), None);
+    let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default());
     let ranked: Vec<_> = view
         .items
         .iter()
@@ -1516,7 +1542,7 @@ fn pull_requests_carry_their_size_mark() {
         vec![issue(3, "Bug")],
         vec![todo("Write docs")],
     );
-    let view = snapshot::build(&snap, &HashMap::new(), None);
+    let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default());
     let mut marks: Vec<_> = view
         .items
         .iter()
@@ -1555,7 +1581,7 @@ fn a_waiting_pull_request_returns_to_needs_you_when_it_becomes_the_users_move() 
         let mut item = waiting.clone();
         change(&mut item.facts);
         let snap = snapshot(vec![item], vec![], vec![]);
-        let view = snapshot::build(&snap, &HashMap::new(), None);
+        let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default());
         let judged = candidates(&snap, LlmLanguage::En)
             .iter()
             .filter(|c| c.asked())
@@ -1671,6 +1697,82 @@ async fn unclaimed_judge_job_ends_the_ranking() {
     let error = ranking.observe(job).await.expect_err("unclaimed too long");
     assert!(matches!(error, RankError::Unclaimed));
     assert_eq!(error.message(), "No runner picked up the ranking job");
+}
+
+/// An Ask claimed ahead of the judge job (Ask goes first, plan §5.3) holds the credential: that wait is not
+/// "unclaimed"; once the credential is idle again the limit applies as before.
+#[tokio::test]
+async fn ask_holding_the_credential_does_not_count_as_unclaimed() {
+    let h = harness().await;
+    let snap = snapshot(prs(1), vec![], vec![]);
+    let id = h.stored("u1", &snap).await;
+    let run = RankRun {
+        scope: scope("u1"),
+        refresh_id: id,
+        attempt: 0,
+    };
+    let long_ago = tokio::time::Instant::now()
+        .checked_sub(UNCLAIMED_LIMIT)
+        .expect("uptime");
+    let mut ranking = Ranking {
+        state: &h.state,
+        run: &run,
+        counts: JudgeCounts::default(),
+        live: RankingState::Running,
+        zone: jiff::tz::TimeZone::UTC,
+        language: LlmLanguage::En,
+        day: now(),
+        unclaimed_since: Some(long_ago),
+        provisional: None,
+    };
+    let input = JudgeWorkInput {
+        items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
+    };
+    let job = ranking.submit(1, 0, &input).await.expect("submit").job_id;
+    let analysis = db::repo::analyses::testing::seed_analysis(h.db())
+        .await
+        .expect("analysis");
+    h.db()
+        .analyses()
+        .set_state(
+            analysis,
+            &contracts::api::analyses::AnalysisState::Finished { total: 1 },
+            Timestamp::now(),
+        )
+        .await
+        .expect("finished");
+    let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::Ask);
+    spec.credential.id = CREDENTIAL_ID.to_owned();
+    h.db()
+        .jobs()
+        .enqueue(
+            db::repo::jobs::NewJob {
+                spec,
+                priority: JobPriority::Interactive,
+                stage: JobStage::Ask(contracts::ids::QuestionId::new_random()),
+                generation: 0,
+            },
+            Timestamp::now(),
+        )
+        .await
+        .expect("enqueue ask");
+    let ask = h.claim().await;
+    assert_eq!(ask.kind, JobKind::Ask, "the later Ask is claimed first");
+
+    ranking
+        .observe(job)
+        .await
+        .expect("waiting behind an Ask, not unclaimed");
+    assert_eq!(ranking.live, RankingState::Running);
+    assert_eq!(ranking.unclaimed_since, None);
+
+    h.complete(&ask, JobOutcome::Cancelled).await;
+    ranking.unclaimed_since = Some(long_ago);
+    let error = ranking
+        .observe(job)
+        .await
+        .expect_err("idle credential, unclaimed too long");
+    assert!(matches!(error, RankError::Unclaimed));
 }
 
 #[tokio::test]

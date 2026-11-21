@@ -313,6 +313,43 @@ pub struct StoredJudgement {
 }
 
 impl Dashboard<'_> {
+    /// Identities hidden by this user, across snapshots and devices.
+    pub async fn hidden_mentions(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<String>, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT mention_id FROM dashboard_hidden_mentions
+             WHERE tenant_id = ? AND user_id = ? ORDER BY mention_id",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_all(self.pool)
+        .await?)
+    }
+
+    /// Idempotently hides one mention; never changes the snapshot or ranking.
+    pub async fn hide_mention(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: &str,
+        now: Timestamp,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO dashboard_hidden_mentions (tenant_id, user_id, mention_id, hidden_at)
+             VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(id)
+        .bind(ts(now))
+        .execute(self.pool)
+        .await?;
+        Ok(())
+    }
+
     /// The user's settings row; none means the defaults (`DashboardSettings::default`).
     pub async fn settings(
         &self,
@@ -623,6 +660,33 @@ impl Dashboard<'_> {
         .bind(id.to_string())
         .bind(tenant_id)
         .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        changed(&mut tx, tenant_id, user_id, id, updated.rows_affected()).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Replaces the snapshot of refresh `id` while it holds the user's current snapshot (a targeted re-read of a few
+    /// pull requests, ADR-022); `Conflict` once a newer refresh holds it, `NotFound` for another user's refresh.
+    pub async fn replace_current_snapshot<T: Serialize + Sync>(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+        snapshot: &T,
+    ) -> Result<(), DbError> {
+        let document = serde_json::to_string(snapshot)?;
+        let mut tx = write_tx(self.pool).await?;
+        let updated = sqlx::query(concat!(
+            "UPDATE dashboard_refreshes SET snapshot = ?3 WHERE id = ?4 AND id IS (",
+            current_snapshot_id!(),
+            ")"
+        ))
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(document)
+        .bind(id.to_string())
         .execute(&mut *tx)
         .await?;
         changed(&mut tx, tenant_id, user_id, id, updated.rows_affected()).await?;
@@ -1432,6 +1496,30 @@ mod tests {
             + SignedDuration::from_mins(minute)
     }
 
+    #[tokio::test]
+    async fn hidden_mentions_are_per_user_and_survive_refreshes() {
+        let db = db().await;
+        let dash = db.dashboard();
+        dash.hide_mention(T, "u1", "old-comment", at(1))
+            .await
+            .unwrap();
+        dash.hide_mention(T, "u1", "old-comment", at(2))
+            .await
+            .unwrap();
+        ranking(&db, "u1", 3).await;
+        assert_eq!(
+            dash.hidden_mentions(T, "u1").await.unwrap(),
+            ["old-comment"]
+        );
+        assert!(dash.hidden_mentions(T, "u2").await.unwrap().is_empty());
+        assert!(
+            dash.hidden_mentions("other", "u1")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     async fn seed_users(db: &Db) {
         sqlx::raw_sql(
             "INSERT INTO users (id, github_id, login, created_at, updated_at)
@@ -1998,6 +2086,41 @@ mod tests {
             true,
         );
         assert_eq!(current(&db, "u1").await, Some((id, 7)));
+    }
+
+    #[tokio::test]
+    async fn only_the_current_snapshot_is_replaced() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let first = finished(&db, "u1", 0, RankingState::Finished).await;
+        dash.replace_current_snapshot(T, "u1", first, &json!({ "n": 1 }))
+            .await
+            .expect("replace");
+        assert_eq!(current(&db, "u1").await, Some((first, 1)));
+        let scanning = start(&db, "u1", 10).await;
+        dash.replace_current_snapshot(T, "u1", first, &json!({ "n": 2 }))
+            .await
+            .expect("a scan holds no snapshot yet");
+        assert_eq!(current(&db, "u1").await, Some((first, 2)));
+        assert_err(
+            dash.replace_current_snapshot(T, "u1", scanning, &json!({ "n": 3 }))
+                .await,
+            true,
+        );
+        dash.store_snapshot(T, "u1", scanning, &json!({ "n": 11 }), at(11))
+            .await
+            .expect("store");
+        assert_err(
+            dash.replace_current_snapshot(T, "u1", first, &json!({ "n": 4 }))
+                .await,
+            true,
+        );
+        assert_eq!(current(&db, "u1").await, Some((scanning, 11)));
+        assert_err(
+            dash.replace_current_snapshot(T, "u2", scanning, &json!({ "n": 5 }))
+                .await,
+            false,
+        );
     }
 
     #[tokio::test]
@@ -3492,8 +3615,11 @@ mod tests {
         .fetch_all(&db.pool)
         .await
         .expect("versions");
-        let all = i64::try_from(super::super::MIGRATIONS.len()).expect("count");
-        assert_eq!(versions, (1..=all).collect::<Vec<_>>());
+        let all: Vec<i64> = super::super::MIGRATIONS
+            .iter()
+            .map(|(version, ..)| *version)
+            .collect();
+        assert_eq!(versions, all);
     }
 
     /// Migration 0005 upgrades a database with dashboard rows in place: refreshes, settings and judgements are kept,

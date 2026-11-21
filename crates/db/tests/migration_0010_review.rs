@@ -236,13 +236,81 @@ async fn migration_0010_on_a_seeded_v9_database() {
         analyses_before.replace("('en', 'pl')", "('en', 'pl', 'ru')")
     );
     let (rows_after, schema_after) = snapshot(&old).await;
+    // Db::open also applies 0011 (a new empty table and its index) and 0014 (the `questions_by_parent` index): additive
+    // to this 0010 preservation check.
+    assert_eq!(
+        rows_after
+            .iter()
+            .find(|(t, _)| t == "dashboard_hidden_mentions")
+            .map(|(_, rows)| rows.len()),
+        Some(0)
+    );
+    // 0015 adds `controlled_owners` and `controlled_owners_changed` (with their primary-key indexes) and widens the
+    // document kinds in place.
+    assert_eq!(schema_after.len(), schema_before.len() + 7);
+    let added_0015 = |entry: &String| {
+        matches!(
+            entry.split('|').nth(2),
+            Some("controlled_owners" | "controlled_owners_changed")
+        )
+    };
+    // 0012 rebuilds `questions` with four anchor columns after `step_id`, 0013 appends `touched_steps` and 0014
+    // `kind`, `flow_id` and `parent_id`, all empty for existing step questions except `kind`; the repository and
+    // schema tests check that table, so here it is compared without them.
+    let rebuilt = |entry: &String| entry.split('|').nth(2) == Some("questions");
+    let schema_before: Vec<_> = schema_before
+        .into_iter()
+        .filter(|entry| !rebuilt(entry))
+        .map(|entry| entry.replace("'memcan_profile'))", "'memcan_profile', 'dependencies'))"))
+        .collect();
+    let schema_after: Vec<_> = schema_after
+        .into_iter()
+        .filter(|entry| {
+            entry.split('|').nth(2) != Some("dashboard_hidden_mentions")
+                && !rebuilt(entry)
+                && !added_0015(entry)
+        })
+        .collect();
     let rows_after: Vec<_> = rows_after
         .into_iter()
-        .filter(|(t, _)| t != "_sqlx_migrations")
+        .filter(|(t, _)| {
+            !matches!(
+                t.as_str(),
+                "_sqlx_migrations"
+                    | "dashboard_hidden_mentions"
+                    | "controlled_owners"
+                    | "controlled_owners_changed"
+            )
+        })
+        .map(|(table, rows)| {
+            if table != "questions" {
+                return (table, rows);
+            }
+            let rows = rows
+                .into_iter()
+                .map(|row| {
+                    let fields: Vec<&str> = row.splitn(9, '|').collect();
+                    assert_eq!(fields[4..8], ["NULL"; 4], "{row}");
+                    let row = [&fields[..4], &fields[8..]].concat().join("|");
+                    row.strip_suffix("|NULL|'step'|NULL|NULL")
+                        .unwrap_or_else(|| panic!("{row}"))
+                        .to_owned()
+                })
+                .collect();
+            (table, rows)
+        })
         .collect();
+    // 0016 drops the allowlist logins 0001 seeded, still unbound here.
     let rows_before: Vec<_> = rows_before
         .into_iter()
         .filter(|(t, _)| t != "_sqlx_migrations")
+        .map(|(table, rows)| {
+            if table == "tenant_allowed_logins" {
+                (table, Vec::new())
+            } else {
+                (table, rows)
+            }
+        })
         .collect();
     assert_eq!(rows_before, rows_after, "row contents changed");
     assert_eq!(schema_before, schema_after, "other schema entries changed");

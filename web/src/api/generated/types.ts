@@ -268,6 +268,24 @@ created_at: string,
 finished_at: string | null, };
 
 /**
+ * Body of `POST /api/v1/analyses/{id}/questions`: a question with what it is about.
+ */
+export type AnchoredAskRequest = {
+/**
+ * The question, at most `AskRequest::MAX_TEXT_CHARS` characters.
+ */
+text: string,
+/**
+ * What the question is about; a follow-up repeats its thread's anchor.
+ */
+anchor: AskAnchor,
+/**
+ * A follow-up: a question of the thread it continues (the thread's first question is stored); absent for a new
+ * thread.
+ */
+parent_id?: QuestionId, };
+
+/**
  * An annotation anchored to lines of a step (same side as the step); its range is a highlight.
  */
 export type Annotation = {
@@ -335,7 +353,7 @@ message: string, };
 /**
  * Machine-readable API error code.
  */
-export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable" | "refresh_running" | "github_rate_limited" | "invalid_dashboard_settings" | "cursor_expired" | "insufficient_scope" | "token_not_accepted" | "token_limit_reached" | "rate_limited";
+export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable" | "refresh_running" | "github_rate_limited" | "invalid_dashboard_settings" | "cursor_expired" | "insufficient_scope" | "token_not_accepted" | "token_limit_reached" | "rate_limited" | "github_refused";
 
 /**
  * A GitHub App installation.
@@ -351,6 +369,35 @@ account: string,
 all_repositories: boolean, };
 
 /**
+ * What a question is about.
+ */
+export type AskAnchor = { "kind": "step",
+/**
+ * The step.
+ */
+step_id: StepId,
+/**
+ * Lines inside the step, on its side and file; null for the whole step.
+ */
+lines: LineRange | null, } | { "kind": "lines",
+/**
+ * Repository-relative path on `side`.
+ */
+path: string,
+/**
+ * Commit the lines refer to.
+ */
+side: LineSide,
+/**
+ * The lines, at most `AskAnchor::MAX_LINES`; null for the whole file.
+ */
+range: LineRange | null, } | { "kind": "flow",
+/**
+ * The flow.
+ */
+flow_id: FlowId, } | { "kind": "pr" };
+
+/**
  * An LLM answer to a question about a step.
  */
 export type AskOutput = {
@@ -364,7 +411,7 @@ answer: string,
 evidence: Array<Evidence>, };
 
 /**
- * A private question and its LLM answer, pinned to the step; returned only to its asker.
+ * A private question and its LLM answer, pinned to its anchor; returned only to its asker.
  */
 export type AskQuestion = {
 /**
@@ -380,9 +427,17 @@ asked_by?: string,
  */
 mine?: boolean,
 /**
- * The step.
+ * What the question is about.
  */
-step_id: StepId,
+anchor: AskAnchor,
+/**
+ * The step of a step anchor; absent for other anchors.
+ */
+step_id?: StepId,
+/**
+ * A follow-up: the first question of its thread; absent for a first question.
+ */
+parent_id?: QuestionId,
 /**
  * The question.
  */
@@ -710,6 +765,62 @@ line: number, };
 export type CommitSha = string;
 
 /**
+ * The installation-wide list of controlled GitHub owners: their repositories are "yours" in the Dependencies
+ * view, besides the pull request's owner, which always is.
+ */
+export type ControlledOwners = {
+/**
+ * Owner logins, sorted case-insensitively, unique.
+ */
+owners: Array<string>,
+/**
+ * Who saved the list last; null before the first save.
+ */
+changed_by: string | null,
+/**
+ * When it was saved last.
+ */
+changed_at: string | null, };
+
+/**
+ * A conversion added for a type of another crate: a deterministic fact (Rust tokens), never a verdict.
+ */
+export type ConversionFact = {
+/**
+ * What the line adds.
+ */
+kind: ConversionKind,
+/**
+ * The `impl` or `fn` line.
+ */
+at: HeadLine,
+/**
+ * The type's name.
+ */
+type_name: string,
+/**
+ * The type's path as written.
+ */
+written: string,
+/**
+ * The crate the type comes from.
+ */
+type_crate: string,
+/**
+ * The `use` line importing it, if any.
+ */
+imported_at: HeadLine | null,
+/**
+ * Where the type is defined.
+ */
+definition: TypeDefinition, };
+
+/**
+ * What a conversion fact's line adds.
+ */
+export type ConversionKind = "from_impl" | "try_from_impl" | "impl_on_foreign_type" | "conversion_fn";
+
+/**
  * Counters over material that is not analysed.
  */
 export type Counters = {
@@ -730,6 +841,77 @@ dependencies_changed: Array<string>,
  * files); their changes are not counted in `dependencies_changed`.
  */
 dependency_files_not_checked: Array<string>, };
+
+/**
+ * What the pull request changes in a crate.
+ */
+export type CrateChanges = {
+/**
+ * Changed lines (added and removed) in its files.
+ */
+changed_lines: number,
+/**
+ * Changed files.
+ */
+files: number,
+/**
+ * Flows with lines in it, in Tour order.
+ */
+flows: Array<CrateFlow>,
+/**
+ * Conversions added for types of workspace or controlled crates (deterministic), at most 50.
+ */
+facts: Array<ConversionFact>,
+/**
+ * Facts beyond those listed.
+ */
+facts_hidden: number,
+/**
+ * Facts about types of other crates (counted, not listed).
+ */
+other_facts: number,
+/**
+ * The LLM's notes, at most 3, most changed lines first.
+ */
+notes: Array<CrateNote>,
+/**
+ * Notes beyond those listed.
+ */
+notes_hidden: number,
+/**
+ * Direct dependencies not listed (over the view's cap of crates outside this repository and controlled ones).
+ */
+other_dependencies: number, };
+
+/**
+ * A flow with lines in a crate.
+ */
+export type CrateFlow = {
+/**
+ * Flow id.
+ */
+id: FlowId,
+/**
+ * Its title (LLM).
+ */
+title: string, };
+
+/**
+ * A keyword note of the LLM on what changed in a crate.
+ */
+export type CrateNote = {
+/**
+ * The note (LLM).
+ */
+text: string,
+/**
+ * The changed lines of the hunks it describes, in this crate (head side when present).
+ */
+lines: Array<FileRange>,
+/**
+ * Changed lines of those hunks: the ranking key.
+ */
+changed_lines: number, };
 
 /**
  * Body of `POST /api/v1/settings/access-tokens`.
@@ -905,6 +1087,14 @@ unreachable: Array<string>, };
  */
 export type DashboardSummary = {
 /**
+ * Unanswered, unhidden mentions, oldest first; independent of the ranking.
+ */
+mentions: Array<Mention>,
+/**
+ * Mention reads omitted in this snapshot, independent of item filters and pagination.
+ */
+mention_coverage: MentionCoverage,
+/**
  * Opaque; changes whenever the stored snapshot or its ranking changes (poll this, then fetch the items).
  */
 revision: string,
@@ -923,7 +1113,12 @@ schedule: ScheduleStatus,
 /**
  * Items of the snapshot whose judgement came from an older ranking prompt (re-judged within the caps).
  */
-older_prompt_judgements: number, };
+older_prompt_judgements: number,
+/**
+ * Configured dashboard plug-ins (ADR-022); absent when none is configured. While one is listed, the browser
+ * reads the summary again every minute.
+ */
+plugins?: Array<PluginStatus>, };
 
 /**
  * Removed code shown at its deletion marker.
@@ -955,6 +1150,160 @@ replacement?: LineRange,
  * hide them.
  */
 context_only?: Array<number>, };
+
+/**
+ * A crate.
+ */
+export type DependencyCrate = {
+/**
+ * Package name.
+ */
+name: string,
+/**
+ * Version, if known.
+ */
+version: string | null,
+/**
+ * Manifest path of a crate of this repository.
+ */
+manifest: string | null,
+/**
+ * The `Cargo.lock` record or manifest declaration naming its source (head commit).
+ */
+source_at: HeadLine | null,
+/**
+ * Locked git commit, if any.
+ */
+revision: string | null,
+/**
+ * Changed crates depending on it directly.
+ */
+used_by: Array<string>,
+/**
+ * Conversion facts naming its types.
+ */
+facts_about: number,
+/**
+ * What the pull request changes in it; null for an unchanged crate.
+ */
+changes: CrateChanges | null, };
+
+/**
+ * Something the map does not cover.
+ */
+export type DependencyLimit = { "kind": "manifests_cut",
+/**
+ * Manifests at the head commit.
+ */
+total: number,
+/**
+ * Manifests read.
+ */
+read: number, } | { "kind": "manifest_unreadable",
+/**
+ * Its path.
+ */
+path: string, } | { "kind": "lock_unreadable",
+/**
+ * Its path.
+ */
+path: string, } | { "kind": "no_lock_file",
+/**
+ * Directory of its root manifest (`""` = repository root).
+ */
+workspace_dir: string, } | { "kind": "source_unread",
+/**
+ * Its path.
+ */
+path: string, } | { "kind": "facts_cut",
+/**
+ * Facts kept.
+ */
+kept: number, } | { "kind": "workspace_unresolved",
+/**
+ * Its manifest.
+ */
+manifest: string, } | { "kind": "workspace_entries_cut",
+/**
+ * The root manifest.
+ */
+manifest: string, } | { "kind": "target_specific",
+/**
+ * The manifest.
+ */
+manifest: string, } | { "kind": "source_cut",
+/**
+ * Its path.
+ */
+path: string, } | { "kind": "definitions_unread",
+/**
+ * The crate's directory (`""` = repository root).
+ */
+dir: string,
+/**
+ * Files not read.
+ */
+files: number, };
+
+/**
+ * A repository or other source of crates.
+ */
+export type DependencyRepository = {
+/**
+ * What kind of source it is.
+ */
+kind: RepositoryKind,
+/**
+ * The GitHub repository, when known.
+ */
+repo: RepoRef | null,
+/**
+ * The registry name, git URL or path as Cargo names it; null for this repository.
+ */
+location: string | null,
+/**
+ * The repository's owner is controlled ("yours").
+ */
+controlled: boolean,
+/**
+ * Its crates: changed crates first (by changed lines), then by name.
+ */
+crates: Array<DependencyCrate>, };
+
+/**
+ * Whether the map exists.
+ */
+export type DependencyStatus = "available" | "not_rust";
+
+/**
+ * Response of `GET /api/v1/analyses/{id}/dependencies`.
+ */
+export type DependencyView = {
+/**
+ * Whether the head commit has Cargo manifests.
+ */
+status: DependencyStatus,
+/**
+ * Owners whose repositories are "yours": the pull request's owner and the Settings list, sorted.
+ */
+controlled_owners: Array<string>,
+/**
+ * What the map does not cover.
+ */
+limits: Array<DependencyLimit>,
+/**
+ * Changed files in no crate (not checked).
+ */
+files_outside_crates: number,
+/**
+ * Whether the LLM's notes exist for this analysis.
+ */
+notes: NotesState,
+/**
+ * This repository first, then controlled GitHub repositories, other GitHub repositories, other git URLs,
+ * registries, paths and unknown sources, holding the direct dependencies of the changed crates.
+ */
+repositories: Array<DependencyRepository>, };
 
 /**
  * A diff hunk.
@@ -1239,6 +1588,54 @@ line: number, };
 export type FeedbackValue = "correct" | "wrong" | "irrelevant" | "overrated" | "underrated" | "missed_by_llm";
 
 /**
+ * How a file changed.
+ */
+export type FileChangeStatus = "added" | "modified" | "deleted" | "renamed";
+
+/**
+ * Group of a file in the file tree.
+ */
+export type FileGroup = { "kind": "code" } | { "kind": "not_analysed",
+/**
+ * Section.
+ */
+category: NotAnalysedCategory,
+/**
+ * How it was recognised.
+ */
+badge: ProvenanceBadge,
+/**
+ * The matching rule or detector description.
+ */
+rule: string, };
+
+/**
+ * One hunk: a run of contiguous changed lines, removed and added together, without context.
+ */
+export type FileHunk = {
+/**
+ * Hunk id of the pre-pass.
+ */
+id: HunkId,
+/**
+ * Removed lines (base side); null when the hunk removes nothing.
+ */
+base: LineRange | null,
+/**
+ * Added lines (head side); null when the hunk adds nothing.
+ */
+head: LineRange | null,
+/**
+ * Head line after which the removed lines were (0 = before line 1); set when `head` is null and the file
+ * exists at head.
+ */
+after_line: number | null,
+/**
+ * The hunk's changed lines by owner, base parts first; together they hold every changed line once.
+ */
+parts: Array<HunkPart>, };
+
+/**
  * A line range of one file.
  */
 export type FileRange = {
@@ -1271,6 +1668,29 @@ side: LineSide,
  * The lines, ascending and disjoint.
  */
 ranges: Array<LineRange>, };
+
+/**
+ * The user's GitHub Viewed mark of a file (GraphQL `FileViewedState`).
+ */
+export type FileViewedState = "viewed" | "unviewed" | "dismissed";
+
+/**
+ * Response of `GET /api/v1/analyses/{id}/files`.
+ */
+export type FilesResponse = {
+/**
+ * Every file of the diff, in diff (path) order.
+ */
+files: Array<PrFile>,
+/**
+ * Whether `PrFile::viewed` was read from GitHub for every file.
+ */
+viewed_status: ViewedStatus,
+/**
+ * The pull request's head on GitHub when the Viewed state was read; null when not read. Marking Viewed is
+ * refused while it differs from the analysed head.
+ */
+current_head: CommitSha | null, };
 
 /**
  * A question about the fit of the change at project scale.
@@ -1584,6 +2004,44 @@ kind: NodeKind,
 label: string, };
 
 /**
+ * A line of a file at the head commit.
+ */
+export type HeadLine = {
+/**
+ * Repository-relative path.
+ */
+file: string,
+/**
+ * 1-based line.
+ */
+line: number, };
+
+/**
+ * A pull request Ready to merge would list, held back by a plug-in's statement (ADR-022).
+ */
+export type HeldBack = {
+/**
+ * The pull request as Ready to merge would list it.
+ */
+item: ReadyToMergeItem,
+/**
+ * Plug-in id.
+ */
+plugin: string,
+/**
+ * Name of the plug-in, shown before the reason.
+ */
+source: string,
+/**
+ * The plug-in's reason, plain text.
+ */
+reason: string,
+/**
+ * Evidence: the source's record of the pull request.
+ */
+url: string, };
+
+/**
  * A dated event for the charts.
  */
 export type HistoryEvent = {
@@ -1604,6 +2062,32 @@ item_id: string, };
  * Kind of a history event; pull requests and reviews only (OD16).
  */
 export type HistoryKind = "pr_opened" | "pr_merged" | "pr_closed_unmerged" | "review_given";
+
+/**
+ * Identifier of a diff hunk from the server's pre-pass: `h1`, `h2`, ….
+ */
+export type HunkId = string;
+
+/**
+ * Changed lines of a hunk with one owner.
+ */
+export type HunkPart = {
+/**
+ * Side of the lines.
+ */
+side: LineSide,
+/**
+ * The lines.
+ */
+range: LineRange,
+/**
+ * Where the lines are explained, or why they are in no flow.
+ */
+owner: PartOwner,
+/**
+ * Other steps (of any flow) whose lines include these lines, in Tour order.
+ */
+also_in: Array<StepId>, };
 
 /**
  * A moved block whose text is identical after whitespace normalisation. The UI says "Body text identical"
@@ -1710,6 +2194,14 @@ export type ItemKind = "pr" | "issue" | "todo";
  * Response of `GET /api/v1/dashboard/items`: ranked items of the latest snapshot, in rank order.
  */
 export type ItemPage = {
+/**
+ * Unanswered, unhidden mentions on the first page only; empty on cursor pages.
+ */
+mentions: Array<Mention>,
+/**
+ * Mention reads omitted in this snapshot, independent of item filters and pagination.
+ */
+mention_coverage: MentionCoverage,
 /**
  * The summary's `revision` the page belongs to.
  */
@@ -2045,6 +2537,76 @@ state: MemcanState,
 last_success_at: string | null, };
 
 /**
+ * A request addressed to a scanned login, outside the ranked list.
+ */
+export type Mention = {
+/**
+ * Only a bounded part of this conversation was read.
+ */
+partly_read: boolean,
+/**
+ * Stable opaque identity of this post on this item (used by Hide).
+ */
+id: string,
+/**
+ * The containing item.
+ */
+item_key: ItemKey,
+/**
+ * Pull request or issue.
+ */
+kind: GithubKind,
+/**
+ * Repository.
+ */
+repo: RepoRef,
+/**
+ * Item number.
+ */
+number: number,
+/**
+ * Item title, plain text.
+ */
+title: string,
+/**
+ * Mentioning author; a deleted account is shown as `ghost`.
+ */
+author: string,
+/**
+ * GitHub Bot type, [bot] suffix or the user's known bots.
+ */
+is_bot: boolean,
+/**
+ * When the mentioning post was created.
+ */
+created_at: string,
+/**
+ * One line of the mentioning text, plain text only.
+ */
+text: string,
+/**
+ * Server-built GitHub link to the mentioning post.
+ */
+url: string, };
+
+/**
+ * Missing mention reads; zero items does not imply that every login was searched.
+ */
+export type MentionCoverage = {
+/**
+ * Real candidates not checked because of the read budget, deadline or read failure.
+ */
+unchecked_items: number,
+/**
+ * Logins whose mention search was unavailable; fallback covers only mention-only issues.
+ */
+unchecked_logins: Array<string>,
+/**
+ * Logins whose PR mention search exceeded its request budget.
+ */
+timed_out_logins: Array<string>, };
+
+/**
  * Model and reasoning effort (plan §5.2, ADR-002).
  */
 export type ModelChoice = {
@@ -2226,9 +2788,76 @@ file_count: number,
 items: Array<NotAnalysedItem>, };
 
 /**
+ * Why a file is never rendered.
+ */
+export type NotRenderedReason = "too_large" | "generated" | "binary";
+
+/**
+ * Whether the LLM's crate notes exist.
+ */
+export type NotesState = "produced" | "pending" | "not_produced";
+
+/**
  * Whether an issue was introduced by the pull request.
  */
 export type Origin = "introduced" | "pre_existing" | "unclear";
+
+/**
+ * Where changed lines are explained, decided by the server from the same coverage that yields Unexplained.
+ */
+export type PartOwner = { "kind": "step",
+/**
+ * The flow.
+ */
+flow_id: FlowId,
+/**
+ * The step.
+ */
+step_id: StepId, } | { "kind": "flow",
+/**
+ * The flow.
+ */
+flow_id: FlowId, } | { "kind": "incidental",
+/**
+ * The flow.
+ */
+flow_id: FlowId,
+/**
+ * What changed there, as the LLM wrote it.
+ */
+text: string, } | { "kind": "unexplained",
+/**
+ * Why the server did not send them to the LLM; absent when the LLM did not explain them.
+ */
+reason?: UnexplainedReason, } | { "kind": "not_analysed",
+/**
+ * Section.
+ */
+category: NotAnalysedCategory,
+/**
+ * How it was recognised.
+ */
+badge: ProvenanceBadge,
+/**
+ * The matching rule.
+ */
+rule: string, } | { "kind": "context_rule",
+/**
+ * How it was recognised.
+ */
+badge: ProvenanceBadge,
+/**
+ * The matching rule.
+ */
+rule: string, } | { "kind": "identical_move",
+/**
+ * Original block at the base commit.
+ */
+from: FileRange,
+/**
+ * New block at the head commit.
+ */
+to: FileRange, } | { "kind": "whitespace_only" };
 
 /**
  * Who decides a part.
@@ -2372,6 +3001,70 @@ importance_rank: number,
 ranges: Array<FileRanges>, };
 
 /**
+ * An external statement of a dashboard plug-in about a pull request (ADR-022): attributed to its source, plain
+ * text, never a diffpilot fact or verdict.
+ */
+export type PluginNote = {
+/**
+ * Plug-in id, e.g. `pr-hygiene`.
+ */
+plugin: string,
+/**
+ * Name shown before the statement, e.g. `PR Hygiene`.
+ */
+source: string,
+/**
+ * Evidence: the source's record of the pull request, built by the server.
+ */
+url: string,
+/**
+ * When the source produced the data.
+ */
+as_of: string,
+/**
+ * Headline (PR Hygiene: the next action).
+ */
+summary: string | null,
+/**
+ * Further points (PR Hygiene: the blockers).
+ */
+details: Array<string>,
+/**
+ * Labelled values (PR Hygiene: stage, whose move, lateness).
+ */
+facts: Array<Fact>, };
+
+/**
+ * Whether a plug-in's statements are shown.
+ */
+export type PluginState = "waiting" | "current" | "stale";
+
+/**
+ * A configured dashboard plug-in: an external source of statements about pull requests (ADR-022).
+ */
+export type PluginStatus = {
+/**
+ * Stable id, e.g. `pr-hygiene`.
+ */
+plugin: string,
+/**
+ * Name shown before its statements, e.g. `PR Hygiene`.
+ */
+source: string,
+/**
+ * The source's home page.
+ */
+url: string,
+/**
+ * Whether its statements are shown now.
+ */
+state: PluginState,
+/**
+ * When the source produced the data last read; null before the first successful read.
+ */
+as_of: string | null, };
+
+/**
  * An ownership policy file (JSON format of `stale_prs_are_bad`).
  */
 export type PolicyRef = {
@@ -2468,6 +3161,51 @@ related_work: Array<RelatedWork>,
  * Questions about the fit of the change, never verdicts.
  */
 fit_questions: Array<FitQuestion>, };
+
+/**
+ * One file of the pull request.
+ */
+export type PrFile = {
+/**
+ * Path at the head commit (at the base commit for a deleted file); the path GitHub's Viewed mark uses.
+ */
+path: string,
+/**
+ * Path at the base commit of a renamed file.
+ */
+old_path: string | null,
+/**
+ * How the file changed.
+ */
+status: FileChangeStatus,
+/**
+ * Git treats the file as binary: no hunks.
+ */
+binary: boolean,
+/**
+ * Added lines in the diff.
+ */
+added: number,
+/**
+ * Removed lines in the diff.
+ */
+removed: number,
+/**
+ * Group of the file tree: code, or recognised by a path rule.
+ */
+group: FileGroup,
+/**
+ * Why the file is never rendered; null when it is.
+ */
+not_rendered: NotRenderedReason | null,
+/**
+ * The user's GitHub Viewed mark; null when it was not read.
+ */
+viewed: FileViewedState | null,
+/**
+ * Hunks (runs of changed lines without context) in file order.
+ */
+hunks: Array<FileHunk>, };
 
 /**
  * A pull request of a repository.
@@ -2634,6 +3372,40 @@ resumes_at: string | null,
  * Plain text of a failure; null unless `failed` or `interrupted`.
  */
 message: string | null, };
+
+/**
+ * A pull request of the user ready to merge: into the default branch, not a draft, write access, every check passed
+ * and nothing left to answer (plan K17).
+ */
+export type ReadyToMergeItem = {
+/**
+ * Display alias, e.g. `PLAT-1176`.
+ */
+id: string,
+/**
+ * Repository.
+ */
+repo: RepoRef,
+/**
+ * Pull request number.
+ */
+number: number,
+/**
+ * Title.
+ */
+title: string,
+/**
+ * GitHub link, built by the server.
+ */
+url: string,
+/**
+ * Deterministic tags from scan facts (CI state; checks not passing that are not required).
+ */
+tags: Array<FactTag>,
+/**
+ * Size mark of its full diff (display only); absent when the totals are unknown.
+ */
+change_size?: ChangeSizeMark, };
 
 /**
  * Reasoning effort of the model.
@@ -2820,6 +3592,11 @@ related_repos: Array<RepoRef>,
  * Project profile source.
  */
 project_profile: ProjectProfileStatus, };
+
+/**
+ * Kind of a crate source.
+ */
+export type RepositoryKind = "this" | "github" | "other_git" | "registry" | "path" | "unknown";
 
 /**
  * Settings of one repository row.
@@ -3092,6 +3869,15 @@ export type SetAskEffortRequest = {
 reasoning_effort: ReasoningEffort, };
 
 /**
+ * Body of `PUT /api/v1/settings/controlled-owners`.
+ */
+export type SetControlledOwnersRequest = {
+/**
+ * GitHub owner logins (users or organisations), at most [`SetControlledOwnersRequest::MAX_OWNERS`].
+ */
+owners: Array<string>, };
+
+/**
  * Body of `PUT /api/v1/settings/llm/judge-effort`.
  */
 export type SetJudgeEffortRequest = {
@@ -3117,6 +3903,19 @@ export type SetTimeZoneRequest = {
  * IANA time zone name.
  */
 time_zone: string, };
+
+/**
+ * Body of `PUT /api/v1/analyses/{id}/files/viewed`.
+ */
+export type SetViewedRequest = {
+/**
+ * `PrFile::path` of a file of the analysis.
+ */
+path: string,
+/**
+ * True marks the file as viewed on GitHub, false removes the mark.
+ */
+viewed: boolean, };
 
 /**
  * Response of `GET /api/v1/settings`.
@@ -3150,7 +3949,11 @@ app_installations: Array<AppInstallation> | null,
 /**
  * The tenant's known repositories (any pull request opened); each one's settings can be opened.
  */
-repos: Array<RepoRef>, };
+repos: Array<RepoRef>,
+/**
+ * Installation-wide controlled GitHub owners (Dependencies view, ADR-021); absent on older servers.
+ */
+controlled_owners?: ControlledOwners, };
 
 /**
  * Size mark of a pull request: a fixed table of changed lines (additions + deletions), plan §C.2 K16.
@@ -3203,6 +4006,19 @@ excluded: number,
  * The user's pull requests waiting on other people.
  */
 awaiting: Array<AwaitingItem>,
+/**
+ * The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked.
+ */
+ready_to_merge: Array<ReadyToMergeItem>,
+/**
+ * Pull requests K17 would list that a current plug-in statement holds back (ADR-022), by display id.
+ */
+ready_to_merge_held?: Array<HeldBack>,
+/**
+ * The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read
+ * again by the next refresh); null when the snapshot did not record merge states (stored before they were).
+ */
+merge_state_pending: number | null,
 /**
  * Dated pull request and review events of the chart window (12 weeks), across the scanned logins.
  */
@@ -3446,6 +4262,15 @@ quiet: QuietRows,
 threads: Array<GithubThread>, };
 
 /**
+ * Where a fact's type is defined.
+ */
+export type TypeDefinition = { "kind": "located",
+/**
+ * The definition line.
+ */
+at: HeadLine, } | { "kind": "not_located" } | { "kind": "not_searched" } | { "kind": "other_repository" };
+
+/**
  * Unexplained lines of one file on one side, with why the server left them out when it decided so.
  */
 export type UnexplainedRanges = {
@@ -3525,6 +4350,11 @@ last_7_days: UsageTotals | null, };
 export type UserFeedbackValue = "correct" | "wrong" | "irrelevant" | "overrated" | "underrated";
 
 /**
+ * How completely the Viewed state was read.
+ */
+export type ViewedStatus = "checked" | "partial" | "not_checked";
+
+/**
  * One ranked item.
  */
 export type WorkItem = {
@@ -3592,4 +4422,8 @@ llm: ItemText | null,
 /**
  * The user's diffpilot analysis of this pull request, read at request time; null when none.
  */
-review: ReviewLink | null, };
+review: ReviewLink | null,
+/**
+ * Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
+ */
+plugin_notes?: Array<PluginNote>, };

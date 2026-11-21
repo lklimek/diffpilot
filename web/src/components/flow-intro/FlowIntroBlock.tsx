@@ -1,4 +1,5 @@
 import { CodeText } from "../section/CodeText";
+import { AskButton } from "../ask/chat/AskButton";
 import { Tooltip } from "../tooltip/Tooltip";
 import { buttonClass } from "../button/button";
 import { useId } from "react";
@@ -30,6 +31,8 @@ interface FlowIntroBlockProps {
   ticked: StepId[];
   /** Ticks (`true`) or unticks (`false`) every step of the flow; no button without it. */
   onSetReviewed?: (reviewed: boolean) => void;
+  /** Opens the Ask chat about this flow; no button without it. */
+  onAsk?: () => void;
 }
 
 const lineCount = (ranges: readonly { start_line: number; end_line: number }[]) =>
@@ -45,6 +48,7 @@ export function FlowIntroBlock({
   dependencies,
   ticked,
   onSetReviewed,
+  onAsk,
   now,
   onRequest,
   busy,
@@ -185,6 +189,7 @@ export function FlowIntroBlock({
           <span className="text-[12.5px] text-muted">
             {reviewed} of {total} {total === 1 ? "step" : "steps"} reviewed
           </span>
+          {onAsk && <AskButton what="this flow" onAsk={onAsk} />}
           {onSetReviewed && (
             <ReviewToggle
               label="Mark flow reviewed"

@@ -37,6 +37,7 @@
 #   fake-memcan  FAKE_MEMCAN_LISTEN        127.0.0.1:<free port>; FAKE_MEMCAN_TOKEN = SR_MEMCAN_TOKEN;
 #                FAKE_MEMCAN_PATH          /mcp (inspection and failure modes: <url>/_fake/*, tools/fake-memcan)
 #   server       SR_PUBLIC_URL             http://127.0.0.1:<public port> (plain HTTP: cookies not Secure)
+#                SR_ALLOWED_LOGINS         alice
 #                SR_LISTEN_ADDR            127.0.0.1:<public port>
 #                SR_RUNNER_LISTEN_ADDR     = SR_DEV_RUNNER_LISTEN_ADDR (runner protocol only)
 #                SR_DATA_DIR               <state>/server (SQLite database, bare mirrors)
@@ -66,9 +67,9 @@
 # with SR_SMOKE_ISOLATION=supervisor (this stack with --without runner), or the whole stack in containers with
 # deploy/compose.yaml plus deploy/compose.local.yaml (docs/runbook.md, "Local stack").
 #
-# The sign-in allowlist gets the fake user `alice` (stage 2 has no allowlist settings route): inserted into
-# the database once the server has created it. Output: one line `SR_DEV_URL=<url>` when the stack is ready, then
-# `SR_DEV_STATE_DIR=<dir>`; the generated values are in <state>/stack.env (mode 600) for the tests' log scan.
+# The sign-in allowlist is the fake user `alice` (SR_ALLOWED_LOGINS). Output: one line `SR_DEV_URL=<url>` when the
+# stack is ready, then `SR_DEV_STATE_DIR=<dir>`; the generated values are in <state>/stack.env (mode 600) for the
+# tests' log scan.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -89,7 +90,7 @@ while (($#)); do
 done
 skipped() { [[ " ${without[*]} " == *" $1 "* ]]; }
 
-for tool in curl git openssl python3 sqlite3; do
+for tool in curl git openssl python3; do
   command -v "$tool" > /dev/null || { echo "stack.sh: $tool is required" >&2; exit 1; }
 done
 
@@ -179,6 +180,7 @@ common=(PATH="$PATH" HOME="$state/home" LANG=C.UTF-8 NO_COLOR=1 RUST_LOG="${RUST
   env -i "${common[@]}" "$repo/tools/fake-github/prepare-clone-base.sh" "$state/remotes" > /dev/null
 server_env=(
   SR_PUBLIC_URL="$url"
+  SR_ALLOWED_LOGINS="$login"
   SR_LISTEN_ADDR="127.0.0.1:$public_port"
   SR_RUNNER_LISTEN_ADDR="$runner_addr"
   SR_DATA_DIR="$state/server"
@@ -238,8 +240,6 @@ fi
 # The server reads a `.env` of its working directory or a parent: run it in the state dir.
 start server "$state" "${server_env[@]}" "$server_bin"
 wait_for server "$url/api/v1/me"
-sqlite3 -cmd ".timeout 5000" "$state/server/diffpilot.sqlite" \
-  "INSERT OR IGNORE INTO tenant_allowed_logins (tenant_id, login) VALUES ('default', '$login');"
 if ! skipped runner; then
   start runner "$state" "${runner_env[@]}" "$runner_bin"
 fi

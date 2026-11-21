@@ -1,6 +1,6 @@
-//! Rust line rules of the generic plugin, read from `rustc_lexer` tokens, never from raw text: comment-only lines
-//! and plain private imports (brief amendment 2026-11-18). Whatever the rules cannot read with certainty is not
-//! covered.
+//! Rust line rules of the generic plugin, read from `rustc_lexer` tokens, never from raw text: comment-only lines,
+//! plain imports and re-exports (brief amendments 2026-11-18 and 2026-11-20) and items compiled only for tests.
+//! Whatever the rules cannot read with certainty is not covered.
 
 use std::collections::{HashMap, HashSet};
 
@@ -9,6 +9,8 @@ use ra_ap_rustc_lexer::{FrontmatterAllowed, LiteralKind, TokenKind, strip_sheban
 
 use super::{FileSource, OtherSide};
 use crate::diff::Hunk;
+
+pub(super) mod conversions;
 
 /// Deepest `{` nesting of a `use` tree the rules read; a deeper tree is unreadable.
 const MAX_USE_DEPTH: usize = 32;
@@ -125,12 +127,27 @@ const ITEM_KEYWORDS: &[&str] = &[
     "fn", "struct", "enum", "union", "type", "trait", "mod", "const", "static", "crate",
 ];
 
+/// Keywords of the items the test rule reads.
+const TEST_ITEM_KEYWORDS: &[&str] = &[
+    "fn",
+    "mod",
+    "impl",
+    "trait",
+    "use",
+    "struct",
+    "enum",
+    "union",
+    "macro_rules",
+];
+
 /// Covered changed lines of one Rust file side, per rule.
 pub(super) struct Covered {
     /// Comment-only lines.
     pub comments: Vec<u32>,
-    /// Plain private `use` declarations.
+    /// Plain `use` declarations and re-exports.
     pub imports: Vec<u32>,
+    /// Lines of items compiled only for tests.
+    pub tests: Vec<u32>,
 }
 
 /// The covered changed lines of `file`, whose text is `text`.
@@ -138,6 +155,7 @@ pub(super) fn covered<'a>(file: &FileSource<'a>, text: &'a str) -> Covered {
     let nothing = || Covered {
         comments: Vec::new(),
         imports: Vec::new(),
+        tests: Vec::new(),
     };
     let Some(this) = lex(text) else {
         return nothing();
@@ -151,10 +169,266 @@ pub(super) fn covered<'a>(file: &FileSource<'a>, text: &'a str) -> Covered {
         },
         OtherSide::Unknown => return nothing(),
     };
+    let tests = TestItems::new(&this);
     Covered {
         comments: comment_lines(file, &this, &other),
-        imports: import_lines(file, &this, &other),
+        imports: import_lines(file, &this, &tests, &other),
+        tests: tests.changed_lines(this.lines, file.changed_lines),
     }
+}
+
+/// The code tokens of `lexed` (comments left out), in order.
+fn code_tokens<'l, 'a>(lexed: &'l Lexed<'a>) -> Vec<&'l Token<'a>> {
+    lexed
+        .tokens
+        .iter()
+        .filter(|t| !is_comment(t.kind))
+        .collect()
+}
+
+/// For each code token that opens a delimited group, the index of the token closing it.
+fn closing(code: &[&Token<'_>]) -> Vec<Option<usize>> {
+    let mut out = vec![None; code.len()];
+    let mut open = Vec::new();
+    for (index, token) in code.iter().enumerate() {
+        if is_open(token.kind) {
+            open.push(index);
+        } else if is_close(token.kind)
+            && let Some(start) = open.pop()
+        {
+            out[start] = Some(index);
+        }
+    }
+    out
+}
+
+/// An item compiled only for tests: lines are 0-based.
+struct TestItem {
+    first: usize,
+    /// Line of the first token after the attributes.
+    header: usize,
+    last: usize,
+    /// Lines of its body's `{` and `}`.
+    body: Option<(usize, usize)>,
+}
+
+/// The test items of one side, with a mask of the code tokens inside them.
+pub(super) struct TestItems {
+    items: Vec<TestItem>,
+    /// Per code token (see [`code_tokens`]): inside a test item, after its attributes.
+    inside: Vec<bool>,
+}
+
+impl TestItems {
+    /// No test items: every token counts.
+    pub(super) fn none() -> Self {
+        Self {
+            items: Vec::new(),
+            inside: Vec::new(),
+        }
+    }
+
+    /// Items whose first outer attribute is `#[cfg(test)]` or `#[test]` / `#[<path>::test(..)]`, starting a line after
+    /// `;`, `{`, `}` or the file start and ending a line; an item is `fn`, `mod`, `impl`, `trait`, `use`, `struct`,
+    /// `enum`, `union` or `macro_rules` ending at its `;` or its body's `}`. Never inside a macro token tree; a header
+    /// with `=`, `,` or an unbalanced close is not read. A path attribute counts only when no `use`, glob or item of
+    /// the file can bind its first segment (an imported `test` macro is not the test harness). Linear in the tokens.
+    fn new(lexed: &Lexed<'_>) -> Self {
+        let mut paths = Paths::default();
+        let mut scope = Scope::default();
+        scan(lexed, &Self::none(), &mut paths, &mut scope, None);
+        let free = |head: &str| {
+            !scope.unsure && !scope.bound.contains_key(head) && !scope.items.contains(head)
+        };
+        let code = code_tokens(lexed);
+        let close = closing(&code);
+        let mut items = Vec::new();
+        let mut marks = vec![0i64; code.len() + 1];
+        for index in 0..code.len() {
+            if let Some((item, start, end)) = test_item(lexed, &code, &close, &free, index) {
+                marks[start] += 1;
+                marks[end + 1] -= 1;
+                items.push(item);
+            }
+        }
+        let mut depth = 0;
+        let inside = marks[..code.len()]
+            .iter()
+            .map(|mark| {
+                depth += mark;
+                depth > 0
+            })
+            .collect();
+        Self { items, inside }
+    }
+
+    /// The `changed` lines (1-based, sorted) of a side with `lines` lines inside the body of a test item, or inside a
+    /// test item whose attribute lines and first item line all changed (so no attribute moves onto an unchanged item;
+    /// an unchanged closing line the diff pairs elsewhere does not matter).
+    fn changed_lines(&self, lines: usize, changed: &[u32]) -> Vec<u32> {
+        let mut is_changed = vec![false; lines];
+        for &line in changed {
+            if let Some(slot) = usize::try_from(line)
+                .ok()
+                .and_then(|line| line.checked_sub(1))
+                .and_then(|index| is_changed.get_mut(index))
+            {
+                *slot = true;
+            }
+        }
+        let mut count = vec![0usize; lines + 1];
+        for (index, changed) in is_changed.iter().enumerate() {
+            count[index + 1] = count[index] + usize::from(*changed);
+        }
+        let mut marks = vec![0i64; lines + 1];
+        let mut cover = |from: usize, to: usize| {
+            if from <= to && to < lines {
+                marks[from] += 1;
+                marks[to + 1] -= 1;
+            }
+        };
+        for item in &self.items {
+            if item.header < lines
+                && count[item.header + 1] - count[item.first] == item.header - item.first + 1
+            {
+                cover(item.first, item.last);
+            } else if let Some((open, close)) = item.body
+                && open + 1 < close
+            {
+                cover(open + 1, close - 1);
+            }
+        }
+        let mut depth = 0;
+        let mut out = Vec::new();
+        for (index, mark) in marks[..lines].iter().enumerate() {
+            depth += mark;
+            if depth > 0
+                && is_changed[index]
+                && let Ok(line) = u32::try_from(index + 1)
+            {
+                out.push(line);
+            }
+        }
+        out
+    }
+}
+
+/// The test item whose attributes start at code token `index`, with the indices of its first token after the
+/// attributes and of its last token; `free(name)` tells whether a path attribute may start with `name`.
+fn test_item(
+    lexed: &Lexed<'_>,
+    code: &[&Token<'_>],
+    close: &[Option<usize>],
+    free: &dyn Fn(&str) -> bool,
+    index: usize,
+) -> Option<(TestItem, usize, usize)> {
+    let token = code[index];
+    if token.kind != TokenKind::Pound || lexed.in_macro.get(token.first).copied().unwrap_or(true) {
+        return None;
+    }
+    let starts_line = index.checked_sub(1).is_none_or(|before| {
+        matches!(
+            code[before].kind,
+            TokenKind::Semi | TokenKind::OpenBrace | TokenKind::CloseBrace
+        ) && code[before].last < token.first
+    });
+    if !starts_line {
+        return None;
+    }
+    let (mut at, mut test) = (index, false);
+    while code.get(at)?.kind == TokenKind::Pound {
+        let open = at + 1;
+        if code.get(open)?.kind != TokenKind::OpenBracket {
+            return None;
+        }
+        let end = (*close.get(open)?)?;
+        // Only the first attribute: one before it may be a macro that sees the item first.
+        test |= at == index && is_test_attribute(code, close, free, open + 1, end);
+        at = end + 1;
+    }
+    if !test {
+        return None;
+    }
+    let start = at;
+    let mut keyword = false;
+    let (end, body) = loop {
+        let token = code.get(at)?;
+        match token.kind {
+            TokenKind::Semi => break (at, None),
+            TokenKind::OpenBrace => {
+                let end = (*close.get(at)?)?;
+                break (end, Some((token.first, code[end].last)));
+            }
+            TokenKind::OpenParen | TokenKind::OpenBracket => at = (*close.get(at)?)?,
+            TokenKind::CloseBrace
+            | TokenKind::CloseParen
+            | TokenKind::CloseBracket
+            | TokenKind::Comma
+            | TokenKind::Eq => return None,
+            TokenKind::Ident => keyword |= TEST_ITEM_KEYWORDS.contains(&token.text),
+            _ => {}
+        }
+        at += 1;
+    };
+    let ends_line = code
+        .get(end + 1)
+        .is_none_or(|after| after.first > code[end].last);
+    (keyword && ends_line).then(|| {
+        let item = TestItem {
+            first: token.first,
+            header: code[start].first,
+            last: code[end].last,
+            body,
+        };
+        (item, start, end)
+    })
+}
+
+/// Whether the attribute tokens `code[from..to]` are `cfg(test)`, or a path ending in `test` whose first segment is
+/// `free`, with or without arguments in parentheses.
+fn is_test_attribute(
+    code: &[&Token<'_>],
+    close: &[Option<usize>],
+    free: &dyn Fn(&str) -> bool,
+    from: usize,
+    to: usize,
+) -> bool {
+    let kind = |at: usize| code[at].kind;
+    if to.checked_sub(from) == Some(4)
+        && kind(from) == TokenKind::Ident
+        && kind(from + 1) == TokenKind::OpenParen
+        && kind(from + 2) == TokenKind::Ident
+        && kind(from + 3) == TokenKind::CloseParen
+        && code[from].text == "cfg"
+        && code[from + 2].text == "test"
+    {
+        return true;
+    }
+    // A path: identifiers joined by `::`, then optional arguments closing at `to - 1`.
+    let mut at = from;
+    let mut last = None;
+    while at < to {
+        match code[at].kind {
+            TokenKind::Ident if last.is_none() || code[at - 1].kind == TokenKind::Colon => {
+                last = Some(code[at].text);
+                at += 1;
+            }
+            TokenKind::Colon
+                if last.is_some()
+                    && code.get(at + 1).is_some_and(|t| t.kind == TokenKind::Colon)
+                    && code.get(at + 2).is_some_and(|t| t.kind == TokenKind::Ident) =>
+            {
+                at += 2;
+            }
+            TokenKind::OpenParen
+                if last.is_some() && close.get(at).copied().flatten() == Some(to - 1) =>
+            {
+                at = to;
+            }
+            _ => return false,
+        }
+    }
+    last == Some("test") && free(code[from].text)
 }
 
 /// The other side of the file, lexed.
@@ -617,7 +891,12 @@ struct UseTree<'a> {
 
 /// The `use` tree after the `use` keyword at code token `start - 1`, iterative; `None` when it is not a tree the rules
 /// read with certainty (macro variables, nesting deeper than [`MAX_USE_DEPTH`], anything unexpected).
-fn parse_use<'a>(code: &[&Token<'a>], start: usize, paths: &mut Paths<'a>) -> Option<UseTree<'a>> {
+fn parse_use<'a>(
+    code: &[&Token<'a>],
+    start: usize,
+    paths: &mut Paths<'a>,
+    reached: &mut usize,
+) -> Option<UseTree<'a>> {
     let mut tree = UseTree {
         bindings: Vec::new(),
         glob: false,
@@ -631,6 +910,7 @@ fn parse_use<'a>(code: &[&Token<'a>], start: usize, paths: &mut Paths<'a>) -> Op
     let mut alias: Option<&str> = None;
     let mut index = start;
     loop {
+        *reached = index;
         let token = code.get(index)?;
         let top = marks.last().copied().unwrap_or(0);
         let mut end_item = |segments: &mut Vec<&'a str>,
@@ -676,7 +956,10 @@ fn parse_use<'a>(code: &[&Token<'a>], start: usize, paths: &mut Paths<'a>) -> Op
                 } else if expect_alias {
                     alias = Some(word);
                     expect_alias = false;
-                } else if want_segment && !closed {
+                } else if want_segment
+                    && !closed
+                    && !(token.kind == TokenKind::Ident && word == "use")
+                {
                     let parent = *ids.last()?;
                     ids.push(paths.id(parent, word));
                     segments.push(word);
@@ -758,32 +1041,70 @@ struct Scope<'a> {
     binding_tokens: HashSet<usize>,
 }
 
-/// A changed-line candidate: a plain private `use` alone on its line at the top level of the file.
+/// A changed-line candidate: a plain `use` declaration alone on its lines (1-based, `first..=last`) at the top level
+/// of the file.
 struct Plain<'a> {
-    line: u32,
+    first: u32,
+    last: u32,
+    /// Has a visibility: a re-export.
+    public: bool,
     bindings: Vec<(&'a str, u32)>,
 }
 
-/// Adds the bindings and items of `lexed` to `scope`; collects plain `use` lines into `plain` when given.
+/// Index of the first token of the visibility before the `use` at code token `index` (`pub`, `pub(crate)`,
+/// `pub(super)`, `pub(self)`, `pub(in path)`), or `index` without one.
+fn visibility_start(code: &[&Token<'_>], index: usize) -> usize {
+    let Some(before) = index.checked_sub(1) else {
+        return index;
+    };
+    let is_pub = |at: usize| code[at].kind == TokenKind::Ident && code[at].text == "pub";
+    if is_pub(before) {
+        return before;
+    }
+    if code[before].kind != TokenKind::CloseParen {
+        return index;
+    }
+    let mut at = before;
+    while let Some(previous) = at.checked_sub(1) {
+        at = previous;
+        match code[at].kind {
+            TokenKind::OpenParen => {
+                return match at.checked_sub(1) {
+                    Some(start) if is_pub(start) => start,
+                    _ => index,
+                };
+            }
+            TokenKind::Ident | TokenKind::Colon => {}
+            _ => return index,
+        }
+    }
+    index
+}
+
+/// Adds the bindings and items of `lexed` outside its test items to `scope`; collects plain `use` declarations into
+/// `plain` when given.
 fn scan<'a>(
     lexed: &Lexed<'a>,
+    tests: &TestItems,
     paths: &mut Paths<'a>,
     scope: &mut Scope<'a>,
     mut plain: Option<&mut Vec<Plain<'a>>>,
 ) {
-    let code: Vec<&Token<'a>> = lexed
-        .tokens
-        .iter()
-        .filter(|t| !is_comment(t.kind))
-        .collect();
+    let code = code_tokens(lexed);
+    // Tokens before this index were read by an earlier `use` tree: a `use` among them is not a declaration.
+    let mut consumed = 0;
     for (index, token) in code.iter().enumerate() {
-        if token.kind != TokenKind::Ident {
+        // A test item's imports and items are seen only by test code.
+        if token.kind != TokenKind::Ident || tests.inside.get(index).copied().unwrap_or(false) {
             continue;
         }
         let next = |offset: usize| code.get(index + offset).copied();
         match token.text {
-            "use" => {
-                let Some(tree) = parse_use(&code, index + 1, paths) else {
+            "use" if index >= consumed => {
+                let mut reached = index;
+                let parsed = parse_use(&code, index + 1, paths, &mut reached);
+                consumed = reached;
+                let Some(tree) = parsed else {
                     scope.unsure = true;
                     continue;
                 };
@@ -801,12 +1122,13 @@ fn scan<'a>(
                         .or_insert(Some(id));
                 }
                 let line = token.first;
-                let alone = index.checked_sub(1).is_none_or(|before| {
+                let start = visibility_start(&code, index);
+                let last = code[tree.end].last;
+                let alone = start.checked_sub(1).is_none_or(|before| {
                     matches!(code[before].kind, TokenKind::Semi | TokenKind::CloseBrace)
                         && code[before].last < line
-                }) && code[tree.end].last == line
-                    && token.last == line
-                    && next(tree.end + 1 - index).is_none_or(|after| after.first > line);
+                }) && code[start].first == line
+                    && next(tree.end + 1 - index).is_none_or(|after| after.first > last);
                 let top_level =
                     token.depth == 0 && !lexed.in_macro.get(line).copied().unwrap_or(true);
                 if let Some(plain) = plain.as_deref_mut()
@@ -815,10 +1137,13 @@ fn scan<'a>(
                     && !tree.glob
                     && !tree.alias
                     && !tree.bindings.is_empty()
-                    && let Ok(line) = u32::try_from(line + 1)
+                    && let (Ok(first), Ok(last)) =
+                        (u32::try_from(line + 1), u32::try_from(last + 1))
                 {
                     plain.push(Plain {
-                        line,
+                        first,
+                        last,
+                        public: start != index,
                         bindings: tree.bindings,
                     });
                 }
@@ -841,18 +1166,37 @@ fn scan<'a>(
     }
 }
 
-/// Changed plain private `use` lines: alone on their line at the top level of the file after `;`, `}` or the start
-/// (no visibility, attribute or other token before them), no `as` or `*`, and every bound name bound to this one path
-/// on both sides, not declared as an item in the file, not a prelude name, and either bound by a plain `use` of the
-/// same path on the other side (a moved import) or used nowhere there except as a `use` binding. A glob or an unreadable tree on either side covers nothing.
-fn import_lines<'a>(file: &FileSource<'a>, this: &Lexed<'a>, other: &Other<'a>) -> Vec<u32> {
+/// Changed lines of plain `use` declarations: alone on their lines at the top level of the file after `;`, `}` or the
+/// start (nothing but a visibility before them on their line, no attribute), no `as` or `*`, and every bound name bound
+/// to this one path on both sides, not declared as an item in the file, not a prelude name, and either bound by a plain
+/// `use` of the same path on the other side (a moved import) or used nowhere there except as a `use` binding while a
+/// private import's own side names it (an import named nowhere may be a trait imported for its methods). Test
+/// items are left out on both sides (their names reach only test code). A glob or an unreadable tree outside them on
+/// either side covers nothing.
+fn import_lines<'a>(
+    file: &FileSource<'a>,
+    this: &Lexed<'a>,
+    tests: &TestItems,
+    other: &Other<'a>,
+) -> Vec<u32> {
     let mut paths = Paths::default();
     let mut scope = Scope::default();
     let (mut plain, mut other_plain) = (Vec::new(), Vec::new());
-    scan(this, &mut paths, &mut scope, Some(&mut plain));
-    if let Other::Lexed(lexed) = other {
-        scan(lexed, &mut paths, &mut scope, Some(&mut other_plain));
-    }
+    scan(this, tests, &mut paths, &mut scope, Some(&mut plain));
+    let other_tests = match other {
+        Other::Lexed(lexed) => {
+            let other_tests = TestItems::new(lexed);
+            scan(
+                lexed,
+                &other_tests,
+                &mut paths,
+                &mut scope,
+                Some(&mut other_plain),
+            );
+            Some(other_tests)
+        }
+        Other::Absent => None,
+    };
     // Bound by a plain import of the same path on the other side too: a moved import re-points nothing.
     let moved: HashSet<(&str, u32)> = other_plain
         .iter()
@@ -864,29 +1208,46 @@ fn import_lines<'a>(file: &FileSource<'a>, this: &Lexed<'a>, other: &Other<'a>) 
     // A name the side without the import already uses resolved to something else there (extern prelude, macro
     // prelude, a derive, a constant in a pattern): the import re-points it. Its own binding there (a reordered
     // import, bound to the same path on both sides) is no use.
-    let used_without: HashSet<&str> = match other {
-        Other::Lexed(lexed) => lexed
-            .tokens
-            .iter()
-            .filter(|token| is_ident(token.kind))
-            .map(|token| name(token.text))
+    // Names a side uses outside `use` bindings and test items.
+    let used = |lexed: &Lexed<'a>, tests: &TestItems| -> HashSet<&'a str> {
+        code_tokens(lexed)
+            .into_iter()
+            .zip(&tests.inside)
+            .filter(|(token, inside)| is_ident(token.kind) && !**inside)
+            .map(|(token, _)| name(token.text))
             .filter(|word| !scope.binding_tokens.contains(&word.as_ptr().addr()))
-            .collect(),
-        Other::Absent => HashSet::new(),
+            .collect()
     };
-    plain
+    let used_without: HashSet<&str> = match (other, &other_tests) {
+        (Other::Lexed(lexed), Some(other_tests)) => used(lexed, other_tests),
+        _ => HashSet::new(),
+    };
+    let used_here = used(this, tests);
+    let mut out: Vec<u32> = plain
         .into_iter()
         .filter(|plain| {
-            file.changed_lines.binary_search(&plain.line).is_ok()
-                && plain.bindings.iter().all(|&(bound, id)| {
-                    !scope.items.contains(bound)
-                        && !PRELUDE.contains(&bound)
-                        && (moved.contains(&(bound, id)) || !used_without.contains(bound))
-                        && scope.bound.get(bound) == Some(&Some(id))
-                })
+            plain.bindings.iter().all(|&(bound, id)| {
+                // A private import its own side never names (a trait for its methods) can re-point an unchanged call.
+                let named = plain.public || used_here.contains(bound);
+                !scope.items.contains(bound)
+                    && !PRELUDE.contains(&bound)
+                    && (moved.contains(&(bound, id)) || (named && !used_without.contains(bound)))
+                    && scope.bound.get(bound) == Some(&Some(id))
+            })
         })
-        .map(|plain| plain.line)
-        .collect()
+        .flat_map(|plain| {
+            let from = file
+                .changed_lines
+                .partition_point(|&line| line < plain.first);
+            let to = file
+                .changed_lines
+                .partition_point(|&line| line <= plain.last);
+            file.changed_lines[from..to].to_vec()
+        })
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 #[cfg(test)]
@@ -898,7 +1259,10 @@ mod tests {
     use similar::{Algorithm, DiffOp, capture_diff_slices};
 
     use crate::diff::{Hunk, LineSpan};
-    use crate::tech::{FileSource, Generic, OtherSide, TechPlugin, is_line_rule};
+    use crate::tech::{
+        Classified, FileSource, Generic, IMPORT_RULE, OtherSide, TEST_ITEM_RULE, TechPlugin,
+        is_line_rule,
+    };
 
     /// -U0 hunks between two line lists, as `git diff` reports them.
     fn hunks(base: &[&str], head: &[&str]) -> Vec<Hunk> {
@@ -960,6 +1324,17 @@ mod tests {
         head: Option<&[&str]>,
         unknown: bool,
     ) -> Vec<u32> {
+        lines_where(side, base, head, unknown, &is_line_rule)
+    }
+
+    /// Lines of `side` of `base` -> `head` that items accepted by `keep` cover.
+    fn lines_where(
+        side: LineSide,
+        base: Option<&[&str]>,
+        head: Option<&[&str]>,
+        unknown: bool,
+        keep: &dyn Fn(&Classified) -> bool,
+    ) -> Vec<u32> {
         let hunks = hunks(base.unwrap_or_default(), head.unwrap_or_default());
         let (this, other) = match side {
             LineSide::Head => (head, base),
@@ -992,7 +1367,7 @@ mod tests {
             .classify(&file)
             .expect("classify")
             .into_iter()
-            .filter(is_line_rule)
+            .filter(|item| keep(item))
             .flat_map(|item| item.ranges.unwrap_or_default())
             .flat_map(|r| r.start_line..=r.end_line)
             .collect();
@@ -1026,7 +1401,7 @@ mod tests {
             "use crate::a::{X, Y};",
             "use ::b::c;",
             "/// Doc of f.",
-            "fn f() {}",
+            "fn f(_: fmt::Error, _: X, _: Y) { c() }",
             "/*",
             " * A block.",
             " */",
@@ -1036,7 +1411,11 @@ mod tests {
         let reordered = ["use std::sync::Mutex;", "use std::fmt;", "fn f() {}"];
         assert_eq!(head(&base_file, &reordered), [1], "a reordered import");
         let grouped = ["use std::fmt;", "use std::sync::{Arc, Mutex};", "fn f() {}"];
-        assert_eq!(head(&base_file, &grouped), [2], "same paths");
+        assert_eq!(
+            head(&base_file, &grouped),
+            NONE,
+            "a new name the file never names may be a trait for its methods"
+        );
         // The same with the names in use: a moved import binds the same path on both sides, it re-points nothing.
         let used = [
             "use std::fmt;",
@@ -1049,7 +1428,11 @@ mod tests {
             [1],
             "a reordered import of a used name"
         );
-        let grouped = ["use std::fmt;", "use std::sync::{Arc, Mutex};", used[2]];
+        let grouped = [
+            "use std::fmt;",
+            "use std::sync::{Arc, Mutex};",
+            "fn f(m: Mutex<fmt::Error>, a: Arc<u8>) {}",
+        ];
         assert_eq!(
             head(&used, &grouped),
             [2],
@@ -1058,10 +1441,10 @@ mod tests {
     }
 
     #[test]
-    fn visibility_attributes_mod_and_extern_crate_are_never_covered() {
+    fn aliases_globs_attributes_mod_and_extern_crate_are_never_covered() {
         for line in [
-            "pub use crate::a::X;",
-            "pub(crate) use crate::a::X;",
+            "pub use crate::a::X as Y;",
+            "pub use crate::a::*;",
             "use crate::auth::verify_lenient as verify;",
             "use crate::a::{X as Y};",
             "use crate::prelude::*;",
@@ -1070,7 +1453,7 @@ mod tests {
             "pub mod m;",
             "extern crate foo;",
             "extern crate foo as bar;",
-            "#[cfg(test)] use crate::a::X;",
+            "#[cfg(feature = \"x\")] use crate::a::X;",
         ] {
             assert_eq!(added(&[line]), NONE, "{line}");
         }
@@ -1112,6 +1495,7 @@ mod tests {
             "    }",
             "}",
             "use std::fmt;",
+            "fn g(_: fmt::Error) {}",
         ];
         assert_eq!(added(&gate), [6]);
         let raw = [
@@ -1270,7 +1654,13 @@ mod tests {
     #[test]
     fn an_unread_other_side_covers_nothing() {
         let base_file = ["fn f() {}"];
-        let head_file = ["use std::fmt;", "/* note */", "// line", "fn f() {}"];
+        let head_file = [
+            "use std::fmt;",
+            "/* note */",
+            "// line",
+            "fn f() {}",
+            "fn g(_: fmt::Error) {}",
+        ];
         assert_eq!(head(&base_file, &head_file), [1, 2, 3]);
         assert_eq!(
             covered_with(LineSide::Head, Some(&base_file), Some(&head_file), true),
@@ -1446,6 +1836,241 @@ mod tests {
         );
     }
 
+    /// Head lines of `base` -> `head` covered by `rule`.
+    fn head_by(rule: &str, base: &[&str], head: &[&str]) -> Vec<u32> {
+        lines_where(LineSide::Head, Some(base), Some(head), false, &|item| {
+            item.rule == rule
+        })
+    }
+
+    /// Base lines of `base` -> `head` covered by `rule`.
+    fn base_by(rule: &str, base: &[&str], head: &[&str]) -> Vec<u32> {
+        lines_where(LineSide::Base, Some(base), Some(head), false, &|item| {
+            item.rule == rule
+        })
+    }
+
+    /// Lines of an added file covered by `rule`.
+    fn added_by(rule: &str, head: &[&str]) -> Vec<u32> {
+        lines_where(LineSide::Head, None, Some(head), false, &|item| {
+            item.rule == rule
+        })
+    }
+
+    #[test]
+    fn re_exports_are_covered_like_plain_imports() {
+        for line in [
+            "pub use crate::a::X;",
+            "pub(crate) use crate::a::X;",
+            "pub(super) use crate::a::X;",
+            "pub(in crate::outer) use crate::a::X;",
+            "pub use crate::a::{X, Y};",
+        ] {
+            assert_eq!(added_by(IMPORT_RULE, &[line]), [1], "{line}");
+        }
+        // The owner's case: a removed public re-export of a type the file does not use.
+        let base_file = ["pub use crate::reason::RejectionReason;", "pub fn f() {}"];
+        assert_eq!(base_by(IMPORT_RULE, &base_file, &base_file[1..]), [1]);
+        // A private import turned into a re-export binds the same path on both sides.
+        let private = ["use crate::a::X;", "fn f(x: X) {}"];
+        let public = ["pub use crate::a::X;", "fn f(x: X) {}"];
+        assert_eq!(head_by(IMPORT_RULE, &private, &public), [1]);
+        assert_eq!(base_by(IMPORT_RULE, &private, &public), [1]);
+        // Still visible: a re-export that re-points a name the other side uses.
+        let other = [
+            "pub use crate::lenient::verify;",
+            "fn f() -> bool { verify() }",
+        ];
+        let strict = ["pub use crate::strict::verify;", other[1]];
+        assert_eq!(head_by(IMPORT_RULE, &other, &strict), NONE);
+        // A visibility that is not `pub` before `use` on the same line.
+        assert_eq!(added_by(IMPORT_RULE, &["crate(x) use a::b;"]), NONE);
+    }
+
+    #[test]
+    fn multi_line_use_declarations_are_covered_whole() {
+        let group = [
+            "use std::sync::{",
+            "    Arc,",
+            "    Mutex,",
+            "};",
+            "fn f(a: Arc<Mutex<u8>>) {}",
+        ];
+        assert_eq!(added_by(IMPORT_RULE, &group), [1, 2, 3, 4]);
+        let base_file = ["use std::sync::{", "    Arc,", "};", "fn f(a: Arc<u8>) {}"];
+        let head_file = [
+            "use std::sync::{",
+            "    Arc,",
+            "    Mutex,",
+            "};",
+            "fn f(a: Arc<u8>, m: Mutex<u8>) {}",
+        ];
+        assert_eq!(head_by(IMPORT_RULE, &base_file, &head_file), [3]);
+        assert_eq!(base_by(IMPORT_RULE, &head_file, &base_file), [3]);
+        let public = ["pub use crate::a::{", "    X,", "    Y,", "};"];
+        assert_eq!(added_by(IMPORT_RULE, &public), [1, 2, 3, 4]);
+        // Not covered: a glob or alias in the tree, code after the `;`, a name the other side uses.
+        for tree in [
+            ["use a::{", "    b::*,", "    c,", "};"],
+            ["use a::{", "    b as d,", "    c,", "};"],
+            ["use a::{", "    b,", "    c,", "}; fn f() {}"],
+        ] {
+            assert_eq!(added_by(IMPORT_RULE, &tree), NONE, "{tree:?}");
+        }
+        let uses = ["fn f(m: Mutex) {}"];
+        let imports = ["use std::sync::{", "    Mutex,", "};", "fn f(m: Mutex) {}"];
+        assert_eq!(head_by(IMPORT_RULE, &uses, &imports), NONE);
+    }
+
+    #[test]
+    fn inline_test_items_are_covered_by_the_test_rule() {
+        let production = ["fn f() -> u8 {", "    1", "}"];
+        let with_tests = [
+            "fn f() -> u8 {",
+            "    1",
+            "}",
+            "",
+            "#[cfg(test)]",
+            "mod tests {",
+            "    use super::*;",
+            "",
+            "    #[test]",
+            "    fn one() {",
+            "        assert_eq!(f(), 1);",
+            "    }",
+            "}",
+        ];
+        // A whole new test module, attribute included.
+        assert_eq!(
+            head_by(TEST_ITEM_RULE, &production, &with_tests),
+            [5, 6, 7, 8, 9, 10, 11, 12, 13]
+        );
+        assert_eq!(
+            base_by(TEST_ITEM_RULE, &with_tests, &production),
+            [5, 6, 7, 8, 9, 10, 11, 12, 13]
+        );
+        // Lines inside the body of an unchanged test module.
+        let mut edited = with_tests;
+        edited[10] = "        assert_eq!(f(), 2);";
+        assert_eq!(head_by(TEST_ITEM_RULE, &with_tests, &edited), [11]);
+        assert_eq!(base_by(TEST_ITEM_RULE, &with_tests, &edited), [11]);
+        // `#[test]` and `#[<path>::test(..)]` functions outside a test module, and a `#[cfg(test)] use`.
+        let tokio = [
+            "#[tokio::test(flavor = \"multi_thread\")]",
+            "async fn two() {",
+            "    run().await;",
+            "}",
+        ];
+        assert_eq!(added_by(TEST_ITEM_RULE, &tokio), [1, 2, 3, 4]);
+        assert_eq!(
+            added_by(TEST_ITEM_RULE, &["#[cfg(test)] use crate::a::X;"]),
+            [1]
+        );
+        let attributes = ["#[cfg(test)]", "#[expect(dead_code)]", "fn helper() {}"];
+        assert_eq!(added_by(TEST_ITEM_RULE, &attributes), [1, 2, 3]);
+    }
+
+    #[test]
+    fn test_rule_never_covers_what_can_reach_production() {
+        let rule = TEST_ITEM_RULE;
+        // Other conditions.
+        for attribute in [
+            "#[cfg(not(test))]",
+            "#[cfg(all(test, unix))]",
+            "#[cfg_attr(test, x)]",
+        ] {
+            assert_eq!(
+                added_by(rule, &[attribute, "fn f() {}"]),
+                NONE,
+                "{attribute}"
+            );
+        }
+        // An attribute added to or removed from an unchanged item.
+        let plain = ["fn real() {}"];
+        let gated = ["#[cfg(test)]", "fn real() {}"];
+        assert_eq!(head_by(rule, &plain, &gated), NONE);
+        assert_eq!(base_by(rule, &gated, &plain), NONE);
+        // Deleting the item under the attribute moves the attribute onto the next item.
+        let base_file = ["#[cfg(test)]", "use crate::helpers;", "fn real() {}"];
+        assert_eq!(base_by(rule, &base_file, &gated), NONE);
+        // The item's opening and closing lines of an unchanged module.
+        let module = ["#[cfg(test)]", "mod tests {", "    fn a() {}", "}"];
+        let renamed = ["#[cfg(test)]", "mod checks {", "    fn a() {}", "}"];
+        assert_eq!(head_by(rule, &module, &renamed), NONE);
+        // Production code sharing a line with the item.
+        assert_eq!(
+            added_by(rule, &["#[cfg(test)]", "mod tests {}  fn prod() {}"]),
+            NONE
+        );
+        assert_eq!(added_by(rule, &["fn prod() {} #[test] fn t() {}"]), NONE);
+        // A field, an expression or a constant initialiser is no item the rule reads.
+        let field = ["struct S {", "    #[cfg(test)]", "    probe: u8,", "}"];
+        assert_eq!(added_by(rule, &field), NONE);
+        assert_eq!(
+            added_by(
+                rule,
+                &["#[cfg(test)]", "const LIMIT: Limits = Limits { max: 1 };"]
+            ),
+            NONE
+        );
+        // Inside a macro token tree.
+        let call = ["items! {", "    #[test]", "    fn t() {}", "}"];
+        assert_eq!(added_by(rule, &call), NONE);
+        // An imported, declared or glob-imported attribute macro is not the test harness.
+        for (binding, attribute) in [
+            ("use skipping::test;", "#[test]"),
+            ("mod tokio {}", "#[tokio::test]"),
+            ("use helpers::*;", "#[test]"),
+        ] {
+            let file = [binding, attribute, "fn t() {}"];
+            assert_eq!(added_by(rule, &file), NONE, "{binding}");
+        }
+        // An attribute before the test attribute may be a macro that runs first.
+        let wrapped = ["#[wrap]", "#[cfg(test)]", "fn t() {}"];
+        assert_eq!(added_by(rule, &wrapped), NONE);
+    }
+
+    #[test]
+    fn imports_stay_covered_beside_a_test_module_glob() {
+        let tests = ["#[cfg(test)]", "mod tests {", "    use super::*;", "}"];
+        let base_file = ["fn a() {}", tests[0], tests[1], tests[2], tests[3]];
+        let head_file = [
+            "use crate::audit::Sink;",
+            "fn a() {}",
+            "fn b(s: Sink) {}",
+            tests[0],
+            tests[1],
+            tests[2],
+            tests[3],
+        ];
+        assert_eq!(head_by(IMPORT_RULE, &base_file, &head_file), [1]);
+        // A glob of a module that is not a test module still shows every changed use.
+        let plain = ["mod t { use super::*; }"];
+        assert_eq!(head_by(IMPORT_RULE, &plain, &["use a::b;", plain[0]]), NONE);
+    }
+
+    #[test]
+    fn use_keywords_inside_a_use_tree_are_read_once() {
+        let levels = 20_000;
+        for hostile in [
+            format!("use a{};\n", "::use".repeat(levels)),
+            format!(
+                "use a::{}x{};\n",
+                "{use, ".repeat(levels),
+                "}".repeat(levels)
+            ),
+        ] {
+            let lines: Vec<&str> = hostile.lines().collect();
+            let started = Instant::now();
+            assert_eq!(added(&lines), NONE);
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "{:?}",
+                started.elapsed()
+            );
+        }
+    }
+
     #[test]
     fn hostile_use_trees_neither_overflow_nor_take_quadratic_time() {
         let deep = format!("use a::{}b{};\n", "{".repeat(10_000), "}".repeat(10_000));
@@ -1459,7 +2084,22 @@ mod tests {
             .join()
             .expect("no stack overflow");
         assert_eq!(found, NONE, "deeper than the rules read: not covered");
-        let many: Vec<String> = (0..20_000).map(|i| format!("use m::n{i:06};")).collect();
+        let nested = format!(
+            "{}{}",
+            "#[cfg(test)]\nmod t {\n".repeat(10_000),
+            "}\n".repeat(10_000)
+        );
+        let lines: Vec<&str> = nested.lines().collect();
+        let started = Instant::now();
+        assert_eq!(added_by(TEST_ITEM_RULE, &lines).len(), 30_000);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+        let many: Vec<String> = (0..20_000)
+            .map(|i| format!("pub use m::n{i:06};"))
+            .collect();
         let lines: Vec<&str> = many.iter().map(String::as_str).collect();
         let started = Instant::now();
         assert_eq!(added(&lines).len(), 20_000);
@@ -1468,5 +2108,36 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    /// Attributes nested inside a first attribute, each starting a line after `;`: every start reads its own
+    /// attribute once, so the test rule must stay linear in the tokens (a 500 KB file, well under the blob limit).
+    #[test]
+    fn hostile_nested_attributes_do_not_take_quadratic_time() {
+        let levels = 100_000;
+        let nested = format!("{}{}", "#[\n;\n".repeat(levels), "]\n".repeat(levels));
+        let lines: Vec<&str> = nested.lines().collect();
+        let started = Instant::now();
+        assert_eq!(added_by(TEST_ITEM_RULE, &lines), NONE);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A trait import whose name the file never uses changes which method a call resolves to (a trait method on
+    /// the receiver beats an inherent method of its `Deref` target); its hunk is no longer listed to the agent, so
+    /// the rule must leave it visible.
+    #[test]
+    fn an_import_used_by_no_name_on_its_side_is_not_cut() {
+        let base = [
+            "use crate::wrap::Wrapper;",
+            "fn show(w: &Wrapper) -> &str {",
+            "    w.name()",
+            "}",
+        ];
+        let head = ["use crate::ext::Named;", base[0], base[1], base[2], base[3]];
+        assert_eq!(head_by(IMPORT_RULE, &base, &head), NONE);
     }
 }

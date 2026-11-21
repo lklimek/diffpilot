@@ -13,12 +13,12 @@ use contracts::api::analyses::AnalysisState;
 use contracts::api::events::AnalysisEvent;
 use contracts::api::pr::PrSummary;
 use contracts::api::questions::{AskQuestion, AskState};
-use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId};
+use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId, StepId};
 use contracts::job::protocol::{Claim, ClaimResponse};
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use contracts::job::spec::{JobPriority, JobSpec};
 use contracts::job::state::JobState;
-use contracts::routes::{ASK_QUESTION, LIST_QUESTIONS, RUNNER_CLAIM, RUNNER_RESULT};
+use contracts::routes::{ASK_ANCHORED, ASK_QUESTION, LIST_QUESTIONS, RUNNER_CLAIM, RUNNER_RESULT};
 use contracts::time::Timestamp;
 use db::repo::analyses::NewAnalysis;
 use db::repo::analyses::testing::{job_spec, seed_analysis};
@@ -286,6 +286,59 @@ impl Fixture {
         }
         let request = request
             .body(Body::from(json!({ "text": text }).to_string()))
+            .expect("request");
+        json_of(
+            router(self.state.clone())
+                .oneshot(request)
+                .await
+                .expect("infallible"),
+        )
+        .await
+    }
+
+    /// Asks `text` about `anchor` through the anchored route.
+    /// Posts `body` (text, anchor, parent) to the anchored-question route as the fixture user.
+    async fn ask_body(&self, body: Value) -> (StatusCode, Value) {
+        let path = ASK_ANCHORED
+            .path
+            .replace("{id}", &self.analysis.to_string());
+        let request = Request::post(path)
+            .header(header::COOKIE, &self.cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-csrf-token", "csrf")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+        json_of(
+            router(self.state.clone())
+                .oneshot(request)
+                .await
+                .expect("response"),
+        )
+        .await
+    }
+
+    /// Answers `question` with [`good_answer`] and waits until it is shown.
+    async fn answer_with_good_answer(&self, question: QuestionId) {
+        let job = self.scripted_job(question).await.spec.job_id;
+        self.scripted
+            .send(job, JobUpdate::OutputReady(good_answer()));
+        self.scripted.send(job, succeeded(job, good_answer()));
+        self.scripted.close(job);
+        self.wait_for(question, |q| q.state == AskState::Answered)
+            .await;
+    }
+
+    async fn ask_anchored(&self, anchor: Value, text: &str) -> (StatusCode, Value) {
+        let path = ASK_ANCHORED
+            .path
+            .replace("{id}", &self.analysis.to_string());
+        let request = Request::post(path)
+            .header(header::COOKIE, &self.cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-csrf-token", "csrf")
+            .body(Body::from(
+                json!({ "text": text, "anchor": anchor }).to_string(),
+            ))
             .expect("request");
         json_of(
             router(self.state.clone())
@@ -620,7 +673,11 @@ async fn ask_limits_questions_per_user_and_hour() {
                 NewQuestion {
                     id: QuestionId::new_random(),
                     analysis_id: f.analysis,
-                    step_id: StepId("f1.1".to_owned()),
+                    anchor: contracts::api::questions::AskAnchor::Step {
+                        step_id: StepId("f1.1".to_owned()),
+                        lines: None,
+                    },
+                    parent_id: None,
                     user_id: "u1".to_owned(),
                     text: "earlier".to_owned(),
                 },
@@ -940,7 +997,11 @@ async fn restart_follows_open_questions_to_their_end() {
             NewQuestion {
                 id: QuestionId::new_random(),
                 analysis_id: f.analysis,
-                step_id: StepId("f2.1".to_owned()),
+                anchor: contracts::api::questions::AskAnchor::Step {
+                    step_id: StepId("f2.1".to_owned()),
+                    lines: None,
+                },
+                parent_id: None,
                 user_id: "u1".to_owned(),
                 text: QUESTION.to_owned(),
             },
@@ -985,7 +1046,11 @@ impl Fixture {
                 NewQuestion {
                     id: QuestionId::new_random(),
                     analysis_id: self.analysis,
-                    step_id: StepId("f1.5".to_owned()),
+                    anchor: contracts::api::questions::AskAnchor::Step {
+                        step_id: StepId("f1.5".to_owned()),
+                        lines: None,
+                    },
+                    parent_id: None,
                     user_id: "u1".to_owned(),
                     text: QUESTION.to_owned(),
                 },
@@ -1451,7 +1516,11 @@ async fn private_questions_never_expose_another_asker() {
             NewQuestion {
                 id: QuestionId::new_random(),
                 analysis_id: f.analysis,
-                step_id: StepId("f1.5".to_owned()),
+                anchor: contracts::api::questions::AskAnchor::Step {
+                    step_id: StepId("f1.5".to_owned()),
+                    lines: None,
+                },
+                parent_id: None,
                 user_id: "u2".to_owned(),
                 text: "Another user's question".to_owned(),
             },
@@ -1869,4 +1938,580 @@ async fn question_cancelled_with_its_analysis_says_what_happened() {
         job::ANALYSIS_CANCELLED,
         "The question was cancelled because its analysis was cancelled."
     );
+}
+
+/// C3/C4: a question about lines of a file (not one step) is stored with its anchor; its prompt carries the lines,
+/// the server's owners of their changed lines and the steps overlapping them; its context pack the overlapping steps
+/// in full.
+#[tokio::test]
+async fn a_question_about_lines_carries_their_owners_and_steps() {
+    let f = fixture(false).await;
+    // The GitHub snapshot the pipeline stores: flow 1 rates threads, which verification accepts only when listed.
+    let golden = fixture_json("api/default/tour.json");
+    let mut threads = golden["threads"].clone();
+    for thread in threads.as_array_mut().expect("threads") {
+        for key in ["step_id", "llm_status", "llm_reason"] {
+            thread[key] = Value::Null;
+        }
+    }
+    let snapshot = json!({ "ci": golden["pr_context"]["facts"]["ci"], "threads": threads, "threads_status": "checked" });
+    f.state
+        .db
+        .documents()
+        .put(
+            f.analysis,
+            DocumentKind::GithubSnapshot,
+            "",
+            &snapshot,
+            Timestamp::now(),
+        )
+        .await
+        .expect("snapshot");
+    let anchor = json!({ "kind": "lines", "path": "src/rpc/client.rs", "side": "head", "range": { "start_line": 100, "end_line": 102 } });
+    let (status, body) = f.ask_anchored(anchor.clone(), QUESTION).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["anchor"], anchor);
+    assert_eq!(body.get("step_id"), None, "no step");
+    let id: QuestionId = serde_json::from_value(body["id"].clone()).expect("id");
+    assert_eq!(
+        f.question(id).await.anchor,
+        serde_json::from_value(anchor).expect("anchor")
+    );
+    let prompt = f.scripted_job(id).await.spec.prompt;
+    assert!(prompt.starts_with("Job: ask.\n"), "{prompt}");
+    for text in [
+        "lines 100-102 of the file named in the lines block, on the head commit",
+        r#"{"path":"src/rpc/client.rs","side":"head","start_line":100,"end_line":102}"#,
+        r#""owner":{"kind":"step","flow_id":"f1","step_id":"f1.6"}"#,
+        r#""step_id":"f1.6","flow_id":"f1""#,
+        QUESTION,
+    ] {
+        assert!(prompt.contains(text), "{text} not in {prompt}");
+    }
+    assert!(prompt.contains("+"), "the classic diff is quoted");
+    let pack = job::context_pack(&f.state.db, f.analysis, id)
+        .await
+        .expect("pack")
+        .expect("some pack");
+    assert!(pack.contains("steps overlapping the asked lines (full analysis)"));
+    assert!(pack.contains(r#"{"step_id":"f1.6""#), "{pack}");
+}
+
+#[tokio::test]
+async fn anchors_outside_the_pull_request_or_the_step_are_refused() {
+    let f = fixture(false).await;
+    let (_, step) = job::stored_step(&f.state.db, f.analysis, &StepId("f1.5".to_owned()))
+        .await
+        .expect("db")
+        .expect("step");
+    let lines = |start: u32, end: u32| json!({ "start_line": start, "end_line": end });
+    let file = |path: &str, side: &str, range: Value| json!({ "kind": "lines", "path": path, "side": side, "range": range });
+    for anchor in [
+        file("src/not-in-the-pr.rs", "head", lines(1, 2)),
+        file("../etc/passwd", "head", lines(1, 2)),
+        file("tests/rpc_retry.rs", "base", Value::Null),
+        file("src/rpc/client.rs", "head", lines(5, 4)),
+        file("src/rpc/client.rs", "head", lines(1, 2001)),
+        file("src/rpc/client.rs", "head", lines(100, 100_000)),
+        json!({ "kind": "step", "step_id": "f1.5", "lines": lines(step.end_line + 1, step.end_line + 1) }),
+        json!({ "kind": "step", "step_id": "f1.5", "lines": lines(step.start_line, step.start_line + 2000) }),
+    ] {
+        let (status, body) = f.ask_anchored(anchor.clone(), QUESTION).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{anchor}: {body}");
+        assert_eq!(body["code"], "invalid_request", "{anchor}");
+    }
+    let (status, body) = f
+        .ask_anchored(
+            json!({ "kind": "step", "step_id": "f9.1", "lines": null }),
+            QUESTION,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    // Lines inside the step, the whole file, and the base side of a deleted file are accepted.
+    let within = json!({ "kind": "step", "step_id": "f1.5", "lines": lines(step.start_line, step.start_line) });
+    for anchor in [
+        within.clone(),
+        file("src/rpc/client.rs", "head", Value::Null),
+        file("tests/send_once.rs", "base", lines(1, 1)),
+    ] {
+        let (status, body) = f.ask_anchored(anchor.clone(), QUESTION).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{anchor}: {body}");
+    }
+    let (_, body) = f.ask_anchored(within, QUESTION).await;
+    let id: QuestionId = serde_json::from_value(body["id"].clone()).expect("id");
+    let prompt = f.scripted_job(id).await.spec.prompt;
+    let about = format!("f1.5 (its lines {0}-{0})", step.start_line);
+    assert!(prompt.contains(&about), "{about} not in the prompt");
+}
+
+/// C4 contract: the steps that own asked lines are given to the job. Removed lines of a moved block are owned by
+/// the moved step (its `moved.from`), which sits on another file and side; the prompt quotes that owner in the
+/// facts, so its summary must be among the steps, and the context pack must hold it in full.
+#[tokio::test]
+async fn a_question_about_moved_away_lines_gets_their_owning_step() {
+    let f = fixture(false).await;
+    let golden = fixture_json("api/default/tour.json");
+    let mut threads = golden["threads"].clone();
+    for thread in threads.as_array_mut().expect("threads") {
+        for key in ["step_id", "llm_status", "llm_reason"] {
+            thread[key] = Value::Null;
+        }
+    }
+    let snapshot = json!({ "ci": golden["pr_context"]["facts"]["ci"], "threads": threads, "threads_status": "checked" });
+    f.state
+        .db
+        .documents()
+        .put(
+            f.analysis,
+            DocumentKind::GithubSnapshot,
+            "",
+            &snapshot,
+            Timestamp::now(),
+        )
+        .await
+        .expect("snapshot");
+    // src/util/backoff.rs is renamed to src/rpc/retry.rs; its removed base lines 5-6 and 23 are owned by steps on
+    // the head side (the head step at the deletion marker, the moved step whose original holds the line).
+    let anchor = json!({ "kind": "lines", "path": "src/util/backoff.rs", "side": "base", "range": { "start_line": 5, "end_line": 23 } });
+    let (status, body) = f.ask_anchored(anchor, QUESTION).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id: QuestionId = serde_json::from_value(body["id"].clone()).expect("id");
+    let prompt = f.scripted_job(id).await.spec.prompt;
+    let marker = r#""owner":{"kind":"step","flow_id":""#;
+    let owners: Vec<String> = prompt
+        .match_indices(marker)
+        .filter_map(|(at, _)| {
+            let rest = &prompt[at + marker.len()..];
+            let rest = &rest[rest.find(r#""step_id":""#)? + 11..];
+            Some(rest[..rest.find('"')?].to_owned())
+        })
+        .collect();
+    assert!(!owners.is_empty(), "the facts name owning steps: {prompt}");
+    for owner in &owners {
+        assert!(
+            prompt.contains(&format!(r#"{{"step_id":"{owner}","flow_id""#)),
+            "owner {owner} of asked lines is not among the steps given to the job: {prompt}"
+        );
+    }
+    let pack = job::context_pack(&f.state.db, f.analysis, id)
+        .await
+        .expect("pack")
+        .expect("some pack");
+    for owner in &owners {
+        assert!(
+            pack.contains(&format!(r#"{{"step_id":"{owner}""#)),
+            "the context pack holds owner {owner}: {pack}"
+        );
+    }
+}
+
+/// A user at the hourly limit gets the limit before any anchor check reads the diff or a file.
+#[tokio::test]
+async fn the_question_limit_is_checked_before_the_anchor() {
+    let f = fixture(false).await;
+    let limits = db::repo::questions::QuestionLimits {
+        per_analysis: 1000,
+        per_user: 1000,
+        user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+    };
+    for n in 0..MAX_QUESTIONS_PER_USER_PER_HOUR {
+        let question = NewQuestion {
+            id: QuestionId::new_random(),
+            analysis_id: f.analysis,
+            anchor: AskAnchor::Step {
+                step_id: StepId("f1.1".to_owned()),
+                lines: None,
+            },
+            parent_id: None,
+            user_id: "u1".to_owned(),
+            text: format!("q{n}"),
+        };
+        f.state
+            .db
+            .questions()
+            .create(question, limits, Timestamp::now())
+            .await
+            .expect("create");
+    }
+    let anchor =
+        json!({ "kind": "lines", "path": "src/not-in-the-pr.rs", "side": "head", "range": null });
+    let (status, body) = f.ask_anchored(anchor, QUESTION).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}
+
+/// A whole-file question says when its diff stops before the file's last changed line.
+#[test]
+fn a_whole_file_diff_says_where_it_stops() {
+    use contracts::api::files::{HunkPart, PartOwner};
+    use contracts::common::{LineRange, LineSide};
+    let part = |end_line| HunkPart {
+        side: LineSide::Head,
+        range: LineRange {
+            start_line: 10,
+            end_line,
+        },
+        owner: PartOwner::Unexplained { reason: None },
+        also_in: Vec::new(),
+    };
+    assert_eq!(job::clipped_diff_note(&[part(2000)], None), None);
+    let note = job::clipped_diff_note(&[part(10), part(2500)], None).expect("note");
+    assert!(
+        note.contains("lines 1-2000 only") && note.contains("up to line 2500"),
+        "{note}"
+    );
+    let range = Some(LineRange {
+        start_line: 2400,
+        end_line: 2600,
+    });
+    assert_eq!(
+        job::clipped_diff_note(&[part(2500)], range),
+        None,
+        "a range is quoted as asked"
+    );
+}
+
+/// The claim reads the steps chosen at submit and does not rebuild the Tour: here the Tour cannot be built (no GitHub
+/// snapshot), yet the pack holds the stored step; a question without chosen steps gets none.
+#[tokio::test]
+async fn the_pack_of_a_lines_question_takes_the_steps_chosen_at_submit() {
+    let f = fixture(false).await;
+    let limits = db::repo::questions::QuestionLimits {
+        per_analysis: 1000,
+        per_user: 1000,
+        user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+    };
+    let questions = f.state.db.questions();
+    let mut asked = Vec::new();
+    for text in ["chosen", "not chosen"] {
+        let question = NewQuestion {
+            id: QuestionId::new_random(),
+            analysis_id: f.analysis,
+            anchor: AskAnchor::Lines {
+                path: "src/rpc/retry.rs".to_owned(),
+                side: contracts::common::LineSide::Head,
+                range: None,
+            },
+            parent_id: None,
+            user_id: "u1".to_owned(),
+            text: text.to_owned(),
+        };
+        asked.push(question.id);
+        questions
+            .create(question, limits, Timestamp::now())
+            .await
+            .expect("create");
+    }
+    questions
+        .set_touched_steps(asked[0], &[StepId("f1.1".to_owned())])
+        .await
+        .expect("steps");
+    let pack = |id| job::context_pack(&f.state.db, f.analysis, id);
+    let chosen = pack(asked[0]).await.expect("pack").expect("some pack");
+    assert!(chosen.contains(r#"{"step_id":"f1.1""#), "{chosen}");
+    let none = pack(asked[1]).await.expect("pack").expect("some pack");
+    assert!(!none.contains(r#"{"step_id":"#), "{none}");
+}
+
+/// Stores the fixture's GitHub snapshot, so the Tour can be built (flow anchors are checked against it).
+async fn store_snapshot(f: &Fixture) {
+    let golden = fixture_json("api/default/tour.json");
+    let mut threads = golden["threads"].clone();
+    for thread in threads.as_array_mut().expect("threads") {
+        for key in ["step_id", "llm_status", "llm_reason"] {
+            thread[key] = Value::Null;
+        }
+    }
+    let snapshot = json!({ "ci": golden["pr_context"]["facts"]["ci"], "threads": threads, "threads_status": "checked" });
+    f.state
+        .db
+        .documents()
+        .put(
+            f.analysis,
+            DocumentKind::GithubSnapshot,
+            "",
+            &snapshot,
+            Timestamp::now(),
+        )
+        .await
+        .expect("snapshot");
+}
+
+fn id_of(body: &Value) -> QuestionId {
+    serde_json::from_value(body["id"].clone()).expect("id")
+}
+
+/// A follow-up's job carries its thread (the first question with its answer, then earlier follow-ups), so the
+/// context survives a lost or re-forked session; a follow-up to a follow-up joins the first question's thread.
+#[tokio::test]
+async fn a_follow_up_carries_its_thread_in_the_prompt() {
+    let f = fixture(false).await;
+    store_snapshot(&f).await;
+    let flow = json!({ "kind": "flow", "flow_id": "f1" });
+    let (status, body) = f
+        .ask_body(json!({ "text": "Why retry here at all?", "anchor": flow }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let root = id_of(&body);
+    let first_prompt = f.scripted_job(root).await.spec.prompt;
+    f.answer_with_good_answer(root).await;
+    let (status, body) = f
+        .ask_body(
+            json!({ "text": "And with a repeated submit?", "anchor": flow, "parent_id": root }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["parent_id"], json!(root));
+    let follow_up = id_of(&body);
+    let prompt = f.scripted_job(follow_up).await.spec.prompt;
+    for part in [
+        "Why retry here at all?",
+        "mempool::broadcast_tx accepts each transaction once",
+    ] {
+        assert!(prompt.contains(part), "the thread holds {part:?}: {prompt}");
+        assert!(
+            !first_prompt.contains(part) || part.starts_with("Why"),
+            "{first_prompt}"
+        );
+    }
+    // A reply to the follow-up joins the first question's thread and sees both earlier questions.
+    let (status, body) = f
+        .ask_body(json!({ "text": "Third?", "anchor": flow, "parent_id": follow_up }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(
+        body["parent_id"],
+        json!(root),
+        "one level: the thread's first question"
+    );
+    let prompt = f.scripted_job(id_of(&body)).await.spec.prompt;
+    let (asked, replied) = (
+        prompt
+            .find("Why retry here at all?")
+            .expect("first question"),
+        prompt
+            .find("And with a repeated submit?")
+            .expect("follow-up"),
+    );
+    assert!(asked < replied, "oldest first: {prompt}");
+}
+
+/// A parent must be a question of this user on this analysis (else not found, as for a foreign question), and a
+/// follow-up keeps its thread's anchor; nothing is stored or submitted when refused.
+#[tokio::test]
+async fn a_follow_up_needs_the_users_own_parent_and_its_anchor() {
+    let f = fixture(false).await;
+    store_snapshot(&f).await;
+    let flow = json!({ "kind": "flow", "flow_id": "f1" });
+    let (_, body) = f.ask_body(json!({ "text": "Root?", "anchor": flow })).await;
+    let root = id_of(&body);
+    f.scripted_job(root).await;
+    let foreign = QuestionId::new_random();
+    let limits = db::repo::questions::QuestionLimits {
+        per_analysis: 1000,
+        per_user: 1000,
+        user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+    };
+    f.state
+        .db
+        .users()
+        .upsert_member(
+            DEFAULT_TENANT,
+            "u2",
+            &db::repo::users::GithubProfile {
+                github_id: 2,
+                login: "colleague".to_owned(),
+                name: None,
+                avatar_url: None,
+            },
+            Timestamp::now(),
+        )
+        .await
+        .expect("second user");
+    f.state
+        .db
+        .questions()
+        .create(
+            NewQuestion {
+                id: foreign,
+                analysis_id: f.analysis,
+                anchor: AskAnchor::Pr,
+                parent_id: None,
+                user_id: "u2".to_owned(),
+                text: "theirs".to_owned(),
+            },
+            limits,
+            Timestamp::now(),
+        )
+        .await
+        .expect("foreign question");
+    let before = f.scripted.requests().len();
+    for (parent, anchor, status) in [
+        (
+            QuestionId::new_random(),
+            flow.clone(),
+            StatusCode::NOT_FOUND,
+        ),
+        (foreign, json!({ "kind": "pr" }), StatusCode::NOT_FOUND),
+        (root, json!({ "kind": "pr" }), StatusCode::BAD_REQUEST),
+    ] {
+        let (got, body) = f
+            .ask_body(json!({ "text": "Follow?", "anchor": anchor, "parent_id": parent }))
+            .await;
+        assert_eq!(got, status, "{body}");
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(f.scripted.requests().len(), before, "no job submitted");
+    let (_, listed) = f.list().await;
+    assert_eq!(listed.as_array().map(Vec::len), Some(1), "{listed}");
+}
+
+/// A question about a flow gets that flow's analysis; one about the whole PR gets the plan's flows; an unknown flow
+/// is not found.
+#[tokio::test]
+async fn flow_and_pr_questions_get_their_context() {
+    let f = fixture(false).await;
+    store_snapshot(&f).await;
+    let (status, body) = f
+        .ask_body(json!({ "text": "Why 5 s?", "anchor": { "kind": "flow", "flow_id": "f2" } }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["anchor"], json!({ "kind": "flow", "flow_id": "f2" }));
+    let prompt = f.scripted_job(id_of(&body)).await.spec.prompt;
+    assert!(
+        prompt.contains("Every RPC call built from RpcConfig::default()"),
+        "{prompt}"
+    );
+    let (status, body) = f
+        .ask_body(json!({ "text": "What is risky here?", "anchor": { "kind": "pr" } }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id = id_of(&body);
+    let prompt = f.scripted_job(id).await.spec.prompt;
+    assert!(
+        prompt.contains("Move of backoff helpers util/backoff.rs"),
+        "{prompt}"
+    );
+    let (status, body) = f
+        .ask_body(json!({ "text": "?", "anchor": { "kind": "flow", "flow_id": "f99" } }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    // The packs come from stored documents only.
+    let pack = job::context_pack(&f.state.db, f.analysis, id)
+        .await
+        .expect("pack")
+        .expect("some pack");
+    assert!(pack.contains("Move of backoff helpers"), "{pack}");
+}
+
+/// The context pack of a flow question holds that flow's analysis in full, marked as asked.
+#[tokio::test]
+async fn the_pack_of_a_flow_question_holds_the_flow() {
+    let f = fixture(false).await;
+    store_snapshot(&f).await;
+    let (_, body) = f
+        .ask_body(json!({ "text": "Why 5 s?", "anchor": { "kind": "flow", "flow_id": "f2" } }))
+        .await;
+    let pack = job::context_pack(&f.state.db, f.analysis, id_of(&body))
+        .await
+        .expect("pack")
+        .expect("some pack");
+    assert!(pack.contains("asked flow f2"), "{pack}");
+    assert!(
+        pack.contains("Every RPC call built from RpcConfig::default()"),
+        "{pack}"
+    );
+}
+
+/// A flow whose stored analysis fails today's checks is shown failed in the Tour: it cannot be asked about.
+#[tokio::test]
+async fn a_flow_the_tour_shows_failed_cannot_be_asked_about() {
+    let f = fixture(false).await;
+    store_snapshot(&f).await;
+    let mut rejected = fixture_json("agent/flow-2.json");
+    for key in [
+        "steps",
+        "edges",
+        "impact_refs",
+        "pattern_repetitions",
+        "thread_statuses",
+    ] {
+        rejected[key] = json!([]);
+    }
+    f.state
+        .db
+        .documents()
+        .put(
+            f.analysis,
+            DocumentKind::Flow,
+            "f2",
+            &rejected,
+            Timestamp::now(),
+        )
+        .await
+        .expect("rejected flow");
+    let (status, body) = f
+        .ask_body(json!({ "text": "Why 5 s?", "anchor": { "kind": "flow", "flow_id": "f2" } }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = f
+        .ask_body(json!({ "text": "And f1?", "anchor": { "kind": "flow", "flow_id": "f1" } }))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+}
+
+/// The asker's own question on another analysis is no parent here: not found, nothing stored or submitted.
+#[tokio::test]
+async fn a_follow_up_of_the_users_question_on_another_analysis_is_not_found() {
+    let f = fixture(false).await;
+    let limits = db::repo::questions::QuestionLimits {
+        per_analysis: 1000,
+        per_user: 1000,
+        user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+    };
+    let elsewhere = QuestionId::new_random();
+    f.state
+        .db
+        .questions()
+        .create(
+            NewQuestion {
+                id: elsewhere,
+                analysis_id: f.other,
+                anchor: AskAnchor::Pr,
+                parent_id: None,
+                user_id: "u1".to_owned(),
+                text: "on the other analysis".to_owned(),
+            },
+            limits,
+            Timestamp::now(),
+        )
+        .await
+        .expect("question on the other analysis");
+    let (status, body) = f
+        .ask_body(json!({ "text": "Follow?", "anchor": { "kind": "pr" }, "parent_id": elsewhere }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(f.scripted.requests().is_empty(), "no job submitted");
+    let (_, listed) = f.list().await;
+    assert_eq!(listed, json!([]), "nothing stored on this analysis");
+}
+
+/// A Tour that cannot be built for a flow question answers as the Tour route does: a missing stored document is
+/// not found, not a server error.
+#[tokio::test]
+async fn a_flow_question_without_a_buildable_tour_answers_like_the_tour_route() {
+    let f = fixture(false).await;
+    store_snapshot(&f).await;
+    // The PR context is gone: the Tour lacks a stored document.
+    f.state
+        .db
+        .documents()
+        .delete(f.analysis, DocumentKind::PrContext, "")
+        .await
+        .expect("delete");
+    let (status, body) = f
+        .ask_body(json!({ "text": "Why?", "anchor": { "kind": "flow", "flow_id": "f1" } }))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["code"], "not_found");
 }

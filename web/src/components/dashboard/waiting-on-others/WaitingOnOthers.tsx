@@ -1,4 +1,6 @@
 import type { AwaitingItem } from "../../../api/generated/types";
+import { CopyLineButton } from "../common/CopyLineButton";
+import { CopyListButton } from "../common/CopyListButton";
 import { daysSince } from "../common/format";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 import { FactTags, SizePill } from "../common/Tags";
@@ -10,6 +12,11 @@ const who = (login: string) => (login.startsWith("team:") ? login : `@${login}`)
 export function WaitingOnOthers({ items, now }: { items: AwaitingItem[]; now: Date }) {
   const sorted = [...items].sort((a, b) => a.waiting_since.localeCompare(b.waiting_since));
   const oldest = sorted[0] ? daysSince(sorted[0].waiting_since, now) : null;
+  const waits = (item: AwaitingItem) => `waits on ${item.waiting_on.map(who).join(", ")} for`;
+  const line = (item: AwaitingItem) => ({
+    ...item,
+    suffix: `${waits(item)} ${daysSince(item.waiting_since, now)} d`,
+  });
   return (
     <AsideSection
       title="Waiting on others"
@@ -35,12 +42,12 @@ export function WaitingOnOthers({ items, now }: { items: AwaitingItem[]; now: Da
               <div className="flex items-baseline gap-2">
                 <span className="font-mono text-[12.5px] font-semibold">{item.id}</span>
                 <OpenExternal href={item.url} label={openLabel(item)} />
+                <CopyLineButton line={line(item)} id={item.id} />
               </div>
               <div className="[overflow-wrap:anywhere]">{item.title}</div>
               <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
                 <span>
-                  waits on {item.waiting_on.map(who).join(", ")} for{" "}
-                  <b className="text-text">{daysSince(item.waiting_since, now)} d</b>
+                  {waits(item)} <b className="text-text">{daysSince(item.waiting_since, now)} d</b>
                 </span>
                 <SizePill mark={item.change_size} />
                 <FactTags tags={item.tags} />
@@ -49,6 +56,7 @@ export function WaitingOnOthers({ items, now }: { items: AwaitingItem[]; now: Da
           ))}
         </ul>
       )}
+      <CopyListButton lines={sorted.map(line)} what="PRs waiting on others" />
       <p className="mt-1.5 text-xs text-muted">
         Your ready PRs with a pending review request to someone else; longest wait first. A long wait is a
         hint to nudge on GitHub yourself.

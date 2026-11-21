@@ -9,6 +9,15 @@ import { SETTINGS, setScenario } from "../../mocks/scenarios";
 const server = startMockServer();
 const region = (name: string | RegExp) => screen.findByRole("region", { name });
 
+/** The signed-out Home: Settings shows its own sign-in card until the route change commits, so wait for it to go. */
+async function expectSignedOutHome(router: ReturnType<typeof renderRoute>) {
+  await waitFor(() => {
+    expect(router.state.location.pathname).toBe("/");
+    expect(screen.queryByRole("heading", { level: 1, name: "Settings" })).toBeNull();
+  });
+  expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+}
+
 describe("Settings (brief §4.4)", () => {
   it("default: LLM working with the time of the last call, language, App, repository rules", async () => {
     renderRoute("/settings");
@@ -135,8 +144,7 @@ it("Sign out ends the session, clears this login's drafts and shows the signed-o
   });
   const router = renderRoute("/settings");
   await userEvent.click(within(await region("Account")).getByRole("button", { name: "Sign out" }));
-  await waitFor(() => expect(router.state.location.pathname).toBe("/"));
-  expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+  await expectSignedOutHome(router);
   expect(body).toEqual({ everywhere: false });
   expect(csrf).not.toBeNull();
   expect(window.sessionStorage.getItem("diffpilot.comment-drafts.alice.a1")).toBeNull();
@@ -156,8 +164,7 @@ it("Sign out everywhere, once confirmed, ends every session and shows the signed
   await userEvent.click(within(account).getByRole("button", { name: "Sign out everywhere" }));
   expect(bodies).toEqual([]);
   await userEvent.click(within(account).getByRole("button", { name: "Yes, sign out everywhere" }));
-  await waitFor(() => expect(router.state.location.pathname).toBe("/"));
-  expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+  await expectSignedOutHome(router);
   expect(bodies).toEqual([{ everywhere: true }]);
   expect(window.sessionStorage.getItem("diffpilot.comment-drafts.alice.a1")).toBeNull();
   window.sessionStorage.clear();
@@ -173,9 +180,7 @@ it("Sign out of a session that already ended (401) still clears the drafts and s
   );
   const router = renderRoute("/settings");
   await userEvent.click(within(await region("Account")).getByRole("button", { name: "Sign out" }));
-  await waitFor(() => expect(router.state.location.pathname).toBe("/"));
-  expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
-  expect(screen.queryByText(/Not signed out/)).toBeNull();
+  await expectSignedOutHome(router);
   expect(window.sessionStorage.getItem("diffpilot.comment-drafts.alice.a1")).toBeNull();
   window.sessionStorage.clear();
 });

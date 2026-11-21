@@ -1,6 +1,7 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { ExcludedItem, ExclusionCount, ExclusionReason, Exclusions } from "../../../api/generated/types";
 import { navigateOnClick, type Navigate } from "../common/navigate";
+import { HideButton } from "../../button/HideButton";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { helpHref, type HelpTopic } from "../../settings/settingsHelp";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
@@ -73,6 +74,7 @@ const byCount = (counts: ExclusionCount[]) => [...counts].sort((a, b) => b.count
  */
 export function ExcludedItems({ exclusions, onNavigate }: ExcludedItemsProps) {
   const [open, setOpen] = useState(false);
+  const toggle = useRef<HTMLButtonElement>(null);
   const panelId = useId();
   const quiet = "text-xs text-muted";
   if (!exclusions) {
@@ -88,6 +90,7 @@ export function ExcludedItems({ exclusions, onNavigate }: ExcludedItemsProps) {
         tip={open ? "Hide the excluded items" : "List the excluded items by reason, with links to GitHub"}
       >
         <button
+          ref={toggle}
           type="button"
           aria-expanded={open}
           aria-controls={panelId}
@@ -101,22 +104,30 @@ export function ExcludedItems({ exclusions, onNavigate }: ExcludedItemsProps) {
       {open && (
         <div
           id={panelId}
-          className="mt-1.5 flex flex-col gap-3 rounded-lg border border-border bg-surface p-3"
+          className="mt-1.5 flex items-start gap-2 rounded-lg border border-border bg-surface p-3"
         >
-          {counts.map(({ reason, count }) => (
-            <Group
-              key={reason}
-              text={textOf(reason)}
-              count={count}
-              items={items.filter((item) => item.reason === reason)}
-              onNavigate={onNavigate}
-            />
-          ))}
-          {items.length < exclusions.total && (
-            <p className={quiet}>
-              Listed: the first {items.length} of {exclusions.total}.
-            </p>
-          )}
+          <div className="flex min-w-0 flex-1 flex-col gap-3">
+            {counts.map(({ reason, count }) => (
+              <Group
+                key={reason}
+                text={textOf(reason)}
+                count={count}
+                items={items.filter((item) => item.reason === reason)}
+                onNavigate={onNavigate}
+              />
+            ))}
+            {items.length < exclusions.total && (
+              <p className={quiet}>
+                Listed: the first {items.length} of {exclusions.total}.
+              </p>
+            )}
+          </div>
+          <HideButton
+            name="Hide excluded items"
+            tip="Hides the list of excluded items; the line above shows it again."
+            onHide={() => setOpen(false)}
+            focusAfter={() => toggle.current}
+          />
         </div>
       )}
     </div>

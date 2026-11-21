@@ -415,15 +415,17 @@ async fn rerun(
         .bind(id.to_string())
         .execute(&mut *tx)
         .await?;
-    // Their unfinished ask jobs end with them: queued ones withdrawn, running ones flagged for cancellation.
-    let rows = sqlx::query("SELECT j.id,j.attempt FROM jobs j JOIN questions q ON q.job_id=j.id WHERE q.analysis_id=?2 AND substr(q.step_id,1,length(?1))=?1 AND j.state IN ('queued','paused')")
-        .bind(&prefix).bind(id.to_string()).fetch_all(&mut *tx).await?;
+    // Questions on its steps or on the flow as a whole go too (follow-ups repeat their thread's anchor); their
+    // unfinished ask jobs end with them: queued ones withdrawn, running ones flagged for cancellation.
+    let rows = sqlx::query("SELECT j.id,j.attempt FROM jobs j JOIN questions q ON q.job_id=j.id WHERE q.analysis_id=?2 AND (substr(q.step_id,1,length(?1))=?1 OR q.flow_id=?3) AND j.state IN ('queued','paused')")
+        .bind(&prefix).bind(id.to_string()).bind(&flow.0).fetch_all(&mut *tx).await?;
     withdraw(&mut *tx, rows, now).await?;
-    sqlx::query("UPDATE jobs SET cancel_requested=1 WHERE state IN ('claimed','running') AND id IN (SELECT job_id FROM questions WHERE analysis_id=?2 AND substr(step_id,1,length(?1))=?1)")
-        .bind(&prefix).bind(id.to_string()).execute(&mut *tx).await?;
-    sqlx::query("DELETE FROM questions WHERE analysis_id=?2 AND substr(step_id,1,length(?1))=?1")
+    sqlx::query("UPDATE jobs SET cancel_requested=1 WHERE state IN ('claimed','running') AND id IN (SELECT job_id FROM questions WHERE analysis_id=?2 AND (substr(step_id,1,length(?1))=?1 OR flow_id=?3))")
+        .bind(&prefix).bind(id.to_string()).bind(&flow.0).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM questions WHERE analysis_id=?2 AND (substr(step_id,1,length(?1))=?1 OR flow_id=?3)")
         .bind(&prefix)
         .bind(id.to_string())
+        .bind(&flow.0)
         .execute(&mut *tx)
         .await?;
     // A tombstone, as when its author removes it: the feedback writer deletes its MemCan memory.
@@ -533,6 +535,7 @@ mod tests {
                 })
                 .collect(),
             unassigned: vec![],
+            crate_notes: None,
         };
         db.documents()
             .put(id, DocumentKind::Plan, "", &plan, Timestamp::now())
@@ -647,6 +650,7 @@ mod tests {
                 })
                 .collect(),
             unassigned: vec![],
+            crate_notes: None,
         };
         db.documents()
             .put(id, DocumentKind::Plan, "", &plan, Timestamp::now())
@@ -1259,6 +1263,7 @@ mod tests {
         use crate::repo::feedback::NewFeedback;
         use crate::repo::questions::{NewQuestion, QuestionLimits};
         use contracts::api::feedback::{FeedbackTarget, FeedbackValue};
+        use contracts::api::questions::AskAnchor;
         use contracts::api::review::ReviewState;
         use contracts::ids::{AnnotationId, FeedbackId, QuestionId, StepId};
         let db = Db::in_memory().await.unwrap();
@@ -1301,13 +1306,41 @@ mod tests {
             user_window_start: Timestamp::now() - SignedDuration::from_hours(24),
         };
         let (asked, kept) = (QuestionId::new_random(), QuestionId::new_random());
-        for (question, step) in [(asked, "f1.2"), (kept, "f2.1")] {
+        let on_lines = QuestionId::new_random();
+        // A question about the flow and its follow-up go with the flow's analysis; other flows' (f10 too) stay.
+        let (on_flow, reply, on_f10) = (
+            QuestionId::new_random(),
+            QuestionId::new_random(),
+            QuestionId::new_random(),
+        );
+        let flow = |flow: &str| AskAnchor::Flow {
+            flow_id: FlowId(flow.into()),
+        };
+        let step = |step: &str| AskAnchor::Step {
+            step_id: StepId(step.into()),
+            lines: None,
+        };
+        // A question about lines is about code, not about a step: it outlives the flow's steps.
+        let lines = AskAnchor::Lines {
+            path: "f1.rs".into(),
+            side: contracts::common::LineSide::Head,
+            range: None,
+        };
+        for (question, anchor, parent_id) in [
+            (asked, step("f1.2"), None),
+            (kept, step("f2.1"), None),
+            (on_lines, lines, None),
+            (on_flow, flow("f1"), None),
+            (reply, flow("f1"), Some(on_flow)),
+            (on_f10, flow("f10"), None),
+        ] {
             db.questions()
                 .create(
                     NewQuestion {
                         id: question,
                         analysis_id: id,
-                        step_id: StepId(step.into()),
+                        anchor,
+                        parent_id,
                         user_id: "u1".into(),
                         text: "why?".into(),
                     },
@@ -1360,6 +1393,14 @@ mod tests {
             Err(DbError::NotFound)
         ));
         assert!(db.questions().get(kept, Timestamp::now()).await.is_ok());
+        assert!(db.questions().get(on_lines, Timestamp::now()).await.is_ok());
+        for gone in [on_flow, reply] {
+            assert!(matches!(
+                db.questions().get(gone, Timestamp::now()).await,
+                Err(DbError::NotFound)
+            ));
+        }
+        assert!(db.questions().get(on_f10, Timestamp::now()).await.is_ok());
         let left: Vec<FeedbackTarget> = db
             .feedback()
             .list(id, "u2")

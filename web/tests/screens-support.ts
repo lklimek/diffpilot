@@ -18,6 +18,14 @@ export async function startAnalysis(page: Page, name = "Start analysis"): Promis
     .click();
 }
 
+/** Where to point at bar `index` of My work's net chart: the SVG takes the pointer, a bar is found by its x. */
+export async function netChartBar(page: Page, index: number) {
+  const chart = page.getByRole("img", { name: /^Net closed minus opened/ });
+  const box = (await chart.boundingBox())!;
+  const bar = (await chart.locator(`[data-point="${index}"]`).boundingBox())!;
+  return { chart, at: { position: { x: bar.x + bar.width / 2 - box.x, y: box.height / 2 } } };
+}
+
 /** Every button and button-like link in main has a tooltip (brief §4 rule 3). */
 export async function expectTooltips(page: Page): Promise<void> {
   const main = page.getByRole("main");

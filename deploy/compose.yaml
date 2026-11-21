@@ -42,6 +42,7 @@ services:
       dockerfile: deploy/server/Dockerfile
     environment:
       SR_PUBLIC_URL: ${SR_PUBLIC_URL:?set SR_PUBLIC_URL}
+      SR_ALLOWED_LOGINS: ${SR_ALLOWED_LOGINS:?set SR_ALLOWED_LOGINS}
       SR_LISTEN_ADDR: ${SR_SERVER_PUBLIC_ADDR:-172.29.73.2}:3000
       SR_RUNNER_LISTEN_ADDR: ${SR_SERVER_RUNNER_ADDR:-172.29.71.2}:3001
       SR_TRUSTED_PROXIES: ${SR_TRUSTED_PROXIES:-}
@@ -60,6 +61,7 @@ services:
       SR_MEMCAN_URL: ${SR_MEMCAN_URL:?set SR_MEMCAN_URL}
       SR_MEMCAN_TOKEN: ${SR_MEMCAN_TOKEN:-}
       SR_MEMCAN_UI_URL: ${SR_MEMCAN_UI_URL:-}
+      SR_PR_HYGIENE_URL: ${SR_PR_HYGIENE_URL:-}
       RUST_LOG: ${RUST_LOG:-info}
       NO_COLOR: "1"
     volumes:
@@ -153,7 +155,7 @@ services:
   egress-proxy:
     <<: *hardening
     image: ${SR_PROXY_IMAGE:-diffpilot-egress-proxy:local}
-    build: { context: egress-proxy }
+    build: { context: egress-proxy, additional_contexts: { workspace: .. } }
     # Kept in RAM on purpose: under 1 KB of configuration the entrypoint writes at every start (hosts file, MemCan
     # rule); nothing else is stored.
     tmpfs: ["/run/squid:uid=13,gid=13,mode=0750,size=1m"]

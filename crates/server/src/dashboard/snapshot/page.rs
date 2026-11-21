@@ -7,7 +7,7 @@ use contracts::api::dashboard::{GithubKind, ItemKind, ItemQuery};
 use db::repo::dashboard::RefreshRecord;
 use sha2::{Digest, Sha256};
 
-use super::{Snapshot, ViewItem};
+use super::{Snapshot, View, ViewItem};
 
 /// Revision of a user without a readable snapshot.
 pub const NO_SNAPSHOT: &str = "none";
@@ -31,11 +31,12 @@ fn short_hash(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Opaque revision of `snapshot`, held by `record`: changes when the snapshot or its ranking changes (state,
-/// attempt and judgement counts; WP11-JUDGE records the counts as judgements land) and when TODOs are hidden.
-pub fn revision(record: &RefreshRecord, snapshot: &Snapshot) -> String {
-    let source = format!(
-        "{}|{:?}|{:?}|{}|{}|{}|{}|{:?}|{:?}|{}",
+/// Opaque revision of `snapshot`, held by `record`, as `view` shows it: changes when the snapshot or its ranking
+/// changes (state, attempt and judgement counts; WP11-JUDGE records the counts as judgements land), when TODOs are
+/// hidden, when pull requests are re-read and when the shown plug-in statements change (ADR-022).
+pub fn revision(record: &RefreshRecord, snapshot: &Snapshot, view: &View) -> String {
+    let mut source = format!(
+        "{}|{:?}|{:?}|{}|{}|{}|{}|{:?}|{:?}|{}|{:?}",
         record.id,
         record.state,
         record.ranking_state,
@@ -46,7 +47,23 @@ pub fn revision(record: &RefreshRecord, snapshot: &Snapshot) -> String {
         record.scanned_at,
         record.finished_at,
         snapshot.todos_hidden,
+        snapshot.mentions.iter().map(|m| &m.id).collect::<Vec<_>>(),
     );
+    if let Some(at) = snapshot.prs_reread_at {
+        source.push_str(&format!("|reread {at}"));
+    }
+    let notes: Vec<_> = view
+        .items
+        .iter()
+        .filter(|item| !item.item.plugin_notes.is_empty())
+        .map(|item| (&item.item.key, &item.item.plugin_notes))
+        .collect();
+    if !notes.is_empty() || !view.ready_to_merge_held.is_empty() {
+        source.push_str(&format!(
+            "|plugins {notes:?} {:?}",
+            view.ready_to_merge_held
+        ));
+    }
     format!("r-{}", short_hash(source.as_bytes()))
 }
 

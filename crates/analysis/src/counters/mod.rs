@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::diff::FileDiff;
 use crate::lines::ranges;
-use crate::tech::{Classified, DependencyFile, dependency_file};
+use crate::tech::{Classified, DependencyFile, dependency_file, is_line_rule};
 
 /// The counters with their evidence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,13 +47,46 @@ pub fn compute<'t>(
     let mut added_test_lines = 0_u32;
     let mut dependencies: BTreeMap<String, Vec<Evidence>> = BTreeMap::new();
     let mut not_checked = Vec::new();
-    for file in files {
-        if file.path_on(LineSide::Head).is_some_and(|path| {
-            classified.iter().any(|item| {
-                item.side == LineSide::Head
+    let test_items = |side: LineSide, path: &str| -> Vec<&Classified> {
+        classified
+            .iter()
+            .filter(|item| {
+                item.side == side
                     && item.file == path
                     && item.category == NotAnalysedCategory::Tests
             })
+            .collect()
+    };
+    for file in files {
+        // A test file counts whole; inline test items count their lines.
+        let item_lines = |side: LineSide| -> Vec<u32> {
+            let Some(path) = file.path_on(side) else {
+                return Vec::new();
+            };
+            let mut lines: Vec<u32> = test_items(side, path)
+                .into_iter()
+                .filter(|item| is_line_rule(item))
+                .flat_map(|item| item.ranges.iter().flatten())
+                .flat_map(|range| range.start_line..=range.end_line)
+                .collect();
+            lines.sort_unstable();
+            lines.dedup();
+            lines
+        };
+        added_test_lines = added_test_lines
+            .saturating_add(u32::try_from(item_lines(LineSide::Head).len()).unwrap_or(u32::MAX));
+        let removed_items = item_lines(LineSide::Base);
+        if let (Some(path), false) = (file.path_on(LineSide::Base), removed_items.is_empty()) {
+            removed_test_lines.push(FileRanges {
+                file: path.to_owned(),
+                side: LineSide::Base,
+                ranges: ranges(&removed_items),
+            });
+        }
+        if file.path_on(LineSide::Head).is_some_and(|path| {
+            test_items(LineSide::Head, path)
+                .iter()
+                .any(|item| !is_line_rule(item))
         }) {
             for hunk in &file.hunks {
                 added_test_lines = added_test_lines
@@ -61,11 +94,9 @@ pub fn compute<'t>(
             }
         }
         let test_file = file.path_on(LineSide::Base).filter(|path| {
-            classified.iter().any(|item| {
-                item.side == LineSide::Base
-                    && item.file == *path
-                    && item.category == NotAnalysedCategory::Tests
-            })
+            test_items(LineSide::Base, path)
+                .iter()
+                .any(|item| !is_line_rule(item))
         });
         if let Some(path) = test_file {
             let mut removed: Vec<u32> = file

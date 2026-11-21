@@ -38,6 +38,7 @@ struct OwnerRepo {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenPull {
+    updated_at: Timestamp,
     number: u32,
     title: String,
     url: String,
@@ -84,7 +85,7 @@ struct PageInfo {
     end_cursor: Option<String>,
 }
 
-const PULL_NODES: &str = "number title url author { login } assignees(first: 20) { nodes { login } } \
+const PULL_NODES: &str = "number title url updatedAt author { login } assignees(first: 20) { nodes { login } } \
 reviewRequests(first: 20) { nodes { requestedReviewer { ... on User { login } } } }";
 const ISSUE_NODES: &str = "number title url body createdAt updatedAt authorAssociation author { login } \
 assignees(first: 20) { nodes { login } } labels(first: 20) { nodes { name } } \
@@ -137,6 +138,13 @@ struct RepoAuthored {
 
 /// `@login` in `text`, not part of a longer login or an e-mail address (case-insensitive).
 pub(crate) fn mentions(text: &str, login: &str) -> bool {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('>'))
+        .any(|line| ranking_mentions(line, login))
+}
+
+// The ranking's text match includes quotes, preserving its existing relations and judge inputs.
+fn ranking_mentions(text: &str, login: &str) -> bool {
     let word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
     let lower = text.to_ascii_lowercase();
     let wanted = format!("@{}", login.to_ascii_lowercase());
@@ -445,6 +453,9 @@ impl<T: TokenSource> WorkClient<T> {
                     for (hit, relation) in relations {
                         if hit {
                             found.add_pr(item.clone(), &pull.title, &pull.url, login, relation);
+                            if let Some(candidate) = found.pull_requests.get_mut(&item) {
+                                candidate.updated_at = Some(pull.updated_at);
+                            }
                         }
                     }
                 }
@@ -455,6 +466,7 @@ impl<T: TokenSource> WorkClient<T> {
                 .all_nodes(lookup("issues", ISSUE_NODES), &["issues"])
                 .await?;
             for issue in issues {
+                let mut fallback_mention_logins = BTreeSet::new();
                 let mut relations = BTreeSet::new();
                 for login in logins {
                     if issue.assignees.nodes.iter().any(|a| same(&a.login, login)) {
@@ -462,7 +474,10 @@ impl<T: TokenSource> WorkClient<T> {
                     }
                     let mut texts = std::iter::once(issue.body.as_str())
                         .chain(issue.comments.nodes.iter().map(|c| c.body.as_str()));
-                    if texts.any(|text| mentions(text, login)) {
+                    if texts.clone().any(|text| mentions(text, login)) {
+                        fallback_mention_logins.insert(login.clone());
+                    }
+                    if texts.any(|text| ranking_mentions(text, login)) {
                         relations.insert(IssueRelation::Mentioned);
                     }
                 }
@@ -475,6 +490,8 @@ impl<T: TokenSource> WorkClient<T> {
                 found.add_issue(
                     item,
                     IssueCandidate {
+                        mention_candidate: false,
+                        fallback_mention_logins,
                         title: issue.title,
                         url: issue.url,
                         author: issue.author.map(|a| a.login),

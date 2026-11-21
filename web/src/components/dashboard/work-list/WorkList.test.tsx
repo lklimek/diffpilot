@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SizeMark, TodosState, WorkItem } from "../../../api/generated/types";
 import { ALL_SIZES } from "../common/size";
 import { ITEMS, NOW, PROVISIONAL_ITEMS } from "../test-fixtures";
+import { reviewAction } from "../work-item/ItemAction";
 import { ALL_KINDS, WorkList, type ItemKind } from "./WorkList";
 
 const reviewHref = (item: WorkItem) => `/review?pr=${encodeURIComponent(item.url ?? "")}`;
@@ -41,14 +42,37 @@ const rowIds = () =>
   [...document.querySelectorAll("li[data-item]")].map((li) => li.getAttribute("data-item"));
 
 describe("WorkList", () => {
+  it("shows a plug-in's statement on its pull request's row, the further points once the row is expanded", async () => {
+    const note = {
+      plugin: "pr-hygiene",
+      source: "PR Hygiene",
+      url: "https://pr-hygiene.example.test/api/v1/prs/acme/node-client/482",
+      as_of: "2026-11-18T10:12:00Z",
+      summary: "Author must post /self-reviewed 1a2b3c",
+      details: [
+        "Author must post /self-reviewed 1a2b3c",
+        "Human approval or objection resolution is required",
+      ],
+      facts: [{ label: "Stage", value: "self-review" }],
+    };
+    const items = ITEMS.map((item) => (item.id === "NC-482" ? { ...item, plugin_notes: [note] } : item));
+    render(<List items={items} />);
+    const row = document.querySelector("li[data-item][data-item*='482']") as HTMLElement;
+    expect(row).toHaveTextContent("PR Hygiene: Author must post /self-reviewed 1a2b3c");
+    expect(within(row).queryByText("Human approval or objection resolution is required")).toBeNull();
+    expect(document.querySelectorAll("[data-plugin-note]")).toHaveLength(1);
+    await userEvent.click(within(row).getByRole("button", { name: "Details of NC-482" }));
+    expect(within(row).getByText("Human approval or objection resolution is required")).toBeInTheDocument();
+  });
+
   it("PRs, Issues and TODOs are independent toggles, all on at first; kinds combine; P0 alarms always show", async () => {
     render(<List />);
     expect(screen.getByRole("group", { name: "Kinds shown" })).toBeInTheDocument();
     const prs = screen.getByRole("button", { name: /PRs 8/ });
-    const issues = screen.getByRole("button", { name: /Issues 4/ });
+    const issues = screen.getByRole("button", { name: /Issues 3/ });
     const todos = screen.getByRole("button", { name: /TODOs 2/ });
     for (const button of [prs, issues, todos]) expect(button).toHaveAttribute("aria-pressed", "true");
-    expect(rowIds()).toHaveLength(13);
+    expect(rowIds()).toHaveLength(12);
 
     await userEvent.click(issues);
     expect(issues).toHaveAttribute("aria-pressed", "false");
@@ -101,7 +125,7 @@ describe("WorkList", () => {
   it("the last kind on stays on and says why; keyboard toggles", async () => {
     render(<List initial={["pr", "issue"]} />);
     const prs = screen.getByRole("button", { name: /PRs 8/ });
-    const issues = screen.getByRole("button", { name: /Issues 4/ });
+    const issues = screen.getByRole("button", { name: /Issues 3/ });
     expect(prs).not.toHaveAttribute("aria-disabled");
     issues.focus();
     await userEvent.keyboard("{Enter}");
@@ -254,16 +278,49 @@ describe("WorkList", () => {
     expect(onHelp).not.toHaveBeenCalled();
   });
 
-  it("links a PR to its review: Review without an analysis, Open review when the head moved", () => {
+  it("links a PR to its review: Review without an analysis, Open when the head moved", () => {
     render(<List items={PROVISIONAL_ITEMS} />);
     const plain = document.querySelector('[data-item="acme~platform~pr~1203"] a[data-review-link]');
     expect(plain).toHaveTextContent("Review");
     const moved = document.querySelector('[data-item="acme~node-client~pr~482"] a[data-review-link]');
-    expect(moved).toHaveTextContent("Open review");
+    expect(moved).toHaveTextContent("Open");
+    expect(moved).not.toHaveTextContent("review");
     expect(moved).toHaveAttribute(
       "href",
       `/review?pr=${encodeURIComponent("https://github.com/acme/node-client/pull/482")}`,
     );
+  });
+
+  it("review links have unique accessible names that start with the visible label", () => {
+    render(<List items={PROVISIONAL_ITEMS} />);
+    const links = [...document.querySelectorAll<HTMLAnchorElement>("a[data-review-link]")];
+    expect(links.length).toBeGreaterThan(1);
+    const names = links.map((a) => a.getAttribute("aria-label") ?? "");
+    for (const a of links) {
+      const name = a.getAttribute("aria-label") ?? "";
+      expect(name.startsWith(a.textContent ?? "?")).toBe(true);
+      expect(name).toMatch(/#\d+ /);
+    }
+    expect(new Set(names).size).toBe(names.length);
+    expect(screen.getByRole("link", { name: /^Open review of #482 / })).toBeVisible();
+    expect(screen.getByRole("link", { name: /^Review pull request #1203 / })).toBeVisible();
+  });
+
+  it.each([
+    [{ head_moved: false, has_my_state: true }, /ticks and answers are kept/, true],
+    [{ head_moved: false, has_my_state: false }, /^Opens your review\./, false],
+    [{ head_moved: true, has_my_state: true }, /^The PR moved\./, false],
+  ])("every Open link says it starts nothing (%j)", (review, extra, kept) => {
+    const item = PROVISIONAL_ITEMS.find((i) => i.kind === "pr" && i.review);
+    expect(item).toBeDefined();
+    const { tip, label } = reviewAction({
+      ...item!,
+      review: { ...item!.review!, ...review, analysed_head: "0123456789abcdef" },
+    });
+    expect(label).toBe("Open");
+    expect(tip).toMatch(/starts nothing\./i);
+    expect(tip).toMatch(extra);
+    expect(tip.includes("ticks and answers are kept")).toBe(kept);
   });
 
   it("a plain click on a review link navigates in the app; a modified click keeps the browser's", () => {
@@ -297,15 +354,41 @@ describe("WorkList", () => {
     expect(rows.className).toMatch(/bg-surface-2/);
   });
 
+  it("a P0 alarm shows its points and the same score breakdown as a ranked row (button and Enter)", async () => {
+    render(<List />);
+    const alarm = screen.getByRole("group", { name: "P0 alarm PLAT-1187" });
+    const score = within(alarm).getByRole("button", { name: "Score 107, show breakdown" });
+    expect(score).toHaveTextContent(/^107$/);
+    expect(within(alarm).queryByRole("heading", { name: "Score breakdown" })).toBeNull();
+    await userEvent.click(score);
+    expect(within(alarm).getByRole("heading", { name: "Score breakdown" })).toBeVisible();
+    expect(within(alarm).getByText(/P0 alarm \(score 107 kept for reference\)/)).toBeVisible();
+    expect(score).toHaveAccessibleName("Score 107, hide breakdown");
+    await userEvent.click(score);
+    expect(within(alarm).queryByRole("heading", { name: "Score breakdown" })).toBeNull();
+    // Enter on the focused alarm toggles it like a ranked row.
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(document.activeElement).toBe(alarm);
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    const detail = document.getElementById(score.getAttribute("aria-controls")!)!;
+    expect(within(detail).getByRole("heading", { name: "Score breakdown" })).toBeVisible();
+    // Enter on the score button itself toggles once.
+    score.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(detail).not.toBeVisible();
+    await userEvent.keyboard("{Enter}");
+    expect(within(detail).getByRole("heading", { name: "Score breakdown" })).toBeVisible();
+  });
+
   it("counts the P0 alarms of a hidden kind among the listed items", async () => {
     render(<List initial={["pr", "todo"]} />);
     const listed = () =>
       document.querySelectorAll("li[data-item]").length + document.querySelectorAll("[data-alarm]").length;
-    const header = () => screen.getByText(/of 14 items, ranked/);
-    expect(header()).toHaveTextContent(`${listed()} of 14 items, ranked`);
-    expect(header()).toHaveTextContent("11 of 14 items, ranked");
-    await userEvent.click(screen.getByRole("button", { name: /Issues 4/ }));
-    expect(header()).toHaveTextContent(`${listed()} of 14 items, ranked`);
+    const header = () => screen.getByText(/of 13 items, ranked/);
+    expect(header()).toHaveTextContent(`${listed()} of 13 items, ranked`);
+    expect(header()).toHaveTextContent("11 of 13 items, ranked");
+    await userEvent.click(screen.getByRole("button", { name: /Issues 3/ }));
+    expect(header()).toHaveTextContent(`${listed()} of 13 items, ranked`);
     expect(header()).not.toHaveTextContent(/listed with every choice/);
   });
 
@@ -345,11 +428,11 @@ describe("WorkList: a visible link out on every row (F38)", () => {
   it("each row and the P0 alarm have an icon link named and tipped 'Open <id> on GitHub', in a new tab", () => {
     render(<List />);
     for (const item of [pr, alarm]) {
-      const link = screen.getByRole("link", { name: `Open ${item.id} on GitHub` });
+      const link = screen.getByRole("link", { name: `Open ${item.id} on GitHub (new tab)` });
       expect(link).toHaveAttribute("href", item.url);
       expect(link).toHaveAttribute("target", "_blank");
       expect(link).toHaveAttribute("rel", "noopener noreferrer");
-      expect(link).toHaveAccessibleDescription(`Open ${item.id} on GitHub`);
+      expect(link).toHaveAccessibleDescription(`Open ${item.id} on GitHub (new tab)`);
       expect(link.querySelector("svg")).not.toBeNull();
       expect(link.className).toMatch(/min-h-6/);
       expect(link.className).toMatch(/min-w-6/);
@@ -363,7 +446,7 @@ describe("WorkList: a visible link out on every row (F38)", () => {
       { ...pr, key: "js-url", id: "JS-1", url: "javascript:alert(1)" },
     ];
     render(<List items={items} />);
-    expect(screen.getByRole("link", { name: "Open TODO in MemCan" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Open TODO in MemCan (new tab)" })).toHaveAttribute(
       "href",
       "http://memcan.example/ui/tasks/1",
     );
@@ -374,7 +457,7 @@ describe("WorkList: a visible link out on every row (F38)", () => {
 
   it("clicking the icon does not expand or select the row", async () => {
     render(<List />);
-    const link = screen.getByRole("link", { name: `Open ${pr.id} on GitHub` });
+    const link = screen.getByRole("link", { name: `Open ${pr.id} on GitHub (new tab)` });
     link.addEventListener("click", (event) => event.preventDefault());
     const bubbled = vi.fn();
     // React handlers run at the root; a stopped click does not reach the body beyond it.

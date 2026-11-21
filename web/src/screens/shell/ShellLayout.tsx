@@ -17,7 +17,7 @@ interface ShellLayoutProps {
   crumb: string;
   /** Signed-in GitHub login; null when signed out. */
   login: string | null;
-  /** Ranked items of the latest snapshot; no count when null. */
+  /** Unhidden human mentions; no count when null. */
   myWorkCount: number | null;
   /** Opens the page's keyboard help. */
   onHelp?: () => void;

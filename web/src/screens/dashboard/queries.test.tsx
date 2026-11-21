@@ -11,6 +11,7 @@ import { resetDashboard, setDashboardScenario } from "../../mocks/handlers/dashb
 import { resetDashboardSettings } from "../../mocks/handlers/dashboard-settings";
 import itemsJson from "../../../../fixtures/dashboard/api/items.json";
 import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
+import summaryJson from "../../../../fixtures/dashboard/api/summary.json";
 import {
   applyRefreshStatus,
   REFRESH_RECONNECT_MS,
@@ -18,15 +19,21 @@ import {
   SUMMARY_KEY,
   refreshKey,
   loadAllItems,
+  PLUGIN_REFETCH_MS,
+  PLUGIN_RETRY_MS,
+  PLUGIN_RETRY_READS,
+  summaryRefetchInterval,
   resetSentTimeZones,
   useDashboardSummary,
   useRefreshEvents,
   useSaveBrowserTimeZone,
   useStartRefresh,
+  useHideMention,
 } from "./queries";
 
 const ITEMS = (itemsJson as unknown as ItemPage).items;
 const SCANNING = scanningJson as unknown as RefreshStatus;
+const SUMMARY_FIXTURE = summaryJson as unknown as DashboardSummary;
 const server = setupServer(...handlers);
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 beforeEach(() => {
@@ -57,6 +64,8 @@ function wrapper() {
 }
 
 const page = (items: WorkItem[], revision: string, next: string | null): ItemPage => ({
+  mentions: [],
+  mention_coverage: { unchecked_items: 0, unchecked_logins: [], timed_out_logins: [] },
   revision,
   items,
   next_cursor: next,
@@ -234,6 +243,56 @@ describe("useStartRefresh (R2)", () => {
   });
 });
 
+describe("summaryRefetchInterval (ADR-022)", () => {
+  const summary = { revision: "r", latest_refresh: null } as unknown as DashboardSummary;
+  const plugin = {
+    plugin: "pr-hygiene",
+    source: "PR Hygiene",
+    url: "https://pr-hygiene.example.test/",
+    state: "current" as const,
+    as_of: "2026-11-18T10:00:00Z",
+  };
+  it("reads the summary again every minute only while it lists a dashboard plug-in", () => {
+    expect(summaryRefetchInterval(undefined)).toBe(false);
+    expect(summaryRefetchInterval(summary)).toBe(false);
+    expect(summaryRefetchInterval({ ...summary, plugins: [] })).toBe(false);
+    expect(summaryRefetchInterval({ ...summary, plugins: [plugin] })).toBe(PLUGIN_REFETCH_MS);
+    expect(PLUGIN_REFETCH_MS).toBe(60_000);
+  });
+
+  it("reads it within seconds while a plug-in is not current, for a bounded number of reads", () => {
+    for (const state of ["waiting", "stale"] as const) {
+      const off = { ...summary, plugins: [{ ...plugin, state }] };
+      expect(summaryRefetchInterval(off, 1)).toBe(PLUGIN_RETRY_MS);
+      expect(summaryRefetchInterval(off, PLUGIN_RETRY_READS)).toBe(PLUGIN_RETRY_MS);
+      expect(summaryRefetchInterval(off, PLUGIN_RETRY_READS + 1)).toBe(PLUGIN_REFETCH_MS);
+    }
+    expect(PLUGIN_RETRY_MS).toBe(5_000);
+  });
+
+  it("a returning reader's summary is read again within seconds until the plug-in is current", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let reads = 0;
+    server.use(
+      http.get("/api/v1/dashboard", () => {
+        reads += 1;
+        const state = reads < 3 ? "stale" : "current";
+        return HttpResponse.json({ ...SUMMARY_FIXTURE, plugins: [{ ...plugin, state }] });
+      }),
+    );
+    renderHook(() => useDashboardSummary(true), { wrapper: wrapper().wrapper });
+    await waitFor(() => expect(reads).toBe(1));
+    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS);
+    await waitFor(() => expect(reads).toBe(2));
+    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS);
+    await waitFor(() => expect(reads).toBe(3));
+    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS * 3);
+    expect(reads).toBe(3);
+    await vi.advanceTimersByTimeAsync(PLUGIN_REFETCH_MS);
+    await waitFor(() => expect(reads).toBe(4));
+  });
+});
+
 describe("useSaveBrowserTimeZone (R6b)", () => {
   it("sends the browser's zone once while none is stored, then reads the summary again", async () => {
     setDashboardScenario("no-time-zone");
@@ -398,4 +457,35 @@ describe("refresh statuses are applied in order (never an older one over a newer
     renderHook(() => useDashboardSummary(true), { wrapper: w });
     await waitFor(() => expect(latest(client)?.state).toBe("ranking"));
   });
+});
+
+it("treats an already gone mention as a successful hide and refreshes the summary", async () => {
+  const { client, wrapper: w } = wrapper();
+  const invalidate = vi.spyOn(client, "invalidateQueries");
+  server.use(
+    http.post("/api/v1/dashboard/mentions/:id/hide", () =>
+      HttpResponse.json({ code: "not_found", message: "Gone" }, { status: 404 }),
+    ),
+  );
+  const hook = renderHook(useHideMention, { wrapper: w });
+  act(() => hook.result.current.mutate("gone"));
+  await waitFor(() => expect(hook.result.current.isPending).toBe(false));
+  expect(hook.result.current.error).toBeNull();
+  expect(invalidate).toHaveBeenCalledWith({ queryKey: SUMMARY_KEY });
+});
+
+it("keeps real hide failures and clears them after another hide succeeds", async () => {
+  const { wrapper: w } = wrapper();
+  server.use(
+    http.post("/api/v1/dashboard/mentions/:id/hide", () =>
+      HttpResponse.json({ code: "internal_error", message: "Failed" }, { status: 500 }),
+    ),
+  );
+  const hook = renderHook(useHideMention, { wrapper: w });
+  act(() => hook.result.current.mutate("one"));
+  await waitFor(() => expect(hook.result.current.error).not.toBeNull());
+  server.use(http.post("/api/v1/dashboard/mentions/:id/hide", () => new HttpResponse(null, { status: 204 })));
+  act(() => hook.result.current.mutate("two"));
+  await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
+  expect(hook.result.current.error).toBeNull();
 });

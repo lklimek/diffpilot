@@ -47,10 +47,11 @@ pub fn plan_batches(files: &[FileDiff]) -> Vec<Vec<FileDiff>> {
 
 /// One plan whose flows are the batch plans' flows, renumbered `f1…` in batch order, with `depends_on` renamed
 /// within each batch and `importance_rank` interleaved (every batch's first flow, then every second, …);
-/// `unassigned` is concatenated.
+/// `unassigned` is concatenated, and so are `crate_notes` (null only when every batch has none).
 pub fn merge_plans(batches: &[PlanOutput]) -> PlanOutput {
     let mut flows: Vec<(u32, usize, PlannedFlow)> = Vec::new();
     let mut unassigned = Vec::new();
+    let mut crate_notes: Option<Vec<_>> = None;
     let mut next = 1u32;
     for (batch, plan) in batches.iter().enumerate() {
         let renamed: BTreeMap<&FlowId, FlowId> = plan
@@ -76,6 +77,11 @@ pub fn merge_plans(batches: &[PlanOutput]) -> PlanOutput {
             flows.push((flow.importance_rank, batch, merged));
         }
         unassigned.extend(plan.unassigned.iter().cloned());
+        if let Some(notes) = &plan.crate_notes {
+            crate_notes
+                .get_or_insert_with(Vec::new)
+                .extend(notes.iter().cloned());
+        }
     }
     let mut ranked: Vec<usize> = (0..flows.len()).collect();
     ranked.sort_by_key(|&index| (flows[index].0, flows[index].1));
@@ -85,6 +91,7 @@ pub fn merge_plans(batches: &[PlanOutput]) -> PlanOutput {
     PlanOutput {
         flows: flows.into_iter().map(|(_, _, flow)| flow).collect(),
         unassigned,
+        crate_notes,
     }
 }
 
@@ -285,10 +292,12 @@ mod tests {
                 head_end: None,
                 reason: "r".to_owned(),
             }],
+            crate_notes: None,
         };
         let second = PlanOutput {
             flows: vec![flow("f1", 1, "h9", &[])],
             unassigned: Vec::new(),
+            crate_notes: None,
         };
         let merged = merge_plans(&[first, second]);
         let summary: Vec<(String, u32, Vec<String>)> = merged
@@ -312,5 +321,34 @@ mod tests {
         );
         assert_eq!(merged.flows[2].hunks[0].hunk_id, HunkId("h9".to_owned()));
         assert_eq!(merged.unassigned.len(), 1);
+    }
+
+    #[test]
+    fn merged_plans_concatenate_crate_notes() {
+        let plan = |notes: Option<Vec<&str>>| PlanOutput {
+            flows: Vec::new(),
+            unassigned: Vec::new(),
+            crate_notes: notes.map(|list| {
+                list.into_iter()
+                    .map(|text| contracts::agent::plan::PlanCrateNote {
+                        note: text.to_owned(),
+                        hunks: vec![HunkId("h1".to_owned())],
+                    })
+                    .collect()
+            }),
+        };
+        assert_eq!(merge_plans(&[plan(None), plan(None)]).crate_notes, None);
+        let merged = merge_plans(&[
+            plan(Some(vec!["a"])),
+            plan(None),
+            plan(Some(vec!["b", "c"])),
+        ]);
+        let notes: Vec<String> = merged
+            .crate_notes
+            .expect("notes")
+            .into_iter()
+            .map(|n| n.note)
+            .collect();
+        assert_eq!(notes, ["a", "b", "c"]);
     }
 }

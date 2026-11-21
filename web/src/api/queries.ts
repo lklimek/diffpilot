@@ -5,6 +5,7 @@ import type {
   AnalysisEvent,
   AnalysisId,
   AnalysisSummary,
+  AnchoredAskRequest,
   AskQuestion,
   CreateAccessToken,
   CreateCommentRequest,
@@ -12,13 +13,13 @@ import type {
   Feedback,
   FeedbackId,
   FeedbackRequest,
+  FilesResponse,
   FlowId,
   LlmLanguage,
   PendingReview,
   QuestionId,
   RangeQuery,
   RepoRef,
-  StepId,
   Tour,
 } from "./generated/types";
 import { api } from "./client";
@@ -35,14 +36,16 @@ export const useMyAnalyses = (enabled: boolean) =>
 export const useTour = (id: AnalysisId) =>
   useQuery({ queryKey: ["tour", id], queryFn: () => api.getTour(id) });
 
+/** The query of a range's lines, shared by `useLines` and one-off reads of the same cache entry. */
+export const linesQuery = (id: AnalysisId, query: RangeQuery) => ({
+  queryKey: ["lines", id, query],
+  queryFn: () => api.getLines(id, query),
+  staleTime: Infinity,
+});
+
 /** Lines of a range; disabled while `query` is undefined. */
 export const useLines = (id: AnalysisId, query: RangeQuery | undefined) =>
-  useQuery({
-    queryKey: ["lines", id, query],
-    queryFn: () => api.getLines(id, query!),
-    enabled: query !== undefined,
-    staleTime: Infinity,
-  });
+  useQuery({ ...linesQuery(id, query!), enabled: query !== undefined });
 
 /** Classic diff of a range; disabled while `query` is undefined. */
 export const useDiff = (id: AnalysisId, query: RangeQuery | undefined) =>
@@ -88,6 +91,8 @@ export const useQuestions = (id: AnalysisId) => {
       const cached = client.getQueryData<AskQuestion[]>(["questions", id]) ?? [];
       return mergeFetchedQuestions(fetched, cached, (q) => (a.at.get(q) ?? -1) > since);
     },
+    // Every view (chat, Inspector copy, menu counts) shows a failed question asked again once.
+    select: withoutRetried,
   });
 };
 
@@ -102,12 +107,68 @@ function arrive(client: QueryClient, id: AnalysisId, question: AskQuestion, repl
   });
 }
 
-/** Asks about a step; the pending question joins the list, its answer arrives on the event stream. */
-export const useAskQuestion = (id: AnalysisId) => {
+/**
+ * The questions without failed ones asked again: a failed question gives way to a later one with the same text,
+ * subject and thread ("Ask again"), unless follow-ups hang on it.
+ */
+export function withoutRetried(questions: readonly AskQuestion[]): AskQuestion[] {
+  const key = (q: AskQuestion) => JSON.stringify([q.text, q.anchor, q.parent_id ?? null]);
+  const parents = new Set(questions.flatMap((q) => (q.parent_id ? [q.parent_id] : [])));
+  return questions.filter(
+    (q) =>
+      q.state !== "failed" ||
+      parents.has(q.id) ||
+      !questions.some(
+        (later) =>
+          later.id !== q.id &&
+          key(later) === key(q) &&
+          Date.parse(later.created_at) > Date.parse(q.created_at),
+      ),
+  );
+}
+
+/**
+ * Asks in the Ask chat: a new thread about `anchor`, or a follow-up (`parent_id`) that keeps its thread's anchor.
+ * The pending question joins the list; its answer arrives on the event stream.
+ */
+export const useAskInChat = (id: AnalysisId) => {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ step, text }: { step: StepId; text: string }) => api.askQuestion(id, step, { text }),
+    mutationFn: (body: AnchoredAskRequest) => api.askAnchored(id, body),
     onSuccess: (question) => arrive(client, id, question, false),
+  });
+};
+
+/** The PR's files with their hunks and the user's GitHub Viewed marks; read again when the tab regains focus. */
+export const useFiles = (id: AnalysisId) =>
+  useQuery({ queryKey: ["files", id], queryFn: () => api.getFiles(id), refetchOnWindowFocus: true });
+
+/** The Cargo map of the head commit with conversion facts and crate notes (ADR-021). */
+export const useDependencies = (id: AnalysisId) =>
+  useQuery({ queryKey: ["dependencies", id], queryFn: () => api.getDependencies(id) });
+
+/**
+ * Marks or unmarks a file as viewed on GitHub. Nothing changes before GitHub confirmed; then the cached mark is
+ * set and the list read again.
+ */
+export const useSetFileViewed = (id: AnalysisId) => {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, viewed }: { path: string; viewed: boolean }) =>
+      api.setFileViewed(id, { path, viewed }),
+    onSuccess: (_, { path, viewed }) => {
+      client.setQueryData<FilesResponse>(
+        ["files", id],
+        (files) =>
+          files && {
+            ...files,
+            files: files.files.map((f) =>
+              f.path === path ? { ...f, viewed: viewed ? "viewed" : "unviewed" } : f,
+            ),
+          },
+      );
+      return client.invalidateQueries({ queryKey: ["files", id] });
+    },
   });
 };
 
@@ -127,8 +188,11 @@ export function useQuestionEvents(id: AnalysisId): { lost: boolean } {
             event.event === "analysis" &&
             event.summary.id === id &&
             event.summary.review_ready !== undefined
-          )
+          ) {
+            // A flow accepted meanwhile changes who explains the lines of the Files view too.
             void client.invalidateQueries({ queryKey: ["tour", id] });
+            void client.invalidateQueries({ queryKey: ["files", id] });
+          }
           if (event.event === "question") arrive(client, id, event.question, true);
           if (event.event === "analysis" && event.summary.id === id && event.summary.usage !== undefined) {
             client.setQueryData<Tour>(
@@ -465,6 +529,21 @@ export function useSetAskEffort() {
   });
 }
 
+/** Saves the installation-wide controlled owners; Dependencies views are read again with them. */
+export function useSetControlledOwners() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (owners: string[]) => api.setControlledOwners({ owners }),
+    onSuccess: (controlled_owners) => {
+      client.setQueryData<import("./generated/types").Settings>(
+        ["settings"],
+        (old) => old && { ...old, controlled_owners },
+      );
+      void client.invalidateQueries({ queryKey: ["dependencies"] });
+    },
+  });
+}
+
 /** Saves the installation-wide ranking effort and refreshes its audit details. */
 export function useSetJudgeEffort() {
   const client = useQueryClient();
@@ -540,7 +619,11 @@ export function useForgetReanalysedFlows(id: AnalysisId, tour: Tour | undefined)
 
 export function useFlowWork(id: AnalysisId) {
   const client = useQueryClient();
-  const refresh = () => client.invalidateQueries({ queryKey: ["tour", id] });
+  const refresh = () =>
+    Promise.all([
+      client.invalidateQueries({ queryKey: ["tour", id] }),
+      client.invalidateQueries({ queryKey: ["files", id] }),
+    ]);
   return {
     request: useMutation({
       mutationFn: (flow: string) => api.requestFlow(id, flow),
@@ -554,6 +637,7 @@ export function useFlowWork(id: AnalysisId) {
       onSuccess: refresh,
     }),
     resume: useMutation({ mutationFn: () => api.resumeAnalysis(id), onSuccess: refresh }),
+    pause: useMutation({ mutationFn: () => api.pauseAnalysis(id), onSuccess: refresh }),
     retry: useMutation({ mutationFn: () => api.retryAnalysis(id), onSuccess: refresh }),
   };
 }

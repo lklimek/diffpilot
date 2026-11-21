@@ -52,21 +52,25 @@ marked `read` in `routes.rs`; every other route answers 403 `token_not_accepted`
 | A9 | `GET /api/v1/analyses/{id}/tour` | `Tour` (`tour`) |
 | A10 | `GET /api/v1/analyses/{id}/lines`, `…/diff` | `LinesResponse`, `DiffResponse` (`lines_response`, `diff_response`); range query of `http-api.md` |
 | A11 | `GET /api/v1/analyses/{id}/review-state` | `ReviewState` (`review_state`) |
-| A12 | `GET /api/v1/analyses/{id}/questions` | `AskQuestion[]` (`ask_question_list`), the user's own |
+| A12 | `GET /api/v1/analyses/{id}/questions` | `AskQuestion[]` (`ask_question_list`), the user's own; `anchor` is a step, lines (or a whole file), a flow or the PR; a follow-up carries `parent_id`, its thread's first question |
 | A13 | `GET /api/v1/analyses/{id}/feedback` | `Feedback[]` (`feedback_list`), the user's own |
 | A14 | `GET /api/v1/analyses/{id}/pending-review` | `PendingReview` (`pending_review`) |
 | A15 | `GET /api/v1/settings`, `GET /api/v1/repos/{owner}/{name}/settings` | `Settings`, `RepoSettings` (`settings`, `repo_settings`) |
 | A16 | `GET /api/v1/analyses` | `MyAnalyses` (`my_analyses`), the user's own; query `MyAnalysesQuery` (`my_analyses_query`) |
+| A17 | `GET /api/v1/analyses/{id}/files` (R12) | `FilesResponse` (`files_response`): files, hunks and who explains each changed line; the user's GitHub Viewed marks |
 
 Never with a token: refreshing, cancelling or ranking the dashboard, any settings change, starting or steering an
 analysis, asking, feedback, pending comments, listing or creating tokens (`/api/v1/settings/access-tokens`), and
 the runner listener (it answers 401 to an `srp_` token). Reaching an analysis: v1 has no analysis list; follow the `review.analysis_id` of a pull
-request item (A3). Reads backed by the user's GitHub token (A14, installations in A15) answer as for a browser
+request item (A3). Reads backed by the user's GitHub token (A14, installations in A15, Viewed marks in A17) answer as for a browser
 without a GitHub sign-in when the server holds none: 401 `unauthenticated` with the message "Your GitHub sign-in
 has ended. Sign in again." and **no** `WWW-Authenticate` header (the access token itself is fine).
 
+A17 reads the Viewed marks with the user's GitHub token; without a GitHub sign-in it answers 401 as above, and
+when GitHub does not answer it still serves the files, with `viewed_status: not_checked`.
+
 **Do not poll faster than once a minute.** Reads backed by the user's GitHub token (A9 related-link checks, A14,
-installations in A15) spend the user's own GitHub budget (5000 requests an hour, shared with the browser and the
+installations in A15, Viewed marks in A17) spend the user's own GitHub budget (5000 requests an hour, shared with the browser and the
 dashboard refresh); for a token the server reuses each such read for 60 s per user, so polling them faster only
 returns the same answer. A2 is a cheap database read.
 
@@ -80,7 +84,9 @@ Cheap polling (plan §E.5 E5-5):
    out, counted per reason), `latest_refresh`, `schedule`. Add `?excluded=true` to list the left-out items too
    (at most 200: id, URL, title, author, reason; no LLM text, but `judged_not_eligible` and `merged_into_another` are LLM decisions, the other reasons
    deterministic rules). `snapshot.awaiting` lists the user's PRs that
-   wait only on others; they are not in the items below (no tier, nothing to do now). Pull request items carry
+   wait only on others; they are not in the items below (no tier, nothing to do now). `snapshot.ready_to_merge`
+   lists the user's PRs ready to merge at the scan (into the default branch, checks passed, nothing to answer); they are in the items too
+   (`snapshot.merge_state_pending`: how many merge states GitHub had not computed yet). Pull request items carry
    `change_size` (`tiny` … `huge` with `additions`/`deletions`); filter by it on the client.
 2. Only when `revision` differs from the last one seen: read the items (step 3). The snapshot changes after a
    refresh (manual or the daily automatic one) and again when the LLM ranking lands.
@@ -150,3 +156,19 @@ fields and treat unknown enum values (`kind`, `component`, `status`, `tier`, `To
 Each token request writes one server log line (token id, user id, method, route template, status, duration); the
 token, its hash, other headers and the query string are never logged. Settings shows each token's last use
 (recorded at most once a minute).
+
+### Mentions outside the ranking
+`partly_read` reports a bounded conversation window, without a safety implication.
+Read `mention_coverage` on the summary or any items page:
+`unchecked_items` counts real candidates not read within the budget/deadline or after a read failure;
+`unchecked_logins` lists logins whose mention search was unavailable (limited fallback for mention-only issues), and
+`timed_out_logins` lists PR mention searches exceeding their request budget. Report these gaps separately
+from the mentions; do not parse English scan notes or interpret a zero item count as full login coverage.
+Both dashboard summary and items responses expose `mentions`, independent of the ranked items and their
+filters. The items response includes them only on its first page; cursor pages return `[]`. List these as quick replies separately from P0–P3. They are unanswered, unhidden posts
+addressed to a scanned login, oldest first. `is_bot` allows callers to filter automated requests; the browser
+default excludes bots, but the API includes both. `url` opens the mentioning post; `text` is untrusted plain
+text. A later refresh removes a post after any scanned login comments/reviews the item. Read tokens cannot call
+`POST /api/v1/dashboard/mentions/{id}/hide`; this action requires a browser session and CSRF.
+
+Hiding changes the dashboard revision: in-progress item cursors expire (409); reload from the first page.

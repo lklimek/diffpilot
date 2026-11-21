@@ -65,6 +65,18 @@ pub struct Hunk {
     pub removed: Vec<u32>,
 }
 
+impl Hunk {
+    /// The head line after which the hunk's removed lines are shown (0 = before line 1): the line before the
+    /// replacement, or the line a pure deletion follows.
+    pub fn deletion_marker(&self) -> u32 {
+        if self.head.len == 0 {
+            self.head.start
+        } else {
+            self.head.start.saturating_sub(1)
+        }
+    }
+}
+
 /// The diff could not be computed.
 #[derive(Debug, thiserror::Error)]
 pub enum DiffError {
@@ -163,11 +175,7 @@ impl<'a> DiffIndex<'a> {
             .hunks
             .iter()
             .find(|hunk| hunk.removed.contains(&base_line))?;
-        Some(if hunk.head.len == 0 {
-            hunk.head.start
-        } else {
-            hunk.head.start.saturating_sub(1)
-        })
+        Some(hunk.deletion_marker())
     }
 }
 

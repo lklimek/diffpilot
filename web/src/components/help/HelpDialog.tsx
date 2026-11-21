@@ -7,6 +7,8 @@ import { SHORTCUTS } from "./shortcuts";
 interface HelpDialogProps {
   /** Whether the dialog is shown. */
   open: boolean;
+  /** The view's key map (the Flows view's by default). */
+  shortcuts?: typeof SHORTCUTS;
   /** Called on Close, Escape or a click outside. */
   onClose: () => void;
 }
@@ -102,7 +104,7 @@ const LEGEND: ReactNode[] = [
 const FOCUSABLE = 'button, [href], textarea, input, [tabindex]:not([tabindex="-1"])';
 
 /** The `?` help: keyboard shortcuts and the legend of how code is drawn (brief §4 rule 4). */
-export function HelpDialog({ open, onClose }: HelpDialogProps) {
+export function HelpDialog({ open, onClose, shortcuts = SHORTCUTS }: HelpDialogProps) {
   const titleId = useId();
   const legendId = useId();
   const close = useRef<HTMLButtonElement>(null);
@@ -156,7 +158,7 @@ export function HelpDialog({ open, onClose }: HelpDialogProps) {
         </h2>
         <table aria-labelledby={titleId} className="w-full border-collapse">
           <tbody>
-            {SHORTCUTS.map(({ label, text }) => (
+            {shortcuts.map(({ label, text }) => (
               <tr key={label} className="border-b border-border last:border-0">
                 <td className="py-1 pr-3 whitespace-nowrap">
                   <kbd className="rounded border border-b-2 border-border px-1 font-mono text-xs">

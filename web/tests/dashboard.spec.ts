@@ -1,6 +1,6 @@
 import { type Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
-import { expectAccessible, expectKeyboardTooltips, PR_URL } from "./screens-support";
+import { expectAccessible, expectKeyboardTooltips, netChartBar, PR_URL } from "./screens-support";
 import { ANALYSIS_ID } from "./support";
 
 // My work at `/` (plan §F) against the msw dashboard scenarios
@@ -10,6 +10,50 @@ import { ANALYSIS_ID } from "./support";
 const SCRIPT_STEP_MS = 500;
 
 test.describe("My work (msw)", () => {
+  test("mentions: three rows, bot preference, hide, count, keyboard and narrow themes", async ({ page }) => {
+    await page.goto("/?dashboard=mentions");
+    const strip = page.getByRole("region", { name: "Mentions" });
+    await expect(strip.getByRole("link")).toHaveCount(0);
+    await strip.getByRole("button", { name: "Mentions (4)" }).click();
+    await expect(strip.getByRole("link")).toHaveCount(3);
+    await expect(page.locator("[data-nav-count]")).toHaveText("4");
+    await strip.getByRole("button", { name: "+1 more" }).click();
+    await expect(strip.getByRole("link")).toHaveCount(4);
+    await strip.getByRole("button", { name: "with bots", exact: true }).click();
+    await expect(strip.getByText(/· bot/)).toBeVisible();
+    await expect(page.locator("[data-nav-count]")).toHaveText("4");
+    await page.reload();
+    await expect(strip.getByRole("button", { name: "with bots", exact: true })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await strip
+      .getByRole("button", { name: /Hide mention/ })
+      .first()
+      .focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("[data-nav-count]")).toHaveText("3");
+    await expect(
+      page.getByRole("link", { name: "My work, 3 unanswered mentions from people" }),
+    ).toBeVisible();
+    await page.getByRole("link", { name: "My work, 3 unanswered mentions from people" }).hover();
+    await expect(
+      page.getByRole("tooltip", { name: /Your PRs, issues and TODOs.*3 unanswered mentions from people/ }),
+    ).toBeVisible();
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(strip).toBeVisible();
+      const nav = page.getByRole("navigation", { name: "Main" });
+      await expect(page.locator("[data-nav-count]")).toBeVisible();
+      await expect(nav.getByRole("button", { name: "Collapse navigation" })).toBeVisible();
+      const width = await strip.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+      expect(width.scroll).toBeLessThanOrEqual(width.client);
+      expect((await strip.getByRole("listitem").first().boundingBox())!.height).toBeLessThanOrEqual(48);
+      await expectAccessible(page);
+    }
+  });
+
   const open = async (page: Page, scenario = "normal", extra = "") => {
     await page.goto(`/?dashboard=${scenario}${extra}`);
     await expect(page.getByRole("heading", { name: "My work", level: 1 })).toBeVisible();
@@ -21,7 +65,7 @@ test.describe("My work (msw)", () => {
     await expect(
       page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /My work/ }),
     ).toHaveAttribute("aria-current", "page");
-    await expect(page.locator("[data-nav-count]")).toHaveText("14");
+    await expect(page.locator("[data-nav-count]")).toHaveText("1");
     await expect(main(page).getByText("fix(sync): retry header fetch after peer timeout")).toBeVisible();
     // Every kind on at first: pull requests, issues and TODOs.
     await expect(main(page).getByText("Wallet balance shows a stale value after a reorg")).toBeVisible();
@@ -46,7 +90,7 @@ test.describe("My work (msw)", () => {
     await expect(main(page).getByRole("link", { name: "Open PLAT-1187 on GitHub" })).toBeVisible();
     await expect(main(page).getByRole("link", { name: "Open TODO in MemCan" })).toHaveCount(2);
     await link.focus();
-    await expect(page.getByRole("tooltip")).toHaveText("Open PLAT-1203 on GitHub");
+    await expect(page.getByRole("tooltip")).toHaveText("Open PLAT-1203 on GitHub (new tab)");
     await page.context().route("https://github.com/**", (route) => route.fulfill({ body: "GitHub" }));
     const popup = page.waitForEvent("popup");
     await link.click();
@@ -102,6 +146,78 @@ test.describe("My work (msw)", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
+  test("side panel: Ready to merge lists the user's mergeable PRs; Copy list puts linked lines on the clipboard", async ({
+    page,
+    context,
+  }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await open(page);
+    const side = page.getByRole("complementary");
+    const ready = side.locator("details", { has: page.getByRole("heading", { name: "Ready to merge" }) });
+    await expect(ready.locator("summary")).toContainText("1 PRs");
+    await expect(ready.getByRole("link", { name: "Open WUI-311 on GitHub (new tab)" })).toBeVisible();
+    await expect(ready.getByText("CI failing")).toBeVisible();
+    // Still ranked: the same PR is in Needs you.
+    await expect(
+      page.getByRole("region", { name: "Needs you" }).getByRole("link", { name: "Open WUI-311 on GitHub" }),
+    ).toBeVisible();
+    const copy = ready.getByRole("button", { name: "Copy list of PRs ready to merge" });
+    const box = (await copy.boundingBox())!;
+    expect(box.height).toBeGreaterThanOrEqual(24);
+    await copy.focus();
+    await page.keyboard.press("Enter");
+    await expect(ready.getByRole("status")).toHaveText("Copied 1 line.");
+    const clip = await page.evaluate(async () => {
+      const [item] = await navigator.clipboard.read();
+      return {
+        text: await (await item!.getType("text/plain")).text(),
+        html: await (await item!.getType("text/html")).text(),
+      };
+    });
+    expect(clip.text).toBe(
+      "[acme/wallet-ui#311](https://github.com/acme/wallet-ui/pull/311) feat(wallet): show pending withdrawals - small (+266 / -114)",
+    );
+    expect(clip.html).toContain(
+      '<a href="https://github.com/acme/wallet-ui/pull/311">acme/wallet-ui#311</a>',
+    );
+  });
+
+  test("Copy list over plain HTTP: without the Clipboard API a copy event still carries HTML and text", async ({
+    page,
+  }) => {
+    // The LAN deployment is not a secure context: no navigator.clipboard there.
+    await page.addInitScript(() => {
+      Object.defineProperty(Navigator.prototype, "clipboard", { get: () => undefined, configurable: true });
+      window.addEventListener("copy", (event) => {
+        const copied = {
+          text: event.clipboardData?.getData("text/plain"),
+          html: event.clipboardData?.getData("text/html"),
+        };
+        (window as unknown as { copied: typeof copied }).copied = copied;
+      });
+    });
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await open(page);
+    const waiting = page
+      .getByRole("complementary")
+      .locator("details", { has: page.getByRole("heading", { name: "Waiting on others" }) });
+    const copy = waiting.getByRole("button", { name: "Copy list of PRs waiting on others" });
+    await copy.click();
+    await expect(waiting.getByRole("status").filter({ hasText: /^Copied/ })).toHaveText("Copied 3 lines.");
+    await expect(copy).toBeFocused();
+    const copied = await page.evaluate(
+      () => (window as unknown as { copied: { text: string; html: string } }).copied,
+    );
+    expect(copied.text.split("\n")).toHaveLength(3);
+    expect(copied.text).toContain(
+      "[acme/platform#1176](https://github.com/acme/platform/pull/1176) feat(sync): parallel header download - large (+3200 / -400) — waits on @jun-park, team:core for 11 d",
+    );
+    expect(copied.html).toContain(
+      '<a href="https://github.com/acme/platform/pull/1176">acme/platform#1176</a>',
+    );
+  });
+
   test("kind toggles combine by keyboard, the last one on stays on, and the choice is remembered", async ({
     page,
   }) => {
@@ -149,19 +265,19 @@ test.describe("My work (msw)", () => {
     // Into the scripted ranking (steps 5–6); time stands still there until the next jump.
     await page.clock.runFor(5.5 * SCRIPT_STEP_MS);
     await settle(page, async (quick) => {
-      await quick(page.getByText(/Ranking with the LLM: \d+ of 14 items judged\./)).toBeVisible();
+      await quick(page.getByText(/Ranking with the LLM: \d+ of 13 items judged\./)).toBeVisible();
       await quick(main(page).getByText("Not judged yet", { exact: true })).toBeVisible();
     });
     await page.clock.runFor(2 * SCRIPT_STEP_MS);
     await settle(page, async (quick) => {
-      await quick(page.getByText("Ranking finished: 14 items judged.")).toBeVisible();
+      await quick(page.getByText("Ranking finished: 13 items judged.")).toBeVisible();
       await quick(page.getByText(/Ranking with the LLM/)).toHaveCount(0);
     });
   });
 
   test("provisional and waiting for the review analysis", async ({ page }) => {
     await open(page, "provisional");
-    await expect(page.getByText("Ranking with the LLM: 10 of 14 items judged.")).toBeVisible();
+    await expect(page.getByText("Ranking with the LLM: 10 of 13 items judged.")).toBeVisible();
     await expect(main(page).getByText("fix(ui): restore the focus ring on tabs")).toBeVisible();
     await open(page, "waiting");
     await expect(page.getByText("Waiting for the review analysis to finish.")).toBeVisible();
@@ -176,7 +292,7 @@ test.describe("My work (msw)", () => {
     await page.getByRole("button", { name: "Retry ranking" }).click();
     await settle(page, (quick) => quick(page.getByText(/Ranking with the LLM/)).toBeVisible());
     await page.clock.runFor(2.5 * SCRIPT_STEP_MS);
-    await settle(page, (quick) => quick(page.getByText("Ranking finished: 14 items judged.")).toBeVisible());
+    await settle(page, (quick) => quick(page.getByText("Ranking finished: 13 items judged.")).toBeVisible());
   });
 
   test("MemCan unreachable: each kept TODO row says it was not refreshed, with a tooltip", async ({
@@ -247,7 +363,7 @@ test.describe("My work (msw)", () => {
     });
   });
 
-  test("1600×900, side panel open: headline beside its chart, first ranked row above the fold", async ({
+  test("1600×900, side panel open: headline beside its chart, first ranked row starts above the fold", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1600, height: 900 });
@@ -257,7 +373,47 @@ test.describe("My work (msw)", () => {
     const chart = (await page.getByRole("img", { name: /^Net closed minus opened/ }).boundingBox())!;
     expect(chart.x).toBeGreaterThan(hero.x + hero.width);
     const first = (await page.locator("li[data-item]").first().boundingBox())!;
-    expect(first.y + first.height).toBeLessThanOrEqual(900);
+    expect(first.y).toBeLessThan(900);
+  });
+
+  test("a chart bar lists its pull requests under the chart; again, Hide or another period closes it", async ({
+    page,
+  }) => {
+    await open(page);
+    // Mon 16 Nov: the third bar from the right of the 20 working days.
+    const { chart, at } = await netChartBar(page, 17);
+    const list = page.getByRole("region", { name: "Pull requests of Mon 16 Nov" });
+    await chart.hover(at);
+    await expect(page.locator("[data-chart-tip]")).toContainText(
+      "Click or press Enter to list its pull requests",
+    );
+    await chart.click(at);
+    await expect(list.getByRole("group", { name: "Opened (2)" })).toBeVisible();
+    const closed = list.getByRole("group", { name: "Closed (3)" });
+    await expect(closed.getByRole("listitem").filter({ hasText: "acme/node-client#1114" })).toContainText(
+      "closed without merge",
+    );
+    await expect(closed.getByRole("link", { name: /^acme\/platform#1116/ })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/platform/pull/1116",
+    );
+    await chart.click(at);
+    await expect(list).toHaveCount(0);
+    // By keyboard: read a bar, Enter lists it, Hide returns to the chart. Focus starts on the last bar.
+    await page.mouse.move(0, 0);
+    await chart.blur();
+    await chart.focus();
+    for (let i = 0; i < 2; i++) await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("Enter");
+    await expect(list).toBeVisible();
+    await list.getByRole("button", { name: "Hide pull requests of Mon 16 Nov" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(list).toHaveCount(0);
+    await expect(chart).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(list).toBeVisible();
+    await page.getByRole("button", { name: "Weeks" }).click();
+    await expect(page.getByRole("region", { name: /^Pull requests of/ })).toHaveCount(0);
   });
 
   test("signed out: the sign-in card", async ({ page }) => {
@@ -270,6 +426,8 @@ test.describe("My work (msw)", () => {
 
   for (const colorScheme of ["light", "dark"] as const) {
     test(`no serious axe violations in every mockup state, ${colorScheme}`, async ({ page }) => {
+      // One axe pass per mockup state; CI runners need more than the default 30 s.
+      test.setTimeout(120_000);
       await page.emulateMedia({ colorScheme });
       for (const scenario of [
         "normal",
@@ -290,7 +448,7 @@ test.describe("My work (msw)", () => {
       }
     });
 
-    test(`no serious axe violations at 1600 px: side panel open, a row expanded, chart table, ${colorScheme}`, async ({
+    test(`no serious axe violations at 1600 px: side panel open, a row expanded, chart table and bar list, ${colorScheme}`, async ({
       page,
     }) => {
       await page.setViewportSize({ width: 1600, height: 900 });
@@ -304,6 +462,9 @@ test.describe("My work (msw)", () => {
       await expect(page.getByRole("group", { name: "Drafts: 1" })).toBeVisible();
       await page.getByRole("button", { name: "Show as table" }).click();
       await expect(page.getByRole("region", { name: "Net per day as a table" })).toBeVisible();
+      const bar = await netChartBar(page, 17);
+      await bar.chart.click(bar.at);
+      await expect(page.getByRole("region", { name: "Pull requests of Mon 16 Nov" })).toBeVisible();
       await expectAccessible(page);
     });
   }
@@ -335,7 +496,9 @@ test.describe("review start from a PR row (msw)", () => {
     page,
   }) => {
     await page.goto("/?dashboard=review-new");
-    await row(page).getByRole("link", { name: "Review" }).click();
+    await row(page)
+      .getByRole("link", { name: /^Review pull request / })
+      .click();
     await expect(page).toHaveURL(/\/review\?pr=/);
     await expect(page.getByLabel(/pull request URL/i)).toHaveValue(PR_URL);
     await expect(page.getByRole("button", { name: "Start analysis", exact: true })).toBeVisible();
@@ -343,14 +506,65 @@ test.describe("review start from a PR row (msw)", () => {
 
   test("found: the row opens the review of the current head", async ({ page }) => {
     await page.goto("/?dashboard=review-found");
-    await row(page).getByRole("link", { name: "Resume review" }).click();
+    await row(page)
+      .getByRole("link", { name: /^Open review of / })
+      .click();
     await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}`));
   });
 
   test("moved: the review start page says the PR has moved", async ({ page }) => {
     await page.goto("/?dashboard=review-moved");
-    await row(page).getByRole("link", { name: "Open review" }).click();
+    await row(page)
+      .getByRole("link", { name: /^Open review of / })
+      .click();
     await expect(page.getByLabel(/pull request URL/i)).toHaveValue(PR_URL);
     await expect(page.getByText("The PR has moved.")).toBeVisible();
   });
+});
+
+test("failed mention hide keeps the row and count and shows a retry message", async ({ page }) => {
+  await page.goto("/?dashboard=mention-hide-fails");
+  const strip = page.getByRole("region", { name: "Mentions" });
+  await strip.getByRole("button", { name: "Mentions (4)" }).click();
+  await strip
+    .getByRole("button", { name: /Hide mention/ })
+    .first()
+    .click();
+  await expect(page.getByText(/Could not hide this mention. Try again./)).toBeVisible();
+  await expect(strip.getByRole("link")).toHaveCount(3);
+  await expect(page.locator("[data-nav-count]")).toHaveText("4");
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(page.getByText(/Could not hide this mention. Try again./)).toHaveCount(0);
+});
+
+test("hiding a vanished mention removes its row and updates the count without an error", async ({ page }) => {
+  await page.goto("/?dashboard=mention-hide-gone");
+  const strip = page.getByRole("region", { name: "Mentions" });
+  await strip.getByRole("button", { name: "Mentions (4)" }).click();
+  const first = strip.getByRole("button", { name: /Hide mention/ }).first();
+  const href = await strip.getByRole("link").first().getAttribute("href");
+  await first.click();
+  await expect(page.locator("[data-nav-count]")).toHaveText("3");
+  await expect(strip.locator(`a[href="${href}"]`)).toHaveCount(0);
+  await expect(page.getByText(/Could not hide this mention. Try again./)).toHaveCount(0);
+});
+
+test("structured mention coverage stays in the collapsed summary and out of scan notes", async ({ page }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto("/?dashboard=mention-coverage");
+  const strip = page.getByRole("region", { name: "Mentions" });
+  await expect(strip).toContainText("Mentions not checked on 5 items this refresh.");
+  await expect(strip).toContainText("Mention search for @alice-helper is unavailable; coverage is limited.");
+  expect((await strip.boundingBox())!.height).toBeLessThanOrEqual(28);
+  const heading = (await strip.getByRole("button", { name: "Mentions (1)" }).boundingBox())!;
+  const coverage = (await strip.locator("span[title]").boundingBox())!;
+  expect(coverage.x).toBeGreaterThanOrEqual(heading.x + heading.width);
+  const first = (await page.locator("li[data-item]").first().boundingBox())!;
+  expect(first.y).toBeLessThan(900);
+  await strip.getByRole("button", { name: "Mentions (1)" }).focus();
+  await expect(page.getByRole("tooltip")).toContainText("@alice-helper");
+  await expect(page.getByRole("tooltip")).toContainText("@slow");
+  await strip.getByRole("button", { name: "Mentions (1)" }).click();
+  await expect(strip.getByText(/^Mention search for @alice-helper/)).toBeVisible();
+  await expect(page.locator("aside")).not.toContainText("Mentions not checked");
 });

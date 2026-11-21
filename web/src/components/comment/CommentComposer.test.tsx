@@ -125,7 +125,9 @@ describe("CommentComposer", () => {
     });
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(document.body).toHaveTextContent("On src/sync/peers.rs:20. This file is not part of the PR diff");
-    expect(screen.getByRole("link", { name: "line 20 on GitHub ↗" })).toHaveAttribute("href", permalink);
+    expect(
+      screen.getByRole("link", { name: "line 20 on GitHub (opens on GitHub in a new tab)" }),
+    ).toHaveAttribute("href", permalink);
     expect(document.body).not.toHaveTextContent("https://");
   });
 

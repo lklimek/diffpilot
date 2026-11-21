@@ -35,6 +35,11 @@
   "questions": [
     {
       "id": "3f1c5a7e-0482-4d2b-9e6f-000000000001",
+      "anchor": {
+        "kind": "step",
+        "step_id": "f1.5",
+        "lines": null
+      },
       "step_id": "f1.5",
       "text": "Does the node deduplicate broadcast_tx by transaction id?",
       "state": "answered",
