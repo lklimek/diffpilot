@@ -1714,6 +1714,7 @@ async fn scan_over_the_time_limit_fails_as_timed_out() {
 }
 
 mod judged;
+mod plugin;
 
 /// Pull requests the refused linked login `alice-helper` authored count in the charts whoever merged them: by the
 /// user (`acme/platform#1231`), by a third person (`acme/consensus#1536`, absent from its event feed), outside the

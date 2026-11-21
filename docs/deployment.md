@@ -42,7 +42,8 @@ emptied at every start. `<project>` is the compose project name: `diffpilot` by 
   no job while less than `SR_RUNNER_DISK_RESERVE_MIB` (default 2048) is free on Docker's data root.
 - A domain name and a TLS-terminating reverse proxy in front of the server (section 7).
 - A GitHub account that can create a GitHub App (section 4), and a ChatGPT account for the Codex sign-in (section 8).
-- Outbound HTTPS from the host to GitHub, Docker Hub and the LLM provider (`chatgpt.com`, `openai.com`).
+- Outbound HTTPS from the host to GitHub, Docker Hub and the LLM provider (`chatgpt.com`, `openai.com`); with
+  `SR_PR_HYGIENE_URL` set, also from the server to that PR Hygiene host (ADR-022).
 - Optional: a [MemCan](https://github.com/lklimek/memcan) instance (section 9).
 - On the host for backups and checks: `bash`, `openssl`, `sqlite3` 3.27+ (`deploy/backup.sh`), `jq` (rendering
   check of `deploy/check-production-config.sh`).
@@ -183,6 +184,7 @@ Required means compose or the service refuses to start without it. "Secret" valu
 | `SR_MEMCAN_URL` | yes | | MemCan MCP endpoint, full URL (section 9). |
 | `SR_MEMCAN_TOKEN` | yes, secret | | MemCan token (section 9). |
 | `SR_MEMCAN_UI_URL` | no | empty | MemCan web UI base including `/ui`; the dashboard links TODOs to `<base>/tasks/<uuid>`. |
+| `SR_PR_HYGIENE_URL` | no | empty | PR Hygiene service base URL (`http`/`https`), e.g. `https://pr-hygiene.services.dash.org`. Set: the dashboard plug-in reads its public API (no credential) at most once a minute while someone uses the dashboard (ADR-022). Empty: off. |
 | `RUST_LOG` | no | `info` | Log level of server and runner (`debug`, or per module, e.g. `info,runner=debug`). |
 
 **Runner**

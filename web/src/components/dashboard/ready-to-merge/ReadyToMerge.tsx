@@ -1,16 +1,29 @@
-import type { ReadyToMergeItem } from "../../../api/generated/types";
+import type { HeldBack, PluginStatus, ReadyToMergeItem } from "../../../api/generated/types";
 import { CopyListButton } from "../common/CopyListButton";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 import { FactTags, SizePill } from "../common/Tags";
+import { PluginStatusNote } from "../plugin-status/PluginStatusNote";
 import { AsideSection } from "../side-panel/AsideSection";
 
 const prs = (n: number) => `${n} ${n === 1 ? "PR" : "PRs"}`;
 
 /**
  * The user's PRs GitHub let them merge at the last scan, in the server's order (by id) (side panel). `pending`:
- * how many merge states GitHub had not computed yet; null when the snapshot did not record merge states.
+ * how many merge states GitHub had not computed yet; null when the snapshot did not record merge states. `held`:
+ * PRs left out because a dashboard plug-in's statement holds them back (ADR-022), each with that source's reason.
+ * `plugins`: the configured plug-ins; one whose statements are not applied now is named.
  */
-export function ReadyToMerge({ items, pending }: { items: ReadyToMergeItem[]; pending: number | null }) {
+export function ReadyToMerge({
+  items,
+  pending,
+  held = [],
+  plugins,
+}: {
+  items: ReadyToMergeItem[];
+  pending: number | null;
+  held?: HeldBack[];
+  plugins?: PluginStatus[];
+}) {
   if (pending === null) {
     return (
       <AsideSection title="Ready to merge" defaultOpen summary="not recorded">
@@ -29,7 +42,9 @@ export function ReadyToMerge({ items, pending }: { items: ReadyToMergeItem[]; pe
       }
     >
       {items.length === 0 ? (
-        <p className="text-xs text-muted">None of your PRs was ready to merge at the last scan.</p>
+        held.length === 0 && (
+          <p className="text-xs text-muted">None of your PRs was ready to merge at the last scan.</p>
+        )
       ) : (
         <ul className="m-0 list-none p-0">
           {items.map((item) => (
@@ -47,6 +62,35 @@ export function ReadyToMerge({ items, pending }: { items: ReadyToMergeItem[]; pe
           ))}
         </ul>
       )}
+      {held.length > 0 && (
+        <div className="mt-2">
+          <p className="m-0 text-xs text-muted">
+            {items.length === 0
+              ? "All of your PRs that were ready to merge at the last scan are held back by another source:"
+              : "Left out because another source holds them back:"}
+          </p>
+          <ul aria-label="Held back" className="m-0 list-none p-0">
+            {held.map(({ item, source, reason, url, plugin }) => (
+              <li
+                key={`${plugin}-${item.url}`}
+                data-held={plugin}
+                className="grid gap-0.5 border-t border-border py-1.5 first:border-t-0"
+              >
+                <div className="flex items-baseline gap-2">
+                  <span className="font-mono text-[12.5px] font-semibold">{item.id}</span>
+                  <OpenExternal href={item.url} label={openLabel(item)} />
+                </div>
+                <div className="[overflow-wrap:anywhere]">{item.title}</div>
+                <p className="m-0 text-xs [overflow-wrap:anywhere]">
+                  <span className="font-semibold">{source}:</span> {reason}{" "}
+                  <OpenExternal href={url} label={`${source} data for ${item.id}`} />
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <PluginStatusNote plugins={plugins} what="Ready to merge is shown" />
       {pending > 0 && (
         <p className="mt-1.5 text-xs text-muted">
           {prs(pending)}: GitHub had not computed the merge state yet; the next refresh checks again.

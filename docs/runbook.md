@@ -267,8 +267,8 @@ is corrupted. Finished analyses are not converted: their questions show as flags
    `deploy/backup.sh` and the full backup in "Backup and restore" are the file-based alternatives. Keep the copy until
    the new version has run for a few days.
 
-3. Add the new variables of the section "New configuration" to `/srv/diffpilot/.env` (only `SR_MEMCAN_UI_URL` is
-   new; it is optional), then start and check:
+3. Add the new variables of the section "New configuration" to `/srv/diffpilot/.env` (`SR_MEMCAN_UI_URL` and
+   `SR_PR_HYGIENE_URL` are new; both are optional), then start and check:
 
    ```sh
    deploy/check-production-config.sh --env-file /srv/diffpilot/.env   # from /srv/diffpilot/app
@@ -299,12 +299,13 @@ needed: `docker volume rm diffpilot_server-data-v1`.
 
 ### New configuration
 
-Only one variable is new since v1; none is required. The scheduler and the dashboard have no variables: they are
+Two variables are new since v1; none is required. The scheduler and the dashboard have no other variables: they are
 configured per user in Settings.
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
 | `SR_MEMCAN_UI_URL` | no | empty | Base URL of the MemCan web UI **including `/ui`**, e.g. `http://memcan.example.lan:8190/ui`. The dashboard links a MemCan TODO to `<base>/tasks/<uuid>`. Must be `http://` or `https://`; a trailing `/` is removed. Empty: TODOs show without links. A bad value stops the server at start (exit 1). |
+| `SR_PR_HYGIENE_URL` | no | empty | Base URL of the PR Hygiene service, e.g. `https://pr-hygiene.services.dash.org`. Set: the dashboard's PR Hygiene plug-in reads the service's public API (no credential) at most once a minute while someone uses the dashboard in a browser, shows its statements on pull requests and holds pull requests it does not list as ready out of Ready to merge (ADR-022). The server then needs outbound HTTPS to that host. Must be `http://` or `https://`. Empty: off, no request. A bad value stops the server at start (exit 1). |
 
 Changed behaviour of an existing variable:
 

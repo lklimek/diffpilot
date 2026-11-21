@@ -123,6 +123,59 @@ describe("side panel sections", () => {
     expect(screen.queryByText(/None of your PRs/)).toBeNull();
   });
 
+  it("Ready to merge lists the PRs a plug-in holds back apart, each with its source's reason and evidence", () => {
+    const [ready] = SUMMARY.snapshot!.ready_to_merge;
+    const held = {
+      item: ready!,
+      plugin: "pr-hygiene",
+      source: "PR Hygiene",
+      reason: "Author must post /self-reviewed 1a2b3c",
+      url: "https://pr-hygiene.example.test/api/v1/prs/acme/wallet-ui/311",
+    };
+    const { unmount } = render(<ReadyToMerge items={[]} pending={0} held={[held]} />);
+    expect(screen.getByText("Ready to merge").closest("summary")).toHaveTextContent("0 PRs");
+    expect(screen.queryByText(/None of your PRs/)).toBeNull();
+    expect(
+      screen.getByText(
+        "All of your PRs that were ready to merge at the last scan are held back by another source:",
+      ),
+    ).toBeInTheDocument();
+    const list = screen.getByRole("list", { name: "Held back" });
+    const [row] = within(list).getAllByRole("listitem");
+    expect(row).toHaveTextContent("WUI-311");
+    expect(row).toHaveTextContent("PR Hygiene: Author must post /self-reviewed 1a2b3c");
+    expect(within(row!).getByRole("link", { name: "PR Hygiene data for WUI-311 (new tab)" })).toHaveAttribute(
+      "href",
+      held.url,
+    );
+    expect(within(row!).getByRole("link", { name: "Open WUI-311 on GitHub (new tab)" })).toHaveAttribute(
+      "href",
+      ready!.url,
+    );
+    unmount();
+    render(
+      <ReadyToMerge items={[ready!]} pending={0} held={[{ ...held, item: { ...ready!, id: "WUI-298" } }]} />,
+    );
+    expect(screen.getByText("Left out because another source holds them back:")).toBeInTheDocument();
+  });
+
+  it("Ready to merge names a plug-in whose statements are not applied, and nothing for a current one", () => {
+    const plugin = {
+      plugin: "pr-hygiene",
+      source: "PR Hygiene",
+      url: "https://pr-hygiene.example.test/",
+      state: "stale" as const,
+      as_of: "2026-11-18T08:00:00Z",
+    };
+    const { unmount } = render(<ReadyToMerge items={[]} pending={0} plugins={[plugin]} />);
+    expect(document.querySelector("[data-plugin-status='stale']")).toHaveTextContent(
+      "PR Hygiene: unavailable or out of date; Ready to merge is shown without its statements.",
+    );
+    unmount();
+    render(<ReadyToMerge items={[]} pending={0} plugins={[{ ...plugin, state: "current" }]} />);
+    expect(document.querySelector("[data-plugin-status]")).toBeNull();
+  });
+
   describe("copy list", () => {
     let written: Record<string, Blob>[] = [];
     beforeEach(() => {

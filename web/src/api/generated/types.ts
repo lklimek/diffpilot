@@ -1113,7 +1113,12 @@ schedule: ScheduleStatus,
 /**
  * Items of the snapshot whose judgement came from an older ranking prompt (re-judged within the caps).
  */
-older_prompt_judgements: number, };
+older_prompt_judgements: number,
+/**
+ * Configured dashboard plug-ins (ADR-022); absent when none is configured. While one is listed, the browser
+ * reads the summary again every minute.
+ */
+plugins?: Array<PluginStatus>, };
 
 /**
  * Removed code shown at its deletion marker.
@@ -2010,6 +2015,31 @@ file: string,
  * 1-based line.
  */
 line: number, };
+
+/**
+ * A pull request Ready to merge would list, held back by a plug-in's statement (ADR-022).
+ */
+export type HeldBack = {
+/**
+ * The pull request as Ready to merge would list it.
+ */
+item: ReadyToMergeItem,
+/**
+ * Plug-in id.
+ */
+plugin: string,
+/**
+ * Name of the plug-in, shown before the reason.
+ */
+source: string,
+/**
+ * The plug-in's reason, plain text.
+ */
+reason: string,
+/**
+ * Evidence: the source's record of the pull request.
+ */
+url: string, };
 
 /**
  * A dated event for the charts.
@@ -2971,6 +3001,70 @@ importance_rank: number,
 ranges: Array<FileRanges>, };
 
 /**
+ * An external statement of a dashboard plug-in about a pull request (ADR-022): attributed to its source, plain
+ * text, never a diffpilot fact or verdict.
+ */
+export type PluginNote = {
+/**
+ * Plug-in id, e.g. `pr-hygiene`.
+ */
+plugin: string,
+/**
+ * Name shown before the statement, e.g. `PR Hygiene`.
+ */
+source: string,
+/**
+ * Evidence: the source's record of the pull request, built by the server.
+ */
+url: string,
+/**
+ * When the source produced the data.
+ */
+as_of: string,
+/**
+ * Headline (PR Hygiene: the next action).
+ */
+summary: string | null,
+/**
+ * Further points (PR Hygiene: the blockers).
+ */
+details: Array<string>,
+/**
+ * Labelled values (PR Hygiene: stage, whose move, lateness).
+ */
+facts: Array<Fact>, };
+
+/**
+ * Whether a plug-in's statements are shown.
+ */
+export type PluginState = "waiting" | "current" | "stale";
+
+/**
+ * A configured dashboard plug-in: an external source of statements about pull requests (ADR-022).
+ */
+export type PluginStatus = {
+/**
+ * Stable id, e.g. `pr-hygiene`.
+ */
+plugin: string,
+/**
+ * Name shown before its statements, e.g. `PR Hygiene`.
+ */
+source: string,
+/**
+ * The source's home page.
+ */
+url: string,
+/**
+ * Whether its statements are shown now.
+ */
+state: PluginState,
+/**
+ * When the source produced the data last read; null before the first successful read.
+ */
+as_of: string | null, };
+
+/**
  * An ownership policy file (JSON format of `stale_prs_are_bad`).
  */
 export type PolicyRef = {
@@ -3917,6 +4011,10 @@ awaiting: Array<AwaitingItem>,
  */
 ready_to_merge: Array<ReadyToMergeItem>,
 /**
+ * Pull requests K17 would list that a current plug-in statement holds back (ADR-022), by display id.
+ */
+ready_to_merge_held?: Array<HeldBack>,
+/**
  * The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read
  * again by the next refresh); null when the snapshot did not record merge states (stored before they were).
  */
@@ -4324,4 +4422,8 @@ llm: ItemText | null,
 /**
  * The user's diffpilot analysis of this pull request, read at request time; null when none.
  */
-review: ReviewLink | null, };
+review: ReviewLink | null,
+/**
+ * Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
+ */
+plugin_notes?: Array<PluginNote>, };

@@ -667,6 +667,33 @@ impl Dashboard<'_> {
         Ok(())
     }
 
+    /// Replaces the snapshot of refresh `id` while it holds the user's current snapshot (a targeted re-read of a few
+    /// pull requests, ADR-022); `Conflict` once a newer refresh holds it, `NotFound` for another user's refresh.
+    pub async fn replace_current_snapshot<T: Serialize + Sync>(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+        snapshot: &T,
+    ) -> Result<(), DbError> {
+        let document = serde_json::to_string(snapshot)?;
+        let mut tx = write_tx(self.pool).await?;
+        let updated = sqlx::query(concat!(
+            "UPDATE dashboard_refreshes SET snapshot = ?3 WHERE id = ?4 AND id IS (",
+            current_snapshot_id!(),
+            ")"
+        ))
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(document)
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        changed(&mut tx, tenant_id, user_id, id, updated.rows_affected()).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// The current snapshot: that of the user's newest refresh in `ranking` or `finished` (a `failed` or
     /// `cancelled` refresh never holds one), with that refresh.
     pub async fn latest_snapshot<T: DeserializeOwned>(
@@ -2059,6 +2086,41 @@ mod tests {
             true,
         );
         assert_eq!(current(&db, "u1").await, Some((id, 7)));
+    }
+
+    #[tokio::test]
+    async fn only_the_current_snapshot_is_replaced() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let first = finished(&db, "u1", 0, RankingState::Finished).await;
+        dash.replace_current_snapshot(T, "u1", first, &json!({ "n": 1 }))
+            .await
+            .expect("replace");
+        assert_eq!(current(&db, "u1").await, Some((first, 1)));
+        let scanning = start(&db, "u1", 10).await;
+        dash.replace_current_snapshot(T, "u1", first, &json!({ "n": 2 }))
+            .await
+            .expect("a scan holds no snapshot yet");
+        assert_eq!(current(&db, "u1").await, Some((first, 2)));
+        assert_err(
+            dash.replace_current_snapshot(T, "u1", scanning, &json!({ "n": 3 }))
+                .await,
+            true,
+        );
+        dash.store_snapshot(T, "u1", scanning, &json!({ "n": 11 }), at(11))
+            .await
+            .expect("store");
+        assert_err(
+            dash.replace_current_snapshot(T, "u1", first, &json!({ "n": 4 }))
+                .await,
+            true,
+        );
+        assert_eq!(current(&db, "u1").await, Some((scanning, 11)));
+        assert_err(
+            dash.replace_current_snapshot(T, "u2", scanning, &json!({ "n": 5 }))
+                .await,
+            false,
+        );
     }
 
     #[tokio::test]

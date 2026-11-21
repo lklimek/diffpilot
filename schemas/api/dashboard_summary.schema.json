@@ -56,6 +56,13 @@
       "type": "integer",
       "format": "uint32",
       "minimum": 0
+    },
+    "plugins": {
+      "description": "Configured dashboard plug-ins (ADR-022); absent when none is configured. While one is listed, the browser\nreads the summary again every minute.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PluginStatus"
+      }
     }
   },
   "required": [
@@ -657,6 +664,13 @@
             "$ref": "#/$defs/ReadyToMergeItem"
           }
         },
+        "ready_to_merge_held": {
+          "description": "Pull requests K17 would list that a current plug-in statement holds back (ADR-022), by display id.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeldBack"
+          }
+        },
         "merge_state_pending": {
           "description": "The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read\nagain by the next refresh); null when the snapshot did not record merge states (stored before they were).",
           "type": [
@@ -995,6 +1009,39 @@
         "title",
         "url",
         "tags"
+      ]
+    },
+    "HeldBack": {
+      "description": "A pull request Ready to merge would list, held back by a plug-in's statement (ADR-022).",
+      "type": "object",
+      "properties": {
+        "item": {
+          "description": "The pull request as Ready to merge would list it.",
+          "$ref": "#/$defs/ReadyToMergeItem"
+        },
+        "plugin": {
+          "description": "Plug-in id.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Name of the plug-in, shown before the reason.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "The plug-in's reason, plain text.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Evidence: the source's record of the pull request.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "plugin",
+        "source",
+        "reason",
+        "url"
       ]
     },
     "HistoryEvent": {
@@ -1422,6 +1469,62 @@
           "description": "The scheduled refresh failed; shown until a later refresh succeeds.",
           "type": "string",
           "const": "failed"
+        }
+      ]
+    },
+    "PluginStatus": {
+      "description": "A configured dashboard plug-in: an external source of statements about pull requests (ADR-022).",
+      "type": "object",
+      "properties": {
+        "plugin": {
+          "description": "Stable id, e.g. `pr-hygiene`.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Name shown before its statements, e.g. `PR Hygiene`.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The source's home page.",
+          "type": "string"
+        },
+        "state": {
+          "description": "Whether its statements are shown now.",
+          "$ref": "#/$defs/PluginState"
+        },
+        "as_of": {
+          "description": "When the source produced the data last read; null before the first successful read.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "plugin",
+        "source",
+        "url",
+        "state"
+      ]
+    },
+    "PluginState": {
+      "description": "Whether a plug-in's statements are shown.",
+      "oneOf": [
+        {
+          "description": "Not read yet, or not read recently because nobody used the dashboard (it is read only then); being read.",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "Read recently; its statements are shown.",
+          "type": "string",
+          "const": "current"
+        },
+        {
+          "description": "The source failed since its last good read, or its data is older than the freshness bound; nothing of it is\nshown.",
+          "type": "string",
+          "const": "stale"
         }
       ]
     }

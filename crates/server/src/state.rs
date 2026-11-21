@@ -7,6 +7,7 @@ use db::repo::Db;
 use crate::auth::PendingPairs;
 use crate::config::Config;
 use crate::dashboard::DashboardHub;
+use crate::dashboard::plugin::PluginHost;
 use crate::jobs::executor::JobExecutor;
 use crate::jobs::progress::ProgressHub;
 use crate::jobs::queue::QueueExecutor;
@@ -30,6 +31,8 @@ pub struct AppState {
     pub stopping: tokio::sync::watch::Sender<bool>,
     /// Per-user dashboard refreshes (ADR-017).
     pub dashboard: DashboardHub,
+    /// Dashboard plug-ins (ADR-022); empty unless configured.
+    pub plugins: PluginHost,
 }
 
 impl AppState {
@@ -47,6 +50,7 @@ impl AppState {
     pub fn new(config: Config, db: Db, executor: Arc<dyn JobExecutor>) -> Self {
         Self {
             statistics: crate::pipeline::statistics::Statistics::default(),
+            plugins: PluginHost::from_config(&config),
             config: Arc::new(config),
             db,
             executor,

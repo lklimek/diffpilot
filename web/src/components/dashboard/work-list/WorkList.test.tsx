@@ -42,6 +42,29 @@ const rowIds = () =>
   [...document.querySelectorAll("li[data-item]")].map((li) => li.getAttribute("data-item"));
 
 describe("WorkList", () => {
+  it("shows a plug-in's statement on its pull request's row, the further points once the row is expanded", async () => {
+    const note = {
+      plugin: "pr-hygiene",
+      source: "PR Hygiene",
+      url: "https://pr-hygiene.example.test/api/v1/prs/acme/node-client/482",
+      as_of: "2026-11-18T10:12:00Z",
+      summary: "Author must post /self-reviewed 1a2b3c",
+      details: [
+        "Author must post /self-reviewed 1a2b3c",
+        "Human approval or objection resolution is required",
+      ],
+      facts: [{ label: "Stage", value: "self-review" }],
+    };
+    const items = ITEMS.map((item) => (item.id === "NC-482" ? { ...item, plugin_notes: [note] } : item));
+    render(<List items={items} />);
+    const row = document.querySelector("li[data-item][data-item*='482']") as HTMLElement;
+    expect(row).toHaveTextContent("PR Hygiene: Author must post /self-reviewed 1a2b3c");
+    expect(within(row).queryByText("Human approval or objection resolution is required")).toBeNull();
+    expect(document.querySelectorAll("[data-plugin-note]")).toHaveLength(1);
+    await userEvent.click(within(row).getByRole("button", { name: "Details of NC-482" }));
+    expect(within(row).getByText("Human approval or objection resolution is required")).toBeInTheDocument();
+  });
+
   it("PRs, Issues and TODOs are independent toggles, all on at first; kinds combine; P0 alarms always show", async () => {
     render(<List />);
     expect(screen.getByRole("group", { name: "Kinds shown" })).toBeInTheDocument();

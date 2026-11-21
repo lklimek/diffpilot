@@ -169,6 +169,16 @@ fn scope(session: &Session) -> Scope {
     }
 }
 
+/// Counts a dashboard read in a browser session as the user's presence for the plug-in poller (ADR-022 §3); a
+/// personal access token read is an automated client, not a user in the session.
+fn mark_present(state: &AppState, session: &Session) {
+    if !session.is_access_token() {
+        state
+            .plugins
+            .mark_active(&session.tenant_id, &session.user_id);
+    }
+}
+
 /// The current snapshot scored with the judgements present now, and how many of those judgements an older ranking
 /// prompt made; `None` without a readable snapshot.
 async fn current_view(
@@ -198,9 +208,10 @@ async fn current_view(
         &snapshot,
         &judgements,
         state.config.memcan_ui_url.as_deref(),
+        &state.plugins.overlay(state.dashboard.now()),
     );
     Ok(Some((
-        snapshot::revision(&record, &snapshot),
+        snapshot::revision(&record, &snapshot, &view),
         snapshot,
         view,
         record,
@@ -216,6 +227,7 @@ async fn summary(
     let Query(query) = query?;
     let list_excluded = query.excluded.unwrap_or(false);
     let scope = scope(&session);
+    mark_present(&state, &session);
     let dashboard = state.db.dashboard();
     let latest_refresh = match dashboard
         .latest_refresh(&scope.tenant_id, &scope.user_id)
@@ -252,6 +264,7 @@ async fn summary(
         snapshot: meta,
         schedule: schedule_status(stored.as_ref(), state.dashboard.now(), scanned_at),
         older_prompt_judgements,
+        plugins: state.plugins.statuses(state.dashboard.now()),
     }))
 }
 
@@ -294,6 +307,7 @@ async fn items(
 ) -> DashboardResult<Response> {
     let Query(query) = query?;
     let scope = scope(&session);
+    mark_present(&state, &session);
     let (revision, page, next_cursor, mentions, mention_coverage) =
         match current_view(&state, &scope).await? {
             Some((revision, snapshot, view, _, _)) => {

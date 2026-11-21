@@ -31,6 +31,39 @@ pub struct DashboardSummary {
     pub schedule: ScheduleStatus,
     /// Items of the snapshot whose judgement came from an older ranking prompt (re-judged within the caps).
     pub older_prompt_judgements: u32,
+    /// Configured dashboard plug-ins (ADR-022); absent when none is configured. While one is listed, the browser
+    /// reads the summary again every minute.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<PluginStatus>>", optional)]
+    pub plugins: Vec<PluginStatus>,
+}
+
+/// A configured dashboard plug-in: an external source of statements about pull requests (ADR-022).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PluginStatus {
+    /// Stable id, e.g. `pr-hygiene`.
+    pub plugin: String,
+    /// Name shown before its statements, e.g. `PR Hygiene`.
+    pub source: String,
+    /// The source's home page.
+    pub url: String,
+    /// Whether its statements are shown now.
+    pub state: PluginState,
+    /// When the source produced the data last read; null before the first successful read.
+    pub as_of: Option<Timestamp>,
+}
+
+/// Whether a plug-in's statements are shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginState {
+    /// Not read yet, or not read recently because nobody used the dashboard (it is read only then); being read.
+    Waiting,
+    /// Read recently; its statements are shown.
+    Current,
+    /// The source failed since its last good read, or its data is older than the freshness bound; nothing of it is
+    /// shown.
+    Stale,
 }
 
 /// Missing mention reads; zero items does not imply that every login was searched.
@@ -274,6 +307,10 @@ pub struct SnapshotMeta {
     pub awaiting: Vec<AwaitingItem>,
     /// The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked.
     pub ready_to_merge: Vec<ReadyToMergeItem>,
+    /// Pull requests K17 would list that a current plug-in statement holds back (ADR-022), by display id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<HeldBack>>", optional)]
+    pub ready_to_merge_held: Vec<HeldBack>,
     /// The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read
     /// again by the next refresh); null when the snapshot did not record merge states (stored before they were).
     pub merge_state_pending: Option<u32>,
@@ -454,6 +491,21 @@ pub struct ReadyToMergeItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub change_size: Option<ChangeSizeMark>,
+}
+
+/// A pull request Ready to merge would list, held back by a plug-in's statement (ADR-022).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct HeldBack {
+    /// The pull request as Ready to merge would list it.
+    pub item: ReadyToMergeItem,
+    /// Plug-in id.
+    pub plugin: String,
+    /// Name of the plug-in, shown before the reason.
+    pub source: String,
+    /// The plug-in's reason, plain text.
+    pub reason: String,
+    /// Evidence: the source's record of the pull request.
+    pub url: String,
 }
 
 /// A dated event for the charts.
@@ -637,6 +689,30 @@ pub struct WorkItem {
     pub llm: Option<ItemText>,
     /// The user's diffpilot analysis of this pull request, read at request time; null when none.
     pub review: Option<ReviewLink>,
+    /// Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<PluginNote>>", optional)]
+    pub plugin_notes: Vec<PluginNote>,
+}
+
+/// An external statement of a dashboard plug-in about a pull request (ADR-022): attributed to its source, plain
+/// text, never a diffpilot fact or verdict.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PluginNote {
+    /// Plug-in id, e.g. `pr-hygiene`.
+    pub plugin: String,
+    /// Name shown before the statement, e.g. `PR Hygiene`.
+    pub source: String,
+    /// Evidence: the source's record of the pull request, built by the server.
+    pub url: String,
+    /// When the source produced the data.
+    pub as_of: Timestamp,
+    /// Headline (PR Hygiene: the next action).
+    pub summary: Option<String>,
+    /// Further points (PR Hygiene: the blockers).
+    pub details: Vec<String>,
+    /// Labelled values (PR Hygiene: stage, whose move, lateness).
+    pub facts: Vec<Fact>,
 }
 
 /// Size mark of a pull request: a fixed table of changed lines (additions + deletions), plan §C.2 K16.
