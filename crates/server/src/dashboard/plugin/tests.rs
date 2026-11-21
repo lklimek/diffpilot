@@ -2,6 +2,7 @@
 //! against the in-process fake service (`test_support::pr_hygiene`); no real network.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::http::StatusCode;
@@ -9,7 +10,6 @@ use serde_json::json;
 
 use super::pr_hygiene::PrHygiene;
 use super::*;
-use crate::state::tests::test_state;
 use crate::test_support::logs::LogCapture;
 use crate::test_support::pr_hygiene::{FakePrHygiene, record};
 
@@ -58,6 +58,7 @@ fn data(as_of: Timestamp, prs: &[(u32, &str)]) -> PluginData {
 struct Scripted {
     home: Url,
     answers: Mutex<VecDeque<Result<Polled, PluginError>>>,
+    polls: AtomicUsize,
 }
 
 impl Scripted {
@@ -65,6 +66,7 @@ impl Scripted {
         Arc::new(Self {
             home: Url::parse("https://source.example.test/").expect("url"),
             answers: Mutex::new(answers.into()),
+            polls: AtomicUsize::new(0),
         })
     }
 }
@@ -83,6 +85,7 @@ impl DashboardPlugin for Scripted {
     }
 
     fn poll(&self) -> BoxFuture<'_, Result<Polled, PluginError>> {
+        self.polls.fetch_add(1, Ordering::SeqCst);
         let answer = lock(&self.answers)
             .pop_front()
             .unwrap_or(Ok(Polled::Unchanged));
@@ -268,6 +271,9 @@ fn external_text_is_bounded_plain_and_links_are_web_links() {
         }),
     );
     long.summary = Some(format!("line\none\u{1b}[31m{}", "x".repeat(400)));
+    let mut spoofed = statement("b", None);
+    spoofed.summary =
+        Some("Merge\u{202E}evil\u{202C} it\u{200B}\u{2066}now\u{2069}\u{FEFF}".to_owned());
     long.details = (0..20).map(|n| format!("detail {n}")).collect();
     long.facts = (0..10)
         .map(|n| Fact {
@@ -277,12 +283,18 @@ fn external_text_is_bounded_plain_and_links_are_web_links() {
         .collect();
     long.url = "javascript:alert(1)".to_owned();
     let key = PrKey::new(&repo("acme", "node-client"), 1);
+    let spoofed_key = PrKey::new(&repo("acme", "node-client"), 2);
     let bounded = bounded(
         PluginData {
             as_of: now(),
-            prs: [(key.clone(), long)].into(),
+            prs: [(key.clone(), long), (spoofed_key.clone(), spoofed)].into(),
         },
         &home,
+    );
+    assert_eq!(
+        bounded.prs[&spoofed_key].summary.as_deref(),
+        Some("Mergeevil itnow"),
+        "bidi and zero-width format characters are removed"
     );
     let s = &bounded.prs[&key];
     let summary = s.summary.as_deref().expect("summary");
@@ -298,65 +310,66 @@ fn external_text_is_bounded_plain_and_links_are_web_links() {
     assert_eq!(s.url, "https://source.example.test/");
 }
 
-#[tokio::test]
-async fn nothing_is_requested_while_no_user_is_active_and_polls_follow_the_interval() {
-    let fake = FakePrHygiene::start(
-        "2026-11-18T08:59:00Z",
-        vec![record(
-            "dashpay/platform",
-            1,
-            Some("waiting-author"),
-            "Fix it",
-        )],
-    )
-    .await;
-    let mut state = test_state().await;
-    let timing = Timing {
-        interval: Duration::from_millis(100),
-        active_for: Duration::from_millis(400),
-        ..Timing::default()
-    };
-    state.plugins = host(
-        Arc::new(PrHygiene::new(fake.url.clone()).expect("plugin")),
-        timing,
+/// Polls of `plugin` once the tasks woken so far have run (paused clock).
+async fn polls_after(plugin: &Scripted, wait: Duration) -> usize {
+    tokio::time::sleep(wait).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    plugin.polls.load(Ordering::SeqCst)
+}
+
+#[tokio::test(start_paused = true)]
+async fn nothing_is_polled_while_no_user_is_active_and_polls_follow_the_interval() {
+    let plugin = Scripted::new(Vec::new());
+    let host = host(
+        Arc::clone(&plugin) as Arc<dyn DashboardPlugin>,
+        Timing::default(),
     );
-    assert!(spawn(state.clone()));
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (stop, stopping) = watch::channel(false);
+    let changes = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&changes);
+    let poller = tokio::spawn(host.clone().run(stopping, now, move |_| {
+        seen.fetch_add(1, Ordering::SeqCst);
+        async {}
+    }));
+    let minute = Duration::from_secs(60);
     assert_eq!(
-        fake.served(),
-        Vec::new(),
-        "no user active: no request at all"
+        polls_after(&plugin, 30 * minute).await,
+        0,
+        "no user active: no poll at all"
     );
 
-    state.plugins.mark_active("t", "u1");
-    let started = Instant::now();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while fake.served().is_empty() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("an active user starts the polls at once");
-    assert!(
-        started.elapsed() < Duration::from_millis(90),
-        "not after a full interval"
-    );
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-    let polls = fake
-        .served()
-        .iter()
-        .filter(|s| s.path == "/api/v1/prs")
-        .count();
-    // Active for 400 ms after the mark: polls at 0, 100, 200, 300 and (at most) 400 ms.
-    assert!((3..=6).contains(&polls), "{polls} polls");
-    let after = fake.served().len();
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    host.mark_active("t", "u1");
     assert_eq!(
-        fake.served().len(),
-        after,
-        "no request once nobody is active"
+        polls_after(&plugin, Duration::ZERO).await,
+        1,
+        "a reader starts a poll at once"
     );
-    let _ = state.stopping.send(true);
+    assert_eq!(
+        polls_after(&plugin, minute - Duration::from_secs(1)).await,
+        1,
+        "not before the interval"
+    );
+    assert_eq!(polls_after(&plugin, Duration::from_secs(1)).await, 2);
+    // Active for 3 minutes after the read: polls at 0, 1, 2 and 3 minutes, then none.
+    assert_eq!(polls_after(&plugin, 30 * minute).await, 4);
+
+    host.mark_active("t", "u1");
+    assert_eq!(
+        polls_after(&plugin, Duration::ZERO).await,
+        5,
+        "a returning reader polls at once"
+    );
+    host.mark_active("t", "u2");
+    assert_eq!(
+        polls_after(&plugin, Duration::from_secs(10)).await,
+        5,
+        "one poller for every reader"
+    );
+    assert_eq!(changes.load(Ordering::SeqCst), 0, "nothing changed");
+    stop.send(true).expect("stop");
+    poller.await.expect("poller ends");
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -521,4 +534,59 @@ async fn pr_hygiene_failures_are_errors() {
 
     let closed = PrHygiene::new(Url::parse("http://127.0.0.1:9/").expect("url")).expect("plugin");
     assert!(matches!(closed.poll().await, Err(PluginError::Http(_))));
+}
+
+#[tokio::test]
+async fn pr_hygiene_logs_unreadable_records_once_per_change_of_their_count() {
+    let logs = LogCapture::start();
+    let mut bad_shape = record("dashpay/platform", 2, Some("waiting-author"), "x");
+    bad_shape["blockers"] = json!(null);
+    bad_shape["number"] = json!("two");
+    let fake = FakePrHygiene::start(
+        "2026-11-18T08:59:00Z",
+        vec![
+            record("dashpay/platform", 1, Some("waiting-author"), "Fix it"),
+            bad_shape,
+            record("not a repo", 3, Some("waiting-author"), "Fix it"),
+        ],
+    )
+    .await;
+    let plugin = PrHygiene::new(fake.url.clone()).expect("plugin");
+    let Ok(Polled::Data(data)) = plugin.poll().await else {
+        panic!("data expected");
+    };
+    assert_eq!(data.prs.len(), 1);
+    let unreadable = "PR Hygiene records of an unexpected shape or repository name are left out";
+    assert_eq!(
+        logs.text().matches(unreadable).count(),
+        1,
+        "{}",
+        logs.text()
+    );
+    assert!(logs.text().contains("unreadable=2"), "{}", logs.text());
+
+    let mut prs = fake.prs();
+    prs["prs"][0]["next_action"] = json!("Resolve the threads");
+    fake.set_prs(prs.clone());
+    assert!(matches!(plugin.poll().await, Ok(Polled::Data(_))));
+    assert_eq!(
+        logs.text().matches(unreadable).count(),
+        1,
+        "same count: no new line"
+    );
+
+    prs["prs"] = json!([record(
+        "dashpay/platform",
+        1,
+        Some("waiting-author"),
+        "Fix it"
+    )]);
+    fake.set_prs(prs);
+    assert!(matches!(plugin.poll().await, Ok(Polled::Data(_))));
+    assert_eq!(
+        logs.text()
+            .matches("PR Hygiene records are all readable again")
+            .count(),
+        1
+    );
 }

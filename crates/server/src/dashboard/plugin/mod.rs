@@ -7,6 +7,7 @@ pub mod pr_hygiene;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -15,7 +16,7 @@ use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use futures::future::BoxFuture;
 use jiff::SignedDuration;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 use tokio::time::Instant;
 use url::Url;
 
@@ -410,9 +411,18 @@ fn differences(previous: &PluginData, next: &PluginData) -> impl Iterator<Item =
     keys.into_iter()
 }
 
-/// `text` without control characters, cut to `max` characters.
+/// Invisible format characters that can reorder or hide displayed text: bidi embeddings, overrides, isolates and
+/// marks, zero-width characters, the soft hyphen and the byte order mark (Unicode category Cf).
+fn is_format(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
+/// `text` without control and format characters, cut to `max` characters.
 fn plain(text: &str, max: usize) -> String {
     text.chars()
+        .filter(|c| !is_format(*c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .take(max)
         .collect::<String>()
@@ -532,31 +542,53 @@ pub fn spawn(state: AppState) -> bool {
     if state.plugins.is_empty() {
         return false;
     }
-    tokio::spawn(run(state));
+    let host = state.plugins.clone();
+    let stopping = state.stopping.subscribe();
+    let clock = state.dashboard.clone();
+    tokio::spawn(host.run(
+        stopping,
+        move || clock.now(),
+        move |changed| {
+            let state = state.clone();
+            async move {
+                for (tenant_id, user_id) in state.plugins.active_users() {
+                    let scope = super::refresh::Scope { tenant_id, user_id };
+                    super::refresh::reread::changed_prs(&state, &scope, &changed).await;
+                }
+            }
+        },
+    ));
     true
 }
 
-async fn run(state: AppState) {
-    let mut stopping = state.stopping.subscribe();
-    let host = state.plugins.clone();
-    tracing::info!(plugins = ?host, "dashboard plug-in poller started");
-    loop {
-        while host.active_users().is_empty() {
+impl PluginHost {
+    /// The poller loop: waits while nobody is active, polls, hands a non-empty change signal to `on_change`, sleeps
+    /// [`Timing::interval`]; ends once `stopping` turns true.
+    async fn run<F, Fut>(
+        self,
+        mut stopping: watch::Receiver<bool>,
+        now: impl Fn() -> Timestamp,
+        mut on_change: F,
+    ) where
+        F: FnMut(HashSet<PrKey>) -> Fut,
+        Fut: Future<Output = ()>,
+    {
+        tracing::info!(plugins = ?self, "dashboard plug-in poller started");
+        loop {
+            while self.active_users().is_empty() {
+                tokio::select! {
+                    () = self.woken() => {}
+                    _ = stopping.wait_for(|stop| *stop) => return,
+                }
+            }
+            let changed = self.poll_once(now()).await;
+            if !changed.is_empty() {
+                on_change(changed).await;
+            }
             tokio::select! {
-                () = host.woken() => {}
+                () = tokio::time::sleep(self.timing().interval) => {}
                 _ = stopping.wait_for(|stop| *stop) => return,
             }
-        }
-        let changed = host.poll_once(state.dashboard.now()).await;
-        if !changed.is_empty() {
-            for (tenant_id, user_id) in host.active_users() {
-                let scope = super::refresh::Scope { tenant_id, user_id };
-                super::refresh::reread::changed_prs(&state, &scope, &changed).await;
-            }
-        }
-        tokio::select! {
-            () = tokio::time::sleep(host.timing().interval) => {}
-            _ = stopping.wait_for(|stop| *stop) => return,
         }
     }
 }

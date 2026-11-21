@@ -43,6 +43,8 @@ pub struct PrHygiene {
 struct Cache {
     prs: Option<(String, PrsBody)>,
     stages: Option<(String, StagesBody)>,
+    /// Records of the last data left out as unreadable (logged when the count changes).
+    unreadable: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -174,10 +176,24 @@ impl PrHygiene {
             }
             (Answer::NotModified, Answer::NotModified) => return Ok(Polled::Unchanged),
         };
-        Ok(Polled::Data(self.data(&prs_body, &stages_body)))
+        let (data, unreadable) = self.data(&prs_body, &stages_body);
+        if unreadable != cache.unreadable {
+            if unreadable > 0 {
+                tracing::warn!(
+                    unreadable,
+                    total = prs_body.prs.len(),
+                    "PR Hygiene records of an unexpected shape or repository name are left out; check the service's API version"
+                );
+            } else {
+                tracing::info!("PR Hygiene records are all readable again");
+            }
+            cache.unreadable = unreadable;
+        }
+        Ok(Polled::Data(data))
     }
 
-    fn data(&self, prs: &PrsBody, stages: &StagesBody) -> PluginData {
+    /// The statements of `prs`, and how many records were left out as unreadable (shape or repository name).
+    fn data(&self, prs: &PrsBody, stages: &StagesBody) -> (PluginData, usize) {
         let owners: HashMap<&str, &str> = stages
             .stages
             .iter()
@@ -189,8 +205,10 @@ impl PrHygiene {
             .map(|r| r.to_ascii_lowercase())
             .collect();
         let mut statements = HashMap::new();
+        let mut unreadable = 0;
         for value in &prs.prs {
             let Ok(record) = serde_json::from_value::<PrRecord>(value.clone()) else {
+                unreadable += 1;
                 continue;
             };
             if stale.contains(&record.repo.to_ascii_lowercase()) {
@@ -201,16 +219,20 @@ impl PrHygiene {
                 .split_once('/')
                 .and_then(|(owner, name)| ItemRef::new(owner, name, record.number))
             else {
+                unreadable += 1;
                 continue;
             };
             if let Some(statement) = self.statement(&item, &record, value, &owners) {
                 statements.insert(PrKey::new(&item.repo, item.number), statement);
             }
         }
-        PluginData {
-            as_of: prs.generated_at,
-            prs: statements,
-        }
+        (
+            PluginData {
+                as_of: prs.generated_at,
+                prs: statements,
+            },
+            unreadable,
+        )
     }
 
     /// The statement on a governed pull request; `None` for an ungoverned one (no engine state).
