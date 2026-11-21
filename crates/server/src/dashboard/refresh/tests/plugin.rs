@@ -393,3 +393,42 @@ async fn the_poller_rereads_a_pull_request_whose_statement_changed_for_an_active
     assert_eq!(reread, "fix(rpc): close idle connections");
     let _ = w.state.stopping.send(true);
 }
+
+/// Presence comes from a person using the dashboard in a browser session (owner, v1.2: "query only when the user
+/// is active in the session"); an automated personal-access-token read must not start or prolong plug-in polling.
+#[tokio::test]
+async fn a_personal_access_token_read_does_not_mark_its_user_active() {
+    use contracts::api::access_tokens::{AccessTokenId, TokenScope};
+    use db::repo::access_tokens::NewAccessToken;
+    let mut w = world().await;
+    w.refreshed().await;
+    let fake = FakePrHygiene::start(GENERATED, Vec::new()).await;
+    with_plugin(&mut w, &fake, Timing::default());
+    let secret = format!("srp_ABCDEFGH_{}", "a".repeat(43));
+    w.state
+        .db
+        .access_tokens()
+        .create(
+            DEFAULT_TENANT,
+            "u1",
+            &NewAccessToken {
+                id: AccessTokenId("ABCDEFGH".into()),
+                name: "presence test".into(),
+                token_hash: crate::secrets::sha256(secret.as_bytes()),
+                scopes: vec![TokenScope::Read],
+                expires_at: Timestamp::now() + SignedDuration::from_hours(24),
+            },
+            Timestamp::now(),
+        )
+        .await
+        .expect("token");
+    let bearer = format!("Bearer {secret}");
+    for uri in ["/api/v1/dashboard", "/api/v1/dashboard/items"] {
+        let read = w.send("GET", uri, "", &[("authorization", &bearer)]).await;
+        assert_eq!(read.status, StatusCode::OK, "{}", read.body);
+    }
+    assert!(
+        w.state.plugins.active_users().is_empty(),
+        "a token read is not a user in the session"
+    );
+}
