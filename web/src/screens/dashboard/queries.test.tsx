@@ -11,6 +11,7 @@ import { resetDashboard, setDashboardScenario } from "../../mocks/handlers/dashb
 import { resetDashboardSettings } from "../../mocks/handlers/dashboard-settings";
 import itemsJson from "../../../../fixtures/dashboard/api/items.json";
 import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
+import summaryJson from "../../../../fixtures/dashboard/api/summary.json";
 import {
   applyRefreshStatus,
   REFRESH_RECONNECT_MS,
@@ -19,6 +20,8 @@ import {
   refreshKey,
   loadAllItems,
   PLUGIN_REFETCH_MS,
+  PLUGIN_RETRY_MS,
+  PLUGIN_RETRY_READS,
   summaryRefetchInterval,
   resetSentTimeZones,
   useDashboardSummary,
@@ -30,6 +33,7 @@ import {
 
 const ITEMS = (itemsJson as unknown as ItemPage).items;
 const SCANNING = scanningJson as unknown as RefreshStatus;
+const SUMMARY_FIXTURE = summaryJson as unknown as DashboardSummary;
 const server = setupServer(...handlers);
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 beforeEach(() => {
@@ -241,19 +245,51 @@ describe("useStartRefresh (R2)", () => {
 
 describe("summaryRefetchInterval (ADR-022)", () => {
   const summary = { revision: "r", latest_refresh: null } as unknown as DashboardSummary;
+  const plugin = {
+    plugin: "pr-hygiene",
+    source: "PR Hygiene",
+    url: "https://pr-hygiene.example.test/",
+    state: "current" as const,
+    as_of: "2026-11-18T10:00:00Z",
+  };
   it("reads the summary again every minute only while it lists a dashboard plug-in", () => {
     expect(summaryRefetchInterval(undefined)).toBe(false);
     expect(summaryRefetchInterval(summary)).toBe(false);
     expect(summaryRefetchInterval({ ...summary, plugins: [] })).toBe(false);
-    const plugin = {
-      plugin: "pr-hygiene",
-      source: "PR Hygiene",
-      url: "https://pr-hygiene.example.test/",
-      state: "current" as const,
-      as_of: "2026-11-18T10:00:00Z",
-    };
     expect(summaryRefetchInterval({ ...summary, plugins: [plugin] })).toBe(PLUGIN_REFETCH_MS);
     expect(PLUGIN_REFETCH_MS).toBe(60_000);
+  });
+
+  it("reads it within seconds while a plug-in is not current, for a bounded number of reads", () => {
+    for (const state of ["waiting", "stale"] as const) {
+      const off = { ...summary, plugins: [{ ...plugin, state }] };
+      expect(summaryRefetchInterval(off, 1)).toBe(PLUGIN_RETRY_MS);
+      expect(summaryRefetchInterval(off, PLUGIN_RETRY_READS)).toBe(PLUGIN_RETRY_MS);
+      expect(summaryRefetchInterval(off, PLUGIN_RETRY_READS + 1)).toBe(PLUGIN_REFETCH_MS);
+    }
+    expect(PLUGIN_RETRY_MS).toBe(5_000);
+  });
+
+  it("a returning reader's summary is read again within seconds until the plug-in is current", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let reads = 0;
+    server.use(
+      http.get("/api/v1/dashboard", () => {
+        reads += 1;
+        const state = reads < 3 ? "stale" : "current";
+        return HttpResponse.json({ ...SUMMARY_FIXTURE, plugins: [{ ...plugin, state }] });
+      }),
+    );
+    renderHook(() => useDashboardSummary(true), { wrapper: wrapper().wrapper });
+    await waitFor(() => expect(reads).toBe(1));
+    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS);
+    await waitFor(() => expect(reads).toBe(2));
+    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS);
+    await waitFor(() => expect(reads).toBe(3));
+    await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS * 3);
+    expect(reads).toBe(3);
+    await vi.advanceTimersByTimeAsync(PLUGIN_REFETCH_MS);
+    await waitFor(() => expect(reads).toBe(4));
   });
 });
 

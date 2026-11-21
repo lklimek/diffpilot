@@ -3,7 +3,7 @@ import { useMutationState } from "@tanstack/react-query";
 // every item of its revision (R1b, cursor paging, ETag), live refresh events (R5), Refresh (R2), Cancel (R3),
 // Rank again (R4) and the browser's time zone on the first visit (R6b).
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "../../api/client";
 import type { DashboardSummary, RefreshId, RefreshStatus, WorkItem } from "../../api/generated/types";
 
@@ -49,28 +49,50 @@ export function isOlderStatus(next: RefreshStatus, kept: RefreshStatus | null | 
 /** How often the summary is read again while it lists a dashboard plug-in (ADR-022) and the tab is visible. */
 export const PLUGIN_REFETCH_MS = 60_000;
 
-/** The summary's re-read interval: every minute while it lists a plug-in, else none. */
-export const summaryRefetchInterval = (summary: DashboardSummary | undefined): number | false =>
-  summary?.plugins?.length ? PLUGIN_REFETCH_MS : false;
+/** The quicker re-read while a listed plug-in is not current (the server polls it once a reader is back). */
+export const PLUGIN_RETRY_MS = 5_000;
+/** Quick re-reads in a row before falling back to every minute (a source that stays down). */
+export const PLUGIN_RETRY_READS = 6;
+
+/** A listed plug-in's statements are not applied now (not read yet, or stale). */
+const pluginNotCurrent = (summary: DashboardSummary | undefined): boolean =>
+  summary?.plugins?.some((plugin) => plugin.state !== "current") ?? false;
+
+/**
+ * The summary's re-read interval: none without a plug-in; while one is not current, every `PLUGIN_RETRY_MS` for
+ * the first `PLUGIN_RETRY_READS` such reads in a row (`notCurrentReads`); otherwise every minute.
+ */
+export const summaryRefetchInterval = (
+  summary: DashboardSummary | undefined,
+  notCurrentReads = 0,
+): number | false => {
+  if (!summary?.plugins?.length) return false;
+  return pluginNotCurrent(summary) && notCurrentReads <= PLUGIN_RETRY_READS
+    ? PLUGIN_RETRY_MS
+    : PLUGIN_REFETCH_MS;
+};
 
 /**
  * The user's dashboard summary; disabled while signed out. A latest refresh older than the shown one is kept. While
  * the summary lists a dashboard plug-in it is read again every minute (visible tabs only), which keeps the
- * plug-in's statements current and the reader counted as active.
+ * plug-in's statements current and the reader counted as active; sooner while a plug-in is not current yet, so a
+ * returning reader sees its statements within seconds (`summaryRefetchInterval`).
  */
 export function useDashboardSummary(enabled: boolean) {
   const client = useQueryClient();
+  const notCurrentReads = useRef(0);
   return useQuery({
     queryKey: SUMMARY_KEY,
     queryFn: async () => {
       const summary = await api.getDashboard();
+      notCurrentReads.current = pluginNotCurrent(summary) ? notCurrentReads.current + 1 : 0;
       const kept = client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh;
       return summary.latest_refresh && isOlderStatus(summary.latest_refresh, kept)
         ? { ...summary, latest_refresh: kept! }
         : summary;
     },
     enabled,
-    refetchInterval: (query) => summaryRefetchInterval(query.state.data),
+    refetchInterval: (query) => summaryRefetchInterval(query.state.data, notCurrentReads.current),
   });
 }
 

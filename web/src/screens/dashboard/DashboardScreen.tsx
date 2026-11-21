@@ -254,6 +254,7 @@ export function DashboardScreen() {
               items={snapshot.ready_to_merge}
               pending={snapshot.merge_state_pending}
               held={snapshot.ready_to_merge_held}
+              plugins={summary?.plugins}
             />
             <Yesterday
               label={fullDayLabel(charts.yesterday.day)}
