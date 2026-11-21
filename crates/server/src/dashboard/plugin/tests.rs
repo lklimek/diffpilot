@@ -510,6 +510,12 @@ async fn pr_hygiene_failures_are_errors() {
         matches!(plugin.poll().await, Err(PluginError::Malformed(_))),
         "no generation time"
     );
+    let huge = " ".repeat(8 * 1024 * 1024 + 1);
+    fake.set_raw(Some(&huge));
+    assert!(matches!(
+        plugin.poll().await,
+        Err(PluginError::TooLarge { .. })
+    ));
     fake.set_raw(None);
     assert!(matches!(plugin.poll().await, Ok(Polled::Data(_))));
 

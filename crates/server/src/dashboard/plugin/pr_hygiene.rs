@@ -102,7 +102,7 @@ impl PrHygiene {
     }
 
     fn endpoint(&self, path: &str) -> Url {
-        // `path` is a constant relative path; joining it to a base ending in `/` cannot fail.
+        // `path` is relative (constants and validated owner, name and number); joining it to the base cannot fail.
         self.base.join(path).unwrap_or_else(|_| self.base.clone())
     }
 
