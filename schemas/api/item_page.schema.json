@@ -297,6 +297,13 @@
               "type": "null"
             }
           ]
+        },
+        "plugin_notes": {
+          "description": "Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PluginNote"
+          }
         }
       },
       "required": [
@@ -737,6 +744,58 @@
     "CommitSha": {
       "description": "A full 40-character hexadecimal git commit id.",
       "type": "string"
+    },
+    "PluginNote": {
+      "description": "An external statement of a dashboard plug-in about a pull request (ADR-022): attributed to its source, plain\ntext, never a diffpilot fact or verdict.",
+      "type": "object",
+      "properties": {
+        "plugin": {
+          "description": "Plug-in id, e.g. `pr-hygiene`.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Name shown before the statement, e.g. `PR Hygiene`.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Evidence: the source's record of the pull request, built by the server.",
+          "type": "string"
+        },
+        "as_of": {
+          "description": "When the source produced the data.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "summary": {
+          "description": "Headline (PR Hygiene: the next action).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "details": {
+          "description": "Further points (PR Hygiene: the blockers).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "facts": {
+          "description": "Labelled values (PR Hygiene: stage, whose move, lateness).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Fact"
+          }
+        }
+      },
+      "required": [
+        "plugin",
+        "source",
+        "url",
+        "as_of",
+        "details",
+        "facts"
+      ]
     }
   }
 }

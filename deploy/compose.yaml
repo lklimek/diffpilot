@@ -61,6 +61,7 @@ services:
       SR_MEMCAN_URL: ${SR_MEMCAN_URL:?set SR_MEMCAN_URL}
       SR_MEMCAN_TOKEN: ${SR_MEMCAN_TOKEN:-}
       SR_MEMCAN_UI_URL: ${SR_MEMCAN_UI_URL:-}
+      SR_PR_HYGIENE_URL: ${SR_PR_HYGIENE_URL:-}
       RUST_LOG: ${RUST_LOG:-info}
       NO_COLOR: "1"
     volumes:

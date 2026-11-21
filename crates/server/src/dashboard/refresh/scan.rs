@@ -369,6 +369,7 @@ pub(super) async fn scan<T: TokenSource>(
         unreachable,
         checked,
         merge_states_recorded: true,
+        prs_reread_at: None,
         todos_hidden: false,
     })
 }

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use contracts::api::dashboard::{
     AwaitingItem, EXCLUDED_ITEMS_LIMIT, ExcludedItem, ExclusionCount, Exclusions, Fact, FactTag,
-    ItemCounts, ItemKey, ItemKind, ItemTarget, ItemText, RankingState, ReadyToMergeItem,
+    HeldBack, ItemCounts, ItemKey, ItemKind, ItemTarget, ItemText, RankingState, ReadyToMergeItem,
     ScoreState, SnapshotMeta, Tier, WorkItem,
 };
 use contracts::common::RepoRef;
@@ -15,6 +15,7 @@ use jiff::SignedDuration;
 use jiff::tz::TimeZone;
 
 use super::{Snapshot, StoredIssue, StoredPr, StoredTodo};
+use crate::dashboard::plugin::Overlay;
 use crate::dashboard::refresh::rank::ItemJudgement;
 use crate::dashboard::score::{
     self, CiEffective, Judgement, Mergeable, Milestone, Relation, ScoreError, ScoreRules, Scored,
@@ -43,6 +44,8 @@ pub struct View {
     pub awaiting: Vec<AwaitingItem>,
     /// The user's pull requests ready to merge (K17).
     pub ready_to_merge: Vec<ReadyToMergeItem>,
+    /// Those K17 would list that a plug-in holds back (ADR-022).
+    pub ready_to_merge_held: Vec<HeldBack>,
     /// `SnapshotMeta.merge_state_pending`.
     pub merge_state_pending: Option<u32>,
 }
@@ -69,6 +72,7 @@ impl View {
             excluded: self.exclusions.total,
             awaiting: self.awaiting.clone(),
             ready_to_merge: self.ready_to_merge.clone(),
+            ready_to_merge_held: self.ready_to_merge_held.clone(),
             merge_state_pending: self.merge_state_pending,
             history: snapshot.history.clone(),
             todos: snapshot.todos_state.clone(),
@@ -86,11 +90,13 @@ enum Source<'a> {
     Todo(&'a StoredTodo),
 }
 
-/// Scores and ranks the snapshot's items with `judgements` at its scan time. `memcan_ui` is `SR_MEMCAN_UI_URL`.
+/// Scores and ranks the snapshot's items with `judgements` at its scan time. `memcan_ui` is `SR_MEMCAN_UI_URL`;
+/// `overlay` holds the plug-in statements shown now (ADR-022): notes on pull requests and Ready to merge holds.
 pub fn build(
     snapshot: &Snapshot,
     judgements: &HashMap<ItemKey, ItemJudgement>,
     memcan_ui: Option<&str>,
+    overlay: &Overlay,
 ) -> View {
     let rules = ScoreRules::new(&snapshot.own_login, &snapshot.settings);
     let at = snapshot.scanned_at;
@@ -168,10 +174,14 @@ pub fn build(
         let text = judgements
             .get(&item.key)
             .and_then(|judged| judged.text.clone());
-        items.push(work_item(&rules, &look_back, item, source, text, memcan_ui));
+        let mut view_item = work_item(&rules, &look_back, item, source, text, memcan_ui);
+        if let Source::Pr(pr) = source {
+            view_item.item.plugin_notes = overlay.notes(&pr.facts.repo, pr.facts.number);
+        }
+        items.push(view_item);
     }
     let awaiting = awaiting(&rules, snapshot);
-    let ready_to_merge = ready_to_merge(&rules, snapshot);
+    let (ready_to_merge, ready_to_merge_held) = ready_to_merge(&rules, snapshot, overlay);
     let merge_state_pending = snapshot.merge_states_recorded.then(|| {
         let pending = snapshot
             .pull_requests
@@ -189,6 +199,7 @@ pub fn build(
         exclusions: exclusions(ranking.excluded, &sources, memcan_ui),
         awaiting,
         ready_to_merge,
+        ready_to_merge_held,
         merge_state_pending,
     }
 }
@@ -443,6 +454,7 @@ fn work_item(
             score: scored.score,
             llm,
             review: None,
+            plugin_notes: Vec::new(),
         },
         head_sha,
     }
@@ -647,14 +659,20 @@ fn waiting_since(requested: Option<Timestamp>, created: Timestamp) -> Timestamp 
     requested.unwrap_or(created)
 }
 
-/// The user's pull requests ready to merge ([`merge_ready`]); they stay ranked.
-fn ready_to_merge(rules: &ScoreRules, snapshot: &Snapshot) -> Vec<ReadyToMergeItem> {
+/// The user's pull requests ready to merge ([`merge_ready`]; they stay ranked), and those of them a current
+/// plug-in statement holds back (ADR-022 §6).
+fn ready_to_merge(
+    rules: &ScoreRules,
+    snapshot: &Snapshot,
+    overlay: &Overlay,
+) -> (Vec<ReadyToMergeItem>, Vec<HeldBack>) {
     let facts: Vec<_> = snapshot
         .pull_requests
         .iter()
         .map(|pr| pr.facts.clone())
         .collect();
-    merge_ready(rules, &facts)
+    let mut held = Vec::new();
+    let ready = merge_ready(rules, &facts)
         .into_iter()
         .filter_map(|f| {
             let stored = snapshot
@@ -672,5 +690,19 @@ fn ready_to_merge(rules: &ScoreRules, snapshot: &Snapshot) -> Vec<ReadyToMergeIt
                 change_size: score::size_mark(f),
             })
         })
-        .collect()
+        .filter_map(|item| match overlay.hold(&item.repo, item.number) {
+            Some(hold) => {
+                held.push(HeldBack {
+                    item,
+                    plugin: hold.plugin,
+                    source: hold.source,
+                    reason: hold.reason,
+                    url: hold.url,
+                });
+                None
+            }
+            None => Some(item),
+        })
+        .collect();
+    (ready, held)
 }

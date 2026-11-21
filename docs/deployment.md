@@ -183,6 +183,7 @@ Required means compose or the service refuses to start without it. "Secret" valu
 | `SR_MEMCAN_URL` | yes | | MemCan MCP endpoint, full URL (section 9). |
 | `SR_MEMCAN_TOKEN` | yes, secret | | MemCan token (section 9). |
 | `SR_MEMCAN_UI_URL` | no | empty | MemCan web UI base including `/ui`; the dashboard links TODOs to `<base>/tasks/<uuid>`. |
+| `SR_PR_HYGIENE_URL` | no | empty | PR Hygiene service base URL (`http`/`https`), e.g. `https://pr-hygiene.services.dash.org`. Set: the dashboard plug-in reads its public API (no credential) at most once a minute while someone uses the dashboard (ADR-022). Empty: off. |
 | `RUST_LOG` | no | `info` | Log level of server and runner (`debug`, or per module, e.g. `info,runner=debug`). |
 
 **Runner**

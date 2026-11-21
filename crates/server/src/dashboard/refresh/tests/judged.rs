@@ -359,7 +359,7 @@ async fn judged_refresh_ranks_the_fixture_world_as_the_scorer_expects() {
     );
     let applied: HashMap<ItemKey, ItemJudgement> =
         items.iter().map(|i| (i.key.clone(), expected(i))).collect();
-    let view = snapshot::build(&stored, &applied, None);
+    let view = snapshot::build(&stored, &applied, None, &Default::default());
     let want: Vec<(&str, Tier, i32)> = view
         .items
         .iter()

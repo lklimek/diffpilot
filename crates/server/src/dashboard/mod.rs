@@ -3,6 +3,7 @@
 
 pub mod hub;
 pub mod judge;
+pub mod plugin;
 pub mod refresh;
 pub mod schedule;
 pub mod score;

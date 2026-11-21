@@ -48,6 +48,8 @@ pub const MEMCAN_URL: &str = "SR_MEMCAN_URL";
 pub const MEMCAN_TOKEN: &str = "SR_MEMCAN_TOKEN";
 /// MemCan web UI base including `/ui`; dashboard TODO links are `<base>/tasks/<uuid>` (optional).
 pub const MEMCAN_UI_URL: &str = "SR_MEMCAN_UI_URL";
+/// Base URL of the PR Hygiene service; set, the dashboard's PR Hygiene plug-in is on (optional, ADR-022).
+pub const PR_HYGIENE_URL: &str = "SR_PR_HYGIENE_URL";
 /// Path of a file holding `SR_SECRET_KEY`; exactly one of the two may be set.
 pub const SECRET_KEY_FILE: &str = "SR_SECRET_KEY_FILE";
 /// Path of a file holding `SR_RUNNER_SECRET`; exactly one of the two may be set.
@@ -95,6 +97,8 @@ pub struct Config {
     pub memcan: MemcanConfig,
     /// MemCan web UI base, no trailing slash; links are `<value>/tasks/<uuid>` (default: none, no links).
     pub memcan_ui_url: Option<String>,
+    /// PR Hygiene service base, the dashboard plug-in's source (default: none, plug-in off; ADR-022).
+    pub pr_hygiene_url: Option<Url>,
 }
 
 /// GitHub App credentials and GitHub base URLs (configurable for the fake GitHub).
@@ -381,6 +385,9 @@ impl Config {
                     let url = String::from(url);
                     url.strip_suffix('/').map(str::to_owned).unwrap_or(url)
                 }),
+            pr_hygiene_url: get(PR_HYGIENE_URL)?
+                .map(|value| parse_http_url(PR_HYGIENE_URL, &value))
+                .transpose()?,
         })
     }
 }
@@ -808,6 +815,33 @@ pub(crate) mod tests {
                 other => panic!("{key}: expected UnsupportedUrlScheme, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn pr_hygiene_url_is_optional_and_must_be_http() {
+        assert_eq!(parse(&required_env()).expect("valid").pr_hygiene_url, None);
+        let mut env = required_env();
+        env.insert(PR_HYGIENE_URL, "https://pr-hygiene.example.test".to_owned());
+        let url = parse(&env).expect("valid").pr_hygiene_url;
+        assert_eq!(
+            url.map(String::from).as_deref(),
+            Some("https://pr-hygiene.example.test/")
+        );
+        env.insert(PR_HYGIENE_URL, "pr-hygiene.example.test".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidUrl {
+                key: PR_HYGIENE_URL,
+                ..
+            })
+        ));
+        env.insert(PR_HYGIENE_URL, "ftp://pr-hygiene.example.test".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::UnsupportedUrlScheme {
+                key: PR_HYGIENE_URL
+            })
+        ));
     }
 
     #[test]

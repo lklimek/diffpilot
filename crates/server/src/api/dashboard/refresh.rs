@@ -198,9 +198,10 @@ async fn current_view(
         &snapshot,
         &judgements,
         state.config.memcan_ui_url.as_deref(),
+        &state.plugins.overlay(state.dashboard.now()),
     );
     Ok(Some((
-        snapshot::revision(&record, &snapshot),
+        snapshot::revision(&record, &snapshot, &view),
         snapshot,
         view,
         record,
@@ -216,6 +217,7 @@ async fn summary(
     let Query(query) = query?;
     let list_excluded = query.excluded.unwrap_or(false);
     let scope = scope(&session);
+    state.plugins.mark_active(&scope.tenant_id, &scope.user_id);
     let dashboard = state.db.dashboard();
     let latest_refresh = match dashboard
         .latest_refresh(&scope.tenant_id, &scope.user_id)
@@ -252,6 +254,7 @@ async fn summary(
         snapshot: meta,
         schedule: schedule_status(stored.as_ref(), state.dashboard.now(), scanned_at),
         older_prompt_judgements,
+        plugins: state.plugins.statuses(state.dashboard.now()),
     }))
 }
 
@@ -294,6 +297,7 @@ async fn items(
 ) -> DashboardResult<Response> {
     let Query(query) = query?;
     let scope = scope(&session);
+    state.plugins.mark_active(&scope.tenant_id, &scope.user_id);
     let (revision, page, next_cursor, mentions, mention_coverage) =
         match current_view(&state, &scope).await? {
             Some((revision, snapshot, view, _, _)) => {
