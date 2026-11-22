@@ -11,7 +11,7 @@ const prs = (n: number) => `${n} ${n === 1 ? "PR" : "PRs"}`;
  * The user's PRs GitHub let them merge at the last scan, in the server's order (by id) (side panel). `pending`:
  * how many merge states GitHub had not computed yet; null when the snapshot did not record merge states. `held`:
  * PRs left out because a dashboard plug-in's statement holds them back (ADR-022), each with that source's reason.
- * `plugins`: the configured plug-ins; one whose statements are not applied now is named.
+ * `plugins`: the configured plug-ins; one that can hold PRs back and whose statements are not applied now is named.
  */
 export function ReadyToMerge({
   items,
@@ -90,7 +90,10 @@ export function ReadyToMerge({
           </ul>
         </div>
       )}
-      <PluginStatusNote plugins={plugins} what="Ready to merge is shown" />
+      <PluginStatusNote
+        plugins={plugins?.filter((plugin) => plugin.holds_ready_to_merge)}
+        what="Ready to merge is shown"
+      />
       {pending > 0 && (
         <p className="mt-1.5 text-xs text-muted">
           {prs(pending)}: GitHub had not computed the merge state yet; the next refresh checks again.

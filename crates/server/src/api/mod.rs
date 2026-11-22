@@ -25,6 +25,7 @@ pub mod health;
 pub mod lines;
 pub mod pr;
 pub mod questions;
+pub mod review_loop;
 pub mod review_state;
 pub mod runner;
 pub mod settings;
@@ -57,6 +58,7 @@ pub fn router(state: AppState) -> Router {
         .merge(lines::routes())
         .merge(pr::routes())
         .merge(questions::routes())
+        .merge(review_loop::routes())
         .merge(review_state::routes())
         .merge(settings::routes())
         .merge(tour::routes())

@@ -282,4 +282,8 @@ impl DashboardPlugin for PrHygiene {
     fn poll(&self) -> BoxFuture<'_, Result<Polled, PluginError>> {
         Box::pin(self.read())
     }
+
+    fn holds_ready_to_merge(&self) -> bool {
+        true
+    }
 }

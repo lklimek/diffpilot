@@ -14,6 +14,7 @@ pub mod model;
 pub mod pipeline;
 pub mod prompts;
 pub mod review;
+pub mod review_loop;
 pub mod secrets;
 pub mod state;
 #[cfg(test)]
