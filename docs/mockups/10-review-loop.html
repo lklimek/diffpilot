@@ -3,253 +3,597 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Review loop - diffpilot mockup</title>
-<!-- Proposed (docs/review-workflow-plan.md, ADR-023). Static example data; the plan wins on behaviour. -->
+<title>PR page and Comments - diffpilot mockup v2</title>
+<!-- Design for discussion: docs/review-workflow-plan.md, ADR-023 (proposed). Fictional data.
+     Self-contained (no external assets). The plan wins on behaviour. -->
 <style>
 :root{--bg:#f4f5f7;--surface:#fff;--surface-2:#eceff3;--border:#c9d0da;--text:#1a1f27;--muted:#4b5565;
  --accent:#1d5fc0;--accent-bg:#e4eefb;--focus:#0b57d0;--on-accent:#fff;
  --high:#a8200d;--high-bg:#fdeceb;--high-bd:#d92d20;--med:#7a4a00;--med-bg:#fff2d2;--med-bd:#c47700;
  --low:#0a5580;--low-bg:#e5f1f9;--low-bd:#2b83b8;--ok:#0f6330;--ok-bg:#e3f5e8;--llm:#5d2f94;--llm-bg:#f0e8fa;
- --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+ --bot:#0a5c5c;--bot-bg:#dff1ef;--code:#fbfbfc;--mark:#fff2d2;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 @media (prefers-color-scheme:dark){:root{--bg:#0f1218;--surface:#171b23;--surface-2:#1f2530;--border:#374151;--text:#e7eaf0;--muted:#a6b0bf;
  --accent:#8ab8ff;--accent-bg:#17283f;--focus:#8ab8ff;--on-accent:#0b1220;--high:#ffa8a0;--high-bg:#3a1b19;--high-bd:#f0605a;
- --med:#f3c677;--med-bg:#3a2d12;--med-bd:#d0902a;--low:#86cbf0;--low-bg:#112f40;--low-bd:#3f93c4;--ok:#86d9a2;--ok-bg:#13301f;--llm:#d0b3f5;--llm-bg:#2a2039}}
+ --med:#f3c677;--med-bg:#3a2d12;--med-bd:#d0902a;--low:#86cbf0;--low-bg:#112f40;--low-bd:#3f93c4;--ok:#86d9a2;--ok-bg:#13301f;
+ --llm:#d0b3f5;--llm-bg:#2a2039;--bot:#7fd8d0;--bot-bg:#0f2e2c;--code:#12161d;--mark:#3a2d12}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;min-height:100vh}
-h1{font-size:20px;margin:0 0 6px}h2{font-size:16px;margin:0 0 8px}h3{font-size:12.5px;margin:0 0 4px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+h1{font-size:20px;margin:0 0 6px}h2{font-size:16px;margin:0 0 8px}
+h3{font-size:12px;margin:14px 0 5px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
 p{margin:0 0 8px}a{color:var(--accent)}code{font-family:var(--mono);font-size:.92em}
+kbd{display:inline-block;min-width:18px;text-align:center;padding:0 5px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;background:var(--surface);font-size:11px;color:var(--text)}
 :focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 .skip{position:absolute;left:-999px}.skip:focus{left:8px;top:8px;background:var(--surface);padding:6px 10px;z-index:9}
-.muted{color:var(--muted)}.small{font-size:12px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.topbar{position:sticky;top:0;z-index:5;height:48px;display:flex;align-items:center;gap:14px;padding:0 14px;background:var(--surface);border-bottom:1px solid var(--border)}
-.brand{font-weight:700;text-decoration:none;color:var(--text)}.brand span{color:var(--accent)}
-.states{display:flex;gap:6px;flex-wrap:wrap;padding:5px 14px;background:var(--surface-2);border-bottom:1px dashed var(--muted);font-size:12px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.muted{color:var(--muted)}.small{font-size:12px}.note{font-size:12px;color:var(--muted)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.sp{flex:1}
+[hidden]{display:none!important}
+/* mockup state switcher */
+.states{display:flex;gap:6px 16px;flex-wrap:wrap;padding:6px 14px;background:var(--surface-2);border-bottom:1px dashed var(--muted);font-size:12px;align-items:center}
+.states .grp{display:flex;gap:5px;flex-wrap:wrap;align-items:center}.states b{font-weight:600}
 .states button{border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:12px;padding:2px 10px;font-size:12px;cursor:pointer;min-height:24px}
 .states button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
-.shell{display:grid;grid-template-columns:200px 1fr;flex:1}
+/* chrome */
+.topbar{position:sticky;top:0;z-index:6;min-height:48px;display:flex;align-items:center;gap:12px;padding:0 14px;background:var(--surface);border-bottom:1px solid var(--border);white-space:nowrap}
+.brand{font-weight:700;text-decoration:none;color:var(--text)}.brand span{color:var(--accent)}
+.crumb{display:flex;align-items:center;gap:6px;min-width:0}
+.viewmenu{position:relative}
+.viewbtn{border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:6px;padding:3px 10px;font:inherit;cursor:pointer;min-height:24px}
+.menu{position:absolute;top:30px;left:0;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,.18);padding:4px;min-width:280px;z-index:9}
+.menu a{display:flex;justify-content:space-between;gap:12px;padding:6px 10px;border-radius:6px;text-decoration:none;color:var(--text)}
+.menu a[aria-current]{background:var(--accent-bg);font-weight:600}.menu a .muted{font-size:12px}
+.shell{display:grid;grid-template-columns:190px 1fr;flex:1}
 nav.app{background:var(--surface);border-right:1px solid var(--border);padding:12px 8px}
 nav.app a{display:flex;justify-content:space-between;padding:6px 10px;border-radius:6px;color:var(--text);text-decoration:none;min-height:24px}
 nav.app a[aria-current]{background:var(--accent-bg);font-weight:600}
 .count{background:var(--accent);color:var(--on-accent);border-radius:9px;padding:0 7px;font-size:12px}
-.page{padding:16px 20px}
-.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin:10px 0 12px}
-.tabs button{border:0;background:none;padding:6px 12px;cursor:pointer;color:var(--text);font:inherit;border-bottom:3px solid transparent}
-.tabs button[aria-selected=true]{border-bottom-color:var(--accent);font-weight:600}
-.cols{display:grid;grid-template-columns:clamp(240px,16vw,340px) 1fr clamp(300px,22vw,460px);gap:14px;align-items:start}
+.page{padding:14px 20px;min-width:0}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
-.card+.card{margin-top:12px}
-.qlist h3{margin-top:10px}.qlist ol{list-style:none;margin:0;padding:0}
-.qlist li a{display:block;padding:5px 8px;border-radius:6px;text-decoration:none;color:var(--text)}
-.qlist li a[aria-current]{background:var(--accent-bg);outline:1px solid var(--accent)}
+.stack>*+*{margin-top:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.cols{display:grid;grid-template-columns:clamp(230px,15vw,320px) minmax(0,1fr) clamp(280px,20vw,420px);gap:14px;align-items:start}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin:0 0 12px}
+.tabs button{border:0;background:none;padding:7px 12px;cursor:pointer;color:var(--text);font:inherit;border-bottom:3px solid transparent;min-height:24px}
+.tabs button[aria-selected=true]{border-bottom-color:var(--accent);font-weight:600}
+/* chips, tags */
 .chip{display:inline-flex;gap:4px;align-items:center;border:1px solid var(--border);border-radius:10px;padding:0 8px;font-size:12px;background:var(--surface-2);white-space:nowrap}
 .chip.gate{border-color:var(--high-bd);background:var(--high-bg);color:var(--high);font-weight:600}
-.chip.gh{border-color:var(--border)}.chip.fact{border-color:var(--ok);color:var(--ok);background:var(--ok-bg)}
-.tag{font-size:11px;font-weight:700;border-radius:4px;padding:0 5px;vertical-align:1px}
-.tag.llm{background:var(--llm-bg);color:var(--llm)}.tag.ghub{background:var(--surface-2);color:var(--text);border:1px solid var(--border)}
+.chip.fact{border-color:var(--ok);color:var(--ok);background:var(--ok-bg)}
+.chip.reask{border-color:var(--med-bd);background:var(--med-bg);color:var(--med);font-weight:600}
+.chip.auto{border-color:var(--low-bd);background:var(--low-bg);color:var(--low);font-weight:600}
+.chip.botpost{border-color:var(--bot);background:var(--bot-bg);color:var(--bot);font-weight:600}
+.tag{font-size:11px;font-weight:700;border-radius:4px;padding:0 5px;vertical-align:1px;text-transform:none;letter-spacing:0}
+.tag.llm{background:var(--llm-bg);color:var(--llm)}.tag.ghub{background:var(--surface-2);color:var(--text);border:1px solid var(--border)}.tag.ext{background:var(--low-bg);color:var(--low)}
+.who{font-size:11px;font-weight:700;border-radius:4px;padding:0 5px;margin-right:5px;white-space:nowrap}
+.who.agent{background:var(--accent-bg);color:var(--accent)}.who.dp{background:var(--bot-bg);color:var(--bot)}.who.owner{background:var(--surface-2);border:1px solid var(--border)}
+/* header facts */
+.prhead{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 14px;margin-bottom:12px;font-size:13px}
+.prhead .k{color:var(--muted)}
+.round{font-weight:700;font-variant-numeric:tabular-nums}
+.watch{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:14px;padding:2px 10px;background:var(--surface);color:var(--text);font:inherit;font-size:12px;cursor:pointer;min-height:24px}
+.watch[aria-pressed=true]{border-color:var(--low-bd);background:var(--low-bg);color:var(--low);font-weight:600}
+.watch .eye{font-size:13px}
+/* content */
 .quote{border-left:4px solid var(--border);padding:6px 10px;background:var(--surface-2);border-radius:4px;white-space:pre-wrap}
 .llmbox{border:1px solid var(--llm);border-radius:6px;padding:10px 12px;background:var(--llm-bg)}
-dl.kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;margin:6px 0 0}dl.kv dt{color:var(--muted)}dl.kv dd{margin:0}
+.evid{border:1px solid var(--med-bd);background:var(--med-bg);border-radius:6px;padding:10px 12px}
+dl.kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;margin:0}dl.kv dt{color:var(--muted)}dl.kv dd{margin:0}
+pre.code{margin:0;background:var(--code);border:1px solid var(--border);border-radius:6px;font:12.5px/1.55 var(--mono);overflow:auto;padding:6px 0}
+pre.code span.l{display:block;padding:0 10px 0 0;white-space:pre}
+pre.code span.l i{display:inline-block;width:44px;text-align:right;padding-right:10px;color:var(--muted);font-style:normal;user-select:none}
+pre.code span.l.m{background:var(--mark);box-shadow:inset 4px 0 0 var(--med-bd)}
 fieldset{border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin:12px 0}legend{font-weight:600;padding:0 4px}
-.opt{display:flex;gap:8px;align-items:flex-start;padding:4px 0;min-height:24px}
+.opt{display:flex;gap:8px;align-items:flex-start;padding:3px 0;min-height:24px;cursor:pointer}
+.opt .k{font-family:var(--mono);color:var(--muted);min-width:12px}
 .rec{font-size:11px;font-weight:700;color:var(--ok);border:1px solid var(--ok);border-radius:4px;padding:0 5px;margin-left:6px}
-input[type=text],textarea{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--muted);border-radius:6px;padding:6px 9px;width:100%}
-.gatebox{border:1px solid var(--high-bd);background:var(--high-bg);border-radius:6px;padding:8px 10px;margin-top:8px}
-.btn{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer;min-height:24px}
-.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}.btn.sm{padding:2px 8px;font-size:12px}
+.optgate{border-top:1px dashed var(--high-bd);margin-top:4px;padding-top:6px}
+label.f{font-size:12px;font-weight:600;display:block;margin:8px 0 3px}
+input[type=text],textarea,select{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--muted);border-radius:6px;padding:5px 8px;width:100%}
+select{width:auto;min-width:170px}textarea{resize:vertical}
+.gatebox{border:1px solid var(--high-bd);background:var(--high-bg);border-radius:6px;padding:8px 10px;margin-top:10px}
+.btn{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer;min-height:24px;text-decoration:none}
+.btn:hover{border-color:var(--accent)}.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}.btn.sm{padding:2px 8px;font-size:12px}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
 .banner{padding:10px 14px;border:1px solid var(--border);border-left-width:5px;border-radius:6px;background:var(--surface);margin-bottom:12px}
 .banner.warn{border-color:var(--med-bd);background:var(--med-bg)}.banner.err{border-color:var(--high-bd);background:var(--high-bg)}.banner.info{border-color:var(--low-bd);background:var(--low-bg)}
-table{width:100%;border-collapse:collapse}th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);padding:6px 8px;border-bottom:1px solid var(--border);position:sticky;top:48px;background:var(--surface)}
-td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:top}td.n{text-align:right;font-variant-numeric:tabular-nums}
-ol.effects{margin:4px 0 0;padding-left:20px}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);padding:6px 8px;border-bottom:1px solid var(--border);background:var(--surface)}
+td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:top}td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+tr.sec td{background:var(--surface-2);font-weight:600}
+ol.effects{margin:4px 0 0;padding-left:22px}ol.effects li{margin:3px 0}
+.preview{border:1px solid var(--border);border-radius:6px;padding:8px 10px;background:var(--surface-2);margin-top:8px;font-size:13px}
+.preview .hd{display:flex;gap:6px;align-items:center;font-size:12px;margin-bottom:4px}
+.preview .ft{color:var(--muted);font-size:12px;border-top:1px solid var(--border);margin-top:6px;padding-top:4px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-bottom:14px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.tile .v{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums}.tile .l{font-size:12px;color:var(--muted)}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.seg button{border:0;background:var(--surface);color:var(--text);padding:4px 12px;font:inherit;cursor:pointer;min-height:24px}
+.seg button+button{border-left:1px solid var(--border)}.seg button[aria-pressed=true]{background:var(--accent);color:var(--on-accent);font-weight:600}
+.qlist h3:first-child{margin-top:0}.qlist ol{list-style:none;margin:0;padding:0}
+.qlist li button{display:flex;gap:6px;align-items:center;width:100%;text-align:left;padding:5px 8px;border-radius:6px;background:none;border:0;font:inherit;color:var(--text);cursor:pointer;min-height:24px}
+.qlist li button[aria-current=true]{background:var(--accent-bg);outline:1px solid var(--accent)}
+.qlist .id{font-family:var(--mono);font-size:12px;color:var(--muted);min-width:30px}
+.bar{height:8px;border-radius:4px;background:var(--surface-2);border:1px solid var(--border);overflow:hidden;margin:6px 0}
+.bar i{display:block;height:100%;background:var(--accent)}
 .foot{font-size:11px;color:var(--muted);text-align:center;padding:4px;border-top:1px solid var(--border);background:var(--surface)}
-[hidden]{display:none!important}
-#toast{position:fixed;bottom:40px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:8px 14px;border-radius:6px}
+#toast{position:fixed;bottom:36px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:8px 14px;border-radius:6px;z-index:20}
+.notif{position:fixed;right:18px;top:120px;width:330px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.25);padding:10px 12px;z-index:15;font-size:13px}
+.notif .t{font-weight:700}
 </style>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
-<header class="topbar"><a class="brand" href="index.html">diff<span>pilot</span></a>
- <span>Review loop &rsaquo; <strong>acme/node-client #482</strong> <a href="https://github.com/acme/node-client/pull/482" target="_blank" rel="noopener" aria-label="Open #482 on GitHub (new tab)">GitHub</a></span>
- <span class="muted small" style="flex:1">feat(rpc): retry with backoff on timeout &middot; head <code>9f3c2e1</code></span>
- <span class="muted small">GitHub read 10:41</span><button class="btn sm" type="button" data-tip="Read the threads, reviews and comments of this PR from GitHub again">Read GitHub again</button>
- <span class="muted">alice</span></header>
-<div class="states" role="group" aria-label="Mockup states"><b>Mockup state:</b>
- <button type="button" data-state="question" aria-pressed="true">Question (gate item)</button>
- <button type="button" data-state="group">Group question</button>
- <button type="button" data-state="table">PR table</button>
- <button type="button" data-state="rounds">Rounds</button>
- <button type="button" data-state="log">Decision log</button>
- <button type="button" data-state="waiting">Waiting for you</button>
- <button type="button" data-state="empty">Empty</button>
- <button type="button" data-state="error">GitHub error</button></div>
+
+<div class="states" role="group" aria-label="Mockup states">
+ <div class="grp"><b>Navigation:</b>
+  <button type="button" data-state="mywork">My work + Watch</button>
+  <button type="button" data-state="watching">Watched PRs</button>
+  <button type="button" data-state="prpage">PR page</button>
+  <button type="button" data-state="prauto">PR page, watched (auto-assessed)</button>
+  <button type="button" data-state="menu">Review menu: Comments</button></div>
+ <div class="grp"><b>Questions:</b>
+  <button type="button" data-state="question" aria-pressed="true">Question with context</button>
+  <button type="button" data-state="gate">Gate item: accept despite the gate</button>
+  <button type="button" data-state="phase3">Phase 3: diffpilot[bot] posts</button>
+  <button type="button" data-state="reask">Re-asked repeat</button>
+  <button type="button" data-state="group">Group (no gate items)</button>
+  <button type="button" data-state="rest">Decide the rest</button>
+  <button type="button" data-state="merge">Round 3: merge question</button>
+  <button type="button" data-state="dismiss">Dismiss stale reviews</button>
+  <button type="button" data-state="running">LLM assessment running</button></div>
+ <div class="grp"><b>Pages:</b>
+  <button type="button" data-state="table">Table page</button>
+  <button type="button" data-state="rounds">Rounds</button>
+  <button type="button" data-state="carry">Carry-overs</button>
+  <button type="button" data-state="carryall">Carry-overs, all PRs</button>
+  <button type="button" data-state="log">Decision log and agents</button></div>
+ <div class="grp"><b>Edge:</b>
+  <button type="button" data-state="empty">Empty</button>
+  <button type="button" data-state="error">GitHub error</button></div>
+</div>
+
+<!-- top bar: shell variant (My work, Watched) and review variant (PR page, Comments) -->
+<header class="topbar">
+ <a class="brand" href="#">diff<span>pilot</span></a>
+ <div class="crumb" id="crumb-review">
+  <span>&rsaquo;</span><a href="#" data-go="prpage"><strong>acme/node-client #482</strong></a>
+  <a href="#" title="Open #482 on GitHub in a new tab" class="small">GitHub</a><span>&rsaquo;</span>
+  <div class="viewmenu"><button class="viewbtn" type="button" id="viewbtn" aria-haspopup="true" aria-expanded="false" aria-controls="viewmenu"><span id="viewname">Comments</span> &#9662;</button>
+   <div class="menu" id="viewmenu" role="menu" hidden>
+    <a href="#" role="menuitem">Flows <span class="muted">20 of 20 flows analysed</span></a>
+    <a href="#" role="menuitem">Files <span class="muted">analysis at 9f3c2e1</span></a>
+    <a href="#" role="menuitem">Dependencies <span class="muted">Cargo workspace</span></a>
+    <a href="#" role="menuitem" aria-current="page" data-go="question">Comments <span class="muted">9 questions &middot; no analysis needed</span></a>
+    <a href="#" role="menuitem" data-go="prpage">PR page <span class="muted">review and comments overview</span></a></div></div>
+ </div>
+ <span class="sp muted small" id="crumb-title">feat(rpc): retry with backoff on timeout &middot; head <code>9f3c2e1</code></span>
+ <span class="muted small" id="readinfo">GitHub read 10:41</span>
+ <span class="muted" title="Signed in as alice">alice</span>
+</header>
 
 <div class="shell">
-<nav class="app" aria-label="Main"><a href="#">My work</a><a href="#" aria-current="page">Review loop <span class="count" aria-label="7 undecided questions">7</span></a><a href="#">Review a PR</a><a href="#">Settings</a></nav>
+<nav class="app" aria-label="Main"><a href="#" data-go="mywork" id="nav-mywork">My work</a><a href="#" data-go="watching" id="nav-watch">Watched PRs <span class="count" title="3 watched pull requests">3</span></a><a href="#">Review a PR</a><a href="#">Settings</a></nav>
 <main class="page" id="main">
 
-<!-- WAITING FOR YOU (V3) -->
-<section data-view="waiting" hidden aria-labelledby="w-h">
- <h1 id="w-h">Waiting for you</h1>
- <p class="muted small">Tracked pull requests only. Rows marked "derived" follow a rule shown in their tooltip. diffpilot does not merge, post <code>/self-reviewed</code>, dismiss reviews or approve <code>ghsudo</code>; these links open GitHub.</p>
- <table><thead><tr><th scope="col">PR</th><th scope="col">What</th><th scope="col">Source</th><th scope="col">Open</th></tr></thead><tbody>
- <tr><td>acme/node-client #482</td><td>7 questions (1 gate item) &middot; 1 coordinator answer to read</td><td>diffpilot</td><td><a href="#">Questions</a></td></tr>
- <tr><td>acme/node-client #490</td><td>PR Hygiene: only owner approval pending &rarr; <code>/self-reviewed</code> or merge</td><td><span class="chip" data-tip="PR Hygiene statement, read 10:39 (external)">PR Hygiene</span> derived</td><td><a href="#">GitHub</a></td></tr>
- <tr><td>acme/node-client #501</td><td>bot <code>CHANGES_REQUESTED</code>; every item of that review has your decision &rarr; dismissal is yours</td><td>derived from GitHub reviews + your decisions</td><td><a href="#">GitHub</a></td></tr>
+<!-- ================= MY WORK ================= -->
+<section data-screen="mywork" aria-labelledby="mw-h">
+ <h1 id="mw-h">My work</h1>
+ <p class="note">Excerpt of the ranked list: only the parts this design adds (Watch toggle, comment state). Score columns as today.</p>
+ <table><thead><tr><th scope="col">Tier</th><th scope="col">Pull request</th><th scope="col">Comments</th><th scope="col">Watch</th><th scope="col">Open</th></tr></thead><tbody>
+  <tr><td>P1</td><td><strong>acme/node-client #482</strong> feat(rpc): retry with backoff on timeout</td>
+   <td><span class="chip auto" title="Watched: new comments were assessed by diffpilot's LLM automatically at 10:52">Assessed automatically 10:52 &middot; 5 questions</span></td>
+   <td><button class="watch" type="button" aria-pressed="true" data-watch><span class="eye" aria-hidden="true">&#9673;</span><span>Watching</span></button></td><td><a href="#" data-go="prauto">PR page</a></td></tr>
+  <tr><td>P1</td><td><strong>acme/node-client #490</strong> fix(rpc): cap backoff at 30 s</td>
+   <td><span class="chip" title="Read on demand at 09:15">2 questions</span></td>
+   <td><button class="watch" type="button" aria-pressed="false" data-watch><span class="eye" aria-hidden="true">&#9675;</span><span>Watch</span></button></td><td><a href="#" data-go="prpage">PR page</a></td></tr>
+  <tr><td>P2</td><td><strong>acme/wire-codec #77</strong> refactor(codec): one frame reader</td>
+   <td><span class="chip auto">Waiting for thepastaclaw's round to end</span></td>
+   <td><button class="watch" type="button" aria-pressed="true" data-watch><span class="eye" aria-hidden="true">&#9673;</span><span>Watching</span></button></td><td><a href="#">PR page</a></td></tr>
+  <tr><td>P3</td><td><strong>acme/node-client #501</strong> docs: retry policy</td><td class="muted small">not read yet</td>
+   <td><button class="watch" type="button" aria-pressed="false" data-watch><span class="eye" aria-hidden="true">&#9675;</span><span>Watch</span></button></td><td><a href="#">PR page</a></td></tr>
+ </tbody></table>
+ <p class="note" style="margin-top:8px">Watch: diffpilot checks the PR for new comments and reviews itself, assesses them with its LLM at once and notifies you. This uses GitHub requests and LLM tokens; limits are listed on Watched PRs.</p>
+</section>
+
+<!-- ================= WATCHED PRS ================= -->
+<section data-screen="watching" hidden aria-labelledby="wa-h">
+ <h1 id="wa-h">Watched pull requests <span class="muted small">3 of 20</span></h1>
+ <p class="note">Checked every 5 minutes (one GitHub request for up to 10 PRs), and at once when PR Hygiene or thepastaclaw reports a change. New comments are assessed by diffpilot's LLM; one assessment per PR at a time, after the bot's round has ended. Today: 4 automatic assessments, limit 30.</p>
+ <table><thead><tr><th scope="col">Pull request</th><th scope="col">Watching since</th><th scope="col">Last check</th><th scope="col">Automatic assessment</th><th scope="col">State</th><th scope="col"></th></tr></thead><tbody>
+  <tr><td><a href="#" data-go="prauto">acme/node-client #482</a></td><td>Nov 21 09:02</td><td>10:55</td><td><span class="chip auto">10:52 &middot; 5 new questions</span></td><td>questions ready</td><td><button class="btn sm" type="button">Unwatch</button></td></tr>
+  <tr><td>acme/wire-codec #77</td><td>Nov 22 08:30</td><td>10:55</td><td>3 new comments found 10:40</td><td><span class="chip" title="thepastaclaw status, data of 10:41 (external)">waiting for thepastaclaw's round to end</span></td><td><button class="btn sm" type="button">Unwatch</button></td></tr>
+  <tr><td>acme/node-client #470</td><td>Nov 20 14:10</td><td>10:55</td><td>Nov 21 18:02 &middot; 2 questions</td><td>all decided &middot; 1 effect pending</td><td><button class="btn sm" type="button">Unwatch</button></td></tr>
+  <tr><td class="muted">acme/node-client #455</td><td class="muted">Nov 18</td><td class="muted">&mdash;</td><td class="muted">&mdash;</td><td class="muted">merged Nov 21; watching ended</td><td></td></tr>
  </tbody></table>
 </section>
 
-<section data-view="pr">
-<div class="banner err" data-only="error" hidden role="alert"><strong>GitHub could not be read (rate limit).</strong> Showing the read of 10:12; next read at 10:52.</div>
-<div class="tabs" role="tablist" aria-label="Pull request views">
- <button role="tab" type="button" data-tab="question" aria-selected="true">Questions</button>
- <button role="tab" type="button" data-tab="table" aria-selected="false">Table</button>
- <button role="tab" type="button" data-tab="rounds" aria-selected="false">Rounds</button>
- <button role="tab" type="button" data-tab="log" aria-selected="false">Decision log</button></div>
+<!-- ================= PR PAGE ================= -->
+<section data-screen="prpage" hidden aria-labelledby="pp-h">
+ <div class="row" style="align-items:flex-start"><div class="sp"><h1 id="pp-h">acme/node-client #482 <span class="muted" style="font-weight:400">feat(rpc): retry with backoff on timeout</span></h1>
+  <p class="small muted">by octo-dev &middot; base <code>main</code> &middot; ready &middot; head <code>9f3c2e1</code> &middot; CI: 2 passed, 1 pending</p></div>
+  <button class="watch" type="button" id="pp-watch" aria-pressed="false" data-watch title="Watch: new comments are found and assessed automatically; uses GitHub requests and LLM tokens"><span class="eye" aria-hidden="true">&#9675;</span><span>Watch</span></button></div>
+ <div class="banner info small" id="pp-auto" hidden><strong>Watching.</strong> New comments found at 10:50 were assessed automatically at 10:52: 5 new questions. You were notified at 10:52.</div>
+ <div class="prhead" aria-label="Pull request status">
+  <span><span class="k">Bot rounds</span> <span class="round">4</span></span>
+  <span title="Statement of the PR Hygiene plug-in (external), read 10:39"><span class="tag ext">PR Hygiene</span> Waiting on author &mdash; 2 blockers</span>
+  <span title="thepastaclaw review-system status (external); its data can trail by about 20 minutes"><span class="tag ext">thepastaclaw status</span> reviewing (verify, 3/5) since 10:12 &middot; data of 10:21</span></div>
+ <div class="grid2">
+  <article class="card" aria-labelledby="ra-h"><h2 id="ra-h">Review a PR</h2>
+   <p><span class="chip">EN</span> Analysis at <code>9f3c2e1</code></p>
+   <p><strong>12 of 20 flows analysed</strong> &middot; analysing flow 13: "Backoff cap and jitter"</p>
+   <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="20" aria-valuenow="12" aria-label="Flows analysed"><i style="width:60%"></i></div>
+   <p class="small muted">Estimate: about 25 minutes (basis: the last 5 flows). "Analysing all remaining flows" is on.</p>
+   <div class="row"><a class="btn pri" href="#">Open &rarr;</a><button class="btn" type="button">Pause analysis</button><button class="btn" type="button">Stop analysing all</button><button class="btn" type="button">Cancel analysis</button></div>
+  </article>
+  <article class="card" aria-labelledby="pc-h"><h2 id="pc-h">Process PR comments</h2>
+   <dl class="kv"><dt>Unresolved threads on GitHub</dt><dd>9 <span class="chip fact" title="Read from GitHub at 10:41">read 10:41</span></dd>
+    <dt>Questions for you</dt><dd><strong>9</strong> (2 gate items, 1 asked again)</dd>
+    <dt>Waiting for agents</dt><dd>3 effects (1 decision claimed by build-host-2)</dd>
+    <dt>LLM assessment</dt><dd>14 of 14 comments assessed at <code>9f3c2e1</code></dd>
+    <dt>Round</dt><dd>4 (thepastaclaw)</dd></dl>
+   <p class="note" style="margin-top:8px">Comments need no analysis: diffpilot's LLM assesses each comment on its own.</p>
+   <div class="row"><a class="btn pri" href="#" data-go="question">Open Comments &rarr;</a><a class="btn" href="#" data-go="table">Table</a></div>
+  </article></div>
+</section>
 
-<div class="cols" data-panel="question">
- <aside class="card qlist" aria-label="Queue for #482">
-  <h3>Needs you (7)</h3><ol>
-   <li><a href="#" aria-current="true">C14 &middot; Retry may resend a signed request <span class="chip gate">G-FUNDS</span></a></li>
-   <li><a href="#">C9 &middot; Answer from the coordinator</a></li>
-   <li><a href="#">C11 &middot; Backoff cap not configurable</a></li>
-   <li><a href="#">C15 &middot; Log line prints the endpoint token</a></li>
-   <li><a href="#">Group: Reject &mdash; outside threat model (3)</a></li></ol>
-  <h3>Waiting for the coordinator (1)</h3><ol><li><a href="#">C12 &middot; your question sent 10:30</a></li></ol>
-  <h3>Repeats, not asked (2)</h3><ol><li><a href="#">C16 &middot; repeat of C3 (Reject)</a></li><li><a href="#">C17 &middot; repeat of C5 (Handled in #490)</a></li></ol>
-  <h3>Decided (12)</h3><p class="small muted">3 effects pending &middot; <a href="#">open the log</a></p>
- </aside>
+<!-- ================= COMMENTS (shared header + tabs) ================= -->
+<section data-screen="comments" hidden>
+ <div class="banner err" id="err-banner" hidden role="alert"><strong>GitHub could not be read (rate limit).</strong> Showing the read of 10:12; next read at 10:52. Decisions on these items still work.</div>
+ <div class="prhead" aria-label="Pull request status">
+  <strong>PR #482</strong>
+  <span><span class="k">Bot rounds</span> <span class="round">4</span></span>
+  <span title="Statement of the PR Hygiene plug-in (external), read 10:39"><span class="tag ext">PR Hygiene</span> Waiting on author &mdash; 2 blockers</span>
+  <span title="thepastaclaw review-system status (external); its data can trail by about 20 minutes"><span class="tag ext">thepastaclaw status</span> reviewing (verify, 3/5) since 10:12 &middot; data of 10:21</span>
+  <span class="sp"></span><span class="chip auto" title="Watched PR">Watching &middot; assessed automatically 10:52</span>
+  <button class="btn sm" type="button" title="Read the threads, reviews and comments from GitHub again">Read GitHub again</button></div>
+ <div class="tabs" role="tablist" aria-label="Comments pages">
+  <button role="tab" type="button" data-tab="q" aria-selected="true">Questions <span class="count">9</span></button>
+  <button role="tab" type="button" data-tab="table" aria-selected="false">Table</button>
+  <button role="tab" type="button" data-tab="rounds" aria-selected="false">Rounds</button>
+  <button role="tab" type="button" data-tab="carry" aria-selected="false">Carry-overs</button>
+  <button role="tab" type="button" data-tab="log" aria-selected="false">Decision log and agents</button></div>
 
- <article class="card" aria-labelledby="q-h" data-only="question">
-  <div class="row small muted">Question 1 of 7 &middot; <span>thepastaclaw &middot; bot &middot; inline thread</span> &middot; first seen round 3 at <code>3f9a1c2</code></div>
-  <h2 id="q-h" tabindex="-1">C14 &middot; Retry may resend a signed request after a late reply</h2>
-  <div class="row"><span class="chip gate" data-tip="Gate from the verification (G-FUNDS). A gate thread is resolved only if you tick it below.">Gate: G-FUNDS &middot; from the verification</span>
-   <span class="chip" data-tip="Category from the closed catalog, set by the verifier">Category: funds</span>
-   <span class="chip gh" data-tip="The bot's own severity marker; a claim, not a diffpilot rating"><span class="tag ghub">GitHub</span> thepastaclaw: Blocking</span></div>
-  <h3 style="margin-top:12px">Comment <span class="tag ghub">GitHub</span></h3>
-  <div class="quote">When the reply to the first send arrives after the timeout, `retry_with_backoff` sends the same signed request again. Both can be accepted.</div>
-  <p class="small"><a href="#" target="_blank" rel="noopener">Open on GitHub</a> &middot; <code>src/rpc/retry.rs:88-97</code> at <code>9f3c2e1</code></p>
-  <div class="row"><span class="chip fact" data-tip="Read from GitHub at 10:41">&#10003; Thread unresolved &middot; read 10:41</span><span class="chip fact" data-tip="Parsed from the comment body">Marker dedupe=rpc-retry-resend</span></div>
+ <!-- Questions -->
+ <div class="cols" data-panel="q">
+  <aside class="card qlist" aria-label="Queue">
+   <h3>PR-level (1)</h3><ol><li><button type="button" data-go="merge"><span class="id">P</span> Merge now, remaining as follow-ups?</button></li></ol>
+   <h3>Needs you (9)</h3><ol>
+    <li><button type="button" data-go="reask"><span class="id">C21</span> Cap checked after the sleep <span class="chip reask">asked again</span></button></li>
+    <li><button type="button" data-go="gate"><span class="id">C14</span> Retry may resend a signed request <span class="chip gate">G-FUNDS</span></button></li>
+    <li><button type="button"><span class="id">C15</span> Log prints the endpoint token <span class="chip gate">G-SECRET</span></button></li>
+    <li><button type="button" data-go="question"><span class="id">C11</span> Backoff cap not configurable</button></li>
+    <li><button type="button"><span class="id">C22</span> Jitter uses a fixed seed</button></li>
+    <li><button type="button"><span class="id">C23</span> Doc comment names the old default</button></li>
+    <li><button type="button" data-go="group"><span class="id">G1</span> Reject: outside threat model (3)</button></li></ol>
+   <p style="margin:8px 0"><button class="btn sm" type="button" data-go="rest" title="Each recommendation becomes its own decision after a confirmation list; gate items are left out">Decide the rest per recommendation (7)</button></p>
+   <h3>Waiting for an LLM answer (1)</h3><ol><li><button type="button"><span class="id">C12</span> your question, 10:30</button></li></ol>
+   <h3>Carried, not asked (6)</h3><ol><li><button type="button" data-go="carry"><span class="id">C16</span> repeat of C3 &middot; Reject</button></li><li><button type="button" data-go="carry"><span class="id">C17</span> repeat of C5 &middot; Handled in #490</button></li></ol>
+   <h3>Decided (12)</h3><p class="small muted" style="padding:0 8px">3 effects open &middot; <a href="#" data-go="log">log</a></p>
+   <h3>Outside diffpilot (1)</h3><p class="small muted" style="padding:0 8px">C9 resolved on GitHub by octo-dev; not recorded here</p>
+  </aside>
 
-  <h3 style="margin-top:12px">Verification <span class="tag llm" data-tip="Written by an LLM agent, not checked by diffpilot">LLM</span> <span class="muted small" style="text-transform:none">from coordinator at 9f3c2e1, 10:32</span></h3>
-  <div class="llmbox"><dl class="kv">
-   <dt>The verifier says</dt><dd>valid &mdash; <code>retry.rs:91</code> re-sends without checking the first attempt's outcome</dd>
-   <dt>Pre-existing on base</dt><dd>no, introduced by this PR</dd>
-   <dt>Necessity</dt><dd>in scope: the PR promises one send per call (description, first bullet)</dd>
-   <dt>Elsewhere</dt><dd>&mdash;</dd><dt>Fix</dt><dd>keep an attempt id and skip the resend when the first reply lands; size S (~25 lines)</dd>
-   <dt>Local fix held</dt><dd>none</dd><dt>Earlier decisions</dt><dd>none on this code path</dd></dl></div>
+  <div class="stack" id="cardcol">
+   <!-- QUESTION CARD (generic, filled by script: C11 plain / C14 gate) -->
+   <article class="card" data-card="form" aria-labelledby="q-h">
+    <div class="row small muted"><span id="q-pos"></span><span id="q-src"></span></div>
+    <h2 id="q-h" tabindex="-1"></h2>
+    <div class="row" id="q-chips"></div>
+    <h3>What the PR is about <span class="tag llm" title="Written by diffpilot's LLM, not checked">LLM</span></h3>
+    <p><strong>PR #482:</strong> retries a timed-out RPC call with exponential backoff instead of failing at once; a call is still meant to be sent once.</p>
+    <h3>Comment <span class="tag ghub">GitHub</span></h3>
+    <div class="quote" id="q-comment"></div>
+    <h3>The discussed code <span class="muted small" style="text-transform:none;letter-spacing:0">src/rpc/retry.rs, enclosing function at <code>9f3c2e1</code> &middot; <a href="#">Open on GitHub</a> &middot; <a href="#">Open in Files</a></span></h3>
+    <pre class="code" id="q-code" aria-label="Code of retry_with_backoff with the commented lines marked"></pre>
+    <p class="small" style="margin-top:6px"><button class="btn sm" type="button">Show 12 lines above</button> <button class="btn sm" type="button">Show 12 lines below</button></p>
+    <div class="llmbox small"><strong>What this code does</strong> <span class="tag llm">LLM</span><br>Sends the signed request with a per-attempt timeout; on a timeout or a retryable error it sleeps, doubles the delay up to the cap and sends the same request again, up to <code>max_attempts</code> times. A late reply to an earlier attempt is not looked at.</div>
+    <h3>Facts read by diffpilot</h3>
+    <div class="row"><span class="chip fact" title="Read from GitHub at 10:41">Thread unresolved &middot; read 10:41</span><span class="chip fact" title="Parsed from the comment body; used to recognise repeats" id="q-marker"></span></div>
+    <h3>LLM assessment <span class="tag llm" title="Written by diffpilot's LLM, not checked">LLM</span> <span class="muted small" style="text-transform:none;letter-spacing:0">diffpilot Codex at 9f3c2e1, 10:52</span></h3>
+    <div class="llmbox"><dl class="kv" id="q-assess"></dl></div>
+    <form id="decide" novalidate aria-labelledby="dec-l">
+     <fieldset><legend id="dec-l">Your decision</legend><div role="radiogroup" aria-label="Decision" id="opts"></div>
+      <div data-need="reject accept" hidden><label class="f" for="reason">Reason (posted as the public reply)</label><input id="reason" type="text"></div>
+      <div data-need="handled followup" hidden><label class="f" for="target">Pull request number</label><input id="target" type="text" inputmode="numeric" placeholder="#490"></div>
+      <div data-need="upstream" hidden><label class="f" for="up">Upstream issue or PR URL, or "create"</label><input id="up" type="text"></div>
+      <div class="gatebox" id="gatebox"><label class="opt"><input type="checkbox" id="gres" aria-describedby="gres-d"> <span>Resolve this thread</span></label><p id="gres-d" class="small" style="margin:0"></p></div>
+     </fieldset>
+     <h3>What happens next</h3><ol class="effects" id="effects"></ol>
+     <label class="f" for="reply" id="reply-l">Reply text</label><textarea id="reply" rows="2"></textarea>
+     <div class="preview" aria-label="Preview of the reply on GitHub"><div class="hd" id="pv-hd"></div><div id="pv-body"></div><div class="ft" id="pv-ft"></div></div>
+     <p class="small" id="err" role="alert" style="color:var(--high);margin-top:6px" hidden></p>
+     <div class="row" style="margin-top:10px"><button class="btn pri" type="submit">Decide <kbd>Enter</kbd></button><button class="btn" type="button" id="askbtn">Ask the LLM <kbd>q</kbd></button><button class="btn" type="button">Skip for now <kbd>s</kbd></button></div>
+     <div id="askbox" hidden style="margin-top:8px"><label class="f" for="askq">Your question (answered by diffpilot's LLM; a question is not a decision)</label><textarea id="askq" rows="2"></textarea><button class="btn sm" type="button" style="margin-top:6px">Send question</button></div>
+    </form>
+   </article>
 
-  <form id="decide" aria-labelledby="dec-l">
-   <fieldset><legend id="dec-l">Your decision</legend>
-    <div role="radiogroup" aria-label="Decision">
-     <label class="opt"><input type="radio" name="d" value="fix" checked> <span>1 Fix here<span class="rec">Recommended</span></span></label>
-     <label class="opt"><input type="radio" name="d" value="reject"> <span>2 Reject (reason required)</span></label>
-     <label class="opt"><input type="radio" name="d" value="handled"> <span>3 Handled in another PR</span></label>
-     <label class="opt"><input type="radio" name="d" value="followup"> <span>4 Follow-up PR</span></label>
-     <label class="opt"><input type="radio" name="d" value="upstream"> <span>5 Upstream issue</span></label>
-     <label class="opt"><input type="radio" name="d" value="todo"> <span>6 TODO</span></label>
-     <label class="opt"><input type="radio" name="d" value="resolve"> <span>7 Resolve (already fixed)</span></label></div>
-    <div data-need="reject" hidden><label for="reason">Reason (public reply)</label><input id="reason" type="text" value=""></div>
-    <div data-need="handled followup" hidden><label for="target">Pull request number</label><input id="target" type="text" inputmode="numeric" placeholder="#490"></div>
-    <div data-need="upstream" hidden><label for="up">Upstream issue or PR URL</label><input id="up" type="text"></div>
-    <div class="gatebox"><label class="opt"><input type="checkbox" id="gres" aria-describedby="gres-d"> <span>Resolve this thread</span></label>
-     <p id="gres-d" class="small">Gate thread (G-FUNDS): it is resolved only if you tick this. Without it the coordinator replies and leaves it open.</p></div>
-   </fieldset>
-   <h3>What happens next</h3>
-   <ol class="effects" id="effects"><li>Coordinator fixes it (test red first) and pushes with the next round.</li><li>Reply after the push: what changed, with the commit.</li><li>Thread stays open (gate, not ticked).</li></ol>
-   <label for="reply" style="margin-top:8px;display:block">Reply text (public, posted by the coordinator's GitHub account)</label>
-   <textarea id="reply" rows="2">Per maintainer decision, fixed: the retry now skips the resend when the first reply arrives late (commit follows).</textarea>
-   <div class="row" style="margin-top:10px"><button class="btn pri" type="submit">Decide <kbd>Enter</kbd></button>
-    <button class="btn" type="button" id="askbtn">Ask the coordinator <kbd>q</kbd></button><button class="btn" type="button">Skip for now <kbd>s</kbd></button></div>
-   <div id="askbox" hidden style="margin-top:8px"><label for="askq">Your question (the item waits for the answer; it is not a decision)</label><textarea id="askq" rows="2"></textarea><button class="btn sm" type="button" style="margin-top:6px">Send question</button></div>
-  </form>
- </article>
+   <!-- RE-ASKED REPEAT -->
+   <article class="card" data-card="reask" aria-labelledby="r-h" hidden>
+    <div class="small muted">Question 1 of 9 &middot; thepastaclaw &middot; bot &middot; inline thread &middot; round 4 at <code>9f3c2e1</code></div>
+    <h2 id="r-h" tabindex="-1">C21 &middot; Retry cap is checked after the sleep</h2>
+    <div class="row"><span class="chip reask">Asked again &mdash; repeat of C3</span><span class="chip">Category: correctness</span><span class="chip"><span class="tag ghub">GitHub</span> thepastaclaw: Suggestion</span></div>
+    <h3>Why you are asked again</h3>
+    <div class="evid"><p style="margin:0 0 6px"><strong>The code at that place changed after your decision.</strong></p>
+     <dl class="kv small"><dt>Your decision</dt><dd>C3 &middot; Reject &middot; Nov 21 10:44 at <code>3f9a1c2</code> &middot; "The cap is a soft limit by design."</dd>
+      <dt>Changed lines</dt><dd><code>src/rpc/retry.rs:89-90</code> changed in <code>7d8e9f0</code> (Nov 22 09:58)</dd>
+      <dt>Bot comment text</dt><dd>not edited since your decision</dd>
+      <dt>Rule</dt><dd>a repeat is asked again when the bot edited its comment text or the code at that place changed</dd></dl>
+     <p class="small" style="margin:6px 0 0"><span class="chip fact" title="Computed from the diff between the two heads">read from the diff</span> <a href="#">Show the change</a></p></div>
+    <fieldset><legend>Your decision</legend>
+     <label class="opt"><input type="radio" name="r" checked> <span class="k">1</span><span>Same as before: Reject with the same reason <span class="rec">(Recommended)</span></span></label>
+     <label class="opt"><input type="radio" name="r"> <span class="k">2</span><span>Fix here</span></label>
+     <label class="opt"><input type="radio" name="r"> <span class="k">3</span><span>Other decision&hellip;</span></label></fieldset>
+    <div class="row"><button class="btn pri" type="button">Decide <kbd>Enter</kbd></button><button class="btn" type="button">Ask the LLM</button></div>
+   </article>
 
- <article class="card" aria-labelledby="g-h" data-only="group" hidden>
-  <div class="small muted">Question 5 of 7 &middot; group of items with the same recommendation</div>
-  <h2 id="g-h" tabindex="-1">Same recommendation: Reject &mdash; outside this PR's threat model (3 items)</h2>
-  <table><thead><tr><th scope="col">ID</th><th scope="col">Reviewer</th><th scope="col">Comment</th><th scope="col">Verification <span class="tag llm">LLM</span></th><th scope="col"><span class="vh">Action</span></th></tr></thead><tbody>
-   <tr><td>C18</td><td>thepastaclaw &middot; bot</td><td>Config file could be swapped by a local user</td><td>needs a local attacker; profile: out of model</td><td><button class="btn sm" type="button" data-out>Discuss individually</button></td></tr>
-   <tr><td>C19</td><td>thepastaclaw &middot; bot</td><td>Cache directory symlink race</td><td>same user, crafted file system state</td><td><button class="btn sm" type="button" data-out>Discuss individually</button></td></tr>
-   <tr><td>C20</td><td>CodeRabbit &middot; bot</td><td>Harden temp file permissions</td><td>pre-existing on base; same user</td><td><button class="btn sm" type="button" data-out>Discuss individually</button></td></tr></tbody></table>
-  <label for="greason" style="margin-top:10px;display:block">Reason for all (public reply)</label><input id="greason" type="text" value="Outside this PR's threat model: needs an attacker running as the same OS user.">
-  <h3 style="margin-top:10px">What happens next, per item</h3><ol class="effects"><li>Reply with the reason.</li><li>Resolve (bot threads).</li></ol>
-  <p class="small muted">Each item gets its own decision record. Gate items are never grouped.</p>
-  <div class="row"><button class="btn pri" type="button">Reject all 3 <kbd>Enter</kbd></button><button class="btn" type="button">Skip for now</button></div>
- </article>
+   <!-- GROUP -->
+   <article class="card" data-card="group" aria-labelledby="g-h" hidden>
+    <div class="small muted">Question 7 of 9 &middot; items with the same recommendation</div>
+    <h2 id="g-h" tabindex="-1">Same recommendation: Reject &mdash; outside this PR's threat model (3 items)</h2>
+    <table><thead><tr><th scope="col">ID</th><th scope="col">Reviewer</th><th scope="col">Comment</th><th scope="col">LLM assessment <span class="tag llm">LLM</span></th><th scope="col"><span class="vh">Action</span></th></tr></thead><tbody id="gbody">
+     <tr><td>C18</td><td>thepastaclaw &middot; bot</td><td>Config file could be swapped by a local user</td><td>needs an attacker running as the same OS user</td><td><button class="btn sm" type="button" data-out>Discuss individually</button></td></tr>
+     <tr><td>C19</td><td>thepastaclaw &middot; bot</td><td>Cache directory symlink race</td><td>same OS user, crafted file system state</td><td><button class="btn sm" type="button" data-out>Discuss individually</button></td></tr>
+     <tr><td>C20</td><td>CodeRabbit &middot; bot</td><td>Harden temp file permissions</td><td>pre-existing on base; same OS user</td><td><button class="btn sm" type="button" data-out>Discuss individually</button></td></tr></tbody></table>
+    <label class="f" for="greason">Reason for all (posted as each reply)</label><input id="greason" type="text" value="Outside this PR's threat model: it needs an attacker running as the same OS user.">
+    <h3>What happens next, per item</h3><ol class="effects"><li><span class="who agent">External agent</span>replies with the reason.</li><li><span class="who agent">External agent</span>resolves the thread.</li></ol>
+    <div class="banner info small" style="margin-top:10px">Gate items are never grouped. Each item gets its own decision record.</div>
+    <div class="row"><button class="btn pri" type="button" id="gapply">Reject all 3 <kbd>Enter</kbd></button><button class="btn" type="button">Skip for now</button></div>
+   </article>
 
- <article class="card" data-only="empty" hidden aria-labelledby="e-h"><h2 id="e-h">No undecided questions</h2>
-  <p>In what was read at 10:41: 14 threads (all pages read), 3 reviews, 1 verification upload at <code>9f3c2e1</code>. 2 threads have no verification and would be listed here as questions.</p>
-  <p class="small muted">An empty queue says nothing about defects the reviewers did not raise.</p></article>
+   <!-- DECIDE THE REST -->
+   <article class="card" data-card="rest" aria-labelledby="dr-h" hidden>
+    <h2 id="dr-h" tabindex="-1">Decide the rest per recommendation &mdash; confirm 7 decisions</h2>
+    <p>Each row becomes its own decision, marked "via decide the rest". Untick a row to keep it as a question. Nothing is stored until you confirm.</p>
+    <table><thead><tr><th scope="col"><span class="vh">Include</span></th><th scope="col">ID</th><th scope="col">Comment</th><th scope="col">Recommendation <span class="tag llm">LLM</span></th><th scope="col">Effects</th></tr></thead><tbody id="rbody">
+     <tr><td><input type="checkbox" checked aria-label="Include C21"></td><td>C21</td><td>Cap checked after the sleep</td><td>Reject (same as C3)</td><td>reply, resolve</td></tr>
+     <tr><td><input type="checkbox" checked aria-label="Include C11"></td><td>C11</td><td>Backoff cap not configurable</td><td>Reject: not promised by this PR</td><td>reply, resolve</td></tr>
+     <tr><td><input type="checkbox" checked aria-label="Include C22"></td><td>C22</td><td>Jitter uses a fixed seed</td><td>Fix here</td><td>fix, reply, resolve</td></tr>
+     <tr><td><input type="checkbox" checked aria-label="Include C23"></td><td>C23</td><td>Doc comment names the old default</td><td>Fix here</td><td>fix, reply, resolve</td></tr>
+     <tr><td><input type="checkbox" checked aria-label="Include C18"></td><td>C18</td><td>Config file could be swapped</td><td>Reject: outside threat model</td><td>reply, resolve</td></tr>
+     <tr><td><input type="checkbox" checked aria-label="Include C19"></td><td>C19</td><td>Cache directory symlink race</td><td>Reject: outside threat model</td><td>reply, resolve</td></tr>
+     <tr><td><input type="checkbox" checked aria-label="Include C20"></td><td>C20</td><td>Harden temp file permissions</td><td>Follow-up PR</td><td>draft PR, reply, resolve</td></tr></tbody></table>
+    <div class="banner warn small" style="margin-top:10px"><strong>Left out: 2 gate items.</strong> C14 (G-FUNDS) and C15 (G-SECRET) stay single questions; gate items are never decided in bulk.</div>
+    <p class="small" id="rsum">7 decisions: Fix here 2 &middot; Reject 4 &middot; Follow-up PR 1.</p>
+    <div class="row"><button class="btn pri" type="button" id="rapply">Apply 7 decisions</button><button class="btn" type="button">Cancel</button></div>
+   </article>
 
- <aside aria-label="Pull request status">
-  <div class="card"><h3>Pull request</h3><dl class="kv small"><dt>Base</dt><dd><code>main</code> &middot; ready</dd><dt>Head</dt><dd><code>9f3c2e1</code></dd><dt>CI</dt><dd>2 passed &middot; 1 pending</dd>
-   <dt>Bot rounds</dt><dd>4 <span class="muted">(budget 5, set by you)</span></dd></dl></div>
-  <div class="card"><h3>PR Hygiene <span class="muted" style="text-transform:none">&middot; external statement, read 10:39</span></h3>
-   <p><strong>PR Hygiene:</strong> Waiting on author &mdash; 2 blockers</p><ul class="small"><li>Unresolved review threads: 9</li><li>thepastaclaw requested changes</li></ul>
-   <p class="small"><a href="#">Source record</a></p></div>
-  <div class="card"><h3>Counts</h3><table class="small"><tbody>
-   <tr><td>Undecided questions</td><td class="n">7</td></tr><tr><td>Waiting for the coordinator</td><td class="n">1</td></tr>
-   <tr><td>Effects pending</td><td class="n">3</td></tr><tr><td>Repeats (not asked)</td><td class="n">2</td></tr>
-   <tr><td>Unresolved threads on GitHub</td><td class="n">9</td></tr><tr><td>Internal findings (coordinator's)</td><td class="n">6</td></tr></tbody></table></div>
- </aside>
-</div>
+   <!-- ROUND 3 MERGE QUESTION -->
+   <article class="card" data-card="merge" aria-labelledby="m-h" hidden>
+    <div class="small muted">PR-level question &middot; asked after bot round 3 ended (Nov 21 11:05)</div>
+    <h2 id="m-h" tabindex="-1">Merge now, remaining items as follow-ups?</h2>
+    <p>Round 3 of thepastaclaw has ended. Open items: 5 undecided, 0 with a gate. Fixes decided and pushed in earlier rounds: 7.</p>
+    <table class="small"><thead><tr><th scope="col">ID</th><th scope="col">Item</th><th scope="col">LLM recommendation <span class="tag llm">LLM</span></th></tr></thead><tbody>
+     <tr><td>C11</td><td>Backoff cap not configurable</td><td>Reject</td></tr><tr><td>C22</td><td>Jitter uses a fixed seed</td><td>Fix here (size XS)</td></tr>
+     <tr><td>C23</td><td>Doc comment names the old default</td><td>Fix here (size XS)</td></tr><tr><td>C19</td><td>Cache directory symlink race</td><td>Reject</td></tr><tr><td>C20</td><td>Harden temp file permissions</td><td>Follow-up PR</td></tr></tbody></table>
+    <fieldset><legend>Your decision</legend>
+     <label class="opt"><input type="radio" name="m" checked> <span class="k">1</span><span>Merge now; the 5 remaining items become follow-ups <span class="muted small">&mdash; an agent opens one follow-up PR listing them, replies with its link and resolves each thread; you merge on GitHub</span></span></label>
+     <label class="opt"><input type="radio" name="m"> <span class="k">2</span><span>Another round <span class="muted small">&mdash; the items are asked one by one</span></span></label></fieldset>
+    <p class="note">No recommendation: this is a PR-level choice. Merging stays your own action on GitHub.</p>
+    <div class="row"><button class="btn pri" type="button">Decide <kbd>Enter</kbd></button><a class="btn" href="#">Merge on GitHub</a></div>
+   </article>
 
-<div data-panel="table" hidden>
- <table><caption class="vh">All items of #482</caption><thead><tr><th scope="col">ID</th><th scope="col">Source</th><th scope="col">Category</th><th scope="col">Problem</th><th scope="col">Scope</th><th scope="col">Recommendation <span class="tag llm">LLM</span></th><th scope="col">Decision</th><th scope="col">Effects</th></tr></thead>
- <tbody><tr><td colspan="8"><strong>Undecided (7)</strong></td></tr>
-  <tr><td>C14</td><td>thread &middot; bot</td><td>funds</td><td>Retry may resend a signed request</td><td>in</td><td>Fix here</td><td>&mdash;</td><td>&mdash;</td></tr>
-  <tr><td>C11</td><td>thread &middot; bot</td><td>maintainability</td><td>Backoff cap not configurable</td><td>out: not promised</td><td>Reject</td><td>&mdash;</td><td>&mdash;</td></tr>
-  <tr><td colspan="8"><strong>Decided (12)</strong></td></tr>
-  <tr><td>C3</td><td>thread &middot; bot</td><td>concurrency</td><td>Two clicks start two retries</td><td>out: user's own conflicting action</td><td>Reject</td><td>Reject</td><td>reply done &middot; resolve done</td></tr>
-  <tr><td>C5</td><td>body item &middot; human</td><td>tests</td><td>No test for the cap</td><td>in</td><td>Handled in #490</td><td>Handled in #490</td><td>PR comment pending</td></tr>
-  <tr><td colspan="8"><strong>Repeats, not asked (2)</strong> &middot; <strong>Resolved on GitHub without a decision here (1)</strong> &middot; <strong>Internal review (6, coordinator's)</strong> <button class="btn sm" type="button">Show</button></td></tr>
- </tbody></table>
-</div>
+   <!-- DISMISS STALE REVIEWS -->
+   <article class="card" data-card="dismiss" aria-labelledby="d-h" hidden>
+    <div class="small muted">PR-level question &middot; end of round 4</div>
+    <h2 id="d-h" tabindex="-1">Dismiss stale bot reviews?</h2>
+    <p>These reviews still request changes, and every item they raised has a decision here.</p>
+    <table class="small"><thead><tr><th scope="col">Review</th><th scope="col">State <span class="tag ghub">GitHub</span></th><th scope="col">Items</th></tr></thead><tbody>
+     <tr><td>thepastaclaw, round 4 at <code>9f3c2e1</code></td><td>changes requested</td><td>8 of 8 decided (5 executed, 3 open)</td></tr>
+     <tr><td>CodeRabbit, Nov 21 at <code>3f9a1c2</code></td><td>changes requested</td><td>2 of 2 decided and executed</td></tr></tbody></table>
+    <label class="f" for="dmsg">Dismissal message</label><input id="dmsg" type="text" value="Per maintainer decision: every item of this review has a decision.">
+    <fieldset><legend>Your decision</legend>
+     <label class="opt"><input type="radio" name="dm" checked> <span class="k">1</span><span>Dismiss both reviews <span class="muted small">&mdash; executed by an external agent (by diffpilot[bot] in phase 3)</span></span></label>
+     <label class="opt"><input type="radio" name="dm"> <span class="k">2</span><span>Keep them</span></label></fieldset>
+    <div class="row"><button class="btn pri" type="button">Decide <kbd>Enter</kbd></button></div>
+   </article>
 
-<div data-panel="rounds" hidden>
- <table><caption class="vh">Bot rounds of #482</caption><thead><tr><th scope="col">Round</th><th scope="col">Head</th><th scope="col">Finished</th><th scope="col">Bot verdict <span class="tag ghub">GitHub</span></th><th scope="col">New</th><th scope="col">Still open</th><th scope="col">Repeats</th><th scope="col">Fix</th><th scope="col">Reject</th><th scope="col">Moved / follow-up</th><th scope="col">Undecided</th></tr></thead>
- <tbody><tr><td>1</td><td><code>a1b2c3d</code></td><td>Nov 20 09:40</td><td>changes requested</td><td class="n">6</td><td class="n">0</td><td class="n">0</td><td class="n">4</td><td class="n">1</td><td class="n">1</td><td class="n">0</td></tr>
-  <tr><td>2</td><td><code>c4d5e6f</code></td><td>Nov 20 15:12</td><td>changes requested</td><td class="n">3</td><td class="n">2</td><td class="n">1</td><td class="n">2</td><td class="n">2</td><td class="n">0</td><td class="n">0</td></tr>
-  <tr><td>3</td><td><code>3f9a1c2</code></td><td>Nov 21 11:05</td><td>changes requested</td><td class="n">4</td><td class="n">1</td><td class="n">2</td><td class="n">1</td><td class="n">1</td><td class="n">0</td><td class="n">2</td></tr>
-  <tr><td>4</td><td><code>9f3c2e1</code></td><td>Nov 22 10:20</td><td>changes requested</td><td class="n">3</td><td class="n">2</td><td class="n">2</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">5</td></tr></tbody></table>
- <details style="margin-top:12px"><summary>Internal reviews (2)</summary><ul class="small"><li><code>main...9f3c2e1</code> &middot; basic review &middot; reviewer and model as reported &middot; 6 findings</li><li><code>main...3f9a1c2</code> &middot; basic review &middot; 4 findings</li></ul></details>
- <p class="small muted">A round is a thepastaclaw review whose body carries its final-phase marker for that head.</p>
-</div>
+   <!-- ASSESSMENT RUNNING -->
+   <article class="card" data-card="running" aria-labelledby="ar-h" hidden>
+    <h2 id="ar-h">LLM assessment running</h2>
+    <p>diffpilot's LLM reads each comment against the PR at <code>9f3c2e1</code>. Questions appear as soon as the job finishes.</p>
+    <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="9" aria-valuenow="4" aria-label="Comments assessed"><i style="width:44%"></i></div>
+    <p class="small"><strong>4 of 9 comments assessed</strong> &middot; started 10:49 &middot; queued behind nothing &middot; 5 comments unchanged since their last assessment were reused</p>
+    <p class="note">The LLM reads and does not change code. You can already decide items assessed earlier.</p>
+   </article>
 
-<div data-panel="log" hidden>
- <ol class="small" style="list-style:none;padding:0">
-  <li class="card"><strong>Nov 22 10:44 &middot; C3 &middot; Reject</strong> by alice &middot; via single question &middot; recommendation then: Reject <span class="tag llm">LLM</span><br>Effects: reply &mdash; the coordinator reports done (<a href="#">link</a>) <span class="chip fact">Reply found on GitHub &middot; 10:46</span>; resolve &mdash; done <span class="chip fact">Thread resolved &middot; 10:46</span></li>
-  <li class="card"><strong>Nov 22 10:45 &middot; C5 &middot; Handled in #490</strong> by alice &middot; recommendation then: Fix here <span class="tag llm">LLM</span><br>Effects: PR-level comment &mdash; pending</li>
-  <li class="card"><strong>Nov 22 10:47 &middot; C16 &middot; carried from C3</strong> &middot; same marker <code>dedupe=retry-double-click</code> &middot; <button class="btn sm" type="button">Reopen</button></li></ol>
-</div>
+   <!-- EMPTY -->
+   <article class="card" data-card="empty" aria-labelledby="e-h" hidden><h2 id="e-h">No undecided questions</h2>
+    <p>In what was read at 10:41: 14 threads (all pages read), 4 reviews and 3 PR comments; all 14 comments were assessed at <code>9f3c2e1</code>.</p>
+    <p class="note">An empty queue says nothing about defects the reviewers did not raise.</p></article>
+  </div>
+
+  <aside class="stack" aria-label="PR panel">
+   <div class="card"><h3 style="margin-top:0">Counts</h3><table class="small"><tbody>
+    <tr><td>Undecided questions</td><td class="n">9</td></tr><tr><td>&hellip; gate items</td><td class="n">2</td></tr>
+    <tr><td>Carried, not asked</td><td class="n">6</td></tr><tr><td>Asked again</td><td class="n">2</td></tr>
+    <tr><td>Effects open (agents)</td><td class="n">3</td></tr><tr><td>Unresolved threads on GitHub</td><td class="n">9</td></tr>
+    <tr><td>Resolved outside diffpilot</td><td class="n">1</td></tr></tbody></table></div>
+   <div class="card"><h3 style="margin-top:0">Agents</h3><p class="small">2 subscribed: <strong>build-host-2</strong> (fix, reply, resolve, follow-up PR; seen 10:51), <strong>laptop-cli</strong> (reply, resolve; seen 10:40).</p>
+    <p class="small" id="poster">Replies and resolves: external agents. diffpilot[bot]: not enabled (phase 3).</p></div>
+  </aside>
+ </div>
+
+ <!-- TABLE PAGE -->
+ <div data-panel="table" hidden>
+  <p><strong>PR #482:</strong> retries a timed-out RPC call with exponential backoff instead of failing at once; a call is still meant to be sent once. <span class="tag llm">LLM</span></p>
+  <table id="tbl"><caption class="vh">Decision table of #482</caption><thead><tr><th scope="col">ID</th><th scope="col">Source</th><th scope="col">Problem</th><th scope="col">Scope <span class="tag llm">LLM</span></th><th scope="col">Elsewhere</th><th scope="col">Opinion <span class="tag llm">LLM</span></th><th scope="col">Recommendation <span class="tag llm">LLM</span></th><th scope="col">Decision</th><th scope="col">Reason / target</th></tr></thead>
+  <tbody>
+   <tr class="sec"><td colspan="9">Undecided (9)</td></tr>
+   <tr data-gate><td>C14 <span class="chip gate">G-FUNDS</span></td><td>thread &middot; bot</td><td>A late reply plus a resend can send one signed call twice</td><td>in: PR promises one send</td><td>&mdash;</td><td>valid; introduced here</td><td>Fix here</td><td><select aria-label="Decision for C14 (gate item: choose explicitly)"><option value="">Choose&hellip; (gate item)</option><option>Fix here</option><option>Reject</option><option value="accept">Accept despite the gate</option><option>Follow-up PR</option></select></td><td><input type="text" aria-label="Reason or target for C14" placeholder="&mdash;" disabled></td></tr>
+   <tr data-gate><td>C15 <span class="chip gate">G-SECRET</span></td><td>thread &middot; bot</td><td>Debug log prints the endpoint token</td><td>in: introduced here</td><td>&mdash;</td><td>valid</td><td>Fix here</td><td><select aria-label="Decision for C15 (gate item: choose explicitly)"><option value="">Choose&hellip; (gate item)</option><option>Fix here</option><option>Reject</option><option value="accept">Accept despite the gate</option></select></td><td><input type="text" aria-label="Reason or target for C15" placeholder="&mdash;" disabled></td></tr>
+   <tr><td>C21 <span class="chip reask">asked again</span></td><td>thread &middot; bot</td><td>Cap checked after the sleep</td><td>out: soft limit by design</td><td>&mdash;</td><td>valid; code changed since C3</td><td>Reject (same as C3)</td><td><select aria-label="Decision for C21"><option>Reject</option><option>Fix here</option><option>Follow-up PR</option></select></td><td><input type="text" aria-label="Reason for C21" value="The cap is a soft limit by design."></td></tr>
+   <tr><td>C11</td><td>thread &middot; bot</td><td>Backoff cap not configurable</td><td>out: not promised</td><td>&mdash;</td><td>valid, minor</td><td>Reject</td><td><select aria-label="Decision for C11"><option>Reject</option><option>Fix here</option><option>Follow-up PR</option><option>TODO</option></select></td><td><input type="text" aria-label="Reason for C11" value="Not promised by this PR; the cap is a constant."></td></tr>
+   <tr><td>C22</td><td>thread &middot; bot</td><td>Jitter uses a fixed seed</td><td>in</td><td>&mdash;</td><td>valid; size XS</td><td>Fix here</td><td><select aria-label="Decision for C22"><option>Fix here</option><option>Reject</option></select></td><td><input type="text" aria-label="Reason for C22" placeholder="&mdash;" disabled></td></tr>
+   <tr><td>C23</td><td>review body &middot; human (octo-reviewer)</td><td>Doc comment names the old default</td><td>in</td><td>&mdash;</td><td>valid; size XS</td><td>Fix here</td><td><select aria-label="Decision for C23"><option>Fix here</option><option>Reject</option></select></td><td><input type="text" aria-label="Reason for C23" placeholder="&mdash;" disabled></td></tr>
+   <tr><td>C18</td><td>thread &middot; bot</td><td>Config file could be swapped by a local user</td><td>out: threat model</td><td>&mdash;</td><td>needs the same OS user</td><td>Reject</td><td><select aria-label="Decision for C18"><option>Reject</option><option>Fix here</option></select></td><td><input type="text" aria-label="Reason for C18" value="Outside this PR's threat model."></td></tr>
+   <tr><td>C19</td><td>thread &middot; bot</td><td>Cache directory symlink race</td><td>out: threat model</td><td>&mdash;</td><td>same OS user</td><td>Reject</td><td><select aria-label="Decision for C19"><option>Reject</option><option>Fix here</option></select></td><td><input type="text" aria-label="Reason for C19" value="Outside this PR's threat model."></td></tr>
+   <tr><td>C20</td><td>thread &middot; bot (CodeRabbit)</td><td>Harden temp file permissions</td><td>out: pre-existing</td><td>#455 (open)</td><td>pre-existing on base</td><td>Follow-up PR</td><td><select aria-label="Decision for C20"><option>Follow-up PR</option><option>Handled in #N</option><option>Reject</option></select></td><td><input type="text" aria-label="Target for C20" value="new"></td></tr>
+   <tr class="sec"><td colspan="9">Decided 12 &middot; Carried 6 &middot; Outside diffpilot 1 <button class="btn sm" type="button">Show</button></td></tr>
+  </tbody></table>
+  <p class="small" id="tsum" style="margin-top:10px"></p>
+  <div class="row"><button class="btn pri" type="button" id="tsubmit">Record decisions</button><span class="small muted" id="twhy"></span></div>
+ </div>
+
+ <!-- ROUNDS -->
+ <div data-panel="rounds" hidden>
+  <table><caption class="vh">Bot rounds of #482</caption><thead><tr><th scope="col">Round</th><th scope="col">Head</th><th scope="col">Finished</th><th scope="col">Bot verdict <span class="tag ghub">GitHub</span></th><th scope="col" class="n">New</th><th scope="col" class="n">Still open</th><th scope="col" class="n">Carried</th><th scope="col" class="n">Asked again</th><th scope="col" class="n">Fix</th><th scope="col" class="n">Reject</th><th scope="col" class="n">Moved / follow-up</th><th scope="col" class="n">Undecided</th></tr></thead>
+  <tbody><tr><td>1</td><td><code>a1b2c3d</code></td><td>Nov 20 09:40</td><td>changes requested</td><td class="n">6</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">4</td><td class="n">1</td><td class="n">1</td><td class="n">0</td></tr>
+   <tr><td>2</td><td><code>c4d5e6f</code></td><td>Nov 20 15:12</td><td>changes requested</td><td class="n">3</td><td class="n">2</td><td class="n">1</td><td class="n">0</td><td class="n">2</td><td class="n">2</td><td class="n">0</td><td class="n">0</td></tr>
+   <tr><td>3</td><td><code>3f9a1c2</code></td><td>Nov 21 11:05</td><td>changes requested</td><td class="n">4</td><td class="n">1</td><td class="n">2</td><td class="n">1</td><td class="n">1</td><td class="n">2</td><td class="n">0</td><td class="n">0</td></tr>
+   <tr><td>4</td><td><code>9f3c2e1</code></td><td>Nov 22 10:20</td><td>changes requested</td><td class="n">5</td><td class="n">2</td><td class="n">3</td><td class="n">1</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">9</td></tr></tbody></table>
+  <p class="note" style="margin-top:8px">A round is a thepastaclaw review whose body carries its final-phase marker for that head. Round 5 status: <span class="tag ext">thepastaclaw status</span> reviewing (verify, 3/5) since 10:12.</p>
+ </div>
+
+ <!-- CARRY-OVERS -->
+ <div data-panel="carry" hidden>
+  <div class="row" style="justify-content:space-between;margin-bottom:10px"><h2 style="margin:0" id="carry-h">Carry-overs on #482</h2>
+   <div class="seg" role="group" aria-label="Scope"><button type="button" id="sc-pr" aria-pressed="true">This pull request</button><button type="button" id="sc-all" aria-pressed="false">All pull requests</button></div></div>
+  <p class="note">A repeat of a decided finding (same <code>dedupe=</code> marker) takes your earlier decision without a question. It is asked again only when the bot edited its comment text or the code at that place changed after your decision. Counts only.</p>
+  <div id="carry-pr">
+   <div class="tiles"><div class="tile"><div class="v">6</div><div class="l">carried without asking</div></div><div class="tile"><div class="v">2</div><div class="l">asked again</div></div><div class="tile"><div class="v">1</div><div class="l">&hellip; the bot edited its comment</div></div><div class="tile"><div class="v">1</div><div class="l">&hellip; the code at that place changed</div></div><div class="tile"><div class="v">1</div><div class="l">carried effects open</div></div></div>
+   <table><thead><tr><th scope="col">When</th><th scope="col">Item</th><th scope="col">Repeat of</th><th scope="col">Event</th><th scope="col">Why</th><th scope="col">Effects</th><th scope="col"></th></tr></thead><tbody>
+    <tr><td>Nov 22 10:47</td><td>C16</td><td>C3 &middot; Reject</td><td>carried</td><td>same marker <code>dedupe=retry-double-click</code>; comment not edited; code unchanged</td><td>reply done &middot; resolve done</td><td><button class="btn sm" type="button">Reopen</button></td></tr>
+    <tr><td>Nov 22 10:47</td><td>C17</td><td>C5 &middot; Handled in #490</td><td>carried</td><td>same marker; comment not edited; code unchanged</td><td>reply open</td><td><button class="btn sm" type="button">Reopen</button></td></tr>
+    <tr><td>Nov 22 10:46</td><td>C21</td><td>C3 &middot; Reject</td><td><span class="chip reask">asked again</span></td><td>code at <code>retry.rs:89-90</code> changed in <code>7d8e9f0</code></td><td>&mdash;</td><td><button class="btn sm" type="button" data-go="reask">Open question</button></td></tr>
+    <tr><td>Nov 21 11:20</td><td>C13</td><td>C2 &middot; Fix here</td><td><span class="chip reask">asked again</span></td><td>the bot edited its comment at 11:12 (text changed)</td><td>decided again: Fix here</td><td><a href="#">Show the edit</a></td></tr>
+    <tr><td>Nov 21 11:20</td><td>C10</td><td>C4 &middot; Reject</td><td>carried</td><td>same marker; comment not edited; code unchanged</td><td>reply done &middot; resolve done</td><td><button class="btn sm" type="button">Reopen</button></td></tr>
+    <tr><td>Nov 20 15:30</td><td>C7</td><td>C1 &middot; Upstream issue</td><td>carried</td><td>same marker; comment not edited; code unchanged</td><td>reply done &middot; resolve done</td><td><button class="btn sm" type="button">Reopen</button></td></tr></tbody></table>
+  </div>
+  <div id="carry-all" hidden>
+   <div class="tiles"><div class="tile"><div class="v">23</div><div class="l">carried without asking</div></div><div class="tile"><div class="v">7</div><div class="l">asked again</div></div><div class="tile"><div class="v">4</div><div class="l">&hellip; the bot edited its comment</div></div><div class="tile"><div class="v">3</div><div class="l">&hellip; the code at that place changed</div></div><div class="tile"><div class="v">2</div><div class="l">carried effects open</div></div></div>
+   <table><thead><tr><th scope="col">Pull request</th><th scope="col" class="n">Carried</th><th scope="col" class="n">Asked again: bot edit</th><th scope="col" class="n">Asked again: code changed</th><th scope="col" class="n">Effects open</th><th scope="col">Last event</th></tr></thead><tbody>
+    <tr><td>acme/node-client #482</td><td class="n">6</td><td class="n">1</td><td class="n">1</td><td class="n">1</td><td>Nov 22 10:47</td></tr>
+    <tr><td>acme/node-client #490</td><td class="n">11</td><td class="n">2</td><td class="n">1</td><td class="n">0</td><td>Nov 22 09:15</td></tr>
+    <tr><td>acme/node-client #470</td><td class="n">4</td><td class="n">1</td><td class="n">0</td><td class="n">1</td><td>Nov 21 18:02</td></tr>
+    <tr><td>acme/wire-codec #77</td><td class="n">2</td><td class="n">0</td><td class="n">1</td><td class="n">0</td><td>Nov 21 12:40</td></tr></tbody></table>
+  </div>
+ </div>
+
+ <!-- LOG AND AGENTS -->
+ <div data-panel="log" hidden>
+  <div class="card" style="margin-bottom:12px"><h3 style="margin-top:0">Decision feed</h3>
+   <table class="small"><thead><tr><th scope="col">Agent (token name)</th><th scope="col">Capabilities</th><th scope="col">Connected</th><th scope="col">Claims now</th><th scope="col">Last seen</th></tr></thead><tbody>
+    <tr><td>build-host-2</td><td>fix, reply, resolve, follow-up PR, upstream issue</td><td>event stream</td><td>C22 (lease until 11:21)</td><td>10:51</td></tr>
+    <tr><td>laptop-cli</td><td>reply, resolve, dismiss review</td><td>polling</td><td>&mdash;</td><td>10:40</td></tr></tbody></table>
+   <p class="small" style="margin:6px 0 0">Open effects: 3 &middot; failed: 1 (C17 reply: "GitHub answered 403; retrying needs write access") &middot; no agent can take TODO effects right now.</p></div>
+  <ol class="stack small" style="list-style:none;padding:0;margin:0">
+   <li class="card"><strong>Nov 22 10:56 &middot; C22 &middot; Fix here</strong> by alice &middot; via table &middot; recommendation then: Fix here <span class="tag llm">LLM</span><br>
+    <span class="who agent">build-host-2</span>claimed 10:51 &middot; fix: reported done, commit <code>b81f0a2</code> (pushed 10:55) &middot; reply: open (after the fix) &middot; resolve: open</li>
+   <li class="card"><strong>Nov 22 10:52 &middot; 7 decisions via "decide the rest"</strong> by alice &middot; confirmed list C21, C11, C22, C23, C18, C19, C20 &middot; left out: C14, C15 (gate items)</li>
+   <li class="card"><strong>Nov 22 10:47 &middot; C16 &middot; carried from C3 (Reject)</strong> &middot; marker <code>dedupe=retry-double-click</code><br><span class="who agent">laptop-cli</span>reply done (<a href="#">link</a>) <span class="chip fact">Reply found on GitHub &middot; 10:48</span> &middot; resolve done <span class="chip fact">Thread resolved &middot; 10:48</span></li>
+   <li class="card"><strong>Nov 22 10:45 &middot; C8 &middot; Accept despite the gate (G-FUNDS)</strong> by alice &middot; recommendation then: Reject <span class="tag llm">LLM</span><br>Reason posted: "Pre-existing fee display; tracked in #455." &middot; <span class="who agent">laptop-cli</span>reply done &middot; resolve done (always, for this decision)</li>
+   <li class="card" data-p3log hidden><strong>Phase 3 example &middot; C5 &middot; Handled in #490</strong> by alice<br><span class="who dp">diffpilot[bot]</span>PR-level comment posted (<a href="#">link</a>) <span class="chip fact">Comment found on GitHub &middot; 10:49</span></li>
+  </ol>
+ </div>
 </section>
 </main></div>
+
+<div class="notif" id="notif" role="status" hidden><div class="row"><span class="t">diffpilot</span><span class="sp"></span><span class="small muted">browser notification</span></div><p style="margin:4px 0 0">acme/node-client #482: 5 questions ready (watched PR, assessed automatically).</p></div>
 <div id="live" class="vh" aria-live="polite"></div><div id="toast" role="status" hidden></div>
-<footer class="foot">Mockup &mdash; static example data &middot; proposal, not approved</footer>
-<style>.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}</style>
+<footer class="foot">Mockup v2 &mdash; fictional data &middot; design for discussion, not approved &middot; keys on a question: <kbd>1</kbd>&ndash;<kbd>8</kbd> choose, <kbd>q</kbd> ask, <kbd>Enter</kbd> decide</footer>
+
 <script>
 const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const CODE=[[80,'pub async fn retry_with_backoff(&self, req: SignedRequest) -> Result<Reply, RpcError> {'],[81,'    let mut delay = self.policy.initial;'],
+[82,'    for attempt in 0..self.policy.max_attempts {'],[83,'        match timeout(self.policy.per_try, self.send(&req)).await {'],[84,'            Ok(Ok(reply)) => return Ok(reply),'],
+[85,'            Ok(Err(e)) if !e.is_retryable() => return Err(e),'],[86,'            _ => {}'],[87,'        }'],[88,'        // the first send may still be in flight here'],
+[89,'        sleep(delay).await;'],[90,'        delay = (delay * 2).min(self.policy.max_delay);'],[91,'        tracing::debug!(attempt, "retrying signed request");'],
+[92,'    }'],[93,'    Err(RpcError::Timeout)'],[94,'}']];
+const ITEMS={
+ C11:{pos:'Question 4 of 9',src:' · thepastaclaw · bot · inline thread · first seen round 4 at 9f3c2e1',title:'C11 · Backoff cap is not configurable',gate:false,
+  chips:'<span class="chip">Category: maintainability</span><span class="chip"><span class="tag ghub">GitHub</span> thepastaclaw: Suggestion</span>',
+  comment:'max_delay is a constant in RetryPolicy::default(). Deployments with slow nodes cannot raise it without a rebuild.',mark:[90,90],marker:'Marker dedupe=rpc-backoff-cap-config',
+  assess:[['The LLM says','valid — retry.rs:90 caps the delay with policy.max_delay; the policy has no setter'],['Pre-existing on base','no, the policy is new in this PR'],['Necessity','out: the PR promises retries, not configurable timing'],['Elsewhere','#490 "cap backoff at 30 s" (open) changes the same constant'],['Fix','add a builder method; size S (about 20 lines)'],['Earlier decisions','none on this code path']],
+  rec:'reject',recReason:'Not promised by this PR; #490 owns the cap.'},
+ C14:{pos:'Question 2 of 9',src:' · thepastaclaw · bot · inline thread · first seen round 3 at 3f9a1c2',title:'C14 · Retry may resend a signed request after a late reply',gate:true,
+  chips:'<span class="chip gate" title="Gate from the LLM assessment (G-FUNDS). Gate items are never grouped or decided in bulk.">Gate: G-FUNDS · from the LLM assessment</span><span class="chip">Category: funds</span><span class="chip"><span class="tag ghub">GitHub</span> thepastaclaw: Blocking</span>',
+  comment:'When the reply to the first send arrives after the timeout, retry_with_backoff sends the same signed request again. Both can be accepted by the node.',mark:[88,91],marker:'Marker dedupe=rpc-retry-resend',
+  assess:[['The LLM says','partly valid — retry.rs:89 sends again without looking at the first attempt; the node rejects a reused nonce (node docs, rpc/nonce.md:14), so a double charge needs a node without that check'],['Pre-existing on base','no, introduced by this PR'],['Necessity','in: the description promises one send per call'],['Elsewhere','—'],['Fix','keep an attempt id; skip the resend once the first reply lands; size S (about 25 lines)'],['Earlier decisions','none on this code path']],
+  rec:'fix',recReason:''}};
+const OPTS=[['fix','Fix here'],['reject','Reject (reason required)'],['handled','Handled in another PR'],['followup','Follow-up PR'],['upstream','Upstream issue'],['todo','TODO'],['resolve','Resolve (already fixed)']];
+let S='question',cur='C11',phase3=false;
+const SCREEN={mywork:'mywork',watching:'watching',prpage:'prpage',prauto:'prpage'};
+const TAB={table:'table',rounds:'rounds',carry:'carry',carryall:'carry',log:'log'};
+const CARD={question:'form',gate:'form',phase3:'form',error:'form',reask:'reask',group:'group',rest:'rest',merge:'merge',dismiss:'dismiss',running:'running',empty:'empty'};
+function loadItem(id){cur=id;const it=ITEMS[id];$('#q-pos').textContent=it.pos;$('#q-src').textContent=it.src;$('#q-h').textContent=it.title;$('#q-chips').innerHTML=it.chips;
+ $('#q-comment').textContent=it.comment;$('#q-marker').textContent=it.marker;
+ $('#q-code').innerHTML=CODE.map(([n,t])=>'<span class="l'+(n>=it.mark[0]&&n<=it.mark[1]?' m':'')+'"><i>'+n+'</i>'+esc(t)+'</span>').join('');
+ $('#q-assess').innerHTML=it.assess.map(([k,v])=>'<dt>'+k+'</dt><dd>'+esc(v)+'</dd>').join('');
+ const o=OPTS.slice();const ri=o.findIndex(x=>x[0]===it.rec);const r=o.splice(ri,1)[0];o.unshift(r);if(it.gate)o.push(['accept','Accept despite the gate']);
+ $('#opts').innerHTML=o.map(([v,l],i)=>'<label class="opt'+(v==='accept'?' optgate':'')+'"><input type="radio" name="d" value="'+v+'"'+(i===0?' checked':'')+'> <span class="k">'+(i+1)+'</span><span>'+l+(v===it.rec?' <span class="rec">(Recommended)</span>':'')+(v==='accept'?' <span class="muted small">— reject with a gate override; reason required and posted as the reply; the thread is always resolved</span>':'')+'</span></label>').join('');
+ $$('input[name=d]').forEach(x=>x.onchange=upd);$('#reason').value=it.rec==='reject'?it.recReason:'';$('#gatebox').hidden=!it.gate;$('#gres').checked=false;upd();}
+function W(){return phase3?'<span class="who dp">diffpilot[bot]</span>':'<span class="who agent">External agent</span>';}
+const A='<span class="who agent">External agent</span>';
+function upd(){const v=($('input[name=d]:checked')||{}).value;const it=ITEMS[cur];
+ $$('[data-need]').forEach(e=>e.hidden=!e.dataset.need.split(' ').includes(v));
+ const t=$('#gres'),d=$('#gres-d');
+ if(v==='accept'||v==='resolve'){t.checked=true;t.disabled=true;d.textContent=v==='accept'?'Accept despite the gate always resolves the thread: choosing it is your explicit resolve.':'Resolve (already fixed) resolves the thread.';}
+ else{t.disabled=false;d.textContent='Gate thread (G-FUNDS): resolved only if you tick this. Without it the reply is posted and the thread stays open.';}
+ const res=!it.gate||t.checked?W()+'resolves the thread.':'Thread stays open (gate item, not ticked).';
+ const L={fix:[A+'fixes it (test red first) and pushes.',W()+'replies after the push with the commit.',res],reject:[W()+'replies with your reason.',res],
+  handled:[W()+'replies: "Per maintainer decision, this is addressed in #N."',res],followup:[A+'opens a draft follow-up PR first.',W()+'replies with its link.',res],
+  upstream:[A+'links or creates the upstream issue and adds a "Known limitation" line.',W()+'replies with the link.',res],
+  todo:[A+'saves a TODO (never mentioned on GitHub).',W()+'replies: "Per maintainer decision, out of scope for this PR."',res],
+  resolve:[W()+'resolves the thread.'],accept:[W()+'replies with your reason (required).',W()+'resolves the thread (always, for this option).','Recorded as Reject with a gate override (G-FUNDS).']}[v];
+ $('#effects').innerHTML=L.map(x=>'<li>'+x+'</li>').join('');
+ const base={fix:'Per maintainer decision, fixed: '+(cur==='C14'?'the retry now skips the resend once the first reply lands.':'see the commit.')+' (commit follows)',reject:'Per maintainer decision, not changed here: ',
+  handled:'Per maintainer decision, this is addressed in #490.',followup:'Per maintainer decision, moved to a follow-up PR: (link)',upstream:'Per maintainer decision, tracked upstream: (link)',
+  todo:'Per maintainer decision, out of scope for this PR.',resolve:'',accept:'Per maintainer decision, accepted for this PR: '}[v];
+ const txt=(v==='reject'||v==='accept')?base+$('#reason').value:base;$('#reply').value=txt;$('#reply').disabled=v==='resolve';
+ $('#reply-l').textContent=phase3?'Reply text (public; posted by diffpilot[bot], the diffpilot GitHub App)':'Reply text (public; posted by the external agent that claims this decision)';
+ $('#pv-hd').innerHTML=phase3?'<span class="chip botpost">diffpilot[bot] · bot</span><span class="muted">preview on GitHub</span>':'<span class="chip">agent’s GitHub account</span><span class="muted">preview on GitHub</span>';
+ $('#pv-body').textContent=v==='resolve'?'(no reply; the thread is resolved)':txt;
+ $('#pv-ft').textContent='Posted by diffpilot on behalf of the maintainer’s decision ('+cur+').';$('#pv-ft').hidden=!phase3;$('#err').hidden=true;}
+$('#gres').onchange=upd;$('#reason').oninput=upd;
 function tab(t){$$('[role=tab]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.tab===t)));$$('[data-panel]').forEach(p=>p.hidden=p.dataset.panel!==t);}
-function state(s){$$('.states button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.state===s)));
- const w=s==='waiting';$('[data-view=waiting]').hidden=!w;$('[data-view=pr]').hidden=w;
- const t=['table','rounds','log'].includes(s)?s:'question';tab(t);
- $$('[data-only]').forEach(e=>{const o=e.dataset.only;e.hidden=!(o===s||(o==='question'&&(s==='question'||s==='error')))});}
+function carryScope(all){$('#sc-pr').setAttribute('aria-pressed',String(!all));$('#sc-all').setAttribute('aria-pressed',String(all));$('#carry-pr').hidden=all;$('#carry-all').hidden=!all;$('#carry-h').textContent=all?'Carry-overs on all pull requests':'Carry-overs on #482';}
+function state(s){S=s;phase3=s==='phase3';$$('.states button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.state===s)));
+ const scr=SCREEN[s]||'comments';$$('[data-screen]').forEach(x=>x.hidden=x.dataset.screen!==scr);
+ const shell=scr==='mywork'||scr==='watching';$('#crumb-review').hidden=shell;$('#crumb-title').style.visibility=shell?'hidden':'visible';
+ $('#nav-mywork').toggleAttribute('aria-current',scr==='mywork');$('#nav-watch').toggleAttribute('aria-current',scr==='watching');
+ $('#viewname').textContent=scr==='prpage'?'PR page':'Comments';
+ const open=s==='menu';$('#viewmenu').hidden=!open;$('#viewbtn').setAttribute('aria-expanded',String(open));
+ $('#pp-auto').hidden=s!=='prauto';const pw=$('#pp-watch');setWatch(pw,s==='prauto');
+ $('#notif').hidden=s!=='prauto';
+ $('#err-banner').hidden=s!=='error';$('#readinfo').textContent=s==='error'?'GitHub read failed 10:41 (rate limit)':'GitHub read 10:41';
+ if(scr==='comments'){tab(TAB[s]||'q');const c=CARD[s]||'form';$$('[data-card]').forEach(x=>x.hidden=x.dataset.card!==c);
+  if(c==='form'){loadItem(s==='gate'||s==='phase3'?'C14':'C11');if(s==='gate'){$$('input[name=d]').forEach(r=>r.checked=r.value==='accept');$('#reason').value='Pre-existing in the node client’s nonce handling; the node rejects reused nonces. Tracked in #455.';upd();}}
+  carryScope(s==='carryall');}
+ $$('[data-p3log]').forEach(e=>e.hidden=!phase3);
+ $('#poster').textContent=phase3?'Replies, comments, resolves and dismissals: diffpilot[bot] (phase 3). Fixes and follow-up PRs: external agents.':'Replies and resolves: external agents. diffpilot[bot]: not enabled (phase 3).';
+ tsum();}
+function setWatch(b,on){b.setAttribute('aria-pressed',String(on));b.querySelector('.eye').innerHTML=on?'&#9673;':'&#9675;';b.lastElementChild.textContent=on?'Watching':'Watch';}
+$$('[data-watch]').forEach(b=>b.addEventListener('click',()=>{const on=b.getAttribute('aria-pressed')!=='true';setWatch(b,on);toast(on?'Watching: new comments will be found and assessed automatically.':'Not watching: comments are read when you open them.');}));
 $$('.states button').forEach(b=>b.onclick=()=>state(b.dataset.state));
-$$('[role=tab]').forEach(b=>b.onclick=()=>tab(b.dataset.tab));
-const eff={fix:['Coordinator fixes it (test red first) and pushes with the next round.','Reply after the push: what changed, with the commit.'],
- reject:['Reply with your reason.'],handled:['Reply: "Per maintainer decision, this is addressed in #N."'],
- followup:['Coordinator opens a draft follow-up PR first.','Reply with its link.'],upstream:['Reply with the upstream link.','"Known limitation" line in the PR body.'],
- todo:['Coordinator saves a TODO (never mentioned on GitHub).','Reply: "Per maintainer decision, out of scope for this PR."'],resolve:['Resolve the thread.']};
-function upd(){const v=$('input[name=d]:checked').value;$$('[data-need]').forEach(e=>e.hidden=!e.dataset.need.split(' ').includes(v));
- const l=[...eff[v]];if(v!=='resolve')l.push($('#gres').checked?'Resolve the thread (you ticked it).':'Thread stays open (gate, not ticked).');
- $('#effects').innerHTML=l.map(x=>'<li>'+x+'</li>').join('');}
-$$('input[name=d]').forEach(r=>r.onchange=upd);$('#gres').onchange=upd;
+$$('[role=tab]').forEach(b=>b.onclick=()=>{const m={q:'question',table:'table',rounds:'rounds',carry:'carry',log:'log'};state(m[b.dataset.tab]);});
+$$('[data-go]').forEach(b=>b.addEventListener('click',e=>{e.preventDefault();state(b.dataset.go);}));
+$('#viewbtn').onclick=()=>{const m=$('#viewmenu');m.hidden=!m.hidden;$('#viewbtn').setAttribute('aria-expanded',String(!m.hidden));};
+$('#sc-pr').onclick=()=>carryScope(false);$('#sc-all').onclick=()=>carryScope(true);
 $('#askbtn').onclick=()=>{$('#askbox').hidden=false;$('#askq').focus();};
-$('#decide').onsubmit=e=>{e.preventDefault();const t=$('#toast');t.textContent='C14: decision recorded. 6 questions left. Undo';t.hidden=false;$('#live').textContent='C14: decision recorded. 6 questions left.';setTimeout(()=>t.hidden=true,3000);};
-$$('[data-out]').forEach(b=>b.onclick=()=>{const r=b.closest('tr'),id=r.cells[0].textContent;r.remove();$('#live').textContent=id+' will be asked on its own next.';});
-document.addEventListener('keydown',e=>{if(/INPUT|TEXTAREA/.test(e.target.tagName))return;const n=+e.key;
- if(n>=1&&n<=7){const r=$$('input[name=d]')[n-1];if(r&&!$('[data-only=question]').hidden){r.checked=true;upd();r.focus();}}
- if(e.key==='q'){$('#askbtn').click();e.preventDefault();}});
+function toast(m){const t=$('#toast');t.textContent=m;t.hidden=false;$('#live').textContent=m;clearTimeout(toast.h);toast.h=setTimeout(()=>t.hidden=true,3200);}
+$('#decide').onsubmit=e=>{e.preventDefault();const v=$('input[name=d]:checked').value;
+ if((v==='reject'||v==='accept')&&!$('#reason').value.trim()){$('#err').textContent='A reason is required: it is posted as the reply.';$('#err').hidden=false;$('#reason').focus();return;}
+ toast(cur+': decision recorded. 8 questions left. Undo');};
+$$('[data-out]').forEach(b=>b.onclick=()=>{const r=b.closest('tr'),id=r.cells[0].textContent;r.remove();const n=$$('#gbody tr').length;$('#gapply').textContent='Reject all '+n;
+ $('#g-h').textContent='Same recommendation: Reject — outside this PR’s threat model ('+n+' items)';toast(id+' will be asked on its own next.');});
+$('#gapply').onclick=()=>toast('Recorded: '+$$('#gbody tr').length+' decisions, one per item.');
+function rsum(){const n=$$('#rbody input:checked').length;$('#rapply').textContent='Apply '+n+' decisions';$('#dr-h').textContent='Decide the rest per recommendation — confirm '+n+' decisions';$('#rapply').disabled=n===0;$('#rsum').textContent=n+' decisions selected; unticked rows stay questions.';}
+$$('#rbody input').forEach(c=>c.onchange=rsum);
+$('#rapply').onclick=()=>toast($$('#rbody input:checked').length+' decisions recorded, one per item. Gate items C14 and C15 remain questions.');
+function tsum(){const rows=$$('#tbl tbody tr:not(.sec)');const cnt={};let missing=[];
+ rows.forEach(r=>{const s=r.querySelector('select'),i=r.querySelector('input');const v=s.options[s.selectedIndex].text;const id=r.cells[0].textContent.trim().split(' ')[0];
+  if(!s.value&&r.hasAttribute('data-gate')){missing.push(id+' (gate item: choose explicitly)');return;}
+  const needs=/Reject|Accept|Follow-up|Handled/.test(v);i.disabled=!needs;if(needs&&!i.value.trim())missing.push(id+' (reason or target)');
+  const k=s.value==='accept'?'Accept despite the gate':v;cnt[k]=(cnt[k]||0)+1;});
+ const n=Object.values(cnt).reduce((a,b)=>a+b,0);$('#tsum').textContent='Will record '+n+' decisions: '+Object.entries(cnt).map(([k,c])=>k+' '+c).join(' · ')+'.';
+ $('#tsubmit').disabled=missing.length>0;$('#twhy').textContent=missing.length?'Still needed: '+missing.join(', '):'';$('#tsubmit').textContent='Record '+n+' decisions';}
+$$('#tbl select, #tbl input').forEach(x=>{x.addEventListener('change',tsum);x.addEventListener('input',tsum);});
+$('#tsubmit').onclick=()=>toast('Decisions recorded, one per row.');
+document.addEventListener('keydown',e=>{if(/INPUT|TEXTAREA|SELECT/.test(e.target.tagName))return;const card=$('[data-card=form]');if(!card||card.hidden||card.closest('[hidden]'))return;
+ const n=+e.key,opts=$$('input[name=d]');if(n>=1&&n<=opts.length){opts[n-1].checked=true;upd();opts[n-1].focus();}
+ if(e.key==='q'){e.preventDefault();$('#askbtn').click();}});
+state('question');
 </script>
 </body>
 </html>
