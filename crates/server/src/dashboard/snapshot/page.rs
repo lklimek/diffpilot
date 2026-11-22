@@ -3,7 +3,7 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use contracts::api::dashboard::{GithubKind, ItemKind, ItemQuery};
+use contracts::api::dashboard::{AwaitingReason, GithubKind, ItemKind, ItemQuery};
 use db::repo::dashboard::RefreshRecord;
 use sha2::{Digest, Sha256};
 
@@ -58,11 +58,15 @@ pub fn revision(record: &RefreshRecord, snapshot: &Snapshot, view: &View) -> Str
         .filter(|item| !item.item.plugin_notes.is_empty())
         .map(|item| (&item.item.key, &item.item.plugin_notes))
         .collect();
-    if !notes.is_empty() || !view.ready_to_merge_held.is_empty() {
-        source.push_str(&format!(
-            "|plugins {notes:?} {:?}",
-            view.ready_to_merge_held
-        ));
+    let plugin_waits: Vec<_> = view
+        .awaiting
+        .iter()
+        .filter(|item| matches!(item.reason, AwaitingReason::Plugin { .. }))
+        .map(|item| (&item.id, &item.reason, &item.waiting_on))
+        .collect();
+    if !notes.is_empty() || !plugin_waits.is_empty() {
+        let ready: Vec<_> = view.ready_to_merge.iter().map(|item| &item.id).collect();
+        source.push_str(&format!("|plugins {notes:?} {plugin_waits:?} {ready:?}"));
     }
     format!("r-{}", short_hash(source.as_bytes()))
 }

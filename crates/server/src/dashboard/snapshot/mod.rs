@@ -85,6 +85,9 @@ pub struct StoredPr {
     pub ci_red: Vec<String>,
     /// Running build, test and lint checks.
     pub ci_pending: Vec<String>,
+    /// Ignored checks not passing, as `name (STATE)` (K17 R4; info only); empty in a snapshot stored before.
+    #[serde(default)]
+    pub ci_ignored: Vec<String>,
     /// Issues it closes (`closingIssuesReferences`, first 5); empty in a snapshot stored before they were kept.
     #[serde(default)]
     pub linked_issues: Vec<StoredLinkedIssue>,

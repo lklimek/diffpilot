@@ -46,6 +46,10 @@ export interface SettingHelp {
 /** The built-in release branch patterns (server `BUILTIN_BRANCH_PATTERNS`). */
 export const BUILT_IN_BRANCH_TEXT = "main, master, release/*, hotfix/*, vX.Y, vX.Y-dev";
 
+/** The built-in ignored checks (server `text::is_builtin_ignored_check`), as patterns. */
+export const BUILT_IN_CHECK_TEXT =
+  "*hygiene*, PR title, *semantic-pull-request*, *milestone*, *CodeRabbit*, review, policy*, PastaClaw review";
+
 /** Name of the dashboard group for owners listed when GitHub search refuses an account. */
 export const SEARCH_REFUSED_GROUP = "When GitHub search refuses an account";
 
@@ -224,12 +228,22 @@ const HELP = {
   branch_patterns: {
     section: "Dashboard",
     title: "Release branches",
-    what: "Names of the repository's release and long-lived branches. A pull request based on such a branch is not treated as stacked on another pull request, and one that targets such a branch (other than the default branch) counts as targeting a release line.",
-    when: "Every ranking of the repository's pull requests.",
+    what: "Names of the repository's release and long-lived branches. A pull request based on such a branch is not treated as stacked on another pull request, one that targets such a branch (other than the default branch) counts as targeting a release line, and Ready to merge lists your pull requests into such a branch as into the default branch.",
+    when: "Every ranking of the repository's pull requests, and Ready to merge.",
     empty: `Leave empty for the built-ins: ${BUILT_IN_BRANCH_TEXT}. Your list replaces the built-ins; it does not add to them.`,
     limits:
       "Up to 10 patterns, separated by spaces or commas; letters, digits, . _ / - and *. X.Y stands for a version of two or more numbers (1.8, 5.1, 2.0.1); * matches any text.",
     example: "vX.Y-dev matches v1.8-dev and v5.1-dev; release/* matches release/2.1; v*-dev works too.",
+  },
+  ignored_checks: {
+    section: "Dashboard",
+    title: "Ignored checks",
+    what: "Names of the repository's checks and commit statuses that are gates rather than build, test or lint results (approval, policy and review-bot checks). They never make CI failing or running; a check of them that has not passed is named in the tip of CI passing.",
+    when: "Every refresh of the repository's pull requests: CI passing, Ready to merge (a PR GitHub calls unstable counts as clean when only ignored, skipped or neutral checks have not passed) and Waiting on others (CI green).",
+    empty: `Leave empty for the built-ins: ${BUILT_IN_CHECK_TEXT}. Your list replaces the built-ins; it does not add to them. Among the built-ins, policy* stands for policy alone or followed by a space or sign (policy / reconcile).`,
+    limits:
+      "Up to 20 names, separated by commas; each 1 to 100 characters. A name matches the whole check name without regard to case; * matches any text. The check's own name counts, without its workflow.",
+    example: "*hygiene*, PR title, PastaClaw review, docs-preview",
   },
   enumerate_owners: {
     section: "Dashboard",
@@ -256,7 +270,7 @@ const HELP = {
     section: "Dashboard",
     title: "Ready for a human label",
     what: "The label that marks a pull request ready for a human review.",
-    when: "Every ranking: a pull request with this label ranks higher, and one of yours with it, green checks and no open threads counts as ready for others. A ready pull request of yours with reviews requested from others, where nothing is your move (no review asked of you, no change request, no comment awaiting your reply, no conflicts, not approved for you to merge, no merge button active for you on GitHub), is listed under Waiting on others only, not in Needs you.",
+    when: "Every ranking: a pull request with this label ranks higher. One of yours with it needs a human: it is never listed under Ready to merge, and while nothing is your move (no conflicts, CI green with ignored checks left out, no change request, no unresolved thread, no comment awaiting your reply, no review asked of you) it is listed under Waiting on others only, not in Needs you, even when it is approved or you could merge it.",
     empty: "ready-for-human.",
     limits: "1 to 50 characters; compared without regard to case.",
     example: "needs-review.",
@@ -410,6 +424,7 @@ export const CONTRACT_HELP: {
     watch_issues: "watch_issues",
     ownership_policy: "ownership_policy",
     branch_patterns: "branch_patterns",
+    ignored_checks: "ignored_checks",
   },
   accessToken: { name: "access_tokens", scopes: "access_tokens", expires_in_days: "access_tokens" },
 };

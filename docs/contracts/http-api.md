@@ -667,12 +667,14 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   snapshot yet: an empty page. Pull request items carry `change_size` (plan §C.2 K16: `tiny` < 150, `small`
   150–499, `medium` 500–2999, `large` 3000–9999, `huge` ≥ 10 000 changed lines, with `additions`/`deletions` as
   evidence; absent for issues, TODOs and unknown totals; clients show an unknown class by its name). There is no
-  size filter on R1b. A pull request of the user that waits only on others (plan §C.2 K15) is not an
+  size filter on R1b. A pull request of the user that waits on others (plan §C.2 K15) is not an
   item: it is listed in `SnapshotMeta.awaiting` only (`AwaitingItem.total_tenths` is null), never ranked, counted
-  or excluded, so no tier filter hands it out as work. `SnapshotMeta.ready_to_merge` lists, by display id, the
-  user's pull requests ready to merge at the scan (plan §C.2 K17: into the default branch, every check passed,
-  nothing left to answer); they are ranked. `merge_state_pending` counts those of the user's pull requests into the
-  default branch whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
+  or excluded, so no tier filter hands it out as work; `waiting_on` names whom to ping and `reason` why
+  (`ready_label`, `plugin` with the source's reason and evidence, `review_requested`). `SnapshotMeta.ready_to_merge`
+  lists, by display id, the user's pull requests ready to merge at the scan (plan §C.2 K17: into the default branch
+  or a release branch, every check passed except ignored ones, nothing left to answer, no ready label, not held by a
+  current plug-in); they are ranked. `merge_state_pending` counts those of the user's pull requests Ready to merge
+  could list whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
 - **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
   with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
   recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per

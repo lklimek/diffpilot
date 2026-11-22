@@ -33,6 +33,7 @@ struct RepoRule {
     repo: RepoRef,
     alias: Option<String>,
     branches: Vec<BranchPattern>,
+    checks: Vec<CheckPattern>,
 }
 
 impl ScoreRules {
@@ -56,6 +57,11 @@ impl ScoreRules {
                         .branch_patterns
                         .iter()
                         .map(|p| BranchPattern::new(p))
+                        .collect(),
+                    checks: row
+                        .ignored_checks
+                        .iter()
+                        .map(|p| CheckPattern::new(p))
                         .collect(),
                 })
                 .collect(),
@@ -118,6 +124,15 @@ impl ScoreRules {
     ) -> bool {
         default_branch == Some(branch)
             || self.branch_patterns(repo).iter().any(|p| p.matches(branch))
+    }
+
+    /// A check or status of this repository that never makes CI red or pending (K17 R4): the row's Ignored checks,
+    /// else the built-ins.
+    pub fn is_ignored_check(&self, repo: &RepoRef, name: &str) -> bool {
+        match self.row(repo) {
+            Some(row) if !row.checks.is_empty() => row.checks.iter().any(|p| p.matches(name)),
+            _ => super::text::is_builtin_ignored_check(name),
+        }
     }
 
     /// The pull request targets a release line (K9): a pattern match other than the default branch.
@@ -203,6 +218,21 @@ impl BranchPattern {
             *cell = Some(result);
         }
         result
+    }
+}
+
+/// An Ignored checks pattern of the settings: the whole check name, ignoring case; `*` is any text.
+#[derive(Clone, Debug)]
+struct CheckPattern(BranchPattern);
+
+impl CheckPattern {
+    fn new(pattern: &str) -> Self {
+        // Lowercased, a pattern has no `X.Y` version token.
+        Self(BranchPattern::new(&pattern.to_lowercase()))
+    }
+
+    fn matches(&self, name: &str) -> bool {
+        self.0.matches(&name.to_lowercase())
     }
 }
 

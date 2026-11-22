@@ -308,7 +308,6 @@ async fn invalid_output_leaves_the_provisional_order() {
             ("WUI-298", Tier::P2, 376),
             ("NC-490", Tier::P2, 356),
             ("PLAT-1210", Tier::P3, 333),
-            ("CON-1541", Tier::P3, 302),
             ("TODO-3fa91c2e", Tier::P3, 263),
             ("CON-1520", Tier::P3, 243),
             ("CON-1525", Tier::P3, 191),

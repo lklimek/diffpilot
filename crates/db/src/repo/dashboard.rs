@@ -1725,6 +1725,7 @@ mod tests {
                     path: "policies/platform.json".to_owned(),
                 }),
                 branch_patterns: vec!["vX.Y-dev".to_owned()],
+                ignored_checks: Vec::new(),
             }],
             enumerate_owners: vec!["dashpay".to_owned()],
             lookback_days: 14,

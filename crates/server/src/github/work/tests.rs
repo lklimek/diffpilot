@@ -1557,6 +1557,7 @@ async fn mention_policy_is_shared_and_file_reads_are_concurrent_with_finished_re
             alias: None,
             watch_issues: false,
             branch_patterns: vec![],
+            ignored_checks: Vec::new(),
             ownership_policy: Some(PolicyRef {
                 repo: repo("acme/policy"),
                 path: "policy.json".into(),
@@ -1647,6 +1648,7 @@ async fn mention_policy_failures_warn_once_per_repository_per_refresh() {
                 alias: None,
                 watch_issues: false,
                 branch_patterns: vec![],
+                ignored_checks: Vec::new(),
                 ownership_policy: Some(PolicyRef {
                     repo: repo("acme/policy"),
                     path: "policy.json".into(),

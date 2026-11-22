@@ -1,7 +1,8 @@
 //! The PR Hygiene plug-in (ADR-022 §9): the public JSON API of the PR Hygiene service (`/api/v1/prs`,
 //! `/api/v1/stages`), read with `If-None-Match`. Governed pull requests of repositories that are not stale get a
-//! statement: the engine's next action, its blockers, stage, whose move and lateness, and a hold on Ready to merge
-//! unless the engine state is `ready-to-merge`. All of it is untrusted data.
+//! statement: the engine's next action, its blockers, stage, whose move and lateness, a hold on Ready to merge
+//! unless the engine state is `ready-to-merge`, and whose move it is for Waiting on others (the stage's owner; the
+//! `asks` approvers owe a review). All of it is untrusted data.
 
 use std::collections::HashMap;
 
@@ -17,11 +18,15 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use super::fetch::{self, Answer};
-use super::{DashboardPlugin, PluginData, PluginError, Polled, PrKey, PrStatement, Readiness};
+use super::{
+    DashboardPlugin, Move, PluginData, PluginError, Polled, PrKey, PrStatement, Readiness,
+};
 use crate::github::work::ItemRef;
 
 /// The engine state of a pull request the engine lists as ready to merge.
 const READY_TO_MERGE: &str = "ready-to-merge";
+/// Stage owners whose stage waits on people other than the author (`/api/v1/stages`).
+const PEOPLE_OWNERS: [&str; 2] = ["reviewers", "maintainers"];
 /// Values of a record that change with time alone, left out of its change mark.
 const TIME_ONLY: [&str; 2] = ["lateness", "idle"];
 
@@ -195,9 +200,11 @@ impl PrHygiene {
     ) -> Option<PrStatement> {
         let engine_state = record.engine_state.as_deref()?;
         let mut facts = Vec::new();
+        let mut owner = None;
         if let Some(stage) = &record.stage {
             facts.push(fact("Stage", stage));
-            if let Some(owner) = owners.get(stage.as_str()) {
+            owner = owners.get(stage.as_str()).copied();
+            if let Some(owner) = owner {
                 facts.push(fact("Whose move", owner));
             }
         }
@@ -210,16 +217,23 @@ impl PrHygiene {
             };
             facts.push(fact("Lateness", text));
         }
+        let reason = record
+            .next_action
+            .clone()
+            .or_else(|| record.stage.as_ref().map(|s| format!("Stage: {s}")))
+            .unwrap_or_else(|| format!("Engine state: {engine_state}"));
+        let whose_move = match owner {
+            Some("author") => Some(Move::Author),
+            Some(owner) if PEOPLE_OWNERS.contains(&owner) => Some(Move::People {
+                owed: approvers(value),
+                reason: reason.clone(),
+            }),
+            _ => None,
+        };
         let ready_to_merge = if engine_state == READY_TO_MERGE {
             Readiness::Agrees
         } else {
-            Readiness::Holds {
-                reason: record
-                    .next_action
-                    .clone()
-                    .or_else(|| record.stage.as_ref().map(|s| format!("Stage: {s}")))
-                    .unwrap_or_else(|| format!("Engine state: {engine_state}")),
-            }
+            Readiness::Holds { reason }
         };
         Some(PrStatement {
             url: self
@@ -232,6 +246,7 @@ impl PrHygiene {
             details: record.blockers.clone(),
             facts,
             ready_to_merge: Some(ready_to_merge),
+            whose_move,
             mark: mark(value),
         })
     }
@@ -249,6 +264,20 @@ fn fact(label: &str, value: &str) -> Fact {
         label: label.to_owned(),
         value: value.to_owned(),
     }
+}
+
+/// The logins of every `asks[].approvers` of a record, in order; an entry of another shape is skipped.
+fn approvers(value: &Value) -> Vec<String> {
+    value
+        .get("asks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|ask| ask.get("approvers").and_then(Value::as_array))
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Hash of the record without its time-only values.

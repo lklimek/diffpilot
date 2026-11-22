@@ -25,6 +25,7 @@ const row = (repo: string, extra: Partial<RepositoryRule> = {}): RepositoryRule 
     watch_issues: false,
     ownership_policy: null,
     branch_patterns: [],
+    ignored_checks: [],
     ...extra,
   };
 };
@@ -136,6 +137,21 @@ describe("dashboard settings validation (plan §F.6)", () => {
     );
   });
 
+  it("ignored checks: at most 20 names of 1 to 100 characters, without commas or control characters", () => {
+    const checks = (ignored_checks: string[]) =>
+      errors({ repositories: [row("acme/x", { ignored_checks })] });
+    expect(checks(["PR Hygiene", "policy*", "CI / lint (x.y)", "x".repeat(100)])).toEqual({});
+    expect(checks(["a, b"])["repositories.0.ignored_checks"]).toBe(
+      'Repository 1: "a, b" is not a check name (1 to 100 characters, no commas).',
+    );
+    for (const bad of ["", " lead", "tab\tin", "x".repeat(101)]) {
+      expect(checks([bad]), JSON.stringify(bad)).toHaveProperty(["repositories.0.ignored_checks"]);
+    }
+    expect(checks(Array.from({ length: 21 }, (_, i) => `c${i}`))["repositories.0.ignored_checks"]).toBe(
+      "Repository 1: at most 20 ignored checks.",
+    );
+  });
+
   it("G8 owners to enumerate: login syntax, at most 5", () => {
     expect(errors({ enumerate_owners: ["a/b"] })).toHaveProperty("enumerate_owners");
     expect(errors({ enumerate_owners: ["a", "b", "c", "d", "e", "f"] }).enumerate_owners).toMatch(
@@ -242,6 +258,7 @@ describe("form draft", () => {
           alias: "PLAT",
           ownership_policy: { repo: { owner: "acme", name: "policies" }, path: "p.json" },
           branch_patterns: ["release/*", "vX.Y"],
+          ignored_checks: ["*hygiene*", "PastaClaw review"],
         }),
         row("acme/docs"),
       ],
@@ -253,13 +270,17 @@ describe("form draft", () => {
       repo: " acme/web ",
       alias: " ",
       branch_patterns: "main,  release/* hotfix/*",
+      ignored_checks: " PR title ,, CI / lint ",
     };
     draft.lookback_days = "x";
     draft.ready_label = " ready ";
     draft.time_zone = "";
     const back = fromDraft(draft);
     expect(back.repositories[1]).toEqual(
-      row("acme/web", { branch_patterns: ["main", "release/*", "hotfix/*"] }),
+      row("acme/web", {
+        branch_patterns: ["main", "release/*", "hotfix/*"],
+        ignored_checks: ["PR title", "CI / lint"],
+      }),
     );
     expect(back.lookback_days).toBeNaN();
     expect(back.ready_label).toBe("ready");

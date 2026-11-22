@@ -33,6 +33,8 @@ const TEXT_CHARS: usize = 300;
 const DETAILS_KEPT: usize = 8;
 /// Facts kept per statement.
 const FACTS_KEPT: usize = 6;
+/// Logins kept of those owing a review.
+const OWED_KEPT: usize = 10;
 /// Characters kept of a fact's label or value.
 const FACT_CHARS: usize = 100;
 
@@ -98,6 +100,8 @@ pub struct PrStatement {
     pub facts: Vec<Fact>,
     /// Opinion on Ready to merge; `None`: no opinion.
     pub ready_to_merge: Option<Readiness>,
+    /// Whose move it is (Waiting on others, K15 W3b); `None`: no opinion.
+    pub whose_move: Option<Move>,
     /// Changes whenever the pull request's state at the source changes (time-only values excluded).
     pub mark: String,
 }
@@ -109,6 +113,20 @@ pub enum Readiness {
     Agrees,
     /// The source holds it back, for `reason`.
     Holds {
+        /// Plain text.
+        reason: String,
+    },
+}
+
+/// Whose move a plug-in says a pull request is (K15 W3b).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Move {
+    /// The author's: it does not wait on others.
+    Author,
+    /// The reviewers' or maintainers': it waits on people.
+    People {
+        /// GitHub logins the source says owe a review; empty when it names none.
+        owed: Vec<String>,
         /// Plain text.
         reason: String,
     },
@@ -463,6 +481,11 @@ fn is_format(c: char) -> bool {
         | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
 }
 
+/// A GitHub login: letters, digits and `-`, at most 39.
+fn is_login(text: &str) -> bool {
+    (1..=39).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
 /// `text` without control and format characters, cut to `max` characters.
 fn plain(text: &str, max: usize) -> String {
     text.chars()
@@ -502,6 +525,16 @@ fn bounded(mut data: PluginData, home: &Url) -> PluginData {
         if let Some(Readiness::Holds { reason }) = &mut statement.ready_to_merge {
             *reason = plain(reason, TEXT_CHARS);
         }
+        if let Some(Move::People { owed, reason }) = &mut statement.whose_move {
+            *reason = plain(reason, TEXT_CHARS);
+            let mut kept: Vec<String> = Vec::new();
+            for login in owed.iter().filter(|l| is_login(l)) {
+                if kept.len() < OWED_KEPT && !kept.iter().any(|k| k.eq_ignore_ascii_case(login)) {
+                    kept.push(login.clone());
+                }
+            }
+            *owed = kept;
+        }
         let web =
             Url::parse(&statement.url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"));
         if !web {
@@ -537,6 +570,19 @@ pub struct Hold {
     pub url: String,
 }
 
+/// A plug-in's statement of whose move a pull request is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MoveStatement {
+    /// Plug-in id.
+    pub plugin: String,
+    /// Plug-in name.
+    pub source: String,
+    /// Evidence link.
+    pub url: String,
+    /// Whose move.
+    pub whose: Move,
+}
+
 impl Overlay {
     fn statements(
         &self,
@@ -562,6 +608,19 @@ impl Overlay {
                 facts: statement.facts.clone(),
             })
             .collect()
+    }
+
+    /// The first plug-in that says whose move `repo#number` is (K15 W3b).
+    pub fn whose_move(&self, repo: &RepoRef, number: u32) -> Option<MoveStatement> {
+        self.statements(repo, number)
+            .find_map(|(source, statement)| {
+                Some(MoveStatement {
+                    plugin: source.id.to_owned(),
+                    source: source.name.to_owned(),
+                    url: statement.url.clone(),
+                    whose: statement.whose_move.clone()?,
+                })
+            })
     }
 
     /// The first plug-in holding `repo#number` back from Ready to merge.

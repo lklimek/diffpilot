@@ -260,7 +260,7 @@ proptest! {
     fn text_rules_never_panic(a in "\\PC{0,40}", b in "\\PC{0,40}", pattern in "[a-zX.Y*/-]{0,12}", branch in "[a-z0-9.*/-]{0,30}") {
         let _ = text::conventional_type(&a);
         let _ = (text::has_fix_wording(&a), text::has_blocker_wording(&a), text::has_word(&a, "blocked"));
-        let _ = (text::version(&a, true), text::version(&a, false), text::is_policy_check(&a));
+        let _ = (text::version(&a, true), text::version(&a, false), text::is_builtin_ignored_check(&a));
         prop_assert_eq!(text::compare_ids(&a, &b), text::compare_ids(&b, &a).reverse());
         let _ = BranchPattern::new(&pattern).matches(&branch);
         prop_assert!(BranchPattern::new("*").matches(&branch));

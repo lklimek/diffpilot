@@ -648,11 +648,16 @@ title: string,
  */
 url: string,
 /**
- * Logins and teams (`team:<slug>`) whose review is requested.
+ * Whom to ping: logins and teams (`team:<slug>`) whose review is requested, or those a plug-in says owe a
+ * review; empty when nobody is named.
  */
 waiting_on: Array<string>,
 /**
- * Since when it waits (the oldest open request).
+ * Why it waits on others.
+ */
+reason: AwaitingReason,
+/**
+ * Since when it waits (the oldest open request; else when the pull request was opened).
  */
 waiting_since: string,
 /**
@@ -667,6 +672,31 @@ change_size?: ChangeSizeMark,
  * Always null: a pull request waiting only on others is not ranked (kept for compatibility).
  */
 total_tenths: number | null, };
+
+/**
+ * Why a pull request of the user waits on other people (plan K15 W3), the first that applies.
+ */
+export type AwaitingReason = { "kind": "ready_label",
+/**
+ * The label as on GitHub.
+ */
+label: string, } | { "kind": "plugin",
+/**
+ * Plug-in id.
+ */
+plugin: string,
+/**
+ * Name of the plug-in, shown before the reason.
+ */
+source: string,
+/**
+ * The plug-in's reason, plain text.
+ */
+reason: string,
+/**
+ * Evidence: the source's record of the pull request.
+ */
+url: string, } | { "kind": "review_requested" };
 
 /**
  * Change background work; an already running job is kept.
@@ -3329,31 +3359,6 @@ file: string,
 line: number, };
 
 /**
- * A pull request Ready to merge would list, held back by a plug-in's statement (ADR-022).
- */
-export type HeldBack = {
-/**
- * The pull request as Ready to merge would list it.
- */
-item: ReadyToMergeItem,
-/**
- * Plug-in id.
- */
-plugin: string,
-/**
- * Name of the plug-in, shown before the reason.
- */
-source: string,
-/**
- * The plug-in's reason, plain text.
- */
-reason: string,
-/**
- * Evidence: the source's record of the pull request.
- */
-url: string, };
-
-/**
  * A dated event for the charts.
  */
 export type HistoryEvent = {
@@ -5092,8 +5097,8 @@ message: string | null, };
 export type ReadFailure = "rate_limited" | "unavailable" | "sign_in_required";
 
 /**
- * A pull request of the user ready to merge: into the default branch, not a draft, write access, every check passed
- * and nothing left to answer (plan K17).
+ * A pull request of the user ready to merge: into the default branch or a release branch, not a draft, write
+ * access, every check passed except ignored ones, nothing left to answer and no ready label (plan K17).
  */
 export type ReadyToMergeItem = {
 /**
@@ -5370,7 +5375,12 @@ ownership_policy: PolicyRef | null,
 /**
  * Release and long-lived branch patterns; empty = the built-ins.
  */
-branch_patterns: Array<string>, };
+branch_patterns: Array<string>,
+/**
+ * Checks and statuses that never make CI red or pending (whole name, case-insensitive, `*` any text); empty =
+ * the built-ins.
+ */
+ignored_checks: Array<string>, };
 
 /**
  * Body of `POST /api/v1/pr/resolve`.
@@ -5805,16 +5815,14 @@ excluded: number,
  */
 awaiting: Array<AwaitingItem>,
 /**
- * The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked.
+ * The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked. A pull request a
+ * current plug-in statement holds back (ADR-022) is left out and stays ranked with its note.
  */
 ready_to_merge: Array<ReadyToMergeItem>,
 /**
- * Pull requests K17 would list that a current plug-in statement holds back (ADR-022), by display id.
- */
-ready_to_merge_held?: Array<HeldBack>,
-/**
- * The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read
- * again by the next refresh); null when the snapshot did not record merge states (stored before they were).
+ * The user's pull requests Ready to merge could list (into the default branch or a release branch) whose merge
+ * state GitHub had not computed by the scan (read again by the next refresh); null when the snapshot did not
+ * record merge states (stored before they were).
  */
 merge_state_pending: number | null,
 /**
