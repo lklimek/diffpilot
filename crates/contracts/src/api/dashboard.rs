@@ -51,6 +51,10 @@ pub struct PluginStatus {
     pub state: PluginState,
     /// When the source produced the data last read; null before the first successful read.
     pub as_of: Option<Timestamp>,
+    /// The plug-in can hold a pull request back from Ready to merge (PR Hygiene); absent when it never does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub holds_ready_to_merge: bool,
 }
 
 /// Whether a plug-in's statements are shown.

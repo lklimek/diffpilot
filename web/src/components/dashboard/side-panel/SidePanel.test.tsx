@@ -159,18 +159,26 @@ describe("side panel sections", () => {
     expect(screen.getByText("Left out because another source holds them back:")).toBeInTheDocument();
   });
 
-  it("Ready to merge names a plug-in whose statements are not applied, and nothing for a current one", () => {
+  it("Ready to merge names a plug-in that can hold PRs back whose statements are not applied, and nothing for a current one", () => {
     const plugin = {
       plugin: "pr-hygiene",
       source: "PR Hygiene",
       url: "https://pr-hygiene.example.test/",
       state: "stale" as const,
       as_of: "2026-11-18T08:00:00Z",
+      holds_ready_to_merge: true,
     };
-    const { unmount } = render(<ReadyToMerge items={[]} pending={0} plugins={[plugin]} />);
+    const status = {
+      ...plugin,
+      plugin: "thepastaclaw",
+      source: "thepastaclaw",
+      holds_ready_to_merge: undefined,
+    };
+    const { unmount } = render(<ReadyToMerge items={[]} pending={0} plugins={[plugin, status]} />);
     expect(document.querySelector("[data-plugin-status='stale']")).toHaveTextContent(
       "PR Hygiene: unavailable or out of date; Ready to merge is shown without its statements.",
     );
+    expect(document.querySelectorAll("[data-plugin-status]")).toHaveLength(1);
     unmount();
     render(<ReadyToMerge items={[]} pending={0} plugins={[{ ...plugin, state: "current" }]} />);
     expect(document.querySelector("[data-plugin-status]")).toBeNull();

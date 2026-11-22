@@ -773,12 +773,14 @@ struct GraphqlRequest {
     variables: Value,
 }
 
-/// State of `POST /graphql`: the v1 review endpoint and, when loaded, the dashboard world.
+/// State of `POST /graphql`: the v1 review endpoint and, when loaded, the dashboard world and the review-loop
+/// recordings.
 #[derive(Clone)]
 pub(crate) struct GraphqlState {
     pub(crate) graphql: Arc<Graphql>,
     pub(crate) oauth: Arc<Oauth>,
     pub(crate) dashboard: Option<Arc<Dashboard>>,
+    pub(crate) review_loop: Option<Arc<crate::review_loop::ReviewLoop>>,
 }
 
 /// `POST /graphql`: with the dashboard world loaded, only what v1 sends (mutations, `node` lookups, one
@@ -789,6 +791,19 @@ pub(crate) async fn serve_graphql(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Some(review_loop) = &state.review_loop
+        && let Ok(request) = serde_json::from_slice::<GraphqlRequest>(&body)
+        && let Some(answer) = review_loop.answer(&request.query, &request.variables)
+    {
+        if state.oauth.credentials(&headers) != Credentials::Valid {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"message": "Bad credentials", "documentation_url": "https://docs.github.com/graphql"})),
+            )
+                .into_response();
+        }
+        return answer;
+    }
     if let Some(dashboard) = &state.dashboard
         && let Ok(request) = serde_json::from_slice::<GraphqlRequest>(&body)
     {
@@ -875,6 +890,7 @@ mod tests {
             app_public_key_file: None,
             dashboard_fixture_dir: None,
             dashboard_world_at: None,
+            review_loop_fixture_dir: None,
         };
         let oauth = Arc::new(Oauth::load(&config).unwrap());
         let graphql = Arc::new(Graphql::load(&config, oauth).unwrap());

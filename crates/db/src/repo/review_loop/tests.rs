@@ -1248,3 +1248,135 @@ async fn comment_item_question_without_an_analysis() {
         vec![(item.id, 1)]
     );
 }
+
+#[tokio::test]
+async fn undo_cancels_unclaimed_effects_and_is_refused_once_one_is_claimed() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "dedupe-undo").await;
+    let decision = decide_one(&db, fix_decision(&item), at(10)).await;
+    let item = rl
+        .item_by_no(PR, item.no)
+        .await
+        .expect("read")
+        .expect("item");
+    assert_eq!(
+        rl.undo(T, item.id, item.revision + 1, "u1", at(11))
+            .await
+            .expect("undo"),
+        ActionOutcome::ItemChanged
+    );
+    let ActionOutcome::Done(undone) = rl
+        .undo(T, item.id, item.revision, "u1", at(11))
+        .await
+        .expect("undo")
+    else {
+        panic!("undo refused");
+    };
+    assert_eq!(undone.state, ItemState::Undecided);
+    let stored = rl.item_decisions(item.id).await.expect("decisions");
+    assert_eq!(stored.len(), 1, "decisions stay append-only");
+    assert_eq!(stored[0].decision.undone_at, Some(at(11)));
+    assert!(
+        stored[0]
+            .decision
+            .effects
+            .iter()
+            .all(|effect| effect.state == EffectState::Cancelled)
+    );
+    assert_eq!(
+        rl.undo(T, item.id, undone.revision, "u1", at(12))
+            .await
+            .expect("undo"),
+        ActionOutcome::NoDecision,
+        "an undone decision cannot be undone again"
+    );
+    assert!(
+        rl.claimable(
+            T,
+            &[EffectKind::Fix, EffectKind::Reply, EffectKind::Resolve],
+            None,
+            at(12)
+        )
+        .await
+        .expect("feed")
+        .is_empty(),
+        "an undone decision is not in the feed"
+    );
+
+    let again = decide_one(&db, fix_decision(&undone), at(13)).await;
+    assert_eq!(again.supersedes, Some(decision.id));
+    let token = AccessTokenId("agentAAA".into());
+    let all = [EffectKind::Fix, EffectKind::Reply, EffectKind::Resolve];
+    rl.claim(
+        again.id,
+        &token,
+        &all,
+        SignedDuration::from_mins(30),
+        at(14),
+    )
+    .await
+    .expect("claim");
+    let item = rl
+        .item_by_no(PR, item.no)
+        .await
+        .expect("read")
+        .expect("item");
+    assert_eq!(
+        rl.undo(T, item.id, item.revision, "u1", at(15))
+            .await
+            .expect("undo"),
+        ActionOutcome::EffectClaimed
+    );
+}
+
+#[tokio::test]
+async fn reopen_asks_again_and_skips_are_per_reader_and_revision() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "dedupe-reopen").await;
+    assert_eq!(
+        rl.reopen(item.id, item.revision, at(5))
+            .await
+            .expect("reopen"),
+        ActionOutcome::NoDecision
+    );
+    decide_one(&db, fix_decision(&item), at(10)).await;
+    let item = rl
+        .item_by_no(PR, item.no)
+        .await
+        .expect("read")
+        .expect("item");
+    let ActionOutcome::Done(reopened) = rl
+        .reopen(item.id, item.revision, at(11))
+        .await
+        .expect("reopen")
+    else {
+        panic!("reopen refused");
+    };
+    assert_eq!(reopened.state, ItemState::Reopened);
+    let stored = rl.item_decisions(item.id).await.expect("decisions");
+    assert!(
+        stored[0]
+            .decision
+            .effects
+            .iter()
+            .all(|effect| effect.state == EffectState::Cancelled),
+        "unclaimed effects of a reopened item are cancelled"
+    );
+
+    rl.skip(T, "u1", item.id, 3, at(12)).await.expect("skip");
+    rl.skip(T, "u1", item.id, reopened.revision, at(13))
+        .await
+        .expect("skip again");
+    assert_eq!(
+        rl.skips("u1", PR).await.expect("skips"),
+        vec![(item.id, reopened.revision)]
+    );
+    assert!(rl.skips("u2", PR).await.expect("skips").is_empty());
+    assert!(rl.latest_pass(PR).await.expect("pass").is_none());
+    let decision = rl.item_decisions(item.id).await.expect("decisions")[0]
+        .decision
+        .id;
+    assert_eq!(rl.decision_user(decision).await.expect("user"), "u1");
+}

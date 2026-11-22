@@ -1,0 +1,564 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DecideRest",
+  "description": "The \"Decide the rest per recommendation\" confirmation list; nothing is stored until RC9 confirms it.",
+  "type": "object",
+  "properties": {
+    "rows": {
+      "description": "Rows to decide; their count is the number shown.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DecideRestRow"
+      }
+    },
+    "left_out": {
+      "description": "Undecided items left out, gate items included.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/LeftOutItem"
+      }
+    }
+  },
+  "required": [
+    "rows",
+    "left_out"
+  ],
+  "$defs": {
+    "DecideRestRow": {
+      "description": "One row of the \"Decide the rest\" confirmation list.",
+      "type": "object",
+      "properties": {
+        "row": {
+          "description": "The decision submitted on confirmation (RC9 `via: bulk`).",
+          "$ref": "#/$defs/DecisionBatchRow"
+        },
+        "recommendation": {
+          "description": "The recommendation it follows.",
+          "$ref": "#/$defs/Recommendation"
+        },
+        "effects": {
+          "description": "Its effects.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PlannedEffect"
+          }
+        }
+      },
+      "required": [
+        "row",
+        "recommendation",
+        "effects"
+      ]
+    },
+    "DecisionBatchRow": {
+      "description": "One row of a decision batch.",
+      "type": "object",
+      "properties": {
+        "item_no": {
+          "description": "The item, `C<no>`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "kind": {
+          "description": "Decision.",
+          "$ref": "#/$defs/DecisionKind"
+        },
+        "reason": {
+          "description": "Reason (required for D3 and D8).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "Target (D4, D6, D7; optional title for D5).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionTarget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "override": {
+          "description": "Override flag.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Override"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolve_ticked": {
+          "description": "\"Resolve this thread\" as submitted.",
+          "type": "boolean"
+        },
+        "reply_text": {
+          "description": "Reply text to post (edited preview); null for the server's default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "comment": {
+          "description": "The owner's comment for the executor; never posted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "item_revision": {
+          "description": "The item revision the decision is based on.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "item_no",
+        "kind",
+        "resolve_ticked",
+        "item_revision"
+      ]
+    },
+    "DecisionKind": {
+      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+      "oneOf": [
+        {
+          "description": "D1: resolve, already fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "D2: fix in this pull request.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "D3: reject (with a reason); D8 with a `blocker_gate` override.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "D4: handled in an existing pull request.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "D5: create a follow-up pull request.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "D6: upstream issue (link or create).",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "D7: TODO, out of scope for this pull request.",
+          "type": "string",
+          "const": "todo"
+        },
+        {
+          "description": "P1: merge now, remaining items become follow-ups.",
+          "type": "string",
+          "const": "merge_with_follow_ups"
+        },
+        {
+          "description": "P2: another round.",
+          "type": "string",
+          "const": "another_round"
+        },
+        {
+          "description": "P3: dismiss the listed stale bot reviews.",
+          "type": "string",
+          "const": "dismiss_stale_reviews"
+        },
+        {
+          "description": "P4: keep the reviews.",
+          "type": "string",
+          "const": "keep_reviews"
+        }
+      ]
+    },
+    "DecisionTarget": {
+      "description": "The target a decision needs.",
+      "oneOf": [
+        {
+          "description": "D4: the existing pull request.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "existing_pr"
+            },
+            "number": {
+              "description": "Its number in the same repository.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "number"
+          ]
+        },
+        {
+          "description": "D5: the follow-up pull request's title (prefilled; optional).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "follow_up_pr"
+            },
+            "title": {
+              "description": "Title.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "D6: an issue URL, or null to create one.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "upstream_issue"
+            },
+            "url": {
+              "description": "Issue URL.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "D7: the TODO title.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "todo"
+            },
+            "title": {
+              "description": "Title.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title"
+          ]
+        }
+      ]
+    },
+    "Override": {
+      "description": "A decision against the assessment.",
+      "oneOf": [
+        {
+          "description": "Fix although the necessity verdict is `out`.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "necessity_gate"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "D8: accept despite the gate (reason required, posted; thread always resolved).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "blocker_gate"
+            },
+            "gate": {
+              "description": "The gate.",
+              "$ref": "#/$defs/Gate"
+            }
+          },
+          "required": [
+            "type",
+            "gate"
+          ]
+        }
+      ]
+    },
+    "Gate": {
+      "description": "A blocker gate of claudius `severity` §2. Gate items are never grouped or bulk-decided (RQ4, RQ5). Open enum.",
+      "oneOf": [
+        {
+          "description": "Loss or misdirection of funds.",
+          "type": "string",
+          "const": "G-FUNDS"
+        },
+        {
+          "description": "Secret exposure.",
+          "type": "string",
+          "const": "G-SECRET"
+        },
+        {
+          "description": "Cryptographic weakness.",
+          "type": "string",
+          "const": "G-CRYPTO"
+        },
+        {
+          "description": "Data loss or corruption.",
+          "type": "string",
+          "const": "G-DATA"
+        }
+      ]
+    },
+    "Recommendation": {
+      "description": "The LLM's recommendation; on the card under the evidence, the recommended option first (RQ7).",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Recommended decision.",
+          "$ref": "#/$defs/DecisionKind"
+        },
+        "reason": {
+          "description": "Why.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Target the decision needs (D4–D7).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionTarget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason_class": {
+          "description": "Short class of the reason; groups share kind and class or target (plan §2.4).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reason",
+        "reason_class"
+      ]
+    },
+    "PlannedEffect": {
+      "description": "An effect a decision would get (\"What happens next\", the confirmation list); not stored.",
+      "type": "object",
+      "properties": {
+        "seq": {
+          "description": "Order, 1-based.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "after": {
+          "description": "`seq` it waits for.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "kind": {
+          "description": "Kind.",
+          "$ref": "#/$defs/EffectKind"
+        },
+        "executor": {
+          "description": "Executor.",
+          "$ref": "#/$defs/Executor"
+        },
+        "params": {
+          "description": "Parameters (the reply text that gets posted is in `text`).",
+          "$ref": "#/$defs/EffectParams"
+        }
+      },
+      "required": [
+        "seq",
+        "kind",
+        "executor",
+        "params"
+      ]
+    },
+    "EffectKind": {
+      "description": "Kind of an effect; also an executor capability. Open enum.",
+      "oneOf": [
+        {
+          "description": "Fix and push.",
+          "type": "string",
+          "const": "fix"
+        },
+        {
+          "description": "Reply in the thread.",
+          "type": "string",
+          "const": "reply"
+        },
+        {
+          "description": "Resolve the thread.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "PR-level comment (replies to body and PR-comment items).",
+          "type": "string",
+          "const": "pr_comment"
+        },
+        {
+          "description": "Create a draft follow-up pull request.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "Create an upstream issue (and the \"Known limitation\" body line).",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "Save a TODO.",
+          "type": "string",
+          "const": "todo"
+        },
+        {
+          "description": "Dismiss a review.",
+          "type": "string",
+          "const": "dismiss_review"
+        }
+      ]
+    },
+    "Executor": {
+      "description": "Who executes an effect.",
+      "oneOf": [
+        {
+          "description": "An external agent through the decision feed.",
+          "type": "string",
+          "const": "agent"
+        },
+        {
+          "description": "diffpilot[bot] (phase 3).",
+          "type": "string",
+          "const": "diffpilot_bot"
+        }
+      ]
+    },
+    "EffectParams": {
+      "description": "Parameters of an effect, set by the server's effect function.",
+      "type": "object",
+      "properties": {
+        "text": {
+          "description": "Text to post (reply, PR-level comment, dismissal message).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thread_id": {
+          "description": "GitHub thread node id (reply, resolve).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_id": {
+          "description": "GitHub review node id (dismiss; PR-level replies to a review's items).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Title (follow-up PR, issue, TODO).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "Existing issue URL (D6 with a link).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "item_nos": {
+          "description": "Items listed in a follow-up PR (P1), `C<no>`.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        }
+      },
+      "required": [
+        "item_nos"
+      ]
+    },
+    "LeftOutItem": {
+      "description": "An undecided item left out of \"Decide the rest\".",
+      "type": "object",
+      "properties": {
+        "item_no": {
+          "description": "The item, `C<no>`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "reason": {
+          "description": "Why.",
+          "$ref": "#/$defs/LeftOutReason"
+        }
+      },
+      "required": [
+        "item_no",
+        "reason"
+      ]
+    },
+    "LeftOutReason": {
+      "description": "Why an undecided item is not part of \"Decide the rest per recommendation\". Open enum.",
+      "oneOf": [
+        {
+          "description": "A gate item: decided one by one (RQ5).",
+          "type": "string",
+          "const": "gate"
+        },
+        {
+          "description": "No LLM assessment, so no recommendation.",
+          "type": "string",
+          "const": "not_assessed"
+        },
+        {
+          "description": "A repeat asked again: its reason needs a look.",
+          "type": "string",
+          "const": "asked_again"
+        },
+        {
+          "description": "The recommendation lacks the reason or target its decision needs.",
+          "type": "string",
+          "const": "incomplete"
+        }
+      ]
+    }
+  }
+}

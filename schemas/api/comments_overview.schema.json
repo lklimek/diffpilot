@@ -490,6 +490,10 @@
         "reason": {
           "description": "Reason.",
           "$ref": "#/$defs/QueueReason"
+        },
+        "skipped": {
+          "description": "The reader skipped it (\"Skip for now\") at its current revision; skipped entries come last. Absent when not.",
+          "type": "boolean"
         }
       },
       "required": [

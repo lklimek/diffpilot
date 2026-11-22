@@ -177,6 +177,7 @@ async fn spawn_github(gate: Arc<Gate>, fixture: PathBuf) -> String {
         app_public_key_file: None,
         dashboard_fixture_dir: Some(fixture),
         dashboard_world_at: None,
+        review_loop_fixture_dir: None,
     };
     let router = fake_github::router(&config)
         .expect("fake GitHub")

@@ -175,6 +175,7 @@ pub(crate) async fn spawn_fake_github(dashboard: Option<PathBuf>) -> String {
         app_public_key_file: None,
         dashboard_fixture_dir: dashboard,
         dashboard_world_at: None,
+        review_loop_fixture_dir: None,
     };
     let router = fake_github::router(&config).expect("fake GitHub");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

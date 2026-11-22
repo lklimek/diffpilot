@@ -232,10 +232,12 @@ pub struct PassRecord {
     pub sent: Vec<SentItem>,
     /// The question a question pass answers.
     pub question: Option<QuestionId>,
+    /// When it ended (finished or failed).
+    pub finished_at: Option<Timestamp>,
 }
 
 const PASS_COLUMNS: &str =
-    "id, pull_request_id, user_id, cause, head, state, job_id, sent, question_id";
+    "id, pull_request_id, user_id, cause, head, state, job_id, sent, question_id, finished_at";
 
 fn pass_from_row(row: &SqliteRow) -> Result<PassRecord, DbError> {
     Ok(PassRecord {
@@ -248,6 +250,7 @@ fn pass_from_row(row: &SqliteRow) -> Result<PassRecord, DbError> {
         job_id: opt_wire_col(row, "job_id")?,
         sent: json_col(row, "sent")?,
         question: opt_wire_col(row, "question_id")?,
+        finished_at: opt_ts_col(row, "finished_at")?,
     })
 }
 
@@ -779,6 +782,20 @@ impl ReviewLoop<'_> {
         .await?
         .ok_or(DbError::NotFound)?;
         pass_from_row(&row)
+    }
+
+    /// The PR's latest assessment pass.
+    pub async fn latest_pass(&self, pull_request_id: i64) -> Result<Option<PassRecord>, DbError> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {PASS_COLUMNS} FROM comment_passes WHERE pull_request_id = ?
+             ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        )))
+        .bind(pull_request_id)
+        .fetch_optional(self.pool)
+        .await?
+        .as_ref()
+        .map(pass_from_row)
+        .transpose()
     }
 
     /// Queued and running passes of every pull request, oldest first (server start: follow them again).

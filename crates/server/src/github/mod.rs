@@ -7,6 +7,7 @@ pub mod mirror;
 pub mod oauth;
 pub mod rest;
 pub mod review;
+pub mod review_loop;
 pub mod threads;
 pub mod viewed;
 pub mod work;

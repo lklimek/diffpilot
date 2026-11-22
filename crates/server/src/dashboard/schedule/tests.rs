@@ -1113,6 +1113,7 @@ mod ranked {
             app_public_key_file: None,
             dashboard_fixture_dir: Some(repo_root().join("fixtures/dashboard/github")),
             dashboard_world_at: None,
+            review_loop_fixture_dir: None,
         };
         let router = fake_github::router(&config).expect("fake GitHub");
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

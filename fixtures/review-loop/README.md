@@ -7,7 +7,7 @@ Format: one `{request, status, response}` recording per file, as `fixtures/pr-48
 
 | File | Query | Content |
 |---|---|---|
-| `github/pr.json` | Q-L1 | PR facts at the head |
+| `github/pr.json` | Q-L1 | PR facts at the head, the repository's id and visibility |
 | `github/review-threads.json` | Q-L2 | 8 threads: resolved after a fix with a bot answer (`l1`); open (`l2`); re-raised in place after a withdrawal (`l3`); deferred with a tracking link (`l4`); legacy marker without `dedupe=` (`l5`, outdated); marker with unknown keys (`l6`); human reviewer (`l7`); GitHub `Bot` account (`l8`) |
 | `github/reviews.json` | Q-L3 | legacy review without a phase marker (`r0`); three rounds `phase=final` at `3f9a1c2`, `9f3c2e1`, `52d2da1` (`r1` edited in place with a status block and a finding not shown inline; `r2` with a carried item and a follow-up candidate; `r5`); empty bot and agent reviews holding thread replies (`r3`, `r4`); a human `CHANGES_REQUESTED` body with two items (`h1`); a CodeRabbit body (`c1`); a dismissed review (`a1`) |
 | `github/comments.json` | Q-L4 | the gate comment (edited in place); a CI state comment; a human PR-level comment; a free-form bot reply; an agent reply |
@@ -15,3 +15,7 @@ Format: one `{request, status, response}` recording per file, as `fixtures/pr-48
 | `github/thread-edits.json` | `userContentEdits` | the edit history of `l3`: created, status block added, re-raised (status removed) |
 
 thepastaclaw is a GitHub `User`, not a `Bot`: the bot rule needs `known_bots` (RQ17).
+
+The `request.body.query` of `pr.json`, `review-threads.json`, `reviews.json` and `comments.json` is the document
+`server::github::review_loop` sends (test `fixture_requests_record_the_documents_sent`); fake-github serves these
+four answers with `--review-loop-fixture-dir fixtures/review-loop/github`.

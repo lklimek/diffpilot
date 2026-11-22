@@ -171,7 +171,7 @@ fn scope(session: &Session) -> Scope {
 
 /// Counts a dashboard read in a browser session as the user's presence for the plug-in poller (ADR-022 §3); a
 /// personal access token read is an automated client, not a user in the session.
-fn mark_present(state: &AppState, session: &Session) {
+pub(crate) fn mark_present(state: &AppState, session: &Session) {
     if !session.is_access_token() {
         state
             .plugins

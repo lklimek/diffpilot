@@ -553,6 +553,11 @@
           "description": "The pass left this item out of its output.",
           "type": "string",
           "const": "missing"
+        },
+        {
+          "description": "No assessment pass has run for it yet.",
+          "type": "string",
+          "const": "not_run"
         }
       ]
     },
@@ -1150,6 +1155,14 @@
         "decided_at": {
           "description": "When.",
           "type": "string",
+          "format": "date-time"
+        },
+        "undone_at": {
+          "description": "When the owner undid it (before any effect was claimed); its effects are cancelled and the item is asked\nagain. Absent while it stands.",
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "date-time"
         },
         "effects": {

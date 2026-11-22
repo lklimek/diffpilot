@@ -41,6 +41,7 @@ fn config() -> Config {
         app_public_key_file: None,
         dashboard_fixture_dir: None,
         dashboard_world_at: None,
+        review_loop_fixture_dir: None,
     }
 }
 
@@ -915,4 +916,50 @@ async fn graphql_viewed_marks_are_set_cleared_and_dismissed_by_a_head_move() {
         .unwrap();
     assert_eq!(moved.status(), StatusCode::NO_CONTENT);
     assert_eq!(viewed_state(&base, &token, client_rs).await, "DISMISSED");
+}
+
+fn review_loop_recording(file: &str) -> Value {
+    let path = repo_root().join("fixtures/review-loop/github").join(file);
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// With `--review-loop-fixture-dir`, the review loop's four reads are answered from their recordings (signed in
+/// only); another pull request or document goes on to the other handlers.
+#[tokio::test]
+async fn review_loop_reads_are_served_from_their_recordings() {
+    let base = spawn(Config {
+        review_loop_fixture_dir: Some(repo_root().join("fixtures/review-loop/github")),
+        ..config()
+    })
+    .await;
+    let token = token(&sign_in(&base).await, "access_token");
+    for file in [
+        "pr.json",
+        "review-threads.json",
+        "reviews.json",
+        "comments.json",
+    ] {
+        let recording = review_loop_recording(file);
+        let query = recording["request"]["body"]["query"].as_str().unwrap();
+        let mut variables = recording["request"]["body"]["variables"].clone();
+        variables["after"] = Value::Null;
+        let (status, body) = graphql(&base, &token, query, variables.clone()).await;
+        assert_eq!(status, StatusCode::OK, "{file}");
+        assert_eq!(body, recording["response"], "{file}");
+        let (status, _) = graphql(&base, "not-a-token", query, variables).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{file}");
+    }
+    let recording = review_loop_recording("pr.json");
+    let query = recording["request"]["body"]["query"].as_str().unwrap();
+    let (_, body) = graphql(
+        &base,
+        &token,
+        query,
+        serde_json::json!({"o": "acme", "n": "node-client", "pr": 483}),
+    )
+    .await;
+    assert_ne!(
+        body, recording["response"],
+        "another pull request is not answered from the recording"
+    );
 }

@@ -641,3 +641,36 @@ async fn pr_hygiene_logs_unreadable_records_once_per_change_of_their_count() {
         1
     );
 }
+
+#[test]
+fn only_pr_hygiene_says_it_can_hold_ready_to_merge() {
+    let url = |path: &str| Url::parse(&format!("https://source.example.test/{path}")).expect("url");
+    let host = PluginHost::new(
+        vec![
+            Arc::new(PrHygiene::new(url("")).expect("pr hygiene")),
+            Arc::new(
+                super::thepastaclaw::Thepastaclaw::new(url("data/status.json"))
+                    .expect("thepastaclaw"),
+            ),
+        ],
+        Timing::default(),
+    );
+    let holds: Vec<(String, bool)> = host
+        .statuses(now())
+        .into_iter()
+        .map(|status| (status.plugin, status.holds_ready_to_merge))
+        .collect();
+    assert_eq!(
+        holds,
+        [
+            ("pr-hygiene".to_owned(), true),
+            ("thepastaclaw".to_owned(), false)
+        ]
+    );
+    let json = serde_json::to_value(host.statuses(now())).expect("json");
+    assert_eq!(json[0]["holds_ready_to_merge"], json!(true));
+    assert!(
+        json[1].get("holds_ready_to_merge").is_none(),
+        "omitted when false: {json}"
+    );
+}

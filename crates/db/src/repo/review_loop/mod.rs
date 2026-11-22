@@ -13,12 +13,14 @@ use super::Db;
 use super::jobs::{parse_ts, parse_wire, wire_name};
 use crate::error::DbError;
 
+mod actions;
 mod carry;
 mod decisions;
 mod items;
 mod notify;
 mod watches;
 
+pub use actions::ActionOutcome;
 pub use carry::NewCarryEvent;
 pub use decisions::{
     ClaimOutcome, DecideOutcome, NewDecision, NewEffect, ReportOutcomeRecord, ReportRequest,

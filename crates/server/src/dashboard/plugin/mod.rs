@@ -46,6 +46,10 @@ pub trait DashboardPlugin: Send + Sync + fmt::Debug {
     fn home(&self) -> &Url;
     /// Reads the source once.
     fn poll(&self) -> BoxFuture<'_, Result<Polled, PluginError>>;
+    /// Whether its statements can hold a pull request back from Ready to merge.
+    fn holds_ready_to_merge(&self) -> bool {
+        false
+    }
 }
 
 /// The answer of one poll.
@@ -385,6 +389,7 @@ impl PluginHost {
                         PluginState::Stale
                     },
                     as_of: state.data.as_ref().map(|d| d.as_of),
+                    holds_ready_to_merge: slot.plugin.holds_ready_to_merge(),
                 }
             })
             .collect()

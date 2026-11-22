@@ -15,6 +15,9 @@ use crate::github::oauth::endpoint;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const CLIENT_NAME: &str = "diffpilot";
+/// Largest answer read: a page of review bodies reaches about 1 MB (spike S13-2), so 8 MiB leaves room while a
+/// runaway answer is refused with a clear error.
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 /// A GraphQL call failed.
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +55,12 @@ pub enum GraphqlError {
     /// changed.
     #[error("GitHub refused the request before executing it ({0:?})")]
     NotExecuted(GraphqlErrorType),
+    /// The answer is larger than [`MAX_RESPONSE_BYTES`]; it was not read.
+    #[error("GitHub answered with more than {limit} bytes")]
+    TooLarge {
+        /// Bytes accepted.
+        limit: usize,
+    },
 }
 
 impl GraphqlError {
@@ -78,6 +87,7 @@ impl GraphqlError {
             Self::Http(_)
             | Self::Malformed(_)
             | Self::NoData
+            | Self::TooLarge { .. }
             | Self::Rejected(_)
             | Self::FieldFailed(_) => false,
         }
@@ -173,7 +183,7 @@ pub async fn execute<V: Serialize, D: DeserializeOwned>(
         .is_some_and(|value| value.as_bytes() == b"0");
     if status != StatusCode::OK {
         // A non-200 answer that still carries resolved data was executed (e.g. a secondary rate limit).
-        let body = response.bytes().await.unwrap_or_default();
+        let body = bounded_body(response).await.unwrap_or_default();
         if let Ok(envelope) = serde_json::from_slice::<Envelope>(&body)
             && phase(envelope.data.as_ref()) == Phase::Resolved
         {
@@ -186,7 +196,7 @@ pub async fn execute<V: Serialize, D: DeserializeOwned>(
             status => GraphqlError::Status(status),
         });
     }
-    let bytes = response.bytes().await.map_err(GraphqlError::Http)?;
+    let bytes = bounded_body(response).await?;
     let envelope: Envelope = serde_json::from_slice(&bytes).map_err(GraphqlError::Malformed)?;
     if !envelope.errors.is_empty() {
         let kind = envelope.first_error_type();
@@ -200,6 +210,27 @@ pub async fn execute<V: Serialize, D: DeserializeOwned>(
         None | Some(serde_json::Value::Null) => Err(GraphqlError::NoData),
         Some(data) => serde_json::from_value(data).map_err(GraphqlError::Malformed),
     }
+}
+
+/// The answer's body, refused beyond [`MAX_RESPONSE_BYTES`].
+async fn bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, GraphqlError> {
+    let too_large = GraphqlError::TooLarge {
+        limit: MAX_RESPONSE_BYTES,
+    };
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(too_large);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(GraphqlError::Http)? {
+        if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(too_large);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 /// How far execution got, judged from `data`.
@@ -366,5 +397,19 @@ pub(crate) mod tests {
         assert!(matches!(result, Err(GraphqlError::NoData)), "{result:?}");
         let result = answer(ResponseTemplate::new(200).set_body_json(json!({"data": null}))).await;
         assert!(matches!(result, Err(GraphqlError::NoData)), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn an_answer_over_the_size_cap_is_refused() {
+        let body = format!(
+            "{{\"data\":{{\"x\":\"{}\"}}}}",
+            "a".repeat(MAX_RESPONSE_BYTES)
+        );
+        let result = answer(ResponseTemplate::new(200).set_body_string(body)).await;
+        assert!(
+            matches!(result, Err(GraphqlError::TooLarge { limit }) if limit == MAX_RESPONSE_BYTES),
+            "{result:?}"
+        );
+        assert!(!GraphqlError::TooLarge { limit: 1 }.proves_not_applied());
     }
 }
