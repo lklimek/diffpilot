@@ -77,6 +77,19 @@ describe("AccessTokensCard (ADR-019, plan §F.6)", () => {
     expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toContain(SECRET);
   });
 
+  it("adds the review-loop execute scope only when ticked", async () => {
+    const { onCreate } = renderCard();
+    await userEvent.click(screen.getByRole("button", { name: "New token" }));
+    await userEvent.type(screen.getByLabelText("Name"), "implementing agent");
+    await userEvent.click(screen.getByRole("checkbox", { name: /review_loop_execute/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Create token" }));
+    expect(onCreate).toHaveBeenCalledWith({
+      name: "implementing agent",
+      scopes: ["read", "review_loop_execute"],
+      expires_in_days: 90,
+    });
+  });
+
   it("Escape closes the form, but on the secret view only Done closes", async () => {
     renderCard();
     await userEvent.click(screen.getByRole("button", { name: "New token" }));

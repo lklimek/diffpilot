@@ -61,8 +61,10 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
     <SettingsCard title="Access tokens" help={<HelpTip topic="access_tokens" />}>
       <p>
         A personal access token lets your agents read over HTTP what you can read here: My work, reviews and
-        their questions. Tokens are <b>read-only</b>: they cannot change anything, start a refresh or an
-        analysis, post comments, or list and create tokens.
+        their questions. A <b>read</b> token is <b>read-only</b>: it cannot change anything, start a refresh
+        or an analysis, post comments, or list and create tokens. A token that also has{" "}
+        <b>review_loop_execute</b> may claim your decisions on PR comments and report what it did; no token
+        can decide.
       </p>
       <p className="text-xs text-muted">
         Send it as <code className="font-mono">Authorization: Bearer srp_…</code>. The agent API is described

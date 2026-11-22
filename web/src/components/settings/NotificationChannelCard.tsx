@@ -5,6 +5,7 @@ import type {
   ChannelTestResult,
   NotificationChannel,
   PutChannelRequest,
+  SecretChange,
   UserEventKind,
 } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
@@ -64,7 +65,7 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
   const ntfy = kind === "ntfy";
   const [url, setUrl] = useState(channel?.url ?? (ntfy ? "https://ntfy.sh" : ""));
   const [topic, setTopic] = useState(channel?.topic ?? "");
-  const [secret, setSecret] = useState<string | null>(null);
+  const [secret, setSecret] = useState<SecretChange>({ action: "keep" });
   const [events, setEvents] = useState<UserEventKind[]>(
     channel?.events ?? ["questions_ready", "round_executed"],
   );
@@ -76,11 +77,11 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
     props.onSave({
       url: url.trim(),
       topic: ntfy ? topic.trim() || null : null,
-      secret: secret === null ? null : secret,
+      secret: secret.action === "replace" && secret.value === "" ? { action: "keep" } : secret,
       events,
       enabled,
     });
-    setSecret(null);
+    setSecret({ action: "keep" });
   };
   return (
     <SettingsCard title={ntfy ? "ntfy" : "Webhook (e.g. Home Assistant)"}>
@@ -119,36 +120,80 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
           <label htmlFor={`${id}-secret`} className="mb-0.5 block text-xs font-semibold">
             {secretName}
           </label>
-          {secret === null ? (
+          {secret.action === "replace" ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                id={`${id}-secret`}
+                type="password"
+                autoComplete="off"
+                value={secret.value}
+                aria-describedby={`${id}-secret-d`}
+                onChange={(e) => setSecret({ action: "replace", value: e.target.value })}
+                className={`${INPUT} max-w-80`}
+              />
+              <Tooltip tip="Keeps the stored secret as it is.">
+                <button
+                  type="button"
+                  onClick={() => setSecret({ action: "keep" })}
+                  className={buttonClass("plain", true)}
+                >
+                  Cancel
+                </button>
+              </Tooltip>
+            </div>
+          ) : (
             <div className="flex flex-wrap items-center gap-2">
               <input
                 id={`${id}-secret`}
                 type="text"
                 readOnly
-                value={channel?.secret_last4 ? `•••• ${channel.secret_last4}` : "not set"}
+                value={
+                  secret.action === "remove"
+                    ? "removed when you save"
+                    : channel?.secret_last4
+                      ? `•••• ${channel.secret_last4}`
+                      : "not set"
+                }
                 aria-describedby={`${id}-secret-d`}
                 className={`${INPUT} max-w-56`}
               />
-              <Tooltip tip="Type a new secret; the stored one stays until you save.">
-                <button type="button" onClick={() => setSecret("")} className={buttonClass("plain", true)}>
-                  {channel?.secret_last4 ? "Replace" : "Set"}
-                </button>
-              </Tooltip>
+              {secret.action === "keep" && (
+                <Tooltip tip="Type a new secret; the stored one stays until you save.">
+                  <button
+                    type="button"
+                    onClick={() => setSecret({ action: "replace", value: "" })}
+                    className={buttonClass("plain", true)}
+                  >
+                    {channel?.secret_last4 ? "Replace" : "Set"}
+                  </button>
+                </Tooltip>
+              )}
+              {secret.action === "keep" && channel?.secret_last4 && (
+                <Tooltip tip="Removes the stored secret when you save the channel.">
+                  <button
+                    type="button"
+                    onClick={() => setSecret({ action: "remove" })}
+                    className={buttonClass("plain", true)}
+                  >
+                    Remove secret
+                  </button>
+                </Tooltip>
+              )}
+              {secret.action === "remove" && (
+                <Tooltip tip="Keeps the stored secret.">
+                  <button
+                    type="button"
+                    onClick={() => setSecret({ action: "keep" })}
+                    className={buttonClass("plain", true)}
+                  >
+                    Keep it
+                  </button>
+                </Tooltip>
+              )}
             </div>
-          ) : (
-            <input
-              id={`${id}-secret`}
-              type="password"
-              autoComplete="off"
-              value={secret}
-              aria-describedby={`${id}-secret-d`}
-              onChange={(e) => setSecret(e.target.value)}
-              className={`${INPUT} max-w-80`}
-            />
           )}
           <p id={`${id}-secret-d`} className="mt-0.5 text-xs text-muted">
-            Stored encrypted on the server; only the last 4 characters are shown. Saving an empty value
-            removes it.
+            Stored encrypted on the server; only the last 4 characters are shown.
           </p>
         </div>
         <fieldset className="m-0 rounded-md border border-border px-3 py-1.5">
