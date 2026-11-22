@@ -4,7 +4,7 @@ import { buttonClass } from "../button/button";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText } from "../format/time";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
-import { FactChip } from "./parts";
+import { FactChip, READ_FAILURE } from "./parts";
 
 /** "LLM assessment running: 4 of 9 comments" or "14 of 14 comments assessed at 52d2da1". */
 export function assessmentText(a: AssessmentProgress): string {
@@ -46,6 +46,12 @@ export function ProcessCommentsCard({
                 text={`read ${clockText(read.read_at, now)}`}
                 tip={`Read from GitHub at ${clockText(read.read_at, now)}.`}
               />
+            )}
+            {read.failure && (
+              <p role="status" className="m-0 text-xs text-high">
+                GitHub could not be read ({READ_FAILURE[read.failure] ?? read.failure}).{" "}
+                {read.read_at ? "The last read stays shown." : "Nothing was read from GitHub yet."}
+              </p>
             )}
           </dd>
           <dt className="text-muted">Questions for you</dt>

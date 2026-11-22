@@ -105,3 +105,10 @@ export function GithubLinkedText({ text }: { text: string }) {
     </>
   );
 }
+
+/** Why the latest GitHub read failed, in plain words. */
+export const READ_FAILURE = {
+  rate_limited: "rate limit",
+  unavailable: "GitHub did not answer as expected",
+  sign_in_required: "sign in again",
+} as const;

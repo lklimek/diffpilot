@@ -284,9 +284,9 @@ export function CommentsTable(props: CommentsTableProps) {
             })}
             <tr>
               <th scope="rowgroup" colSpan={12} className={`${TD} bg-surface-2 text-left`}>
-                Decided, carried and outside diffpilot ({closed.length})
+                Previously decided and outside diffpilot ({closed.length})
                 {closed.length > 2 && (
-                  <Tooltip tip="Shows or hides the decided, carried and outside rows beyond the first two.">
+                  <Tooltip tip="Shows or hides the previously decided and outside rows beyond the first two.">
                     <button
                       type="button"
                       onClick={() => setShowAll(!showAll)}

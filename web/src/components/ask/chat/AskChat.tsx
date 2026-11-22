@@ -92,6 +92,8 @@ export interface AskChatProps {
   /** Asks a question without an answer again, in its thread. */
   onAskAgain: (question: AskQuestion) => Promise<unknown> | void;
   onUnanchor: () => void;
+  /** Why the whole PR cannot be the subject here: × is off with this hint, and a question about it is not sent. */
+  wholePrUnavailable?: string;
   onUsePlace: () => void;
   /** Opens what a thread is about (its subject chip); the chat stays open. */
   onGoto: (anchor: AskAnchor) => void;
@@ -378,6 +380,7 @@ export function AskChat(props: AskChatProps) {
   const count = useRef(0);
   const action = useAction();
   const [empty, setEmpty] = useState(false);
+  const [wholePrRefused, setWholePrRefused] = useState(false);
   const [replyFor, setReplyFor] = useState<QuestionId | null>(null);
   const replyButtons = useRef(new Map<QuestionId, HTMLButtonElement>());
   const threadItems = useRef(new Map<QuestionId, HTMLLIElement>());
@@ -437,6 +440,11 @@ export function AskChat(props: AskChatProps) {
       field.current?.focus();
       return;
     }
+    if (subject.kind === "pr" && props.wholePrUnavailable) {
+      setWholePrRefused(true);
+      field.current?.focus();
+      return;
+    }
     if (await action.run(() => props.onSend(draft.trim()))) {
       onDraft("");
       requestAnimationFrame(() => growField(field.current));
@@ -446,7 +454,11 @@ export function AskChat(props: AskChatProps) {
     setReplyFor(null);
     requestAnimationFrame(() => replyButtons.current.get(id)?.focus());
   };
-  const error = empty ? "Write a question first." : action.error && notSent(action.error, action.code);
+  const error = empty
+    ? "Write a question first."
+    : wholePrRefused && subject.kind === "pr"
+      ? (props.wholePrUnavailable ?? null)
+      : action.error && notSent(action.error, action.code);
 
   return (
     <section
@@ -642,11 +654,13 @@ export function AskChat(props: AskChatProps) {
                   <SubjectText anchor={subject} describe={describe} />
                 </span>
               </Tooltip>
-              <Tooltip tip="Ask about the whole PR instead">
+              <Tooltip tip={props.wholePrUnavailable ?? "Ask about the whole PR instead"}>
                 <button
                   type="button"
                   aria-label="Remove the subject: ask about the whole PR"
+                  aria-disabled={props.wholePrUnavailable ? true : undefined}
                   onClick={() => {
+                    if (props.wholePrUnavailable) return;
                     props.onUnanchor();
                     field.current?.focus();
                   }}
@@ -658,7 +672,9 @@ export function AskChat(props: AskChatProps) {
             </span>
           ) : (
             <>
-              <Tooltip tip="Your question will be about the whole pull request.">
+              <Tooltip
+                tip={props.wholePrUnavailable ?? "Your question will be about the whole pull request."}
+              >
                 <span tabIndex={0} className="rounded-[10px] border border-accent bg-accent-bg px-2">
                   Whole PR
                 </span>
@@ -697,6 +713,7 @@ export function AskChat(props: AskChatProps) {
             onChange={(event) => {
               onDraft(event.target.value);
               setEmpty(false);
+              setWholePrRefused(false);
               growField(event.target);
             }}
             onKeyDown={(event) => {

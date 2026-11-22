@@ -16,6 +16,7 @@ import { useUserEventNotifications } from "../../app/userEvents";
 import { Banner } from "../../components/banner/Banner";
 import { buttonClass } from "../../components/button/button";
 import { CommentsTabs, type CommentsPage } from "../../components/comments/CommentsTabs";
+import { READ_FAILURE } from "../../components/comments/parts";
 import { autoPassText, PrStatusStrip } from "../../components/comments/PrHeader";
 import { clockText } from "../../components/format/time";
 import { StatusMessage } from "../../components/status/StatusMessage";
@@ -41,12 +42,6 @@ export const useComments = () => useOutletContext<CommentsContext>();
 
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Try again.";
-
-const READ_FAILURE = {
-  rate_limited: "rate limit",
-  unavailable: "GitHub did not answer as expected",
-  sign_in_required: "sign in again",
-} as const;
 
 /** The shared Ask chat over the reader's questions about the PR's comment items, with the live answer counts. */
 function WithAsk({

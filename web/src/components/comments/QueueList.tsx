@@ -105,7 +105,7 @@ export function QueueList({
           </button>
         </Tooltip>
       )}
-      <h3 className={h}>Carried, not asked ({carried.length})</h3>
+      <h3 className={h}>Previously decided ({carried.length + decided.length})</h3>
       <ul className="m-0 list-none p-0 text-xs">
         {carried.map((i) => (
           <li key={i.id} className="px-2 py-0.5">
@@ -122,9 +122,9 @@ export function QueueList({
           </li>
         ))}
       </ul>
-      <h3 className={h}>Decided ({decided.length})</h3>
       <p className="m-0 px-2 text-xs text-muted">
-        {decided.filter((i) => i.state === "executing").length} with effects open ·{" "}
+        {decided.length} decided here · {decided.filter((i) => i.state === "executing").length} with effects
+        open ·{" "}
         <Tooltip tip="Opens the decision log with the agents' reports.">
           <button
             type="button"

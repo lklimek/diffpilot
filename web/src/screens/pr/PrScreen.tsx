@@ -63,10 +63,16 @@ export function PrScreen() {
                   <OpenExternal href={data.url} label={`Open ${display} on GitHub`} />
                 </h1>
                 <p className="m-0 text-xs text-muted">
-                  by {data.author} · base <code>{data.base}</code>
-                  {data.stack_parent && ` (stacked on #${data.stack_parent.number})`} ·{" "}
-                  {data.draft ? "draft" : data.state.toLowerCase()} · head{" "}
-                  <code>{data.head.slice(0, 7)}</code>
+                  by {data.author}
+                  {data.base && (
+                    <>
+                      {" "}
+                      · base <code>{data.base}</code>
+                    </>
+                  )}
+                  {data.stack_parent && ` (stacked on #${data.stack_parent.number})`}
+                  {(data.draft || data.state) && ` · ${data.draft ? "draft" : data.state.toLowerCase()}`} ·
+                  head <code>{data.head.slice(0, 7)}</code>
                 </p>
               </div>
               <WatchToggle

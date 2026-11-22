@@ -53,9 +53,7 @@ describe("V0 PR page (US1, US19)", () => {
 describe("V1 Questions (US3, US4, US11)", () => {
   it("opens the PR-level question first; j moves to the next question", async () => {
     const router = renderRoute(`${PR}/comments`);
-    expect(
-      await screen.findByRole("heading", { name: "Merge now, remaining items as follow-ups?" }),
-    ).toHaveFocus();
+    expect(await screen.findByRole("heading", { name: "Merge now, or another round?" })).toHaveFocus();
     expect(screen.getByRole("navigation", { name: "Queue" })).toHaveTextContent("PR-level (1)");
     fireEvent.keyDown(document.body, { key: "j" });
     await waitFor(() => expect(router.state.location.search).toBe("?item=C21"));
@@ -68,9 +66,7 @@ describe("V1 Questions (US3, US4, US11)", () => {
     expect(await screen.findByText(/pub async fn send_with_retry/)).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Decide" }));
     expect(await screen.findByText(/C14: decision recorded\. \d+ questions left\./)).toBeInTheDocument();
-    expect(
-      await screen.findByRole("heading", { name: "Merge now, remaining items as follow-ups?" }),
-    ).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Merge now, or another round?" })).toBeVisible();
     await userEvent.click(screen.getByRole("link", { name: "Decision log and agents" }));
     expect(await screen.findByText(/C14 · Fix here/)).toBeVisible();
   });

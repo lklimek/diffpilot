@@ -1,13 +1,22 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { ApiError } from "../../api/client";
-import type { CommentItem, DecideRequest, DecisionBatchRow, QueueEntry } from "../../api/generated/types";
+import type {
+  CommentItem,
+  DecideRequest,
+  DecisionBatchRow,
+  DecisionId,
+  QueueEntry,
+} from "../../api/generated/types";
 import {
+  useAssessAgain,
   useCommentContext,
   useCommentLog,
   useDecide,
   useDecideBatch,
   useItemAction,
+  useMarkGate,
+  useUndoDecision,
 } from "../../api/review-loop";
 import { CollapsibleSection } from "../../components/collapsible/CollapsibleSection";
 import { isTypingField } from "../../components/comments/DecisionForm";
@@ -55,6 +64,11 @@ export function QuestionsScreen() {
   const decide = useDecide(pr);
   const batch = useDecideBatch(pr);
   const action = useItemAction(pr);
+  const undoDecision = useUndoDecision(pr);
+  const assessAgain = useAssessAgain(pr);
+  const markGate = useMarkGate(pr);
+  // What the last "Assess again" did, per item.
+  const [assessNote, setAssessNote] = useState<{ no: number; text: string } | null>(null);
   const log = useCommentLog(pr);
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(new Set());
   const [individual, setIndividual] = useState<ReadonlySet<number>>(new Set());
@@ -62,7 +76,7 @@ export function QuestionsScreen() {
   const [help, setHelp] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   // The last single decision, offered for Undo until one of its effects is claimed (plan §3.2 item 9).
-  const [undoable, setUndoable] = useState<{ no: number } | null>(null);
+  const [undoable, setUndoable] = useState<{ no: number; decision: DecisionId; label: string } | null>(null);
   const [lines, setLines] = useState<{ item: number | null; from: number | null; to: number | null }>({
     item: null,
     from: null,
@@ -124,9 +138,9 @@ export function QuestionsScreen() {
     decide.mutate(
       { no: item.no, body: request },
       {
-        onSuccess: () => {
+        onSuccess: (decision) => {
           afterDecided(itemId(item), 1);
-          setUndoable({ no: item.no });
+          setUndoable({ no: item.no, decision: decision.id, label: itemId(item) });
         },
       },
     );
@@ -140,20 +154,24 @@ export function QuestionsScreen() {
         },
       },
     );
+  // The item is read again before the undo is sent, so the decision's new revision is used (RC12).
   const undo = () => {
-    const item = undoable && byNo.get(undoable.no);
-    if (!item) return;
-    action.mutate(
-      { action: "undo", no: item.no, revision: item.revision },
-      {
-        onSuccess: () => {
-          setUndoable(null);
-          setAnnouncement(`${itemId(item)}: decision undone; it is asked again.`);
-          setSearch({ item: itemId(item) });
-        },
+    if (!undoable) return;
+    const { label } = undoable;
+    undoDecision.mutate(undoable, {
+      onSuccess: () => {
+        setUndoable(null);
+        setAnnouncement(`${label}: decision undone; it is asked again.`);
+        setSearch({ item: label });
       },
-    );
+    });
   };
+  const assess = (item: CommentItem) =>
+    assessAgain.mutate(item.no, {
+      onSuccess: () =>
+        setAssessNote({ no: item.no, text: "Asked: diffpilot's LLM assesses this comment again." }),
+      onError: (failure) => setAssessNote({ no: item.no, text: errorText(failure) }),
+    });
   // "Skip for now": last in this reader's queue, here at once and on the server until the item changes.
   const skip = () => {
     if (entry) setSkipped(new Set(skipped).add(entryKey(entry)));
@@ -216,7 +234,7 @@ export function QuestionsScreen() {
     .filter((i) => i && i.gates.length > 0);
   const running = overview.assessment.running;
   const error = decide.isError ? errorText(decide.error) : batch.isError ? errorText(batch.error) : null;
-  const undoError = undoable && action.isError ? errorText(action.error) : null;
+  const undoError = undoable && undoDecision.isError ? errorText(undoDecision.error) : null;
 
   let card;
   if (rest)
@@ -306,6 +324,14 @@ export function QuestionsScreen() {
             to: direction === "below" ? last + LINES_STEP : last,
           });
         }}
+        onAssessAgain={() => assess(single)}
+        assessAgainBusy={assessAgain.isPending}
+        assessAgainNote={assessNote?.no === single.no ? assessNote.text : null}
+        onMarkGate={(gate, marked) =>
+          markGate.mutate({ no: single.no, gate, marked, revision: single.revision })
+        }
+        gateBusy={markGate.isPending}
+        gateError={markGate.isError ? errorText(markGate.error) : null}
         busy={decide.isPending}
         error={error}
         now={now}
@@ -339,8 +365,8 @@ export function QuestionsScreen() {
             <Tooltip tip="Takes the decision back while no external agent has claimed its effects; the comment is asked again.">
               <button
                 type="button"
-                aria-disabled={action.isPending || undefined}
-                onClick={() => !action.isPending && undo()}
+                aria-disabled={undoDecision.isPending || undefined}
+                onClick={() => !undoDecision.isPending && undo()}
                 className={buttonClass("plain", true)}
               >
                 Undo
