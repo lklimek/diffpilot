@@ -35,7 +35,7 @@ stable (U2); the per-PR overview of rounds and decisions is assembled by hand.
    against the PR head and writes the assessment and recommendation (RQ20).
 4. **External implementing agents** (other machines, outside diffpilot's control) subscribe with a personal access
    token, are notified of decisions they can implement, claim them and report execution. They upload nothing else.
-5. **Watch.** A user marks the PRs he is working on (a per-user toggle on the My work row and on the PR page; a list of
+5. **Watch.** A user marks the PRs he is working on (a per-user toggle on the PR page; My work stays unchanged; a list of
    watched PRs). For a watched PR new comments and reviews are detected automatically, the assessment runs at once
    and the user is notified that questions are ready (§2.8). Unwatched PRs stay on demand.
 6. **Notifications** (RQ23): browser notifications plus per-user push channels in Settings (ntfy, generic webhook);
@@ -82,8 +82,8 @@ included; out of scope now, all data kept; RQ14, RQ22).
 | US16 | AC1 | **Given** "Notify me when work finishes" is on, **when** a round's assessment adds new questions, **then** one browser notification says so; **when** the agents report every decision of that round executed, **then** one more (RQ18). |
 | US17 | AC1 | **Given** a thread was resolved on GitHub by someone outside diffpilot, **when** the PR is read, **then** the item shows "Resolved on GitHub by <login>, not through diffpilot" and leaves the queue; nothing is recorded as a decision. |
 | US18 | AC1 | **Given** GitHub cannot be read, **when** Comments loads, **then** the last read is shown with its time and the failure in plain words; decisions on already read items still work. |
-| US19 | AC1 | **Given** a PR row in My work or the PR page, **when** he switches Watch on, **then** the PR appears in his watched list with "Watching since 10:05" and the note that new comments are assessed automatically and use LLM tokens. |
-| US20 | AC1 | **Given** a watched PR and no diffpilot page open on it, **when** the bot posts 5 new threads, **then** the next probe or plug-in signal detects them, a full read and one assessment job run (after the bot's round ends, if thepastaclaw still reviews), and a notification "acme/node-client #482: 5 questions ready" is created; My work and the watched list show "Assessed automatically 10:52 · 5 questions". |
+| US19 | AC1 | **Given** the PR page, **when** he switches Watch on, **then** the PR appears in his watched list with "Watching since 10:05" and the note that new comments are assessed automatically and use LLM tokens. |
+| US20 | AC1 | **Given** a watched PR and no diffpilot page open on it, **when** the bot posts 5 new threads, **then** the next probe or plug-in signal detects them, a full read and one assessment job run (after the bot's round ends, if thepastaclaw still reviews), and a notification "acme/node-client #482: 5 questions ready" is created; the watched list and the PR page show "Assessed automatically 10:52 · 5 questions". |
 | US21 | AC1 | **Given** a watched PR with an assessment job already queued or running, **when** more comments arrive, **then** no second job starts; the new items join the next pass once the current one ends and the minimum spacing has passed. |
 | US22 | AC1 | **Given** Settings → Notifications, **when** he enters an ntfy server URL, topic and access token and presses "Send test", **then** a test message arrives, the token is shown afterwards only as "•••• 9f2a", and the channel shows "Last delivery: test, delivered 10:58". |
 | US23 | AC1 | **Given** a webhook channel whose host is down, **when** a "questions ready" event is delivered, **then** it is tried 3 times, the channel shows "Failing since 11:02: connection refused (3 attempts)", one warning is logged, and the browser notification still appears on an open tab. |
@@ -177,7 +177,7 @@ Item: `assessing` → `undecided` → `asked_back` → `decided` → `executing`
 `repeat` (carried); `reopened`; `outside` (resolved or answered on GitHub outside diffpilot). Decision: append-only.
 
 ### 2.8 Watch: detection, assessment, notification
-- **Watch list.** Per user (`pr_watches`), toggled on the My work row and the PR page; at most 20 watched PRs per user
+- **Watch list.** Per user (`pr_watches`), toggled on the PR page; at most 20 watched PRs per user
   **[A]**; a closed or merged PR is unwatched automatically with a note in the list.
 - **Detection, reusing refresh machinery** (no webhooks):
   1. **Probe** (in the ADR-020 scheduler task, every 5 minutes **[A]**): one GraphQL request per 10 watched PRs of a
@@ -198,9 +198,9 @@ Item: `assessing` → `undecided` → `asked_back` → `decided` → `executing`
   passes; when the cap is reached the list says "Not assessed automatically: today's limit" and the PR stays on demand.
 - **Notification.** A pass that adds questions creates one per-user event "acme/node-client #482: 5 questions ready"
   (one per round, RQ18), delivered to open tabs as a browser notification and to the user's push channels (§5.5).
-- **Display.** Watched list (`/watching` and a My work side-panel section): PR, watching since, last probe, last
+- **Display.** Watched list (`/watching`): PR, watching since, last probe, last
   automatic assessment ("Assessed automatically 10:52 · 5 questions"), state (waiting for the bot's round, job
-  running, limit reached, paused), Unwatch. The PR page and the My work row show the Watch toggle and the same badge.
+  running, limit reached, paused), Unwatch. The PR page shows the Watch toggle and the same badge.
 
 ## 3. Views and flows
 
@@ -217,9 +217,9 @@ read "Needs an analysis" and link to the PR page.
 | V3 | Decision log and execution (feed state, agent reports) | `…/comments/log` | U1 | 1 |
 | V4 | Rounds and per-item history | `…/comments/rounds` | view 5 | 1 (rounds), 2 (history panel) |
 | V5 | Carry-overs, this PR / all PRs | `…/comments/carry-overs`, `/comments/carry-overs` | — | 1 |
-| V6 | Watched PRs (list), Watch toggles on My work rows and V0 | `/watching` | view 3 (partly) | 1 |
+| V6 | Watched PRs (list), Watch toggle on V0 | `/watching` | view 3 (partly) | 1 |
 | V7 | Settings → Notifications: browser toggle, ntfy, webhook, per-event toggles, Send test, last delivery | `/settings#notifications` | — | 1 |
-My work PR rows gain chips "3 questions", "2 effects pending" (cross-PR view, WM view 3; phase 2). WM view 4 (push
+My work stays unchanged (owner 2026-11-22): no chips, toggles or badges there; the cross-PR view (WM view 3) is the watched list V6. WM view 4 (push
 state) is out of scope (RQ15).
 
 ### 3.1 V0 PR page
@@ -298,10 +298,12 @@ names include "(Recommended)"; gate checkbox described by its rule; live region 
 targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe on every state, both themes.
 
 ### 3.9 Collapsible sections and state badges
+- **GitHub link-outs** (owner 2026-11-22): every element with a GitHub counterpart (PR title, comment, thread, reply,
+  review, commit, round) carries the GitHub mark link-out used in My work (same component, new tab).
 - **Collapsible sections:** every section heading (h2/h3 of a page or card, not the question title) is a disclosure
   button with a chevron (`aria-expanded`, `aria-controls`, Enter/Space); open by default; the state is remembered
   per view and user in local storage. One shared component (`CollapsibleSection`).
-- **State badges** (one per PR, on My work rows, the watched list, the PR page and the Comments header), each colour
+- **State badges** (one per PR, on the watched list, the PR page and the Comments header), each colour
   paired with an icon and a text label, contrast ≥ 4.5:1 in both themes; first match wins:
 
 | ID | Label | Colour (token) | Rule (facts diffpilot read; tooltip lists them) |
@@ -363,7 +365,7 @@ Retention: none now; the planned system-wide 13-month policy will cover these ta
 ### 4.4 Coverage of WM §15
 PR → T-L1 + V0 header; Round → Q-L3 markers, V4; Finding → T-L2 + T-L3; Decision → T-L5; Action → T-L6 (TODO id
 stays in the agent's report, never on GitHub); Gate state → the thepastaclaw plug-in (reviewing / queued); Internal
-review → out of scope (RQ13); views 1, 2, 5 → V1, V2, V4; view 3 → My work chips (phase 2); view 4 → out of scope.
+review → out of scope (RQ13); views 1, 2, 5 → V1, V2, V4; view 3 → watched list V6; view 4 → out of scope.
 
 ## 5. How decisions reach the agents that act
 
@@ -481,7 +483,7 @@ mutating route only when the route names its write scope.
 | review top bar and view menu | gains "Comments"; works without an analysis (menu entries that need one say so) |
 | claudius `triage-findings` | superseded for PR comments; kept for local review reports without a PR |
 | claudius `check-pr-comments` | §4 columns for the table page; §8 matrix extended by WM §6.5 into §2.3; implementing agents may use its scripts to execute feed effects |
-| dashboard, `known_bots` | entry point; bot rule; chips (phase 2) |
+| dashboard, `known_bots` | entry point (unchanged); bot rule |
 | PR Hygiene plug-in, plug-in host (ADR-022) | header note; second plug-in thepastaclaw status (RQ16, ADR-022 addendum below) |
 | access tokens (ADR-019) | agent auth; one write scope |
 | `github::threads`, mirror, lines API | extended reads; code context by range without an analysis |
@@ -502,7 +504,7 @@ statement.
 **Phase 1 (smallest useful):** V0, V1, V2, V3, V4 rounds, V5, V6; `verify_comments`; decision feed RF1–RF4;
 carry-overs; PR-level questions; Watch with probe and plug-in signals; thepastaclaw plug-in; notifications (browser,
 ntfy, webhook) and agent push targets: Watch is of little use without a channel that reaches a closed tab, and a
-woken agent shortens the loop. **Phase 2:** item history panel, My work chips. **Phase 3:** diffpilot[bot] executes
+woken agent shortens the loop. **Phase 2:** item history panel. **Phase 3:** diffpilot[bot] executes
 reply, comment, resolve and dismissal effects (RQ2).
 
 ### 9.1 Spikes
