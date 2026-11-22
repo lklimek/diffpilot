@@ -16,7 +16,9 @@ import {
   getDashboardRefresh,
   listDashboardItems,
   rankDashboardRefresh,
+  snoozeDashboardItem,
   startDashboardRefresh,
+  wakeDashboardItem,
 } from "./dashboard";
 import {
   createAccessToken,
@@ -93,6 +95,8 @@ export const handlers = [
   getRepoSettings,
   getDashboard,
   hideDashboardMention,
+  snoozeDashboardItem,
+  wakeDashboardItem,
   listDashboardItems,
   startDashboardRefresh,
   getDashboardRefresh,

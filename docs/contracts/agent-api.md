@@ -83,7 +83,8 @@ Cheap polling (plan §E.5 E5-5):
 1. `GET /api/v1/dashboard` → `revision`, `snapshot` (scan time, counts, notes, `exclusions`: what the rules left
    out, counted per reason), `latest_refresh`, `schedule`. Add `?excluded=true` to list the left-out items too
    (at most 200: id, URL, title, author, reason; no LLM text, but `judged_not_eligible` and `merged_into_another` are LLM decisions, the other reasons
-   deterministic rules). `snapshot.awaiting` lists the user's PRs that
+   deterministic rules; `snoozed` items were put aside by the user until `snoozed_until`, and an agent cannot snooze
+   or wake them: R12/R13 take a browser session). `snapshot.awaiting` lists the user's PRs that
    wait on others, with whom to ping (`waiting_on`) and why (`reason`); they are not in the items below (no tier,
    nothing to do now). `snapshot.ready_to_merge`
    lists the user's PRs ready to merge at the scan (into the default branch or a release branch, checks passed except

@@ -305,6 +305,21 @@ pub const HIDE_DASHBOARD_MENTION: Route = route(
     SessionCsrf,
 );
 
+/// R12: snoozes one ranked item of the signed-in browser user for a number of days (`SnoozeRequest`).
+pub const SNOOZE_DASHBOARD_ITEM: Route = route(
+    "snoozeDashboardItem",
+    Put,
+    "/api/v1/dashboard/items/{key}/snooze",
+    SessionCsrf,
+);
+/// R13: ends the snooze of one item now ("Wake now").
+pub const WAKE_DASHBOARD_ITEM: Route = route(
+    "wakeDashboardItem",
+    Delete,
+    "/api/v1/dashboard/items/{key}/snooze",
+    SessionCsrf,
+);
+
 /// R2: starts a refresh.
 pub const START_DASHBOARD_REFRESH: Route = route(
     "startDashboardRefresh",
@@ -646,6 +661,8 @@ pub const ROUTES: &[Route] = &[
     GET_DASHBOARD,
     LIST_DASHBOARD_ITEMS,
     HIDE_DASHBOARD_MENTION,
+    SNOOZE_DASHBOARD_ITEM,
+    WAKE_DASHBOARD_ITEM,
     START_DASHBOARD_REFRESH,
     GET_DASHBOARD_REFRESH,
     CANCEL_DASHBOARD_REFRESH,

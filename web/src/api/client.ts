@@ -68,6 +68,7 @@ import type {
   SetTimeZoneRequest,
   SetViewedRequest,
   Settings,
+  SnoozeRequest,
   StepId,
   Tour,
   UpdateCommentRequest,
@@ -361,6 +362,11 @@ export function createApiClient(baseUrl = "") {
     listDashboardItems: (query: ItemQuery, etag: string | null = null) =>
       conditional<ItemPage>("listDashboardItems", { query: itemQueryParams(query) }, etag),
     hideDashboardMention: (id: string) => call<void>("hideDashboardMention", { params: { id } }),
+    /** Snoozes one ranked item for `days` (1–365, R12); a later snooze replaces it. */
+    snoozeDashboardItem: (key: string, days: number) =>
+      call<void>("snoozeDashboardItem", { params: { key }, body: { days } satisfies SnoozeRequest }),
+    /** Ends an item's snooze now ("Wake now", R13). */
+    wakeDashboardItem: (key: string) => call<void>("wakeDashboardItem", { params: { key } }),
     startDashboardRefresh: () => call<RefreshStatus>("startDashboardRefresh"),
     getDashboardRefresh: (id: RefreshId) => call<RefreshStatus>("getDashboardRefresh", { params: { id } }),
     cancelDashboardRefresh: (id: RefreshId) =>

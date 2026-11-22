@@ -13,6 +13,7 @@ use super::facts::{self, PrContext};
 use crate::dashboard::plugin::PrKey;
 use crate::dashboard::score::ScoreRules;
 use crate::dashboard::snapshot::{self, StoredPr};
+use crate::dashboard::snooze;
 use crate::github::work::{
     ItemRef, PR_BATCH, PrCandidate, PullDetail, UserTokens, WorkClient, WorkError,
 };
@@ -122,7 +123,10 @@ pub(crate) async fn reread(
         .replace_current_snapshot(&scope.tenant_id, &scope.user_id, record.id, &stored)
         .await
     {
-        Ok(()) => Ok(Reread::Written { updated, closed }),
+        Ok(()) => {
+            snooze::end_ended(state, scope, &stored).await;
+            Ok(Reread::Written { updated, closed })
+        }
         Err(DbError::Conflict) => Ok(Reread::Skipped("a newer snapshot")),
         Err(error) => Err(error.into()),
     }

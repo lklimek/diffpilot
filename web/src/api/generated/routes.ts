@@ -45,6 +45,8 @@ export const routes = {
   getDashboard: { method: "GET", path: "/api/v1/dashboard", auth: "read" },
   listDashboardItems: { method: "GET", path: "/api/v1/dashboard/items", auth: "read" },
   hideDashboardMention: { method: "POST", path: "/api/v1/dashboard/mentions/{id}/hide", auth: "session_csrf" },
+  snoozeDashboardItem: { method: "PUT", path: "/api/v1/dashboard/items/{key}/snooze", auth: "session_csrf" },
+  wakeDashboardItem: { method: "DELETE", path: "/api/v1/dashboard/items/{key}/snooze", auth: "session_csrf" },
   startDashboardRefresh: { method: "POST", path: "/api/v1/dashboard/refreshes", auth: "session_csrf" },
   getDashboardRefresh: { method: "GET", path: "/api/v1/dashboard/refreshes/{id}", auth: "read" },
   cancelDashboardRefresh: { method: "POST", path: "/api/v1/dashboard/refreshes/{id}/cancel", auth: "session_csrf" },

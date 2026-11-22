@@ -1314,6 +1314,11 @@
           "description": "The LLM merged it into another item covering the same work.",
           "type": "string",
           "const": "merged_into_another"
+        },
+        {
+          "description": "The user snoozed it (`ExcludedItem.snoozed_until`); it wakes then, or earlier on a new review request to the\nuser or a new mention of the user.",
+          "type": "string",
+          "const": "snoozed"
         }
       ]
     },
@@ -1381,6 +1386,14 @@
             "string",
             "null"
           ]
+        },
+        "snoozed_until": {
+          "description": "When the snooze ends (`snoozed` only).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
         }
       },
       "required": [

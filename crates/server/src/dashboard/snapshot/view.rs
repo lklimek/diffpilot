@@ -4,13 +4,13 @@
 use std::collections::HashMap;
 
 use contracts::api::dashboard::{
-    AwaitingItem, AwaitingReason, EXCLUDED_ITEMS_LIMIT, ExcludedItem, ExclusionCount, Exclusions,
-    Fact, FactTag, ItemCounts, ItemKey, ItemKind, ItemTarget, ItemText, RankingState,
-    ReadyToMergeItem, ScoreState, SnapshotMeta, Tier, WorkItem,
+    AwaitingItem, AwaitingReason, EXCLUDED_ITEMS_LIMIT, ExcludedItem, ExclusionCount,
+    ExclusionReason, Exclusions, Fact, FactTag, ItemCounts, ItemKey, ItemKind, ItemTarget,
+    ItemText, RankingState, ReadyToMergeItem, ScoreState, SnapshotMeta, Tier, WorkItem,
 };
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
-use db::repo::dashboard::RefreshRecord;
+use db::repo::dashboard::{RefreshRecord, Snooze};
 use jiff::SignedDuration;
 use jiff::tz::TimeZone;
 
@@ -128,6 +128,7 @@ pub fn build(
         let item = scored_with(key.as_ref(), judgements, |j| {
             score::score_pr(&rules, &pr.facts, j, at)
         });
+        let item = item.map(|item| snoozed(item, &snapshot.snoozes));
         push(item, Source::Pr(pr), &mut scored, &mut sources);
     }
     for issue in &snapshot.issues {
@@ -138,6 +139,7 @@ pub fn build(
         let item = scored_with(key.as_ref(), judgements, |j| {
             score::score_issue(&rules, &issue.facts, j, at)
         });
+        let item = item.map(|item| snoozed(item, &snapshot.snoozes));
         push(item, Source::Issue(issue), &mut scored, &mut sources);
     }
     for todo in &snapshot.todos {
@@ -149,6 +151,7 @@ pub fn build(
         let item = scored_with(key.as_ref(), judgements, |j| {
             score::score_todo(&todo.facts, id.clone(), j, at)
         });
+        let item = item.map(|item| snoozed(item, &snapshot.snoozes));
         push(item, Source::Todo(todo), &mut scored, &mut sources);
     }
     let ranking = score::rank(scored);
@@ -194,17 +197,31 @@ pub fn build(
     View {
         items,
         item_counts: counts,
-        exclusions: exclusions(ranking.excluded, &sources, memcan_ui),
+        exclusions: exclusions(ranking.excluded, &sources, &snapshot.snoozes, memcan_ui),
         awaiting,
         ready_to_merge,
         merge_state_pending,
     }
 }
 
+/// Leaves a snoozed item the rules would rank out of the ranking (owner SN1); another rule's exclusion wins, and a
+/// P0 alarm stays listed (a snooze never hides an alarm).
+fn snoozed(mut item: Scored, snoozes: &[Snooze]) -> Scored {
+    if item.exclusion.is_none()
+        && item.score.tier != Tier::P0
+        && let Some(snooze) = snoozes.iter().find(|s| s.key == item.key)
+    {
+        item.exclusion = Some(ExclusionReason::Snoozed);
+        item.excluded = Some(format!("snoozed until {}", snooze.until));
+    }
+    item
+}
+
 /// Counts per rule and the first [`EXCLUDED_ITEMS_LIMIT`] items by rule, then display id (B4).
 fn exclusions(
     mut left_out: Vec<score::Excluded>,
     sources: &HashMap<ItemKey, Source<'_>>,
+    snoozes: &[Snooze],
     memcan_ui: Option<&str>,
 ) -> Exclusions {
     left_out.sort_by_key(|e| e.rule);
@@ -222,7 +239,10 @@ fn exclusions(
         .into_iter()
         .filter_map(|e| {
             let source = sources.get(&e.key)?;
-            Some(excluded_item(e, source, memcan_ui))
+            let until = (e.rule == ExclusionReason::Snoozed)
+                .then(|| snoozes.iter().find(|s| s.key == e.key).map(|s| s.until))
+                .flatten();
+            Some(excluded_item(e, source, until, memcan_ui))
         })
         .take(EXCLUDED_ITEMS_LIMIT)
         .collect();
@@ -233,7 +253,12 @@ fn exclusions(
     }
 }
 
-fn excluded_item(e: score::Excluded, source: &Source<'_>, memcan_ui: Option<&str>) -> ExcludedItem {
+fn excluded_item(
+    e: score::Excluded,
+    source: &Source<'_>,
+    snoozed_until: Option<Timestamp>,
+    memcan_ui: Option<&str>,
+) -> ExcludedItem {
     let (kind, repo, number, url, title, author) = match source {
         Source::Pr(pr) => {
             let f = &pr.facts;
@@ -277,6 +302,7 @@ fn excluded_item(e: score::Excluded, source: &Source<'_>, memcan_ui: Option<&str
         author,
         reason: e.rule,
         merged_into: e.merged_into,
+        snoozed_until,
     }
 }
 
@@ -740,4 +766,74 @@ fn ready_to_merge(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use contracts::api::dashboard::ItemTarget;
+    use jiff::SignedDuration;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::dashboard::score::{Freshness, Judgement, TodoFacts, TodoStatus};
+
+    fn at() -> Timestamp {
+        "2026-11-18T09:00:00Z".parse().expect("time")
+    }
+
+    fn todo(n: u128, alarm: bool) -> Scored {
+        let facts = TodoFacts {
+            id: Uuid::from_u128(n),
+            title: "t".into(),
+            status: TodoStatus::Pending,
+            priority: None,
+            changed_at: at(),
+        };
+        let judgement = Judgement {
+            parts: Vec::new(),
+            eligibility: None,
+            alarm,
+            also: Vec::new(),
+            judged_at: at(),
+            freshness: Freshness::Current,
+        };
+        score::score_todo(&facts, format!("TODO-{n}"), Some(&judgement), at()).expect("scores")
+    }
+
+    fn snooze(item: &Scored) -> Snooze {
+        Snooze {
+            key: item.key.clone(),
+            snoozed_at: at(),
+            until: at() + SignedDuration::from_hours(24),
+        }
+    }
+
+    /// SN1: a snooze leaves a ranked item out with its reason; a P0 alarm stays, and another rule's exclusion wins.
+    #[test]
+    fn a_snooze_never_hides_an_alarm_or_replaces_another_rule() {
+        let plain = todo(1, false);
+        let alarm = todo(2, true);
+        assert_eq!(alarm.score.tier, Tier::P0);
+        let mut merged = todo(3, false);
+        merged.exclusion = Some(ExclusionReason::MergedIntoAnother);
+        let other = ItemKey::new(&ItemTarget::Todo(Uuid::from_u128(9))).expect("key");
+        let snoozes = [snooze(&plain), snooze(&alarm), snooze(&merged)];
+
+        let left_out = snoozed(plain.clone(), &snoozes);
+        assert_eq!(left_out.exclusion, Some(ExclusionReason::Snoozed));
+        assert_eq!(
+            left_out.excluded.as_deref(),
+            Some("snoozed until 2026-11-19T09:00:00Z")
+        );
+        assert_eq!(snoozed(alarm, &snoozes).exclusion, None, "an alarm stays");
+        assert_eq!(
+            snoozed(merged, &snoozes).exclusion,
+            Some(ExclusionReason::MergedIntoAnother)
+        );
+        let unrelated = Snooze {
+            key: other,
+            ..snooze(&plain)
+        };
+        assert_eq!(snoozed(plain, &[unrelated]).exclusion, None);
+    }
 }

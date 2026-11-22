@@ -34,13 +34,25 @@ const READ: RouteAuth = RouteAuth::SessionOrToken(TokenScope::Read);
 fn dashboard_routes_follow_the_plan() {
     use HttpMethod::{Delete, Get, Post, Put};
     use RouteAuth::{Session, SessionCsrf};
-    let expected: [(Route, HttpMethod, &str, RouteAuth); 14] = [
+    let expected: [(Route, HttpMethod, &str, RouteAuth); 16] = [
         (routes::GET_DASHBOARD, Get, "/api/v1/dashboard", READ),
         (
             routes::LIST_DASHBOARD_ITEMS,
             Get,
             "/api/v1/dashboard/items",
             READ,
+        ),
+        (
+            routes::SNOOZE_DASHBOARD_ITEM,
+            Put,
+            "/api/v1/dashboard/items/{key}/snooze",
+            SessionCsrf,
+        ),
+        (
+            routes::WAKE_DASHBOARD_ITEM,
+            Delete,
+            "/api/v1/dashboard/items/{key}/snooze",
+            SessionCsrf,
         ),
         (
             routes::START_DASHBOARD_REFRESH,

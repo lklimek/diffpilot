@@ -764,6 +764,7 @@ async fn full_refresh_stores_the_expected_snapshot() {
             author: Some("dependabot[bot]".to_owned()),
             reason: ExclusionReason::ExcludedAuthor,
             merged_into: None,
+            snoozed_until: None,
         }]
     );
     assert_eq!(summary.latest_refresh.as_ref().map(|r| r.id), Some(done.id));
@@ -1734,6 +1735,7 @@ async fn scan_over_the_time_limit_fails_as_timed_out() {
 
 mod judged;
 mod plugin;
+mod snooze;
 
 /// Pull requests the refused linked login `alice-helper` authored count in the charts whoever merged them: by the
 /// user (`acme/platform#1231`), by a third person (`acme/consensus#1536`, absent from its event feed), outside the

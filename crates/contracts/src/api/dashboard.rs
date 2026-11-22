@@ -372,6 +372,9 @@ pub enum ExclusionReason {
     JudgedNotEligible,
     /// The LLM merged it into another item covering the same work.
     MergedIntoAnother,
+    /// The user snoozed it (`ExcludedItem.snoozed_until`); it wakes then, or earlier on a new review request to the
+    /// user or a new mention of the user.
+    Snoozed,
 }
 
 /// One item the rules left out.
@@ -397,6 +400,20 @@ pub struct ExcludedItem {
     pub reason: ExclusionReason,
     /// Display id of the item it was merged into (`merged_into_another` only).
     pub merged_into: Option<String>,
+    /// When the snooze ends (`snoozed` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snoozed_until: Option<Timestamp>,
+}
+
+/// Most days an item can be snoozed.
+pub const MAX_SNOOZE_DAYS: u32 = 365;
+
+/// Body of `PUT /api/v1/dashboard/items/{key}/snooze` (R12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SnoozeRequest {
+    /// Days from now, 1 to [`MAX_SNOOZE_DAYS`].
+    pub days: u32,
 }
 
 /// Query of `GET /api/v1/dashboard`.

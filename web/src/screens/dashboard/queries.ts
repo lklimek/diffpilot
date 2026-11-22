@@ -353,3 +353,45 @@ export function useHideMention() {
   });
   return { ...mutation, pendingIds, error, isError: error !== null, dismissError: () => setError(null) };
 }
+
+/** Pending item keys of a mutation keyed `key` (its variables start with the item key). */
+function usePendingKeys(key: string): string[] {
+  return useMutationState({
+    filters: { mutationKey: [key], status: "pending" },
+    select: (m) => (m.state.variables as { key: string }).key,
+  });
+}
+
+/** Snooze of a ranked item (R12, owner SN1): persists server-side; the summary is read again. */
+export function useSnoozeItem() {
+  const client = useQueryClient();
+  const [error, setError] = useState<Error | null>(null);
+  const pendingKeys = usePendingKeys("snooze-item");
+  const mutation = useMutation({
+    mutationKey: ["snooze-item"],
+    mutationFn: ({ key, days }: { key: string; days: number }) => api.snoozeDashboardItem(key, days),
+    onError: setError,
+    onSuccess: () => {
+      setError(null);
+      return client.invalidateQueries({ queryKey: SUMMARY_KEY });
+    },
+  });
+  return { ...mutation, pendingKeys, error, isError: error !== null, dismissError: () => setError(null) };
+}
+
+/** "Wake now" of a snoozed item (R13): ends the snooze; the summary is read again. */
+export function useWakeItem() {
+  const client = useQueryClient();
+  const [error, setError] = useState<Error | null>(null);
+  const pendingKeys = usePendingKeys("wake-item");
+  const mutation = useMutation({
+    mutationKey: ["wake-item"],
+    mutationFn: ({ key }: { key: string }) => api.wakeDashboardItem(key),
+    onError: setError,
+    onSuccess: () => {
+      setError(null);
+      return client.invalidateQueries({ queryKey: SUMMARY_KEY });
+    },
+  });
+  return { ...mutation, pendingKeys, error, isError: error !== null, dismissError: () => setError(null) };
+}

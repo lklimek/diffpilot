@@ -2572,7 +2572,11 @@ reason: ExclusionReason,
 /**
  * Display id of the item it was merged into (`merged_into_another` only).
  */
-merged_into: string | null, };
+merged_into: string | null,
+/**
+ * When the snooze ends (`snoozed` only).
+ */
+snoozed_until?: string, };
 
 /**
  * How many items one rule left out.
@@ -2590,7 +2594,7 @@ count: number, };
 /**
  * The rule that left an item out of the ranking. Clients show an unknown value as a plain "other rule".
  */
-export type ExclusionReason = "excluded_author" | "outside_owned_areas" | "draft" | "judged_not_eligible" | "merged_into_another";
+export type ExclusionReason = "excluded_author" | "outside_owned_areas" | "draft" | "judged_not_eligible" | "merged_into_another" | "snoozed";
 
 /**
  * The items left out of the ranking, counted per reason. No LLM text; `judged_not_eligible` and
@@ -5850,6 +5854,15 @@ checked: KindCounts,
  * older than this field), which the web shows as not recorded.
  */
 exclusions?: Exclusions, };
+
+/**
+ * Body of `PUT /api/v1/dashboard/items/{key}/snooze` (R12).
+ */
+export type SnoozeRequest = {
+/**
+ * Days from now, 1 to [`MAX_SNOOZE_DAYS`].
+ */
+days: number, };
 
 /**
  * Whether a source was checked.

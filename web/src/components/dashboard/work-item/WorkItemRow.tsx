@@ -11,6 +11,7 @@ import type { Navigate } from "../common/navigate";
 import { FactTags, ProvisionalPill, SizePill } from "../common/Tags";
 import { ScoreBreakdown } from "../score-breakdown/ScoreBreakdown";
 import { ScoreTip } from "../score-breakdown/ScoreTip";
+import { SnoozeMenu } from "../snooze-menu/SnoozeMenu";
 import { ItemAction } from "./ItemAction";
 
 interface WorkItemRowProps {
@@ -27,6 +28,10 @@ interface WorkItemRowProps {
   expanderRef?: Ref<HTMLButtonElement>;
   /** State of the MemCan TODOs in the snapshot: a TODO row kept from an earlier scan says so (plan §G). */
   todos?: TodosState;
+  /** Snooze chosen in the row's menu (days); without it no menu. */
+  onSnooze?: (days: number) => void;
+  /** A snooze of this item is being saved. */
+  snoozing?: boolean;
   now: Date;
 }
 
@@ -75,6 +80,8 @@ export function WorkItemRow({
   onNavigate,
   expanderRef,
   todos,
+  onSnooze,
+  snoozing = false,
   now,
 }: WorkItemRowProps) {
   const detailId = `detail-${item.key}`;
@@ -154,6 +161,7 @@ export function WorkItemRow({
         <div className="col-start-4 row-start-1 flex items-center justify-end gap-2 pt-px @min-[1600px]:col-start-6">
           <ScoreButton item={item} expanded={expanded} onToggle={onToggle} controls={detailId} />
           <ItemAction item={item} reviewHref={reviewHref} onNavigate={onNavigate} />
+          {onSnooze && <SnoozeMenu itemId={item.id} onSnooze={onSnooze} pending={snoozing} />}
         </div>
       </div>
       <div

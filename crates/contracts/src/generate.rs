@@ -19,7 +19,7 @@ use crate::api::comments::{
 };
 use crate::api::dashboard::{
     DashboardEvent, DashboardSettings, DashboardSettingsView, DashboardSummary, ItemPage,
-    ItemQuery, RefreshStatus, SetTimeZoneRequest, SummaryQuery,
+    ItemQuery, RefreshStatus, SetTimeZoneRequest, SnoozeRequest, SummaryQuery,
 };
 use crate::api::deps::DependencyView;
 use crate::api::error::{ApiError, LoginError};
@@ -265,6 +265,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<DashboardSettings>();
     collector.visit::<DashboardSettingsView>();
     collector.visit::<SetTimeZoneRequest>();
+    collector.visit::<SnoozeRequest>();
     collector.visit::<AccessToken>();
     collector.visit::<CreateAccessToken>();
     collector.visit::<CreatedAccessToken>();

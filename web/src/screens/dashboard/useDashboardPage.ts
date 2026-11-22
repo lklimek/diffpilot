@@ -11,6 +11,8 @@ import {
   SUMMARY_KEY,
   useCancelRefresh,
   useHideMention,
+  useSnoozeItem,
+  useWakeItem,
   useDashboardItems,
   useDashboardSummary,
   useRankAgain,
@@ -152,6 +154,8 @@ function actionError(error: unknown, action: "refresh" | "cancel" | "rank"): str
 /** The dashboard page: signed-in user, summary, items, view state, filter and actions. */
 export function useDashboardPage() {
   const hideMention = useHideMention();
+  const snooze = useSnoozeItem();
+  const wake = useWakeItem();
   const [withBots, setWithBots] = useMentionBots();
   const [mentionsExpanded, setMentionsExpanded] = useMentionsExpanded();
   const client = useQueryClient();
@@ -199,6 +203,8 @@ export function useDashboardPage() {
 
   return {
     hideMention,
+    snooze,
+    wake,
     mentionsExpanded,
     setMentionsExpanded,
     withBots,
