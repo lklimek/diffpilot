@@ -66,14 +66,17 @@ included; out of scope now, all data kept; RQ14, RQ22).
 | US3 | AC1 | **Given** assessed items, **when** he opens Comments, **then** one question is shown: the PR's purpose, the comment (GitHub tag), the discussed code with its surroundings and an LLM sentence on what that code does, facts read from GitHub, the LLM assessment, then the options with the recommended one first and marked "(Recommended)" (RQ7). |
 | US4 | AC1 | **Given** a question, **when** he decides, **then** the decision is stored with the recommendation shown at that moment and its effects, the next question opens, and the feed announces the decision to subscribed agents. |
 | US5 | AC1 | **Given** three non-gate items share a recommendation, **when** they come up, **then** one group question lists them with "Discuss individually" per row; each item gets its own record. Gate items never appear in a group (RQ4). |
-| US6 | AC1 | **Given** a gate item (G-FUNDS), **when** he rejects it, **then** no resolve effect exists unless he ticks "Resolve this thread"; **when** he chooses "Accept despite the gate", **then** a reason is required, posted as the reply, and the thread is always resolved (RQ6). |
+| US6 | AC1 | **Given** a gate item (G-FUNDS), **when** he rejects it, **then** "Resolve this thread" is shown ticked; submitting it ticked is his explicit resolve, unticking it posts the reply and leaves the thread open; **when** he chooses "Accept despite the gate", **then** a reason is required, posted as the reply, and the thread is always resolved (RQ6). |
 | US7 | AC1 | **Given** 7 undecided non-gate items and 2 gate items, **when** he chooses "Decide the rest per recommendation", **then** a confirmation list shows the 7 with recommendations and effects, the count, and the 2 gate items as left out; nothing is stored until he confirms (RQ5). |
 | US8 | AC1 | **Given** the table page, **when** he sets a decision per row (default = recommendation; gate rows empty until chosen) and submits once, **then** one record per row is stored; submit stays disabled while a gate row has no choice or a row lacks its reason or target (RQ21). |
 | US9 | AC1 | **Given** a new bot thread with the `dedupe=` marker of decided item C3, **when** the server reads the PR, **then** C3's decision is carried without a question and logged; **if** the bot edited the comment text after the decision or a commit after the decision changed the code at the thread's lines, **then** it is asked again with that reason, and the re-ask is logged (RQ3). |
 | US10 | AC1 | **Given** carry-overs happened, **when** he opens Carry-overs (this PR or all PRs), **then** he sees counts (carried, asked again by reason, effects pending) and a dated list with evidence. |
 | US11 | AC1 | **Given** bot round 3 has ended, **when** he opens Comments, **then** the first question is the PR-level "Merge now, remaining items as follow-ups?" with "Merge now; remaining items become follow-ups" and "Another round" (RQ10). |
 | US12 | AC1 | **Given** every item of a bot's `CHANGES_REQUESTED` review is decided at the end of a round, **when** he opens Comments, **then** a PR-level question "Dismiss stale bot reviews?" lists those reviews; "Dismiss" puts a dismissal effect into the feed (RQ11). |
-| US13 | AC1 | **Given** a question, **when** he asks "why is this pre-existing?", **then** a `verify_comments` job answers it (LLM tag) and the item returns to the queue with the same options (WM §6.4 item 6). |
+| US13 | AC1 | **Given** a question, **when** he presses "Ask about this comment" (`a`) and asks "why is this pre-existing?", **then** the floating Ask chat of Flows and Files opens with the subject chip "Comment C14", the answer arrives in that thread (LLM tag) with follow-ups, the card and the table row show "1 Ask answer", and the item keeps its options (WM §6.4 item 6). |
+| US25 | AC1 | **Given** any decision, **when** he writes "keep the test small" in "Your comment", **then** it is stored with the decision, shown in the log and the table, sent to the executing agent with the decision, and not posted to GitHub. |
+| US26 | AC1 | **Given** an analysis of the head exists, **when** a question opens, **then** the card lists the flows and steps containing the commented lines (links into Flows) and icons for notes about this code elsewhere (Flows flag, Files incidental note, Dependencies, PR Hygiene, thepastaclaw), each opening its place in a new tab; without an analysis it says "No analysis yet". |
+| US27 | AC1 | **Given** the table page, **when** he clicks C14's problem, **then** Questions opens with C14; after he decides there, the table row shows that decision, his comment and the Ask indicator. |
 | US14 | AC4 | **Given** a token with `review_loop:execute` and capabilities `fix, reply, resolve`, **when** the agent holds the feed stream, **then** it is notified of decisions whose open effects are within its capabilities, claims one (lease), executes the effects in order and reports each with a reference; another agent's claim on it answers 409. |
 | US15 | AC4 | **Given** a `review_loop:execute` token, **when** it calls a decision route, **then** 403 `token_not_accepted`. |
 | US16 | AC1 | **Given** "Notify me when work finishes" is on, **when** a round's assessment adds new questions, **then** one browser notification says so; **when** the agents report every decision of that round executed, **then** one more (RQ18). |
@@ -111,27 +114,32 @@ ranges is LLM text in the user's LLM-language setting (RQ8). A missing or failed
 without a recommendation ("Not assessed: <reason>"), never hidden.
 
 ### 2.3 Decisions and effects (WM §6.4 item 4, §6.5)
-| ID | Decision | Input | Effects, bot thread (executor) | Human thread |
-|---|---|---|---|---|
-| D1 | Resolve (already fixed) | — | resolve (E) | reply what was done → resolve |
-| D2 | Fix here | optional note | fix + push (A) → reply with commit (E) → resolve (E) | no resolve unless ticked |
-| D3 | Reject | reason | reply reason (E) → resolve (E) | no resolve unless ticked |
-| D4 | Handled in #N | open PR number | reply "Per maintainer decision, this is addressed in #N." (E) → resolve (E) | same |
-| D5 | Follow-up PR | new or #M | draft skeleton PR (A) → reply link (E) → resolve (E) | same |
-| D6 | Upstream issue | URL, or "create" | create issue if asked (A) → reply link (E) → resolve (E); "Known limitation" body line (A) | same |
-| D7 | TODO | title | save TODO (A) → reply "Per maintainer decision, out of scope for this PR." (E; never mentions the TODO) → resolve (E); save failed → nothing else | same |
-| D8 | Accept despite the gate (gate items only) | reason, required | reply reason (E) → resolve (E), always | same |
-| P1 | Merge now; remaining items become follow-ups (I4) | — | one follow-up PR listing the remaining items (A) → per item reply link (E) → resolve (E); the merge is the owner's on GitHub (link) | — |
-| P2 | Another round (I4) | — | none | — |
-| P3 | Dismiss stale bot reviews (I4) | message (prefilled) | dismiss each listed review (E) | — |
-| P4 | Keep the reviews (I4) | — | none | — |
+| ID | Decision | Input | Effects (executor); "→ resolve" only when "Resolve this thread" is ticked |
+|---|---|---|---|
+| D1 | Resolve (already fixed) | — | human thread: reply what was done (E); resolve (E), always |
+| D2 | Fix here | — | fix + push (A) → reply with commit (E) → resolve (E) |
+| D3 | Reject | reason | reply reason (E) → resolve (E) |
+| D4 | Handled in #N (existing PR) | open PR number | reply "Per maintainer decision, this is addressed in #N." (E) → resolve (E) |
+| D5 | Create follow-up PR | — (optional title, prefilled) | create a draft follow-up PR (A) → reply with its link (E) → resolve (E); no link is asked for: the PR does not exist yet |
+| D6 | Upstream issue | URL, or "create" | create issue if asked (A) → reply link (E) → resolve (E); "Known limitation" body line (A) |
+| D7 | TODO | title | save TODO (A) → reply "Per maintainer decision, out of scope for this PR." (E; never mentions the TODO) → resolve (E); save failed → nothing else |
+| D8 | Accept despite the gate (gate items only) | reason, required | reply reason (E) → resolve (E), always |
+| P1 | Merge now; remaining items become follow-ups (I4) | — | one follow-up PR listing the remaining items (A) → per item reply link (E) → resolve (E); the merge is the owner's on GitHub (link) |
+| P2 | Another round (I4) | — | none |
+| P3 | Dismiss stale bot reviews (I4) | message (prefilled) | dismiss each listed review (E) |
+| P4 | Keep the reviews (I4) | — | none |
 
 A = an external agent; E = an external agent in phases 1–2, diffpilot[bot] in phase 3 (§5.3).
+- **Owner's comment** (every decision, D1–D8 and P1–P4, optional free text): stored with the decision, shown in the
+  log and the table, delivered to the executing agent in the feed; never posted to GitHub by itself (the reply text is
+  what gets posted).
+- **"Resolve this thread"** is shown on every thread decision, ticked by default, neutral styling; the owner may
+  untick it (reply without resolving). The submitted state is the explicit resolve decision, gate items included; D1
+  and D8 keep it ticked and locked (always resolve, RQ6). Nothing is resolved without the owner's submit.
 - **Override flag:** `necessity_gate` (fix although the verdict is `out`) or `blocker_gate`; D8 is stored as D3 with
-  `blocker_gate(<gate>)` and counts as an explicit resolve (RQ6).
-- **Gate items** (gate from the assessment or marked by the owner; G-FUNDS, G-SECRET, G-CRYPTO, G-DATA): no resolve
-  effect unless "Resolve this thread" is ticked; D1 and D8 count as ticked; never grouped, never in "Decide the rest",
-  and on the table page their select starts empty (RQ4, RQ5, RQ21).
+  `blocker_gate(<gate>)` (RQ6).
+- **Gate items** (gate from the assessment or marked by the owner; G-FUNDS, G-SECRET, G-CRYPTO, G-DATA): never
+  grouped, never in "Decide the rest", and on the table page their select starts empty (RQ4, RQ5, RQ21).
 - **Body and PR-comment items** have no thread: replies go into one PR-level comment per source review.
 - Effects carry `seq` and `after` (a reply after a fix waits for the fix's commit); replies are English and say "per
   maintainer decision" (WM §6.5); a superseding decision cancels effects not yet claimed and lists done ones.
@@ -144,8 +152,10 @@ decision kind and reason class or target, with one decision and "Discuss individ
 per recommendation** opens a confirmation list (rows untickable) with the count and the gate items named as left
 out; nothing is stored before confirmation; records carry `via = bulk`. The **table page** (RQ21) shows the columns of
 claudius `check-pr-comments` §4 (ID, Source, Problem, Scope, Elsewhere, Opinion, Recommendation) under one line
-"PR #N: <purpose>", plus a decision select per row (default = recommendation; empty for gate rows) and the reason or
-target field the choice needs; one submit stores one record per row (`via = table`); no shorthand text input.
+"PR #N: <purpose>", plus a decision select per row (default = recommendation; empty for gate rows), the reason or
+target field the choice needs, "Resolve" (ticked by default), the owner's comment and an Ask indicator; one submit
+stores one record per row (`via = table`); no shorthand text input. Each row's problem links to Questions with that
+item open; decisions, comments and Ask answers given in Questions or the Ask chat show in the row.
 
 ### 2.5 Carry-overs (RQ3)
 - **Carry:** a finding whose `dedupe=` key matches a decided item takes that decision without a question
@@ -202,7 +212,7 @@ read "Needs an analysis" and link to the PR page.
 | ID | View | Route (web) | WM §15 | Phase |
 |---|---|---|---|---|
 | V0 | PR page: Review a PR + Process PR comments | `/pr/:owner/:repo/:n` (replaces `/analyses/:id/progress`, which redirects) | — | 1 |
-| V1 | Comments: one question at a time, group, "Decide the rest", PR-level questions | `/pr/:owner/:repo/:n/comments` | view 1 | 1 |
+| V1 | Questions (one at a time), group, "Decide the rest", PR-level questions; `?item=C14` opens that item | `/pr/:owner/:repo/:n/comments` | view 1 | 1 |
 | V2 | Table page | `…/comments/table` | view 2 | 1 |
 | V3 | Decision log and execution (feed state, agent reports) | `…/comments/log` | U1 | 1 |
 | V4 | Rounds and per-item history | `…/comments/rounds` | view 5 | 1 (rounds), 2 (history panel) |
@@ -220,9 +230,15 @@ thepastaclaw status, the Watch toggle with its badge. Two cards side by side:
 - **Process PR comments:** unresolved threads on GitHub (fact), undecided questions, waiting for agents, round N,
   assessment state ("LLM assessment running: 4 of 9 comments"), "Open Comments" and "Table".
 
-### 3.2 V1 Question card (top to bottom: context, evidence, assessment, recommendation, decision)
+### 3.2 V1 Questions: the card (top to bottom: context, evidence, assessment, recommendation, decision)
 1. Header: `C14 · 2 of 9`; source and author ("thepastaclaw · bot · inline thread"); first seen (round, head); the
-   bot's severity marker as a GitHub-tagged claim; gate chip; category; repeat-of link.
+   bot's severity marker as a GitHub-tagged claim; gate chip; category; repeat-of link; **notes elsewhere**: icons only,
+   each with an accessible name and a tooltip on hover and focus ("Flows: the LLM flagged these lines (1 flag)",
+   "Files: incidental-change note", "Dependencies: 3 changed callers", "PR Hygiene: 2 blockers", "thepastaclaw:
+   reviewing"), each opening its place (step, line, node, plug-in home) in a new tab; absent sources show no icon.
+   **In flows:** the flows and steps whose ranges contain the commented lines, from the analysis of this head, as
+   links into Flows ("Flow 4 · Retry on timeout · step 2"); an older-head analysis is labelled with its head; none →
+   "No analysis yet · Start on the PR page".
 2. **PR context:** "PR #482: <purpose>" (LLM tag, or the analysis's PR context).
 3. **Comment** (GitHub tag; plain text; links only `https://github.com/…`).
 4. **Code:** the enclosing range at the head with the commented lines marked, collapsed beyond 40 lines, "Show more
@@ -230,20 +246,27 @@ thepastaclaw status, the Watch toggle with its badge. Two cards side by side:
 5. **Facts** read by diffpilot (badges name the check): thread unresolved / outdated, edited after a decision, marker.
 6. **LLM assessment** (LLM tag, "diffpilot Codex at 9f3c2e1, 10:32"): validity and evidence, pre-existing, necessity,
    gates, elsewhere, fix sketch and size, earlier decisions.
-7. **Options:** radio group, recommended first with "(Recommended)" (RQ7); D1–D7, D8 on gate items; inputs per choice;
-   override select; gate items: "Resolve this thread" (unticked; disabled and ticked for D1 and D8).
+7. **Your decision:** radio group, recommended first with "(Recommended)" (RQ7); D1–D7 ("Create follow-up PR" for D5,
+   "Handled in another PR" for D4), D8 on gate items; inputs per choice; override select; "Resolve this thread"
+   (ticked by default, neutral; locked ticked for D1 and D8); **Your comment (optional)** with the hint "Saved with
+   the decision and sent to the agent that executes it. Not posted to GitHub: the reply text below is what gets
+   posted."
 8. **What happens next:** the effects in order with their executor ("External agent", "diffpilot[bot]" in phase 3) and
    the reply preview with its author and, in phase 3, the footer "Posted by diffpilot on behalf of the maintainer's
    decision (C14)."
-9. Actions: **Decide** (Enter), **Ask** (question to Codex, US13), **Skip for now**. After Decide the next card opens
-   with focus on its heading; the live region announces the outcome and the count; Undo until an effect is claimed.
+9. Actions: **Decide** (Enter), **Ask about this comment** (`a`; the shared Ask button and floating Ask chat of Flows
+   and Files, brief amendment 2026-11-19, subject chip "Comment C14"; no separate ask box), **Skip for now**. After
+   Decide the next card opens with focus on its heading; the live region announces the outcome and the count; Undo
+   until an effect is claimed. The Ask chat's threads about this item are counted on the card ("1 Ask answer").
 
 **Empty:** "No undecided questions in what was read at 10:41: 14 threads (all pages read), 4 reviews, 9 comments
 assessed at 9f3c2e1." **Error:** "GitHub could not be read (rate limit). Showing the read of 10:12; next read at 10:52."
 
 ### 3.3 V2 Table page
-"PR #482: <purpose>" line; columns of `check-pr-comments` §4 plus Decision (select) and Reason / target; sections
-Undecided and Repeats asked again; decided, carried and outside items below as read-only rows. Live summary "Will
+"PR #482: <purpose>" line; columns of `check-pr-comments` §4 plus Decision (select), Reason / target, Resolve
+(checkbox, ticked), Your comment and Ask (count of answers, opens the chat thread); the Problem cell links to
+Questions with that item open (`?item=`); sections Undecided and Repeats asked again; decided, carried and outside
+items below as read-only rows showing decision, comment and where it was decided (Questions, group, table, carried). Live summary "Will
 record 9 decisions: Fix here 3 · Reject 4 · Follow-up PR 1 · Accept despite the gate 1"; Submit disabled with the
 reason while a gate row is empty or a field is missing. Real `<table>`; selects labelled by the row's ID and problem.
 
@@ -269,10 +292,26 @@ words with the "GitHub" tag. No numeric confidence; counts, never percentages. E
 ("thepastaclaw status: reviewing (verify, 3/5) · data of 10:21").
 
 ### 3.8 Keyboard and accessibility
-Keys: `j`/`k` next/previous question, `1`–`8` choose, `Enter` decide, `i` discuss individually, `q` ask, `s` skip,
+Keys: `j`/`k` next/previous question, `1`–`8` choose, `Enter` decide, `i` discuss individually, `a` Ask, `s` skip,
 `g` GitHub, `t` table, `?` help, `Esc`. Card heading focused on load; decisions are a `radiogroup` whose accessible
 names include "(Recommended)"; gate checkbox described by its rule; live region for outcomes; tables with headers;
 targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe on every state, both themes.
+
+### 3.9 Collapsible sections and state badges
+- **Collapsible sections:** every section heading (h2/h3 of a page or card, not the question title) is a disclosure
+  button with a chevron (`aria-expanded`, `aria-controls`, Enter/Space); open by default; the state is remembered
+  per view and user in local storage. One shared component (`CollapsibleSection`).
+- **State badges** (one per PR, on My work rows, the watched list, the PR page and the Comments header), each colour
+  paired with an icon and a text label, contrast ≥ 4.5:1 in both themes; first match wins:
+
+| ID | Label | Colour (token) | Rule (facts diffpilot read; tooltip lists them) |
+|---|---|---|---|
+| B1 | Blocked / failing | red (`high`) | a failed effect, CI failed, or a push channel failing for this PR's events |
+| B2 | Questions waiting | amber (`med`) | undecided questions exist |
+| B3 | Executing | teal (`bot`) | decided effects are open or claimed |
+| B4 | Waiting for bot round | blue (`low`) | thepastaclaw reports this head reviewing or queued, or a watched pass waits for the round |
+| B5 | Ready to merge | green (`ok`) | none of B1–B4; CI passed; no review requests changes (or all such are dismissed); PR Hygiene, when present, agrees |
+  Unknown inputs (CI not read, GitHub read failed) show no B5; the tooltip says what is missing.
 
 ## 4. Data and sources
 
@@ -310,8 +349,8 @@ demand), served by range (brief §7).
 | T-L1 | `comment_prs` | id, repo, number, last_read_at, read_state, `github_snapshot` JSON, round_count |
 | T-L2 | `comment_items` | id, pr_id, display_no, kind, stable_key, author, author_kind, path, lines, title, url, body_hash, first_seen_head, first_round, bot_severity, gate_marks JSON, state, revision, outside JSON |
 | T-L3 | `comment_assessments` | id, item_id, job_id, head, fingerprint, fields of §2.2, recommendation JSON, prompt_version |
-| T-L4 | `comment_questions` | id, item_id, user_id, text, job_id, answer, asked_at, answered_at |
-| T-L5 | `comment_decisions` | id, item_id, user_id, kind, reason, target, override, resolve_ticked, reply_text, recommendation JSON, via, carried_from, supersedes, head, body_hash, decided_at (append-only) |
+| T-L4 | Ask chat storage (existing) | subject kind gains `comment_item` (item id); without an analysis the chat is keyed by (PR, user) **[A]** (CCR) |
+| T-L5 | `comment_decisions` | id, item_id, user_id, kind, reason, target, override, resolve_ticked, reply_text, comment, recommendation JSON, via, carried_from, supersedes, head, body_hash, decided_at (append-only) |
 | T-L6 | `comment_effects` | id, decision_id, seq, after, kind, executor, params JSON, state, claim_token_id, lease_until, reference, message, updated_at |
 | T-L7 | `comment_carry_events` | id, pr_id, item_id, kind (`carried`, `asked_again`), source_decision_id, reason (`bot_edited`, `code_changed`), evidence JSON, at |
 | T-L8 | `agent_subscriptions` | token_id, capabilities JSON, last_seen_at, push_kind, push_url, push_topic, push_secret (AES-GCM), last_delivery_at, last_error, failing_since |
@@ -344,6 +383,7 @@ review → out of scope (RQ13); views 1, 2, 5 → V1, V2, V4; view 3 → My work
    `repo`; or poll `GET /api/v1/decision-feed` with `ETag`.
 3. Claim a decision (`POST …/decisions/{id}/claim`; lease 30 min, renewed by each report; another claim → 409
    `claimed`); only decisions whose open effects all fall within the claimer's capabilities can be claimed.
+   The decision carries the owner's comment (instructions for the executor, never posted by diffpilot).
 4. Execute effects in `seq` order; report each (`POST …/effects/{id}/reports`: `done` + reference, `failed` + reason,
    or `released`; idempotency key). An expired lease returns the decision to the feed; a duplicate report is a no-op.
 5. Effects run by diffpilot[bot] (phase 3) never appear in the feed; an agent's `fix` report with its commit releases
@@ -399,11 +439,11 @@ Integers only on the wire; open enums (tolerant readers); JSON Schemas for read 
 | RC2 | GET | `/prs/{pr}/comments` | read | → `CommentsOverview` (header, counts, rounds, assessment state, queue order) |
 | RC3 | POST | `/prs/{pr}/comments/read` | session_csrf | → 202 (read GitHub again; 429 under 10 s) |
 | RC4 | GET | `/prs/{pr}/comments/items` | read | `state`, `kind` → `CommentItem[]` with assessments, decisions, effects |
-| RC5 | GET | `/prs/{pr}/comments/items/{item}/context` | read | `from`, `to` → `CodeContext` (lines at head, marked range, LLM description) |
+| RC5 | GET | `/prs/{pr}/comments/items/{item}/context` | read | `from`, `to` → `CodeContext` (lines at head, marked range, LLM description, flows and steps containing the range, notes elsewhere with their links) |
 | RC6 | POST | `/prs/{pr}/comments/items/{item}/assess` | session_csrf | → 202 (assess again) |
-| RC7 | POST | `/prs/{pr}/comments/items/{item}/questions` | session_csrf | `{text}` → 202 `CommentQuestion` |
-| RC8 | POST | `/prs/{pr}/comments/items/{item}/decisions` | session_csrf | `{kind, reason?, target?, override?, resolve_ticked, reply_text?, item_revision}` → 201; 409 `item_changed` |
-| RC9 | POST | `/prs/{pr}/comments/decision-batches` | session_csrf | `{via: group | bulk | table, rows[…]}` → 201 `Decision[]`; 422 for a gate row under `bulk`/`group` or an unchosen gate row under `table`; 409 lists changed items |
+| RC7 | — | existing Ask chat routes | session_csrf | subject `{kind: comment_item, item}` (CCR); with an analysis of the head the Ask session answers, without one a `verify_comments` question pass answers into the same chat **[A]** |
+| RC8 | POST | `/prs/{pr}/comments/items/{item}/decisions` | session_csrf | `{kind, reason?, target?, override?, resolve_ticked, reply_text?, comment?, item_revision}` → 201; 409 `item_changed` |
+| RC9 | POST | `/prs/{pr}/comments/decision-batches` | session_csrf | `{via: group | bulk | table, rows[…]}` (each row with `resolve_ticked`, `comment?`) → 201 `Decision[]`; 422 for a gate row under `bulk`/`group` or an unchosen gate row under `table`; 409 lists changed items |
 | RC10 | GET | `/prs/{pr}/comments/log` | read | → decisions, effects, claims, reports, carry events |
 | RC11 | GET | `/comments/carry-overs` | read | `pr?`, `cursor` → events + counts (per PR and total) |
 | RW1 | PUT / DELETE | `/prs/{pr}/watch` | session_csrf | → 204 (watch / unwatch; 409 `watch_limit_reached`) |
@@ -445,7 +485,9 @@ mutating route only when the route names its write scope.
 | PR Hygiene plug-in, plug-in host (ADR-022) | header note; second plug-in thepastaclaw status (RQ16, ADR-022 addendum below) |
 | access tokens (ADR-019) | agent auth; one write scope |
 | `github::threads`, mirror, lines API | extended reads; code context by range without an analysis |
-| Ask, notifications | owner questions use the `verify_comments` job, not Ask (no analysis needed); browser notification setting kept, channels added (§5.5) |
+| Ask chat (floating, brief amendment 2026-11-19), `AskButton` | the card's "Ask about this comment"; subject kind `comment_item`; without an analysis a `verify_comments` question pass answers into the same chat |
+| notifications | browser notification setting kept, channels added (§5.5) |
+| Flows ranges, incidental notes, deps graph, plug-in statements | the card's "In flows" list and notes-elsewhere icons (read only, links in new tabs) |
 | `server::secrets` (AES-GCM) | channel and push-target tokens |
 
 **thepastaclaw plug-in (RQ16).** `server::dashboard::plugin::thepastaclaw`, config `SR_THEPASTACLAW_STATUS_URL`
@@ -494,7 +536,10 @@ Named tests (besides §7): `effects_follow_matrix`, `gate_items_never_grouped_or
 `watch_probe_batches_ten_prs`, `unchanged_probe_reads_nothing_more`, `one_assessment_job_per_pr`,
 `watched_pass_waits_for_bot_round`, `questions_ready_event_once_per_round`, `daily_cap_stops_automatic_passes`,
 `ntfy_message_has_title_body_and_click_link`, `webhook_payload_has_fixed_shape`, `delivery_tries_three_times_then_fails`,
-`failure_logged_once_per_state_change`, `agent_with_live_stream_is_not_pushed`, `push_only_for_claimable_capabilities`.
+`failure_logged_once_per_state_change`, `agent_with_live_stream_is_not_pushed`, `push_only_for_claimable_capabilities`,
+`resolve_ticked_by_default_and_submitted_state_wins`, `owner_comment_in_feed_never_posted`,
+`follow_up_pr_needs_no_link`, `state_badge_precedence_and_unknown_inputs`, Playwright `table_row_opens_question`,
+`sections_collapse_by_keyboard`, `ask_about_comment_opens_shared_chat`, `notes_icons_open_new_tab`.
 
 ## 10. Risks
 | ID | Risk | Mitigation |

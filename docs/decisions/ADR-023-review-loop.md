@@ -18,7 +18,10 @@ read with tokens (ADR-019).
 ## Decision
 1. **PR page and Comments view.** My work leads to a PR page (replacing the progress page) with "Review a PR" (the
    analysis and its status) and "Process PR comments". Comments is a view of the review menu beside Flows, Files and
-   Dependencies and works without an analysis. Modules: `server::comments` (items, queue, effects, rounds, carry-overs,
+   Dependencies and works without an analysis; its one-at-a-time page is "Questions", beside Table, Rounds,
+   Carry-overs and the decision log. The question card shows the flows containing the commented code and icons for
+   notes about it from other modules (each opening in a new tab); every section heading is collapsible; PR state badges
+   use a five-state palette with text labels. Modules: `server::comments` (items, queue, effects, rounds, carry-overs,
    watch, feed), `server::github::comments` (reads), `db::repo::comments`, contracts `api::comments` and
    `agent::verify_comments`, web `components/comments/**`, `screens/pr/**`, `screens/comments/**`. No new crate.
 2. **On demand, plus Watch.** Any pull request is processed on demand; diffpilot shows GitHub's state and records
@@ -28,7 +31,9 @@ read with tokens (ADR-019).
 3. **Codex assesses, never implements.** A new job kind `verify_comments` (`JobTarget::PullRequestComments`) runs on
    the existing `JobExecutor` and runner: checkout of the head, the read-only PR-scoped installation token, no session
    restore or save, no MemCan, no GitHub write. It writes per item the assessment, the recommendation and the code
-   context, and answers the owner's questions. Unchanged items reuse their assessment. It is the only source of
+   context. The owner asks about a comment in the shared floating Ask chat (subject kind `comment_item`): with an
+   analysis of the head the Ask session answers; without one a `verify_comments` question pass answers into the same
+   chat. Unchanged items reuse their assessment. It is the only source of
    assessments (RQ20). Every detection that yields new items spends LLM tokens; this is bounded: one assessment job
    per PR at a time, debounced while thepastaclaw still reviews that PR, a minimum spacing per PR and a daily cap.
 4. **Detection for watched PRs reuses refresh machinery** at bounded GitHub cost: one alias-batched GraphQL probe
@@ -38,9 +43,12 @@ read with tokens (ADR-019).
 5. **Decisions are the signed-in users' only.** Decisions, supersedes, gate marks, "Resolve this thread" and
    PR-level questions need a browser session with CSRF; no token can decide.
 6. **Effects computed by the server.** A pure function maps (decision, author kind, source kind, gate, override) to the
-   effects of WM §6.5, each with an executor and order. Gate threads (G-FUNDS, G-SECRET, G-CRYPTO, G-DATA) get a resolve
-   only when the decision says so; "Accept despite the gate" is a reject with a gate override whose reason is posted
-   and whose thread is always resolved (RQ6). Gate items are never grouped, never in "Decide the rest", and need their
+   effects of WM §6.5, each with an executor and order. "Resolve this thread" is shown on every thread decision,
+   ticked by default; the submitted state is the explicit resolve decision, for gate threads (G-FUNDS, G-SECRET,
+   G-CRYPTO, G-DATA) too, and nothing is resolved without the owner's submit. "Accept despite the gate" is a reject
+   with a gate override whose reason is posted and whose thread is always resolved (RQ6). "Create follow-up PR" asks
+   for no link (the agent creates the PR); "Handled in #N" names an existing PR. Every decision carries an optional
+   owner's comment: stored, shown in the log and table, delivered to the executing agent, never posted to GitHub. Gate items are never grouped, never in "Decide the rest", and need their
    own choice on the table page (RQ4, RQ5, RQ21).
 7. **Decision feed for external agents.** Implementing agents outside diffpilot's control subscribe with a personal
    access token (SSE or polling, filtered by their capabilities), claim a decision under a lease, execute its effects
@@ -82,7 +90,7 @@ read with tokens (ADR-019).
 | Strict SSRF filter (deny private addresses always) | the targets the owner uses live on the LAN; hosts are configured by the user or the operator; denial stays an operator switch |
 | Full read of every watched PR per interval | costs a threads/reviews/comments read per PR; the batched probe reads three counters and two ids |
 | diffpilot jobs fix code, push, reply | the runner is read-only with no code execution (brief §2, T3); a prompt-injected PR would gain write access |
-| Ask (private session) for owner questions | needs an analysis; Comments must work without one |
+| A separate ask box on the question card | the owner wants one Ask, the floating chat of Flows and Files; without an analysis a question pass answers into it |
 | A third agent-session kind for comments | ADR-004 allows analytic and Ask sessions only; a context pack per job is enough |
 | Server posts with the owner's App user token | the owner chose the App bot (RQ2) |
 | Free-text shorthand ("C01 fix, C02 reject") | owner chose per-row selects with one submit (RQ21) |
