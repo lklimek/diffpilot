@@ -65,6 +65,7 @@ fn config(verified: bool) -> Config {
         app_public_key_file: verified.then(|| KEYS.1.clone()),
         dashboard_fixture_dir: None,
         dashboard_world_at: None,
+        review_loop_fixture_dir: None,
     }
 }
 

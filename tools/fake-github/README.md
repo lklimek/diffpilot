@@ -23,6 +23,7 @@ cargo run -p fake-github -- \
 | `--app-id` | `FAKE_GITHUB_APP_ID` | — | GitHub App id the App JWTs must name (`SR_GITHUB_APP_ID`). |
 | `--app-public-key-file` | `FAKE_GITHUB_APP_PUBLIC_KEY_FILE` | — | PEM public key of the App key (`openssl rsa -pubout`); App JWTs must verify against it. |
 | `--dashboard-fixture-dir` | `FAKE_GITHUB_DASHBOARD_FIXTURE_DIR` | — | Dashboard world (`fixtures/dashboard/github`); without it the dashboard endpoints answer 404. |
+| `--review-loop-fixture-dir` | `FAKE_GITHUB_REVIEW_LOOP_FIXTURE_DIR` | — | Review-loop reads (`fixtures/review-loop/github`): the PR facts, review threads, reviews and PR comments queries for the recorded pull request are answered from their recordings. |
 | `--dashboard-world-at` | `FAKE_GITHUB_DASHBOARD_WORLD_AT` | — | The instant the world was written for (RFC 3339): every date of the world moves by the time from it to start-up, so the world is always as recent as on that day. Without it the dates are served as written. |
 
 Log level: `RUST_LOG` (default `info`).

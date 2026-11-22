@@ -33,6 +33,7 @@ fn config(dashboard: Option<PathBuf>) -> Config {
         app_public_key_file: None,
         dashboard_fixture_dir: dashboard,
         dashboard_world_at: None,
+        review_loop_fixture_dir: None,
     }
 }
 
@@ -1638,6 +1639,7 @@ async fn world_dates_are_shifted_so_that_world_at_is_now() {
     let world_at = at("2026-11-18T19:30:00Z");
     let base = spawn_with(Config {
         dashboard_world_at: Some(world_at),
+        review_loop_fixture_dir: None,
         ..config(Some(world_dir()))
     })
     .await;
