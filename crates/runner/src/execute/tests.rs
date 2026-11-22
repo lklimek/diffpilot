@@ -1393,8 +1393,33 @@ async fn verify_job_secrets_are_absent_from_events_and_result() {
     assert!(all.contains("[redacted]"), "{all}");
 }
 
-/// A `verify_comments` job holding MemCan access, skills or a session, or a kind that does not match its target, is
-/// refused before anything runs (threat model T23).
+/// A `verify_comments` job may read its own skills (`severity`, `check-pr-comments`; ADR-002 amendment) and still
+/// no MemCan endpoint or session.
+#[tokio::test]
+async fn verify_job_may_read_its_own_skills() {
+    let root = TempDir::new().unwrap();
+    let executor = Executor::new(
+        Stub::new(Behaviour::Succeed),
+        dirs(root.path()),
+        credential(),
+    );
+    let spec = JobSpec {
+        skills: contracts::agent::verify_comments::SKILLS
+            .iter()
+            .map(|skill| (*skill).to_owned())
+            .collect(),
+        ..verify_spec(shared_repo(), &verify_input(None))
+    };
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(
+        matches!(result.outcome, JobOutcome::Succeeded { .. }),
+        "{:?}",
+        result.outcome
+    );
+}
+
+/// A `verify_comments` job holding MemCan access, a session or a skill other than its own (`report-format`), or a
+/// kind that does not match its target, is refused before anything runs (threat model T23).
 #[tokio::test]
 async fn misfit_verify_jobs_are_refused_before_the_provider_runs() {
     let root = TempDir::new().unwrap();
@@ -1410,8 +1435,8 @@ async fn misfit_verify_jobs_are_refused_before_the_provider_runs() {
         });
         spec
     };
-    let with_skills = JobSpec {
-        skills: vec!["severity".to_owned()],
+    let with_report_format = JobSpec {
+        skills: vec!["severity".to_owned(), "report-format".to_owned()],
         ..verify()
     };
     let with_session = JobSpec {
@@ -1431,7 +1456,7 @@ async fn misfit_verify_jobs_are_refused_before_the_provider_runs() {
     };
     for spec in [
         with_memcan,
-        with_skills,
+        with_report_format,
         with_session,
         plan_on_comments,
         verify_on_pr,

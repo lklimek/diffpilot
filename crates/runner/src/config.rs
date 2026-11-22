@@ -40,7 +40,7 @@ pub const CLAUDIUS_URL: &str = "SR_RUNNER_CLAUDIUS_URL";
 pub const CLAUDIUS_REF: &str = "SR_RUNNER_CLAUDIUS_REF";
 /// Seconds between two refreshes of the claudius checkout (default 21600).
 pub const CLAUDIUS_REFRESH_SECS: &str = "SR_RUNNER_CLAUDIUS_REFRESH_SECS";
-/// Comma-separated skills a job may be given (default `severity`, ADR-002).
+/// Comma-separated skills a job may be given (default `severity,check-pr-comments`, ADR-002).
 pub const SKILLS: &str = "SR_RUNNER_SKILLS";
 /// Days an agent session is kept after its last job (default 14).
 pub const SESSION_RETENTION_DAYS: &str = "SR_RUNNER_SESSION_RETENTION_DAYS";
@@ -58,7 +58,7 @@ const MIB: u64 = 1024 * 1024;
 const DEFAULT_CLAUDIUS_URL: &str = "https://github.com/lklimek/claudius.git";
 const DEFAULT_CLAUDIUS_REF: &str = "main";
 const DEFAULT_CLAUDIUS_REFRESH_SECS: u64 = 6 * 3600;
-const DEFAULT_SKILLS: &str = "severity";
+const DEFAULT_SKILLS: &str = "severity,check-pr-comments";
 const SECS_PER_DAY: u64 = 24 * 3600;
 /// Largest secret file read.
 const MAX_SECRET_FILE_BYTES: u64 = 64 * 1024;

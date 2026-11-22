@@ -197,7 +197,7 @@ Required means compose or the service refuses to start without it. "Secret" valu
 | `SR_RUNNER_CLAUDIUS_URL` | no | `https://github.com/lklimek/claudius.git` | Repository the agents' skills come from. |
 | `SR_RUNNER_CLAUDIUS_REF` | no | `main` | Branch, tag (`refs/tags/<tag>`) or commit SHA of the skills; a SHA or tag pins them (recommended; the check warns on a branch). |
 | `SR_RUNNER_CLAUDIUS_REFRESH_SECS` | no | `21600` | Refresh interval of the skills checkout. |
-| `SR_RUNNER_SKILLS` | no | `severity` | Skills a job may get. |
+| `SR_RUNNER_SKILLS` | no | `severity,check-pr-comments` | Skills a job may get (`verify_comments` reads both, analyses and Ask `severity`). A job asking for a skill not listed fails, so an `.env` that sets `severity` alone makes every comment assessment fail: add `check-pr-comments` when upgrading to v1.3. |
 | `SR_RUNNER_SESSION_RETENTION_DAYS` | no | `14` | Days an agent session is kept after its last job. |
 | `SR_RUNNER_DISK_RESERVE_MIB` | no | `2048` | Free space on Docker's data root below which the runner takes no job (and is unhealthy). |
 | `SR_SUPERVISOR_SWEEP_DEADLINE_MS` | no | `5000` | Deadline of the job-end process sweep; a miss ends the container (exit 70). |
