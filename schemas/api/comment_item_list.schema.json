@@ -671,6 +671,14 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0
+        },
+        "skills_commit": {
+          "description": "Commit of the claudius checkout whose skills the job read (\"Assessed with claudius <short sha>\"); null when\nthe runner gave none or the assessment predates it. A reused assessment keeps the commit it was made with.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       },
       "required": [

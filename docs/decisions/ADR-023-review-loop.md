@@ -105,3 +105,20 @@ read with tokens (ADR-019).
 - Watching costs GitHub points per interval and LLM tokens per detected change, both bounded and shown to the user.
 - Implementing agents need a small feed client (claudius scripts can execute effects); the decision log makes the
   owner's agreement with recommendations and the repeats measurable (WM U1, RR R11(b)).
+
+## Amendment (2026-11-22, WP13-WATCH and SK1)
+- **Watch.** A probe every 5 minutes (ADR-020 scheduler task) reads up to 10 watched PRs per aliased GraphQL query
+  (head, `updatedAt`, thread, comment and latest-review counts, state) with the watcher's token; only a PR whose
+  values changed is read in full. A change makes an automatic pass due (`pr_watches.pass_due_at`, migration 0023);
+  it waits while thepastaclaw reviews the PR (its status plug-in or its gate comment in progress or queued on the
+  head), for at most 90 minutes from the change, then goes through `request_pass(Watch)`: one pass per PR, 10-minute
+  spacing, 30 passes per user and 24 hours (shown in RW2). A plug-in change signal (PR Hygiene, the end of a
+  thepastaclaw round) probes its watched PRs at once. A merged or closed PR ends the watch; a user without a usable
+  token pair pauses.
+- **Questions ready.** A watch pass that leaves undecided questions writes one `questions_ready` user event per round
+  and watcher (`pr_watches.notified_for`: `round:<n>`, or `head:<sha>` before any bot round); delivery to channels is
+  the notification task's work. RW3 streams them as SSE events named `user_event` and `heartbeat`
+  (`UserStreamEvent`).
+- **SK1.** `verify_comments` reads the claudius skills `severity` and `check-pr-comments` (ADR-002 amendment); each
+  assessment keeps the claudius commit it was made with as provenance, never as a reason to re-assess (owner Q28 = c).
+- **"Assess again" while a pass runs** answers 409 `conflict` instead of being dropped.

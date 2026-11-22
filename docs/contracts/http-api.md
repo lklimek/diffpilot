@@ -792,12 +792,12 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 
 | ID | Method | Path | Auth | Request | Response |
 |---|---|---|---|---|---|
-| RC1 | GET | `/api/v1/prs/{owner}/{name}/{number}` | read | – | `PrPage` |
+| RC1 | GET | `/api/v1/prs/{owner}/{name}/{number}` | read | – | `PrPage`; a known PR that GitHub could not be read for yet is still served (header from the stored PR, `state` and `base` empty, the failure in `comments.read.failure`) |
 | RC2 | GET | `…/comments` | read | – | `CommentsOverview` |
 | RC3 | POST | `…/comments/read` | session_csrf | – | 202 (429 `rate_limited` under 10 s) |
 | RC4 | GET | `…/comments/items` | read | `ItemsQuery` | `CommentItem[]` |
 | RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
-| RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202 |
+| RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202; 409 `conflict` while an assessment pass of the PR is queued or running (assess again once it ends) |
 | RC8 | POST | `…/comments/items/{item}/decisions` | session_csrf | `DecideRequest` | 201 `Decision`; 409 `item_changed` |
 | RC9 | POST | `…/comments/decision-batches` | session_csrf | `DecisionBatchRequest` | 201 `Decision[]`; 400 `invalid_request` for a gate row under `bulk`/`group` or, under `table`, a batch that leaves out a waiting gate item; 409 `item_changed` naming the changed items |
 | RC10 | GET | `…/comments/log` | read | – | `CommentLog` |
@@ -809,8 +809,8 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC16 | POST | `…/comments/effects-preview` | session_csrf | `EffectsPreviewRequest` | `EffectsPreview[]` (the effects the rows would get; nothing stored); 400 `invalid_request` as RC8/RC9 |
 | RC17 | GET | `…/comments/decide-rest` | read | – | `DecideRest` (the confirmation list of "Decide the rest per recommendation"; gate items and items without a complete recommendation are left out with their reason) |
 | RW1 | PUT / DELETE | `…/watch` | session_csrf | – | 204; 409 `watch_limit_reached` |
-| RW2 | GET | `/api/v1/watches` | read | – | `WatchList` |
-| RW3 | GET | `/api/v1/events` | read | – | SSE `UserEvent` (`sse-events.md`) |
+| RW2 | GET | `/api/v1/watches` | read | – | `WatchList` (with the reader's assessment passes of the last 24 h and the daily limit) |
+| RW3 | GET | `/api/v1/events` | read | – | SSE `UserStreamEvent`: `user_event`, `heartbeat` (`sse-events.md`) |
 | RN1 | GET | `/api/v1/settings/notifications` | session | – | `NotificationSettings` (secrets as `secret_last4` only) |
 | RN2 | PUT / DELETE | `/api/v1/settings/notifications/channels/{kind}` | session_csrf | `PutChannelRequest` / – | `NotificationChannel` / 204; 422 `scheme_not_allowed`; an absent `secret` keeps the stored one |
 | RN3 | POST | `…/channels/{kind}/test` | session_csrf | – | `ChannelTestResult` (one attempt) |

@@ -25,6 +25,8 @@ pub enum WatchOutcome {
 /// A stored watch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WatchRecord {
+    /// Tenant.
+    pub tenant_id: String,
     /// Watcher (`users.id`).
     pub user_id: String,
     /// `pull_requests.id`.
@@ -45,6 +47,10 @@ pub struct WatchRecord {
     pub state: WatchState,
     /// When it ended.
     pub ended_at: Option<Timestamp>,
+    /// Since when an automatic assessment pass is due; `None` when none is.
+    pub pass_due_at: Option<Timestamp>,
+    /// The round the last "questions ready" event was for (`round:<n>` or `head:<sha>`).
+    pub notified_for: Option<String>,
 }
 
 /// A per-user event to store.
@@ -64,14 +70,16 @@ pub struct NewUserEvent {
     pub url: Option<String>,
 }
 
-const WATCH_SELECT: &str = "SELECT w.user_id, w.pull_request_id, r.owner, r.name, p.number, p.title, w.since,
-        w.probe, w.last_probe_at, w.last_auto_pass_at, w.last_auto_pass_questions, w.state, w.ended_at
+const WATCH_SELECT: &str = "SELECT w.tenant_id, w.user_id, w.pull_request_id, r.owner, r.name, p.number, p.title, w.since,
+        w.probe, w.last_probe_at, w.last_auto_pass_at, w.last_auto_pass_questions, w.state, w.ended_at,
+        w.pass_due_at, w.notified_for
     FROM pr_watches w JOIN pull_requests p ON p.id = w.pull_request_id JOIN repos r ON r.id = p.repo_id";
 
 fn watch_from_row(row: &SqliteRow) -> Result<WatchRecord, DbError> {
     let pass_at = opt_ts_col(row, "last_auto_pass_at")?;
     let questions: Option<i64> = row.try_get("last_auto_pass_questions")?;
     Ok(WatchRecord {
+        tenant_id: row.try_get("tenant_id")?,
         user_id: row.try_get("user_id")?,
         pull_request_id: row.try_get("pull_request_id")?,
         pr: PrRef {
@@ -96,6 +104,8 @@ fn watch_from_row(row: &SqliteRow) -> Result<WatchRecord, DbError> {
         },
         state: wire_col(row, "state")?,
         ended_at: opt_ts_col(row, "ended_at")?,
+        pass_due_at: opt_ts_col(row, "pass_due_at")?,
+        notified_for: row.try_get("notified_for")?,
     })
 }
 
@@ -134,7 +144,7 @@ impl ReviewLoop<'_> {
             "INSERT INTO pr_watches (user_id, pull_request_id, tenant_id, since, state) VALUES (?, ?, ?, ?, 'active')
              ON CONFLICT (user_id, pull_request_id) DO UPDATE SET since = excluded.since, state = 'active',
                  ended_at = NULL, probe = NULL, last_probe_at = NULL, last_auto_pass_at = NULL,
-                 last_auto_pass_questions = NULL",
+                 last_auto_pass_questions = NULL, pass_due_at = NULL, notified_for = NULL",
         )
         .bind(user_id)
         .bind(pull_request_id)
@@ -227,6 +237,61 @@ impl ReviewLoop<'_> {
             return Err(DbError::NotFound);
         }
         Ok(())
+    }
+
+    /// Marks an automatic pass due since `at` unless one is due already; `None` clears it.
+    pub async fn set_pass_due(
+        &self,
+        user_id: &str,
+        pull_request_id: i64,
+        at: Option<Timestamp>,
+    ) -> Result<(), DbError> {
+        let updated = sqlx::query(
+            "UPDATE pr_watches SET pass_due_at = CASE WHEN ?1 IS NULL THEN NULL ELSE COALESCE(pass_due_at, ?1) END
+             WHERE user_id = ?2 AND pull_request_id = ?3",
+        )
+        .bind(at.map(ts))
+        .bind(user_id)
+        .bind(pull_request_id)
+        .execute(self.pool)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(DbError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Records the round a "questions ready" event was sent for.
+    pub async fn set_notified(
+        &self,
+        user_id: &str,
+        pull_request_id: i64,
+        round: &str,
+    ) -> Result<(), DbError> {
+        let updated = sqlx::query(
+            "UPDATE pr_watches SET notified_for = ? WHERE user_id = ? AND pull_request_id = ?",
+        )
+        .bind(round)
+        .bind(user_id)
+        .bind(pull_request_id)
+        .execute(self.pool)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(DbError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Passes charged to the user since `since` (the daily cap).
+    pub async fn charged_passes(&self, user_id: &str, since: Timestamp) -> Result<u32, DbError> {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM comment_passes WHERE user_id = ? AND created_at >= ?",
+        )
+        .bind(user_id)
+        .bind(ts(since))
+        .fetch_one(self.pool)
+        .await?;
+        u32::try_from(count).map_err(|_| DbError::Corrupt { column: "count" })
     }
 
     /// Records an automatic assessment of a watched PR.

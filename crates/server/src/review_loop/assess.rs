@@ -84,8 +84,24 @@ pub enum PassQueued {
     Queued,
     /// A pass of the pull request is queued or running already.
     AlreadyRunning,
-    /// Nothing to assess, no review-loop read yet, or spacing or the daily cap holds an automatic pass back.
+    /// An automatic pass is held back: the previous pass ended less than [`PASS_SPACING`] ago.
+    Spaced,
+    /// An automatic pass is held back: every watcher reached [`DAILY_PASSES_PER_USER`].
+    DailyLimit,
+    /// Nothing to assess, no review-loop read yet, or no watcher for an automatic pass.
     Skipped,
+}
+
+/// Who an automatic pass is charged to, or why none runs.
+enum Charge {
+    /// The first watcher under the daily cap.
+    To(String),
+    /// Held back by [`PASS_SPACING`].
+    Spaced,
+    /// Every watcher reached the daily cap.
+    DailyLimit,
+    /// Nobody watches the pull request.
+    NoWatcher,
 }
 
 /// A pass could not be requested or ingested.
@@ -156,8 +172,10 @@ async fn request(
             None => return Ok(PassQueued::Skipped),
         },
         PassReason::Watch => match charged_watcher(state, pr, now, continuation).await? {
-            Some(user) => (Some(user), None),
-            None => return Ok(PassQueued::Skipped),
+            Charge::To(user) => (Some(user), None),
+            Charge::Spaced => return Ok(PassQueued::Spaced),
+            Charge::DailyLimit => return Ok(PassQueued::DailyLimit),
+            Charge::NoWatcher => return Ok(PassQueued::Skipped),
         },
         PassReason::Opened | PassReason::NewComments | PassReason::AssessAgain(_) => (None, None),
     };
@@ -275,12 +293,15 @@ async fn charged_watcher(
     pr: i64,
     now: Timestamp,
     continuation: bool,
-) -> Result<Option<String>, AssessError> {
+) -> Result<Charge, AssessError> {
     let watches = state.db.review_loop().live_watches().await?;
     let mut watchers: Vec<_> = watches
         .iter()
         .filter(|watch| watch.pull_request_id == pr)
         .collect();
+    if watchers.is_empty() {
+        return Ok(Charge::NoWatcher);
+    }
     watchers.sort_by_key(|watch| watch.since);
     for watch in watchers {
         let (passes, last_end) = state
@@ -290,17 +311,17 @@ async fn charged_watcher(
             .await?;
         if !continuation && last_end.is_some_and(|end| end + PASS_SPACING > now) {
             tracing::debug!(pr, "automatic assessment pass held back by the spacing");
-            return Ok(None);
+            return Ok(Charge::Spaced);
         }
         if passes < DAILY_PASSES_PER_USER {
-            return Ok(Some(watch.user_id.clone()));
+            return Ok(Charge::To(watch.user_id.clone()));
         }
     }
     tracing::info!(
         pr,
         "automatic assessment pass not started: no watcher is under the daily limit"
     );
-    Ok(None)
+    Ok(Charge::DailyLimit)
 }
 
 /// Items a pass assesses: comments of open, undecided items (not PR-level questions, which the server asks).
@@ -522,7 +543,10 @@ async fn submit(
         session: None,
         working_session: None,
         context_pack: None,
-        skills: Vec::new(),
+        skills: agent::verify_comments::SKILLS
+            .iter()
+            .map(|skill| (*skill).to_owned())
+            .collect(),
         access: AgentAccess::default(),
     };
     Ok(state
@@ -628,6 +652,9 @@ async fn end_failed(state: &AppState, pass: PassId) -> Result<(), AssessError> {
 /// again and again; they wait for the next trigger.
 async fn next(state: &AppState, record: &PassRecord, complete: bool) {
     let pr = record.pull_request_id;
+    if let Err(error) = super::watch::pass_ended(state, record).await {
+        tracing::warn!(pr, error = ?error, "the end of an automatic assessment pass could not be recorded on its watches");
+    }
     let rest = match record.cause {
         PassCause::Watch => Some(PassReason::Watch),
         PassCause::Opened | PassCause::AssessAgain => Some(PassReason::Opened),

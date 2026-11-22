@@ -18,7 +18,7 @@ pub const DISMISS_MESSAGE: &str = "Per maintainer decision, every item of this r
 /// Which PR-level question an item is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrQuestion {
-    /// "Merge now, remaining items as follow-ups?" (P1/P2).
+    /// "Merge now, or another round?" (P1/P2).
     Merge,
     /// "Dismiss stale bot reviews?" (P3/P4).
     Dismiss,

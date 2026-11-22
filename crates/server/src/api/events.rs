@@ -30,7 +30,7 @@ use crate::auth::Session;
 use crate::state::AppState;
 
 /// Interval of the `heartbeat` event, which also keeps proxies from closing an idle stream.
-const HEARTBEAT: Duration = Duration::from_secs(15);
+pub(crate) const HEARTBEAT: Duration = Duration::from_secs(15);
 /// Most event streams (analysis and dashboard) one user may hold open at once, cookie sessions and tokens alike.
 pub const MAX_STREAMS_PER_USER: u32 = 16;
 /// Seconds a refused stream is asked to wait before opening again.
@@ -218,7 +218,7 @@ async fn reader_events(
 
 /// Whether the stream's session or access token still passes the checks of a new request; a failed read ends the
 /// stream too (the client reconnects through the check).
-async fn session_live(state: &AppState, session: &Session) -> bool {
+pub(crate) async fn session_live(state: &AppState, session: &Session) -> bool {
     match session.is_live(state).await {
         Ok(true) => true,
         Ok(false) => {

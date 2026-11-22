@@ -88,9 +88,12 @@ refresh's own user may open it; another user's refresh id answers `not_found` (t
 
 Plan `docs/review-workflow-plan.md` §2.8, §5 (ADR-023). Types in `crates/contracts/src/api/review_loop.rs`.
 
-- `GET /api/v1/events` (RW3, `read`): the reader's own `UserEvent`s (`questions_ready`, `round_executed`, `test`) as
-  they are stored; the browser shows them as notifications when its per-browser toggle is on. Heartbeats and token
-  re-checks as for dashboard streams.
+- `GET /api/v1/events` (RW3, `read`): `UserStreamEvent` tagged by `event`, the SSE event name:
+  `user_event {user_event}` for each of the reader's own `UserEvent`s (`questions_ready`, `round_executed`, `test`)
+  stored after the stream opened, oldest first (the server looks for new ones every 5 s; a reconnect resends nothing
+  older than the connection, so a browser never notifies twice), and `heartbeat {at}`. The browser shows user events
+  as notifications when its per-browser toggle is on. Heartbeats and token re-checks as for dashboard streams; the
+  stream ends when the server stops.
 - `GET /api/v1/decision-feed/events` (RF2, `read`, query `FeedQuery`): `FeedEvent` tagged by `event`:
   `decision_available {decision, pr, fetch}` when a decision within the subscriber's capabilities becomes
   claimable, `decision_cancelled {decision, pr}` when it leaves the feed (superseded or claimed by another agent),

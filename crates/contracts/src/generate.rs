@@ -35,7 +35,7 @@ use crate::api::review_loop::{
     DecideRest, Decision, DecisionBatchRequest, DecisionFeed, EffectReportRequest, EffectsPreview,
     EffectsPreviewRequest, FeedDecision, FeedEvent, FeedQuery, GateMarkRequest, ItemActionRequest,
     ItemsQuery, NotificationSettings, PrPage, PushTarget, PutChannelRequest, PutPushTargetRequest,
-    UserEvent, WatchList, WebhookPayload,
+    UserStreamEvent, WatchList, WebhookPayload,
 };
 use crate::api::settings::{
     RepoSettings, SetAskEffortRequest, SetControlledOwnersRequest, SetJudgeEffortRequest,
@@ -117,7 +117,7 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<CarryOverQuery>("carry_over_query", &[]),
     api_schema::<CarryOverPage>("carry_over_page", &[routes::LIST_CARRY_OVERS]),
     api_schema::<WatchList>("watch_list", &[routes::LIST_WATCHES]),
-    api_schema::<UserEvent>("user_event", &[routes::USER_EVENTS]),
+    api_schema::<UserStreamEvent>("user_stream_event", &[routes::USER_EVENTS]),
     api_schema::<FeedQuery>("feed_query", &[]),
     api_schema::<DecisionFeed>("decision_feed", &[routes::GET_DECISION_FEED]),
     api_schema::<FeedDecision>("feed_decision", &[routes::GET_FEED_DECISION]),
@@ -288,7 +288,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<CarryOverQuery>();
     collector.visit::<CarryOverPage>();
     collector.visit::<WatchList>();
-    collector.visit::<UserEvent>();
+    collector.visit::<UserStreamEvent>();
     collector.visit::<NotificationSettings>();
     collector.visit::<PutChannelRequest>();
     collector.visit::<ChannelTestResult>();

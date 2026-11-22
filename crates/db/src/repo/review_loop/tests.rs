@@ -329,6 +329,7 @@ async fn assessments_keep_their_fingerprint_and_newest_wins() {
         },
         code: None,
         prompt_version: 1,
+        skills_commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
     };
     rl.add_assessment(T, item.id, &assessment("first"), "fp1")
         .await
@@ -343,6 +344,21 @@ async fn assessments_keep_their_fingerprint_and_newest_wins() {
         .expect("some");
     assert_eq!(latest.fingerprint, "fp2");
     assert_eq!(latest.assessment.necessity.reason, "second");
+    assert_eq!(
+        latest.assessment.skills_commit.as_deref(),
+        Some("0123456789abcdef0123456789abcdef01234567")
+    );
+    // An assessment stored before SK1 has no skills commit and still reads.
+    sqlx::query("UPDATE comment_assessments SET body = json_remove(body, '$.skills_commit')")
+        .execute(&db.pool)
+        .await
+        .expect("old body");
+    let old = rl
+        .latest_assessment(item.id)
+        .await
+        .expect("latest")
+        .expect("some");
+    assert_eq!(old.assessment.skills_commit, None);
 }
 
 #[tokio::test]
@@ -741,6 +757,48 @@ async fn watches_are_limited_and_ended_ones_do_not_count() {
     assert_eq!(rl.live_watches().await.expect("live").len(), 2);
     assert!(rl.unwatch("u1", 1).await.expect("unwatch"));
     assert!(!rl.unwatch("u1", 1).await.expect("gone"));
+}
+
+#[tokio::test]
+async fn a_due_pass_keeps_its_first_time_and_watching_again_clears_watch_state() {
+    let db = db().await;
+    let rl = db.review_loop();
+    rl.watch(T, "u1", 1, 20, at(0)).await.expect("watch");
+    rl.set_pass_due("u1", 1, Some(at(1))).await.expect("due");
+    rl.set_pass_due("u1", 1, Some(at(2)))
+        .await
+        .expect("due again");
+    rl.set_notified("u1", 1, "round:2").await.expect("notified");
+    let watch = &rl.watches("u1").await.expect("watches")[0];
+    assert_eq!(
+        (watch.pass_due_at, watch.notified_for.as_deref()),
+        (Some(at(1)), Some("round:2")),
+        "the first due time stays: the bot-round wait counts from it"
+    );
+    rl.set_pass_due("u1", 1, None).await.expect("clear");
+    assert_eq!(
+        rl.watches("u1").await.expect("watches")[0].pass_due_at,
+        None
+    );
+    rl.set_pass_due("u1", 1, Some(at(3))).await.expect("due");
+    rl.set_watch_state("u1", 1, WatchState::Ended, at(4))
+        .await
+        .expect("end");
+    rl.watch(T, "u1", 1, 20, at(5)).await.expect("again");
+    let watch = &rl.watches("u1").await.expect("watches")[0];
+    assert_eq!(
+        (
+            watch.pass_due_at,
+            watch.notified_for.as_deref(),
+            watch.state
+        ),
+        (None, None, WatchState::Active)
+    );
+    assert!(matches!(
+        rl.set_pass_due("u2", 1, Some(at(6))).await,
+        Err(DbError::NotFound)
+    ));
+    assert_eq!(rl.charged_passes("u1", at(0)).await.expect("passes"), 0);
 }
 
 #[tokio::test]

@@ -21,7 +21,7 @@
       "type": "string"
     },
     "state": {
-      "description": "GitHub state (`OPEN`, `CLOSED`, `MERGED`).",
+      "description": "GitHub state (`OPEN`, `CLOSED`, `MERGED`); empty while GitHub was never read (`comments.read.failure`).",
       "type": "string"
     },
     "draft": {
@@ -29,7 +29,7 @@
       "type": "boolean"
     },
     "base": {
-      "description": "Base branch.",
+      "description": "Base branch; empty while GitHub was never read.",
       "type": "string"
     },
     "stack_parent": {
@@ -449,7 +449,7 @@
           "format": "date-time"
         },
         "questions": {
-          "description": "Questions it added.",
+          "description": "Questions waiting for a decision when it ended.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0

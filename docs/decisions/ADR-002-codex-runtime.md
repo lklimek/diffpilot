@@ -41,3 +41,15 @@
 ## Consequences
 - The runner image and WP3-OPS need no seccomp or AppArmor relaxation.
 - The agent can read its per-job `CODEX_HOME` (credential copy, config); accepted under T1/T9 (WP1-T).
+
+## Amendment (2026-11-22, SK1, ADR-023)
+- `verify_comments` jobs mount `severity` and `check-pr-comments` (`contracts::agent::verify_comments::SKILLS`);
+  analysis and Ask jobs keep `severity`. The server hands a `verify_comments` job only those skills and the runner
+  refuses one with any other (`misfit`); still no MemCan endpoint and no session. `report-format` stays unmounted.
+  The prompt names both skills and states that the output schema and "no GitHub actions" win over any skill step
+  (no gh or other scripts, no posting, no report.json or other file). Default `SR_RUNNER_SKILLS`:
+  `severity,check-pr-comments`.
+- The claudius commit is recorded per comment assessment (`CommentAssessment.skills_commit`) and shown as
+  provenance ("Assessed with claudius <short sha>"). Owner Q28 = c: it is not part of the assessment fingerprint, so
+  a new claudius commit never re-assesses anything; only new or changed items and "Assess again" use the current
+  skills. The prompt text change is recorded under the same `VERIFY_PROMPT_VERSION` for the same reason.

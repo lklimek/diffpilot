@@ -619,7 +619,7 @@ export type AutoPass = {
  */
 at: string,
 /**
- * Questions it added.
+ * Questions waiting for a decision when it ended.
  */
 questions: number, };
 
@@ -1185,7 +1185,12 @@ code: CodeSummary | null,
 /**
  * Prompt version of the job.
  */
-prompt_version: number, };
+prompt_version: number,
+/**
+ * Commit of the claudius checkout whose skills the job read ("Assessed with claudius <short sha>"); null when
+ * the runner gave none or the assessment predates it. A reused assessment keeps the commit it was made with.
+ */
+skills_commit: string | null, };
 
 /**
  * Item counts of a PR.
@@ -4931,7 +4936,7 @@ author: string,
  */
 url: string,
 /**
- * GitHub state (`OPEN`, `CLOSED`, `MERGED`).
+ * GitHub state (`OPEN`, `CLOSED`, `MERGED`); empty while GitHub was never read (`comments.read.failure`).
  */
 state: string,
 /**
@@ -4939,7 +4944,7 @@ state: string,
  */
 draft: boolean,
 /**
- * Base branch.
+ * Base branch; empty while GitHub was never read.
  */
 base: string,
 /**
@@ -6339,6 +6344,19 @@ export type UserEventKind = "questions_ready" | "round_executed" | "test";
 export type UserFeedbackValue = "correct" | "wrong" | "irrelevant" | "overrated" | "underrated";
 
 /**
+ * SSE data of RW3; the SSE `event` field is the `event` tag.
+ */
+export type UserStreamEvent = { "event": "user_event",
+/**
+ * The event.
+ */
+user_event: UserEvent, } | { "event": "heartbeat",
+/**
+ * Server time of sending.
+ */
+at: string, };
+
+/**
  * The LLM's validity reading ("The LLM says: …"). Open enum.
  */
 export type Validity = "valid" | "partly_valid" | "invalid";
@@ -6359,7 +6377,15 @@ watches: Array<WatchedPr>,
 /**
  * Most watched PRs per user.
  */
-limit: number, };
+limit: number,
+/**
+ * Assessment passes charged to the reader in the last 24 hours (automatic and question passes).
+ */
+passes_today: number,
+/**
+ * Passes per user and 24 hours; automatic passes stop at it.
+ */
+daily_limit: number, };
 
 /**
  * State of a watch. Open enum.

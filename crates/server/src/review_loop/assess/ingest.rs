@@ -81,7 +81,11 @@ pub(super) async fn result(
     let failure = match result.outcome {
         JobOutcome::Succeeded { output } => match parse(output)? {
             Some(output) => {
-                let complete = store(state, pass, result.job_id, &output).await?;
+                let made = Made {
+                    job: result.job_id,
+                    skills_commit: result.skills_commit,
+                };
+                let complete = store(state, pass, &made, &output).await?;
                 db.review_loop()
                     .finish_pass(pass.id, true, Timestamp::now())
                     .await?;
@@ -123,11 +127,17 @@ fn parse(output: Value) -> Result<Option<VerifyCommentsOutput>, AssessError> {
     Ok(fits.then(|| serde_json::from_value(output).ok()).flatten())
 }
 
+/// What made a pass's assessments: its job and the claudius commit whose skills it read.
+pub(super) struct Made {
+    pub(super) job: JobId,
+    pub(super) skills_commit: Option<String>,
+}
+
 /// Stores the fit assessments of sent items (the first entry per item counts), the purpose and the answer.
 async fn store(
     state: &AppState,
     pass: &PassRecord,
-    job: JobId,
+    made: &Made,
     output: &VerifyCommentsOutput,
 ) -> Result<bool, AssessError> {
     let db = &state.db;
@@ -153,7 +163,7 @@ async fn store(
             ignored += 1;
             continue;
         }
-        match assessment(entry, job, &pass.head, now) {
+        match assessment(entry, made, &pass.head, now) {
             Ok(assessment) => {
                 db.review_loop()
                     .add_assessment(&tenant, sent.item, &assessment, &sent.fingerprint)
@@ -227,7 +237,7 @@ fn checked(text: &str, max: usize, field: &'static str) -> Result<(), Unfit> {
 /// The stored assessment of one fit entry.
 pub(super) fn assessment(
     entry: &ItemAssessment,
-    job: JobId,
+    made: &Made,
     head: &CommitSha,
     now: Timestamp,
 ) -> Result<CommentAssessment, Unfit> {
@@ -311,7 +321,7 @@ pub(super) fn assessment(
         }),
     };
     Ok(CommentAssessment {
-        job,
+        job: made.job,
         head: head.clone(),
         assessed_at: now,
         reused_since: None,
@@ -337,5 +347,8 @@ pub(super) fn assessment(
         },
         code: entry.code.clone(),
         prompt_version: VERIFY_PROMPT_VERSION,
+        skills_commit: made.skills_commit.clone().filter(|commit| {
+            (7..=64).contains(&commit.len()) && commit.chars().all(|c| c.is_ascii_hexdigit())
+        }),
     })
 }
