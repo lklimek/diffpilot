@@ -186,6 +186,8 @@ pub enum NotAssessedReason {
     Failed,
     /// The pass left this item out of its output.
     Missing,
+    /// No assessment pass has run for it yet.
+    NotRun,
 }
 
 /// A review-loop item with its assessment, decisions and effects (RC4).
@@ -515,6 +517,11 @@ pub struct Decision {
     pub decided_by: String,
     /// When.
     pub decided_at: Timestamp,
+    /// When the owner undid it (before any effect was claimed); its effects are cancelled and the item is asked
+    /// again. Absent while it stands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub undone_at: Option<Timestamp>,
     /// Effects in `seq` order.
     pub effects: Vec<Effect>,
 }
@@ -700,6 +707,100 @@ pub struct DecisionBatchRequest {
     pub via: BatchVia,
     /// One row per item.
     pub rows: Vec<DecisionBatchRow>,
+}
+
+/// Body of the item actions Undo, Reopen and Skip: the item revision the reader saw (409 `item_changed`
+/// otherwise).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ItemActionRequest {
+    /// The item revision.
+    pub item_revision: u32,
+}
+
+/// Body of the gate mark route: the owner marks or clears a gate (clearing removes the owner's mark only; a gate
+/// the assessment names stays).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct GateMarkRequest {
+    /// The gate.
+    pub gate: Gate,
+    /// Mark (true) or clear (false).
+    pub marked: bool,
+    /// The item revision.
+    pub item_revision: u32,
+}
+
+/// An effect a decision would get ("What happens next", the confirmation list); not stored.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PlannedEffect {
+    /// Order, 1-based.
+    pub seq: u32,
+    /// `seq` it waits for.
+    pub after: Option<u32>,
+    /// Kind.
+    pub kind: EffectKind,
+    /// Executor.
+    pub executor: Executor,
+    /// Parameters (the reply text that gets posted is in `text`).
+    pub params: EffectParams,
+}
+
+/// Body of the effects preview: the decisions the reader is about to submit (the revisions are not checked).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct EffectsPreviewRequest {
+    /// One row per item.
+    pub rows: Vec<DecisionBatchRow>,
+}
+
+/// The effects one decision would get.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct EffectsPreview {
+    /// The item, `C<no>`.
+    pub item_no: u32,
+    /// Effects in order.
+    pub effects: Vec<PlannedEffect>,
+}
+
+/// Why an undecided item is not part of "Decide the rest per recommendation". Open enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum LeftOutReason {
+    /// A gate item: decided one by one (RQ5).
+    Gate,
+    /// No LLM assessment, so no recommendation.
+    NotAssessed,
+    /// A repeat asked again: its reason needs a look.
+    AskedAgain,
+    /// The recommendation lacks the reason or target its decision needs.
+    Incomplete,
+}
+
+/// An undecided item left out of "Decide the rest".
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct LeftOutItem {
+    /// The item, `C<no>`.
+    pub item_no: u32,
+    /// Why.
+    pub reason: LeftOutReason,
+}
+
+/// One row of the "Decide the rest" confirmation list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct DecideRestRow {
+    /// The decision submitted on confirmation (RC9 `via: bulk`).
+    pub row: DecisionBatchRow,
+    /// The recommendation it follows.
+    pub recommendation: Recommendation,
+    /// Its effects.
+    pub effects: Vec<PlannedEffect>,
+}
+
+/// The "Decide the rest per recommendation" confirmation list; nothing is stored until RC9 confirms it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct DecideRest {
+    /// Rows to decide; their count is the number shown.
+    pub rows: Vec<DecideRestRow>,
+    /// Undecided items left out, gate items included.
+    pub left_out: Vec<LeftOutItem>,
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -971,6 +1072,10 @@ pub struct QueueEntry {
     pub item_nos: Vec<u32>,
     /// Reason.
     pub reason: QueueReason,
+    /// The reader skipped it ("Skip for now") at its current revision; skipped entries come last. Absent when not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub skipped: bool,
 }
 
 /// Response of RC2.

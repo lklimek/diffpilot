@@ -485,6 +485,49 @@ pub const DECIDE_COMMENT_BATCH: Route = route(
     "/api/v1/prs/{owner}/{name}/{number}/comments/decision-batches",
     SessionCsrf,
 );
+/// RC12: undoes the item's current decision while none of its effects is claimed (`ItemActionRequest`; 200
+/// `CommentItem`; 409 `conflict` once an effect is claimed).
+pub const UNDO_COMMENT_DECISION: Route = route(
+    "undoCommentDecision",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/undo",
+    SessionCsrf,
+);
+/// RC13: asks a decided or carried item again (`ItemActionRequest`; 200 `CommentItem`).
+pub const REOPEN_COMMENT_ITEM: Route = route(
+    "reopenCommentItem",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/reopen",
+    SessionCsrf,
+);
+/// RC14: "Skip for now": the reader's queue shows the item last until it changes (`ItemActionRequest`; 204).
+pub const SKIP_COMMENT_ITEM: Route = route(
+    "skipCommentItem",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/skip",
+    SessionCsrf,
+);
+/// RC15: the owner marks or clears a gate on an item (`GateMarkRequest`; 200 `CommentItem`).
+pub const MARK_COMMENT_GATE: Route = route(
+    "markCommentGate",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/gates",
+    SessionCsrf,
+);
+/// RC16: the effects decisions would get, without storing them (`EffectsPreviewRequest`; 200 `EffectsPreview[]`).
+pub const PREVIEW_COMMENT_EFFECTS: Route = route(
+    "previewCommentEffects",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/effects-preview",
+    SessionCsrf,
+);
+/// RC17: the "Decide the rest per recommendation" confirmation list (`DecideRest`).
+pub const GET_DECIDE_REST: Route = route(
+    "getDecideRest",
+    Get,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/decide-rest",
+    READ,
+);
 /// RC10: the PR's decision log with effects, claims, reports and carry events.
 pub const GET_COMMENT_LOG: Route = route(
     "getCommentLog",
@@ -651,6 +694,12 @@ pub const ROUTES: &[Route] = &[
     ASSESS_COMMENT,
     DECIDE_COMMENT,
     DECIDE_COMMENT_BATCH,
+    UNDO_COMMENT_DECISION,
+    REOPEN_COMMENT_ITEM,
+    SKIP_COMMENT_ITEM,
+    MARK_COMMENT_GATE,
+    PREVIEW_COMMENT_EFFECTS,
+    GET_DECIDE_REST,
     GET_COMMENT_LOG,
     LIST_CARRY_OVERS,
     WATCH_PR,

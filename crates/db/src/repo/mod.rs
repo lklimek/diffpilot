@@ -93,7 +93,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The schema migrations in order, as `(version, description, SQL)`: the initial schema, then additive
 /// changes that upgrade an existing database in place.
-const MIGRATIONS: [(i64, &str, &str); 17] = [
+const MIGRATIONS: [(i64, &str, &str); 18] = [
     (1, "init", include_str!("../../migrations/0001_init.sql")),
     (
         2,
@@ -174,6 +174,12 @@ const MIGRATIONS: [(i64, &str, &str); 17] = [
         17,
         "review_loop",
         include_str!("../../migrations/0017_review_loop.sql"),
+    ),
+    // 0018 is reserved for the review-loop job stream (WP13-JOB); keep the list in version order on merge.
+    (
+        19,
+        "review_loop_actions",
+        include_str!("../../migrations/0019_review_loop_actions.sql"),
     ),
 ];
 

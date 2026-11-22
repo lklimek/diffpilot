@@ -1870,6 +1870,36 @@ comment: string | null,
 item_revision: number, };
 
 /**
+ * The "Decide the rest per recommendation" confirmation list; nothing is stored until RC9 confirms it.
+ */
+export type DecideRest = {
+/**
+ * Rows to decide; their count is the number shown.
+ */
+rows: Array<DecideRestRow>,
+/**
+ * Undecided items left out, gate items included.
+ */
+left_out: Array<LeftOutItem>, };
+
+/**
+ * One row of the "Decide the rest" confirmation list.
+ */
+export type DecideRestRow = {
+/**
+ * The decision submitted on confirmation (RC9 `via: bulk`).
+ */
+row: DecisionBatchRow,
+/**
+ * The recommendation it follows.
+ */
+recommendation: Recommendation,
+/**
+ * Its effects.
+ */
+effects: Array<PlannedEffect>, };
+
+/**
  * A stored decision (append-only) with its effects.
  */
 export type Decision = {
@@ -1937,6 +1967,11 @@ decided_by: string,
  * When.
  */
 decided_at: string,
+/**
+ * When the owner undid it (before any effect was claimed); its effects are cancelled and the item is asked
+ * again. Absent while it stands.
+ */
+undone_at?: string,
 /**
  * Effects in `seq` order.
  */
@@ -2450,6 +2485,28 @@ idempotency_key: string, };
  * Effect state. Open enum.
  */
 export type EffectState = "waiting" | "open" | "claimed" | "done" | "failed" | "cancelled";
+
+/**
+ * The effects one decision would get.
+ */
+export type EffectsPreview = {
+/**
+ * The item, `C<no>`.
+ */
+item_no: number,
+/**
+ * Effects in order.
+ */
+effects: Array<PlannedEffect>, };
+
+/**
+ * Body of the effects preview: the decisions the reader is about to submit (the revisions are not checked).
+ */
+export type EffectsPreviewRequest = {
+/**
+ * One row per item.
+ */
+rows: Array<DecisionBatchRow>, };
 
 /**
  * A place where the matter is handled already.
@@ -3170,6 +3227,24 @@ gate: Gate,
 source: GateSource, };
 
 /**
+ * Body of the gate mark route: the owner marks or clears a gate (clearing removes the owner's mark only; a gate
+ * the assessment names stays).
+ */
+export type GateMarkRequest = {
+/**
+ * The gate.
+ */
+gate: Gate,
+/**
+ * Mark (true) or clear (false).
+ */
+marked: boolean,
+/**
+ * The item revision.
+ */
+item_revision: number, };
+
+/**
  * Who marked a gate on an item.
  */
 export type GateSource = "assessment" | "owner";
@@ -3444,6 +3519,16 @@ basis: Basis,
  * GitHub link.
  */
 github_url: string, };
+
+/**
+ * Body of the item actions Undo, Reopen and Skip: the item revision the reader saw (409 `item_changed`
+ * otherwise).
+ */
+export type ItemActionRequest = {
+/**
+ * The item revision.
+ */
+item_revision: number, };
 
 /**
  * Ranked items by kind and tier.
@@ -3726,6 +3811,24 @@ outcome: DeliveryOutcome,
  * When.
  */
 at: string, };
+
+/**
+ * An undecided item left out of "Decide the rest".
+ */
+export type LeftOutItem = {
+/**
+ * The item, `C<no>`.
+ */
+item_no: number,
+/**
+ * Why.
+ */
+reason: LeftOutReason, };
+
+/**
+ * Why an undecided item is not part of "Decide the rest per recommendation". Open enum.
+ */
+export type LeftOutReason = "gate" | "not_assessed" | "asked_again" | "incomplete";
 
 /**
  * A line ending other than LF.
@@ -4219,7 +4322,7 @@ items: Array<NotAnalysedItem>, };
 /**
  * Why an item has no assessment. Open enum.
  */
-export type NotAssessedReason = "daily_limit" | "failed" | "missing";
+export type NotAssessedReason = "daily_limit" | "failed" | "missing" | "not_run";
 
 /**
  * Why a file is never rendered.
@@ -4508,6 +4611,31 @@ index: number,
 total: number, };
 
 /**
+ * An effect a decision would get ("What happens next", the confirmation list); not stored.
+ */
+export type PlannedEffect = {
+/**
+ * Order, 1-based.
+ */
+seq: number,
+/**
+ * `seq` it waits for.
+ */
+after: number | null,
+/**
+ * Kind.
+ */
+kind: EffectKind,
+/**
+ * Executor.
+ */
+executor: Executor,
+/**
+ * Parameters (the reply text that gets posted is in `text`).
+ */
+params: EffectParams, };
+
+/**
  * Information from the accepted plan, before step analysis.
  */
 export type PlannedFlowDetails = {
@@ -4586,7 +4714,11 @@ state: PluginState,
 /**
  * When the source produced the data last read; null before the first successful read.
  */
-as_of: string | null, };
+as_of: string | null,
+/**
+ * The plug-in can hold a pull request back from Ready to merge (PR Hygiene); absent when it never does.
+ */
+holds_ready_to_merge?: boolean, };
 
 /**
  * An ownership policy file (JSON format of `stale_prs_are_bad`).
@@ -4997,7 +5129,11 @@ item_nos: Array<number>,
 /**
  * Reason.
  */
-reason: QueueReason, };
+reason: QueueReason,
+/**
+ * The reader skipped it ("Skip for now") at its current revision; skipped entries come last. Absent when not.
+ */
+skipped?: boolean, };
 
 /**
  * Why an entry is at its place in the queue (plan §2.4 order). Open enum.

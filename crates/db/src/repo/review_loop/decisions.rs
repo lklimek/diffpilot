@@ -137,7 +137,8 @@ pub enum ReportOutcomeRecord {
 
 const DECISION_COLUMNS: &str = "d.id, d.item_id, i.item_no, d.kind, d.reason, d.target, d.override, d.resolve_ticked,
     d.reply_text, d.comment, d.recommendation, d.via, d.carried_from, d.supersedes, d.head, d.body_hash,
-    d.start_line, d.end_line, u.login, d.decided_at";
+    d.start_line, d.end_line, u.login, d.decided_at,
+    (SELECT un.at FROM comment_decision_undos un WHERE un.decision_id = d.id) AS undone_at";
 
 fn decision_from_row(row: &SqliteRow) -> Result<StoredDecision, DbError> {
     let start: Option<i64> = row.try_get("start_line")?;
@@ -176,6 +177,7 @@ fn decision_from_row(row: &SqliteRow) -> Result<StoredDecision, DbError> {
             head: CommitSha(row.try_get("head")?),
             decided_by: row.try_get("login")?,
             decided_at: ts_col(row, "decided_at")?,
+            undone_at: opt_ts_col(row, "undone_at")?,
             effects: Vec::new(),
         },
         item: wire_col(row, "item_id")?,

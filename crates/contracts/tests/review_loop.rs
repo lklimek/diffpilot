@@ -61,6 +61,42 @@ fn review_loop_routes_follow_the_plan() {
             pr("/comments/decision-batches"),
             SessionCsrf,
         ),
+        (
+            routes::UNDO_COMMENT_DECISION,
+            Post,
+            pr("/comments/items/{item}/undo"),
+            SessionCsrf,
+        ),
+        (
+            routes::REOPEN_COMMENT_ITEM,
+            Post,
+            pr("/comments/items/{item}/reopen"),
+            SessionCsrf,
+        ),
+        (
+            routes::SKIP_COMMENT_ITEM,
+            Post,
+            pr("/comments/items/{item}/skip"),
+            SessionCsrf,
+        ),
+        (
+            routes::MARK_COMMENT_GATE,
+            Post,
+            pr("/comments/items/{item}/gates"),
+            SessionCsrf,
+        ),
+        (
+            routes::PREVIEW_COMMENT_EFFECTS,
+            Post,
+            pr("/comments/effects-preview"),
+            SessionCsrf,
+        ),
+        (
+            routes::GET_DECIDE_REST,
+            Get,
+            pr("/comments/decide-rest"),
+            READ,
+        ),
         (routes::GET_COMMENT_LOG, Get, pr("/comments/log"), READ),
         (
             routes::LIST_CARRY_OVERS,
@@ -188,6 +224,10 @@ fn execute_scope_is_only_on_feed_write_routes() {
         routes::READ_COMMENTS,
         routes::WATCH_PR,
         routes::UNWATCH_PR,
+        routes::UNDO_COMMENT_DECISION,
+        routes::REOPEN_COMMENT_ITEM,
+        routes::SKIP_COMMENT_ITEM,
+        routes::MARK_COMMENT_GATE,
     ] {
         assert_eq!(route.auth, RouteAuth::SessionCsrf, "{}", route.name);
     }
@@ -220,6 +260,7 @@ fn decision() -> Decision {
         head: CommitSha("52d2da140191a9d47becf6a446310be803c007fc".into()),
         decided_by: "alice".into(),
         decided_at: "2026-11-22T10:00:00Z".parse::<Timestamp>().expect("time"),
+        undone_at: None,
         effects: vec![],
     }
 }
@@ -236,6 +277,7 @@ fn decision_wire_form() {
     assert_eq!(json["kind"], json!("reject"));
     assert_eq!(json["via"], json!("question"));
     assert!(json.get("r#override").is_none());
+    assert!(json.get("undone_at").is_none(), "omitted while it stands");
     let target = DecisionTarget::UpstreamIssue { url: None };
     assert_eq!(
         serde_json::to_value(target).expect("serialises"),

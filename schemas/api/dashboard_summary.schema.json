@@ -1499,6 +1499,10 @@
             "null"
           ],
           "format": "date-time"
+        },
+        "holds_ready_to_merge": {
+          "description": "The plug-in can hold a pull request back from Ready to merge (PR Hygiene); absent when it never does.",
+          "type": "boolean"
         }
       },
       "required": [

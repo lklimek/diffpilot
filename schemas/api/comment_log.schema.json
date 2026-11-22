@@ -398,6 +398,14 @@
           "type": "string",
           "format": "date-time"
         },
+        "undone_at": {
+          "description": "When the owner undid it (before any effect was claimed); its effects are cancelled and the item is asked\nagain. Absent while it stands.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
         "effects": {
           "description": "Effects in `seq` order.",
           "type": "array",

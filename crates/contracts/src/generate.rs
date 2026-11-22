@@ -31,8 +31,9 @@ use crate::api::questions::{AnchoredAskRequest, AskQuestion, AskRequest};
 use crate::api::review::ReviewState;
 use crate::api::review_loop::{
     AgentPushPayload, CarryOverPage, CarryOverQuery, ChannelTestResult, Claim, ClaimRequest,
-    CodeContext, CommentItem, CommentLog, CommentsOverview, ContextQuery, DecideRequest, Decision,
-    DecisionBatchRequest, DecisionFeed, EffectReportRequest, FeedDecision, FeedEvent, FeedQuery,
+    CodeContext, CommentItem, CommentLog, CommentsOverview, ContextQuery, DecideRequest,
+    DecideRest, Decision, DecisionBatchRequest, DecisionFeed, EffectReportRequest, EffectsPreview,
+    EffectsPreviewRequest, FeedDecision, FeedEvent, FeedQuery, GateMarkRequest, ItemActionRequest,
     ItemsQuery, NotificationSettings, PrPage, PushTarget, PutChannelRequest, PutPushTargetRequest,
     UserEvent, WatchList, WebhookPayload,
 };
@@ -109,6 +110,7 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<ContextQuery>("context_query", &[]),
     api_schema::<CodeContext>("code_context", &[routes::GET_COMMENT_CONTEXT]),
     api_schema::<CommentLog>("comment_log", &[routes::GET_COMMENT_LOG]),
+    api_schema::<DecideRest>("decide_rest", &[routes::GET_DECIDE_REST]),
     api_schema::<CarryOverQuery>("carry_over_query", &[]),
     api_schema::<CarryOverPage>("carry_over_page", &[routes::LIST_CARRY_OVERS]),
     api_schema::<WatchList>("watch_list", &[routes::LIST_WATCHES]),
@@ -273,6 +275,11 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<CodeContext>();
     collector.visit::<DecideRequest>();
     collector.visit::<DecisionBatchRequest>();
+    collector.visit::<ItemActionRequest>();
+    collector.visit::<GateMarkRequest>();
+    collector.visit::<EffectsPreviewRequest>();
+    collector.visit::<EffectsPreview>();
+    collector.visit::<DecideRest>();
     collector.visit::<Decision>();
     collector.visit::<CommentLog>();
     collector.visit::<CarryOverQuery>();

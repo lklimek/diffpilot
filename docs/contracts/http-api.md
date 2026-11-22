@@ -799,9 +799,15 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
 | RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202 |
 | RC8 | POST | `…/comments/items/{item}/decisions` | session_csrf | `DecideRequest` | 201 `Decision`; 409 `item_changed` |
-| RC9 | POST | `…/comments/decision-batches` | session_csrf | `DecisionBatchRequest` | 201 `Decision[]`; 422 `invalid_request` for a gate row under `bulk`/`group` or an unchosen gate row under `table`; 409 `item_changed` naming the changed items |
+| RC9 | POST | `…/comments/decision-batches` | session_csrf | `DecisionBatchRequest` | 201 `Decision[]`; 400 `invalid_request` for a gate row under `bulk`/`group` or, under `table`, a batch that leaves out a waiting gate item; 409 `item_changed` naming the changed items |
 | RC10 | GET | `…/comments/log` | read | – | `CommentLog` |
 | RC11 | GET | `/api/v1/comments/carry-overs` | read | `CarryOverQuery` | `CarryOverPage` |
+| RC12 | POST | `…/comments/items/{item}/undo` | session_csrf | `ItemActionRequest` | `CommentItem` (asked again; the undone decision keeps `undone_at`); 409 `conflict` without a standing decision or once an effect is claimed; 409 `item_changed` |
+| RC13 | POST | `…/comments/items/{item}/reopen` | session_csrf | `ItemActionRequest` | `CommentItem` (state `reopened`; effects not yet claimed are cancelled); 409 `conflict` without a standing decision; 409 `item_changed` |
+| RC14 | POST | `…/comments/items/{item}/skip` | session_csrf | `ItemActionRequest` | 204; the item comes last in the caller's queue while it stays at that revision |
+| RC15 | POST | `…/comments/items/{item}/gates` | session_csrf | `GateMarkRequest` | `CommentItem`; marks or clears the owner's mark of one gate (assessment gates stay); 409 `item_changed` |
+| RC16 | POST | `…/comments/effects-preview` | session_csrf | `EffectsPreviewRequest` | `EffectsPreview[]` (the effects the rows would get; nothing stored); 400 `invalid_request` as RC8/RC9 |
+| RC17 | GET | `…/comments/decide-rest` | read | – | `DecideRest` (the confirmation list of "Decide the rest per recommendation"; gate items and items without a complete recommendation are left out with their reason) |
 | RW1 | PUT / DELETE | `…/watch` | session_csrf | – | 204; 409 `watch_limit_reached` |
 | RW2 | GET | `/api/v1/watches` | read | – | `WatchList` |
 | RW3 | GET | `/api/v1/events` | read | – | SSE `UserEvent` (`sse-events.md`) |
