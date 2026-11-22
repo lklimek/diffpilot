@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review loop - diffpilot mockup</title>
+<!-- Proposed (docs/review-workflow-plan.md, ADR-023). Static example data; the plan wins on behaviour. -->
+<style>
+:root{--bg:#f4f5f7;--surface:#fff;--surface-2:#eceff3;--border:#c9d0da;--text:#1a1f27;--muted:#4b5565;
+ --accent:#1d5fc0;--accent-bg:#e4eefb;--focus:#0b57d0;--on-accent:#fff;
+ --high:#a8200d;--high-bg:#fdeceb;--high-bd:#d92d20;--med:#7a4a00;--med-bg:#fff2d2;--med-bd:#c47700;
+ --low:#0a5580;--low-bg:#e5f1f9;--low-bd:#2b83b8;--ok:#0f6330;--ok-bg:#e3f5e8;--llm:#5d2f94;--llm-bg:#f0e8fa;
+ --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--surface:#171b23;--surface-2:#1f2530;--border:#374151;--text:#e7eaf0;--muted:#a6b0bf;
+ --accent:#8ab8ff;--accent-bg:#17283f;--focus:#8ab8ff;--on-accent:#0b1220;--high:#ffa8a0;--high-bg:#3a1b19;--high-bd:#f0605a;
+ --med:#f3c677;--med-bg:#3a2d12;--med-bd:#d0902a;--low:#86cbf0;--low-bg:#112f40;--low-bd:#3f93c4;--ok:#86d9a2;--ok-bg:#13301f;--llm:#d0b3f5;--llm-bg:#2a2039}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;min-height:100vh}
+h1{font-size:20px;margin:0 0 6px}h2{font-size:16px;margin:0 0 8px}h3{font-size:12.5px;margin:0 0 4px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+p{margin:0 0 8px}a{color:var(--accent)}code{font-family:var(--mono);font-size:.92em}
+:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+.skip{position:absolute;left:-999px}.skip:focus{left:8px;top:8px;background:var(--surface);padding:6px 10px;z-index:9}
+.muted{color:var(--muted)}.small{font-size:12px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.topbar{position:sticky;top:0;z-index:5;height:48px;display:flex;align-items:center;gap:14px;padding:0 14px;background:var(--surface);border-bottom:1px solid var(--border)}
+.brand{font-weight:700;text-decoration:none;color:var(--text)}.brand span{color:var(--accent)}
+.states{display:flex;gap:6px;flex-wrap:wrap;padding:5px 14px;background:var(--surface-2);border-bottom:1px dashed var(--muted);font-size:12px}
+.states button{border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:12px;padding:2px 10px;font-size:12px;cursor:pointer;min-height:24px}
+.states button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.shell{display:grid;grid-template-columns:200px 1fr;flex:1}
+nav.app{background:var(--surface);border-right:1px solid var(--border);padding:12px 8px}
+nav.app a{display:flex;justify-content:space-between;padding:6px 10px;border-radius:6px;color:var(--text);text-decoration:none;min-height:24px}
+nav.app a[aria-current]{background:var(--accent-bg);font-weight:600}
+.count{background:var(--accent);color:var(--on-accent);border-radius:9px;padding:0 7px;font-size:12px}
+.page{padding:16px 20px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin:10px 0 12px}
+.tabs button{border:0;background:none;padding:6px 12px;cursor:pointer;color:var(--text);font:inherit;border-bottom:3px solid transparent}
+.tabs button[aria-selected=true]{border-bottom-color:var(--accent);font-weight:600}
+.cols{display:grid;grid-template-columns:clamp(240px,16vw,340px) 1fr clamp(300px,22vw,460px);gap:14px;align-items:start}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px 16px}
+.card+.card{margin-top:12px}
+.qlist h3{margin-top:10px}.qlist ol{list-style:none;margin:0;padding:0}
+.qlist li a{display:block;padding:5px 8px;border-radius:6px;text-decoration:none;color:var(--text)}
+.qlist li a[aria-current]{background:var(--accent-bg);outline:1px solid var(--accent)}
+.chip{display:inline-flex;gap:4px;align-items:center;border:1px solid var(--border);border-radius:10px;padding:0 8px;font-size:12px;background:var(--surface-2);white-space:nowrap}
+.chip.gate{border-color:var(--high-bd);background:var(--high-bg);color:var(--high);font-weight:600}
+.chip.gh{border-color:var(--border)}.chip.fact{border-color:var(--ok);color:var(--ok);background:var(--ok-bg)}
+.tag{font-size:11px;font-weight:700;border-radius:4px;padding:0 5px;vertical-align:1px}
+.tag.llm{background:var(--llm-bg);color:var(--llm)}.tag.ghub{background:var(--surface-2);color:var(--text);border:1px solid var(--border)}
+.quote{border-left:4px solid var(--border);padding:6px 10px;background:var(--surface-2);border-radius:4px;white-space:pre-wrap}
+.llmbox{border:1px solid var(--llm);border-radius:6px;padding:10px 12px;background:var(--llm-bg)}
+dl.kv{display:grid;grid-template-columns:max-content 1fr;gap:3px 12px;margin:6px 0 0}dl.kv dt{color:var(--muted)}dl.kv dd{margin:0}
+fieldset{border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin:12px 0}legend{font-weight:600;padding:0 4px}
+.opt{display:flex;gap:8px;align-items:flex-start;padding:4px 0;min-height:24px}
+.rec{font-size:11px;font-weight:700;color:var(--ok);border:1px solid var(--ok);border-radius:4px;padding:0 5px;margin-left:6px}
+input[type=text],textarea{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--muted);border-radius:6px;padding:6px 9px;width:100%}
+.gatebox{border:1px solid var(--high-bd);background:var(--high-bg);border-radius:6px;padding:8px 10px;margin-top:8px}
+.btn{display:inline-flex;gap:6px;align-items:center;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer;min-height:24px}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:600}.btn.sm{padding:2px 8px;font-size:12px}
+.banner{padding:10px 14px;border:1px solid var(--border);border-left-width:5px;border-radius:6px;background:var(--surface);margin-bottom:12px}
+.banner.warn{border-color:var(--med-bd);background:var(--med-bg)}.banner.err{border-color:var(--high-bd);background:var(--high-bg)}.banner.info{border-color:var(--low-bd);background:var(--low-bg)}
+table{width:100%;border-collapse:collapse}th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted);padding:6px 8px;border-bottom:1px solid var(--border);position:sticky;top:48px;background:var(--surface)}
+td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:top}td.n{text-align:right;font-variant-numeric:tabular-nums}
+ol.effects{margin:4px 0 0;padding-left:20px}
+.foot{font-size:11px;color:var(--muted);text-align:center;padding:4px;border-top:1px solid var(--border);background:var(--surface)}
+[hidden]{display:none!important}
+#toast{position:fixed;bottom:40px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:8px 14px;border-radius:6px}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><a class="brand" href="index.html">diff<span>pilot</span></a>
+ <span>Review loop &rsaquo; <strong>acme/node-client #482</strong> <a href="https://github.com/acme/node-client/pull/482" target="_blank" rel="noopener" aria-label="Open #482 on GitHub (new tab)">GitHub</a></span>
+ <span class="muted small" style="flex:1">feat(rpc): retry with backoff on timeout &middot; head <code>9f3c2e1</code></span>
+ <span class="muted small">GitHub read 10:41</span><button class="btn sm" type="button" data-tip="Read the threads, reviews and comments of this PR from GitHub again">Read GitHub again</button>
+ <span class="muted">alice</span></header>
+<div class="states" role="group" aria-label="Mockup states"><b>Mockup state:</b>
+ <button type="button" data-state="question" aria-pressed="true">Question (gate item)</button>
+ <button type="button" data-state="group">Group question</button>
+ <button type="button" data-state="table">PR table</button>
+ <button type="button" data-state="rounds">Rounds</button>
+ <button type="button" data-state="log">Decision log</button>
+ <button type="button" data-state="waiting">Waiting for you</button>
+ <button type="button" data-state="empty">Empty</button>
+ <button type="button" data-state="error">GitHub error</button></div>
+
+<div class="shell">
+<nav class="app" aria-label="Main"><a href="#">My work</a><a href="#" aria-current="page">Review loop <span class="count" aria-label="7 undecided questions">7</span></a><a href="#">Review a PR</a><a href="#">Settings</a></nav>
+<main class="page" id="main">
+
+<!-- WAITING FOR YOU (V3) -->
+<section data-view="waiting" hidden aria-labelledby="w-h">
+ <h1 id="w-h">Waiting for you</h1>
+ <p class="muted small">Tracked pull requests only. Rows marked "derived" follow a rule shown in their tooltip. diffpilot does not merge, post <code>/self-reviewed</code>, dismiss reviews or approve <code>ghsudo</code>; these links open GitHub.</p>
+ <table><thead><tr><th scope="col">PR</th><th scope="col">What</th><th scope="col">Source</th><th scope="col">Open</th></tr></thead><tbody>
+ <tr><td>acme/node-client #482</td><td>7 questions (1 gate item) &middot; 1 coordinator answer to read</td><td>diffpilot</td><td><a href="#">Questions</a></td></tr>
+ <tr><td>acme/node-client #490</td><td>PR Hygiene: only owner approval pending &rarr; <code>/self-reviewed</code> or merge</td><td><span class="chip" data-tip="PR Hygiene statement, read 10:39 (external)">PR Hygiene</span> derived</td><td><a href="#">GitHub</a></td></tr>
+ <tr><td>acme/node-client #501</td><td>bot <code>CHANGES_REQUESTED</code>; every item of that review has your decision &rarr; dismissal is yours</td><td>derived from GitHub reviews + your decisions</td><td><a href="#">GitHub</a></td></tr>
+ </tbody></table>
+</section>
+
+<section data-view="pr">
+<div class="banner err" data-only="error" hidden role="alert"><strong>GitHub could not be read (rate limit).</strong> Showing the read of 10:12; next read at 10:52.</div>
+<div class="tabs" role="tablist" aria-label="Pull request views">
+ <button role="tab" type="button" data-tab="question" aria-selected="true">Questions</button>
+ <button role="tab" type="button" data-tab="table" aria-selected="false">Table</button>
+ <button role="tab" type="button" data-tab="rounds" aria-selected="false">Rounds</button>
+ <button role="tab" type="button" data-tab="log" aria-selected="false">Decision log</button></div>
+
+<div class="cols" data-panel="question">
+ <aside class="card qlist" aria-label="Queue for #482">
+  <h3>Needs you (7)</h3><ol>
+   <li><a href="#" aria-current="true">C14 &middot; Retry may resend a signed request <span class="chip gate">G-FUNDS</span></a></li>
+   <li><a href="#">C9 &middot; Answer from the coordinator</a></li>
+   <li><a href="#">C11 &middot; Backoff cap not configurable</a></li>
+   <li><a href="#">C15 &middot; Log line prints the endpoint token</a></li>
+   <li><a href="#">Group: Reject &mdash; outside threat model (3)</a></li></ol>
+  <h3>Waiting for the coordinator (1)</h3><ol><li><a href="#">C12 &middot; your question sent 10:30</a></li></ol>
+  <h3>Repeats, not asked (2)</h3><ol><li><a href="#">C16 &middot; repeat of C3 (Reject)</a></li><li><a href="#">C17 &middot; repeat of C5 (Handled in #490)</a></li></ol>
+  <h3>Decided (12)</h3><p class="small muted">3 effects pending &middot; <a href="#">open the log</a></p>
+ </aside>
+
+ <article class="card" aria-labelledby="q-h" data-only="question">
+  <div class="row small muted">Question 1 of 7 &middot; <span>thepastaclaw &middot; bot &middot; inline thread</span> &middot; first seen round 3 at <code>3f9a1c2</code></div>
+  <h2 id="q-h" tabindex="-1">C14 &middot; Retry may resend a signed request after a late reply</h2>
+  <div class="row"><span class="chip gate" data-tip="Gate from the verification (G-FUNDS). A gate thread is resolved only if you tick it below.">Gate: G-FUNDS &middot; from the verification</span>
+   <span class="chip" data-tip="Category from the closed catalog, set by the verifier">Category: funds</span>
+   <span class="chip gh" data-tip="The bot's own severity marker; a claim, not a diffpilot rating"><span class="tag ghub">GitHub</span> thepastaclaw: Blocking</span></div>
+  <h3 style="margin-top:12px">Comment <span class="tag ghub">GitHub</span></h3>
+  <div class="quote">When the reply to the first send arrives after the timeout, `retry_with_backoff` sends the same signed request again. Both can be accepted.</div>
+  <p class="small"><a href="#" target="_blank" rel="noopener">Open on GitHub</a> &middot; <code>src/rpc/retry.rs:88-97</code> at <code>9f3c2e1</code></p>
+  <div class="row"><span class="chip fact" data-tip="Read from GitHub at 10:41">&#10003; Thread unresolved &middot; read 10:41</span><span class="chip fact" data-tip="Parsed from the comment body">Marker dedupe=rpc-retry-resend</span></div>
+
+  <h3 style="margin-top:12px">Verification <span class="tag llm" data-tip="Written by an LLM agent, not checked by diffpilot">LLM</span> <span class="muted small" style="text-transform:none">from coordinator at 9f3c2e1, 10:32</span></h3>
+  <div class="llmbox"><dl class="kv">
+   <dt>The verifier says</dt><dd>valid &mdash; <code>retry.rs:91</code> re-sends without checking the first attempt's outcome</dd>
+   <dt>Pre-existing on base</dt><dd>no, introduced by this PR</dd>
+   <dt>Necessity</dt><dd>in scope: the PR promises one send per call (description, first bullet)</dd>
+   <dt>Elsewhere</dt><dd>&mdash;</dd><dt>Fix</dt><dd>keep an attempt id and skip the resend when the first reply lands; size S (~25 lines)</dd>
+   <dt>Local fix held</dt><dd>none</dd><dt>Earlier decisions</dt><dd>none on this code path</dd></dl></div>
+
+  <form id="decide" aria-labelledby="dec-l">
+   <fieldset><legend id="dec-l">Your decision</legend>
+    <div role="radiogroup" aria-label="Decision">
+     <label class="opt"><input type="radio" name="d" value="fix" checked> <span>1 Fix here<span class="rec">Recommended</span></span></label>
+     <label class="opt"><input type="radio" name="d" value="reject"> <span>2 Reject (reason required)</span></label>
+     <label class="opt"><input type="radio" name="d" value="handled"> <span>3 Handled in another PR</span></label>
+     <label class="opt"><input type="radio" name="d" value="followup"> <span>4 Follow-up PR</span></label>
+     <label class="opt"><input type="radio" name="d" value="upstream"> <span>5 Upstream issue</span></label>
+     <label class="opt"><input type="radio" name="d" value="todo"> <span>6 TODO</span></label>
+     <label class="opt"><input type="radio" name="d" value="resolve"> <span>7 Resolve (already fixed)</span></label></div>
+    <div data-need="reject" hidden><label for="reason">Reason (public reply)</label><input id="reason" type="text" value=""></div>
+    <div data-need="handled followup" hidden><label for="target">Pull request number</label><input id="target" type="text" inputmode="numeric" placeholder="#490"></div>
+    <div data-need="upstream" hidden><label for="up">Upstream issue or PR URL</label><input id="up" type="text"></div>
+    <div class="gatebox"><label class="opt"><input type="checkbox" id="gres" aria-describedby="gres-d"> <span>Resolve this thread</span></label>
+     <p id="gres-d" class="small">Gate thread (G-FUNDS): it is resolved only if you tick this. Without it the coordinator replies and leaves it open.</p></div>
+   </fieldset>
+   <h3>What happens next</h3>
+   <ol class="effects" id="effects"><li>Coordinator fixes it (test red first) and pushes with the next round.</li><li>Reply after the push: what changed, with the commit.</li><li>Thread stays open (gate, not ticked).</li></ol>
+   <label for="reply" style="margin-top:8px;display:block">Reply text (public, posted by the coordinator's GitHub account)</label>
+   <textarea id="reply" rows="2">Per maintainer decision, fixed: the retry now skips the resend when the first reply arrives late (commit follows).</textarea>
+   <div class="row" style="margin-top:10px"><button class="btn pri" type="submit">Decide <kbd>Enter</kbd></button>
+    <button class="btn" type="button" id="askbtn">Ask the coordinator <kbd>q</kbd></button><button class="btn" type="button">Skip for now <kbd>s</kbd></button></div>
+   <div id="askbox" hidden style="margin-top:8px"><label for="askq">Your question (the item waits for the answer; it is not a decision)</label><textarea id="askq" rows="2"></textarea><button class="btn sm" type="button" style="margin-top:6px">Send question</button></div>
+  </form>
+ </article>
+
+ <article class="card" aria-labelledby="g-h" data-only="group" hidden>
+  <div class="small muted">Question 5 of 7 &middot; group of items with the same recommendation</div>
+  <h2 id="g-h" tabindex="-1">Same recommendation: Reject &mdash; outside this PR's threat model (3 items)</h2>
+  <table><thead><tr><th scope="col">ID</th><th scope="col">Reviewer</th><th scope="col">Comment</th><th scope="col">Verification <span class="tag llm">LLM</span></th><th scope="col"><span class="vh">Action</span></th></tr></thead><tbody>
+   <tr><td>C18</td><td>thepastaclaw &middot; bot</td><td>Config file could be swapped by a local user</td><td>needs a local attacker; profile: out of model</td><td><button class="btn sm" type="button" data-out>Discuss individually</button></td></tr>
+   <tr><td>C19</td><td>thepastaclaw &middot; bot</td><td>Cache directory symlink race</td><td>same user, crafted file system state</td><td><button class="btn sm" type="button" data-out>Discuss individually</button></td></tr>
+   <tr><td>C20</td><td>CodeRabbit &middot; bot</td><td>Harden temp file permissions</td><td>pre-existing on base; same user</td><td><button class="btn sm" type="button" data-out>Discuss individually</button></td></tr></tbody></table>
+  <label for="greason" style="margin-top:10px;display:block">Reason for all (public reply)</label><input id="greason" type="text" value="Outside this PR's threat model: needs an attacker running as the same OS user.">
+  <h3 style="margin-top:10px">What happens next, per item</h3><ol class="effects"><li>Reply with the reason.</li><li>Resolve (bot threads).</li></ol>
+  <p class="small muted">Each item gets its own decision record. Gate items are never grouped.</p>
+  <div class="row"><button class="btn pri" type="button">Reject all 3 <kbd>Enter</kbd></button><button class="btn" type="button">Skip for now</button></div>
+ </article>
+
+ <article class="card" data-only="empty" hidden aria-labelledby="e-h"><h2 id="e-h">No undecided questions</h2>
+  <p>In what was read at 10:41: 14 threads (all pages read), 3 reviews, 1 verification upload at <code>9f3c2e1</code>. 2 threads have no verification and would be listed here as questions.</p>
+  <p class="small muted">An empty queue says nothing about defects the reviewers did not raise.</p></article>
+
+ <aside aria-label="Pull request status">
+  <div class="card"><h3>Pull request</h3><dl class="kv small"><dt>Base</dt><dd><code>main</code> &middot; ready</dd><dt>Head</dt><dd><code>9f3c2e1</code></dd><dt>CI</dt><dd>2 passed &middot; 1 pending</dd>
+   <dt>Bot rounds</dt><dd>4 <span class="muted">(budget 5, set by you)</span></dd></dl></div>
+  <div class="card"><h3>PR Hygiene <span class="muted" style="text-transform:none">&middot; external statement, read 10:39</span></h3>
+   <p><strong>PR Hygiene:</strong> Waiting on author &mdash; 2 blockers</p><ul class="small"><li>Unresolved review threads: 9</li><li>thepastaclaw requested changes</li></ul>
+   <p class="small"><a href="#">Source record</a></p></div>
+  <div class="card"><h3>Counts</h3><table class="small"><tbody>
+   <tr><td>Undecided questions</td><td class="n">7</td></tr><tr><td>Waiting for the coordinator</td><td class="n">1</td></tr>
+   <tr><td>Effects pending</td><td class="n">3</td></tr><tr><td>Repeats (not asked)</td><td class="n">2</td></tr>
+   <tr><td>Unresolved threads on GitHub</td><td class="n">9</td></tr><tr><td>Internal findings (coordinator's)</td><td class="n">6</td></tr></tbody></table></div>
+ </aside>
+</div>
+
+<div data-panel="table" hidden>
+ <table><caption class="vh">All items of #482</caption><thead><tr><th scope="col">ID</th><th scope="col">Source</th><th scope="col">Category</th><th scope="col">Problem</th><th scope="col">Scope</th><th scope="col">Recommendation <span class="tag llm">LLM</span></th><th scope="col">Decision</th><th scope="col">Effects</th></tr></thead>
+ <tbody><tr><td colspan="8"><strong>Undecided (7)</strong></td></tr>
+  <tr><td>C14</td><td>thread &middot; bot</td><td>funds</td><td>Retry may resend a signed request</td><td>in</td><td>Fix here</td><td>&mdash;</td><td>&mdash;</td></tr>
+  <tr><td>C11</td><td>thread &middot; bot</td><td>maintainability</td><td>Backoff cap not configurable</td><td>out: not promised</td><td>Reject</td><td>&mdash;</td><td>&mdash;</td></tr>
+  <tr><td colspan="8"><strong>Decided (12)</strong></td></tr>
+  <tr><td>C3</td><td>thread &middot; bot</td><td>concurrency</td><td>Two clicks start two retries</td><td>out: user's own conflicting action</td><td>Reject</td><td>Reject</td><td>reply done &middot; resolve done</td></tr>
+  <tr><td>C5</td><td>body item &middot; human</td><td>tests</td><td>No test for the cap</td><td>in</td><td>Handled in #490</td><td>Handled in #490</td><td>PR comment pending</td></tr>
+  <tr><td colspan="8"><strong>Repeats, not asked (2)</strong> &middot; <strong>Resolved on GitHub without a decision here (1)</strong> &middot; <strong>Internal review (6, coordinator's)</strong> <button class="btn sm" type="button">Show</button></td></tr>
+ </tbody></table>
+</div>
+
+<div data-panel="rounds" hidden>
+ <table><caption class="vh">Bot rounds of #482</caption><thead><tr><th scope="col">Round</th><th scope="col">Head</th><th scope="col">Finished</th><th scope="col">Bot verdict <span class="tag ghub">GitHub</span></th><th scope="col">New</th><th scope="col">Still open</th><th scope="col">Repeats</th><th scope="col">Fix</th><th scope="col">Reject</th><th scope="col">Moved / follow-up</th><th scope="col">Undecided</th></tr></thead>
+ <tbody><tr><td>1</td><td><code>a1b2c3d</code></td><td>Nov 20 09:40</td><td>changes requested</td><td class="n">6</td><td class="n">0</td><td class="n">0</td><td class="n">4</td><td class="n">1</td><td class="n">1</td><td class="n">0</td></tr>
+  <tr><td>2</td><td><code>c4d5e6f</code></td><td>Nov 20 15:12</td><td>changes requested</td><td class="n">3</td><td class="n">2</td><td class="n">1</td><td class="n">2</td><td class="n">2</td><td class="n">0</td><td class="n">0</td></tr>
+  <tr><td>3</td><td><code>3f9a1c2</code></td><td>Nov 21 11:05</td><td>changes requested</td><td class="n">4</td><td class="n">1</td><td class="n">2</td><td class="n">1</td><td class="n">1</td><td class="n">0</td><td class="n">2</td></tr>
+  <tr><td>4</td><td><code>9f3c2e1</code></td><td>Nov 22 10:20</td><td>changes requested</td><td class="n">3</td><td class="n">2</td><td class="n">2</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">5</td></tr></tbody></table>
+ <details style="margin-top:12px"><summary>Internal reviews (2)</summary><ul class="small"><li><code>main...9f3c2e1</code> &middot; basic review &middot; reviewer and model as reported &middot; 6 findings</li><li><code>main...3f9a1c2</code> &middot; basic review &middot; 4 findings</li></ul></details>
+ <p class="small muted">A round is a thepastaclaw review whose body carries its final-phase marker for that head.</p>
+</div>
+
+<div data-panel="log" hidden>
+ <ol class="small" style="list-style:none;padding:0">
+  <li class="card"><strong>Nov 22 10:44 &middot; C3 &middot; Reject</strong> by alice &middot; via single question &middot; recommendation then: Reject <span class="tag llm">LLM</span><br>Effects: reply &mdash; the coordinator reports done (<a href="#">link</a>) <span class="chip fact">Reply found on GitHub &middot; 10:46</span>; resolve &mdash; done <span class="chip fact">Thread resolved &middot; 10:46</span></li>
+  <li class="card"><strong>Nov 22 10:45 &middot; C5 &middot; Handled in #490</strong> by alice &middot; recommendation then: Fix here <span class="tag llm">LLM</span><br>Effects: PR-level comment &mdash; pending</li>
+  <li class="card"><strong>Nov 22 10:47 &middot; C16 &middot; carried from C3</strong> &middot; same marker <code>dedupe=retry-double-click</code> &middot; <button class="btn sm" type="button">Reopen</button></li></ol>
+</div>
+</section>
+</main></div>
+<div id="live" class="vh" aria-live="polite"></div><div id="toast" role="status" hidden></div>
+<footer class="foot">Mockup &mdash; static example data &middot; proposal, not approved</footer>
+<style>.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}</style>
+<script>
+const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
+function tab(t){$$('[role=tab]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.tab===t)));$$('[data-panel]').forEach(p=>p.hidden=p.dataset.panel!==t);}
+function state(s){$$('.states button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.state===s)));
+ const w=s==='waiting';$('[data-view=waiting]').hidden=!w;$('[data-view=pr]').hidden=w;
+ const t=['table','rounds','log'].includes(s)?s:'question';tab(t);
+ $$('[data-only]').forEach(e=>{const o=e.dataset.only;e.hidden=!(o===s||(o==='question'&&(s==='question'||s==='error')))});}
+$$('.states button').forEach(b=>b.onclick=()=>state(b.dataset.state));
+$$('[role=tab]').forEach(b=>b.onclick=()=>tab(b.dataset.tab));
+const eff={fix:['Coordinator fixes it (test red first) and pushes with the next round.','Reply after the push: what changed, with the commit.'],
+ reject:['Reply with your reason.'],handled:['Reply: "Per maintainer decision, this is addressed in #N."'],
+ followup:['Coordinator opens a draft follow-up PR first.','Reply with its link.'],upstream:['Reply with the upstream link.','"Known limitation" line in the PR body.'],
+ todo:['Coordinator saves a TODO (never mentioned on GitHub).','Reply: "Per maintainer decision, out of scope for this PR."'],resolve:['Resolve the thread.']};
+function upd(){const v=$('input[name=d]:checked').value;$$('[data-need]').forEach(e=>e.hidden=!e.dataset.need.split(' ').includes(v));
+ const l=[...eff[v]];if(v!=='resolve')l.push($('#gres').checked?'Resolve the thread (you ticked it).':'Thread stays open (gate, not ticked).');
+ $('#effects').innerHTML=l.map(x=>'<li>'+x+'</li>').join('');}
+$$('input[name=d]').forEach(r=>r.onchange=upd);$('#gres').onchange=upd;
+$('#askbtn').onclick=()=>{$('#askbox').hidden=false;$('#askq').focus();};
+$('#decide').onsubmit=e=>{e.preventDefault();const t=$('#toast');t.textContent='C14: decision recorded. 6 questions left. Undo';t.hidden=false;$('#live').textContent='C14: decision recorded. 6 questions left.';setTimeout(()=>t.hidden=true,3000);};
+$$('[data-out]').forEach(b=>b.onclick=()=>{const r=b.closest('tr'),id=r.cells[0].textContent;r.remove();$('#live').textContent=id+' will be asked on its own next.';});
+document.addEventListener('keydown',e=>{if(/INPUT|TEXTAREA/.test(e.target.tagName))return;const n=+e.key;
+ if(n>=1&&n<=7){const r=$$('input[name=d]')[n-1];if(r&&!$('[data-only=question]').hidden){r.checked=true;upd();r.focus();}}
+ if(e.key==='q'){$('#askbtn').click();e.preventDefault();}});
+</script>
+</body>
+</html>
