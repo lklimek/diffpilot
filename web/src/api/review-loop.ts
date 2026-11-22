@@ -110,6 +110,7 @@ export function useItemAction(pr: PrRef) {
 }
 
 /** The owner marks or clears a gate on item `C<no>` (RC15). */
+// TODO(WP13-WEB-C): no screen offers gate marks yet; the control needs a mockup design first.
 export function useMarkGate(pr: PrRef) {
   const invalidate = useInvalidatePr(pr);
   return useMutation({
