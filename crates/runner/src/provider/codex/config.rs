@@ -411,6 +411,10 @@ required = false
             let answer_only = kind == JobKind::JudgeWork;
             let access = match kind {
                 JobKind::JudgeWork => AgentAccess::default(),
+                JobKind::VerifyComments => AgentAccess {
+                    memcan: None,
+                    ..access("http://agentic.lan:8190/mcp")
+                },
                 JobKind::Ask => access_with("http://agentic.lan:8190/mcp", false),
                 JobKind::Plan | JobKind::PrContext | JobKind::AnalyseFlow => {
                     access("http://agentic.lan:8190/mcp")

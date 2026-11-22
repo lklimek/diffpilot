@@ -9,7 +9,7 @@ use contracts::api::review_loop::{
     ItemState, OutsideResolution, ReadFailure,
 };
 use contracts::common::LineRange;
-use contracts::ids::{CommentItemId, CommitSha, JobId, PassId};
+use contracts::ids::{CommentItemId, CommitSha, JobId, PassId, QuestionId};
 use contracts::time::Timestamp;
 
 use super::super::jobs::ts;
@@ -169,19 +169,86 @@ pub enum PassCause {
     Watch,
 }
 
+/// An item sent with a pass and the fingerprint it was sent at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SentItem {
+    /// The item.
+    pub item: CommentItemId,
+    /// Its `C<no>`.
+    pub no: u32,
+    /// Fingerprint of comment text and code at its lines when sent.
+    pub fingerprint: String,
+}
+
 /// A pass to start.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewPass {
     /// `pull_requests.id`.
     pub pull_request_id: i64,
-    /// User charged (daily cap).
-    pub user_id: String,
+    /// User charged (daily cap); none when nobody is.
+    pub user_id: Option<String>,
     /// Cause.
     pub cause: PassCause,
     /// Head assessed.
     pub head: CommitSha,
-    /// Items in the pass.
-    pub items: u32,
+    /// Items sent.
+    pub sent: Vec<SentItem>,
+    /// The question a question pass answers.
+    pub question: Option<QuestionId>,
+}
+
+/// State of a pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PassState {
+    /// Waiting for its job.
+    Queued,
+    /// Its job is submitted.
+    Running,
+    /// Ingested.
+    Finished,
+    /// Ended without an ingested result.
+    Failed,
+}
+
+/// A stored pass.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PassRecord {
+    /// Id.
+    pub id: PassId,
+    /// `pull_requests.id`.
+    pub pull_request_id: i64,
+    /// User charged.
+    pub user_id: Option<String>,
+    /// Cause.
+    pub cause: PassCause,
+    /// Head assessed.
+    pub head: CommitSha,
+    /// State.
+    pub state: PassState,
+    /// Its `verify_comments` job, once submitted.
+    pub job_id: Option<JobId>,
+    /// Items sent.
+    pub sent: Vec<SentItem>,
+    /// The question a question pass answers.
+    pub question: Option<QuestionId>,
+}
+
+const PASS_COLUMNS: &str =
+    "id, pull_request_id, user_id, cause, head, state, job_id, sent, question_id";
+
+fn pass_from_row(row: &SqliteRow) -> Result<PassRecord, DbError> {
+    Ok(PassRecord {
+        id: wire_col(row, "id")?,
+        pull_request_id: row.try_get("pull_request_id")?,
+        user_id: row.try_get("user_id")?,
+        cause: wire_col(row, "cause")?,
+        head: CommitSha(row.try_get("head")?),
+        state: wire_col(row, "state")?,
+        job_id: opt_wire_col(row, "job_id")?,
+        sent: json_col(row, "sent")?,
+        question: opt_wire_col(row, "question_id")?,
+    })
 }
 
 /// Result of [`ReviewLoop::start_pass`].
@@ -643,10 +710,12 @@ impl ReviewLoop<'_> {
             )?));
         }
         let id = PassId::new_random();
+        let items =
+            u32::try_from(pass.sent.len()).map_err(|_| DbError::Corrupt { column: "items" })?;
         sqlx::query(
             "INSERT INTO comment_passes (id, tenant_id, pull_request_id, user_id, cause, head, items, state,
-                 created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)",
+                 created_at, sent, question_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)",
         )
         .bind(id.to_string())
         .bind(tenant_id)
@@ -654,8 +723,10 @@ impl ReviewLoop<'_> {
         .bind(&pass.user_id)
         .bind(wire(pass.cause)?)
         .bind(&pass.head.0)
-        .bind(pass.items)
+        .bind(items)
         .bind(ts(now))
+        .bind(json(&pass.sent)?)
+        .bind(pass.question.map(|question| question.to_string()))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -696,6 +767,44 @@ impl ReviewLoop<'_> {
             return Err(DbError::Conflict);
         }
         Ok(())
+    }
+
+    /// A pass.
+    pub async fn pass(&self, id: PassId) -> Result<PassRecord, DbError> {
+        let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {PASS_COLUMNS} FROM comment_passes WHERE id = ?"
+        )))
+        .bind(id.to_string())
+        .fetch_optional(self.pool)
+        .await?
+        .ok_or(DbError::NotFound)?;
+        pass_from_row(&row)
+    }
+
+    /// Queued and running passes of every pull request, oldest first (server start: follow them again).
+    pub async fn live_passes(&self) -> Result<Vec<PassRecord>, DbError> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {PASS_COLUMNS} FROM comment_passes WHERE state IN ('queued', 'running')
+             ORDER BY created_at, rowid"
+        )))
+        .fetch_all(self.pool)
+        .await?
+        .iter()
+        .map(pass_from_row)
+        .collect()
+    }
+
+    /// The item `id`.
+    pub async fn item(&self, id: CommentItemId) -> Result<ItemRecord, DbError> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {ITEM_COLUMNS} FROM comment_items WHERE id = ?"
+        )))
+        .bind(id.to_string())
+        .fetch_optional(self.pool)
+        .await?
+        .map(|row| item_from_row(&row))
+        .transpose()?
+        .ok_or(DbError::NotFound)
     }
 
     /// Passes charged to a user since `since` (the daily cap) and the end of the PR's latest pass (spacing).

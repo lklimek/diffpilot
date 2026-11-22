@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use contracts::ids::{AnalysisId, JobId, RefreshId};
+use contracts::ids::{AnalysisId, JobId, PassId, RefreshId};
 use contracts::job::spec::JobTarget;
 use contracts::job::state::JobState;
 use contracts::time::Timestamp;
@@ -76,6 +76,47 @@ impl QueueExecutor {
     }
 }
 
+impl QueueExecutor {
+    /// Enqueues the `verify_comments` job of an assessment pass: idempotent per pass, with the model from
+    /// `select_model`; no analysis to serialise on, pause or supersede (ADR-023).
+    async fn submit_verify(
+        &self,
+        pass: PassId,
+        request: JobRequest,
+    ) -> Result<JobHandle, ExecutorError> {
+        let generation = request.generation;
+        let current = || async {
+            Ok::<_, ExecutorError>(
+                self.db
+                    .jobs()
+                    .current_for_pass(pass, generation)
+                    .await?
+                    .map(|job| JobHandle { job_id: job.id }),
+            )
+        };
+        if let Some(existing) = current().await? {
+            return Ok(existing);
+        }
+        let mut job = NewJob {
+            spec: request.spec,
+            priority: request.priority,
+            stage: request.stage,
+            generation,
+        };
+        let saved = self.db.settings().llm_selection().await?;
+        job.spec.model = crate::model::select_model(
+            job.spec.kind,
+            &crate::model::ModelContext::default(),
+            saved.as_ref(),
+        );
+        match self.db.jobs().enqueue(job, Timestamp::now()).await {
+            Ok(job) => Ok(JobHandle { job_id: job.id }),
+            Err(DbError::Conflict) => current().await?.ok_or(ExecutorError::Db(DbError::Conflict)),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
 /// Ends expired leases (requeue, fail or cancel); run before claims and by followers of a job past its lease.
 pub async fn expire_leases(db: &Db, now: Timestamp) -> Result<Vec<ExpiredLease>, DbError> {
     let expired = db.jobs().expire_leases(now).await?;
@@ -98,6 +139,9 @@ impl JobExecutor for QueueExecutor {
                 JobTarget::PullRequest(target) => target.analysis_id,
                 JobTarget::Dashboard { refresh_id } => {
                     return self.submit_dashboard(*refresh_id, request).await;
+                }
+                JobTarget::PullRequestComments(target) => {
+                    return self.submit_verify(target.pass_id, request).await;
                 }
             };
             let stage = request.stage.clone();

@@ -17,6 +17,7 @@ use contracts::agent::analyse_flow::{
 };
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
+use contracts::agent::verify_comments::VerifyItem;
 use contracts::api::deps::{DependencyStatus, DependencyView, RepositoryKind, TypeDefinition};
 use contracts::api::files::HunkPart;
 use contracts::api::pr::PrSummary;
@@ -303,6 +304,8 @@ pub struct AskPrInput<'a> {
     pub plan: Option<&'a PlanOutput>,
     /// The stored PR context.
     pub pr_context: Option<&'a PrContextOutput>,
+    /// The review comment the question is about (T-L4); `None` for a question about the whole PR.
+    pub item: Option<&'a VerifyItem>,
     /// The reviewer's question.
     pub question: &'a str,
     /// Earlier questions of its thread, oldest first.
@@ -604,6 +607,19 @@ pub fn ask(input: &AskInput<'_>) -> Result<String, PromptError> {
     within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
 }
 
+/// The review comment a question is about with an introduction, or nothing for a question about the whole PR.
+fn subject_block(item: Option<&VerifyItem>) -> Result<String, PromptError> {
+    let Some(item) = item else {
+        return Ok(String::new());
+    };
+    let comment = serde_json::to_string(item)?;
+    Ok(format!(
+        "{}\n{}",
+        part("comment_item")?,
+        json_block("review comment", &comment, MAX_ASK_CONTEXT_BYTES)?
+    ))
+}
+
 /// The `ask` prompt about lines without a single step (Files view): the lines, their classic diff, the server's
 /// owners of their changed lines and the overlapping steps in summary; no other flow analysis.
 pub fn ask_lines(input: &AskLinesInput<'_>) -> Result<String, PromptError> {
@@ -735,6 +751,7 @@ pub fn ask_pr(input: &AskPrInput<'_>) -> Result<String, PromptError> {
             ),
             ("question", &question),
             ("thread", &thread_block(input.thread)?),
+            ("subject", &subject_block(input.item)?),
         ],
     )?;
     let prompt = frame("ask", input.job, &task)?;

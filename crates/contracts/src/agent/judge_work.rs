@@ -289,7 +289,7 @@ impl JudgeWorkInput {
 
 /// `json` with U+0085, U+2028 and U+2029 as JSON escapes; serialised JSON holds them only inside strings, so the
 /// result stays the same JSON value.
-fn escape_separators(json: &str) -> String {
+pub(crate) fn escape_separators(json: &str) -> String {
     let mut out = String::with_capacity(json.len());
     for c in json.chars() {
         match c {

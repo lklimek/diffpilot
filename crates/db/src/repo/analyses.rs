@@ -775,11 +775,11 @@ impl Analyses<'_> {
 #[cfg(any(test, feature = "test-util"))]
 pub mod testing {
     use contracts::agent::JobKind;
-    use contracts::ids::{AnalysisId, CommitSha, JobId, RefreshId};
+    use contracts::ids::{AnalysisId, CommitSha, JobId, PassId, RefreshId};
     use contracts::job::access::AgentAccess;
     use contracts::job::spec::{
         CredentialKind, JobLimits, JobSpec, JobTarget, LlmCredentialRef, ModelChoice,
-        PullRequestTarget, ReasoningEffort, RepoCheckout,
+        PullRequestCommentsTarget, PullRequestTarget, ReasoningEffort, RepoCheckout,
     };
 
     use crate::error::DbError;
@@ -895,6 +895,53 @@ pub mod testing {
             },
             prompt: "Judge the items.".to_owned(),
             ..job_spec(AnalysisId::new_random(), JobKind::JudgeWork)
+        }
+    }
+
+    /// A `verify_comments` spec for `pass` of PR #482 (id 1) without credentials, running with [`CREDENTIAL`].
+    pub fn verify_spec(pass: PassId) -> JobSpec {
+        let base = job_spec(AnalysisId::new_random(), JobKind::VerifyComments);
+        let repo = base
+            .target
+            .checkout()
+            .cloned()
+            .unwrap_or_else(|| RepoCheckout {
+                clone_url: String::new(),
+                base_sha: CommitSha(String::new()),
+                head_sha: CommitSha(String::new()),
+            });
+        JobSpec {
+            target: JobTarget::PullRequestComments(PullRequestCommentsTarget {
+                pull_request_id: 1,
+                repo,
+                pass_id: pass,
+            }),
+            prompt: "Assess the comments.".to_owned(),
+            ..base
+        }
+    }
+
+    /// Inserts user `u1`, PR #482 (id 1, once), its review-loop row and a queued pass charged to `u1`.
+    pub async fn seed_pass(db: &Db) -> Result<PassId, DbError> {
+        use crate::repo::review_loop::{NewPass, PassCause, PassStart};
+        seed_analysis(db).await?;
+        let now = contracts::time::Timestamp::now();
+        db.review_loop().ensure_pr(DEFAULT_TENANT, 1, now).await?;
+        let pass = NewPass {
+            pull_request_id: 1,
+            user_id: Some("u1".to_owned()),
+            cause: PassCause::Opened,
+            head: CommitSha("9".repeat(40)),
+            sent: Vec::new(),
+            question: None,
+        };
+        match db
+            .review_loop()
+            .start_pass(DEFAULT_TENANT, &pass, now)
+            .await?
+        {
+            PassStart::Started(id) => Ok(id),
+            PassStart::Busy(_) => Err(DbError::Conflict),
         }
     }
 

@@ -1,5 +1,7 @@
 //! Ask: list the questions of an analysis and ask a question about one of its steps or about lines of one of its
 //! files (session, CSRF and tenant check; the work lives in `ask`). Answers arrive on the analysis's event stream.
+//! On a pull request's route: the reader's questions about its review-comment items, with or without an analysis
+//! (`review_loop::assess`); answers without an analysis are read by listing again.
 
 use std::borrow::Cow;
 
@@ -10,8 +12,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use contracts::api::error::ApiErrorCode;
 use contracts::api::questions::{AnchoredAskRequest, AskAnchor, AskQuestion, AskRequest};
+use contracts::common::RepoRef;
 use contracts::ids::{AnalysisId, StepId};
-use contracts::routes::{ASK_ANCHORED, ASK_QUESTION, LIST_QUESTIONS};
+use contracts::routes::{
+    ASK_ANCHORED, ASK_PR_QUESTION, ASK_QUESTION, LIST_PR_QUESTIONS, LIST_QUESTIONS,
+};
 use contracts::time::Timestamp;
 
 use crate::api::analyses::{AnalysisApiError, visible_analysis};
@@ -19,6 +24,7 @@ use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::ask::{self, AskError, MAX_QUESTIONS_PER_ANALYSIS, MAX_QUESTIONS_PER_USER_PER_HOUR};
 use crate::auth::{Session, SessionCsrf};
 use crate::pipeline::PrDiffError;
+use crate::review_loop::assess::{self, ItemAskError};
 use crate::state::AppState;
 
 /// A questions request failed.
@@ -36,6 +42,24 @@ pub enum QuestionsApiError {
     /// The question was not accepted.
     #[error("the question was not accepted")]
     Ask(#[from] AskError),
+    /// The pull request is not known in the tenant (comment-item questions).
+    #[error("the pull request is not known")]
+    UnknownPr,
+    /// A question on the pull request's route is not about a comment item.
+    #[error("the question is not about a comment item")]
+    NotAnItem,
+}
+
+impl From<ItemAskError> for QuestionsApiError {
+    fn from(error: ItemAskError) -> Self {
+        match error {
+            ItemAskError::NotAnItem => Self::NotAnItem,
+            ItemAskError::UnknownPr => Self::UnknownPr,
+            ItemAskError::UnknownItem => Self::Ask(AskError::UnknownItem),
+            ItemAskError::Ask(error) => Self::Ask(error),
+            ItemAskError::Db(error) => Self::Ask(AskError::Db(error)),
+        }
+    }
 }
 
 impl ApiErrorSource for QuestionsApiError {
@@ -44,6 +68,8 @@ impl ApiErrorSource for QuestionsApiError {
             Self::Json(rejection) => rejection.code(),
             Self::Path(rejection) => rejection.code(),
             Self::Analysis(error) => error.code(),
+            Self::UnknownPr => ApiErrorCode::NotFound,
+            Self::NotAnItem => ApiErrorCode::InvalidRequest,
             Self::Ask(
                 AskError::Empty
                 | AskError::TooLong
@@ -57,9 +83,12 @@ impl ApiErrorSource for QuestionsApiError {
                 ApiErrorCode::Internal
             }
             Self::Ask(AskError::NotFinished) => ApiErrorCode::AnalysisNotFinished,
-            Self::Ask(AskError::UnknownStep | AskError::UnknownFlow | AskError::UnknownParent) => {
-                ApiErrorCode::NotFound
-            }
+            Self::Ask(
+                AskError::UnknownStep
+                | AskError::UnknownFlow
+                | AskError::UnknownItem
+                | AskError::UnknownParent,
+            ) => ApiErrorCode::NotFound,
             Self::Ask(AskError::Superseded | AskError::AnalysisLimit | AskError::UserLimit) => {
                 ApiErrorCode::Conflict
             }
@@ -72,6 +101,12 @@ impl ApiErrorSource for QuestionsApiError {
             Self::Json(rejection) => rejection.public_message(),
             Self::Path(rejection) => rejection.public_message(),
             Self::Analysis(error) => error.public_message(),
+            Self::UnknownPr => {
+                Cow::Borrowed("The pull request is not known here yet. Open it in diffpilot first.")
+            }
+            Self::NotAnItem => {
+                Cow::Borrowed("Ask here about one review comment of the pull request.")
+            }
             Self::Ask(AskError::Empty) => Cow::Borrowed("Write a question first."),
             Self::Ask(AskError::TooLong) => Cow::Owned(format!(
                 "The question is too long; write at most {} characters.",
@@ -88,6 +123,9 @@ impl ApiErrorSource for QuestionsApiError {
             }
             Self::Ask(AskError::UnknownFlow) => {
                 Cow::Borrowed("The flow is not analysed in this analysis. Reload the review.")
+            }
+            Self::Ask(AskError::UnknownItem) => {
+                Cow::Borrowed("The comment is not part of this pull request. Reload the page.")
             }
             Self::Ask(AskError::UnknownParent) => {
                 Cow::Borrowed("The question to follow up was not found. Reload the review.")
@@ -129,6 +167,39 @@ pub fn routes() -> Router<AppState> {
         .route(LIST_QUESTIONS.path, get(list))
         .route(ASK_QUESTION.path, post(create))
         .route(ASK_ANCHORED.path, post(create_anchored))
+        .route(LIST_PR_QUESTIONS.path, get(list_on_pr))
+        .route(ASK_PR_QUESTION.path, post(create_on_pr))
+}
+
+/// Path of the pull-request question routes: owner, name, number.
+type PrPath = Path<(String, String, u32)>;
+
+async fn list_on_pr(
+    State(state): State<AppState>,
+    session: Session,
+    path: Result<PrPath, PathRejection>,
+) -> QuestionsResult<Json<Vec<AskQuestion>>> {
+    let Path((owner, name, number)) = path.map_err(failure)?;
+    let repo = RepoRef { owner, name };
+    let questions = assess::list_questions(&state, &session, &repo, number)
+        .await
+        .map_err(failure)?;
+    Ok(Json(questions))
+}
+
+async fn create_on_pr(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    path: Result<PrPath, PathRejection>,
+    body: Result<Json<AnchoredAskRequest>, JsonRejection>,
+) -> QuestionsResult<(StatusCode, Json<AskQuestion>)> {
+    let Path((owner, name, number)) = path.map_err(failure)?;
+    let Json(request) = body.map_err(failure)?;
+    let repo = RepoRef { owner, name };
+    let question = assess::ask_about_item(&state, &session, &repo, number, request)
+        .await
+        .map_err(failure)?;
+    Ok((StatusCode::ACCEPTED, Json(question)))
 }
 
 async fn list(

@@ -276,7 +276,7 @@ impl Executor {
             },
             access: spec.access.clone(),
             skills: spec.skills.clone(),
-            answer_only: spec.target.pull_request().is_none(),
+            answer_only: matches!(spec.target, JobTarget::Dashboard { .. }),
             compact_on_start: false,
             phases: phases.clone(),
         };
@@ -345,7 +345,8 @@ impl Executor {
         events: mpsc::Sender<ProviderEvent>,
     ) -> (Result<ProviderOutcome, ProviderError>, SessionOutcome) {
         let Some(target) = spec.target.pull_request() else {
-            // A dashboard job always starts a fresh session: nothing to resume, seed or keep (ADR-018).
+            // A dashboard or `verify_comments` job always starts a fresh session: nothing to resume, seed or keep
+            // (ADR-018, ADR-023).
             return (
                 self.provider.run(&call, events).await,
                 SessionOutcome::Started,
@@ -442,17 +443,14 @@ impl Executor {
                 "the flow output directory could not be prepared",
             ));
         }
-        let Some(target) = spec.target.pull_request() else {
+        let Some(repo) = spec.target.checkout() else {
             return Ok(());
         };
-        let mirror = git::mirror_path(&self.dirs.mirrors, &target.repo.clone_url);
-        let commits = [
-            target.repo.head_sha.0.as_str(),
-            target.repo.base_sha.0.as_str(),
-        ];
+        let mirror = git::mirror_path(&self.dirs.mirrors, &repo.clone_url);
+        let commits = [repo.head_sha.0.as_str(), repo.base_sha.0.as_str()];
         if let Err(error) = git::checkout(
             &mirror,
-            &target.repo.clone_url,
+            &repo.clone_url,
             &commits,
             &job_dir.join("repo"),
             phases,
@@ -469,21 +467,27 @@ impl Executor {
     }
 }
 
-/// Why a job's kind, target and access do not fit together (ADR-018, threat model T17): a judge job is a
-/// dashboard job and the other way round, and a dashboard job carries no agent access, skills, flow file or
-/// session to resume.
+/// Why a job's kind, target and access do not fit together (ADR-018, ADR-023, threat model T17, T23): a judge job
+/// is a dashboard job and a `verify_comments` job a comments job, each the other way round too; a dashboard job
+/// carries no agent access, skills, flow file or session to resume, a `verify_comments` job no MemCan endpoint,
+/// skills, flow file or session (only the read-only GitHub token).
 fn misfit(spec: &JobSpec) -> Option<&'static str> {
     let dashboard = matches!(spec.target, JobTarget::Dashboard { .. });
-    if dashboard != (spec.kind == JobKind::JudgeWork) {
+    let comments = matches!(spec.target, JobTarget::PullRequestComments(_));
+    if dashboard != (spec.kind == JobKind::JudgeWork)
+        || comments != (spec.kind == JobKind::VerifyComments)
+    {
         return Some("the job kind does not match its target");
     }
-    let holds_something = spec.access != AgentAccess::default()
-        || !spec.skills.is_empty()
+    let holds_something = !spec.skills.is_empty()
         || spec.flow_file.is_some()
         || spec.session.is_some()
         || spec.working_session.is_some();
-    (dashboard && holds_something)
-        .then_some("a dashboard job must not carry agent access, skills or a session")
+    if dashboard && (holds_something || spec.access != AgentAccess::default()) {
+        return Some("a dashboard job must not carry agent access, skills or a session");
+    }
+    (comments && (holds_something || spec.access.memcan.is_some()))
+        .then_some("a verify_comments job must not carry MemCan access, skills or a session")
 }
 
 /// Numbers activities from 1, scrubs every known secret and then clips them, forwards at most one ready

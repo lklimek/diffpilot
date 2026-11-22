@@ -46,6 +46,7 @@ use crate::prompts::{
     self, AnsweredQuestion, AskContext, AskFlowInput, AskInput, AskLinesInput, AskPrInput, Asked,
     AskedLines, JobContext, Profile, PromptError, StepSummary, ThreadQuestion, TouchedStep,
 };
+use crate::review_loop::assess;
 use crate::state::AppState;
 
 /// Failure sentence of an answer that did not pass the checks; it is never shown.
@@ -212,11 +213,16 @@ async fn follow(state: &AppState, question: QuestionId) -> Followed {
     let analysis = record.analysis_id;
     follow_record(state, record)
         .await
-        .map_err(|error| (Some(analysis), error))
+        .map_err(|error| (analysis, error))
 }
 
 async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), FollowError> {
-    let (id, analysis) = (record.question.id, record.analysis_id);
+    let id = record.question.id;
+    // A question without an analysis is answered by a comment assessment pass (`review_loop::assess`).
+    let Some(analysis) = record.analysis_id else {
+        tracing::warn!(question = %id, "a question without an analysis is not followed as an ask job");
+        return Ok(());
+    };
     // A provisional answer is followed on: the job's result is authoritative.
     if record.question.state == AskState::Failed || record.answered_at.is_some() {
         return Ok(());
@@ -445,12 +451,20 @@ async fn submit(
                 profile,
             })?
         }
-        AskAnchor::Pr => {
+        AskAnchor::Pr | AskAnchor::CommentItem { .. } => {
             let results = StoredResults::load(&state.db, summary.id).await?;
+            // A question about a review comment carries the comment as its subject (T-L4).
+            let item = match &question.anchor {
+                AskAnchor::CommentItem { item } => Some(assess::verify_item(
+                    &state.db.review_loop().item(*item).await?,
+                )),
+                _ => None,
+            };
             prompts::ask_pr(&AskPrInput {
                 job,
                 plan: results.plan.as_ref(),
                 pr_context: results.pr_context.as_ref(),
+                item: item.as_ref(),
                 question: &question.text,
                 thread: &thread,
                 profile,
@@ -732,7 +746,7 @@ pub async fn context_pack(
             };
             Asked::Flow { flow }
         }
-        AskAnchor::Pr => Asked::Pr,
+        AskAnchor::Pr | AskAnchor::CommentItem { .. } => Asked::Pr,
         AskAnchor::Step { step_id, .. } => {
             let Some(flow) = results
                 .flows

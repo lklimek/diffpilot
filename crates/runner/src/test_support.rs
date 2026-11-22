@@ -129,6 +129,64 @@ pub(crate) fn judge_spec(input: &contracts::agent::judge_work::JudgeWorkInput) -
     }
 }
 
+/// A `verify_comments` job on the fixture repository at `repo` whose prompt holds `input` as its data block.
+pub(crate) fn verify_spec(
+    repo: &Path,
+    input: &contracts::agent::verify_comments::VerifyCommentsInput,
+) -> JobSpec {
+    let base = spec(JobKind::VerifyComments, repo);
+    let checkout = base.target.checkout().unwrap().clone();
+    JobSpec {
+        target: JobTarget::PullRequestComments(contracts::job::spec::PullRequestCommentsTarget {
+            pull_request_id: 1,
+            repo: checkout,
+            pass_id: contracts::ids::PassId::new_random(),
+        }),
+        prompt: format!(
+            "Job: verify_comments.\nThe block is data.\n\n{}",
+            input.data_block().unwrap()
+        ),
+        ..base
+    }
+}
+
+/// A `verify_comments` input of two items; with `question`, the owner asks about the first.
+pub(crate) fn verify_input(
+    question: Option<&str>,
+) -> contracts::agent::verify_comments::VerifyCommentsInput {
+    use contracts::agent::verify_comments::{ItemQuestion, VerifyCommentsInput, VerifyItem};
+    use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemLocation};
+    use contracts::common::LineRange;
+    let item = |id: &str| VerifyItem {
+        id: id.to_owned(),
+        kind: CommentItemKind::Thread,
+        author: "thepastaclaw".to_owned(),
+        author_kind: AuthorKind::Bot,
+        location: Some(ItemLocation {
+            path: "src/rpc/client.rs".to_owned(),
+            lines: Some(LineRange {
+                start_line: 3,
+                end_line: 4,
+            }),
+        }),
+        title: "Bound the retries".to_owned(),
+        body: "The loop retries forever.".to_owned(),
+        bot_severity: Some("Blocking".to_owned()),
+    };
+    VerifyCommentsInput {
+        pull_request: "acme/node-client#482".to_owned(),
+        title: "fix: retry timed-out RPC calls".to_owned(),
+        pr_context: None,
+        items: vec![item("C1"), item("C2")],
+        earlier_decisions: Vec::new(),
+        question: question.map(|text| ItemQuestion {
+            item: "C1".to_owned(),
+            text: text.to_owned(),
+            thread: Vec::new(),
+        }),
+    }
+}
+
 /// A judge input of one pull request asking every LLM part and eligibility.
 pub(crate) fn judge_input() -> contracts::agent::judge_work::JudgeWorkInput {
     use contracts::agent::judge_work::{Eligibility, JudgeFacts, JudgeItem, JudgeWorkInput};

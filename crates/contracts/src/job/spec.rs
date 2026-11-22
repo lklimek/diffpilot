@@ -56,13 +56,24 @@ pub enum JobTarget {
         /// The refresh whose items are judged.
         refresh_id: RefreshId,
     },
+    /// A `verify_comments` job (ADR-023): checkout and the read-only GitHub token, no session, no MemCan.
+    PullRequestComments(PullRequestCommentsTarget),
 }
 
 impl JobTarget {
-    /// The pull request of an analysis job; `None` for dashboard jobs.
+    /// The pull request of an analysis job; `None` for other jobs.
     pub fn pull_request(&self) -> Option<&PullRequestTarget> {
         match self {
             Self::PullRequest(target) => Some(target),
+            Self::Dashboard { .. } | Self::PullRequestComments(_) => None,
+        }
+    }
+
+    /// The repository a job checks out; `None` for dashboard jobs.
+    pub fn checkout(&self) -> Option<&RepoCheckout> {
+        match self {
+            Self::PullRequest(target) => Some(&target.repo),
+            Self::PullRequestComments(target) => Some(&target.repo),
             Self::Dashboard { .. } => None,
         }
     }
@@ -85,7 +96,7 @@ pub struct PullRequestTarget {
 }
 
 /// What a `verify_comments` job works on (ADR-023, plan §4.2): the head checkout and the read-only PR-scoped token,
-/// no session, no MemCan. Becomes `JobTarget::PullRequestComments` with the job kind (WP13-JOB).
+/// no session, no MemCan.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PullRequestCommentsTarget {
     /// Stable database key of the pull request.

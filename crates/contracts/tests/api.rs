@@ -42,7 +42,9 @@ use contracts::common::{
     FragmentKind, LineRange, LineSide, LlmLanguage, NodeKind, NotAnalysedCategory, Origin, RepoRef,
     RiskBand,
 };
-use contracts::ids::{AnalysisId, AnnotationId, CommitSha, FlowId, QuestionId, StepId};
+use contracts::ids::{
+    AnalysisId, AnnotationId, CommentItemId, CommitSha, FlowId, QuestionId, StepId,
+};
 use contracts::routes::{HttpMethod, Listener, ROUTES, RouteAuth};
 use contracts::time::Timestamp;
 use schemars::JsonSchema;
@@ -521,6 +523,12 @@ fn ask_anchors_and_files_wire_formats() {
             json!({"kind": "flow", "flow_id": "f2"}),
         ),
         (serde_json::to_value(AskAnchor::Pr), json!({"kind": "pr"})),
+        (
+            serde_json::to_value(AskAnchor::CommentItem {
+                item: CommentItemId(uuid::Uuid::nil()),
+            }),
+            json!({"kind": "comment_item", "item": "00000000-0000-0000-0000-000000000000"}),
+        ),
         (
             serde_json::to_value(AnchoredAskRequest {
                 text: "and then?".to_owned(),

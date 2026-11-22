@@ -2,7 +2,7 @@
 //! Frozen signatures (cross-WP).
 
 use contracts::agent::JobKind;
-use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId, RefreshId};
+use contracts::ids::{AnalysisId, FlowId, JobId, PassId, QuestionId, RefreshId};
 use contracts::job::access::AgentAccess;
 use contracts::job::event::JobEvent;
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult, LlmCallStatus};
@@ -64,10 +64,13 @@ pub enum JobStage {
         /// Batch number.
         batch: u32,
     },
+    /// The `verify_comments` job of an assessment pass (ADR-023).
+    Verify(PassId),
 }
 
 impl JobStage {
-    /// The stored key: `plan:<batch>`, `pr_context`, `flow:<id>`, `ask:<question id>`, `judge:<refresh>:<batch>`.
+    /// The stored key: `plan:<batch>`, `pr_context`, `flow:<id>`, `ask:<question id>`, `judge:<refresh>:<batch>`,
+    /// `verify:<pass>`.
     pub fn key(&self) -> String {
         match self {
             Self::Plan { batch } => format!("plan:{batch}"),
@@ -75,6 +78,7 @@ impl JobStage {
             Self::Flow(flow) => format!("flow:{flow}"),
             Self::Ask(question) => format!("ask:{question}"),
             Self::Judge { refresh, batch } => format!("judge:{refresh}:{batch}"),
+            Self::Verify(pass) => format!("verify:{pass}"),
         }
     }
 
@@ -90,6 +94,9 @@ impl JobStage {
             "ask" => serde_json::from_value(serde_json::Value::String(rest.to_owned()))
                 .ok()
                 .map(Self::Ask),
+            "verify" => serde_json::from_value(serde_json::Value::String(rest.to_owned()))
+                .ok()
+                .map(Self::Verify),
             "judge" => {
                 let (refresh, batch) = rest.split_once(':')?;
                 Some(Self::Judge {
@@ -110,11 +117,12 @@ impl JobStage {
             Self::Flow(_) => JobKind::AnalyseFlow,
             Self::Ask(_) => JobKind::Ask,
             Self::Judge { .. } => JobKind::JudgeWork,
+            Self::Verify(_) => JobKind::VerifyComments,
         }
     }
 }
 
-/// A job to enqueue; the tenant is the analysis's or the refresh's (`spec.target`).
+/// A job to enqueue; the tenant is the analysis's, the refresh's or the pass's (`spec.target`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewJob {
     /// The spec; `access` must be empty (credentials are added at claim).
@@ -134,8 +142,10 @@ pub struct JobRecord {
     pub id: JobId,
     /// Analysis of an analysis job; none for dashboard jobs.
     pub analysis_id: Option<AnalysisId>,
-    /// Refresh of a dashboard job; none for analysis jobs.
+    /// Refresh of a dashboard job; none for other jobs.
     pub refresh_id: Option<RefreshId>,
+    /// Assessment pass of a `verify_comments` job; none for other jobs.
+    pub pass_id: Option<PassId>,
     /// Kind.
     pub kind: JobKind,
     /// Claim priority.
@@ -318,7 +328,7 @@ pub(crate) fn server_result(job: JobId, attempt: u32, outcome: JobOutcome) -> Jo
 
 macro_rules! job_columns {
     () => {
-        "id, analysis_id, refresh_id, kind, priority, state, attempt, max_attempts, spec, cancel_requested, lease_expires_at,
+        "id, analysis_id, refresh_id, pass_id, kind, priority, state, attempt, max_attempts, spec, cancel_requested, lease_expires_at,
          resumes_at, ready_output, result, stage, generation, round, github_access_granted, created_at, finished_at"
     };
 }
@@ -343,6 +353,7 @@ fn job_from_row(row: &SqliteRow) -> Result<JobRecord, DbError> {
     let id: String = row.try_get("id")?;
     let analysis: Option<String> = row.try_get("analysis_id")?;
     let refresh: Option<String> = row.try_get("refresh_id")?;
+    let pass: Option<String> = row.try_get("pass_id")?;
     let kind: String = row.try_get("kind")?;
     let state: String = row.try_get("state")?;
     let spec: String = row.try_get("spec")?;
@@ -356,6 +367,7 @@ fn job_from_row(row: &SqliteRow) -> Result<JobRecord, DbError> {
         refresh_id: refresh
             .map(|id| parse_wire(&id, "jobs.refresh_id"))
             .transpose()?,
+        pass_id: pass.map(|id| parse_wire(&id, "jobs.pass_id")).transpose()?,
         kind: parse_wire(&kind, "jobs.kind")?,
         priority: match row.try_get::<i64, _>("priority")? {
             0 => JobPriority::Interactive,
@@ -492,9 +504,9 @@ impl Current {
 impl Jobs<'_> {
     /// Enqueues a job in state `queued` in the analysis's current round (a dashboard job: the refresh's ranking
     /// attempt); `Conflict` if a live or succeeded job of the same stage, generation and round exists (look it up
-    /// with [`Jobs::current_for_stage`] or [`Jobs::current_for_judge_stage`] and reuse it). `NotFound` when the
-    /// target's analysis does not exist, or its refresh does not exist or no longer ranks (a job that could never
-    /// be claimed).
+    /// with [`Jobs::current_for_stage`], [`Jobs::current_for_judge_stage`] or [`Jobs::current_for_pass`] and reuse
+    /// it). `NotFound` when the target's analysis does not exist, its refresh does not exist or no longer ranks, or
+    /// its pass does not exist or ended (a job that could never be claimed).
     pub async fn enqueue(&self, job: NewJob, now: Timestamp) -> Result<JobRecord, DbError> {
         let mut spec = job.spec;
         // The stored spec never holds a credential (threat model T3b); access is filled at claim.
@@ -503,7 +515,10 @@ impl Jobs<'_> {
         let (flow_id, question_id) = match &job.stage {
             JobStage::Flow(flow) => (Some(flow.0.clone()), None),
             JobStage::Ask(question) => (None, Some(question.to_string())),
-            JobStage::Plan { .. } | JobStage::PrContext | JobStage::Judge { .. } => (None, None),
+            JobStage::Plan { .. }
+            | JobStage::PrContext
+            | JobStage::Judge { .. }
+            | JobStage::Verify(_) => (None, None),
         };
         let (sql, owner) = match &spec.target {
             JobTarget::PullRequest(target) => (
@@ -518,6 +533,13 @@ impl Jobs<'_> {
                  SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ranking_attempt
                  FROM dashboard_refreshes WHERE id = ? AND state = 'ranking'",
                 refresh_id.to_string(),
+            ),
+            JobTarget::PullRequestComments(target) => (
+                "INSERT INTO jobs (id, tenant_id, pass_id, kind, priority, state, spec, credential_id, stage,
+                     generation, flow_id, question_id, created_at, round)
+                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, 0
+                 FROM comment_passes WHERE id = ? AND state IN ('queued', 'running')",
+                target.pass_id.to_string(),
             ),
         };
         let inserted = sqlx::query(sql)
@@ -541,8 +563,9 @@ impl Jobs<'_> {
     }
 
     /// Claims the next runnable job: `queued`, credential usable and idle, no other running job of the same
-    /// analysis, a dashboard job only while its refresh is ranking in the job's attempt; interactive before batch, Ask first within
-    /// interactive, then oldest first. Never pre-empts a claimed or running job. Increments the attempt.
+    /// analysis, a dashboard job only while its refresh is ranking in the job's attempt, a `verify_comments` job only
+    /// while its pass is live; interactive before batch, Ask first and `verify_comments` second within interactive,
+    /// then oldest first. Never pre-empts a claimed or running job. Increments the attempt.
     pub async fn claim(&self, params: ClaimParams<'_>) -> Result<Option<JobRecord>, DbError> {
         if params.credential_ids.is_empty() {
             return Ok(None);
@@ -561,6 +584,7 @@ impl Jobs<'_> {
                  AND NOT EXISTS (SELECT 1 FROM analyses a WHERE a.id = j.analysis_id AND (a.state = 'cancelled' OR (a.user_paused_at IS NOT NULL AND j.kind <> 'ask')))
                  AND NOT EXISTS (SELECT 1 FROM analyses a JOIN pull_requests p ON p.id=a.pull_request_id WHERE a.id=j.analysis_id AND p.session_state='drop_requested')
                  AND NOT EXISTS (SELECT 1 FROM dashboard_refreshes d WHERE d.id = j.refresh_id AND (d.state <> 'ranking' OR d.ranking_attempt <> j.round))
+                 AND NOT EXISTS (SELECT 1 FROM comment_passes p WHERE p.id = j.pass_id AND p.state NOT IN ('queued', 'running'))
                  AND j.credential_id IN (",
         );
         let mut ids = query.separated(", ");
@@ -577,7 +601,8 @@ impl Jobs<'_> {
         );
         query.push_bind(ts(params.now));
         query.push(
-            ")) ORDER BY j.priority, j.kind <> 'ask', j.created_at, j.rowid LIMIT 1) RETURNING id",
+            ")) ORDER BY j.priority, j.kind <> 'ask', j.kind <> 'verify_comments', j.created_at, j.rowid LIMIT 1)
+             RETURNING id",
         );
         let claimed: Option<String> = query.build_query_scalar().fetch_optional(self.pool).await?;
         match claimed {
@@ -730,8 +755,8 @@ impl Jobs<'_> {
         .await?;
         apply_credential_effects(&mut tx, &credential, result, now).await?;
         let kind: String = row.try_get("kind")?;
-        // A dashboard job has no pull request: nothing it reports touches a session (ADR-018).
-        if kind == JobKind::JudgeWork.as_str() {
+        // A dashboard or `verify_comments` job has no session: nothing it reports touches one (ADR-018, ADR-023).
+        if kind == JobKind::JudgeWork.as_str() || kind == JobKind::VerifyComments.as_str() {
             tx.commit().await?;
             return Ok(Completion::Applied { state });
         }
@@ -971,6 +996,27 @@ impl Jobs<'_> {
         ))
         .bind(analysis.to_string())
         .bind(stage.key())
+        .bind(generation)
+        .fetch_optional(self.pool)
+        .await?;
+        row.as_ref().map(job_from_row).transpose()
+    }
+
+    /// The live or succeeded job of an assessment pass (`JobStage::Verify`), if any: what an idempotent submit of a
+    /// `verify_comments` job answers with.
+    pub async fn current_for_pass(
+        &self,
+        pass: PassId,
+        generation: u32,
+    ) -> Result<Option<JobRecord>, DbError> {
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            job_columns!(),
+            " FROM jobs WHERE pass_id = ? AND stage = ? AND generation = ? AND state NOT IN ('failed', 'cancelled')
+             ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        ))
+        .bind(pass.to_string())
+        .bind(JobStage::Verify(pass).key())
         .bind(generation)
         .fetch_optional(self.pool)
         .await?;
@@ -1276,7 +1322,8 @@ mod tests {
     use super::*;
     use crate::repo::Db;
     use crate::repo::analyses::testing::{
-        CREDENTIAL, job_spec, judge_spec, seed_analysis, seed_ranking_refresh,
+        CREDENTIAL, job_spec, judge_spec, seed_analysis, seed_pass, seed_ranking_refresh,
+        verify_spec,
     };
 
     fn at(second: i64) -> Timestamp {
@@ -2306,6 +2353,7 @@ mod tests {
     #[test]
     fn stage_keys_round_trip_and_are_distinct() {
         let question = QuestionId::new_random();
+        let pass = PassId::new_random();
         let refresh = RefreshId::new_random();
         let stages = [
             JobStage::Plan { batch: 1 },
@@ -2314,8 +2362,11 @@ mod tests {
             JobStage::Flow(FlowId("f3".to_owned())),
             JobStage::Ask(question),
             JobStage::Judge { refresh, batch: 2 },
+            JobStage::Verify(pass),
         ];
         let keys: Vec<String> = stages.iter().map(JobStage::key).collect();
+        assert_eq!(keys[6], format!("verify:{pass}"));
+        assert_eq!(JobStage::Verify(pass).kind(), JobKind::VerifyComments);
         assert_eq!(keys[0], "plan:1");
         assert_eq!(keys[2], "pr_context");
         assert_eq!(keys[3], "flow:f3");
@@ -2333,7 +2384,16 @@ mod tests {
         for bad in bad_judge {
             assert_eq!(JobStage::parse(&bad), None, "{bad}");
         }
-        for bad in ["", "plan", "plan:x", "flow:", "ask:not-a-uuid", "other"] {
+        for bad in [
+            "",
+            "plan",
+            "plan:x",
+            "flow:",
+            "ask:not-a-uuid",
+            "verify:",
+            "verify:x",
+            "other",
+        ] {
             assert_eq!(JobStage::parse(bad), None, "{bad}");
         }
     }
@@ -2722,5 +2782,120 @@ mod tests {
             db.agent_sessions().generation(1).await.expect("generation"),
             generation
         );
+    }
+
+    fn verify_job(pass: PassId) -> NewJob {
+        NewJob {
+            spec: verify_spec(pass),
+            priority: JobPriority::Interactive,
+            stage: JobStage::Verify(pass),
+            generation: 0,
+        }
+    }
+
+    /// A `verify_comments` job belongs to its pass only, is idempotent per pass and cannot be enqueued for an ended
+    /// pass.
+    #[tokio::test]
+    async fn verify_job_belongs_to_its_pass_and_is_idempotent() {
+        let db = db().await;
+        let pass = seed_pass(&db).await.expect("pass");
+        let record = db
+            .jobs()
+            .enqueue(verify_job(pass), at(0))
+            .await
+            .expect("enqueue");
+        assert_eq!(
+            (
+                record.analysis_id,
+                record.refresh_id,
+                record.pass_id,
+                record.kind
+            ),
+            (None, None, Some(pass), JobKind::VerifyComments)
+        );
+        assert!(matches!(
+            db.jobs().enqueue(verify_job(pass), at(1)).await,
+            Err(DbError::Conflict)
+        ));
+        let current = db.jobs().current_for_pass(pass, 0).await.expect("current");
+        assert_eq!(current.map(|job| job.id), Some(record.id));
+        db.review_loop()
+            .finish_pass(pass, false, at(2))
+            .await
+            .expect("ended");
+        db.jobs()
+            .request_cancel(record.id, at(3))
+            .await
+            .expect("cancel");
+        assert!(matches!(
+            db.jobs().enqueue(verify_job(pass), at(4)).await,
+            Err(DbError::NotFound)
+        ));
+    }
+
+    /// Claimed after Ask and before dashboard ranking, only while the pass is live.
+    #[tokio::test]
+    async fn verify_job_is_claimed_after_ask_before_ranking_while_its_pass_is_live() {
+        let db = db().await;
+        let pass = seed_pass(&db).await.expect("pass");
+        let analysis = seed_analysis(&db).await.expect("analysis");
+        let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+        let judge = enqueue_new(&db, judge_job(refresh, 1), 0).await;
+        let verify = enqueue_new(&db, verify_job(pass), 1).await;
+        let ask = enqueue_new(&db, ask_job(analysis), 2).await;
+        let order = [ask, verify, judge];
+        for (second, expected) in (3..).zip(order) {
+            let claimed = claim(&db, second).await.expect("claimed");
+            assert_eq!(claimed.id, expected);
+            db.jobs()
+                .complete(&succeeded(claimed.id, 1), at(second))
+                .await
+                .expect("complete");
+        }
+        let second_pass = {
+            db.review_loop()
+                .finish_pass(pass, true, at(10))
+                .await
+                .expect("finished");
+            seed_pass(&db).await.expect("next pass")
+        };
+        enqueue_new(&db, verify_job(second_pass), 11).await;
+        db.review_loop()
+            .finish_pass(second_pass, false, at(12))
+            .await
+            .expect("failed");
+        assert_eq!(
+            claim(&db, 13).await,
+            None,
+            "an ended pass's job waits unclaimed"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_result_never_touches_a_pull_request_session() {
+        let db = db().await;
+        let pass = seed_pass(&db).await.expect("pass");
+        let generation = db.agent_sessions().generation(1).await.expect("generation");
+        let job = enqueue_new(&db, verify_job(pass), 0).await;
+        claim(&db, 1).await.expect("claimed");
+        let mut reported = succeeded(job, 1);
+        reported.session = Some(contracts::job::result::SessionReport {
+            thread_id: "verify-thread".to_owned(),
+            outcome: contracts::job::result::SessionOutcome::Started,
+        });
+        db.jobs()
+            .complete(&reported, at(2))
+            .await
+            .expect("complete");
+        assert_eq!(
+            db.agent_sessions().generation(1).await.expect("generation"),
+            generation
+        );
+        let thread: Option<String> =
+            sqlx::query_scalar("SELECT agent_thread_id FROM pull_requests WHERE id = 1")
+                .fetch_one(&db.pool)
+                .await
+                .expect("thread");
+        assert_eq!(thread, None);
     }
 }

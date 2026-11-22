@@ -1560,7 +1560,8 @@ async fn question_threads_migration_keeps_every_question_with_its_kind() {
         .expect("schema")
     };
     let (order_before, schema_before) = (order().await, schema().await);
-    migrate(&db.pool, MIGRATIONS.len())
+    // Up to 0014 only: later migrations add their own indexes (0018: comment-item questions).
+    migrate(&db.pool, before_threads + 1)
         .await
         .expect("upgrade in place");
     assert_eq!(
@@ -1885,4 +1886,168 @@ async fn fresh_install_listing_a_seeded_login_gets_it_unbound() {
         allowlist_rows(&db.pool).await,
         [("LKLIMEK".to_owned(), None)]
     );
+}
+
+/// Migration 0018 rebuilds `questions`, `comment_passes` and `jobs` in place: every row keeps its rowid, a follow-up
+/// keeps its parent (no drop cascades into copied rows), questions gain their pull request, children still cascade,
+/// and the new owner rules hold (a `verify_comments` job belongs to a pass; a question without an analysis is a
+/// comment-item question of a pull request).
+#[tokio::test]
+async fn verify_comments_jobs_migration_keeps_rows_and_adds_the_pass_owner() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before = MIGRATIONS
+        .iter()
+        .position(|(_, name, _)| *name == "verify_comments_jobs")
+        .expect("migration 0018");
+    migrate(&pool, before).await.expect("schema before 0018");
+    let db = Db { pool };
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO questions (id, tenant_id, analysis_id, step_id, user_id, text, state, created_at, kind)
+           VALUES ('q9', 'default', 'a1', 'f1.1', 'u1', 'first?', 'answered', 't1', 'step');
+         INSERT INTO questions (id, tenant_id, analysis_id, user_id, text, state, created_at, kind, parent_id)
+           VALUES ('q1', 'default', 'a1', 'u1', 'and?', 'pending', 't2', 'pr', 'q9');
+         INSERT INTO comment_prs (pull_request_id, tenant_id, created_at) VALUES (1, 'default', 't');
+         INSERT INTO comment_passes (id, tenant_id, pull_request_id, user_id, cause, head, items, state, created_at)
+           VALUES ('p1', 'default', 1, 'u1', 'opened', 'h', 2, 'queued', 't');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("rows of the old schema");
+    insert_job(&db, "j2", "a1", "c1", "succeeded")
+        .await
+        .expect("job");
+    insert_job(&db, "j1", "a2", "c1", "queued")
+        .await
+        .expect("job");
+    sqlx::raw_sql(
+        "INSERT INTO job_events (job_id, tenant_id, attempt, seq, at, body) VALUES ('j2', 'default', 1, 1, 't', '{}');
+         INSERT INTO installation_tokens (job_id, tenant_id, attempt, ciphertext, expires_at)
+           VALUES ('j2', 'default', 1, x'00', 't');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("children");
+    let rowids = || async {
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT 'q:' || id, rowid FROM questions UNION ALL SELECT 'j:' || id, rowid FROM jobs
+             UNION ALL SELECT 'p:' || id, rowid FROM comment_passes ORDER BY 1",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("rowids")
+    };
+    let kept = rowids().await;
+    migrate(&db.pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+    assert_eq!(rowids().await, kept, "rows and rowids are kept");
+    let follow_up: (Option<String>, Option<i64>) =
+        sqlx::query_as("SELECT parent_id, pull_request_id FROM questions WHERE id = 'q1'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("follow-up");
+    assert_eq!(follow_up, (Some("q9".to_owned()), Some(1)));
+    let pass: (Option<String>, String, Option<String>) =
+        sqlx::query_as("SELECT user_id, sent, question_id FROM comment_passes WHERE id = 'p1'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("pass");
+    assert_eq!(pass, (Some("u1".to_owned()), "[]".to_owned(), None));
+    let children: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM job_events), (SELECT COUNT(*) FROM installation_tokens)",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("children");
+    assert_eq!(children, (1, 1));
+    for (child, parent) in [
+        ("job_events", "jobs"),
+        ("installation_tokens", "jobs"),
+        ("jobs", "comment_passes"),
+        ("comment_passes", "questions"),
+        ("questions", "comment_items"),
+    ] {
+        let parents: Vec<String> =
+            sqlx::query_scalar("SELECT \"table\" FROM pragma_foreign_key_list(?)")
+                .bind(child)
+                .fetch_all(&db.pool)
+                .await
+                .expect("foreign keys");
+        assert!(parents.contains(&parent.to_owned()), "{child}: {parents:?}");
+    }
+    let insert_job_of = |analysis: Option<&'static str>,
+                         pass: Option<&'static str>,
+                         kind: &'static str| {
+        sqlx::query(
+            "INSERT INTO jobs (id, tenant_id, analysis_id, pass_id, kind, priority, state, spec, credential_id,
+                 created_at, stage)
+             VALUES (?, 'default', ?, ?, ?, 0, 'queued', '{}', 'c1', 't', ?)",
+        )
+        .bind(contracts::ids::JobId::new_random().to_string())
+        .bind(analysis)
+        .bind(pass)
+        .bind(kind)
+        .bind(if kind == "verify_comments" { "verify:p1" } else { "plan:1" })
+        .execute(&db.pool)
+    };
+    assert!(
+        insert_job_of(None, Some("p1"), "verify_comments")
+            .await
+            .is_ok()
+    );
+    assert!(
+        insert_job_of(Some("a1"), Some("p1"), "verify_comments")
+            .await
+            .is_err(),
+        "two owners"
+    );
+    assert!(
+        insert_job_of(None, Some("p1"), "plan").await.is_err(),
+        "analysis kind on a pass"
+    );
+    assert!(
+        insert_job_of(Some("a1"), None, "verify_comments")
+            .await
+            .is_err(),
+        "verify job of an analysis"
+    );
+    let no_analysis = sqlx::raw_sql(
+        "INSERT INTO questions (id, tenant_id, pull_request_id, user_id, text, state, created_at, kind)
+           VALUES ('x1', 'default', 1, 'u1', 'x', 'pending', 't', 'pr')",
+    )
+    .execute(&db.pool)
+    .await;
+    assert!(
+        no_analysis.is_err(),
+        "only comment-item questions go without an analysis"
+    );
+    sqlx::query("DELETE FROM installation_tokens")
+        .execute(&db.pool)
+        .await
+        .expect("revoked");
+    sqlx::query("DELETE FROM jobs WHERE id = 'j2'")
+        .execute(&db.pool)
+        .await
+        .expect("delete job");
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM job_events")
+        .fetch_one(&db.pool)
+        .await
+        .expect("events");
+    assert_eq!(events, 0, "events still cascade with their job");
+    let check: Option<String> = sqlx::query_scalar("PRAGMA foreign_key_check")
+        .fetch_optional(&db.pool)
+        .await
+        .expect("check");
+    assert_eq!(check, None);
 }

@@ -95,7 +95,10 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<LinesResponse>("lines_response", &[routes::GET_LINES]),
     api_schema::<DiffResponse>("diff_response", &[routes::GET_DIFF]),
     api_schema::<ReviewState>("review_state", &[routes::GET_REVIEW_STATE]),
-    api_schema::<Vec<AskQuestion>>("ask_question_list", &[routes::LIST_QUESTIONS]),
+    api_schema::<Vec<AskQuestion>>(
+        "ask_question_list",
+        &[routes::LIST_QUESTIONS, routes::LIST_PR_QUESTIONS],
+    ),
     api_schema::<FilesResponse>("files_response", &[routes::GET_FILES]),
     api_schema::<DependencyView>("dependency_view", &[routes::GET_DEPENDENCIES]),
     api_schema::<Vec<Feedback>>("feedback_list", &[routes::LIST_FEEDBACK]),

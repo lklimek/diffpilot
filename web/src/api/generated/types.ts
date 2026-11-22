@@ -426,7 +426,11 @@ range: LineRange | null, } | { "kind": "flow",
 /**
  * The flow.
  */
-flow_id: FlowId, } | { "kind": "pr" };
+flow_id: FlowId, } | { "kind": "pr" } | { "kind": "comment_item",
+/**
+ * The item.
+ */
+item: CommentItemId, };
 
 /**
  * An LLM answer to a question about a step.
