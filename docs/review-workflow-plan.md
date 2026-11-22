@@ -1,6 +1,6 @@
 # diffpilot — review loop plan: processing PR comments
 
-Status: specification, 2026-11-22. Owner questions RQ1–RQ22 answered or closed; RQ23 open (§11). Owner rule: design in
+Status: specification, 2026-11-22. Owner questions RQ1–RQ23 answered or closed (§11). Owner rule: design in
 HTML first; no implementation until the owner has looked at the mockup and discussed it. Stage v1.3 on `feat/v1.3`,
 cut from `main` (RQ1). Mirrors `docs/implementation-plan.md` (cited "plan §N") and `docs/v1.1-dashboard-plan.md`
 ("dashboard plan"): their rules (authority, git flow, standing brief block, guard A1–A12, merge checklist, CCR) apply
@@ -38,6 +38,8 @@ stable (U2); the per-PR overview of rounds and decisions is assembled by hand.
 5. **Watch.** A user marks the PRs he is working on (a per-user toggle on the My work row and on the PR page; a list of
    watched PRs). For a watched PR new comments and reviews are detected automatically, the assessment runs at once
    and the user is notified that questions are ready (§2.8). Unwatched PRs stay on demand.
+6. **Notifications** (RQ23): browser notifications plus per-user push channels in Settings (ntfy, generic webhook);
+   an agent's token may register a push target that wakes it when a decision it can claim appears (§5.5).
 
 | ID | Actor | Role here |
 |---|---|---|
@@ -80,6 +82,9 @@ included; out of scope now, all data kept; RQ14, RQ22).
 | US19 | AC1 | **Given** a PR row in My work or the PR page, **when** he switches Watch on, **then** the PR appears in his watched list with "Watching since 10:05" and the note that new comments are assessed automatically and use LLM tokens. |
 | US20 | AC1 | **Given** a watched PR and no diffpilot page open on it, **when** the bot posts 5 new threads, **then** the next probe or plug-in signal detects them, a full read and one assessment job run (after the bot's round ends, if thepastaclaw still reviews), and a notification "acme/node-client #482: 5 questions ready" is created; My work and the watched list show "Assessed automatically 10:52 · 5 questions". |
 | US21 | AC1 | **Given** a watched PR with an assessment job already queued or running, **when** more comments arrive, **then** no second job starts; the new items join the next pass once the current one ends and the minimum spacing has passed. |
+| US22 | AC1 | **Given** Settings → Notifications, **when** he enters an ntfy server URL, topic and access token and presses "Send test", **then** a test message arrives, the token is shown afterwards only as "•••• 9f2a", and the channel shows "Last delivery: test, delivered 10:58". |
+| US23 | AC1 | **Given** a webhook channel whose host is down, **when** a "questions ready" event is delivered, **then** it is tried 3 times, the channel shows "Failing since 11:02: connection refused (3 attempts)", one warning is logged, and the browser notification still appears on an open tab. |
+| US24 | AC4 | **Given** an agent token registered an ntfy push target and holds no live connection, **when** a decision within its capabilities appears, **then** the topic gets one message with the decision ID, the PR and the API link to fetch it, and no reply text, reason or token. |
 
 ## 2. Workflow semantics
 
@@ -181,9 +186,8 @@ Item: `assessing` → `undecided` → `asked_back` → `decided` → `executing`
   queued, the pass waits for the round's end (at most 90 minutes **[A]**) so one round is assessed once; at least 10
   minutes between passes on one PR **[A]**; fingerprint reuse (§4.2); the daily per-user cap shared with on-demand
   passes; when the cap is reached the list says "Not assessed automatically: today's limit" and the PR stays on demand.
-- **Notification.** A pass that adds questions creates one per-user event "acme/node-client #482: 5 questions ready";
-  with the existing browser-notification setting on and a diffpilot tab open, the browser shows it (one per round,
-  RQ18). Events are stored, so a channel for users without an open tab is a later consumer of the same events (RQ23).
+- **Notification.** A pass that adds questions creates one per-user event "acme/node-client #482: 5 questions ready"
+  (one per round, RQ18), delivered to open tabs as a browser notification and to the user's push channels (§5.5).
 - **Display.** Watched list (`/watching` and a My work side-panel section): PR, watching since, last probe, last
   automatic assessment ("Assessed automatically 10:52 · 5 questions"), state (waiting for the bot's round, job
   running, limit reached, paused), Unwatch. The PR page and the My work row show the Watch toggle and the same badge.
@@ -204,6 +208,7 @@ read "Needs an analysis" and link to the PR page.
 | V4 | Rounds and per-item history | `…/comments/rounds` | view 5 | 1 (rounds), 2 (history panel) |
 | V5 | Carry-overs, this PR / all PRs | `…/comments/carry-overs`, `/comments/carry-overs` | — | 1 |
 | V6 | Watched PRs (list), Watch toggles on My work rows and V0 | `/watching` | view 3 (partly) | 1 |
+| V7 | Settings → Notifications: browser toggle, ntfy, webhook, per-event toggles, Send test, last delivery | `/settings#notifications` | — | 1 |
 My work PR rows gain chips "3 questions", "2 effects pending" (cross-PR view, WM view 3; phase 2). WM view 4 (push
 state) is out of scope (RQ15).
 
@@ -309,9 +314,11 @@ demand), served by range (brief §7).
 | T-L5 | `comment_decisions` | id, item_id, user_id, kind, reason, target, override, resolve_ticked, reply_text, recommendation JSON, via, carried_from, supersedes, head, body_hash, decided_at (append-only) |
 | T-L6 | `comment_effects` | id, decision_id, seq, after, kind, executor, params JSON, state, claim_token_id, lease_until, reference, message, updated_at |
 | T-L7 | `comment_carry_events` | id, pr_id, item_id, kind (`carried`, `asked_again`), source_decision_id, reason (`bot_edited`, `code_changed`), evidence JSON, at |
-| T-L8 | `agent_subscriptions` | token_id, capabilities JSON, last_seen_at (for V3's "agents subscribed now") |
+| T-L8 | `agent_subscriptions` | token_id, capabilities JSON, last_seen_at, push_kind, push_url, push_topic, push_secret (AES-GCM), last_delivery_at, last_error, failing_since |
 | T-L9 | `pr_watches` | user_id, repo, number, since, probe JSON (last values), last_probe_at, last_auto_pass_at, state |
-| T-L10 | `user_events` | id, user_id, kind (`questions_ready`, `round_executed`), pr, count, at, delivered_at (RQ18, RQ23) |
+| T-L10 | `user_events` | id, user_id, kind (`questions_ready`, `round_executed`, `test`), pr, count, at |
+| T-L11 | `notification_channels` | id, user_id, kind (`ntfy`, `webhook`), url, topic, secret (AES-GCM), events JSON, enabled, last_delivery_at, last_error, failing_since |
+| T-L12 | `notification_deliveries` | id, user_event_id or decision_id, channel_id or token_id, attempt, state, http_status, error, at (kept; the system-wide retention policy, planned, applies later) |
 Retention: none now; the planned system-wide 13-month policy will cover these tables (RQ14, RQ22).
 
 ### 4.4 Coverage of WM §15
@@ -355,6 +362,30 @@ read-only (ADR-005 amendment). Until the permission is accepted these effects st
 Every decision, supersede, reopen, gate mark and clear, "Resolve this thread", PR-level questions. Tokens get 403
 `token_not_accepted` (contract test over `ROUTES`).
 
+### 5.5 Notifications and push targets (RQ23)
+- **Events (minimal):** user events `questions_ready` (a pass added questions on a PR the user watches),
+  `round_executed` (agents reported every decision of a round executed), `test`; agent event `decision_available` (a
+  decision within the target's capabilities became claimable).
+- **User channels** (Settings → Notifications, per user): (a) **browser notification**, the existing toggle, open
+  tabs only (RW3); (b) **ntfy**, first-class: server URL (default `https://ntfy.sh`), topic, optional access token;
+  message title "diffpilot", body "acme/node-client #482: 5 questions ready", `Click` header = the PR's Comments URL;
+  (c) **generic webhook** (e.g. Home Assistant): URL, optional `Authorization` header value; `POST` JSON
+  `{v: 1, event, text, url, pr, at}`. Per channel: on/off and which events.
+- **Agent push target** (optional, per access token with `review_loop:execute`, RF5): ntfy (server, topic, token) or
+  webhook URL; payload `{v: 1, event: "decision_available", decision_id, pr, fetch: "/api/v1/decision-feed/decisions/
+  <id>"}`; never reply text, reasons, comment bodies or secrets. One message per claimable decision; not sent while the
+  token holds a live SSE connection.
+- **Secrets:** channel and push-target tokens are stored AES-GCM under `SR_SECRET_KEY` like GitHub user tokens
+  (`server::secrets`); responses show only the last 4 characters; never logged; never in a `JobSpec` or the runner.
+- **Delivery:** a server task per event and channel; timeout 10 s; 3 attempts (now, +1 min, +5 min) **[A]**; outcome
+  stored per channel (last delivery, last error, failing since) and shown in Settings (user channels) and V3 (agent
+  targets); `warn` logged once when a channel turns failing and `info` once when it recovers, not per attempt.
+- **Outbound limits** (hosts are set by the user or an agent token; proportionate, not a full SSRF filter):
+  `http`/`https` only; redirects not followed (a 3xx is a failure naming the target host); response bodies read up to
+  4 KiB and never shown; 30 messages per hour per channel **[A]**; private addresses allowed by default (Home Assistant
+  and self-hosted ntfy live on the LAN), blocked when the operator sets `SR_NOTIFY_DENY_PRIVATE=1`; the runbook lists
+  notification hosts as operator-chosen outbound destinations.
+
 ## 6. Contracts and routes
 Types in `crates/contracts/src/api/comments.rs` (`PrPage`, `CommentsOverview`, `CommentItem`, `Assessment`,
 `CodeContext`, `Recommendation`, `DecisionKind`, `Override`, `Decision`, `Effect`, `EffectKind`, `Claim`,
@@ -378,11 +409,15 @@ Integers only on the wire; open enums (tolerant readers); JSON Schemas for read 
 | RW1 | PUT / DELETE | `/prs/{pr}/watch` | session_csrf | → 204 (watch / unwatch; 409 `watch_limit_reached`) |
 | RW2 | GET | `/watches` | read | → watched PRs with probe and automatic-assessment state |
 | RW3 | GET | `/events` | read | SSE per user: `questions_ready`, `round_executed` (browser notifications) |
+| RN1 | GET | `/settings/notifications` | session | → browser toggle, channels (secrets masked), last delivery per channel |
+| RN2 | PUT / DELETE | `/settings/notifications/channels/{kind}` | session_csrf | `{url, topic?, secret?, events, enabled}` → 200 (masked); 422 `scheme_not_allowed`; an absent `secret` keeps the stored one |
+| RN3 | POST | `/settings/notifications/channels/{kind}/test` | session_csrf | → 200 `{outcome, http_status?, error?}` (one attempt, no retry) |
+| RF5 | PUT / DELETE | `/decision-feed/push-target` | `review_loop:execute` | `{kind, url, topic?, secret?}` → 200 (masked); the calling token's own target only |
 | RF1 | GET | `/decision-feed` | read | `capabilities`, `repo?`, `cursor` → open decisions with effects; `ETag` |
 | RF2 | GET | `/decision-feed/events` | read | SSE `FeedEvent`; registers the subscription (T-L8) |
 | RF3 | POST | `/decision-feed/decisions/{id}/claim` | `review_loop:execute` | `{capabilities}` → 201 `Claim`; 409 `claimed` |
 | RF4 | POST | `/decision-feed/effects/{id}/reports` | `review_loop:execute` | `{outcome, reference?, message?, idempotency_key}` → 201 |
-`RouteAuth` gains `TokenOnly(TokenScope::ReviewLoopExecute)` for RF3–RF4; `TokenScope` gains `review_loop_execute`.
+`RouteAuth` gains `TokenOnly(TokenScope::ReviewLoopExecute)` for RF3–RF5; `TokenScope` gains `review_loop_execute`.
 Error codes: `item_changed`, `claimed`, `lease_expired`, `capability_missing`. ADR-019 amendment: a token may call a
 mutating route only when the route names its write scope.
 
@@ -395,6 +430,8 @@ mutating route only when the route names its write scope.
 | T25 | Execute tokens: claim and report only, own claims only, audit line, rate limit (ADR-019) | `report_on_foreign_claim_is_rejected`, `execute_token_cannot_decide` |
 | T26 (phase 3) | Write installation token: server-only, PR repository, per effect, revoked; only effects of stored decisions | `write_token_never_in_job_spec`, `bot_posts_only_decided_effects` |
 | T27 | Watch probes are reads with the watcher's own token; the token pair is kept only within ADR-020's 30-day bound; watches pause without it | `watch_probe_sends_no_mutation`, `watch_pauses_without_token_pair` |
+| T28 | Channel and push-target secrets: AES-GCM at rest, masked in every response, never logged, never in a `JobSpec`; push payloads carry IDs and links only | `channel_secret_is_masked_in_responses`, `push_payload_has_no_secret_or_text`, `job_spec_has_no_channel_secret` |
+| T29 | Outbound notifications: http/https only, no redirects, 10 s timeout, response read ≤ 4 KiB, per-channel rate, optional private-address deny | `notify_rejects_non_http_scheme`, `notify_does_not_follow_redirects`, `notify_denies_private_when_configured` |
 | AR-11 | Accepted (proposal): a prompt-injected comment can skew its own LLM assessment; the owner decides with the evidence shown | — |
 
 ## 8. Reuse, supersede, integrate
@@ -408,7 +445,8 @@ mutating route only when the route names its write scope.
 | PR Hygiene plug-in, plug-in host (ADR-022) | header note; second plug-in thepastaclaw status (RQ16, ADR-022 addendum below) |
 | access tokens (ADR-019) | agent auth; one write scope |
 | `github::threads`, mirror, lines API | extended reads; code context by range without an analysis |
-| Ask, notifications | owner questions use the `verify_comments` job, not Ask (no analysis needed); notifications per RQ18 |
+| Ask, notifications | owner questions use the `verify_comments` job, not Ask (no analysis needed); browser notification setting kept, channels added (§5.5) |
+| `server::secrets` (AES-GCM) | channel and push-target tokens |
 
 **thepastaclaw plug-in (RQ16).** `server::dashboard::plugin::thepastaclaw`, config `SR_THEPASTACLAW_STATUS_URL`
 (default unset = off), polls `https://thepastaclaw.github.io/review-system/data/status.json` under ADR-022's rules
@@ -420,8 +458,10 @@ statement.
 
 ## 9. Phasing and work packages
 **Phase 1 (smallest useful):** V0, V1, V2, V3, V4 rounds, V5, V6; `verify_comments`; decision feed RF1–RF4;
-carry-overs; PR-level questions; Watch with probe and plug-in signals; thepastaclaw plug-in; browser notifications. **Phase 2:** item history panel, My work chips. **Phase 3:**
-diffpilot[bot] executes reply, comment, resolve and dismissal effects (RQ2).
+carry-overs; PR-level questions; Watch with probe and plug-in signals; thepastaclaw plug-in; notifications (browser,
+ntfy, webhook) and agent push targets: Watch is of little use without a channel that reaches a closed tab, and a
+woken agent shortens the loop. **Phase 2:** item history panel, My work chips. **Phase 3:** diffpilot[bot] executes
+reply, comment, resolve and dismissal effects (RQ2).
 
 ### 9.1 Spikes
 | ID | Question | Gates |
@@ -443,6 +483,7 @@ diffpilot[bot] executes reply, comment, resolve and dismissal effects (RQ2).
 | WP13-FEED (CCR) | RF1–RF4, SSE, execute scope, leases, ADR-019 amendment | CORE | yes | ~600 |
 | WP13-PLUG | thepastaclaw plug-in; plug-in polling while watches exist (ADR-022 amendment) | — | — | ~300 |
 | WP13-WATCH (CCR) | watches, probe in the ADR-020 scheduler, plug-in triggers, debounce and spacing, user events, RW1–RW3, token-pair rule (ADR-020 amendment) | CORE, PLUG | yes | ~700 |
+| WP13-NOTIFY (CCR) | channels (ntfy, webhook), delivery task with retries and state, agent push targets, RN1–RN3, RF5, Settings section, runbook outbound hosts | WATCH, FEED | yes | ~650 |
 | WP13-WEB-C / WEB-S | components and screens V0–V5, view-menu entry, progress redirect, msw states = mockup states, Playwright | A | — | ~1800 |
 | WP13-E2E / SEC / DOCS | full stack; security review; brief amendment, `agent-api.md` feed section, runbook | all | — | ~500 + docs |
 Named tests (besides §7): `effects_follow_matrix`, `gate_items_never_grouped_or_bulk`,
@@ -451,7 +492,9 @@ Named tests (besides §7): `effects_follow_matrix`, `gate_items_never_grouped_or
 `comments_work_without_analysis`, `claim_conflict_is_409`, `expired_lease_returns_decision`,
 `round_three_asks_merge_question_once`, `stale_review_dismissal_question_after_round`, `outside_resolution_not_recorded`,
 `watch_probe_batches_ten_prs`, `unchanged_probe_reads_nothing_more`, `one_assessment_job_per_pr`,
-`watched_pass_waits_for_bot_round`, `questions_ready_event_once_per_round`, `daily_cap_stops_automatic_passes`.
+`watched_pass_waits_for_bot_round`, `questions_ready_event_once_per_round`, `daily_cap_stops_automatic_passes`,
+`ntfy_message_has_title_body_and_click_link`, `webhook_payload_has_fixed_shape`, `delivery_tries_three_times_then_fails`,
+`failure_logged_once_per_state_change`, `agent_with_live_stream_is_not_pushed`, `push_only_for_claimable_capabilities`.
 
 ## 10. Risks
 | ID | Risk | Mitigation |
@@ -462,8 +505,9 @@ Named tests (besides §7): `effects_follow_matrix`, `gate_items_never_grouped_or
 | R13-4 | Codex assessment cost on PRs with many comments | fingerprint reuse, batch cap, daily cap |
 | R13-5 | Decisions and actions outside diffpilot diverge from ours | GitHub state shown beside ours; outside resolutions leave the queue unrecorded |
 | R13-6 | Watching many busy PRs burns LLM tokens and GitHub points | watch limit, batched probe, one job per PR, bot-round debounce, spacing, daily cap; costs shown in the watched list |
+| R13-7 | A push channel fails silently and the owner misses questions | per-channel failing state in Settings, warning logged once, browser notification independent |
 
-## 11. Owner questions (RQ1–RQ22 answered or closed 2026-11-22; RQ23 open)
+## 11. Owner questions (all answered or closed, 2026-11-22)
 | ID | Question | Answer |
 |---|---|---|
 | RQ1 | Stage and branch | `feat/v1.3` from `main` |
@@ -488,10 +532,11 @@ Named tests (besides §7): `effects_follow_matrix`, `gate_items_never_grouped_or
 | RQ20 | Who assesses | only a diffpilot Codex job (read-only), on entering Comments and on new comments |
 | RQ21 | Table view | separate page, `check-pr-comments` §4 columns, per-row select (default = recommendation) and reason/target, one submit; gate rows need their own choice |
 | RQ22 | Data retention | as RQ14 |
-| RQ23 | **Open.** How should a user be notified when no diffpilot tab is open (e.g. mobile push, Home Assistant, e-mail)? | until answered: browser notifications on open tabs; events are stored (T-L10) so a channel can be added later |
+| RQ23 | Notification channel without an open tab | b, extended: browser notification plus per-user ntfy (first-class) and generic webhook in Settings; agent tokens may register an ntfy or webhook push target; bounded retries; failures visible in Settings (§5.5) |
 
 ## 12. Assumptions to confirm
 **[A]** review-body split ordinals stay stable across passes; **[A]** ≤ 10 items per job fits the prompt; **[A]** the
 merge question repeats after each round from round 3; **[A]** `lastEditedAt` changes on thepastaclaw's in-place edits;
 **[A]** Q-L reads cost about one point per page; **[A]** Watch constants (20 PRs, 5-minute probe, 90-minute bot-round
-wait, 10-minute spacing) to be checked against S13-2 and the owner's usage.
+wait, 10-minute spacing) to be checked against S13-2 and the owner's usage; **[A]** notification constants (3 attempts,
+10 s timeout, 30 messages per hour per channel, 30-day delivery log).

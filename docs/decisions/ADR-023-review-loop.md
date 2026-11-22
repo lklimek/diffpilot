@@ -1,8 +1,7 @@
 # ADR-023: Processing PR comments — PR page, Comments view, Codex assessment, Watch, decision feed for external agents
 
-- Status: proposed (2026-11-22). Owner model and answers RQ1–RQ22 of 2026-11-22 recorded in
-  `docs/review-workflow-plan.md` (§0, §11); RQ23 (notification channel without an open tab) open. Design in HTML
-  first; no implementation before the owner's review.
+- Status: proposed (2026-11-22). Owner model and answers RQ1–RQ23 of 2026-11-22 recorded in
+  `docs/review-workflow-plan.md` (§0, §11). Design in HTML first; no implementation before the owner's review.
 - Extends ADR-018 (new `JobTarget`), ADR-019 (one write scope for tokens), ADR-020 (the token pair is also kept while
   the user watches PRs), ADR-022 (second plug-in; plug-ins also poll while watches exist) and, in phase 3, ADR-005
   (a server-only write installation token).
@@ -56,9 +55,13 @@ read with tokens (ADR-019).
 10. **thepastaclaw status plug-in** (RQ16): a second ADR-022 plug-in reading the review system's `status.json`;
     statements "reviewing (phase, progress)" or "queued (reason)", attributed, no Ready to merge opinion. Plug-ins also
     poll while any user watches a PR (ADR-022 amendment).
-11. **Notifications** are per-user events (questions ready, round executed) delivered to open tabs as browser
-    notifications under the existing setting (RQ18); a channel for users without an open tab is a later consumer of
-    the same events (RQ23 open).
+11. **Notifications** (RQ18, RQ23): per-user events (questions ready on a watched PR, a round's decisions all
+    executed) go to open tabs as browser notifications and to push channels the user configures in Settings: ntfy
+    (first-class: server URL, topic, optional token) and a generic webhook (short text and a PR link). An agent's
+    `review_loop:execute` token may register its own ntfy or webhook push target, woken by claimable decisions with
+    IDs and a fetch link only. Channel tokens are server-side secrets (AES-GCM, masked, never in a `JobSpec`).
+    Delivery: 10 s timeout, 3 attempts, failure state shown in Settings and logged once per state change; `http`/`https`
+    only, no redirects, private addresses allowed unless the operator denies them (LAN targets such as Home Assistant).
 12. **Phase 3: diffpilot[bot] posts** (RQ2): replies, PR-level comments, resolves and dismissals of stored decisions are
     posted by the server as the diffpilot GitHub App, with a footer naming diffpilot and the maintainer's decision. The
     App gains `pull_requests: write`; the write installation token is minted per effect for the PR repository only,
@@ -75,6 +78,8 @@ read with tokens (ADR-019).
 | The coordinator uploads its own verifications | owner model: one assessment source, diffpilot's Codex; external agents only execute (RQ20) |
 | Track every PR the user touches | owner model: on demand, plus an explicit per-user Watch for PRs being worked on |
 | GitHub webhooks for watched PRs | a public inbound endpoint and App webhook configuration; the probe with plug-in signals is enough at this scale |
+| E-mail or Web Push as the push channel | needs SMTP or VAPID keys and a service worker; the owner already uses ntfy, and a webhook covers Home Assistant |
+| Strict SSRF filter (deny private addresses always) | the targets the owner uses live on the LAN; hosts are configured by the user or the operator; denial stays an operator switch |
 | Full read of every watched PR per interval | costs a threads/reviews/comments read per PR; the batched probe reads three counters and two ids |
 | diffpilot jobs fix code, push, reply | the runner is read-only with no code execution (brief §2, T3); a prompt-injected PR would gain write access |
 | Ask (private session) for owner questions | needs an analysis; Comments must work without one |

@@ -62,6 +62,7 @@ nav.app a[aria-current]{background:var(--accent-bg);font-weight:600}
 .chip.reask{border-color:var(--med-bd);background:var(--med-bg);color:var(--med);font-weight:600}
 .chip.auto{border-color:var(--low-bd);background:var(--low-bg);color:var(--low);font-weight:600}
 .chip.botpost{border-color:var(--bot);background:var(--bot-bg);color:var(--bot);font-weight:600}
+.chip.fail{border-color:var(--high-bd);background:var(--high-bg);color:var(--high);font-weight:600}
 .tag{font-size:11px;font-weight:700;border-radius:4px;padding:0 5px;vertical-align:1px;text-transform:none;letter-spacing:0}
 .tag.llm{background:var(--llm-bg);color:var(--llm)}.tag.ghub{background:var(--surface-2);color:var(--text);border:1px solid var(--border)}.tag.ext{background:var(--low-bg);color:var(--low)}
 .who{font-size:11px;font-weight:700;border-radius:4px;padding:0 5px;margin-right:5px;white-space:nowrap}
@@ -131,7 +132,8 @@ ol.effects{margin:4px 0 0;padding-left:22px}ol.effects li{margin:3px 0}
   <button type="button" data-state="watching">Watched PRs</button>
   <button type="button" data-state="prpage">PR page</button>
   <button type="button" data-state="prauto">PR page, watched (auto-assessed)</button>
-  <button type="button" data-state="menu">Review menu: Comments</button></div>
+  <button type="button" data-state="menu">Review menu: Comments</button>
+  <button type="button" data-state="settings">Settings: Notifications</button></div>
  <div class="grp"><b>Questions:</b>
   <button type="button" data-state="question" aria-pressed="true">Question with context</button>
   <button type="button" data-state="gate">Gate item: accept despite the gate</button>
@@ -173,7 +175,7 @@ ol.effects{margin:4px 0 0;padding-left:22px}ol.effects li{margin:3px 0}
 </header>
 
 <div class="shell">
-<nav class="app" aria-label="Main"><a href="#" data-go="mywork" id="nav-mywork">My work</a><a href="#" data-go="watching" id="nav-watch">Watched PRs <span class="count" title="3 watched pull requests">3</span></a><a href="#">Review a PR</a><a href="#">Settings</a></nav>
+<nav class="app" aria-label="Main"><a href="#" data-go="mywork" id="nav-mywork">My work</a><a href="#" data-go="watching" id="nav-watch">Watched PRs <span class="count" title="3 watched pull requests">3</span></a><a href="#">Review a PR</a><a href="#" data-go="settings" id="nav-settings">Settings</a></nav>
 <main class="page" id="main">
 
 <!-- ================= MY WORK ================= -->
@@ -206,6 +208,35 @@ ol.effects{margin:4px 0 0;padding-left:22px}ol.effects li{margin:3px 0}
   <tr><td>acme/node-client #470</td><td>Nov 20 14:10</td><td>10:55</td><td>Nov 21 18:02 &middot; 2 questions</td><td>all decided &middot; 1 effect pending</td><td><button class="btn sm" type="button">Unwatch</button></td></tr>
   <tr><td class="muted">acme/node-client #455</td><td class="muted">Nov 18</td><td class="muted">&mdash;</td><td class="muted">&mdash;</td><td class="muted">merged Nov 21; watching ended</td><td></td></tr>
  </tbody></table>
+</section>
+
+<!-- ================= SETTINGS: NOTIFICATIONS ================= -->
+<section data-screen="settings" hidden aria-labelledby="st-h">
+ <h1 id="st-h">Settings <span class="muted" style="font-weight:400">&rsaquo; Notifications</span></h1>
+ <p class="note">Where diffpilot tells you that questions are ready on a watched PR, or that agents executed every decision of a round. Messages carry a short text and a link to the PR, never comment text.</p>
+ <div class="stack">
+  <article class="card" aria-labelledby="nb-h"><h2 id="nb-h">Browser</h2>
+   <label class="opt"><input type="checkbox" checked> <span>Notify me in this browser <span class="muted small">&mdash; only while a diffpilot tab is open</span></span></label></article>
+  <article class="card" aria-labelledby="nn-h"><div class="row"><h2 id="nn-h" style="margin:0">ntfy</h2><span class="sp"></span><label class="opt"><input type="checkbox" checked> <span>On</span></label></div>
+   <div class="grid2"><div><label class="f" for="ntfy-url">Server URL</label><input id="ntfy-url" type="text" value="https://ntfy.example.lan"></div>
+    <div><label class="f" for="ntfy-topic">Topic</label><input id="ntfy-topic" type="text" value="diffpilot-alice"></div></div>
+   <label class="f" for="ntfy-tok">Access token (optional)</label>
+   <div class="row"><input id="ntfy-tok" type="text" value="&bull;&bull;&bull;&bull; 9f2a" readonly aria-describedby="ntfy-tok-d" style="max-width:220px"><button class="btn sm" type="button">Replace</button><button class="btn sm" type="button">Remove</button></div>
+   <p id="ntfy-tok-d" class="note" style="margin-top:4px">Stored encrypted on the server; only the last 4 characters are shown.</p>
+   <fieldset><legend>Send</legend><label class="opt"><input type="checkbox" checked> <span>Questions ready on a watched PR</span></label><label class="opt"><input type="checkbox" checked> <span>All decisions of a round executed</span></label></fieldset>
+   <div class="row"><button class="btn" type="button" data-test="ntfy">Send test</button><span class="small" role="status" data-status="ntfy"><span class="chip fact">Delivered</span> last delivery 10:52 &middot; "acme/node-client #482: 5 questions ready"</span></div>
+  </article>
+  <article class="card" aria-labelledby="nw-h"><div class="row"><h2 id="nw-h" style="margin:0">Webhook <span class="muted small" style="font-weight:400">e.g. Home Assistant</span></h2><span class="sp"></span><label class="opt"><input type="checkbox" checked> <span>On</span></label></div>
+   <label class="f" for="wh-url">URL</label><input id="wh-url" type="text" value="http://ha.example.lan:8123/api/webhook/diffpilot-questions">
+   <label class="f" for="wh-auth">Authorization header (optional)</label><input id="wh-auth" type="text" placeholder="not set" style="max-width:320px">
+   <fieldset><legend>Send</legend><label class="opt"><input type="checkbox" checked> <span>Questions ready on a watched PR</span></label><label class="opt"><input type="checkbox"> <span>All decisions of a round executed</span></label></fieldset>
+   <div class="row"><button class="btn" type="button" data-test="webhook">Send test</button><span class="small" role="status" data-status="webhook"><span class="chip fail">Failing since 11:02</span> connection refused (3 attempts) &middot; last success Nov 21 18:02</span></div>
+   <details style="margin-top:8px"><summary class="small">What is sent</summary><pre class="code" style="padding:6px 10px">POST, JSON:
+{"v": 1, "event": "questions_ready", "text": "acme/node-client #482: 5 questions ready",
+ "url": "https://diffpilot.example.lan/pr/acme/node-client/482/comments", "pr": "acme/node-client#482", "at": "2026-11-22T10:52:00Z"}</pre></details>
+  </article>
+  <p class="note">Only http and https addresses. Redirects are not followed. Each attempt waits up to 10 seconds; 3 attempts, then the channel shows as failing here.</p>
+ </div>
 </section>
 
 <!-- ================= PR PAGE ================= -->
@@ -472,9 +503,11 @@ ol.effects{margin:4px 0 0;padding-left:22px}ol.effects li{margin:3px 0}
  <!-- LOG AND AGENTS -->
  <div data-panel="log" hidden>
   <div class="card" style="margin-bottom:12px"><h3 style="margin-top:0">Decision feed</h3>
-   <table class="small"><thead><tr><th scope="col">Agent (token name)</th><th scope="col">Capabilities</th><th scope="col">Connected</th><th scope="col">Claims now</th><th scope="col">Last seen</th></tr></thead><tbody>
-    <tr><td>build-host-2</td><td>fix, reply, resolve, follow-up PR, upstream issue</td><td>event stream</td><td>C22 (lease until 11:21)</td><td>10:51</td></tr>
-    <tr><td>laptop-cli</td><td>reply, resolve, dismiss review</td><td>polling</td><td>&mdash;</td><td>10:40</td></tr></tbody></table>
+   <table class="small"><thead><tr><th scope="col">Agent (token name)</th><th scope="col">Capabilities</th><th scope="col">Connected</th><th scope="col">Claims now</th><th scope="col">Last seen</th><th scope="col">Push target</th></tr></thead><tbody>
+    <tr><td>build-host-2</td><td>fix, reply, resolve, follow-up PR, upstream issue</td><td>event stream</td><td>C22 (lease until 11:21)</td><td>10:51</td><td class="muted">none (connected; not pushed)</td></tr>
+    <tr><td>laptop-cli</td><td>reply, resolve, dismiss review</td><td>polling</td><td>&mdash;</td><td>10:40</td><td>ntfy &middot; ntfy.example.lan/agent-laptop &middot; <span class="chip fact">delivered 10:39</span></td></tr>
+    <tr><td>ci-runner</td><td>fix, reply, resolve</td><td>not connected</td><td>&mdash;</td><td>09:58</td><td>webhook &middot; ci.example.lan/hooks/diffpilot &middot; <span class="chip fail">failing since 10:20: HTTP 502 (3 attempts)</span></td></tr></tbody></table>
+   <p class="small" style="margin:6px 0 0">Each agent sets its own push target with its access token. A push says only "decision C23 on acme/node-client #482 can be claimed" with a link to fetch it through the API; no reply text, reasons or tokens. Agents with a live event stream are not pushed.</p>
    <p class="small" style="margin:6px 0 0">Open effects: 3 &middot; failed: 1 (C17 reply: "GitHub answered 403; retrying needs write access") &middot; no agent can take TODO effects right now.</p></div>
   <ol class="stack small" style="list-style:none;padding:0;margin:0">
    <li class="card"><strong>Nov 22 10:56 &middot; C22 &middot; Fix here</strong> by alice &middot; via table &middot; recommendation then: Fix here <span class="tag llm">LLM</span><br>
@@ -513,7 +546,7 @@ const ITEMS={
   rec:'fix',recReason:''}};
 const OPTS=[['fix','Fix here'],['reject','Reject (reason required)'],['handled','Handled in another PR'],['followup','Follow-up PR'],['upstream','Upstream issue'],['todo','TODO'],['resolve','Resolve (already fixed)']];
 let S='question',cur='C11',phase3=false;
-const SCREEN={mywork:'mywork',watching:'watching',prpage:'prpage',prauto:'prpage'};
+const SCREEN={mywork:'mywork',watching:'watching',settings:'settings',prpage:'prpage',prauto:'prpage'};
 const TAB={table:'table',rounds:'rounds',carry:'carry',carryall:'carry',log:'log'};
 const CARD={question:'form',gate:'form',phase3:'form',error:'form',reask:'reask',group:'group',rest:'rest',merge:'merge',dismiss:'dismiss',running:'running',empty:'empty'};
 function loadItem(id){cur=id;const it=ITEMS[id];$('#q-pos').textContent=it.pos;$('#q-src').textContent=it.src;$('#q-h').textContent=it.title;$('#q-chips').innerHTML=it.chips;
@@ -550,8 +583,8 @@ function tab(t){$$('[role=tab]').forEach(b=>b.setAttribute('aria-selected',Strin
 function carryScope(all){$('#sc-pr').setAttribute('aria-pressed',String(!all));$('#sc-all').setAttribute('aria-pressed',String(all));$('#carry-pr').hidden=all;$('#carry-all').hidden=!all;$('#carry-h').textContent=all?'Carry-overs on all pull requests':'Carry-overs on #482';}
 function state(s){S=s;phase3=s==='phase3';$$('.states button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.state===s)));
  const scr=SCREEN[s]||'comments';$$('[data-screen]').forEach(x=>x.hidden=x.dataset.screen!==scr);
- const shell=scr==='mywork'||scr==='watching';$('#crumb-review').hidden=shell;$('#crumb-title').style.visibility=shell?'hidden':'visible';
- $('#nav-mywork').toggleAttribute('aria-current',scr==='mywork');$('#nav-watch').toggleAttribute('aria-current',scr==='watching');
+ const shell=scr==='mywork'||scr==='watching'||scr==='settings';$('#crumb-review').hidden=shell;$('#crumb-title').style.visibility=shell?'hidden':'visible';
+ $('#nav-mywork').toggleAttribute('aria-current',scr==='mywork');$('#nav-watch').toggleAttribute('aria-current',scr==='watching');$('#nav-settings').toggleAttribute('aria-current',scr==='settings');
  $('#viewname').textContent=scr==='prpage'?'PR page':'Comments';
  const open=s==='menu';$('#viewmenu').hidden=!open;$('#viewbtn').setAttribute('aria-expanded',String(open));
  $('#pp-auto').hidden=s!=='prauto';const pw=$('#pp-watch');setWatch(pw,s==='prauto');
@@ -593,6 +626,8 @@ $('#tsubmit').onclick=()=>toast('Decisions recorded, one per row.');
 document.addEventListener('keydown',e=>{if(/INPUT|TEXTAREA|SELECT/.test(e.target.tagName))return;const card=$('[data-card=form]');if(!card||card.hidden||card.closest('[hidden]'))return;
  const n=+e.key,opts=$$('input[name=d]');if(n>=1&&n<=opts.length){opts[n-1].checked=true;upd();opts[n-1].focus();}
  if(e.key==='q'){e.preventDefault();$('#askbtn').click();}});
+$$('[data-test]').forEach(b=>b.onclick=()=>{const k=b.dataset.test,s=$('[data-status='+k+']');s.textContent='Sending test…';
+ setTimeout(()=>{s.innerHTML=k==='ntfy'?'<span class="chip fact">Delivered</span> test 10:58 · HTTP 200':'<span class="chip fail">Failed</span> test 10:58 · connection refused (ha.example.lan:8123); one attempt, no retry';},700);});
 state('question');
 </script>
 </body>
