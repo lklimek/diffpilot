@@ -1,7 +1,9 @@
 # ADR-023: Processing PR comments — PR page, Comments view, Codex assessment, Watch, decision feed for external agents
 
-- Status: proposed (2026-11-22). Owner model and answers RQ1–RQ23 of 2026-11-22 recorded in
-  `docs/review-workflow-plan.md` (§0, §11). Design in HTML first; no implementation before the owner's review.
+- Status: accepted (2026-11-22; the owner reviewed the mockup and started development). Owner model and answers
+  RQ1–RQ23 of 2026-11-22 recorded in `docs/review-workflow-plan.md` (§0, §11). Spikes: `docs/spikes/S13-1-*`,
+  `S13-2-*`. Contract names: `api::review_loop` and `db::repo::review_loop` (`api::comments` and
+  `repo::comments` hold the ADR-006 pending review).
 - Extends ADR-018 (new `JobTarget`), ADR-019 (one write scope for tokens), ADR-020 (the token pair is also kept while
   the user watches PRs), ADR-022 (second plug-in; plug-ins also poll while watches exist) and, in phase 3, ADR-005
   (a server-only write installation token).

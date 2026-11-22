@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "UserEvent",
+  "description": "A per-user event (RW3 SSE data, push channels).",
+  "type": "object",
+  "properties": {
+    "id": {
+      "description": "Id.",
+      "$ref": "#/$defs/UserEventId"
+    },
+    "kind": {
+      "description": "Kind.",
+      "$ref": "#/$defs/UserEventKind"
+    },
+    "pr": {
+      "description": "Pull request; null for `test`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PrRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "count": {
+      "description": "Questions (questions_ready) or decisions (round_executed).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "text": {
+      "description": "Plain text, e.g. \"acme/node-client #482: 5 questions ready\".",
+      "type": "string"
+    },
+    "url": {
+      "description": "The PR's Comments page.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "at": {
+      "description": "When.",
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "id",
+    "kind",
+    "count",
+    "text",
+    "at"
+  ],
+  "$defs": {
+    "UserEventId": {
+      "description": "Identifier of a per-user event (questions ready, round executed, test).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "UserEventKind": {
+      "description": "Kind of a per-user event; also what a channel subscribes to.",
+      "oneOf": [
+        {
+          "description": "A pass added questions on a watched PR.",
+          "type": "string",
+          "const": "questions_ready"
+        },
+        {
+          "description": "Agents reported every decision of a round executed.",
+          "type": "string",
+          "const": "round_executed"
+        },
+        {
+          "description": "A channel test.",
+          "type": "string",
+          "const": "test"
+        }
+      ]
+    },
+    "PrRef": {
+      "description": "A pull request of a repository.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "The repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "The pull request number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "repo",
+        "number"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    }
+  }
+}

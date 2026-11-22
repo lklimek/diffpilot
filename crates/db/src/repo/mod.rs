@@ -27,6 +27,7 @@ pub mod llm_credentials;
 pub mod pull_requests;
 pub mod questions;
 pub mod repos;
+pub mod review_loop;
 pub mod review_state;
 pub mod sessions;
 pub mod settings;
@@ -92,7 +93,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The schema migrations in order, as `(version, description, SQL)`: the initial schema, then additive
 /// changes that upgrade an existing database in place.
-const MIGRATIONS: [(i64, &str, &str); 16] = [
+const MIGRATIONS: [(i64, &str, &str); 17] = [
     (1, "init", include_str!("../../migrations/0001_init.sql")),
     (
         2,
@@ -168,6 +169,11 @@ const MIGRATIONS: [(i64, &str, &str); 16] = [
         16,
         "unbound_seed_logins",
         include_str!("../../migrations/0016_unbound_seed_logins.sql"),
+    ),
+    (
+        17,
+        "review_loop",
+        include_str!("../../migrations/0017_review_loop.sql"),
     ),
 ];
 

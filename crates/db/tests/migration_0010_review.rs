@@ -245,6 +245,43 @@ async fn migration_0010_on_a_seeded_v9_database() {
             .map(|(_, rows)| rows.len()),
         Some(0)
     );
+    // 0017 adds the review-loop tables (with their indexes and trigger), all empty: left out of this check.
+    const ADDED_0017: [&str; 13] = [
+        "comment_prs",
+        "comment_items",
+        "comment_assessments",
+        "comment_passes",
+        "comment_decisions",
+        "comment_effects",
+        "comment_effect_reports",
+        "comment_carry_events",
+        "agent_subscriptions",
+        "pr_watches",
+        "user_events",
+        "notification_channels",
+        "notification_deliveries",
+    ];
+    let added_0017 = |entry: &String| {
+        entry
+            .split('|')
+            .nth(2)
+            .is_some_and(|table| ADDED_0017.contains(&table))
+    };
+    for table in ADDED_0017 {
+        let rows = rows_after
+            .iter()
+            .find(|(t, _)| t == table)
+            .map(|(_, rows)| rows.len());
+        assert_eq!(rows, Some(0), "{table}");
+    }
+    let schema_after: Vec<_> = schema_after
+        .into_iter()
+        .filter(|entry| !added_0017(entry))
+        .collect();
+    let rows_after: Vec<_> = rows_after
+        .into_iter()
+        .filter(|(t, _)| !ADDED_0017.contains(&t.as_str()))
+        .collect();
     // 0015 adds `controlled_owners` and `controlled_owners_changed` (with their primary-key indexes) and widens the
     // document kinds in place.
     assert_eq!(schema_after.len(), schema_before.len() + 7);

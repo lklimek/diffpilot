@@ -2,7 +2,7 @@
 
 Source of truth: `crates/db/migrations/` (`0001_init.sql`, then additive migrations that upgrade an existing
 database in place and keep its data: `0002_flow_auto_retries.sql`, `0003_dashboard.sql`, `0004_access_tokens.sql`, `0005_ranking_attempt.sql`, `0006_ask_effort.sql`, `0007_jobs_targets.sql`, `0008_ranking_sent.sql`, `0009_known_bots.sql`,
-`0010_language_ru.sql`, `0011_hidden_mentions.sql`). An applied migration file is never edited
+`0010_language_ru.sql`, `0011_hidden_mentions.sql`, …, `0017_review_loop.sql`). An applied migration file is never edited
 (sqlx compares its checksum at start). A server binary older than the database (an applied migration it does not
 know) refuses to start; going back needs a database copy of that version. SQLite in WAL mode, foreign keys on, `STRICT` tables, timestamps as RFC 3339 UTC text. Only
 `crates/db` uses sqlx; everything else goes through the repository API (`crates/db/src/repo/*.rs`, one module per
@@ -38,6 +38,19 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `dashboard_judgements` | stored LLM judgement per (user, item key in its normative form, `http-api.md` "Item keys"): judged-input fingerprint (SHA-256 hex), input and prompt versions, `body` JSON, refresh (set null when deleted), job id (no foreign key), model, `judged_at`, `last_seen_at` (deleted 90 days after) | PK `(user_id, item_key)` |
 | `dashboard_hidden_mentions` | per-post hides (migration 0011, STRICT), `hidden_at`; independent of refresh history | PK `(tenant_id, user_id, mention_id)`; user cascade |
 | `access_tokens` | personal access tokens (ADR-019): public 8-character `id`, name, SHA-256 `token_hash` (32 bytes, never the token), `scopes` JSON, created/expiry/last-used/revoked times | `token_hash` unique; name unique per user among tokens not revoked; cascade with the user |
+| `comment_prs` | review loop (ADR-023, migration 0017): per pull request the last GitHub read (time, failure, `github_snapshot`), bot `round_count`, `next_item_no` (`C<no>` never reused), the latest pass's `purpose` (LLM) | PK `pull_request_id` (cascade); failure and its time set together |
+| `comment_items` | items (thread, review-body item, PR-comment item, PR-level question): `item_no`, `stable_key` (`dedupe=` marker, thread id, review id + ordinal, `pr:<round>:…`), author and kind, location, title, body, `body_hash` (normalised text, spike S13-1 K1), first head and round, bot severity, `gate_marks` JSON, `github` facts JSON, `state`, `revision` (+1 per change), `outside` JSON, `repeat_of` | `UNIQUE (pull_request_id, item_no)` and `(pull_request_id, stable_key)`; `state = 'outside'` exactly with `outside`; lines need a path |
+| `comment_assessments` | LLM assessments (`CommentAssessment` JSON) per item and pass with `fingerprint`, job id (no foreign key), head, prompt version; the newest is current | index `(item_id, id)` |
+| `comment_passes` | `verify_comments` passes: PR, charged user, cause, head, items, state, job | one `queued`/`running` pass per PR (partial unique index); `finished_at` exactly when ended |
+| `comment_decisions` | decisions, append-only (an `UPDATE` trigger aborts): kind, reason, `target`/`override`/`recommendation` JSON, `resolve_ticked`, reply text, the owner's `comment`, `via`, `carried_from`, `supersedes`, head, the item's `body_hash` and lines at decision time | `via = 'carried'` exactly with `carried_from`; a decision is superseded at most once |
+| `comment_effects` | effects per decision in `seq` order (`after_seq`), kind, executor, `params` JSON, state, claim (`claim_token_id`, `lease_until`), reference, message, `seen_on_github_at` | `UNIQUE (decision_id, seq)`; `claimed` exactly with a claim |
+| `comment_effect_reports` | agent reports per effect: token, outcome, reference, message, idempotency key | `UNIQUE (token_id, idempotency_key)` |
+| `comment_carry_events` | carried decisions and repeats asked again with reason and `evidence` JSON | `asked_again` exactly with a reason |
+| `agent_subscriptions` | feed subscriptions of `review_loop_execute` tokens: capabilities, last seen, optional push target (kind, URL, topic, `push_secret` ciphertext) and its delivery health | PK `token_id` (cascade); push fields only with a kind |
+| `pr_watches` | watched PRs per user: since, last probe values and time, latest automatic pass, `state`, `ended_at` | PK `(user_id, pull_request_id)`; `ended` exactly with `ended_at`; the 20-PR limit is checked by the repository |
+| `user_events` | per-user events (`questions_ready`, `round_executed`, `test`) with count, text, link | `test` exactly without a PR |
+| `notification_channels` | a user's ntfy and webhook channels: URL, topic, `secret` ciphertext, events, on/off, delivery health (last delivery, last error, failing since) | `UNIQUE (user_id, kind)` |
+| `notification_deliveries` | one row per (user event, channel) or (decision, agent token): attempts, state, next attempt, HTTP status, error | exactly one source and its matching target; `pending` exactly with a next attempt; once per pair (partial unique indexes) |
 
 Every table except `tenants`, `users` and installation-wide `llm_selection` has a `NOT NULL tenant_id` (schema test). `CHECK` lists mirror the
 closed contract enums (schema test compares them with the serde names).

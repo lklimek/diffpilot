@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::JobKind;
-use crate::ids::{AnalysisId, CommitSha, JobId, RefreshId};
+use crate::ids::{AnalysisId, CommitSha, JobId, PassId, RefreshId};
 use crate::job::access::AgentAccess;
 
 /// One agent job, self-contained (brief §5 item 1).
@@ -82,6 +82,18 @@ pub struct PullRequestTarget {
     pub pull_request_id: i64,
     /// The repository to check out.
     pub repo: RepoCheckout,
+}
+
+/// What a `verify_comments` job works on (ADR-023, plan §4.2): the head checkout and the read-only PR-scoped token,
+/// no session, no MemCan. Becomes `JobTarget::PullRequestComments` with the job kind (WP13-JOB).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PullRequestCommentsTarget {
+    /// Stable database key of the pull request.
+    pub pull_request_id: i64,
+    /// The repository to check out (head).
+    pub repo: RepoCheckout,
+    /// The assessment pass.
+    pub pass_id: PassId,
 }
 
 /// Where the runner fetches the repository from.

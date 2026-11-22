@@ -1,0 +1,383 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CarryOverPage",
+  "description": "Response of RC11: events newest first, counts per PR and in total.",
+  "type": "object",
+  "properties": {
+    "totals": {
+      "description": "Totals over the scope.",
+      "$ref": "#/$defs/CarryCounts"
+    },
+    "per_pr": {
+      "description": "Per pull request (all-PR scope; one row for a PR scope).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PrCarryCounts"
+      }
+    },
+    "events": {
+      "description": "Events, newest first.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CarryEvent"
+      }
+    },
+    "next_cursor": {
+      "description": "Cursor of the next page.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "totals",
+    "per_pr",
+    "events"
+  ],
+  "$defs": {
+    "CarryCounts": {
+      "description": "Carry-over counts.",
+      "type": "object",
+      "properties": {
+        "carried": {
+          "description": "Carried.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "asked_again_bot_edited": {
+          "description": "Asked again: bot edited.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "asked_again_code_changed": {
+          "description": "Asked again: code changed.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "effects_pending": {
+          "description": "Carried decisions whose effects are pending.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "carried",
+        "asked_again_bot_edited",
+        "asked_again_code_changed",
+        "effects_pending"
+      ]
+    },
+    "PrCarryCounts": {
+      "description": "Counts of one pull request.",
+      "type": "object",
+      "properties": {
+        "pr": {
+          "description": "Pull request.",
+          "$ref": "#/$defs/PrRef"
+        },
+        "counts": {
+          "description": "Counts.",
+          "$ref": "#/$defs/CarryCounts"
+        }
+      },
+      "required": [
+        "pr",
+        "counts"
+      ]
+    },
+    "PrRef": {
+      "description": "A pull request of a repository.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "The repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "The pull request number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "repo",
+        "number"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "CarryEvent": {
+      "description": "A carry-over event (V5).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Id.",
+          "$ref": "#/$defs/CarryEventId"
+        },
+        "pr": {
+          "description": "Pull request.",
+          "$ref": "#/$defs/PrRef"
+        },
+        "item_no": {
+          "description": "The repeat, `C<no>`; may equal the source item when the bot re-raised it in place (spike S13-1 E2).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "source_item_no": {
+          "description": "The item of the source decision, `C<no>`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "source_decision": {
+          "description": "The decision carried or re-asked.",
+          "$ref": "#/$defs/DecisionId"
+        },
+        "source_kind": {
+          "description": "Its kind.",
+          "$ref": "#/$defs/DecisionKind"
+        },
+        "kind": {
+          "description": "Kind.",
+          "$ref": "#/$defs/CarryKind"
+        },
+        "reason": {
+          "description": "Why asked again.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReaskReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "description": "Evidence.",
+          "$ref": "#/$defs/CarryEvidence"
+        },
+        "effects_pending": {
+          "description": "Effects of the carried decision not yet done.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "at": {
+          "description": "When.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "pr",
+        "item_no",
+        "source_item_no",
+        "source_decision",
+        "source_kind",
+        "kind",
+        "evidence",
+        "effects_pending",
+        "at"
+      ]
+    },
+    "CarryEventId": {
+      "description": "Identifier of a carry-over event (a decision carried to a repeat, or a repeat asked again).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "DecisionId": {
+      "description": "Identifier of a decision on a review-loop item (append-only).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "DecisionKind": {
+      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+      "oneOf": [
+        {
+          "description": "D1: resolve, already fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "D2: fix in this pull request.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "D3: reject (with a reason); D8 with a `blocker_gate` override.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "D4: handled in an existing pull request.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "D5: create a follow-up pull request.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "D6: upstream issue (link or create).",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "D7: TODO, out of scope for this pull request.",
+          "type": "string",
+          "const": "todo"
+        },
+        {
+          "description": "P1: merge now, remaining items become follow-ups.",
+          "type": "string",
+          "const": "merge_with_follow_ups"
+        },
+        {
+          "description": "P2: another round.",
+          "type": "string",
+          "const": "another_round"
+        },
+        {
+          "description": "P3: dismiss the listed stale bot reviews.",
+          "type": "string",
+          "const": "dismiss_stale_reviews"
+        },
+        {
+          "description": "P4: keep the reviews.",
+          "type": "string",
+          "const": "keep_reviews"
+        }
+      ]
+    },
+    "CarryKind": {
+      "description": "Carry-over event kind.",
+      "oneOf": [
+        {
+          "description": "The earlier decision was carried without a question.",
+          "type": "string",
+          "const": "carried"
+        },
+        {
+          "description": "The repeat was asked again.",
+          "type": "string",
+          "const": "asked_again"
+        }
+      ]
+    },
+    "ReaskReason": {
+      "description": "Why a repeat was asked again (RQ3). Open enum.",
+      "oneOf": [
+        {
+          "description": "The bot edited the finding text after the decision.",
+          "type": "string",
+          "const": "bot_edited"
+        },
+        {
+          "description": "A commit after the decision's head changed the code at the thread's lines.",
+          "type": "string",
+          "const": "code_changed"
+        }
+      ]
+    },
+    "CarryEvidence": {
+      "description": "Evidence of a carry-over event, read by the server.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "description": "GitHub link of the repeat.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body_hash_before": {
+          "description": "Normalised text hash at decision time (hex).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body_hash_after": {
+          "description": "Normalised text hash now (hex).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "description": "The commit that changed the lines.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitSha"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lines": {
+          "description": "The decided lines mapped forward to the head.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "CommitSha": {
+      "description": "A full 40-character hexadecimal git commit id.",
+      "type": "string"
+    },
+    "LineRange": {
+      "description": "Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.",
+      "type": "object",
+      "properties": {
+        "start_line": {
+          "description": "First line, 1-based.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_line": {
+          "description": "Last line, inclusive.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start_line",
+        "end_line"
+      ]
+    }
+  }
+}

@@ -83,3 +83,16 @@ refresh's own user may open it; another user's refresh id answers `not_found` (t
 - Reconnect = current status, then live events. Updates of a refresh are written before they are published, under
   one per-user task (the v1 invariant above). The stream stays open after the refresh ended until the client
   closes it. No provider activity, no item text and no secrets are sent.
+
+## Review-loop events (v1.3)
+
+Plan `docs/review-workflow-plan.md` §2.8, §5 (ADR-023). Types in `crates/contracts/src/api/review_loop.rs`.
+
+- `GET /api/v1/events` (RW3, `read`): the reader's own `UserEvent`s (`questions_ready`, `round_executed`, `test`) as
+  they are stored; the browser shows them as notifications when its per-browser toggle is on. Heartbeats and token
+  re-checks as for dashboard streams.
+- `GET /api/v1/decision-feed/events` (RF2, `read`, query `FeedQuery`): `FeedEvent` tagged by `event`:
+  `decision_available {decision, pr, fetch}` when a decision within the subscriber's capabilities becomes
+  claimable, `decision_cancelled {decision, pr}` when it leaves the feed (superseded or claimed by another agent),
+  `heartbeat {at}`. Opening the stream records the token's subscription and capabilities; no comment text, reply
+  text or secret is sent (fetch the decision with RF1b).

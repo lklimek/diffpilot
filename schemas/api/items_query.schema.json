@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ItemsQuery",
+  "description": "Query of RC4.",
+  "type": "object",
+  "properties": {
+    "state": {
+      "description": "Only items in this state.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ItemState"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "kind": {
+      "description": "Only items of this kind.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommentItemKind"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "ItemState": {
+      "description": "Item state (plan §2.7). Open enum.",
+      "oneOf": [
+        {
+          "description": "The LLM assessment is running.",
+          "type": "string",
+          "const": "assessing"
+        },
+        {
+          "description": "Waiting for the owner's decision.",
+          "type": "string",
+          "const": "undecided"
+        },
+        {
+          "description": "The owner asked about it in the Ask chat; the answer is pending or unread.",
+          "type": "string",
+          "const": "asked_back"
+        },
+        {
+          "description": "Decided; no effect left for an executor.",
+          "type": "string",
+          "const": "decided"
+        },
+        {
+          "description": "Decided; effects are open or claimed.",
+          "type": "string",
+          "const": "executing"
+        },
+        {
+          "description": "Every effect reported done.",
+          "type": "string",
+          "const": "done"
+        },
+        {
+          "description": "A repeat that carried an earlier decision without a question.",
+          "type": "string",
+          "const": "repeat"
+        },
+        {
+          "description": "A repeat asked again (bot edit or code change) or reopened by the owner.",
+          "type": "string",
+          "const": "reopened"
+        },
+        {
+          "description": "Resolved on GitHub outside diffpilot; out of the queue, nothing recorded.",
+          "type": "string",
+          "const": "outside"
+        }
+      ]
+    },
+    "CommentItemKind": {
+      "description": "Where an item comes from (plan §2.1 I1–I4). Open enum.",
+      "oneOf": [
+        {
+          "description": "I1: a review thread.",
+          "type": "string",
+          "const": "thread"
+        },
+        {
+          "description": "I2: an item of a review body (no thread).",
+          "type": "string",
+          "const": "review_body"
+        },
+        {
+          "description": "I3: an item of a human PR-level comment.",
+          "type": "string",
+          "const": "pr_comment"
+        },
+        {
+          "description": "I4: a PR-level question built by the server from rounds (merge now, dismiss stale reviews).",
+          "type": "string",
+          "const": "pr_question"
+        }
+      ]
+    }
+  }
+}

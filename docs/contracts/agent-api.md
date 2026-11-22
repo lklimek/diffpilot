@@ -172,3 +172,12 @@ text. A later refresh removes a post after any scanned login comments/reviews th
 `POST /api/v1/dashboard/mentions/{id}/hide`; this action requires a browser session and CSRF.
 
 Hiding changes the dashboard revision: in-progress item cursors expire (409); reload from the first page.
+
+## 7. Review loop (v1.3)
+
+Read routes RC1, RC2, RC4, RC5, RC10, RC11, RW2, RW3, RF1, RF1b and RF2 (`http-api.md` "Review loop (v1.3)") are
+`read`; their schemas: `pr_page`, `comments_overview`, `comment_item_list` (query `items_query`), `code_context`
+(query `context_query`), `comment_log`, `carry_over_page` (query `carry_over_query`), `watch_list`, `user_event`,
+`decision_feed` (query `feed_query`), `feed_decision`, `feed_event`. An implementing agent's token also needs the
+scope `review_loop_execute` to claim decisions (RF3), report effects (RF4) and register its push target (RF5); no
+token can decide. The step-by-step feed guide follows with the feed (plan §9.2 WP13-DOCS).

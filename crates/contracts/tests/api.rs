@@ -278,6 +278,12 @@ fn error_codes_map_to_statuses() {
         ("token_limit_reached", 409),
         ("rate_limited", 429),
         ("github_refused", 422),
+        ("item_changed", 409),
+        ("claimed", 409),
+        ("lease_expired", 409),
+        ("capability_missing", 422),
+        ("watch_limit_reached", 409),
+        ("scheme_not_allowed", 422),
     ];
     assert_eq!(ApiErrorCode::ALL.len(), expected.len());
     for (code, (name, status)) in ApiErrorCode::ALL.into_iter().zip(expected) {
@@ -327,12 +333,13 @@ fn routes_are_unique_and_split_by_listener() {
     }
 }
 
+/// Browser routes: every mutation needs the session's CSRF token. Token-only routes (ADR-023 feed writes) take no
+/// session and are covered by `execute_scope_is_only_on_feed_write_routes`.
 #[test]
 fn mutating_browser_routes_require_csrf() {
-    for route in ROUTES
-        .iter()
-        .filter(|route| route.listener == Listener::Public)
-    {
+    for route in ROUTES.iter().filter(|route| {
+        route.listener == Listener::Public && !matches!(route.auth, RouteAuth::TokenOnly(_))
+    }) {
         let mutating = route.method != HttpMethod::Get;
         assert_eq!(
             mutating,

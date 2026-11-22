@@ -10,6 +10,7 @@ pub mod judge_work;
 pub mod plan;
 pub mod pr_context;
 pub mod strict;
+pub mod verify_comments;
 
 pub use strict::StrictSchemaError;
 

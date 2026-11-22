@@ -15,6 +15,7 @@ pub mod files;
 pub mod pr;
 pub mod questions;
 pub mod review;
+pub mod review_loop;
 pub mod settings;
 pub mod tour;
 pub mod usage;

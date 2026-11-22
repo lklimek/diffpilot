@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FeedEvent",
+  "description": "SSE data of RF2.",
+  "oneOf": [
+    {
+      "description": "A decision within the subscriber's capabilities became claimable.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "string",
+          "const": "decision_available"
+        },
+        "decision": {
+          "description": "Decision.",
+          "$ref": "#/$defs/DecisionId"
+        },
+        "pr": {
+          "description": "Pull request.",
+          "$ref": "#/$defs/PrRef"
+        },
+        "fetch": {
+          "description": "API path to fetch it (RF1b).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "decision",
+        "pr",
+        "fetch"
+      ]
+    },
+    {
+      "description": "A decision left the feed (superseded or claimed by another agent).",
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "string",
+          "const": "decision_cancelled"
+        },
+        "decision": {
+          "description": "Decision.",
+          "$ref": "#/$defs/DecisionId"
+        },
+        "pr": {
+          "description": "Pull request.",
+          "$ref": "#/$defs/PrRef"
+        }
+      },
+      "required": [
+        "event",
+        "decision",
+        "pr"
+      ]
+    },
+    {
+      "description": "Keeps the stream open.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "string",
+          "const": "heartbeat"
+        },
+        "at": {
+          "description": "Server time.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "event",
+        "at"
+      ]
+    }
+  ],
+  "$defs": {
+    "DecisionId": {
+      "description": "Identifier of a decision on a review-loop item (append-only).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "PrRef": {
+      "description": "A pull request of a repository.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "The repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "The pull request number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "repo",
+        "number"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ContextQuery",
+  "description": "Query of RC5: lines `from..=to` (defaults: the enclosing range, at most 40 lines).",
+  "type": "object",
+  "properties": {
+    "from": {
+      "description": "First line.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    },
+    "to": {
+      "description": "Last line.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    }
+  }
+}

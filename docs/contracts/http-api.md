@@ -781,3 +781,65 @@ without parsing or duplicating scan notes. Older snapshots default to an empty l
 204 (including repeated hides), 404 for an identity outside the user's snapshot/hidden set. A hide changes the
 summary revision and items ETag, persists per user across devices/refreshes, and leaves ranking/judgement alone.
 New posts on the same item have independent identities. Hides are not an update to GitHub.
+
+## Review loop (v1.3)
+
+Plan `docs/review-workflow-plan.md` §6 (ADR-023). Types: `crates/contracts/src/api/review_loop.rs` (the module
+`api::comments` already holds the pending review of ADR-006); agent output `agent/verify_comments.rs`; routes in
+`routes.rs`, generated like every HTTP type. Path parameters: `{owner}/{name}/{number}` is the pull request (as
+`/repos/{owner}/{name}/settings`), `{item}` an item's per-PR number `C<no>`, `{kind}` `ntfy` | `webhook`.
+Fixtures: `fixtures/review-loop/` (spike S13-1).
+
+| ID | Method | Path | Auth | Request | Response |
+|---|---|---|---|---|---|
+| RC1 | GET | `/api/v1/prs/{owner}/{name}/{number}` | read | – | `PrPage` |
+| RC2 | GET | `…/comments` | read | – | `CommentsOverview` |
+| RC3 | POST | `…/comments/read` | session_csrf | – | 202 (429 `rate_limited` under 10 s) |
+| RC4 | GET | `…/comments/items` | read | `ItemsQuery` | `CommentItem[]` |
+| RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
+| RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202 |
+| RC8 | POST | `…/comments/items/{item}/decisions` | session_csrf | `DecideRequest` | 201 `Decision`; 409 `item_changed` |
+| RC9 | POST | `…/comments/decision-batches` | session_csrf | `DecisionBatchRequest` | 201 `Decision[]`; 422 `invalid_request` for a gate row under `bulk`/`group` or an unchosen gate row under `table`; 409 `item_changed` naming the changed items |
+| RC10 | GET | `…/comments/log` | read | – | `CommentLog` |
+| RC11 | GET | `/api/v1/comments/carry-overs` | read | `CarryOverQuery` | `CarryOverPage` |
+| RW1 | PUT / DELETE | `…/watch` | session_csrf | – | 204; 409 `watch_limit_reached` |
+| RW2 | GET | `/api/v1/watches` | read | – | `WatchList` |
+| RW3 | GET | `/api/v1/events` | read | – | SSE `UserEvent` (`sse-events.md`) |
+| RN1 | GET | `/api/v1/settings/notifications` | session | – | `NotificationSettings` (secrets as `secret_last4` only) |
+| RN2 | PUT / DELETE | `/api/v1/settings/notifications/channels/{kind}` | session_csrf | `PutChannelRequest` / – | `NotificationChannel` / 204; 422 `scheme_not_allowed`; an absent `secret` keeps the stored one |
+| RN3 | POST | `…/channels/{kind}/test` | session_csrf | – | `ChannelTestResult` (one attempt) |
+| RF1 | GET | `/api/v1/decision-feed` | read | `FeedQuery` | `DecisionFeed`; `ETag` |
+| RF1b | GET | `/api/v1/decision-feed/decisions/{id}` | read | – | `FeedDecision` (the `fetch` link of `decision_available` and of push messages) |
+| RF2 | GET | `/api/v1/decision-feed/events` | read | `FeedQuery` | SSE `FeedEvent`; registers the subscription |
+| RF3 | POST | `/api/v1/decision-feed/decisions/{id}/claim` | token: review_loop_execute | `ClaimRequest` | 201 `Claim`; 409 `claimed`; 422 `capability_missing` |
+| RF4 | POST | `/api/v1/decision-feed/effects/{id}/reports` | token: review_loop_execute | `EffectReportRequest` | 201; 409 `lease_expired`; a repeated idempotency key is a no-op |
+| RF5 | PUT / DELETE | `/api/v1/decision-feed/push-target` | token: review_loop_execute | `PutPushTargetRequest` / – | `PushTarget` / 204; the calling token's own target only |
+
+### Rules
+- **Who decides (T22).** Decisions, batches, re-reads, re-assessments, watches and channel settings need a session
+  with CSRF; a token gets 403 `token_not_accepted`. `RouteAuth::TokenOnly(TokenScope::ReviewLoopExecute)` (named
+  `token_review_loop_execute` in `routes.ts`) marks RF3–RF5: a personal access token with the scope
+  `review_loop_execute`, never a session, any method (ADR-019 amendment: a token may call a mutating route only when
+  the route names its write scope). These are the only non-`GET` public routes that are not `session_csrf`
+  (contract tests `execute_scope_is_only_on_feed_write_routes`, `mutating_browser_routes_require_csrf`).
+- **Revisions.** Every `CommentItem` carries `revision`; a decision names `item_revision` and gets 409
+  `item_changed` when the item changed meanwhile (a read, an assessment, another user's decision). Decisions are
+  append-only: a new decision supersedes the current one and cancels its effects not yet claimed.
+- **D8** is `reject` with `override: {type: "blocker_gate", gate}`; gate ids are `G-FUNDS`, `G-SECRET`,
+  `G-CRYPTO`, `G-DATA`. The owner's `comment` is stored and sent to the executor, never posted; `reply_text` is
+  what gets posted.
+- **Claims.** A claim covers every open agent effect of a current decision, for 30 minutes, renewed by each report;
+  only decisions whose open effects all fall within the claimer's capabilities can be claimed. A report on another
+  token's claim answers 409 `claimed`; after the lease ended 409 `lease_expired`. `released` returns the decision
+  to the feed.
+- **Secrets (T28).** Channel and push-target secrets are accepted in requests only; responses carry
+  `secret_last4`. The browser notification toggle stays per browser (local storage) and is not part of RN1.
+- **Outbound payloads** (contract types, plan §5.5): webhook `WebhookPayload` `{v, event, text, url, pr, at}`;
+  agent push `AgentPushPayload` `{v, event, decision_id, pr, fetch}`, never reply text, reasons, comment bodies or
+  secrets (contract test `push_payloads_have_a_fixed_shape`).
+- **Text.** Comment bodies are GitHub text (untrusted, rendered as plain text, links only to
+  `https://github.com/…`); assessment, purpose and code descriptions are LLM text; bot severity is the bot's claim.
+- **Job contract.** `agent::verify_comments::VerifyCommentsOutput` (Codex strict subset) and
+  `job::spec::PullRequestCommentsTarget` are defined; `JobKind::VerifyComments` and the `JobTarget` variant come
+  with the runner path (WP13-JOB), because they change exhaustive matches in the server, runner and the `jobs`
+  table's CHECK lists.

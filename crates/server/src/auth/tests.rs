@@ -723,10 +723,11 @@ async fn csrf_required_on_mutations() {
     let h = harness().await;
     let signed_in = h.sign_in("lklimek", 1001).await;
     let mut checked = 0;
-    for route in ROUTES
-        .iter()
-        .filter(|route| route.listener == Listener::Public && route.method != HttpMethod::Get)
-    {
+    for route in ROUTES.iter().filter(|route| {
+        route.listener == Listener::Public
+            && route.method != HttpMethod::Get
+            && !matches!(route.auth, RouteAuth::TokenOnly(_))
+    }) {
         assert_eq!(route.auth, RouteAuth::SessionCsrf, "{}", route.path);
         let uri = with_placeholder_ids(route.path);
         for csrf in [None, Some("wrong-token"), Some("")] {

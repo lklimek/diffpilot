@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CodeContext",
+  "description": "Response of RC5.",
+  "type": "object",
+  "properties": {
+    "path": {
+      "description": "Repository-relative path.",
+      "type": "string"
+    },
+    "head": {
+      "description": "Head the lines come from.",
+      "$ref": "#/$defs/CommitSha"
+    },
+    "lines": {
+      "description": "Lines served.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CodeLine"
+      }
+    },
+    "total_lines": {
+      "description": "Lines in the file.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "marked": {
+      "description": "The commented lines.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LineRange"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "code": {
+      "description": "Enclosing range and description (LLM), when assessed.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CodeSummary"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "analysis": {
+      "description": "The analysis the flow steps come from; null without one.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalysisId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "analysis_head": {
+      "description": "Head of that analysis (labelled when older than the PR head).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CommitSha"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "in_flows": {
+      "description": "Flow steps containing the lines.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FlowStepRef"
+      }
+    },
+    "notes": {
+      "description": "Notes elsewhere.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/NoteElsewhere"
+      }
+    }
+  },
+  "required": [
+    "path",
+    "head",
+    "lines",
+    "total_lines",
+    "in_flows",
+    "notes"
+  ],
+  "$defs": {
+    "CommitSha": {
+      "description": "A full 40-character hexadecimal git commit id.",
+      "type": "string"
+    },
+    "CodeLine": {
+      "description": "One line of code.",
+      "type": "object",
+      "properties": {
+        "line": {
+          "description": "1-based line at the head.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "text": {
+          "description": "Text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "line",
+        "text"
+      ]
+    },
+    "LineRange": {
+      "description": "Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.",
+      "type": "object",
+      "properties": {
+        "start_line": {
+          "description": "First line, 1-based.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_line": {
+          "description": "Last line, inclusive.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start_line",
+        "end_line"
+      ]
+    },
+    "CodeSummary": {
+      "description": "The enclosing code of the discussed lines and what it does.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Repository-relative path at the head.",
+          "type": "string"
+        },
+        "enclosing": {
+          "description": "Enclosing range (function or block).",
+          "$ref": "#/$defs/LineRange"
+        },
+        "description": {
+          "description": "One paragraph on what the code does (LLM).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "enclosing",
+        "description"
+      ]
+    },
+    "AnalysisId": {
+      "description": "Identifier of an analysis (one per pull request, head commit and LLM language).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "FlowStepRef": {
+      "description": "A flow step whose range contains the commented lines.",
+      "type": "object",
+      "properties": {
+        "flow": {
+          "description": "Flow.",
+          "$ref": "#/$defs/FlowId"
+        },
+        "flow_title": {
+          "description": "Flow title (LLM).",
+          "type": "string"
+        },
+        "step": {
+          "description": "Step.",
+          "$ref": "#/$defs/StepId"
+        }
+      },
+      "required": [
+        "flow",
+        "flow_title",
+        "step"
+      ]
+    },
+    "FlowId": {
+      "description": "Identifier of a flow, assigned by the `plan` job: `f1`, `f2`, ….",
+      "type": "string",
+      "pattern": "^f[0-9]+$"
+    },
+    "StepId": {
+      "description": "Identifier of a step, assigned by the server in step order: `\"<flow>.<n>\"`, e.g. `f2.3`.",
+      "type": "string"
+    },
+    "NoteElsewhere": {
+      "description": "A note about this code elsewhere (an icon opening its place in a new tab).",
+      "type": "object",
+      "properties": {
+        "source": {
+          "description": "Source.",
+          "$ref": "#/$defs/NoteSource"
+        },
+        "label": {
+          "description": "Accessible name and tooltip.",
+          "type": "string"
+        },
+        "count": {
+          "description": "Count shown on the icon.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "url": {
+          "description": "Where it opens (app route or plug-in home).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "label",
+        "url"
+      ]
+    },
+    "NoteSource": {
+      "description": "A source of notes about code elsewhere in diffpilot. Open enum.",
+      "oneOf": [
+        {
+          "description": "A Flows flag on the lines.",
+          "type": "string",
+          "const": "flows"
+        },
+        {
+          "description": "A Files incidental-change note.",
+          "type": "string",
+          "const": "files"
+        },
+        {
+          "description": "Dependencies (changed callers).",
+          "type": "string",
+          "const": "dependencies"
+        },
+        {
+          "description": "The PR Hygiene plug-in.",
+          "type": "string",
+          "const": "pr_hygiene"
+        },
+        {
+          "description": "The thepastaclaw status plug-in.",
+          "type": "string",
+          "const": "thepastaclaw"
+        }
+      ]
+    }
+  }
+}
