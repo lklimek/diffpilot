@@ -1,0 +1,300 @@
+{
+  "type": "object",
+  "properties": {
+    "purpose": {
+      "type": "string",
+      "description": "The pull request's purpose in one sentence."
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "description": "The assessment of one item at the head.",
+        "type": "object",
+        "properties": {
+          "item": {
+            "description": "The item's id from the prompt, e.g. `C14`.",
+            "type": "string"
+          },
+          "validity": {
+            "description": "Whether the comment is right about the code at the head. `valid`: Valid. `partly_valid`: Partly valid. `invalid`: Invalid.",
+            "type": "string",
+            "enum": [
+              "valid",
+              "partly_valid",
+              "invalid"
+            ]
+          },
+          "evidence": {
+            "description": "Lines read at the head that support the validity.",
+            "type": "array",
+            "items": {
+              "description": "A line read that supports the validity reading.",
+              "type": "object",
+              "properties": {
+                "path": {
+                  "description": "Repository-relative path at the head.",
+                  "type": "string"
+                },
+                "line": {
+                  "description": "1-based line at the head.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "note": {
+                  "description": "What the line shows.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "line",
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "pre_existing": {
+            "description": "The problem exists on the base branch already.",
+            "type": "boolean"
+          },
+          "category": {
+            "description": "Category slug from the catalog in the prompt.",
+            "type": "string"
+          },
+          "necessity": {
+            "description": "Whether the fix belongs in this pull request. `in`: In scope. `out`: Out of scope.",
+            "type": "string",
+            "enum": [
+              "in",
+              "out"
+            ]
+          },
+          "necessity_reason": {
+            "description": "Evidence for `in`, or the reason for `out`.",
+            "type": "string"
+          },
+          "better_pr": {
+            "description": "A better-fitting pull request for `out` (`owner/repo#n`); null otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "gates": {
+            "description": "Blocker gates the comment's problem trips; empty when none.",
+            "type": "array",
+            "items": {
+              "description": "A blocker gate of claudius `severity` §2. Gate items are never grouped or bulk-decided (RQ4, RQ5). Open enum. `G-FUNDS`: Loss or misdirection of funds. `G-SECRET`: Secret exposure. `G-CRYPTO`: Cryptographic weakness. `G-DATA`: Data loss or corruption.",
+              "type": "string",
+              "enum": [
+                "G-FUNDS",
+                "G-SECRET",
+                "G-CRYPTO",
+                "G-DATA"
+              ]
+            }
+          },
+          "elsewhere": {
+            "description": "Open pull requests, issues or upstream work that already handle it.",
+            "type": "array",
+            "items": {
+              "description": "A place where the matter is handled already.",
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "description": "Kind. `open_pr`: An open pull request. `issue`: An issue. `upstream`: An upstream project.",
+                  "type": "string",
+                  "enum": [
+                    "open_pr",
+                    "issue",
+                    "upstream"
+                  ]
+                },
+                "reference": {
+                  "description": "URL or `owner/repo#n`.",
+                  "type": "string"
+                },
+                "note": {
+                  "description": "One line on the overlap.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "reference",
+                "note"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "fix_sketch": {
+            "description": "How a fix would look; null when no fix is recommended.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fix_size": {
+            "description": "Size of that fix; null when no fix is recommended.",
+            "anyOf": [
+              {
+                "description": "Size of a fix. `XS`: Extra small. `S`: Small. `M`: Medium.",
+                "type": "string",
+                "enum": [
+                  "XS",
+                  "S",
+                  "M"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reply_drafts": {
+            "description": "Reply drafts in English that say \"per maintainer decision\".",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "recommendation": {
+            "description": "The recommended decision.",
+            "type": "object",
+            "properties": {
+              "kind": {
+                "description": "Decision. `resolve`: Already fixed: resolve. `fix_here`: Fix in this pull request. `reject`: Reject, with a reason. `handled_in_pr`: Handled in an existing pull request (`target_pr`). `follow_up_pr`: Create a follow-up pull request (optional `title`). `upstream_issue`: Upstream issue (`target_url`, or null to create one). `todo`: Out of scope: TODO (`title`).",
+                "type": "string",
+                "enum": [
+                  "resolve",
+                  "fix_here",
+                  "reject",
+                  "handled_in_pr",
+                  "follow_up_pr",
+                  "upstream_issue",
+                  "todo"
+                ]
+              },
+              "reason": {
+                "description": "Why, in one or two sentences.",
+                "type": "string"
+              },
+              "reason_class": {
+                "description": "A short class of the reason (a few words) shared by items with the same reason.",
+                "type": "string"
+              },
+              "target_pr": {
+                "description": "Existing pull request number for `handled_in_pr`; null otherwise.",
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "target_url": {
+                "description": "Issue URL for `upstream_issue`; null otherwise or to create one.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "description": "Title for `follow_up_pr` or `todo`; null otherwise.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "reason",
+              "reason_class",
+              "target_pr",
+              "target_url",
+              "title"
+            ],
+            "additionalProperties": false
+          },
+          "code": {
+            "description": "The enclosing function or block of the discussed lines and what it does; null without lines.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "path": {
+                "description": "Repository-relative path at the head.",
+                "type": "string"
+              },
+              "enclosing": {
+                "description": "Enclosing range (function or block).",
+                "type": "object",
+                "properties": {
+                  "start_line": {
+                    "description": "First line, 1-based.",
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "end_line": {
+                    "description": "Last line, inclusive.",
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "start_line",
+                  "end_line"
+                ],
+                "additionalProperties": false
+              },
+              "description": {
+                "description": "One paragraph on what the code does (LLM).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "enclosing",
+              "description"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "item",
+          "validity",
+          "evidence",
+          "pre_existing",
+          "category",
+          "necessity",
+          "necessity_reason",
+          "better_pr",
+          "gates",
+          "elsewhere",
+          "fix_sketch",
+          "fix_size",
+          "reply_drafts",
+          "recommendation",
+          "code"
+        ],
+        "additionalProperties": false
+      },
+      "description": "One assessment per item given in the prompt."
+    },
+    "answer": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "The answer to the owner's question in a question pass; null otherwise."
+    }
+  },
+  "required": [
+    "purpose",
+    "items",
+    "answer"
+  ],
+  "description": "One pass over the items of a pull request.",
+  "additionalProperties": false
+}

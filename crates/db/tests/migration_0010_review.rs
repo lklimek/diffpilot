@@ -236,6 +236,53 @@ async fn migration_0010_on_a_seeded_v9_database() {
         analyses_before.replace("('en', 'pl')", "('en', 'pl', 'ru')")
     );
     let (rows_after, schema_after) = snapshot(&old).await;
+    // 0018 rebuilds `jobs` (with `job_events` and `installation_tokens`), `questions` and `comment_passes` (new root
+    // pages, the `pass_id` owner, comment-item questions; the schema tests check them): their schema entries are left
+    // out here and their rows compared without the added columns (`jobs.pass_id`, `questions.pull_request_id` and
+    // `questions.item_id`).
+    const REBUILT_0018: [&str; 5] = [
+        "jobs",
+        "job_events",
+        "installation_tokens",
+        "questions",
+        "comment_passes",
+    ];
+    let rebuilt_0018 = |entry: &String| {
+        entry
+            .split('|')
+            .nth(2)
+            .is_some_and(|table| REBUILT_0018.contains(&table))
+    };
+    let schema_before: Vec<_> = schema_before
+        .into_iter()
+        .filter(|entry| !rebuilt_0018(entry))
+        .collect();
+    let schema_after: Vec<_> = schema_after
+        .into_iter()
+        .filter(|entry| !rebuilt_0018(entry))
+        .collect();
+    let rows_after: Vec<(String, Vec<String>)> = rows_after
+        .into_iter()
+        .map(|(table, rows)| {
+            let added: &[(usize, &str)] = match table.as_str() {
+                "jobs" => &[(4, "NULL")],
+                "questions" => &[(21, "NULL"), (3, "1")],
+                _ => &[],
+            };
+            let rows = rows
+                .into_iter()
+                .map(|row| {
+                    let mut fields: Vec<&str> = row.split('|').collect();
+                    for (index, value) in added {
+                        assert_eq!(fields.get(*index), Some(value), "{table}: {row}");
+                        fields.remove(*index);
+                    }
+                    fields.join("|")
+                })
+                .collect::<Vec<String>>();
+            (table, rows)
+        })
+        .collect();
     // Db::open also applies 0011 (a new empty table and its index) and 0014 (the `questions_by_parent` index): additive
     // to this 0010 preservation check.
     assert_eq!(
@@ -284,7 +331,8 @@ async fn migration_0010_on_a_seeded_v9_database() {
         .collect();
     // 0015 adds `controlled_owners` and `controlled_owners_changed` (with their primary-key indexes) and widens the
     // document kinds in place.
-    assert_eq!(schema_after.len(), schema_before.len() + 7);
+    // (0014's `questions_by_parent` is left out with the tables 0018 rebuilds.)
+    assert_eq!(schema_after.len(), schema_before.len() + 6);
     let added_0015 = |entry: &String| {
         matches!(
             entry.split('|').nth(2),

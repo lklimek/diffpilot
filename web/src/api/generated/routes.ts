@@ -67,6 +67,8 @@ export const routes = {
   decideCommentBatch: { method: "POST", path: "/api/v1/prs/{owner}/{name}/{number}/comments/decision-batches", auth: "session_csrf" },
   getCommentLog: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}/comments/log", auth: "read" },
   listCarryOvers: { method: "GET", path: "/api/v1/comments/carry-overs", auth: "read" },
+  askPrQuestion: { method: "POST", path: "/api/v1/prs/{owner}/{name}/{number}/questions", auth: "session_csrf" },
+  listPrQuestions: { method: "GET", path: "/api/v1/prs/{owner}/{name}/{number}/questions", auth: "read" },
   watchPr: { method: "PUT", path: "/api/v1/prs/{owner}/{name}/{number}/watch", auth: "session_csrf" },
   unwatchPr: { method: "DELETE", path: "/api/v1/prs/{owner}/{name}/{number}/watch", auth: "session_csrf" },
   listWatches: { method: "GET", path: "/api/v1/watches", auth: "read" },

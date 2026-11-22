@@ -20,6 +20,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::test_support::{
     build_repo, commits, credential, dirs, judge_input, judge_spec, shared_repo, spec,
+    verify_input, verify_spec,
 };
 
 const TOKEN_CANARY: &str = "ghs_EXECUTE_CANARY_000000000000001";
@@ -1334,4 +1335,149 @@ async fn fake_provider_answers_judge_jobs_with_valid_judgements() {
     );
     let (again, _) = execute_collect(&scripted, judge_spec(&input)).await;
     assert!(matches!(again.outcome, JobOutcome::Succeeded { .. }));
+}
+
+fn github_token() -> InstallationToken {
+    InstallationToken {
+        token: Secret::new(TOKEN_CANARY),
+        expires_at: Timestamp::now(),
+        repository: RepoRef {
+            owner: "acme".to_owned(),
+            name: "node-client".to_owned(),
+        },
+    }
+}
+
+/// A `verify_comments` job runs on the head checkout with its read-only GitHub token and its tools, in a fresh
+/// session kept in the job directory: nothing is resumed, stored or reported, and the token never leaves the run
+/// (ADR-023, threat model T23).
+#[tokio::test]
+async fn verify_job_runs_on_the_checkout_with_the_token_and_without_session() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::WriteSession);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let mut spec = verify_spec(shared_repo(), &verify_input(None));
+    spec.access.github = Some(github_token());
+    spec.context_pack = Some("never used".to_owned());
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(
+        matches!(result.outcome, JobOutcome::Succeeded { .. }),
+        "{:?}",
+        result.outcome
+    );
+    assert_eq!(result.session, None, "no session is kept");
+    let seen = stub.seen();
+    assert_eq!(seen.head.trim(), commits().head, "head checked out");
+    assert!(seen.session_dir.starts_with(&seen.job_dir), "{seen:?}");
+    assert!(seen.access.github.is_some() && seen.access.memcan.is_none());
+    assert!(!seen.answer_only, "the agent reads the checkout");
+    assert!(!seen.prompt.contains("never used"));
+    assert!(stub.resumed.lock().unwrap().is_empty());
+    assert_removed(&seen);
+    let stored = fs::read_dir(root.path().join("state/sessions"))
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(stored, 0, "the session store is untouched");
+}
+
+/// The job's GitHub token never appears in its events, ready output or result.
+#[tokio::test]
+async fn verify_job_secrets_are_absent_from_events_and_result() {
+    let root = TempDir::new().unwrap();
+    let executor = Executor::new(Stub::new(Behaviour::Leak), dirs(root.path()), credential());
+    let mut spec = verify_spec(shared_repo(), &verify_input(None));
+    spec.access.github = Some(github_token());
+    let (result, events) = execute_collect(&executor, spec).await;
+    let all = format!("{events:?} {result:?}");
+    assert!(!all.contains(TOKEN_CANARY), "{all}");
+    assert!(all.contains("[redacted]"), "{all}");
+}
+
+/// A `verify_comments` job holding MemCan access, skills or a session, or a kind that does not match its target, is
+/// refused before anything runs (threat model T23).
+#[tokio::test]
+async fn misfit_verify_jobs_are_refused_before_the_provider_runs() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Succeed);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let verify = || verify_spec(shared_repo(), &verify_input(None));
+    let with_memcan = {
+        let mut spec = verify();
+        spec.access.memcan = Some(contracts::job::access::McpHttpEndpoint {
+            url: "https://memcan.example/mcp".to_owned(),
+            token: Secret::new("memcan-token"),
+            allow_write: false,
+        });
+        spec
+    };
+    let with_skills = JobSpec {
+        skills: vec!["severity".to_owned()],
+        ..verify()
+    };
+    let with_session = JobSpec {
+        session: Some(SessionRef {
+            pull_request_id: 1,
+            thread_id: "thread-1".to_owned(),
+        }),
+        ..verify()
+    };
+    let plan_on_comments = JobSpec {
+        kind: JobKind::Plan,
+        ..verify()
+    };
+    let verify_on_pr = JobSpec {
+        kind: JobKind::VerifyComments,
+        ..spec(JobKind::Plan, shared_repo())
+    };
+    for spec in [
+        with_memcan,
+        with_skills,
+        with_session,
+        plan_on_comments,
+        verify_on_pr,
+    ] {
+        let (result, _) = execute_collect(&executor, spec).await;
+        assert!(
+            matches!(
+                result.outcome,
+                JobOutcome::Failed {
+                    kind: JobFailureKind::Internal,
+                    ..
+                }
+            ),
+            "{:?}",
+            result.outcome
+        );
+    }
+    assert!(
+        stub.seen.lock().unwrap().is_none(),
+        "the provider never ran"
+    );
+}
+
+/// The fake provider answers every item of the input with an assessment of the output type, and the question of a
+/// question pass with an answer.
+#[cfg(feature = "fake-provider")]
+#[tokio::test]
+async fn fake_provider_answers_verify_jobs_for_every_item() {
+    use contracts::agent::verify_comments::VerifyCommentsOutput;
+
+    use crate::provider::fake::FakeProvider;
+    let root = TempDir::new().unwrap();
+    let executor = Executor::new(
+        Arc::new(FakeProvider::default()),
+        dirs(root.path()),
+        credential(),
+    );
+    for question in [None, Some("Is this still true?")] {
+        let input = verify_input(question);
+        let (result, _) = execute_collect(&executor, verify_spec(shared_repo(), &input)).await;
+        let JobOutcome::Succeeded { output } = result.outcome else {
+            panic!("{:?}", result.outcome);
+        };
+        let answer: VerifyCommentsOutput = serde_json::from_value(output).unwrap();
+        let ids: Vec<&str> = answer.items.iter().map(|item| item.item.as_str()).collect();
+        assert_eq!(ids, ["C1", "C2"]);
+        assert_eq!(answer.answer.is_some(), question.is_some());
+    }
 }

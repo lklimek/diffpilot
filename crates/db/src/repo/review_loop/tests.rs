@@ -351,10 +351,11 @@ async fn one_live_pass_per_pull_request() {
     let rl = db.review_loop();
     let pass = NewPass {
         pull_request_id: PR,
-        user_id: "u1".into(),
+        user_id: Some("u1".into()),
         cause: PassCause::Opened,
         head: head(),
-        items: 9,
+        sent: Vec::new(),
+        question: None,
     };
     let PassStart::Started(first) = rl.start_pass(T, &pass, at(0)).await.expect("start") else {
         panic!("expected a start");
@@ -1107,4 +1108,143 @@ async fn check_lists_mirror_the_review_loop_enums() {
         let flat = sql.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(flat.contains(&list), "{table}: expected {list}");
     }
+}
+
+/// A pass keeps what it sent and the question it answers; a pass charged to nobody is allowed; live passes list.
+#[tokio::test]
+async fn pass_records_its_items_question_and_charged_user() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "dedupe-p").await;
+    let sent = vec![SentItem {
+        item: item.id,
+        no: item.no,
+        fingerprint: "fp".into(),
+    }];
+    let pass = NewPass {
+        pull_request_id: PR,
+        user_id: None,
+        cause: PassCause::Read,
+        head: head(),
+        sent: sent.clone(),
+        question: None,
+    };
+    let PassStart::Started(id) = rl.start_pass(T, &pass, at(0)).await.expect("start") else {
+        panic!("expected a start");
+    };
+    let record = rl.pass(id).await.expect("pass");
+    assert_eq!(
+        (record.user_id, record.state, record.sent, record.job_id),
+        (None, PassState::Queued, sent, None)
+    );
+    assert_eq!(rl.live_passes().await.expect("live").len(), 1);
+    let job = JobId::new_random();
+    rl.pass_running(id, job).await.expect("running");
+    assert_eq!(rl.pass(id).await.expect("pass").job_id, Some(job));
+    rl.finish_pass(id, true, at(5)).await.expect("finish");
+    assert!(rl.live_passes().await.expect("live").is_empty());
+    assert_eq!(rl.item(item.id).await.expect("item").id, item.id);
+}
+
+/// Without an analysis a comment-item question belongs to the pull request and the asker: listed for them only,
+/// waiting for a question pass, counted per item once answered, never offered to the analysis Ask followers.
+#[tokio::test]
+async fn comment_item_question_without_an_analysis() {
+    use crate::repo::questions::{Asked, NewPrQuestion, PrQuestionLimits, QuestionUpdate};
+    use contracts::agent::ask::AskOutput;
+    use contracts::api::questions::AskAnchor;
+    use contracts::ids::QuestionId;
+    let db = db().await;
+    let item = new_item(&db, "dedupe-q").await;
+    let limits = PrQuestionLimits {
+        per_pull_request: 2,
+        per_user: 10,
+        user_window_start: at(0),
+    };
+    let question = |pr: i64, user: &str| NewPrQuestion {
+        id: QuestionId::new_random(),
+        pull_request_id: pr,
+        item: item.id,
+        parent_id: None,
+        user_id: user.into(),
+        text: "Is this still true?".into(),
+    };
+    assert!(matches!(
+        db.questions()
+            .create_for_pr(question(2, "u1"), limits, at(1))
+            .await,
+        Err(DbError::NotFound)
+    ));
+    let Asked::Stored(stored) = db
+        .questions()
+        .create_for_pr(question(PR, "u1"), limits, at(1))
+        .await
+        .expect("stored")
+    else {
+        panic!("expected a stored question");
+    };
+    assert_eq!(stored.analysis_id, None);
+    assert_eq!(stored.pull_request_id, Some(PR));
+    assert_eq!(
+        stored.question.anchor,
+        AskAnchor::CommentItem { item: item.id }
+    );
+    db.questions()
+        .create_for_pr(question(PR, "u1"), limits, at(2))
+        .await
+        .expect("second");
+    assert!(matches!(
+        db.questions()
+            .create_for_pr(question(PR, "u1"), limits, at(3))
+            .await,
+        Ok(Asked::AnalysisLimit)
+    ));
+    let questions = db.questions();
+    assert_eq!(
+        questions
+            .list_for_pull_request(PR, "u1", at(4))
+            .await
+            .expect("list")
+            .len(),
+        2
+    );
+    assert!(
+        questions
+            .list_for_pull_request(PR, "u2", at(4))
+            .await
+            .expect("list")
+            .is_empty()
+    );
+    assert!(
+        questions
+            .unanswered(at(4))
+            .await
+            .expect("unanswered")
+            .is_empty()
+    );
+    let next = questions
+        .next_unsent_for_pr(PR, at(4))
+        .await
+        .expect("next")
+        .expect("one");
+    assert_eq!(next.question.id, stored.question.id);
+    assert_eq!(
+        questions.pull_requests_with_unsent().await.expect("prs"),
+        vec![PR]
+    );
+    questions
+        .update(
+            next.question.id,
+            &QuestionUpdate::Answered(AskOutput {
+                answer: "Yes.".into(),
+                evidence: Vec::new(),
+            }),
+            at(5),
+        )
+        .await
+        .expect("answered");
+    assert_eq!(
+        questions.answers_per_item(PR, "u1").await.expect("counts"),
+        vec![(item.id, 1)]
+    );
 }

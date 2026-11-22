@@ -25,8 +25,8 @@ pub use decisions::{
     StoredDecision,
 };
 pub use items::{
-    CommentPrRecord, ItemRecord, NewPass, ObservedItem, PassCause, PassStart, ReadResult,
-    StoredAssessment, UpsertOutcome,
+    CommentPrRecord, ItemRecord, NewPass, ObservedItem, PassCause, PassRecord, PassStart,
+    PassState, ReadResult, SentItem, StoredAssessment, UpsertOutcome,
 };
 pub use notify::{
     ChannelInput, ChannelRecord, DeliveryRecord, DeliveryTarget, FailureTransition, PushInput,

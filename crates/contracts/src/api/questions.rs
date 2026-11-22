@@ -1,5 +1,6 @@
-//! Ask: private questions about a step, lines or a file, a flow or the whole PR, with follow-ups in threads, answered
-//! in the asker's working session for this PR.
+//! Ask: private questions about a step, lines or a file, a flow, the whole PR or a review-comment item, with
+//! follow-ups in threads, answered in the asker's working session for this PR (or, for a comment item without an
+//! analysis, by a `verify_comments` question pass).
 
 use crate::time::Timestamp;
 use schemars::JsonSchema;
@@ -8,7 +9,7 @@ use ts_rs::TS;
 
 use crate::agent::ask::AskOutput;
 use crate::common::{LineRange, LineSide};
-use crate::ids::{FlowId, QuestionId, StepId};
+use crate::ids::{CommentItemId, FlowId, QuestionId, StepId};
 
 /// Body of `POST /api/v1/analyses/{id}/steps/{step_id}/questions`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -63,6 +64,12 @@ pub enum AskAnchor {
     },
     /// The whole pull request.
     Pr,
+    /// A review-comment item of the pull request (ADR-023): with an analysis of the head its Ask session answers,
+    /// without one a `verify_comments` question pass answers.
+    CommentItem {
+        /// The item.
+        item: CommentItemId,
+    },
 }
 
 impl AskAnchor {
@@ -73,7 +80,7 @@ impl AskAnchor {
     pub fn step_id(&self) -> Option<&StepId> {
         match self {
             Self::Step { step_id, .. } => Some(step_id),
-            Self::Lines { .. } | Self::Flow { .. } | Self::Pr => None,
+            Self::Lines { .. } | Self::Flow { .. } | Self::Pr | Self::CommentItem { .. } => None,
         }
     }
 }

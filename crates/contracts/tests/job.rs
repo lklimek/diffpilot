@@ -3,7 +3,7 @@
 
 use contracts::agent::JobKind;
 use contracts::common::RepoRef;
-use contracts::ids::{AnalysisId, CommitSha, JobId, RefreshId};
+use contracts::ids::{AnalysisId, CommitSha, JobId, PassId, RefreshId};
 use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::event::{ActivityKind, JobEvent};
 use contracts::job::protocol::{
@@ -16,7 +16,7 @@ use contracts::job::result::{
 };
 use contracts::job::spec::{
     CredentialKind, JobLimits, JobSpec, JobTarget, LlmCredentialRef, ModelChoice,
-    PullRequestTarget, ReasoningEffort, RepoCheckout, SessionRef,
+    PullRequestCommentsTarget, PullRequestTarget, ReasoningEffort, RepoCheckout, SessionRef,
 };
 use contracts::job::state::{JobState, JobTransition};
 use contracts::time::Timestamp;
@@ -215,6 +215,20 @@ fn job_target_wire_format_is_internally_tagged() {
     );
     assert!(wire.get("analysis_id").is_none() && wire.get("repo").is_none());
     assert_eq!(dashboard.target.pull_request(), None);
+    let mut comments = spec();
+    let repo = comments.target.checkout().expect("checkout").clone();
+    comments.target = JobTarget::PullRequestComments(PullRequestCommentsTarget {
+        pull_request_id: 7,
+        repo,
+        pass_id: PassId::new_random(),
+    });
+    round_trip(&comments);
+    let wire = serde_json::to_value(&comments).expect("serialises");
+    assert_eq!(wire["target"]["type"], "pull_request_comments");
+    assert_eq!(wire["target"]["pull_request_id"], 7);
+    assert_eq!(comments.target.pull_request(), None);
+    assert!(comments.target.checkout().is_some());
+    assert_eq!(dashboard.target.checkout(), None);
     let pr = serde_json::to_value(spec()).expect("serialises");
     assert_eq!(pr["target"]["type"], "pull_request");
     assert_eq!(pr["target"]["pull_request_id"], 1);

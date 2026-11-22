@@ -14,9 +14,9 @@ pub struct ModelContext {
     pub changed_lines: u32,
 }
 
-/// The saved installation choice (Sol at high effort before any save); Ask jobs use the saved Ask effort
-/// instead ([`DEFAULT_ASK_EFFORT`] before any save) and dashboard ranking jobs the saved ranking effort
-/// ([`DEFAULT_JUDGE_EFFORT`] before any save).
+/// The saved installation choice (Sol at high effort before any save), also for `verify_comments` jobs; Ask jobs use
+/// the saved Ask effort instead ([`DEFAULT_ASK_EFFORT`] before any save) and dashboard ranking jobs the saved ranking
+/// effort ([`DEFAULT_JUDGE_EFFORT`] before any save).
 pub fn select_model(
     kind: JobKind,
     context: &ModelContext,
@@ -40,7 +40,11 @@ pub fn select_model(
             reasoning_effort: saved.map_or(DEFAULT_JUDGE_EFFORT, |saved| saved.judge_effort),
             ..choice
         },
-        JobKind::Plan | JobKind::PrContext | JobKind::AnalyseFlow => choice,
+        // `verify_comments` uses the installation choice (plan §4.2; no own setting).
+        // TODO(S13-3): check whether a lower effort suffices once real Codex runs are approved.
+        JobKind::Plan | JobKind::PrContext | JobKind::AnalyseFlow | JobKind::VerifyComments => {
+            choice
+        }
     }
 }
 
@@ -123,6 +127,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `verify_comments` follows the installation model and effort, not the Ask or ranking effort (plan §4.2).
+    #[test]
+    fn verify_comments_uses_the_installation_choice() {
+        let saved = saved("gpt-6-astra", ReasoningEffort::Medium, ReasoningEffort::Low);
+        assert_eq!(
+            select_model(
+                JobKind::VerifyComments,
+                &ModelContext::default(),
+                Some(&saved)
+            ),
+            saved.choice
+        );
+        assert_eq!(
+            select_model(JobKind::VerifyComments, &ModelContext::default(), None).reasoning_effort,
+            ReasoningEffort::High
+        );
     }
 
     #[test]

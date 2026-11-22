@@ -3,7 +3,7 @@
 use contracts::api::pr::PrSummary;
 use contracts::common::{LlmLanguage, RepoRef};
 use contracts::time::Timestamp;
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 
 use contracts::ids::{AnalysisId, CommitSha};
 
@@ -78,6 +78,33 @@ impl PullRequests<'_> {
         Ok(id)
     }
 
+    /// The stored pull request `id` as last resolved; `NotFound` when unknown.
+    pub async fn get(&self, id: i64) -> Result<PullRequestRecord, DbError> {
+        let row = sqlx::query(
+            "SELECT p.tenant_id, r.owner, r.name, p.number, p.title, p.author, p.html_url, p.base_sha, p.head_sha
+             FROM pull_requests p JOIN repos r ON r.id = p.repo_id WHERE p.id = ?",
+        )
+        .bind(id)
+        .fetch_optional(self.pool)
+        .await?
+        .ok_or(DbError::NotFound)?;
+        Ok(PullRequestRecord {
+            tenant_id: row.try_get("tenant_id")?,
+            pr: PrSummary {
+                repo: RepoRef {
+                    owner: row.try_get("owner")?,
+                    name: row.try_get("name")?,
+                },
+                number: row.try_get("number")?,
+                title: row.try_get("title")?,
+                author: row.try_get("author")?,
+                html_url: row.try_get("html_url")?,
+                base_sha: CommitSha(row.try_get("base_sha")?),
+                head_sha: CommitSha(row.try_get("head_sha")?),
+            },
+        })
+    }
+
     /// For each of `items` (repository and number; owner and name case-insensitive) with a stored pull request
     /// of the tenant: the analysis a reader is shown (as [`super::analyses::Analyses::latest_for_pr`]) and
     /// whether `user_id` stored review state for it, in list order. One statement for the whole list. Read-only.
@@ -143,6 +170,15 @@ pub struct PrReviewLink {
     pub head_sha: CommitSha,
     /// The reader stored review state for it.
     pub has_review_state: bool,
+}
+
+/// A stored pull request with its tenant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PullRequestRecord {
+    /// Tenant.
+    pub tenant_id: String,
+    /// The pull request as last resolved (title, author, base and head).
+    pub pr: PrSummary,
 }
 
 #[cfg(test)]

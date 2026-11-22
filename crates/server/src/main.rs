@@ -60,6 +60,8 @@ enum StartError {
     Resume(#[source] DbError),
     #[error("could not follow the open questions")]
     ResumeQuestions(#[source] DbError),
+    #[error("could not follow the live comment assessment passes")]
+    ResumePasses(#[source] DbError),
     #[error("could not end the dashboard refreshes the restart interrupted")]
     RecoverDashboard(#[source] DbError),
     #[error("the HTTP server stopped with an I/O error")]
@@ -140,6 +142,9 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     server::ask::resume_unanswered(&state)
         .await
         .map_err(StartError::ResumeQuestions)?;
+    server::review_loop::assess::resume(&state)
+        .await
+        .map_err(StartError::ResumePasses)?;
     server::dashboard::refresh::recover(&state)
         .await
         .map_err(StartError::RecoverDashboard)?;

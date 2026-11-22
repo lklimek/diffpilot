@@ -195,7 +195,9 @@ fn agent_fixtures_validate_and_round_trip() {
             JobKind::Plan => round_trip::<PlanOutput>(&file, &value),
             JobKind::PrContext => round_trip::<PrContextOutput>(&file, &value),
             JobKind::AnalyseFlow => round_trip::<FlowAnalysisOutput>(&file, &value),
-            JobKind::Ask | JobKind::JudgeWork => unreachable!("no ask or judge_work fixture"),
+            JobKind::Ask | JobKind::JudgeWork | JobKind::VerifyComments => {
+                unreachable!("no ask, judge_work or verify_comments fixture")
+            }
         }
     }
 }

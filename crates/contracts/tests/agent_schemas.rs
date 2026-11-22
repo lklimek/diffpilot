@@ -7,6 +7,7 @@ use contracts::agent::judge_work::JudgeWorkOutput;
 use contracts::agent::plan::PlanOutput;
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::agent::strict::{self, StrictSchemaError};
+use contracts::agent::verify_comments::VerifyCommentsOutput;
 use contracts::agent::{JobKind, output_schema};
 use contracts::common::{
     AnnotationType, Basis, Blocking, Classification, FitTopic, FlagLevel, FragmentKind, Origin,
@@ -171,7 +172,9 @@ fn no_floats_in_agent_schemas() {
 
 #[test]
 fn integers_only_for_lines_and_rank() {
-    const ALLOWED: [&str; 8] = [
+    // `target_pr` is a GitHub pull request number (ADR-023), not a rating.
+    const ALLOWED: [&str; 9] = [
+        "target_pr",
         "line",
         "start_line",
         "end_line",
@@ -211,9 +214,12 @@ fn no_confidence_like_fields() {
     for (kind, schema) in review_schemas() {
         walk(&schema, None, &mut |name, _| {
             let name = name.unwrap_or_default();
+            // A comment assessment recommends a decision the owner takes or not (ADR-023, RQ7).
+            let recommended_decision = kind == JobKind::VerifyComments && name == "recommendation";
             let hit = BANNED
                 .iter()
-                .any(|banned| name.contains(banned) && name != "importance_rank");
+                .any(|banned| name.contains(banned) && name != "importance_rank")
+                && !recommended_decision;
             assert!(!hit, "{kind:?}: field `{name}`");
         });
     }
@@ -338,6 +344,21 @@ fn samples() -> Vec<(JobKind, Value)> {
                 "why": "A real defect with a small fix.", "next": "Review the retry loop."
             }]}),
         ),
+        (
+            JobKind::VerifyComments,
+            json!({"purpose": "Retries failed RPC calls.", "answer": null, "items": [{
+                "item": "C1", "validity": "valid",
+                "evidence": [{"path": "src/rpc/client.rs", "line": 120, "note": "Retries without a bound."}],
+                "pre_existing": false, "category": "error-handling", "necessity": "in",
+                "necessity_reason": "The retry loop is new in this pull request.", "better_pr": null,
+                "gates": [], "elsewhere": [], "fix_sketch": "Bound the loop.", "fix_size": "XS",
+                "reply_drafts": ["Fixed per maintainer decision."],
+                "recommendation": {"kind": "fix_here", "reason": "Small and in scope.", "reason_class": "small fix",
+                                   "target_pr": null, "target_url": null, "title": null},
+                "code": {"path": "src/rpc/client.rs", "enclosing": {"start_line": 110, "end_line": 130},
+                         "description": "Sends the request and retries on timeout."}
+            }]}),
+        ),
     ]
 }
 
@@ -369,6 +390,10 @@ fn samples_validate_and_round_trip() {
             ),
             JobKind::JudgeWork => serde_json::to_value(
                 serde_json::from_value::<JudgeWorkOutput>(sample.clone()).expect("judge_work"),
+            ),
+            JobKind::VerifyComments => serde_json::to_value(
+                serde_json::from_value::<VerifyCommentsOutput>(sample.clone())
+                    .expect("verify_comments"),
             ),
         }
         .expect("serialises");

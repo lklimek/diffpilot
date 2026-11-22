@@ -68,6 +68,9 @@ pub enum AskError {
     /// The flow has no stored analysis.
     #[error("the flow is not analysed in the analysis")]
     UnknownFlow,
+    /// The review-comment item is not one of the analysed pull request's.
+    #[error("the comment item is not part of the pull request")]
+    UnknownItem,
     /// The parent is not a question of this user on this analysis.
     #[error("the question to follow up is not one of the user's on the analysis")]
     UnknownParent,
@@ -205,7 +208,7 @@ async fn thread_of(
         Err(DbError::NotFound) => return Err(AskError::UnknownParent),
         Err(error) => return Err(error.into()),
     };
-    if record.analysis_id != analysis.id || record.user_id != user_id {
+    if record.analysis_id != Some(analysis.id) || record.user_id != user_id {
         return Err(AskError::UnknownParent);
     }
     if record.question.anchor != *anchor {
@@ -216,7 +219,7 @@ async fn thread_of(
 
 /// A step anchor names a stored step (and lines inside it); a lines anchor names a file of the diff on its side and
 /// at most [`AskAnchor::MAX_LINES`] lines of it; a flow anchor names a flow the Tour shows analysed; the PR always
-/// exists.
+/// exists; a comment-item anchor names an item of the analysed pull request.
 async fn check_anchor(
     state: &AppState,
     analysis: &AnalysisSummary,
@@ -243,6 +246,14 @@ async fn check_anchor(
             }
         }
         AskAnchor::Pr => {}
+        AskAnchor::CommentItem { item } => {
+            let pull_request = state.db.analyses().get(analysis.id).await?.pull_request_id;
+            match state.db.review_loop().item(*item).await {
+                Ok(record) if record.pull_request_id == pull_request => {}
+                Ok(_) | Err(DbError::NotFound) => return Err(AskError::UnknownItem),
+                Err(error) => return Err(error.into()),
+            }
+        }
         AskAnchor::Step { step_id, lines } => {
             let Some((_, step)) = job::stored_step(&state.db, analysis.id, step_id).await? else {
                 return Err(AskError::UnknownStep);

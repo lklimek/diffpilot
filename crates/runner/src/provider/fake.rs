@@ -3,7 +3,8 @@
 //!
 //! The recording is chosen by file mode or the call's output schema and, for `analyse_flow`, by the first flow
 //! id token `f<n>` of the prompt's `Job: analyse_flow f<n>.` line. `ask` has no recording; `judge_work` answers
-//! every item of the prompt's data block neutrally (asked parts 0, eligibility as computed).
+//! every item of the prompt's data block neutrally (asked parts 0, eligibility as computed); `verify_comments`
+//! answers every item of its data block with a neutral assessment and, in a question pass, the question.
 //!
 //! A script (JSON file named by [`SCRIPT_ENV`], read before every call; no file: plain replay) overrides calls
 //! for the full-stack tests: the first rule matching the job kind, the flow and a prompt substring applies, at
@@ -13,6 +14,7 @@
 //! a tagged-text string for file jobs). File jobs write `out/flow.md` before using the real bounded collector.
 
 use contracts::agent::judge_work::{JudgeWorkInput, part_values};
+use contracts::agent::verify_comments::VerifyCommentsInput;
 use contracts::agent::{JobKind, output_schema};
 use contracts::api::dashboard::ScoreComponent;
 use contracts::ids::JobId;
@@ -386,6 +388,7 @@ fn job_kind(call: &ProviderCall) -> Result<JobKind, ProviderError> {
 fn stream(kind: JobKind, prompt: &str) -> Result<String, ProviderError> {
     match kind {
         JobKind::JudgeWork => Ok(answer_stream(&judge_answer(prompt)?)),
+        JobKind::VerifyComments => Ok(answer_stream(&verify_answer(prompt)?)),
         _ => recorded(kind, prompt).map(str::to_owned),
     }
 }
@@ -424,15 +427,50 @@ fn judge_answer(prompt: &str) -> Result<Value, ProviderError> {
     Ok(json!({ "items": items }))
 }
 
+/// A valid neutral assessment of every item of the prompt's verify input: partly valid, in scope, no gates,
+/// recommended for a fix here; a question pass also answers the question.
+fn verify_answer(prompt: &str) -> Result<Value, ProviderError> {
+    let input = VerifyCommentsInput::from_prompt(prompt).ok_or_else(|| ProviderError::Failed {
+        message: "the fake provider found no verify input in the prompt".to_owned(),
+    })?;
+    let items: Vec<Value> = input
+        .items
+        .iter()
+        .map(|item| {
+            let code = item.location.as_ref().and_then(|location| {
+                location.lines.map(|lines| {
+                    json!({"path": location.path, "enclosing": lines,
+                        "description": "Fake description of the enclosing code for tests."})
+                })
+            });
+            json!({
+                "item": item.id, "validity": "partly_valid", "evidence": [], "pre_existing": false,
+                "category": "other", "necessity": "in", "necessity_reason": "Fake assessment for tests.",
+                "better_pr": null, "gates": [], "elsewhere": [], "fix_sketch": "Fake fix sketch.", "fix_size": "XS",
+                "reply_drafts": ["Fixed per maintainer decision."],
+                "recommendation": {"kind": "fix_here", "reason": "Fake recommendation for tests.",
+                    "reason_class": "fake", "target_pr": null, "target_url": null, "title": null},
+                "code": code
+            })
+        })
+        .collect();
+    let answer = input
+        .question
+        .map(|_| "Fake answer to the question for tests.");
+    Ok(json!({"purpose": "Fake purpose for tests.", "items": items, "answer": answer}))
+}
+
 /// The recording for a call of `kind`; the flow comes from the prompt.
 fn recorded(kind: JobKind, prompt: &str) -> Result<&'static str, ProviderError> {
     let name = match kind {
         JobKind::Plan => "plan".to_owned(),
         JobKind::PrContext => "pr-context".to_owned(),
         JobKind::AnalyseFlow => format!("analyse-flow-{}", flow_number(prompt).unwrap_or(1)),
-        JobKind::Ask | JobKind::JudgeWork => {
+        JobKind::Ask | JobKind::JudgeWork | JobKind::VerifyComments => {
             return Err(ProviderError::Failed {
-                message: "the fake provider has no recording for ask or judge_work jobs".to_owned(),
+                message:
+                    "the fake provider has no recording for ask, judge_work or verify_comments jobs"
+                        .to_owned(),
             });
         }
     };

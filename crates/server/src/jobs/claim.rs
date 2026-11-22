@@ -186,10 +186,16 @@ pub async fn claim(
                 runner = %request.runner_id,
                 "runner claimed a job"
             );
+            let verify = matches!(job.spec.target, JobTarget::PullRequestComments(_));
             // Session and pack first: a job whose context cannot be prepared is released before any token is
             // minted, so nothing needs revoking. The attempt stays spent: a job that can never be prepared fails
-            // after its attempts instead of blocking the queue.
-            let mut spec = match prepare_spec(db, packs, &job).await {
+            // after its attempts instead of blocking the queue. A `verify_comments` job has no session or pack.
+            let prepared = if verify {
+                Ok(verify_spec(&job))
+            } else {
+                prepare_spec(db, packs, &job).await
+            };
+            let mut spec = match prepared {
                 Ok(spec) => spec,
                 Err(error) => {
                     let released = db.jobs().release_claim(job.id, job.attempt, now).await?;
@@ -219,11 +225,10 @@ pub async fn claim(
                 .await?;
             spec.access = AgentAccess {
                 github,
-                // An Ask sees user-typed text, so it only reads shared memory (ADR-004).
-                memcan: Some(memcan_endpoint(
-                    config,
-                    !matches!(job.stage, JobStage::Ask(_)),
-                )),
+                // An Ask sees user-typed text, so it only reads shared memory (ADR-004); a `verify_comments` job
+                // gets no MemCan endpoint at all (ADR-023).
+                memcan: (!verify)
+                    .then(|| memcan_endpoint(config, !matches!(job.stage, JobStage::Ask(_)))),
             };
             Some(Claim {
                 job_token: token,
@@ -252,6 +257,20 @@ fn dashboard_spec(job: &JobRecord) -> contracts::job::spec::JobSpec {
     }
 }
 
+/// A `verify_comments` job's spec as handed out: its prompt, schema and checkout; no session, context pack or skills,
+/// whatever was stored (ADR-023, threat model T23). Its read-only installation token is added by the claim.
+fn verify_spec(job: &JobRecord) -> contracts::job::spec::JobSpec {
+    contracts::job::spec::JobSpec {
+        session: None,
+        working_session: None,
+        context_pack: None,
+        skills: Vec::new(),
+        flow_file: None,
+        access: AgentAccess::default(),
+        ..job.spec.clone()
+    }
+}
+
 /// The MemCan endpoint of one job; `allow_write` only for jobs that never see user-typed text.
 fn memcan_endpoint(config: &Config, allow_write: bool) -> McpHttpEndpoint {
     McpHttpEndpoint {
@@ -272,7 +291,9 @@ async fn prepare_spec(
     let mut spec = job.spec.clone();
     let (analysis, pull_request_id) = match &spec.target {
         JobTarget::PullRequest(target) => (target.analysis_id, target.pull_request_id),
-        JobTarget::Dashboard { .. } => return Err(DbError::NotFound.into()),
+        JobTarget::Dashboard { .. } | JobTarget::PullRequestComments(_) => {
+            return Err(DbError::NotFound.into());
+        }
     };
     if let Some(file) = &spec.flow_file {
         let found = file
@@ -287,7 +308,7 @@ async fn prepare_spec(
     spec.session = analysis_session(db, analysis).await?;
     spec.working_session = if let JobStage::Ask(question) = job.stage {
         let record = db.questions().get(question, Timestamp::now()).await?;
-        if record.analysis_id != analysis {
+        if record.analysis_id != Some(analysis) {
             return Err(DbError::NotFound.into());
         }
         Some(WorkingSession {
@@ -335,8 +356,18 @@ async fn github_access(
     now: Timestamp,
 ) -> Result<Option<InstallationToken>, ClaimError> {
     let (db, config, job) = (&db, config.as_ref(), &job);
-    let analysis = job.analysis_id.ok_or(DbError::NotFound)?;
-    let repo = db.analyses().summary(analysis).await?.pr.repo;
+    // The PR repository only (ADR-005): an analysis job's, or a `verify_comments` job's pull request.
+    let repo = match &job.spec.target {
+        JobTarget::PullRequest(target) => db.analyses().summary(target.analysis_id).await?.pr.repo,
+        JobTarget::PullRequestComments(target) => {
+            db.pull_requests()
+                .get(target.pull_request_id)
+                .await?
+                .pr
+                .repo
+        }
+        JobTarget::Dashboard { .. } => return Err(DbError::NotFound.into()),
+    };
     let runtime = SignedDuration::from_secs(i64::from(job.spec.limits.max_runtime_secs));
     let token = match app_token::mint_for_job(&config.github, &repo, now, runtime).await {
         Ok(Minted::Accepted(token)) => token,
@@ -725,6 +756,83 @@ mod tests {
         let stored = s.db.jobs().get(job).await.expect("job");
         assert!(!stored.github_access_granted);
         assert_eq!(s.db.jobs().github_token(job, 1).await.expect("token"), None);
+    }
+
+    /// A `verify_comments` job gets a read-only installation token for the PR repository only (ADR-005) and
+    /// nothing else: no MemCan endpoint, session, context pack or skills, whatever its stored spec asked for
+    /// (ADR-023, threat model T23); its model is the installation choice.
+    #[tokio::test]
+    async fn verify_job_spec_has_read_only_token() {
+        let capture = LogCapture::start();
+        let s = setup().await;
+        let pass = db::repo::analyses::testing::seed_pass(&s.db)
+            .await
+            .expect("pass");
+        let mut spec = db::repo::analyses::testing::verify_spec(pass);
+        spec.skills = vec!["severity".to_owned()];
+        spec.session = Some(contracts::job::spec::SessionRef {
+            pull_request_id: 1,
+            thread_id: "thread-7".to_owned(),
+        });
+        let job = QueueExecutor::new(s.db.clone(), ProgressHub::default())
+            .submit(crate::jobs::executor::JobRequest {
+                spec,
+                priority: JobPriority::Interactive,
+                stage: JobStage::Verify(pass),
+                generation: 0,
+                pr_repo: Some(RepoRef {
+                    owner: "acme".to_owned(),
+                    name: "node-client".to_owned(),
+                }),
+            })
+            .await
+            .expect("submit")
+            .job_id;
+        let now = Timestamp::now();
+        installed(&s, now).await;
+        let claimed = claim_one(&s, now).await;
+        assert_eq!(claimed.spec.job_id, job);
+        let github = claimed.spec.access.github.expect("installation token");
+        assert_eq!(github.token.expose(), MINTED_TOKEN);
+        assert_eq!(
+            github.repository,
+            RepoRef {
+                owner: "acme".to_owned(),
+                name: "node-client".to_owned()
+            }
+        );
+        assert_eq!(
+            claimed.spec.access.memcan, None,
+            "no MemCan for comment assessment"
+        );
+        assert_eq!(claimed.spec.session, None);
+        assert_eq!(claimed.spec.working_session, None);
+        assert_eq!(claimed.spec.context_pack, None);
+        assert!(claimed.spec.skills.is_empty());
+        let mint = s
+            .github
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|request| request.url.path().ends_with("/access_tokens"))
+            .expect("a mint request");
+        let body: serde_json::Value = serde_json::from_slice(&mint.body).expect("mint body");
+        assert_eq!(body["repositories"], serde_json::json!(["node-client"]));
+        let permissions = body["permissions"].as_object().expect("permissions");
+        assert!(
+            permissions.values().all(|level| level == "read"),
+            "read-only: {permissions:?}"
+        );
+        assert!(
+            s.db.jobs()
+                .get(job)
+                .await
+                .expect("job")
+                .github_access_granted
+        );
+        let logs = capture.text();
+        assert!(!logs.contains(MINTED_TOKEN), "{logs}");
     }
 
     /// Ending an analysis cancels its jobs only; a dashboard job keeps running.

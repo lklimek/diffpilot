@@ -495,6 +495,21 @@ pub const GET_COMMENT_LOG: Route = route(
 /// RC11: carry-over events and counts, one PR or all (`CarryOverQuery`).
 pub const LIST_CARRY_OVERS: Route =
     route("listCarryOvers", Get, "/api/v1/comments/carry-overs", READ);
+/// RC7: asks about a review-comment item (`AnchoredAskRequest` with a `comment_item` anchor; 202 `AskQuestion`):
+/// answered in the Ask session of a finished analysis of the head, else by a `verify_comments` question pass.
+pub const ASK_PR_QUESTION: Route = route(
+    "askPrQuestion",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/questions",
+    SessionCsrf,
+);
+/// RC7: the reader's own questions about the PR's review-comment items, oldest first (`AskQuestion[]`).
+pub const LIST_PR_QUESTIONS: Route = route(
+    "listPrQuestions",
+    Get,
+    "/api/v1/prs/{owner}/{name}/{number}/questions",
+    READ,
+);
 /// RW1: watches a PR (204; 409 `watch_limit_reached`).
 pub const WATCH_PR: Route = route(
     "watchPr",
@@ -653,6 +668,8 @@ pub const ROUTES: &[Route] = &[
     DECIDE_COMMENT_BATCH,
     GET_COMMENT_LOG,
     LIST_CARRY_OVERS,
+    ASK_PR_QUESTION,
+    LIST_PR_QUESTIONS,
     WATCH_PR,
     UNWATCH_PR,
     LIST_WATCHES,

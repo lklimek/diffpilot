@@ -18,7 +18,10 @@ use contracts::job::protocol::{Claim, ClaimResponse};
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use contracts::job::spec::{JobPriority, JobSpec};
 use contracts::job::state::JobState;
-use contracts::routes::{ASK_ANCHORED, ASK_QUESTION, LIST_QUESTIONS, RUNNER_CLAIM, RUNNER_RESULT};
+use contracts::routes::{
+    ASK_ANCHORED, ASK_PR_QUESTION, ASK_QUESTION, LIST_PR_QUESTIONS, LIST_QUESTIONS, RUNNER_CLAIM,
+    RUNNER_RESULT,
+};
 use contracts::time::Timestamp;
 use db::repo::analyses::NewAnalysis;
 use db::repo::analyses::testing::{job_spec, seed_analysis};
@@ -2514,4 +2517,199 @@ async fn a_flow_question_without_a_buildable_tour_answers_like_the_tour_route() 
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     assert_eq!(body["code"], "not_found");
+}
+
+/// A review-comment item of the fixture pull request (T-L4).
+async fn comment_item(state: &AppState, key: &str) -> db::repo::review_loop::ItemRecord {
+    use contracts::api::review_loop::{
+        AuthorKind, CommentItemKind, ItemGithubFacts, ItemLocation, ItemState,
+    };
+    let now = Timestamp::now();
+    state
+        .db
+        .review_loop()
+        .ensure_pr(DEFAULT_TENANT, 1, now)
+        .await
+        .expect("review-loop row");
+    let observed = db::repo::review_loop::ObservedItem {
+        kind: CommentItemKind::Thread,
+        stable_key: key.to_owned(),
+        author: "thepastaclaw".to_owned(),
+        author_kind: AuthorKind::Bot,
+        url: None,
+        location: Some(ItemLocation {
+            path: "src/rpc/client.rs".to_owned(),
+            lines: Some(contracts::common::LineRange {
+                start_line: 40,
+                end_line: 43,
+            }),
+        }),
+        title: "Unbounded retry".to_owned(),
+        body: "The retry loop has no upper bound.".to_owned(),
+        body_hash: format!("hash:{key}"),
+        head: contracts::ids::CommitSha("h".to_owned()),
+        round: Some(1),
+        bot_severity: None,
+        github: ItemGithubFacts {
+            resolved: Some(false),
+            resolved_by: None,
+            outdated: Some(false),
+            bot_status: None,
+            edited_after_decision: false,
+            replies: 0,
+            marker: None,
+        },
+        outside: None,
+    };
+    match state
+        .db
+        .review_loop()
+        .upsert_item(DEFAULT_TENANT, 1, &observed, ItemState::Undecided, now)
+        .await
+        .expect("upsert")
+    {
+        db::repo::review_loop::UpsertOutcome::New(item) => item,
+        other => panic!("expected a new item: {other:?}"),
+    }
+}
+
+/// Posts a question about `item` to the pull request's question route as the fixture user.
+async fn ask_on_pr(f: &Fixture, item: &str, text: &str) -> (StatusCode, Value) {
+    let path = ASK_PR_QUESTION
+        .path
+        .replace("{owner}", "acme")
+        .replace("{name}", "node-client")
+        .replace("{number}", "482");
+    let request = Request::post(path)
+        .header(header::COOKIE, &f.cookie)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header("x-csrf-token", "csrf")
+        .body(Body::from(
+            json!({ "text": text, "anchor": { "kind": "comment_item", "item": item } }).to_string(),
+        ))
+        .expect("request");
+    json_of(
+        router(f.state.clone())
+            .oneshot(request)
+            .await
+            .expect("response"),
+    )
+    .await
+}
+
+/// With a finished analysis of the head, a question about a review comment goes to the Ask session with the
+/// comment as its subject (inside a data block), and is listed on the pull request's route.
+#[tokio::test]
+async fn comment_item_question_with_an_analysis_uses_the_ask_session() {
+    let f = fixture(false).await;
+    let pr: PrSummary =
+        serde_json::from_value(fixture_json("api-seed/default/pr-resolve.json")["pr"].clone())
+            .expect("pr");
+    f.state
+        .db
+        .pull_requests()
+        .upsert(DEFAULT_TENANT, 1, &pr, Timestamp::now())
+        .await
+        .expect("head");
+    let item = comment_item(&f.state, "k1").await;
+    let (status, body) = ask_on_pr(&f, &item.id.to_string(), "Is the retry bounded?").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["anchor"]["kind"], "comment_item");
+    assert_eq!(body["mine"], true);
+    let id: QuestionId = serde_json::from_value(body["id"].clone()).expect("id");
+    let record = f
+        .state
+        .db
+        .questions()
+        .get(id, Timestamp::now())
+        .await
+        .expect("question");
+    assert_eq!(record.analysis_id, Some(f.analysis));
+    assert_eq!(record.pull_request_id, Some(1));
+    let job = f.scripted_job(id).await;
+    let prompt = &job.spec.prompt;
+    assert!(
+        prompt.contains("The question is about this review comment"),
+        "{prompt}"
+    );
+    let (before, after) = prompt
+        .split_once("The retry loop has no upper bound.")
+        .expect("the comment is in the prompt");
+    assert!(
+        before.contains("<<<DATA") && after.contains("<<<END"),
+        "fenced as data"
+    );
+    assert!(
+        f.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .expect("passes")
+            .is_empty()
+    );
+
+    let path = LIST_PR_QUESTIONS
+        .path
+        .replace("{owner}", "acme")
+        .replace("{name}", "node-client")
+        .replace("{number}", "482");
+    let request = Request::get(path)
+        .header(header::COOKIE, &f.cookie)
+        .body(Body::empty())
+        .expect("request");
+    let (status, list) = json_of(
+        router(f.state.clone())
+            .oneshot(request)
+            .await
+            .expect("response"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list.as_array().map(Vec::len), Some(1), "{list}");
+}
+
+/// Without an analysis of the head (the PR moved on), the question is stored for the pull request and a
+/// `verify_comments` question pass takes it; an item of another pull request is not found.
+#[tokio::test]
+async fn comment_item_question_without_an_analysis_starts_a_question_pass() {
+    let f = fixture(false).await;
+    let item = comment_item(&f.state, "k1").await;
+    let (status, body) = ask_on_pr(&f, &item.id.to_string(), "Is the retry bounded?").await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id: QuestionId = serde_json::from_value(body["id"].clone()).expect("id");
+    let record = f
+        .state
+        .db
+        .questions()
+        .get(id, Timestamp::now())
+        .await
+        .expect("question");
+    assert_eq!(record.analysis_id, None);
+    let passes = f
+        .state
+        .db
+        .review_loop()
+        .live_passes()
+        .await
+        .expect("passes");
+    assert_eq!(passes.len(), 1);
+    assert_eq!(passes[0].question, Some(id));
+    let submitted = f.scripted.requests();
+    assert!(
+        submitted
+            .iter()
+            .any(|request| request.stage == JobStage::Verify(passes[0].id)),
+        "{submitted:?}"
+    );
+
+    let (status, body) = ask_on_pr(
+        &f,
+        &contracts::ids::CommentItemId::new_random().to_string(),
+        "Why?",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = ask_on_pr(&f, &item.id.to_string(), "   ").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }

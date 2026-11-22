@@ -1214,6 +1214,24 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "A review-comment item of the pull request (ADR-023): with an analysis of the head its Ask session answers,\nwithout one a `verify_comments` question pass answers.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "comment_item"
+            },
+            "item": {
+              "description": "The item.",
+              "$ref": "#/$defs/CommentItemId"
+            }
+          },
+          "required": [
+            "kind",
+            "item"
+          ]
         }
       ]
     },
@@ -1257,6 +1275,11 @@
           "const": "base"
         }
       ]
+    },
+    "CommentItemId": {
+      "description": "Identifier of a review-loop item (a PR review comment, review-body item or PR-level question).",
+      "type": "string",
+      "format": "uuid"
     },
     "AskState": {
       "description": "State of a question.",

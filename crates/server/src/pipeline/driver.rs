@@ -470,7 +470,7 @@ impl Driver<'_> {
             }
             JobStage::PrContext => self.results.pr_context.is_some(),
             JobStage::Flow(id) => self.ended.contains_key(id),
-            JobStage::Ask(_) | JobStage::Judge { .. } => true,
+            JobStage::Ask(_) | JobStage::Judge { .. } | JobStage::Verify(_) => true,
         }
     }
 
@@ -725,7 +725,7 @@ impl Driver<'_> {
                         Err(issues) => Some(issues),
                     }
                 }
-                JobStage::Ask(_) | JobStage::Judge { .. } => {
+                JobStage::Ask(_) | JobStage::Judge { .. } | JobStage::Verify(_) => {
                     return Err(self.invalid(&stage, "not a pipeline stage"));
                 }
             }
@@ -805,12 +805,13 @@ impl Driver<'_> {
                 stage: stage.key(),
                 what: "plan of the flows",
             }),
-            JobStage::PrContext | JobStage::Ask(_) | JobStage::Judge { .. } => {
-                Err(PipelineError::RepairExhausted {
-                    stage: stage.key(),
-                    what: "PR context",
-                })
-            }
+            JobStage::PrContext
+            | JobStage::Ask(_)
+            | JobStage::Judge { .. }
+            | JobStage::Verify(_) => Err(PipelineError::RepairExhausted {
+                stage: stage.key(),
+                what: "PR context",
+            }),
         }
     }
 
@@ -961,7 +962,7 @@ impl Driver<'_> {
                 };
                 finish(RepairOf::Flow(&input), &|| prompts::analyse_flow(&input))?
             }
-            JobStage::Ask(_) | JobStage::Judge { .. } => {
+            JobStage::Ask(_) | JobStage::Judge { .. } | JobStage::Verify(_) => {
                 return Err(self.invalid(stage, "not a pipeline stage"));
             }
         };
