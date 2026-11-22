@@ -23,8 +23,8 @@ mod watches;
 pub use actions::ActionOutcome;
 pub use carry::NewCarryEvent;
 pub use decisions::{
-    ClaimOutcome, DecideOutcome, NewDecision, NewEffect, ReportOutcomeRecord, ReportRequest,
-    StoredDecision,
+    ClaimOutcome, DecideOutcome, DecisionOwner, NewDecision, NewEffect, OpenFeedEntry,
+    ReportOutcomeRecord, ReportRequest, StoredDecision,
 };
 pub use items::{
     CommentPrRecord, ItemRecord, NewPass, ObservedItem, PassCause, PassRecord, PassStart,

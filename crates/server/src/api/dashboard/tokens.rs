@@ -145,8 +145,16 @@ fn validate(request: &CreateAccessToken) -> Result<(), TokensApiError> {
             "The name must be 1 to 60 characters long.",
         ));
     }
-    if request.scopes != [TokenScope::Read] {
-        return Err(TokensApiError::Invalid("The only scope is \"read\"."));
+    let allowed = matches!(
+        request.scopes.as_slice(),
+        [TokenScope::Read]
+            | [TokenScope::Read, TokenScope::ReviewLoopExecute]
+            | [TokenScope::ReviewLoopExecute, TokenScope::Read]
+    );
+    if !allowed {
+        return Err(TokensApiError::Invalid(
+            "The scopes are \"read\", optionally with \"review_loop_execute\".",
+        ));
     }
     if !CreateAccessToken::EXPIRY_DAYS.contains(&request.expires_in_days) {
         return Err(TokensApiError::Invalid(

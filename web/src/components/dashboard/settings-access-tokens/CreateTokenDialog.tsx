@@ -26,7 +26,8 @@ export function nameProblem(name: string, names: string[]): string | null {
 }
 
 /**
- * Modal dialog that creates a read-only token and shows its secret once, with a copy button. The secret lives
+ * Modal dialog that creates a token (read, optionally with the review-loop execute scope) and shows its secret
+ * once, with a copy button. The secret lives
  * only in this dialog's state: never in browser storage or logs, and it is dropped when the dialog closes.
  */
 export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialogProps) {
@@ -34,6 +35,7 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
   const dialog = useRef<HTMLDivElement>(null);
   const [name, setName] = useState("");
   const [days, setDays] = useState(DEFAULT_EXPIRY_DAYS);
+  const [execute, setExecute] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [secret, setSecret] = useState<string | null>(null);
   const [copied, setCopied] = useState<"copied" | "failed" | null>(null);
@@ -50,7 +52,11 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
     setProblem(refused);
     if (refused) return;
     await action.run(async () => {
-      const created = await onCreate({ name: trimmed, scopes: ["read"], expires_in_days: days });
+      const created = await onCreate({
+        name: trimmed,
+        scopes: execute ? ["read", "review_loop_execute"] : ["read"],
+        expires_in_days: days,
+      });
       setSecret(created.token);
     });
   };
@@ -150,6 +156,18 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
             <p>
               Scope: <b>read</b>. The token reads what you can read here and cannot change anything.
             </p>
+            <label className="flex min-h-6 items-start gap-2">
+              <input
+                type="checkbox"
+                checked={execute}
+                className="mt-1"
+                onChange={(e) => setExecute(e.target.checked)}
+              />
+              <span>
+                Also <b>review_loop_execute</b>: an implementing agent may claim your decisions on PR
+                comments, report what it did and set its own push target. It still cannot decide.
+              </span>
+            </label>
             {message && (
               <p id={`${id}-error`} role="alert" className="text-high">
                 Not created: {message}

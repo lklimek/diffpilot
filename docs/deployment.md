@@ -44,7 +44,10 @@ emptied at every start. `<project>` is the compose project name: `diffpilot` by 
 - A GitHub account that can create a GitHub App (section 4), and a ChatGPT account for the Codex sign-in (section 8).
 - Outbound HTTPS from the host to GitHub, Docker Hub and the LLM provider (`chatgpt.com`, `openai.com`); with
   `SR_PR_HYGIENE_URL` set, also from the server to that PR Hygiene host; with `SR_THEPASTACLAW_STATUS_URL` set, to
-  that host (`thepastaclaw.github.io`) (ADR-022).
+  that host (`thepastaclaw.github.io`) (ADR-022). Notification channels (ntfy, webhook) and agent push targets are
+  outbound destinations the users and their agents choose (ADR-023): the server reaches whatever `http`/`https`
+  host they enter (e.g. `ntfy.sh`, a Home Assistant on the LAN); `SR_NOTIFY_DENY_PRIVATE=1` keeps it off private
+  addresses.
 - Optional: a [MemCan](https://github.com/lklimek/memcan) instance (section 9).
 - On the host for backups and checks: `bash`, `openssl`, `sqlite3` 3.27+ (`deploy/backup.sh`), `jq` (rendering
   check of `deploy/check-production-config.sh`).
@@ -187,6 +190,7 @@ Required means compose or the service refuses to start without it. "Secret" valu
 | `SR_MEMCAN_UI_URL` | no | empty | MemCan web UI base including `/ui`; the dashboard links TODOs to `<base>/tasks/<uuid>`. |
 | `SR_PR_HYGIENE_URL` | no | empty | PR Hygiene service base URL (`http`/`https`), e.g. `https://pr-hygiene.services.dash.org`. Set: the dashboard plug-in reads its public API (no credential) at most once a minute while someone uses the dashboard (ADR-022). Empty: off. |
 | `SR_THEPASTACLAW_STATUS_URL` | no | empty | URL of thepastaclaw's review-system status file (`http`/`https`), e.g. `https://thepastaclaw.github.io/review-system/data/status.json`. Set: the dashboard plug-in reads it (no credential) at most once a minute while someone uses the dashboard and notes which pull requests thepastaclaw reviews or has queued (ADR-022). Empty: off. |
+| `SR_NOTIFY_DENY_PRIVATE` | no | `0` | `1`: notification channels and agent push targets may not reach private, loopback, link-local or unique-local addresses (an address in the URL is refused when saved; a host name is resolved by the server and only its public addresses are used; no proxy from the environment). `0`: they may (Home Assistant, a self-hosted ntfy on the LAN). Other values stop the server at start (exit 1). |
 | `RUST_LOG` | no | `info` | Log level of server and runner (`debug`, or per module, e.g. `info,runner=debug`). |
 
 **Runner**

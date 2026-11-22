@@ -1668,7 +1668,7 @@ export type CreateAccessToken = {
  */
 name: string,
 /**
- * Requested scopes; v1.1 accepts only `read`.
+ * Requested scopes: `read`, optionally with `review_loop_execute` (ADR-023).
  */
 scopes: Array<TokenScope>,
 /**
@@ -5105,9 +5105,9 @@ url: string,
  */
 topic: string | null,
 /**
- * New secret; absent keeps the stored one.
+ * The secret: ntfy access token or webhook `Authorization` value.
  */
-secret: string | null,
+secret: SecretChange,
 /**
  * Events.
  */
@@ -5134,9 +5134,9 @@ url: string,
  */
 topic: string | null,
 /**
- * New secret; absent keeps the stored one.
+ * The secret: ntfy access token or webhook `Authorization` value.
  */
-secret: string | null, };
+secret: SecretChange, };
 
 /**
  * Identifier of an Ask question.
@@ -5818,6 +5818,15 @@ basis: string, };
  * Whether a score is final.
  */
 export type ScoreState = "final" | "provisional" | "unjudged";
+
+/**
+ * What a save does with a channel's or push target's stored secret (an absent field keeps it).
+ */
+export type SecretChange = { "action": "keep" } | { "action": "replace",
+/**
+ * The new secret.
+ */
+value: string, } | { "action": "remove" };
 
 /**
  * Body of `PUT /api/v1/settings/llm/ask-effort`.

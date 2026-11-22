@@ -828,21 +828,21 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RW2 | GET | `/api/v1/watches` | read | – | `WatchList` |
 | RW3 | GET | `/api/v1/events` | read | – | SSE `UserEvent` (`sse-events.md`) |
 | RN1 | GET | `/api/v1/settings/notifications` | session | – | `NotificationSettings` (secrets as `secret_last4` only) |
-| RN2 | PUT / DELETE | `/api/v1/settings/notifications/channels/{kind}` | session_csrf | `PutChannelRequest` / – | `NotificationChannel` / 204; 422 `scheme_not_allowed`; an absent `secret` keeps the stored one |
+| RN2 | PUT / DELETE | `/api/v1/settings/notifications/channels/{kind}` | session_csrf | `PutChannelRequest` / – | `NotificationChannel` / 204; 422 `scheme_not_allowed`; 400 `invalid_request` for a URL with credentials or a denied private address, a bad ntfy topic or secret; `secret` is a `SecretChange` (absent or `keep`, `replace`, `remove`) |
 | RN3 | POST | `…/channels/{kind}/test` | session_csrf | – | `ChannelTestResult` (one attempt) |
 | RF1 | GET | `/api/v1/decision-feed` | read | `FeedQuery` | `DecisionFeed`; `ETag` |
 | RF1b | GET | `/api/v1/decision-feed/decisions/{id}` | read | – | `FeedDecision` (the `fetch` link of `decision_available` and of push messages) |
 | RF2 | GET | `/api/v1/decision-feed/events` | read | `FeedQuery` | SSE `FeedEvent`; registers the subscription |
-| RF3 | POST | `/api/v1/decision-feed/decisions/{id}/claim` | token: review_loop_execute | `ClaimRequest` | 201 `Claim`; 409 `claimed`; 422 `capability_missing` |
-| RF4 | POST | `/api/v1/decision-feed/effects/{id}/reports` | token: review_loop_execute | `EffectReportRequest` | 201; 409 `lease_expired`; a repeated idempotency key is a no-op |
+| RF3 | POST | `/api/v1/decision-feed/decisions/{id}/claim` | token: review_loop_execute | `ClaimRequest` | 201 `Claim`; 409 `claimed`; 422 `capability_missing`; 409 `conflict` when nothing is left for an agent |
+| RF4 | POST | `/api/v1/decision-feed/effects/{id}/reports` | token: review_loop_execute | `EffectReportRequest` | 201 (no body); 409 `claimed` (not the claimer), 409 `lease_expired`; 400 for `done` without `reference` or `failed` without `message`; a repeated idempotency key is a no-op |
 | RF5 | PUT / DELETE | `/api/v1/decision-feed/push-target` | token: review_loop_execute | `PutPushTargetRequest` / – | `PushTarget` / 204; the calling token's own target only |
 
 ### Rules
 - **Who decides (T22).** Decisions, batches, re-reads, re-assessments, watches and channel settings need a session
   with CSRF; a token gets 403 `token_not_accepted`. `RouteAuth::TokenOnly(TokenScope::ReviewLoopExecute)` (named
   `token_review_loop_execute` in `routes.ts`) marks RF3–RF5: a personal access token with the scope
-  `review_loop_execute`, never a session, any method (ADR-019 amendment: a token may call a mutating route only when
-  the route names its write scope). These are the only non-`GET` public routes that are not `session_csrf`
+  `review_loop_execute`, never a session (401 `unauthenticated` with `WWW-Authenticate: Bearer` without a token),
+  any method (ADR-019 amendment: a token may call a mutating route only when the route names its write scope). These are the only non-`GET` public routes that are not `session_csrf`
   (contract tests `execute_scope_is_only_on_feed_write_routes`, `mutating_browser_routes_require_csrf`).
 - **Revisions.** Every `CommentItem` carries `revision`; a decision names `item_revision` and gets 409
   `item_changed` when the item changed meanwhile (a read, an assessment, another user's decision). Decisions are
@@ -854,8 +854,9 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
   only decisions whose open effects all fall within the claimer's capabilities can be claimed. A report on another
   token's claim answers 409 `claimed`; after the lease ended 409 `lease_expired`. `released` returns the decision
   to the feed.
-- **Secrets (T28).** Channel and push-target secrets are accepted in requests only; responses carry
-  `secret_last4`. The browser notification toggle stays per browser (local storage) and is not part of RN1.
+- **Secrets (T28).** Channel and push-target secrets are accepted in requests only (`SecretChange`: an absent
+  field or `{"action": "keep"}` keeps the stored one, `{"action": "replace", "value": …}` (8–4096 characters)
+  replaces it, `{"action": "remove"}` removes it); responses carry `secret_last4`. The browser notification toggle stays per browser (local storage) and is not part of RN1.
 - **Outbound payloads** (contract types, plan §5.5): webhook `WebhookPayload` `{v, event, text, url, pr, at}`;
   agent push `AgentPushPayload` `{v, event, decision_id, pr, fetch}`, never reply text, reasons, comment bodies or
   secrets (contract test `push_payloads_have_a_fixed_shape`).

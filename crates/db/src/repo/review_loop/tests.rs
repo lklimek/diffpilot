@@ -1380,3 +1380,198 @@ async fn reopen_asks_again_and_skips_are_per_reader_and_revision() {
         .id;
     assert_eq!(rl.decision_user(decision).await.expect("user"), "u1");
 }
+
+#[tokio::test]
+async fn open_feed_tracks_claimable_decisions_with_their_kinds_and_owners() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "dedupe-a").await;
+    let decision = decide_one(&db, fix_decision(&item), at(10)).await;
+    let all = [EffectKind::Fix, EffectKind::Reply, EffectKind::Resolve];
+    let open = rl.open_feed(at(11)).await.expect("open");
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].decision, decision.id);
+    assert_eq!(open[0].tenant_id, T);
+    assert_eq!(open[0].pr.number, 482);
+    assert_eq!(open[0].kinds, all);
+
+    let lease = SignedDuration::from_mins(30);
+    let a = AccessTokenId("agentAAA".into());
+    rl.claim(decision.id, &a, &all, lease, at(12))
+        .await
+        .expect("claim");
+    assert!(rl.open_feed(at(13)).await.expect("claimed").is_empty());
+    assert_eq!(
+        rl.open_feed(at(12) + lease + SignedDuration::from_secs(1))
+            .await
+            .expect("expired")
+            .len(),
+        1,
+        "a lapsed lease is claimable again"
+    );
+
+    let owner = rl
+        .decision_owner(decision.id)
+        .await
+        .expect("owner")
+        .expect("known");
+    assert_eq!((owner.tenant_id.as_str(), owner.pull_request_id), (T, PR));
+    let by_effect = rl
+        .effect_owner(decision.effects[1].id)
+        .await
+        .expect("owner")
+        .expect("known");
+    assert_eq!(by_effect, owner);
+    assert_eq!(
+        rl.decision_owner(contracts::ids::DecisionId::new_random())
+            .await
+            .expect("unknown"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn event_deliveries_are_queued_once_per_subscribed_channel() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let channel = |events: Vec<UserEventKind>, enabled| ChannelInput {
+        url: "https://ntfy.example".into(),
+        topic: Some("t".into()),
+        secret: SecretUpdate::Keep,
+        events,
+        enabled,
+    };
+    let ntfy = rl
+        .put_channel(
+            T,
+            "u1",
+            ChannelKind::Ntfy,
+            &channel(vec![UserEventKind::QuestionsReady], true),
+        )
+        .await
+        .expect("ntfy");
+    rl.put_channel(
+        T,
+        "u1",
+        ChannelKind::Webhook,
+        &channel(vec![UserEventKind::RoundExecuted], true),
+    )
+    .await
+    .expect("webhook");
+    rl.put_channel(
+        T,
+        "u2",
+        ChannelKind::Ntfy,
+        &channel(vec![UserEventKind::QuestionsReady], false),
+    )
+    .await
+    .expect("off");
+    let event = |user: &str, kind, pull_request_id| NewUserEvent {
+        user_id: user.into(),
+        kind,
+        pull_request_id,
+        count: 5,
+        text: "acme/node-client #482: 5 questions ready".into(),
+        url: Some("https://review.example/pr/acme/node-client/482/comments".into()),
+    };
+    let ready = rl
+        .add_user_event(
+            T,
+            &event("u1", UserEventKind::QuestionsReady, Some(PR)),
+            at(5),
+        )
+        .await
+        .expect("ready");
+    rl.add_user_event(T, &event("u1", UserEventKind::Test, None), at(6))
+        .await
+        .expect("test");
+    rl.add_user_event(
+        T,
+        &event("u2", UserEventKind::QuestionsReady, Some(PR)),
+        at(7),
+    )
+    .await
+    .expect("other user");
+    assert_eq!(
+        rl.enqueue_event_deliveries(at(0), at(8))
+            .await
+            .expect("queue"),
+        1,
+        "only u1's ntfy channel takes questions_ready; tests and disabled channels are left out"
+    );
+    assert_eq!(
+        rl.enqueue_event_deliveries(at(0), at(9))
+            .await
+            .expect("again"),
+        0
+    );
+    assert_eq!(
+        rl.enqueue_event_deliveries(at(5), at(9))
+            .await
+            .expect("later"),
+        0,
+        "events at or before `since` are not queued"
+    );
+    let due = rl.due_deliveries(at(8), 10).await.expect("due");
+    assert_eq!(
+        due.iter().map(|d| d.target.clone()).collect::<Vec<_>>(),
+        [DeliveryTarget::Channel {
+            event: ready,
+            channel: ntfy.id
+        }]
+    );
+    rl.postpone_delivery(due[0].id, at(100))
+        .await
+        .expect("postpone");
+    assert!(
+        rl.due_deliveries(at(99), 10)
+            .await
+            .expect("later")
+            .is_empty()
+    );
+    assert_eq!(
+        rl.due_deliveries(at(100), 10).await.expect("due")[0].attempts,
+        0
+    );
+
+    let read = rl.user_event(ready).await.expect("read").expect("known");
+    assert_eq!(read.kind, UserEventKind::QuestionsReady);
+    assert_eq!(read.pr.map(|pr| pr.number), Some(482));
+    assert_eq!(
+        rl.channel(ntfy.id).await.expect("channel").map(|c| c.kind),
+        Some(ChannelKind::Ntfy)
+    );
+    assert_eq!(
+        rl.last_user_event_at(PR, UserEventKind::QuestionsReady)
+            .await
+            .expect("last"),
+        Some(at(7))
+    );
+    assert_eq!(
+        rl.last_user_event_at(PR, UserEventKind::RoundExecuted)
+            .await
+            .expect("none"),
+        None
+    );
+
+    let token = AccessTokenId("agentAAA".into());
+    rl.subscribe(T, &token, &[EffectKind::Reply], at(1))
+        .await
+        .expect("subscribe");
+    assert!(
+        rl.subscription(&token, at(2))
+            .await
+            .expect("subscription")
+            .is_some()
+    );
+    sqlx::query("UPDATE access_tokens SET revoked_at = 't' WHERE id = 'agentAAA'")
+        .execute(&db.pool)
+        .await
+        .expect("revoke");
+    assert!(
+        rl.subscription(&token, at(3))
+            .await
+            .expect("revoked")
+            .is_none()
+    );
+}

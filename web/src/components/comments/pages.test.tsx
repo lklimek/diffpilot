@@ -221,7 +221,41 @@ describe("NotificationChannelCard (V7)", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "All decisions of a round executed" }));
     await userEvent.click(screen.getByRole("button", { name: "Save channel" }));
     expect(onSave).toHaveBeenCalledWith(
-      expect.objectContaining({ secret: null, events: ["questions_ready", "round_executed"], enabled: true }),
+      expect.objectContaining({
+        secret: { action: "keep" },
+        events: ["questions_ready", "round_executed"],
+        enabled: true,
+      }),
     );
+  });
+
+  it("replaces or removes the stored secret only by an explicit choice", async () => {
+    const onSave = vi.fn();
+    render(
+      <NotificationChannelCard
+        kind="ntfy"
+        channel={ntfy!}
+        onSave={onSave}
+        onRemove={vi.fn()}
+        onTest={vi.fn()}
+        testResult={null}
+        busy={false}
+        error={null}
+        now={NOW}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Remove secret" }));
+    expect(screen.getByLabelText("Access token (optional)")).toHaveValue("removed when you save");
+    await userEvent.click(screen.getByRole("button", { name: "Save channel" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ secret: { action: "remove" } }));
+    await userEvent.click(screen.getByRole("button", { name: "Replace" }));
+    await userEvent.type(screen.getByLabelText("Access token (optional)"), "tk_new_token_1234");
+    await userEvent.click(screen.getByRole("button", { name: "Save channel" }));
+    expect(onSave).toHaveBeenLastCalledWith(
+      expect.objectContaining({ secret: { action: "replace", value: "tk_new_token_1234" } }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Replace" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save channel" }));
+    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ secret: { action: "keep" } }));
   });
 });

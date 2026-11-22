@@ -206,7 +206,12 @@ export const reviewLoopHandlers = [
       kind,
       url: body.url,
       topic: body.topic,
-      secret_last4: body.secret ? body.secret.slice(-4) : (old?.secret_last4 ?? null),
+      secret_last4:
+        body.secret?.action === "replace"
+          ? body.secret.value.slice(-4)
+          : body.secret?.action === "remove"
+            ? null
+            : (old?.secret_last4 ?? null),
       events: body.events,
       enabled: body.enabled,
       delivery: old?.delivery ?? { last: null, last_error: null, failing_since: null },

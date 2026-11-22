@@ -53,6 +53,9 @@ pub const PR_HYGIENE_URL: &str = "SR_PR_HYGIENE_URL";
 /// URL of thepastaclaw's review-system `status.json`; set, the dashboard's thepastaclaw plug-in is on (optional,
 /// ADR-022).
 pub const THEPASTACLAW_STATUS_URL: &str = "SR_THEPASTACLAW_STATUS_URL";
+/// `1`: notification channels and agent push targets may not reach private, loopback or link-local addresses
+/// (plan §5.5); unset or `0`: they may (LAN targets such as Home Assistant).
+pub const NOTIFY_DENY_PRIVATE: &str = "SR_NOTIFY_DENY_PRIVATE";
 /// Path of a file holding `SR_SECRET_KEY`; exactly one of the two may be set.
 pub const SECRET_KEY_FILE: &str = "SR_SECRET_KEY_FILE";
 /// Path of a file holding `SR_RUNNER_SECRET`; exactly one of the two may be set.
@@ -104,6 +107,8 @@ pub struct Config {
     pub pr_hygiene_url: Option<Url>,
     /// thepastaclaw's status file, the dashboard plug-in's source (default: none, plug-in off; ADR-022).
     pub thepastaclaw_status_url: Option<Url>,
+    /// Outbound notifications refuse private addresses (`SR_NOTIFY_DENY_PRIVATE=1`).
+    pub notify_deny_private: bool,
 }
 
 /// GitHub App credentials and GitHub base URLs (configurable for the fake GitHub).
@@ -174,6 +179,12 @@ pub enum ConfigError {
         /// Parse error.
         #[source]
         source: ParseIntError,
+    },
+    /// The value is neither `0` nor `1`.
+    #[error("environment variable {key} must be 0 or 1")]
+    InvalidFlag {
+        /// Variable name.
+        key: &'static str,
     },
     /// The value is not a socket address.
     #[error("environment variable {key} is not a valid address such as 0.0.0.0:3000")]
@@ -396,6 +407,15 @@ impl Config {
             thepastaclaw_status_url: get(THEPASTACLAW_STATUS_URL)?
                 .map(|value| parse_http_url(THEPASTACLAW_STATUS_URL, &value))
                 .transpose()?,
+            notify_deny_private: match get(NOTIFY_DENY_PRIVATE)?.as_deref() {
+                None | Some("0") => false,
+                Some("1") => true,
+                Some(_) => {
+                    return Err(ConfigError::InvalidFlag {
+                        key: NOTIFY_DENY_PRIVATE,
+                    });
+                }
+            },
         })
     }
 }
@@ -848,6 +868,23 @@ pub(crate) mod tests {
             parse(&env),
             Err(ConfigError::UnsupportedUrlScheme {
                 key: PR_HYGIENE_URL
+            })
+        ));
+    }
+
+    #[test]
+    fn notify_deny_private_is_off_unless_one() {
+        assert!(!parse(&required_env()).expect("valid").notify_deny_private);
+        let mut env = required_env();
+        for (value, expected) in [("0", false), ("1", true)] {
+            env.insert(NOTIFY_DENY_PRIVATE, value.to_owned());
+            assert_eq!(parse(&env).expect("valid").notify_deny_private, expected);
+        }
+        env.insert(NOTIFY_DENY_PRIVATE, "yes".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidFlag {
+                key: NOTIFY_DENY_PRIVATE
             })
         ));
     }
