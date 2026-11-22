@@ -1,0 +1,92 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){comments(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id databaseId author{login __typename} body createdAt lastEditedAt url}}}}}",
+      "variables": {
+        "o": "acme",
+        "n": "node-client",
+        "pr": 482
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "comments": {
+            "totalCount": 5,
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": "Y3Vyc29yOnYyOpHO"
+            },
+            "nodes": [
+              {
+                "id": "IC_fixture482_g1",
+                "databaseId": 5000000101,
+                "author": {
+                  "login": "thepastaclaw",
+                  "__typename": "User"
+                },
+                "body": "<!-- thepastaclaw-gate v1 -->\n⛔ Final review complete — 1 blocking finding(s) (commit 52d2da14) · triage: normal · Phase 2 only (no Phase 1 for this repository)",
+                "createdAt": "2026-11-10T11:00:00Z",
+                "lastEditedAt": "2026-11-12T10:30:03Z",
+                "url": "https://github.com/acme/node-client/pull/482#issuecomment-5000000101"
+              },
+              {
+                "id": "IC_fixture482_s1",
+                "databaseId": 5000000102,
+                "author": {
+                  "login": "github-actions",
+                  "__typename": "Bot"
+                },
+                "body": "<!-- platform-pr-review-state-v1 {\"head\":\"52d2da140191a9d47becf6a446310be803c007fc\",\"number\":482,\"state\":\"waiting-author\",\"version\":1} -->\nWaiting for the author.",
+                "createdAt": "2026-11-12T10:31:00Z",
+                "lastEditedAt": null,
+                "url": "https://github.com/acme/node-client/pull/482#issuecomment-5000000102"
+              },
+              {
+                "id": "IC_fixture482_h1",
+                "databaseId": 5000000103,
+                "author": {
+                  "login": "bob",
+                  "__typename": "User"
+                },
+                "body": "The changelog entry is missing; please add one under Unreleased.",
+                "createdAt": "2026-11-12T09:05:00Z",
+                "lastEditedAt": null,
+                "url": "https://github.com/acme/node-client/pull/482#issuecomment-5000000103"
+              },
+              {
+                "id": "IC_fixture482_b1",
+                "databaseId": 5000000104,
+                "author": {
+                  "login": "thepastaclaw",
+                  "__typename": "User"
+                },
+                "body": "@bob on it — I've queued this as job `cj-20261112-091000-0001` and will reply here.",
+                "createdAt": "2026-11-12T09:10:00Z",
+                "lastEditedAt": null,
+                "url": "https://github.com/acme/node-client/pull/482#issuecomment-5000000104"
+              },
+              {
+                "id": "IC_fixture482_a1",
+                "databaseId": 5000000105,
+                "author": {
+                  "login": "carol-agent",
+                  "__typename": "User"
+                },
+                "body": "Bound the total retry time (review body): fixed in 52d2da1401.",
+                "createdAt": "2026-11-12T10:00:00Z",
+                "lastEditedAt": null,
+                "url": "https://github.com/acme/node-client/pull/482#issuecomment-5000000105"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

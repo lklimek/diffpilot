@@ -1,0 +1,176 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviews(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id databaseId author{login __typename} state submittedAt lastEditedAt commit{oid} body url}}}}}",
+      "variables": {
+        "o": "acme",
+        "n": "node-client",
+        "pr": 482
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "reviews": {
+            "totalCount": 9,
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": "Y3Vyc29yOnYyOpO1"
+            },
+            "nodes": [
+              {
+                "id": "PRR_fixture482_r0",
+                "databaseId": 4000000100,
+                "author": {
+                  "login": "thepastaclaw",
+                  "__typename": "User"
+                },
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-11-10T12:00:00Z",
+                "lastEditedAt": null,
+                "commit": {
+                  "oid": "3f9a1c2e8b7d6c5a4f3e2d1c0b9a8f7e6d5c4b3a"
+                },
+                "body": "<!-- thepastaclaw-review v1 -->\n## Review\n\n🟡 1 suggestion(s)",
+                "url": "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000100"
+              },
+              {
+                "id": "PRR_fixture482_r1",
+                "databaseId": 4000000101,
+                "author": {
+                  "login": "thepastaclaw",
+                  "__typename": "User"
+                },
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-11-11T09:00:02Z",
+                "lastEditedAt": "2026-11-11T16:20:02Z",
+                "commit": {
+                  "oid": "3f9a1c2e8b7d6c5a4f3e2d1c0b9a8f7e6d5c4b3a"
+                },
+                "body": "<!-- thepastaclaw-review v1 -->\n<!-- thepastaclaw-review-phase v1 phase=final sha=3f9a1c2e8b7d6c5a4f3e2d1c0b9a8f7e6d5c4b3a policy=45e4063a411d5823 -->\n## Final validation — Phase 2 only (no Phase 1 for this repository)\n\n<!-- thepastaclaw-review-status v1 -->\n> **Updated after discussion:** 1 finding(s) of this review were settled in the inline threads; 2 blocking finding(s) still stand.\n> - ⏭️ Deferred (maintainer decision): 💬 Name the histogram after its unit (tracked in https://github.com/acme/node-client/issues/490)\n\nRequest changes: the retry loop can resend a call the node already applied.\n\n🔴 2 blocking | 🟡 1 suggestion(s) | 💬 ~~1~~ 0 nitpick(s)\n\n### 1 finding(s) not shown inline (the lines are not part of this PR's diff)\n\n**🔴 Blocking: Bound the total retry time**\n`src/rpc/retry.rs:20-26`\n\nEach attempt waits up to the full timeout, so five attempts can take minutes.\n\n<sub>source: `model-a` (phase2-reviewer: general)</sub>\n\n<details>\n<summary>Review provenance</summary>\n\nSource: reviewer 1: `model-a` (agent: `phase2-reviewer`, role: `general`)\n\n- Triage: `normal`\n\n</details>\n\n<details>\n<summary>🤖 Prompt for all review comments with AI agents</summary>\n\n```\nIn `src/rpc/client.rs`:\n- [BLOCKING] src/rpc/client.rs:118-120: Count only finished attempts in the metric\n```\n</details>",
+                "url": "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000101"
+              },
+              {
+                "id": "PRR_fixture482_r3",
+                "databaseId": 4000000103,
+                "author": {
+                  "login": "carol-agent",
+                  "__typename": "User"
+                },
+                "state": "COMMENTED",
+                "submittedAt": "2026-11-11T15:00:00Z",
+                "lastEditedAt": null,
+                "commit": {
+                  "oid": "9f3c2e1a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e"
+                },
+                "body": "",
+                "url": "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000103"
+              },
+              {
+                "id": "PRR_fixture482_r4",
+                "databaseId": 4000000104,
+                "author": {
+                  "login": "thepastaclaw",
+                  "__typename": "User"
+                },
+                "state": "COMMENTED",
+                "submittedAt": "2026-11-11T16:19:58Z",
+                "lastEditedAt": null,
+                "commit": {
+                  "oid": "9f3c2e1a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e"
+                },
+                "body": "",
+                "url": "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000104"
+              },
+              {
+                "id": "PRR_fixture482_r2",
+                "databaseId": 4000000102,
+                "author": {
+                  "login": "thepastaclaw",
+                  "__typename": "User"
+                },
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-11-11T17:00:00Z",
+                "lastEditedAt": null,
+                "commit": {
+                  "oid": "9f3c2e1a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e"
+                },
+                "body": "<!-- thepastaclaw-review v1 -->\n<!-- thepastaclaw-review-phase v1 phase=final sha=9f3c2e1a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e policy=45e4063a411d5823 -->\n## Re-review — Final validation — Phase 2 only (no Phase 1 for this repository)\n\nThe retry loop now only resends idempotent calls; the delay is unbounded.\n\n🔴 1 blocking | 🟡 1 suggestion(s)\n\n### Still open from earlier rounds (1)\n\n- 🔴 **Blocking**: Bound the total retry time — `src/rpc/retry.rs:20-26` (carried)\n\n<details>\n<summary>Follow-up candidates (optional) (1)</summary>\n\n**🟡 Suggestion: Log the final failure once**\n`src/rpc/client.rs:140-142`\n\nEvery attempt logs at `warn`; one summary line after the last attempt is enough.\n\n<sub>source: `model-a` (phase2-reviewer: general)</sub>\n\n</details>\n\n<details>\n<summary>Review provenance</summary>\n\nSource: reviewer 1: `model-a` (agent: `phase2-reviewer`, role: `general`)\n\n- Triage: `normal`\n\n</details>\n\n<details>\n<summary>🤖 Prompt for all review comments with AI agents</summary>\n\n```\nIn `src/rpc/client.rs`:\n- [BLOCKING] src/rpc/client.rs:118-120: Count only finished attempts in the metric\n```\n</details>",
+                "url": "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000102"
+              },
+              {
+                "id": "PRR_fixture482_h1",
+                "databaseId": 4000000105,
+                "author": {
+                  "login": "bob",
+                  "__typename": "User"
+                },
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-11-12T09:00:01Z",
+                "lastEditedAt": null,
+                "commit": {
+                  "oid": "52d2da140191a9d47becf6a446310be803c007fc"
+                },
+                "body": "Two things before this can merge:\n\n1. The timeout should come from `Config`, not a constant.\n2. Please add a test for a call that times out twice and then succeeds.",
+                "url": "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000105"
+              },
+              {
+                "id": "PRR_fixture482_c1",
+                "databaseId": 4000000106,
+                "author": {
+                  "login": "coderabbitai",
+                  "__typename": "Bot"
+                },
+                "state": "COMMENTED",
+                "submittedAt": "2026-11-12T10:35:00Z",
+                "lastEditedAt": null,
+                "commit": {
+                  "oid": "52d2da140191a9d47becf6a446310be803c007fc"
+                },
+                "body": "<!-- coderabbit-ai-generated:v1 -->\n**Actionable comments posted: 1**",
+                "url": "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000106"
+              },
+              {
+                "id": "PRR_fixture482_r5",
+                "databaseId": 4000000107,
+                "author": {
+                  "login": "thepastaclaw",
+                  "__typename": "User"
+                },
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-11-12T10:30:02Z",
+                "lastEditedAt": null,
+                "commit": {
+                  "oid": "52d2da140191a9d47becf6a446310be803c007fc"
+                },
+                "body": "<!-- thepastaclaw-review v1 -->\n<!-- thepastaclaw-review-phase v1 phase=final sha=52d2da140191a9d47becf6a446310be803c007fc policy=45e4063a411d5823 -->\n## Re-review — Final validation — Phase 2 only (no Phase 1 for this repository)\n\nThe delay is now bounded; the metric still counts cancelled attempts.\n\n🔴 1 blocking | 🟡 2 suggestion(s)\n\n### Still open from earlier rounds (1)\n\n- 🔴 **Blocking**: Count only finished attempts in the metric — `src/rpc/client.rs:118-120` ([thread](https://github.com/acme/node-client/pull/482#discussion_r3000000301))\n\n<details>\n<summary>Review provenance</summary>\n\nSource: reviewer 1: `model-a` (agent: `phase2-reviewer`, role: `general`)\n\n- Triage: `normal`\n\n</details>\n\n<details>\n<summary>🤖 Prompt for all review comments with AI agents</summary>\n\n```\nIn `src/rpc/client.rs`:\n- [BLOCKING] src/rpc/client.rs:118-120: Count only finished attempts in the metric\n```\n</details>",
+                "url": "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000107"
+              },
+              {
+                "id": "PRR_fixture482_a1",
+                "databaseId": 4000000108,
+                "author": {
+                  "login": "alice",
+                  "__typename": "User"
+                },
+                "state": "DISMISSED",
+                "submittedAt": "2026-11-10T08:00:00Z",
+                "lastEditedAt": null,
+                "commit": {
+                  "oid": "3f9a1c2e8b7d6c5a4f3e2d1c0b9a8f7e6d5c4b3a"
+                },
+                "body": "",
+                "url": "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000108"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

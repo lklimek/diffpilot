@@ -1,0 +1,47 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "query{p0:repository(owner:\"acme\",name:\"node-client\"){pullRequest(number:482){headRefOid updatedAt reviewThreads{totalCount} comments{totalCount} reviews(last:1){nodes{id}}}} p1:repository(owner:\"acme\",name:\"node-client\"){pullRequest(number:999){headRefOid updatedAt reviewThreads{totalCount} comments{totalCount} reviews(last:1){nodes{id}}}}}",
+      "variables": {}
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "p0": {
+        "pullRequest": {
+          "headRefOid": "52d2da140191a9d47becf6a446310be803c007fc",
+          "updatedAt": "2026-11-12T10:40:12Z",
+          "reviewThreads": {
+            "totalCount": 8
+          },
+          "comments": {
+            "totalCount": 5
+          },
+          "reviews": {
+            "nodes": [
+              {
+                "id": "PRR_fixture482_a1"
+              }
+            ]
+          }
+        }
+      },
+      "p1": {
+        "pullRequest": null
+      }
+    },
+    "errors": [
+      {
+        "type": "NOT_FOUND",
+        "path": [
+          "p1",
+          "pullRequest"
+        ],
+        "message": "Could not resolve to a PullRequest with the number of 999."
+      }
+    ]
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){title state isDraft baseRefName headRefOid reviewDecision updatedAt}}}",
+      "variables": {
+        "o": "acme",
+        "n": "node-client",
+        "pr": 482
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "title": "feat(rpc): retry with backoff on timeout",
+          "state": "OPEN",
+          "isDraft": false,
+          "baseRefName": "main",
+          "headRefOid": "52d2da140191a9d47becf6a446310be803c007fc",
+          "reviewDecision": "CHANGES_REQUESTED",
+          "updatedAt": "2026-11-12T10:40:12Z"
+        }
+      }
+    }
+  }
+}

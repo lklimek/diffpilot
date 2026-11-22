@@ -1,0 +1,352 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated path line startLine diffSide resolvedBy{login} comments(first:50){totalCount nodes{databaseId author{login __typename} body createdAt lastEditedAt url pullRequestReview{id}}}}}}}}",
+      "variables": {
+        "o": "acme",
+        "n": "node-client",
+        "pr": 482
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "reviewThreads": {
+            "totalCount": 8,
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": "Y3Vyc29yOnYyOpK0"
+            },
+            "nodes": [
+              {
+                "id": "PRRT_fixture482_l1",
+                "isResolved": true,
+                "isOutdated": false,
+                "path": "src/rpc/client.rs",
+                "line": 99,
+                "startLine": 96,
+                "diffSide": "RIGHT",
+                "resolvedBy": {
+                  "login": "thepastaclaw"
+                },
+                "comments": {
+                  "totalCount": 3,
+                  "nodes": [
+                    {
+                      "databaseId": 3000000101,
+                      "author": {
+                        "login": "thepastaclaw",
+                        "__typename": "User"
+                      },
+                      "body": "<!-- thepastaclaw-review v1 finding=8db55065c705 dedupe=821d7cdc93fec6e1 -->\n<!-- thepastaclaw-thread-status v1 -->\n> ✅ **Resolved** at `9f3c2e1a`; see the replies below.\n\n**🔴 Blocking: Do not retry a call that may have been applied**\n\nThe retry loop resends `send_raw` after a timeout although the node may have applied it.\n\n<sub>source: `model-a` (phase2-reviewer: general)</sub>",
+                      "createdAt": "2026-11-11T09:00:00Z",
+                      "lastEditedAt": "2026-11-11T16:20:00Z",
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000101",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r1"
+                      }
+                    },
+                    {
+                      "databaseId": 3000000102,
+                      "author": {
+                        "login": "carol-agent",
+                        "__typename": "User"
+                      },
+                      "body": "Fixed in 9f3c2e1a0b. Only idempotent calls are retried now.",
+                      "createdAt": "2026-11-11T15:00:00Z",
+                      "lastEditedAt": null,
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000102",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r3"
+                      }
+                    },
+                    {
+                      "databaseId": 3000000103,
+                      "author": {
+                        "login": "thepastaclaw",
+                        "__typename": "User"
+                      },
+                      "body": "<!-- thepastaclaw-thread-answer v1 sha=9f3c2e1a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e reply=3000000102 finding=8db55065c705 -->\n**Resolved** (re-reviewed at `9f3c2e1a`): only idempotent calls are retried now.",
+                      "createdAt": "2026-11-11T16:19:58Z",
+                      "lastEditedAt": null,
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000103",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r4"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_l2",
+                "isResolved": false,
+                "isOutdated": false,
+                "path": "src/rpc/retry.rs",
+                "line": 41,
+                "startLine": null,
+                "diffSide": "RIGHT",
+                "resolvedBy": null,
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "databaseId": 3000000201,
+                      "author": {
+                        "login": "thepastaclaw",
+                        "__typename": "User"
+                      },
+                      "body": "<!-- thepastaclaw-review v1 finding=1642873d6475 dedupe=ef3c2e21454eefc7 -->\n**🟡 Suggestion: Cap the backoff delay**\n\nThe delay doubles without a ceiling after the fifth attempt.\n\n```suggestion\n        let delay = delay.min(MAX_DELAY);\n```\n\n<sub>source: `model-a` (phase2-reviewer: general)</sub>",
+                      "createdAt": "2026-11-12T10:30:00Z",
+                      "lastEditedAt": null,
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000201",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r5"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_l3",
+                "isResolved": false,
+                "isOutdated": false,
+                "path": "src/rpc/client.rs",
+                "line": 120,
+                "startLine": 118,
+                "diffSide": "RIGHT",
+                "resolvedBy": null,
+                "comments": {
+                  "totalCount": 3,
+                  "nodes": [
+                    {
+                      "databaseId": 3000000301,
+                      "author": {
+                        "login": "thepastaclaw",
+                        "__typename": "User"
+                      },
+                      "body": "<!-- thepastaclaw-review v1 finding=ae64453d76ac dedupe=3ba0e7fbff87a8f0 -->\n**🔴 Blocking: Count only finished attempts in the metric**\n\nThe attempt counter is incremented before the request is sent, so a cancelled attempt is counted.\n\n<sub>source: `model-a` (phase2-reviewer: general)</sub>",
+                      "createdAt": "2026-11-11T09:00:00Z",
+                      "lastEditedAt": "2026-11-12T10:30:05Z",
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000301",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r1"
+                      }
+                    },
+                    {
+                      "databaseId": 3000000302,
+                      "author": {
+                        "login": "carol-agent",
+                        "__typename": "User"
+                      },
+                      "body": "Declined here: a cancelled attempt is a real attempt for this metric.",
+                      "createdAt": "2026-11-11T15:01:00Z",
+                      "lastEditedAt": null,
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000302",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r3"
+                      }
+                    },
+                    {
+                      "databaseId": 3000000303,
+                      "author": {
+                        "login": "thepastaclaw",
+                        "__typename": "User"
+                      },
+                      "body": "<!-- thepastaclaw-thread-answer v1 sha=9f3c2e1a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e reply=3000000302 finding=ae64453d76ac -->\n**Withdrawn** (re-reviewed at `9f3c2e1a`): the metric documents that it counts started attempts.",
+                      "createdAt": "2026-11-11T16:19:59Z",
+                      "lastEditedAt": null,
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000303",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r4"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_l4",
+                "isResolved": true,
+                "isOutdated": false,
+                "path": "src/rpc/metrics.rs",
+                "line": 12,
+                "startLine": null,
+                "diffSide": "RIGHT",
+                "resolvedBy": {
+                  "login": "carol-agent"
+                },
+                "comments": {
+                  "totalCount": 3,
+                  "nodes": [
+                    {
+                      "databaseId": 3000000401,
+                      "author": {
+                        "login": "thepastaclaw",
+                        "__typename": "User"
+                      },
+                      "body": "<!-- thepastaclaw-review v1 finding=7b4457307d35 dedupe=0a1b2c3d4e5f6a7b -->\n<!-- thepastaclaw-thread-status v1 -->\n> ⏭️ **Deferred** (maintainer decision; not blocking; tracked in https://github.com/acme/node-client/issues/490) at `9f3c2e1a`; see the replies below.\n\n**💬 Nitpick: Name the histogram after its unit**\n\n`rpc_retry_delay` holds milliseconds; `_ms` would say so.\n\n<sub>source: `model-a` (phase2-reviewer: general)</sub>",
+                      "createdAt": "2026-11-11T09:00:00Z",
+                      "lastEditedAt": "2026-11-11T16:20:01Z",
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000401",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r1"
+                      }
+                    },
+                    {
+                      "databaseId": 3000000402,
+                      "author": {
+                        "login": "carol-agent",
+                        "__typename": "User"
+                      },
+                      "body": "Tracked in #490.",
+                      "createdAt": "2026-11-11T15:02:00Z",
+                      "lastEditedAt": null,
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000402",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r3"
+                      }
+                    },
+                    {
+                      "databaseId": 3000000403,
+                      "author": {
+                        "login": "thepastaclaw",
+                        "__typename": "User"
+                      },
+                      "body": "<!-- thepastaclaw-thread-answer v1 sha=9f3c2e1a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e reply=None finding=7b4457307d35 -->\n**Deferred**: tracked in #490.",
+                      "createdAt": "2026-11-11T16:20:00Z",
+                      "lastEditedAt": null,
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000403",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r4"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_l5",
+                "isResolved": false,
+                "isOutdated": true,
+                "path": "src/config.rs",
+                "line": 30,
+                "startLine": null,
+                "diffSide": "RIGHT",
+                "resolvedBy": null,
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "databaseId": 3000000501,
+                      "author": {
+                        "login": "thepastaclaw",
+                        "__typename": "User"
+                      },
+                      "body": "<!-- thepastaclaw-review v1 finding=e53a42fd0b67 -->\n**🟡 Suggestion: Validate the retry count at load time**\n\nA negative count is accepted.",
+                      "createdAt": "2026-11-10T12:00:00Z",
+                      "lastEditedAt": null,
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000501",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r0"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_l6",
+                "isResolved": false,
+                "isOutdated": false,
+                "path": "tests/rpc_retry.rs",
+                "line": 15,
+                "startLine": null,
+                "diffSide": "RIGHT",
+                "resolvedBy": null,
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "databaseId": 3000000601,
+                      "author": {
+                        "login": "thepastaclaw",
+                        "__typename": "User"
+                      },
+                      "body": "<!-- thepastaclaw-review v1 finding=c0ffee123456 dedupe=fedcba9876543210 severity=critical href=javascript:alert(1) -->\n**🟡 Suggestion: Assert the attempt count**\n\nThe test checks the result but not how often the call was sent.\n\n<sub>source: `model-a` (phase2-reviewer: general)</sub>",
+                      "createdAt": "2026-11-12T10:30:01Z",
+                      "lastEditedAt": null,
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000601",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_r5"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_l7",
+                "isResolved": false,
+                "isOutdated": false,
+                "path": "src/rpc/client.rs",
+                "line": 105,
+                "startLine": null,
+                "diffSide": "RIGHT",
+                "resolvedBy": null,
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "databaseId": 3000000701,
+                      "author": {
+                        "login": "bob",
+                        "__typename": "User"
+                      },
+                      "body": "Should `send_once` share the retry policy with reads?",
+                      "createdAt": "2026-11-12T09:00:00Z",
+                      "lastEditedAt": null,
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000701",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_h1"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_l8",
+                "isResolved": false,
+                "isOutdated": false,
+                "path": "src/rpc/error.rs",
+                "line": 8,
+                "startLine": null,
+                "diffSide": "RIGHT",
+                "resolvedBy": null,
+                "comments": {
+                  "totalCount": 1,
+                  "nodes": [
+                    {
+                      "databaseId": 3000000801,
+                      "author": {
+                        "login": "coderabbitai",
+                        "__typename": "Bot"
+                      },
+                      "body": "<!-- coderabbit-ai-generated:v1 -->\n_⚠️ Potential issue_\n\n**`Timeout` is not `Clone`.**",
+                      "createdAt": "2026-11-12T10:35:00Z",
+                      "lastEditedAt": null,
+                      "url": "https://github.com/acme/node-client/pull/482#discussion_r3000000801",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_c1"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
