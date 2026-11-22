@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CarryOverQuery",
+  "description": "Query of RC11.",
+  "type": "object",
+  "properties": {
+    "pr": {
+      "description": "One pull request, `owner/name/number`; absent for all.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cursor": {
+      "description": "Opaque cursor of the next page.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

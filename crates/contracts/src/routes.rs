@@ -47,6 +47,9 @@ pub enum RouteAuth {
     /// Session cookie, or a personal access token with this scope (`Authorization: Bearer srp_…`, ADR-019);
     /// safe methods only.
     SessionOrToken(TokenScope),
+    /// A personal access token with this scope only, never a session (ADR-023: the decision feed's claim, report
+    /// and push-target routes); any method.
+    TokenOnly(TokenScope),
 }
 
 impl RouteAuth {
@@ -59,6 +62,8 @@ impl RouteAuth {
             Self::RunnerSecret => "runner_secret",
             Self::JobToken => "job_token",
             Self::SessionOrToken(scope) => scope.as_str(),
+            Self::TokenOnly(TokenScope::Read) => "token_read",
+            Self::TokenOnly(TokenScope::ReviewLoopExecute) => "token_review_loop_execute",
         }
     }
 }
@@ -117,6 +122,8 @@ use RouteAuth::{JobToken, Public, RunnerSecret, Session, SessionCsrf};
 
 /// Session or a `read` personal access token.
 const READ: RouteAuth = RouteAuth::SessionOrToken(TokenScope::Read);
+/// A personal access token with `review_loop_execute` only (ADR-023).
+const EXECUTE: RouteAuth = RouteAuth::TokenOnly(TokenScope::ReviewLoopExecute);
 
 /// Liveness for compose health checks.
 pub const HEALTHZ: Route = route("healthz", Get, "/healthz", Public);
@@ -422,6 +429,163 @@ pub const SET_CONTROLLED_OWNERS: Route = route(
     SessionCsrf,
 );
 
+/// RC1: the PR page (ADR-023): analysis summary, comments summary, plug-in notes, watch.
+pub const GET_PR_PAGE: Route = route(
+    "getPrPage",
+    Get,
+    "/api/v1/prs/{owner}/{name}/{number}",
+    READ,
+);
+/// RC2: the Comments overview: read state, counts, rounds, assessment state, queue order.
+pub const GET_COMMENTS: Route = route(
+    "getComments",
+    Get,
+    "/api/v1/prs/{owner}/{name}/{number}/comments",
+    READ,
+);
+/// RC3: reads the PR's threads, reviews and comments from GitHub again (202; 429 under 10 s).
+pub const READ_COMMENTS: Route = route(
+    "readComments",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/read",
+    SessionCsrf,
+);
+/// RC4: the PR's items with assessments, decisions and effects (`ItemsQuery`).
+pub const LIST_COMMENT_ITEMS: Route = route(
+    "listCommentItems",
+    Get,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/items",
+    READ,
+);
+/// RC5: code context of an item (`ContextQuery`); `{item}` is `C<no>`.
+pub const GET_COMMENT_CONTEXT: Route = route(
+    "getCommentContext",
+    Get,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/context",
+    READ,
+);
+/// RC6: assesses an item again (202).
+pub const ASSESS_COMMENT: Route = route(
+    "assessComment",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/assess",
+    SessionCsrf,
+);
+/// RC8: decides an item (201 `Decision`; 409 `item_changed`).
+pub const DECIDE_COMMENT: Route = route(
+    "decideComment",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/items/{item}/decisions",
+    SessionCsrf,
+);
+/// RC9: decides several items at once (group, bulk, table; 201 `Decision[]`).
+pub const DECIDE_COMMENT_BATCH: Route = route(
+    "decideCommentBatch",
+    Post,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/decision-batches",
+    SessionCsrf,
+);
+/// RC10: the PR's decision log with effects, claims, reports and carry events.
+pub const GET_COMMENT_LOG: Route = route(
+    "getCommentLog",
+    Get,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/log",
+    READ,
+);
+/// RC11: carry-over events and counts, one PR or all (`CarryOverQuery`).
+pub const LIST_CARRY_OVERS: Route =
+    route("listCarryOvers", Get, "/api/v1/comments/carry-overs", READ);
+/// RW1: watches a PR (204; 409 `watch_limit_reached`).
+pub const WATCH_PR: Route = route(
+    "watchPr",
+    Put,
+    "/api/v1/prs/{owner}/{name}/{number}/watch",
+    SessionCsrf,
+);
+/// RW1: stops watching a PR (204).
+pub const UNWATCH_PR: Route = route(
+    "unwatchPr",
+    Delete,
+    "/api/v1/prs/{owner}/{name}/{number}/watch",
+    SessionCsrf,
+);
+/// RW2: the reader's watched PRs.
+pub const LIST_WATCHES: Route = route("listWatches", Get, "/api/v1/watches", READ);
+/// RW3: SSE stream of the reader's events (`UserEvent`).
+pub const USER_EVENTS: Route = route("userEvents", Get, "/api/v1/events", READ);
+/// RN1: the user's notification channels (secrets masked; session only).
+pub const GET_NOTIFICATION_SETTINGS: Route = route(
+    "getNotificationSettings",
+    Get,
+    "/api/v1/settings/notifications",
+    Session,
+);
+/// RN2: saves a notification channel (`{kind}` = `ntfy` | `webhook`).
+pub const PUT_NOTIFICATION_CHANNEL: Route = route(
+    "putNotificationChannel",
+    Put,
+    "/api/v1/settings/notifications/channels/{kind}",
+    SessionCsrf,
+);
+/// RN2: removes a notification channel.
+pub const DELETE_NOTIFICATION_CHANNEL: Route = route(
+    "deleteNotificationChannel",
+    Delete,
+    "/api/v1/settings/notifications/channels/{kind}",
+    SessionCsrf,
+);
+/// RN3: sends a test message through a channel (one attempt).
+pub const TEST_NOTIFICATION_CHANNEL: Route = route(
+    "testNotificationChannel",
+    Post,
+    "/api/v1/settings/notifications/channels/{kind}/test",
+    SessionCsrf,
+);
+/// RF1: claimable decisions within the capabilities (`FeedQuery`; `ETag`).
+pub const GET_DECISION_FEED: Route = route("getDecisionFeed", Get, "/api/v1/decision-feed", READ);
+/// RF1b: one feed decision (the `fetch` link of `decision_available` and of push messages).
+pub const GET_FEED_DECISION: Route = route(
+    "getFeedDecision",
+    Get,
+    "/api/v1/decision-feed/decisions/{id}",
+    READ,
+);
+/// RF2: SSE stream of `FeedEvent`; registers the subscription.
+pub const DECISION_FEED_EVENTS: Route = route(
+    "decisionFeedEvents",
+    Get,
+    "/api/v1/decision-feed/events",
+    READ,
+);
+/// RF3: claims a decision under a lease (201 `Claim`; 409 `claimed`).
+pub const CLAIM_DECISION: Route = route(
+    "claimDecision",
+    Post,
+    "/api/v1/decision-feed/decisions/{id}/claim",
+    EXECUTE,
+);
+/// RF4: reports one effect of a claimed decision (201).
+pub const REPORT_EFFECT: Route = route(
+    "reportEffect",
+    Post,
+    "/api/v1/decision-feed/effects/{id}/reports",
+    EXECUTE,
+);
+/// RF5: registers the calling token's push target.
+pub const PUT_PUSH_TARGET: Route = route(
+    "putPushTarget",
+    Put,
+    "/api/v1/decision-feed/push-target",
+    EXECUTE,
+);
+/// RF5: removes the calling token's push target.
+pub const DELETE_PUSH_TARGET: Route = route(
+    "deletePushTarget",
+    Delete,
+    "/api/v1/decision-feed/push-target",
+    EXECUTE,
+);
+
 /// Every route.
 pub const ROUTES: &[Route] = &[
     REQUEST_FLOW,
@@ -479,6 +643,31 @@ pub const ROUTES: &[Route] = &[
     LIST_ACCESS_TOKENS,
     CREATE_ACCESS_TOKEN,
     REVOKE_ACCESS_TOKEN,
+    GET_PR_PAGE,
+    GET_COMMENTS,
+    READ_COMMENTS,
+    LIST_COMMENT_ITEMS,
+    GET_COMMENT_CONTEXT,
+    ASSESS_COMMENT,
+    DECIDE_COMMENT,
+    DECIDE_COMMENT_BATCH,
+    GET_COMMENT_LOG,
+    LIST_CARRY_OVERS,
+    WATCH_PR,
+    UNWATCH_PR,
+    LIST_WATCHES,
+    USER_EVENTS,
+    GET_NOTIFICATION_SETTINGS,
+    PUT_NOTIFICATION_CHANNEL,
+    DELETE_NOTIFICATION_CHANNEL,
+    TEST_NOTIFICATION_CHANNEL,
+    GET_DECISION_FEED,
+    GET_FEED_DECISION,
+    DECISION_FEED_EVENTS,
+    CLAIM_DECISION,
+    REPORT_EFFECT,
+    PUT_PUSH_TARGET,
+    DELETE_PUSH_TARGET,
     RUNNER_CLAIM,
     RUNNER_EVENTS,
     RUNNER_OUTPUT,

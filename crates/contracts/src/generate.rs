@@ -29,6 +29,13 @@ use crate::api::files::{FilesResponse, SetViewedRequest};
 use crate::api::pr::{ResolvePrRequest, ResolvePrResponse};
 use crate::api::questions::{AnchoredAskRequest, AskQuestion, AskRequest};
 use crate::api::review::ReviewState;
+use crate::api::review_loop::{
+    AgentPushPayload, CarryOverPage, CarryOverQuery, ChannelTestResult, Claim, ClaimRequest,
+    CodeContext, CommentItem, CommentLog, CommentsOverview, ContextQuery, DecideRequest, Decision,
+    DecisionBatchRequest, DecisionFeed, EffectReportRequest, FeedDecision, FeedEvent, FeedQuery,
+    ItemsQuery, NotificationSettings, PrPage, PushTarget, PutChannelRequest, PutPushTargetRequest,
+    UserEvent, WatchList, WebhookPayload,
+};
 use crate::api::settings::{
     RepoSettings, SetAskEffortRequest, SetControlledOwnersRequest, SetJudgeEffortRequest,
     SetLanguageRequest, Settings,
@@ -95,6 +102,21 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<PendingReview>("pending_review", &[routes::GET_PENDING_REVIEW]),
     api_schema::<Settings>("settings", &[routes::GET_SETTINGS]),
     api_schema::<RepoSettings>("repo_settings", &[routes::GET_REPO_SETTINGS]),
+    api_schema::<PrPage>("pr_page", &[routes::GET_PR_PAGE]),
+    api_schema::<CommentsOverview>("comments_overview", &[routes::GET_COMMENTS]),
+    api_schema::<ItemsQuery>("items_query", &[]),
+    api_schema::<Vec<CommentItem>>("comment_item_list", &[routes::LIST_COMMENT_ITEMS]),
+    api_schema::<ContextQuery>("context_query", &[]),
+    api_schema::<CodeContext>("code_context", &[routes::GET_COMMENT_CONTEXT]),
+    api_schema::<CommentLog>("comment_log", &[routes::GET_COMMENT_LOG]),
+    api_schema::<CarryOverQuery>("carry_over_query", &[]),
+    api_schema::<CarryOverPage>("carry_over_page", &[routes::LIST_CARRY_OVERS]),
+    api_schema::<WatchList>("watch_list", &[routes::LIST_WATCHES]),
+    api_schema::<UserEvent>("user_event", &[routes::USER_EVENTS]),
+    api_schema::<FeedQuery>("feed_query", &[]),
+    api_schema::<DecisionFeed>("decision_feed", &[routes::GET_DECISION_FEED]),
+    api_schema::<FeedDecision>("feed_decision", &[routes::GET_FEED_DECISION]),
+    api_schema::<FeedEvent>("feed_event", &[routes::DECISION_FEED_EVENTS]),
 ];
 
 const NOTE: &str = "This file is generated from crates/contracts by the test generated_artifacts_are_current \
@@ -243,6 +265,34 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<AccessToken>();
     collector.visit::<CreateAccessToken>();
     collector.visit::<CreatedAccessToken>();
+    collector.visit::<PrPage>();
+    collector.visit::<CommentsOverview>();
+    collector.visit::<ItemsQuery>();
+    collector.visit::<CommentItem>();
+    collector.visit::<ContextQuery>();
+    collector.visit::<CodeContext>();
+    collector.visit::<DecideRequest>();
+    collector.visit::<DecisionBatchRequest>();
+    collector.visit::<Decision>();
+    collector.visit::<CommentLog>();
+    collector.visit::<CarryOverQuery>();
+    collector.visit::<CarryOverPage>();
+    collector.visit::<WatchList>();
+    collector.visit::<UserEvent>();
+    collector.visit::<NotificationSettings>();
+    collector.visit::<PutChannelRequest>();
+    collector.visit::<ChannelTestResult>();
+    collector.visit::<PushTarget>();
+    collector.visit::<PutPushTargetRequest>();
+    collector.visit::<FeedQuery>();
+    collector.visit::<DecisionFeed>();
+    collector.visit::<FeedDecision>();
+    collector.visit::<FeedEvent>();
+    collector.visit::<ClaimRequest>();
+    collector.visit::<Claim>();
+    collector.visit::<EffectReportRequest>();
+    collector.visit::<WebhookPayload>();
+    collector.visit::<AgentPushPayload>();
     if let Some(name) = collector.duplicate {
         return Err(GenerateError::DuplicateTypeName(name));
     }

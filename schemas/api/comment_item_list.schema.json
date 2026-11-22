@@ -1,0 +1,1559 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Array_of_CommentItem",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/CommentItem"
+  },
+  "$defs": {
+    "CommentItem": {
+      "description": "A review-loop item with its assessment, decisions and effects (RC4).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Database id.",
+          "$ref": "#/$defs/CommentItemId"
+        },
+        "no": {
+          "description": "Per-PR number shown as `C<no>`, assigned at first sight, never reused.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "kind": {
+          "description": "Source.",
+          "$ref": "#/$defs/CommentItemKind"
+        },
+        "stable_key": {
+          "description": "Stable key: the bot's `dedupe=` marker, else the thread node id; review id + ordinal for body items;\n`pr:<round>:merge` / `pr:<round>:dismiss` for PR-level questions.",
+          "type": "string"
+        },
+        "author": {
+          "description": "Author's GitHub login (`diffpilot` for PR-level questions).",
+          "type": "string"
+        },
+        "author_kind": {
+          "description": "Author kind.",
+          "$ref": "#/$defs/AuthorKind"
+        },
+        "url": {
+          "description": "GitHub link (thread, review or comment); null for PR-level questions.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
+          "description": "Discussed lines.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ItemLocation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "description": "Title: the bot's finding heading or the first line; plain text.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Comment text (GitHub): plain text, rendered as text; links only to `https://github.com/…`.",
+          "type": "string"
+        },
+        "bot_severity": {
+          "description": "The bot's own severity words (e.g. `Blocking`), shown with the GitHub tag; a claim, not a fact.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gates": {
+          "description": "Gates from the assessment or the owner.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GateMark"
+          }
+        },
+        "state": {
+          "description": "State.",
+          "$ref": "#/$defs/ItemState"
+        },
+        "revision": {
+          "description": "Revision; a decision names the revision it saw (409 `item_changed` otherwise).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "first_seen_head": {
+          "description": "Head when first read.",
+          "$ref": "#/$defs/CommitSha"
+        },
+        "first_round": {
+          "description": "Bot round when first read; null before the first round.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "github": {
+          "description": "GitHub facts.",
+          "$ref": "#/$defs/ItemGithubFacts"
+        },
+        "outside": {
+          "description": "Set when resolved outside diffpilot.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OutsideResolution"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "repeat_of": {
+          "description": "The item whose decision this repeat carried or re-asks (`C<no>`).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "assessment_state": {
+          "description": "Assessment state.",
+          "$ref": "#/$defs/AssessmentState"
+        },
+        "assessment": {
+          "description": "The latest LLM assessment.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommentAssessment"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decisions": {
+          "description": "Decisions, oldest first; the last is current.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Decision"
+          }
+        },
+        "ask_answers": {
+          "description": "Answers in the Ask chat about this item.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "no",
+        "kind",
+        "stable_key",
+        "author",
+        "author_kind",
+        "title",
+        "body",
+        "gates",
+        "state",
+        "revision",
+        "first_seen_head",
+        "github",
+        "assessment_state",
+        "decisions",
+        "ask_answers"
+      ]
+    },
+    "CommentItemId": {
+      "description": "Identifier of a review-loop item (a PR review comment, review-body item or PR-level question).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "CommentItemKind": {
+      "description": "Where an item comes from (plan §2.1 I1–I4). Open enum.",
+      "oneOf": [
+        {
+          "description": "I1: a review thread.",
+          "type": "string",
+          "const": "thread"
+        },
+        {
+          "description": "I2: an item of a review body (no thread).",
+          "type": "string",
+          "const": "review_body"
+        },
+        {
+          "description": "I3: an item of a human PR-level comment.",
+          "type": "string",
+          "const": "pr_comment"
+        },
+        {
+          "description": "I4: a PR-level question built by the server from rounds (merge now, dismiss stale reviews).",
+          "type": "string",
+          "const": "pr_question"
+        }
+      ]
+    },
+    "AuthorKind": {
+      "description": "Who wrote the item: the bot rule (`Bot` type, `[bot]` login or Settings `known_bots`, RQ17).",
+      "oneOf": [
+        {
+          "description": "A person (also `claude` unless listed as a bot).",
+          "type": "string",
+          "const": "human"
+        },
+        {
+          "description": "A bot by the bot rule.",
+          "type": "string",
+          "const": "bot"
+        },
+        {
+          "description": "The server (PR-level questions).",
+          "type": "string",
+          "const": "diffpilot"
+        }
+      ]
+    },
+    "ItemLocation": {
+      "description": "The lines an item discusses at the head (threads, and body items naming `path:range`).",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Repository-relative path.",
+          "type": "string"
+        },
+        "lines": {
+          "description": "The lines; null for a file-level or outdated thread without a head line.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ]
+    },
+    "LineRange": {
+      "description": "Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.",
+      "type": "object",
+      "properties": {
+        "start_line": {
+          "description": "First line, 1-based.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_line": {
+          "description": "Last line, inclusive.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start_line",
+        "end_line"
+      ]
+    },
+    "GateMark": {
+      "description": "A gate on an item and who set it.",
+      "type": "object",
+      "properties": {
+        "gate": {
+          "description": "The gate.",
+          "$ref": "#/$defs/Gate"
+        },
+        "source": {
+          "description": "Who set it.",
+          "$ref": "#/$defs/GateSource"
+        }
+      },
+      "required": [
+        "gate",
+        "source"
+      ]
+    },
+    "Gate": {
+      "description": "A blocker gate of claudius `severity` §2. Gate items are never grouped or bulk-decided (RQ4, RQ5). Open enum.",
+      "oneOf": [
+        {
+          "description": "Loss or misdirection of funds.",
+          "type": "string",
+          "const": "G-FUNDS"
+        },
+        {
+          "description": "Secret exposure.",
+          "type": "string",
+          "const": "G-SECRET"
+        },
+        {
+          "description": "Cryptographic weakness.",
+          "type": "string",
+          "const": "G-CRYPTO"
+        },
+        {
+          "description": "Data loss or corruption.",
+          "type": "string",
+          "const": "G-DATA"
+        }
+      ]
+    },
+    "GateSource": {
+      "description": "Who marked a gate on an item.",
+      "oneOf": [
+        {
+          "description": "The LLM assessment named it.",
+          "type": "string",
+          "const": "assessment"
+        },
+        {
+          "description": "The owner marked it.",
+          "type": "string",
+          "const": "owner"
+        }
+      ]
+    },
+    "ItemState": {
+      "description": "Item state (plan §2.7). Open enum.",
+      "oneOf": [
+        {
+          "description": "The LLM assessment is running.",
+          "type": "string",
+          "const": "assessing"
+        },
+        {
+          "description": "Waiting for the owner's decision.",
+          "type": "string",
+          "const": "undecided"
+        },
+        {
+          "description": "The owner asked about it in the Ask chat; the answer is pending or unread.",
+          "type": "string",
+          "const": "asked_back"
+        },
+        {
+          "description": "Decided; no effect left for an executor.",
+          "type": "string",
+          "const": "decided"
+        },
+        {
+          "description": "Decided; effects are open or claimed.",
+          "type": "string",
+          "const": "executing"
+        },
+        {
+          "description": "Every effect reported done.",
+          "type": "string",
+          "const": "done"
+        },
+        {
+          "description": "A repeat that carried an earlier decision without a question.",
+          "type": "string",
+          "const": "repeat"
+        },
+        {
+          "description": "A repeat asked again (bot edit or code change) or reopened by the owner.",
+          "type": "string",
+          "const": "reopened"
+        },
+        {
+          "description": "Resolved on GitHub outside diffpilot; out of the queue, nothing recorded.",
+          "type": "string",
+          "const": "outside"
+        }
+      ]
+    },
+    "CommitSha": {
+      "description": "A full 40-character hexadecimal git commit id.",
+      "type": "string"
+    },
+    "ItemGithubFacts": {
+      "description": "Facts diffpilot read from GitHub about an item (badges name the check).",
+      "type": "object",
+      "properties": {
+        "resolved": {
+          "description": "Thread resolved on GitHub; null for items without a thread.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "resolved_by": {
+          "description": "Who resolved the thread.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "outdated": {
+          "description": "Thread outdated (its lines changed since it was written); null without a thread.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "bot_status": {
+          "description": "The bot's own thread status, when it writes one.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BotThreadStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "edited_after_decision": {
+          "description": "The comment text changed after the latest decision (normalised text hash, spike S13-1 K1).",
+          "type": "boolean"
+        },
+        "replies": {
+          "description": "Replies in the thread after the first comment.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "marker": {
+          "description": "The bot's thepastaclaw `dedupe=` marker, when present.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "edited_after_decision",
+        "replies"
+      ]
+    },
+    "BotThreadStatus": {
+      "description": "thepastaclaw's own status of a thread, read from its status block (spike S13-1 M4); a GitHub fact, not a\ndecision. Open enum.",
+      "oneOf": [
+        {
+          "description": "\"Resolved\".",
+          "type": "string",
+          "const": "resolved"
+        },
+        {
+          "description": "\"Deferred (maintainer decision)\".",
+          "type": "string",
+          "const": "deferred"
+        },
+        {
+          "description": "\"Withdrawn\".",
+          "type": "string",
+          "const": "withdrawn"
+        },
+        {
+          "description": "\"No longer applies\".",
+          "type": "string",
+          "const": "no_longer_applies"
+        },
+        {
+          "description": "\"Disputed (left to the maintainers)\".",
+          "type": "string",
+          "const": "disputed"
+        }
+      ]
+    },
+    "OutsideResolution": {
+      "description": "An item resolved or answered on GitHub outside diffpilot (US17).",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "GitHub login that resolved it.",
+          "type": "string"
+        },
+        "seen_at": {
+          "description": "When diffpilot first read it resolved.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "by",
+        "seen_at"
+      ]
+    },
+    "AssessmentState": {
+      "description": "Whether an item has an LLM assessment.",
+      "oneOf": [
+        {
+          "description": "A `verify_comments` pass is running or queued for it.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "running"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "Assessed; see `assessment`.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "assessed"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "Not assessed: asked without a recommendation (\"Not assessed: <reason>\").",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "not_assessed"
+            },
+            "reason": {
+              "description": "Why.",
+              "$ref": "#/$defs/NotAssessedReason"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "NotAssessedReason": {
+      "description": "Why an item has no assessment. Open enum.",
+      "oneOf": [
+        {
+          "description": "The user's daily assessment limit is reached.",
+          "type": "string",
+          "const": "daily_limit"
+        },
+        {
+          "description": "The pass failed.",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "The pass left this item out of its output.",
+          "type": "string",
+          "const": "missing"
+        }
+      ]
+    },
+    "CommentAssessment": {
+      "description": "The LLM assessment of one item at one head (`verify_comments`).",
+      "type": "object",
+      "properties": {
+        "job": {
+          "description": "The job that wrote it.",
+          "$ref": "#/$defs/JobId"
+        },
+        "head": {
+          "description": "Head it was made at.",
+          "$ref": "#/$defs/CommitSha"
+        },
+        "assessed_at": {
+          "description": "When it was stored.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "reused_since": {
+          "description": "Reused from this head: comment text, code at the lines and PR purpose unchanged since (fingerprint).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitSha"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "validity": {
+          "description": "Validity.",
+          "$ref": "#/$defs/Validity"
+        },
+        "evidence": {
+          "description": "Lines that support it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AssessmentEvidence"
+          }
+        },
+        "pre_existing": {
+          "description": "The problem exists on the base already.",
+          "type": "boolean"
+        },
+        "category": {
+          "description": "Category slug (claudius #118 catalog).",
+          "type": "string"
+        },
+        "necessity": {
+          "description": "Necessity.",
+          "$ref": "#/$defs/Necessity"
+        },
+        "gates": {
+          "description": "Gates the LLM names.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Gate"
+          }
+        },
+        "elsewhere": {
+          "description": "Where else it is handled.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Elsewhere"
+          }
+        },
+        "fix_sketch": {
+          "description": "Fix sketch.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fix_size": {
+          "description": "Fix size.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FixSize"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reply_drafts": {
+          "description": "Reply drafts (English, \"per maintainer decision\").",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recommendation": {
+          "description": "Recommendation.",
+          "$ref": "#/$defs/Recommendation"
+        },
+        "code": {
+          "description": "Enclosing code and its description.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CodeSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prompt_version": {
+          "description": "Prompt version of the job.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "job",
+        "head",
+        "assessed_at",
+        "validity",
+        "evidence",
+        "pre_existing",
+        "category",
+        "necessity",
+        "gates",
+        "elsewhere",
+        "reply_drafts",
+        "recommendation",
+        "prompt_version"
+      ]
+    },
+    "JobId": {
+      "description": "Identifier of a job (one agent run).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "Validity": {
+      "description": "The LLM's validity reading (\"The LLM says: …\"). Open enum.",
+      "oneOf": [
+        {
+          "description": "Valid.",
+          "type": "string",
+          "const": "valid"
+        },
+        {
+          "description": "Partly valid.",
+          "type": "string",
+          "const": "partly_valid"
+        },
+        {
+          "description": "Invalid.",
+          "type": "string",
+          "const": "invalid"
+        }
+      ]
+    },
+    "AssessmentEvidence": {
+      "description": "A line read that supports the validity reading.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Repository-relative path at the head.",
+          "type": "string"
+        },
+        "line": {
+          "description": "1-based line at the head.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "note": {
+          "description": "What the line shows.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "note"
+      ]
+    },
+    "Necessity": {
+      "description": "Necessity verdict with its reason.",
+      "type": "object",
+      "properties": {
+        "verdict": {
+          "description": "Verdict.",
+          "$ref": "#/$defs/NecessityVerdict"
+        },
+        "reason": {
+          "description": "Evidence (in) or reason (out).",
+          "type": "string"
+        },
+        "better_pr": {
+          "description": "Better-fitting pull request (`owner/repo#n` or URL) for `out`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "verdict",
+        "reason"
+      ]
+    },
+    "NecessityVerdict": {
+      "description": "Whether the fix belongs in this pull request.",
+      "oneOf": [
+        {
+          "description": "In scope.",
+          "type": "string",
+          "const": "in"
+        },
+        {
+          "description": "Out of scope.",
+          "type": "string",
+          "const": "out"
+        }
+      ]
+    },
+    "Elsewhere": {
+      "description": "A place where the matter is handled already.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Kind.",
+          "$ref": "#/$defs/ElsewhereKind"
+        },
+        "reference": {
+          "description": "URL or `owner/repo#n`.",
+          "type": "string"
+        },
+        "note": {
+          "description": "One line on the overlap.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference",
+        "note"
+      ]
+    },
+    "ElsewhereKind": {
+      "description": "Where else the matter is handled. Open enum.",
+      "oneOf": [
+        {
+          "description": "An open pull request.",
+          "type": "string",
+          "const": "open_pr"
+        },
+        {
+          "description": "An issue.",
+          "type": "string",
+          "const": "issue"
+        },
+        {
+          "description": "An upstream project.",
+          "type": "string",
+          "const": "upstream"
+        }
+      ]
+    },
+    "FixSize": {
+      "description": "Size of a fix.",
+      "oneOf": [
+        {
+          "description": "Extra small.",
+          "type": "string",
+          "const": "XS"
+        },
+        {
+          "description": "Small.",
+          "type": "string",
+          "const": "S"
+        },
+        {
+          "description": "Medium.",
+          "type": "string",
+          "const": "M"
+        }
+      ]
+    },
+    "Recommendation": {
+      "description": "The LLM's recommendation; on the card under the evidence, the recommended option first (RQ7).",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Recommended decision.",
+          "$ref": "#/$defs/DecisionKind"
+        },
+        "reason": {
+          "description": "Why.",
+          "type": "string"
+        },
+        "target": {
+          "description": "Target the decision needs (D4–D7).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionTarget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason_class": {
+          "description": "Short class of the reason; groups share kind and class or target (plan §2.4).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reason",
+        "reason_class"
+      ]
+    },
+    "DecisionKind": {
+      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+      "oneOf": [
+        {
+          "description": "D1: resolve, already fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "D2: fix in this pull request.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "D3: reject (with a reason); D8 with a `blocker_gate` override.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "D4: handled in an existing pull request.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "D5: create a follow-up pull request.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "D6: upstream issue (link or create).",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "D7: TODO, out of scope for this pull request.",
+          "type": "string",
+          "const": "todo"
+        },
+        {
+          "description": "P1: merge now, remaining items become follow-ups.",
+          "type": "string",
+          "const": "merge_with_follow_ups"
+        },
+        {
+          "description": "P2: another round.",
+          "type": "string",
+          "const": "another_round"
+        },
+        {
+          "description": "P3: dismiss the listed stale bot reviews.",
+          "type": "string",
+          "const": "dismiss_stale_reviews"
+        },
+        {
+          "description": "P4: keep the reviews.",
+          "type": "string",
+          "const": "keep_reviews"
+        }
+      ]
+    },
+    "DecisionTarget": {
+      "description": "The target a decision needs.",
+      "oneOf": [
+        {
+          "description": "D4: the existing pull request.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "existing_pr"
+            },
+            "number": {
+              "description": "Its number in the same repository.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "number"
+          ]
+        },
+        {
+          "description": "D5: the follow-up pull request's title (prefilled; optional).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "follow_up_pr"
+            },
+            "title": {
+              "description": "Title.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "D6: an issue URL, or null to create one.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "upstream_issue"
+            },
+            "url": {
+              "description": "Issue URL.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "D7: the TODO title.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "todo"
+            },
+            "title": {
+              "description": "Title.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title"
+          ]
+        }
+      ]
+    },
+    "CodeSummary": {
+      "description": "The enclosing code of the discussed lines and what it does.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Repository-relative path at the head.",
+          "type": "string"
+        },
+        "enclosing": {
+          "description": "Enclosing range (function or block).",
+          "$ref": "#/$defs/LineRange"
+        },
+        "description": {
+          "description": "One paragraph on what the code does (LLM).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "enclosing",
+        "description"
+      ]
+    },
+    "Decision": {
+      "description": "A stored decision (append-only) with its effects.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Id.",
+          "$ref": "#/$defs/DecisionId"
+        },
+        "item_no": {
+          "description": "The item (`C<no>`).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "kind": {
+          "description": "Decision.",
+          "$ref": "#/$defs/DecisionKind"
+        },
+        "reason": {
+          "description": "Reason (D3, D8; posted as the reply).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "Target (D4–D7).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionTarget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "override": {
+          "description": "Override flag.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Override"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolve_ticked": {
+          "description": "\"Resolve this thread\" as submitted: the explicit resolve decision.",
+          "type": "boolean"
+        },
+        "reply_text": {
+          "description": "The reply text that gets posted (English).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "comment": {
+          "description": "The owner's comment: stored, sent to the executing agent, never posted to GitHub.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recommendation": {
+          "description": "The recommendation shown at decision time.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Recommendation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "via": {
+          "description": "Where it was made.",
+          "$ref": "#/$defs/DecisionVia"
+        },
+        "carried_from": {
+          "description": "The decision this one was carried from.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "supersedes": {
+          "description": "The decision this one supersedes.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head": {
+          "description": "Head at decision time.",
+          "$ref": "#/$defs/CommitSha"
+        },
+        "decided_by": {
+          "description": "GitHub login of the deciding user (`carried` decisions: of the source decision).",
+          "type": "string"
+        },
+        "decided_at": {
+          "description": "When.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "effects": {
+          "description": "Effects in `seq` order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Effect"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "item_no",
+        "kind",
+        "resolve_ticked",
+        "via",
+        "head",
+        "decided_by",
+        "decided_at",
+        "effects"
+      ]
+    },
+    "DecisionId": {
+      "description": "Identifier of a decision on a review-loop item (append-only).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "Override": {
+      "description": "A decision against the assessment.",
+      "oneOf": [
+        {
+          "description": "Fix although the necessity verdict is `out`.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "necessity_gate"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "D8: accept despite the gate (reason required, posted; thread always resolved).",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "blocker_gate"
+            },
+            "gate": {
+              "description": "The gate.",
+              "$ref": "#/$defs/Gate"
+            }
+          },
+          "required": [
+            "type",
+            "gate"
+          ]
+        }
+      ]
+    },
+    "DecisionVia": {
+      "description": "Where a decision was made. Open enum.",
+      "oneOf": [
+        {
+          "description": "One question.",
+          "type": "string",
+          "const": "question"
+        },
+        {
+          "description": "A group question.",
+          "type": "string",
+          "const": "group"
+        },
+        {
+          "description": "\"Decide the rest per recommendation\".",
+          "type": "string",
+          "const": "bulk"
+        },
+        {
+          "description": "The table page.",
+          "type": "string",
+          "const": "table"
+        },
+        {
+          "description": "Carried from an earlier decision (repeat).",
+          "type": "string",
+          "const": "carried"
+        }
+      ]
+    },
+    "Effect": {
+      "description": "One effect of a decision.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Id.",
+          "$ref": "#/$defs/EffectId"
+        },
+        "seq": {
+          "description": "Order within the decision, 1-based.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "after": {
+          "description": "`seq` of the effect this one waits for (a reply after a fix waits for its commit).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "kind": {
+          "description": "Kind.",
+          "$ref": "#/$defs/EffectKind"
+        },
+        "executor": {
+          "description": "Executor.",
+          "$ref": "#/$defs/Executor"
+        },
+        "params": {
+          "description": "Parameters.",
+          "$ref": "#/$defs/EffectParams"
+        },
+        "state": {
+          "description": "State.",
+          "$ref": "#/$defs/EffectState"
+        },
+        "claim": {
+          "description": "Current claim.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClaimInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reports": {
+          "description": "Reports, oldest first.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EffectReport"
+          }
+        },
+        "seen_on_github_at": {
+          "description": "When a server read found the effect on GitHub (fact badge).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "updated_at": {
+          "description": "Last change.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "seq",
+        "kind",
+        "executor",
+        "params",
+        "state",
+        "reports",
+        "updated_at"
+      ]
+    },
+    "EffectId": {
+      "description": "Identifier of one effect of a decision (reply, resolve, fix, …).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "EffectKind": {
+      "description": "Kind of an effect; also an executor capability. Open enum.",
+      "oneOf": [
+        {
+          "description": "Fix and push.",
+          "type": "string",
+          "const": "fix"
+        },
+        {
+          "description": "Reply in the thread.",
+          "type": "string",
+          "const": "reply"
+        },
+        {
+          "description": "Resolve the thread.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "PR-level comment (replies to body and PR-comment items).",
+          "type": "string",
+          "const": "pr_comment"
+        },
+        {
+          "description": "Create a draft follow-up pull request.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "Create an upstream issue (and the \"Known limitation\" body line).",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "Save a TODO.",
+          "type": "string",
+          "const": "todo"
+        },
+        {
+          "description": "Dismiss a review.",
+          "type": "string",
+          "const": "dismiss_review"
+        }
+      ]
+    },
+    "Executor": {
+      "description": "Who executes an effect.",
+      "oneOf": [
+        {
+          "description": "An external agent through the decision feed.",
+          "type": "string",
+          "const": "agent"
+        },
+        {
+          "description": "diffpilot[bot] (phase 3).",
+          "type": "string",
+          "const": "diffpilot_bot"
+        }
+      ]
+    },
+    "EffectParams": {
+      "description": "Parameters of an effect, set by the server's effect function.",
+      "type": "object",
+      "properties": {
+        "text": {
+          "description": "Text to post (reply, PR-level comment, dismissal message).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thread_id": {
+          "description": "GitHub thread node id (reply, resolve).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "review_id": {
+          "description": "GitHub review node id (dismiss; PR-level replies to a review's items).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Title (follow-up PR, issue, TODO).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "Existing issue URL (D6 with a link).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "item_nos": {
+          "description": "Items listed in a follow-up PR (P1), `C<no>`.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        }
+      },
+      "required": [
+        "item_nos"
+      ]
+    },
+    "EffectState": {
+      "description": "Effect state. Open enum.",
+      "oneOf": [
+        {
+          "description": "Waits for the effect named by `after`.",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "Claimable.",
+          "type": "string",
+          "const": "open"
+        },
+        {
+          "description": "Claimed under a lease.",
+          "type": "string",
+          "const": "claimed"
+        },
+        {
+          "description": "Reported done.",
+          "type": "string",
+          "const": "done"
+        },
+        {
+          "description": "Reported failed.",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "Cancelled by a superseding decision before it was claimed.",
+          "type": "string",
+          "const": "cancelled"
+        }
+      ]
+    },
+    "ClaimInfo": {
+      "description": "The claim on an effect's decision.",
+      "type": "object",
+      "properties": {
+        "token_name": {
+          "description": "Name of the claiming access token.",
+          "type": "string"
+        },
+        "lease_until": {
+          "description": "Lease end; renewed by each report.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "token_name",
+        "lease_until"
+      ]
+    },
+    "EffectReport": {
+      "description": "A stored agent report (\"Agent <token name> reports: …\").",
+      "type": "object",
+      "properties": {
+        "outcome": {
+          "description": "Outcome.",
+          "$ref": "#/$defs/ReportOutcome"
+        },
+        "reference": {
+          "description": "Reference (commit SHA, URL, TODO id).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "Message (failure reason).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_name": {
+          "description": "Reporting token's name.",
+          "type": "string"
+        },
+        "at": {
+          "description": "When.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "outcome",
+        "token_name",
+        "at"
+      ]
+    },
+    "ReportOutcome": {
+      "description": "Outcome an agent reports for an effect.",
+      "oneOf": [
+        {
+          "description": "Done, with a reference (commit, comment URL, PR, TODO id).",
+          "type": "string",
+          "const": "done"
+        },
+        {
+          "description": "Failed, with a reason.",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "Given back to the feed.",
+          "type": "string",
+          "const": "released"
+        }
+      ]
+    }
+  }
+}

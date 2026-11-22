@@ -179,7 +179,9 @@ fn token_use(method: &Method, matched: Option<&str>) -> TokenUse {
             TokenUse::Read(scope)
         }
         RouteAuth::Public if *route == GET_ME => TokenUse::Identify,
-        RouteAuth::SessionOrToken(_)
+        // TODO(WP13-FEED): accept `review_loop_execute` tokens on the feed's claim, report and push-target routes.
+        RouteAuth::TokenOnly(_)
+        | RouteAuth::SessionOrToken(_)
         | RouteAuth::Public
         | RouteAuth::Session
         | RouteAuth::SessionCsrf

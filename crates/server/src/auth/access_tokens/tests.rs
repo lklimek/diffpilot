@@ -12,8 +12,9 @@ use axum::response::Response;
 use contracts::api::access_tokens::TokenScope;
 use contracts::ids::{AnalysisId, QuestionId, StepId};
 use contracts::routes::{
-    CREATE_ACCESS_TOKEN, GET_ME, GET_REVIEW_STATE, HttpMethod, LIST_ACCESS_TOKENS, LIST_QUESTIONS,
-    Listener, REVOKE_ACCESS_TOKEN, ROUTES, RUNNER_CLAIM, Route, RouteAuth,
+    CREATE_ACCESS_TOKEN, GET_ME, GET_NOTIFICATION_SETTINGS, GET_REVIEW_STATE, HttpMethod,
+    LIST_ACCESS_TOKENS, LIST_QUESTIONS, Listener, REVOKE_ACCESS_TOKEN, ROUTES, RUNNER_CLAIM, Route,
+    RouteAuth,
 };
 use contracts::time::Timestamp;
 use db::repo::DEFAULT_TENANT;
@@ -83,7 +84,10 @@ fn uri(route: &Route, analysis: AnalysisId) -> String {
         .replace("{step_id}", "f1.1")
         .replace("{flow}", "f1")
         .replace("{feedback_id}", "00000000-0000-4000-8000-000000000000")
-        .replace("{comment_id}", "1");
+        .replace("{comment_id}", "1")
+        .replace("{number}", "482")
+        .replace("{item}", "C1")
+        .replace("{kind}", "ntfy");
     if path.ends_with("/lines") || path.ends_with("/diff") {
         path + "?path=src/lib.rs&side=head&from=1&to=5"
     } else {
@@ -193,7 +197,8 @@ fn every_route_has_a_token_classification() {
             (Listener::Public, RouteAuth::Public) if *route == GET_ME => TokenUse::Identify,
             (
                 Listener::Public,
-                RouteAuth::Public
+                RouteAuth::TokenOnly(_)
+                | RouteAuth::Public
                 | RouteAuth::Session
                 | RouteAuth::SessionCsrf
                 | RouteAuth::RunnerSecret
@@ -225,7 +230,7 @@ fn every_route_has_a_token_classification() {
 /// ADR-019 §5: every `GET` route with session auth is `read`, except the token list (R8).
 #[tokio::test]
 async fn every_session_get_route_accepts_read_tokens_except_listed() {
-    const SESSION_ONLY: [Route; 1] = [LIST_ACCESS_TOKENS];
+    const SESSION_ONLY: [Route; 2] = [LIST_ACCESS_TOKENS, GET_NOTIFICATION_SETTINGS];
     for route in ROUTES.iter().filter(|route| {
         route.listener == Listener::Public
             && route.method == HttpMethod::Get
