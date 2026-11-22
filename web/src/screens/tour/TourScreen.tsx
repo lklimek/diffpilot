@@ -84,6 +84,7 @@ import {
   blockFromHash,
   evidenceFromHash,
 } from "./sequence";
+import { commentsPath } from "../pr/paths";
 import { useNow } from "../../app/now";
 import { FlowsMenu } from "./FlowsMenu";
 import { Workspace } from "./Workspace";
@@ -970,6 +971,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           flowsHref: `${location.pathname}${location.hash}`,
           filesHref,
           depsHref: `/analyses/${analysisId}/deps`,
+          commentsHref: commentsPath(tour.analysis.pr),
           prContextHref: `/analyses/${analysisId}#${blockFragment(PR_CONTEXT)}`,
           onNavigate: (href) => void navigate(href),
         }}

@@ -35,6 +35,16 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
     reason: "Section disclosure header: named by its section title, its expanded state is announced.",
   },
   {
+    file: "components/collapsible/CollapsibleSection.tsx",
+    match: "aria-expanded",
+    reason: "Section disclosure heading: named by its section title, its expanded state is announced.",
+  },
+  {
+    file: "components/comments/QueueList.tsx",
+    match: "aria-current={current === entryKey(entry)}",
+    reason: "Queue row named by its item and title; a tip would cover the rows below, like the flow rows.",
+  },
+  {
     file: "components/nav/NavList.tsx",
     match: 'aria-label="PR context',
     reason: "Navigation row named by its destination; a tip would cover the rows below.",

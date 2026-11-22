@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppNav } from "./AppNav";
 import { ShellTopBar } from "./ShellTopBar";
 
-const HREFS = { "my-work": "/", review: "/review", settings: "/settings" };
+const HREFS = { "my-work": "/", review: "/review", watching: "/watching", settings: "/settings" };
 
 describe("AppNav", () => {
   beforeEach(() => window.localStorage.clear());

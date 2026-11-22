@@ -1,5 +1,6 @@
 // The Ask chat's threads, subjects and unread answers: plain functions of the questions and the tour.
-import type { AskAnchor, AskQuestion, LineSide, QuestionId, Step, Tour } from "../../../api/generated/types";
+import type { AskQuestion, LineSide, QuestionId, Step, Tour } from "../../../api/generated/types";
+import type { ChatAnchor } from "../../../api/pending";
 import { rangeText } from "../../section/format";
 
 /** A first question with its follow-ups, oldest first. */
@@ -35,7 +36,7 @@ export function threadsOf(questions: readonly AskQuestion[]): ChatThread[] {
 /** How a subject is named: in a chip, the field's placeholder and the Ask buttons. */
 export interface Subject {
   /** The view its chip opens; null for the whole PR. */
-  view: "Flows" | "Files" | null;
+  view: "Flows" | "Files" | "Comments" | null;
   /** `path:lines` (or the path), drawn as code; null without lines. */
   code: string | null;
   text: string;
@@ -51,7 +52,7 @@ const flowOfStep = (tour: Tour, id: string) => tour.flows.find((f) => f.steps.so
 const old = (side: LineSide) => (side === "base" ? " (old code)" : "");
 
 /** The name of what a question is about. */
-export function subjectOf(anchor: AskAnchor, tour: Tour): Subject {
+export function subjectOf(anchor: ChatAnchor, tour: Tour): Subject {
   switch (anchor.kind) {
     case "step": {
       const step = findStep(tour, anchor.step_id);
@@ -101,6 +102,14 @@ export function subjectOf(anchor: AskAnchor, tour: Tour): Subject {
         tip: "Asked about this flow as a whole. Opens its introduction; the chat stays open.",
       };
     }
+    case "comment_item":
+      return {
+        view: "Comments",
+        code: null,
+        text: `Comment C${anchor.no}`,
+        what: "this comment",
+        tip: `Asked about review comment C${anchor.no}. Opens it in Comments; the chat stays open.`,
+      };
     case "pr":
       return {
         view: null,
@@ -114,7 +123,7 @@ export function subjectOf(anchor: AskAnchor, tour: Tour): Subject {
 
 /** Lines of a file an anchor covers (`to` null: the whole file); null for a flow or the whole PR. */
 export function linesOf(
-  anchor: AskAnchor,
+  anchor: ChatAnchor,
   tour: Tour,
 ): { path: string; side: LineSide; from: number; to: number | null } | null {
   if (anchor.kind === "lines")
@@ -135,10 +144,12 @@ const overlap = (a: { from: number; to: number | null }, b: { from: number; to: 
   (a.to === null || b.from <= a.to) && (b.to === null || a.from <= b.to);
 
 /** Whether a thread's subject belongs to the Inspector copy of `place`. */
-function about(anchor: AskAnchor, place: AskAnchor, tour: Tour): boolean {
+function about(anchor: ChatAnchor, place: ChatAnchor, tour: Tour): boolean {
   switch (place.kind) {
     case "pr":
       return anchor.kind === "pr";
+    case "comment_item":
+      return anchor.kind === "comment_item" && anchor.item === place.item;
     case "flow":
       return anchor.kind === "flow" && anchor.flow_id === place.flow_id;
     case "step": {
@@ -158,7 +169,7 @@ function about(anchor: AskAnchor, place: AskAnchor, tour: Tour): boolean {
 }
 
 /** The threads about a place (its Inspector copy), oldest first. */
-export function questionsAt(questions: readonly AskQuestion[], place: AskAnchor, tour: Tour): ChatThread[] {
+export function questionsAt(questions: readonly AskQuestion[], place: ChatAnchor, tour: Tour): ChatThread[] {
   return threadsOf(questions).filter((t) => about(t.root.anchor, place, tour));
 }
 
@@ -171,5 +182,5 @@ export function unreadOf(questions: readonly AskQuestion[], seen: ReadonlySet<Qu
 }
 
 /** Whether an answer about the anchor can become a review comment: it has lines to anchor on. */
-export const hasLines = (anchor: AskAnchor) =>
+export const hasLines = (anchor: ChatAnchor) =>
   anchor.kind === "step" || (anchor.kind === "lines" && anchor.range !== null);

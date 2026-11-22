@@ -42,6 +42,7 @@ import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { clearCommentDrafts } from "../tour/drafts";
 import { useNotifySetting } from "../../app/workNotifications";
+import { NotificationChannels } from "./NotificationChannels";
 
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
@@ -235,7 +236,10 @@ function SettingsContent({
             busy={setLanguage.isPending}
             onChange={(l) => setLanguage.mutate(l)}
           />
-          <NotificationsCard {...notify} />
+          <div id="notifications" className="grid scroll-mt-16 gap-4">
+            <NotificationsCard {...notify} />
+            <NotificationChannels />
+          </div>
           <AppInstallationsCard installations={app_installations} signInHref={routes.authLogin.path} />
           {settings.data.controlled_owners && (
             <ControlledOwnersCard

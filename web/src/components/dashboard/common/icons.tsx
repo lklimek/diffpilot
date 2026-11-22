@@ -63,7 +63,11 @@ export const CopyIcon = () =>
 export const RefreshIcon = () => svg(<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" />, "h-[15px] w-[15px]");
 
 /** Left-nav icons. */
-export const NavIcon = ({ name }: { name: "my-work" | "review" | "settings" | "collapse" | "expand" }) =>
+export const NavIcon = ({
+  name,
+}: {
+  name: "my-work" | "review" | "watching" | "settings" | "collapse" | "expand";
+}) =>
   svg(
     {
       "my-work": (
@@ -75,6 +79,12 @@ export const NavIcon = ({ name }: { name: "my-work" | "review" | "settings" | "c
         </>
       ),
       review: KIND_PATH.pr,
+      watching: (
+        <>
+          <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+          <circle cx="12" cy="12" r="3" />
+        </>
+      ),
       settings: (
         <>
           <circle cx="12" cy="12" r="3" />

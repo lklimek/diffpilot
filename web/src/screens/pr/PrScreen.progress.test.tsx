@@ -33,11 +33,13 @@ const emit = (state: AnalysisState) =>
 
 const pageText = () => document.body.textContent ?? "";
 
-describe("Analysis progress (brief §4.2, sse-events.md)", () => {
-  it("before the snapshot: connecting", async () => {
-    renderRoute(`/analyses/${ID}/progress`);
-    expect(await screen.findByRole("status")).toHaveTextContent("Connecting…");
-    expect(FakeEventSource.latest().url).toBe(`/api/v1/analyses/${ID}/events`);
+describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §3.1, sse-events.md)", () => {
+  it("the old progress URL opens the PR page; before the snapshot: connecting", async () => {
+    const router = renderRoute(`/analyses/${ID}/progress?scenario=x`);
+    await waitFor(() => expect(router.state.location.pathname).toBe("/pr/acme/node-client/482"));
+    expect(router.state.location.search).toBe("?scenario=x");
+    expect(await screen.findByText("Connecting…")).toBeVisible();
+    await waitFor(() => expect(FakeEventSource.latest().url).toBe(`/api/v1/analyses/${ID}/events`));
   });
 
   it("planning → running k of n → finished with Open; the PR is in the top bar", async () => {
@@ -121,7 +123,7 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Cancel analysis" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Something went wrong on the server.");
-    expect(router.state.location.pathname).toBe(`/analyses/${ID}/progress`);
+    expect(router.state.location.pathname).toBe("/pr/acme/node-client/482");
   });
 
   it("connection lost: keeps the last state and says it reconnects; the next snapshot clears it", async () => {
@@ -137,8 +139,6 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
 
   it("unknown analysis: plain error and a way back", async () => {
     renderRoute("/analyses/00000000-0000-0000-0000-000000000000/progress");
-    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
-    act(() => FakeEventSource.latest().fail());
     expect(await screen.findByRole("alert")).toHaveTextContent("This analysis does not exist.");
     expect(screen.getByRole("link", { name: "My work" })).toHaveAttribute("href", "/");
   });

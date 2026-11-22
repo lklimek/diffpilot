@@ -46,6 +46,7 @@ import { listQuestions } from "./list-questions";
 import { postFeedback } from "./post-feedback";
 import { putReviewState } from "./put-review-state";
 import { resolvePr } from "./resolve-pr";
+import { reviewLoopHandlers } from "./review-loop";
 import { retryAnalysis } from "./retry-analysis";
 import { setControlledOwners } from "./set-controlled-owners";
 import { setFileViewed } from "./set-file-viewed";
@@ -106,4 +107,5 @@ export const handlers = [
   listAccessTokens,
   createAccessToken,
   revokeAccessToken,
+  ...reviewLoopHandlers,
 ];

@@ -16,6 +16,7 @@ import { TopBar } from "../../components/top-bar/TopBar";
 import { SETTINGS_PATH } from "../shell/paths";
 import { errorText } from "../tour/code";
 import { checksHref } from "../tour/review";
+import { commentsPath } from "../pr/paths";
 
 const openKey = (id: AnalysisId) => `diffpilot.deps.open.${id}`;
 
@@ -185,6 +186,7 @@ function DependenciesView({
           flowsHref: base,
           filesHref: `${base}/files`,
           depsHref: `${base}/deps`,
+          commentsHref: commentsPath(pr),
           prContextHref: `${base}#pr_context`,
           onNavigate: (href) => void navigate(href),
         }}
