@@ -225,11 +225,21 @@ roll back and report it, never delete the database.
 
 ## Upgrade to v1.3
 
-One optional variable is new; add it to `/srv/diffpilot/.env` to use it (step 1 of "Upgrade"):
+Two optional variables are new; add them to `/srv/diffpilot/.env` to use them (step 1 of "Upgrade"):
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
 | `SR_THEPASTACLAW_STATUS_URL` | no | empty | URL of thepastaclaw's review-system status file, e.g. `https://thepastaclaw.github.io/review-system/data/status.json`. Set: the dashboard's thepastaclaw plug-in reads the file (no credential, revalidated by `ETag`) at most once a minute while someone uses the dashboard in a browser, and notes on the pull requests it lists "thepastaclaw: reviewing (phase, step n of m)" or "thepastaclaw: queued (reason)"; it never changes Ready to merge (ADR-022). The file trails by up to about 20 minutes. The server then needs outbound HTTPS to that host (`thepastaclaw.github.io`). Must be `http://` or `https://`. Empty: off, no request. A bad value stops the server at start (exit 1). |
+| `SR_NOTIFY_DENY_PRIVATE` | no | `0` | `1`: users' notification channels (ntfy, webhook) and agents' push targets may not reach private, loopback, link-local or unique-local addresses; `0`: they may (Home Assistant or a self-hosted ntfy on the LAN). These hosts are outbound destinations chosen by users and agents, not by the operator: with `0` the server sends to any `http`/`https` host they enter. A bad value stops the server at start (exit 1). |
+
+**Notifications** (ADR-023 decision 11). Each delivery is tried 3 times (now, after about 1 and 5 minutes, 10 s
+each); a channel or push target whose last delivery failed shows "Failing since …" with the error in Settings →
+Notifications (agents' targets in a PR's decision log). The server logs one `warn` "a notification target started
+failing" when a target starts failing and one `info` "a failing notification target delivers again" when it
+recovers, never per attempt; answers of the targets are not logged or shown. At most 30 messages an hour go to one
+target; more wait for the next free slot. Secrets of channels and push targets are encrypted under
+`SR_SECRET_KEY`; after replacing that key they cannot be decrypted: the target fails with "the stored secret could
+not be decrypted; set it again" until its owner saves the secret anew.
 
 ## Upgrade to v1.2
 

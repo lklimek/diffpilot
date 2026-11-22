@@ -135,7 +135,31 @@ pub enum ReportOutcomeRecord {
     LeaseExpired,
 }
 
-const DECISION_COLUMNS: &str = "d.id, d.item_id, i.item_no, d.kind, d.reason, d.target, d.override, d.resolve_ticked,
+/// A claimable decision as the feed tracks it: no live claim, with these kinds of agent effects not yet ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenFeedEntry {
+    /// Tenant.
+    pub tenant_id: String,
+    /// Decision.
+    pub decision: DecisionId,
+    /// Pull request.
+    pub pr: PrRef,
+    /// Kinds of its open agent effects, each once, in `seq` order.
+    pub kinds: Vec<EffectKind>,
+}
+
+/// Where a decision (or one of its effects) belongs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecisionOwner {
+    /// Tenant.
+    pub tenant_id: String,
+    /// `pull_requests.id`.
+    pub pull_request_id: i64,
+    /// The decision.
+    pub decision: DecisionId,
+}
+
+const DECISION_COLUMNS: &str ="d.id, d.item_id, i.item_no, d.kind, d.reason, d.target, d.override, d.resolve_ticked,
     d.reply_text, d.comment, d.recommendation, d.via, d.carried_from, d.supersedes, d.head, d.body_hash,
     d.start_line, d.end_line, u.login, d.decided_at,
     (SELECT un.at FROM comment_decision_undos un WHERE un.decision_id = d.id) AS undone_at";
@@ -716,6 +740,81 @@ impl ReviewLoop<'_> {
         Ok(ids)
     }
 
+    /// Every claimable decision of every tenant (the set [`Self::claimable`] filters), oldest first.
+    pub async fn open_feed(&self, now: Timestamp) -> Result<Vec<OpenFeedEntry>, DbError> {
+        let rows = sqlx::query(
+            "SELECT d.id, d.tenant_id, r.owner, r.name, p.number, e.kind FROM comment_decisions d
+             JOIN comment_effects e ON e.decision_id = d.id
+             JOIN comment_items i ON i.id = d.item_id
+             JOIN pull_requests p ON p.id = i.pull_request_id JOIN repos r ON r.id = p.repo_id
+             WHERE e.executor = 'agent' AND e.state IN ('waiting', 'open', 'claimed')
+               AND NOT EXISTS (SELECT 1 FROM comment_decisions n WHERE n.supersedes = d.id)
+               AND NOT EXISTS (SELECT 1 FROM comment_effects c WHERE c.decision_id = d.id
+                               AND c.state = 'claimed' AND c.lease_until >= ?)
+             ORDER BY d.decided_at, d.rowid, e.seq",
+        )
+        .bind(ts(now))
+        .fetch_all(self.pool)
+        .await?;
+        let mut entries: Vec<OpenFeedEntry> = Vec::new();
+        for row in &rows {
+            let decision: DecisionId = wire_col(row, "id")?;
+            let kind: EffectKind = wire_col(row, "kind")?;
+            match entries.last_mut() {
+                Some(last) if last.decision == decision => {
+                    if !last.kinds.contains(&kind) {
+                        last.kinds.push(kind);
+                    }
+                }
+                _ => entries.push(OpenFeedEntry {
+                    tenant_id: row.try_get("tenant_id")?,
+                    decision,
+                    pr: PrRef {
+                        repo: RepoRef {
+                            owner: row.try_get("owner")?,
+                            name: row.try_get("name")?,
+                        },
+                        number: u32_col(row, "number")?,
+                    },
+                    kinds: vec![kind],
+                }),
+            }
+        }
+        Ok(entries)
+    }
+
+    /// The tenant and pull request of a decision.
+    pub async fn decision_owner(
+        &self,
+        decision: DecisionId,
+    ) -> Result<Option<DecisionOwner>, DbError> {
+        sqlx::query(
+            "SELECT d.id, d.tenant_id, i.pull_request_id FROM comment_decisions d
+             JOIN comment_items i ON i.id = d.item_id WHERE d.id = ?",
+        )
+        .bind(decision.to_string())
+        .fetch_optional(self.pool)
+        .await?
+        .as_ref()
+        .map(owner_from_row)
+        .transpose()
+    }
+
+    /// The tenant, pull request and decision of an effect.
+    pub async fn effect_owner(&self, effect: EffectId) -> Result<Option<DecisionOwner>, DbError> {
+        sqlx::query(
+            "SELECT d.id, d.tenant_id, i.pull_request_id FROM comment_effects e
+             JOIN comment_decisions d ON d.id = e.decision_id
+             JOIN comment_items i ON i.id = d.item_id WHERE e.id = ?",
+        )
+        .bind(effect.to_string())
+        .fetch_optional(self.pool)
+        .await?
+        .as_ref()
+        .map(owner_from_row)
+        .transpose()
+    }
+
     /// Records that a server read found an effect on GitHub (fact badge).
     pub async fn effect_seen_on_github(
         &self,
@@ -734,6 +833,14 @@ impl ReviewLoop<'_> {
         }
         Ok(())
     }
+}
+
+fn owner_from_row(row: &SqliteRow) -> Result<DecisionOwner, DbError> {
+    Ok(DecisionOwner {
+        tenant_id: row.try_get("tenant_id")?,
+        pull_request_id: row.try_get("pull_request_id")?,
+        decision: wire_col(row, "id")?,
+    })
 }
 
 fn terminal(state: EffectState) -> bool {

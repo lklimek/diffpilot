@@ -11,6 +11,7 @@ use crate::dashboard::plugin::PluginHost;
 use crate::jobs::executor::JobExecutor;
 use crate::jobs::progress::ProgressHub;
 use crate::jobs::queue::QueueExecutor;
+use crate::review_loop::feed::FeedHub;
 
 /// State shared by all handlers; cheap to clone.
 #[derive(Clone, Debug)]
@@ -33,6 +34,8 @@ pub struct AppState {
     pub dashboard: DashboardHub,
     /// Dashboard plug-ins (ADR-022); empty unless configured.
     pub plugins: PluginHost,
+    /// Decision feed streams and notification wake-ups (ADR-023).
+    pub feed: FeedHub,
 }
 
 impl AppState {
@@ -58,6 +61,7 @@ impl AppState {
             pending_pairs: PendingPairs::default(),
             stopping: tokio::sync::watch::Sender::new(false),
             dashboard: DashboardHub::default(),
+            feed: FeedHub::default(),
         }
     }
 }

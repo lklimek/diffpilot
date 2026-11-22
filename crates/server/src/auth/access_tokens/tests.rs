@@ -181,8 +181,8 @@ fn malformed_tokens_have_no_id() {
     );
 }
 
-/// No route is left unclassified: every route of the table either accepts a token as a read with its scope,
-/// identifies the user (`/api/v1/me`) or refuses it; a new `RouteAuth` variant fails to compile here.
+/// No route is left unclassified: every route of the table either accepts a token as a read or a `TokenOnly`
+/// route with its scope, identifies the user (`/api/v1/me`) or refuses it; a new `RouteAuth` variant fails to compile here.
 #[test]
 fn every_route_has_a_token_classification() {
     for route in ROUTES {
@@ -195,10 +195,10 @@ fn every_route_has_a_token_classification() {
                 TokenUse::Read(scope)
             }
             (Listener::Public, RouteAuth::Public) if *route == GET_ME => TokenUse::Identify,
+            (Listener::Public, RouteAuth::TokenOnly(scope)) => TokenUse::Execute(scope),
             (
                 Listener::Public,
-                RouteAuth::TokenOnly(_)
-                | RouteAuth::Public
+                RouteAuth::Public
                 | RouteAuth::Session
                 | RouteAuth::SessionCsrf
                 | RouteAuth::RunnerSecret
@@ -275,7 +275,8 @@ async fn every_session_get_route_accepts_read_tokens_except_listed() {
     assert!(served >= 11, "too few read routes served: {served}");
 }
 
-/// Every mutating route answers a token with 403 `token_not_accepted` before its handler runs.
+/// Every mutating route answers a `read` token with 403 before its handler runs: `token_not_accepted`, or on the
+/// feed's `TokenOnly` routes (ADR-019 amendment) `insufficient_scope`.
 #[tokio::test]
 async fn no_mutating_route_accepts_a_token() {
     let s = setup().await;
@@ -294,7 +295,11 @@ async fn no_mutating_route_accepts_a_token() {
             continue;
         }
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {body}");
-        assert_eq!(body["code"], "token_not_accepted", "{uri}");
+        let expected = match route.auth {
+            RouteAuth::TokenOnly(_) => "insufficient_scope",
+            _ => "token_not_accepted",
+        };
+        assert_eq!(body["code"], expected, "{uri}");
         checked += 1;
     }
     assert!(checked >= 20, "too few mutations checked: {checked}");
@@ -462,6 +467,8 @@ async fn token_limit_per_user() {
         json!({"name": "a", "scopes": [], "expires_in_days": 90}),
         json!({"name": "a", "scopes": ["read", "read"], "expires_in_days": 90}),
         json!({"name": "a", "scopes": ["write"], "expires_in_days": 90}),
+        json!({"name": "a", "scopes": ["review_loop_execute"], "expires_in_days": 90}),
+        json!({"name": "a", "scopes": ["read", "review_loop_execute", "read"], "expires_in_days": 90}),
         json!({"name": "a", "scopes": ["read"], "expires_in_days": 7}),
         json!({"name": "a", "scopes": ["read"]}),
     ] {
@@ -471,6 +478,14 @@ async fn token_limit_per_user() {
     }
     let (status, _) = create_token(&s, create_body(&"é".repeat(60))).await;
     assert_eq!(status, StatusCode::CREATED, "60 characters");
+    let agent =
+        json!({"name": "agent", "scopes": ["read", "review_loop_execute"], "expires_in_days": 90});
+    let (status, created) = create_token(&s, agent).await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(
+        created["access_token"]["scopes"],
+        json!(["read", "review_loop_execute"])
+    );
     for days in [30, 365] {
         let body = json!({"name": format!("d{days}"), "scopes": ["read"], "expires_in_days": days});
         assert_eq!(create_token(&s, body).await.0, StatusCode::CREATED);
@@ -480,8 +495,8 @@ async fn token_limit_per_user() {
         (status, &error["code"]),
         (StatusCode::CONFLICT, &json!("conflict"))
     );
-    // setup's token + 3 = 4 live; six more reach the limit.
-    for n in 0..6 {
+    // setup's token + 4 = 5 live; five more reach the limit.
+    for n in 0..5 {
         assert_eq!(
             create_token(&s, create_body(&format!("n{n}"))).await.0,
             StatusCode::CREATED

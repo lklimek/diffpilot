@@ -1419,6 +1419,32 @@ pub struct NotificationSettings {
     pub channels: Vec<NotificationChannel>,
 }
 
+/// What a save does with a channel's or push target's stored secret (an absent field keeps it).
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum SecretChange {
+    /// Keep the stored secret (or none).
+    #[default]
+    Keep,
+    /// Store this secret instead (not empty).
+    Replace {
+        /// The new secret.
+        value: String,
+    },
+    /// Remove the stored secret.
+    Remove,
+}
+
+impl std::fmt::Debug for SecretChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Keep => "Keep",
+            Self::Replace { .. } => "Replace([redacted])",
+            Self::Remove => "Remove",
+        })
+    }
+}
+
 /// Body of RN2 (`PUT …/channels/{kind}`); 200 `NotificationChannel`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct PutChannelRequest {
@@ -1426,8 +1452,9 @@ pub struct PutChannelRequest {
     pub url: String,
     /// ntfy topic.
     pub topic: Option<String>,
-    /// New secret; absent keeps the stored one.
-    pub secret: Option<String>,
+    /// The secret: ntfy access token or webhook `Authorization` value.
+    #[serde(default)]
+    pub secret: SecretChange,
     /// Events.
     pub events: Vec<UserEventKind>,
     /// On.
@@ -1469,8 +1496,9 @@ pub struct PutPushTargetRequest {
     pub url: String,
     /// ntfy topic.
     pub topic: Option<String>,
-    /// New secret; absent keeps the stored one.
-    pub secret: Option<String>,
+    /// The secret: ntfy access token or webhook `Authorization` value.
+    #[serde(default)]
+    pub secret: SecretChange,
 }
 
 /// JSON body of a generic webhook delivery (`POST`; plan §5.5).

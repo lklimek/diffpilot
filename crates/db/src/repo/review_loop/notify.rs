@@ -8,8 +8,10 @@ use sqlx::sqlite::SqliteRow;
 
 use contracts::api::access_tokens::AccessTokenId;
 use contracts::api::review_loop::{
-    ChannelKind, DeliveryOutcome, DeliveryStatus, EffectKind, LastDelivery, UserEventKind,
+    ChannelKind, DeliveryOutcome, DeliveryStatus, EffectKind, LastDelivery, UserEvent,
+    UserEventKind,
 };
+use contracts::common::{PrRef, RepoRef};
 use contracts::ids::{ChannelId, DecisionId, UserEventId};
 use contracts::time::Timestamp;
 
@@ -566,6 +568,124 @@ impl ReviewLoop<'_> {
             })
         })
         .collect()
+    }
+
+    /// One channel by id.
+    pub async fn channel(&self, id: ChannelId) -> Result<Option<ChannelRecord>, DbError> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {CHANNEL_COLUMNS} FROM notification_channels WHERE id = ?"
+        )))
+        .bind(id.to_string())
+        .fetch_optional(self.pool)
+        .await?
+        .as_ref()
+        .map(channel_from_row)
+        .transpose()
+    }
+
+    /// The token's subscription while the token is neither revoked nor expired.
+    pub async fn subscription(
+        &self,
+        token: &AccessTokenId,
+        now: Timestamp,
+    ) -> Result<Option<SubscriptionRecord>, DbError> {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "{SUBSCRIPTION_SELECT} WHERE s.token_id = ? AND t.revoked_at IS NULL AND t.expires_at > ?"
+        )))
+        .bind(&token.0)
+        .bind(ts(now))
+        .fetch_optional(self.pool)
+        .await?
+        .as_ref()
+        .map(subscription_from_row)
+        .transpose()
+    }
+
+    /// One per-user event by id, for its delivery.
+    pub async fn user_event(&self, id: UserEventId) -> Result<Option<UserEvent>, DbError> {
+        let Some(row) = sqlx::query(
+            "SELECT e.id, e.kind, r.owner, r.name, p.number, e.count, e.text, e.url, e.at
+             FROM user_events e LEFT JOIN pull_requests p ON p.id = e.pull_request_id
+             LEFT JOIN repos r ON r.id = p.repo_id WHERE e.id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(self.pool)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let number: Option<i64> = row.try_get("number")?;
+        let pr = match (row.try_get("owner")?, row.try_get("name")?, number) {
+            (Some(owner), Some(name), Some(number)) => Some(PrRef {
+                repo: RepoRef { owner, name },
+                number: u32::try_from(number).map_err(|_| DbError::Corrupt { column: "number" })?,
+            }),
+            _ => None,
+        };
+        Ok(Some(UserEvent {
+            id: wire_col(&row, "id")?,
+            kind: wire_col(&row, "kind")?,
+            pr,
+            count: u32_col(&row, "count")?,
+            text: row.try_get("text")?,
+            url: row.try_get("url")?,
+            at: ts_col(&row, "at")?,
+        }))
+    }
+
+    /// Queues one delivery per enabled channel subscribed to the event's kind, for every user event after `since`
+    /// (tests are sent by RN3 itself); a pair queued before is kept. Returns how many were queued.
+    pub async fn enqueue_event_deliveries(
+        &self,
+        since: Timestamp,
+        now: Timestamp,
+    ) -> Result<u64, DbError> {
+        let inserted = sqlx::query(
+            "INSERT INTO notification_deliveries (tenant_id, user_event_id, channel_id, state, next_attempt_at,
+                 created_at, updated_at)
+             SELECT e.tenant_id, e.id, c.id, 'pending', ?2, ?2, ?2
+             FROM user_events e JOIN notification_channels c ON c.user_id = e.user_id
+             WHERE e.at > ?1 AND e.kind <> 'test' AND c.enabled = 1
+               AND EXISTS (SELECT 1 FROM json_each(c.events) j WHERE j.value = e.kind)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(ts(since))
+        .bind(ts(now))
+        .execute(self.pool)
+        .await?;
+        Ok(inserted.rows_affected())
+    }
+
+    /// Moves a pending delivery to `at` without counting an attempt (the channel's hourly limit is used up).
+    pub async fn postpone_delivery(&self, delivery: i64, at: Timestamp) -> Result<(), DbError> {
+        let updated = sqlx::query(
+            "UPDATE notification_deliveries SET next_attempt_at = ? WHERE id = ? AND state = 'pending'",
+        )
+        .bind(ts(at))
+        .bind(delivery)
+        .execute(self.pool)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Err(DbError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Time of the newest event of `kind` about a pull request, any user.
+    pub async fn last_user_event_at(
+        &self,
+        pull_request_id: i64,
+        kind: UserEventKind,
+    ) -> Result<Option<Timestamp>, DbError> {
+        let at: Option<String> = sqlx::query_scalar(
+            "SELECT MAX(at) FROM user_events WHERE pull_request_id = ? AND kind = ?",
+        )
+        .bind(pull_request_id)
+        .bind(wire(kind)?)
+        .fetch_one(self.pool)
+        .await?;
+        at.map(|at| super::super::jobs::parse_ts(&at, "at"))
+            .transpose()
     }
 
     /// Records one attempt: delivered, failed for good (`retry_at` none) or failed with a retry at `retry_at`.

@@ -8,7 +8,7 @@ use contracts::api::access_tokens::TokenScope;
 use contracts::api::review_loop::{
     AgentPushPayload, DecideRequest, Decision, DecisionBatchRequest, DecisionKind, DecisionTarget,
     DecisionVia, FeedEvent, Gate, NotificationChannel, NotificationSettings, Override, PushTarget,
-    WebhookPayload,
+    PutChannelRequest, PutPushTargetRequest, SecretChange, WebhookPayload,
 };
 use contracts::common::{PrRef, RepoRef};
 use contracts::ids::{CommitSha, DecisionId};
@@ -371,4 +371,67 @@ fn push_payloads_have_a_fixed_shape() {
         .map(String::from)
         .into();
     assert_eq!(property_names::<WebhookPayload>(), webhook);
+}
+
+/// T28: a save names what happens to the stored secret (absent keeps it, `remove` deletes it, never an empty
+/// string), and `Debug` never shows a new secret.
+#[test]
+fn secret_change_is_explicit() {
+    let channel = |secret: Option<Value>| {
+        let mut body =
+            json!({"url": "https://ntfy.sh", "topic": "t", "events": [], "enabled": true});
+        if let Some(secret) = secret {
+            body["secret"] = secret;
+        }
+        serde_json::from_value::<PutChannelRequest>(body).expect("request")
+    };
+    assert_eq!(channel(None).secret, SecretChange::Keep);
+    assert_eq!(
+        channel(Some(json!({"action": "keep"}))).secret,
+        SecretChange::Keep
+    );
+    assert_eq!(
+        channel(Some(json!({"action": "remove"}))).secret,
+        SecretChange::Remove
+    );
+    let replaced = channel(Some(
+        json!({"action": "replace", "value": "tk_live_secret"}),
+    ));
+    assert_eq!(
+        replaced.secret,
+        SecretChange::Replace {
+            value: "tk_live_secret".into()
+        }
+    );
+    assert!(!format!("{replaced:?}").contains("tk_live_secret"));
+    assert!(
+        serde_json::from_value::<PutChannelRequest>(json!({"url": "u", "topic": null,
+        "secret": "", "events": [], "enabled": true}))
+        .is_err()
+    );
+    let target: PutPushTargetRequest = serde_json::from_value(
+        json!({"kind": "webhook", "url": "http://homeassistant.lan/api/webhook/x", "topic": null}),
+    )
+    .expect("push target");
+    assert_eq!(target.secret, SecretChange::Keep);
+}
+
+/// T28: a job's spec has no place for a notification channel, push target or their secrets; the runner never
+/// sees them.
+#[test]
+fn job_spec_has_no_channel_secret() {
+    let names = property_names::<contracts::job::spec::JobSpec>();
+    for forbidden in [
+        "channel",
+        "push",
+        "ntfy",
+        "webhook",
+        "topic",
+        "notification",
+    ] {
+        assert!(
+            !names.iter().any(|name| name.contains(forbidden)),
+            "{forbidden}: {names:?}"
+        );
+    }
 }

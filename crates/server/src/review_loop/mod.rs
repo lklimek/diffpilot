@@ -32,7 +32,9 @@ pub mod assess;
 mod badge;
 mod carry;
 mod effects;
+pub mod feed;
 mod markers;
+pub mod notify;
 mod observe;
 mod queue;
 pub mod views;
@@ -570,7 +572,7 @@ async fn carry_over(
                 effects: new_effects(planned.effects),
             };
             match rl.decide(tenant, &[new], Timestamp::now()).await? {
-                DecideOutcome::Stored(_) => {}
+                DecideOutcome::Stored(_) => state.feed.wake_sync(),
                 DecideOutcome::ItemChanged(_) => {
                     tracing::debug!(
                         item = record.no,
@@ -1046,6 +1048,7 @@ pub async fn decide(
                 ?via,
                 "decisions stored"
             );
+            state.feed.wake_sync();
             Ok(stored)
         }
         DecideOutcome::ItemChanged(nos) => Err(LoopError::ItemChanged(nos)),
@@ -1101,6 +1104,7 @@ pub async fn act(
     match outcome {
         ActionOutcome::Done(record) => {
             tracing::info!(pr = handle.id, item = no, ?action, "item action applied");
+            state.feed.wake_sync();
             Ok(*record)
         }
         ActionOutcome::ItemChanged => Err(LoopError::ItemChanged(vec![no])),

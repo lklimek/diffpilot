@@ -498,12 +498,11 @@ pub async fn log(
         .await?
         .into_iter()
         .map(|subscription| FeedSubscriber {
+            connected: state.feed.is_connected(&subscription.token_id),
+            push: super::notify::push_view(state, &subscription),
             token_name: subscription.token_name,
             capabilities: subscription.capabilities,
-            // TODO(WP13-FEED): live stream presence and the masked push target come with the feed.
-            connected: false,
             last_seen_at: subscription.last_seen_at,
-            push: None,
         })
         .collect();
     Ok(CommentLog {
