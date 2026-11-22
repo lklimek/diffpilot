@@ -42,14 +42,19 @@ pub(crate) struct FakePrHygiene {
     pub url: Url,
 }
 
-/// The stage list the real service serves (2026-11-21).
+/// The stage list the real service serves (2026-11-22).
 pub(crate) fn stages() -> Value {
     json!({"idle_days": 14, "stages": [
         {"stage": "draft", "owner": "author", "in_flow": false, "late_hours": null, "entry_recorded": true},
         {"stage": "bots", "owner": "bots", "in_flow": true, "late_hours": [24.0, 48.0], "entry_recorded": true},
         {"stage": "self-review", "owner": "author", "in_flow": true, "late_hours": [72.0, 168.0], "entry_recorded": true},
+        {"stage": "ci", "owner": "nobody", "in_flow": true, "late_hours": [6.0, 24.0], "entry_recorded": false},
+        {"stage": "queued", "owner": "nobody", "in_flow": true, "late_hours": null, "entry_recorded": true},
         {"stage": "review", "owner": "reviewers", "in_flow": true, "late_hours": [24.0, 72.0], "entry_recorded": true},
-        {"stage": "mergeable", "owner": "author", "in_flow": true, "late_hours": [24.0, 72.0], "entry_recorded": true}
+        {"stage": "mergeable", "owner": "author", "in_flow": true, "late_hours": [24.0, 72.0], "entry_recorded": true},
+        {"stage": "blocked", "owner": "maintainers", "in_flow": true, "late_hours": [24.0, 72.0], "entry_recorded": true},
+        {"stage": "not-governed", "owner": "author", "in_flow": false, "late_hours": null, "entry_recorded": true},
+        {"stage": "unknown", "owner": "nobody", "in_flow": false, "late_hours": null, "entry_recorded": false}
     ]})
 }
 

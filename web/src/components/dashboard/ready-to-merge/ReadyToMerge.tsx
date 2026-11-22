@@ -1,4 +1,4 @@
-import type { HeldBack, PluginStatus, ReadyToMergeItem } from "../../../api/generated/types";
+import type { PluginStatus, ReadyToMergeItem } from "../../../api/generated/types";
 import { CopyListButton } from "../common/CopyListButton";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 import { FactTags, SizePill } from "../common/Tags";
@@ -8,20 +8,18 @@ import { AsideSection } from "../side-panel/AsideSection";
 const prs = (n: number) => `${n} ${n === 1 ? "PR" : "PRs"}`;
 
 /**
- * The user's PRs GitHub let them merge at the last scan, in the server's order (by id) (side panel). `pending`:
- * how many merge states GitHub had not computed yet; null when the snapshot did not record merge states. `held`:
- * PRs left out because a dashboard plug-in's statement holds them back (ADR-022), each with that source's reason.
- * `plugins`: the configured plug-ins; one that can hold PRs back and whose statements are not applied now is named.
+ * The user's PRs ready to merge at the last scan, in the server's order (by id) (side panel). `pending`: how many
+ * merge states GitHub had not computed yet; null when the snapshot did not record merge states. A PR a dashboard
+ * plug-in holds back (ADR-022) is not listed; it stays in the ranking with the plug-in's note. `plugins`: the
+ * configured plug-ins; one that can hold PRs back and whose statements are not applied now is named.
  */
 export function ReadyToMerge({
   items,
   pending,
-  held = [],
   plugins,
 }: {
   items: ReadyToMergeItem[];
   pending: number | null;
-  held?: HeldBack[];
   plugins?: PluginStatus[];
 }) {
   if (pending === null) {
@@ -42,9 +40,7 @@ export function ReadyToMerge({
       }
     >
       {items.length === 0 ? (
-        held.length === 0 && (
-          <p className="text-xs text-muted">None of your PRs was ready to merge at the last scan.</p>
-        )
+        <p className="text-xs text-muted">None of your PRs was ready to merge at the last scan.</p>
       ) : (
         <ul className="m-0 list-none p-0">
           {items.map((item) => (
@@ -62,34 +58,6 @@ export function ReadyToMerge({
           ))}
         </ul>
       )}
-      {held.length > 0 && (
-        <div className="mt-2">
-          <p className="m-0 text-xs text-muted">
-            {items.length === 0
-              ? "All of your PRs that were ready to merge at the last scan are held back by another source:"
-              : "Left out because another source holds them back:"}
-          </p>
-          <ul aria-label="Held back" className="m-0 list-none p-0">
-            {held.map(({ item, source, reason, url, plugin }) => (
-              <li
-                key={`${plugin}-${item.url}`}
-                data-held={plugin}
-                className="grid gap-0.5 border-t border-border py-1.5 first:border-t-0"
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="font-mono text-[12.5px] font-semibold">{item.id}</span>
-                  <OpenExternal href={item.url} label={openLabel(item)} />
-                </div>
-                <div className="[overflow-wrap:anywhere]">{item.title}</div>
-                <p className="m-0 text-xs [overflow-wrap:anywhere]">
-                  <span className="font-semibold">{source}:</span> {reason}{" "}
-                  <OpenExternal href={url} label={`${source} data for ${item.id}`} />
-                </p>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
       <PluginStatusNote
         plugins={plugins?.filter((plugin) => plugin.holds_ready_to_merge)}
         what="Ready to merge is shown"
@@ -101,9 +69,11 @@ export function ReadyToMerge({
       )}
       <CopyListButton lines={items} what="PRs ready to merge" />
       <p className="mt-1.5 text-xs text-muted">
-        Your PRs into the repository's default branch that were ready to merge at the last scan: not a draft,
-        you can write to the repository, every check passed, and no unresolved thread, change request or
-        comment awaiting your reply. By id; they stay in the ranking too.
+        Your PRs into the repository's default branch or a release branch that were ready to merge at the last
+        scan: not a draft, you can write to the repository, no conflicts, every check passed except ignored
+        ones, no unresolved thread, change request or comment awaiting your reply, and no ready label (that
+        one needs a human: Waiting on others). A PR another source holds back stays in the ranking with its
+        note. By id; they stay in the ranking too.
       </p>
     </AsideSection>
   );

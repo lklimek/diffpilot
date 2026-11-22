@@ -135,6 +135,10 @@
           "jun-park",
           "team:core"
         ],
+        "reason": {
+          "kind": "ready_label",
+          "label": "ready-for-human"
+        },
         "waiting_since": "2026-11-07T08:14:00Z",
         "tags": [
           {
@@ -165,6 +169,9 @@
         "waiting_on": [
           "tobias-w"
         ],
+        "reason": {
+          "kind": "review_requested"
+        },
         "waiting_since": "2026-11-14T08:14:00Z",
         "tags": [
           {
@@ -186,6 +193,13 @@
         "waiting_on": [
           "team:ui"
         ],
+        "reason": {
+          "kind": "plugin",
+          "plugin": "pr-hygiene",
+          "source": "PR Hygiene",
+          "reason": "Human approval or objection resolution is required",
+          "url": "https://pr-hygiene.example.test/api/v1/prs/acme/wallet-ui/298"
+        },
         "waiting_since": "2026-11-16T08:14:00Z",
         "tags": [
           {

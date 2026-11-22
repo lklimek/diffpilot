@@ -5,11 +5,17 @@ import { HideButton } from "../../button/HideButton";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { helpHref, type HelpTopic } from "../../settings/settingsHelp";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
+import { buttonClass, busyTip } from "../../button/button";
+import { dateTimeText } from "../../format/time";
 
 interface ExcludedItemsProps {
   /** The snapshot's exclusions; absent when the snapshot did not record them. */
   exclusions: Exclusions | null | undefined;
   onNavigate?: Navigate;
+  /** "Wake now" of a snoozed item (its key); without it no button. */
+  onWake?: (key: string) => void;
+  /** Keys of the snoozed items being woken. */
+  wakingKeys?: string[];
 }
 
 interface ReasonText {
@@ -52,6 +58,11 @@ const REASONS: Record<ExclusionReason, ReasonText> = {
     title: "Merged into another item",
     rule: "The LLM merged each into another item covering the same work.",
   },
+  snoozed: {
+    count: (n) => `${n} snoozed`,
+    title: "Snoozed",
+    rule: "Items you snoozed. Each comes back at its date, or earlier when you get a new review request or mention on it.",
+  },
 };
 
 const OTHER: ReasonText = {
@@ -70,9 +81,10 @@ const byCount = (counts: ExclusionCount[]) => [...counts].sort((a, b) => b.count
 /**
  * What the ranking rules left out of Needs you (B4): one quiet line with the counts per reason, and a disclosure
  * listing the items by reason with links out. No LLM text; titles are plain text. Two reasons
- * (judged not eligible, merged into another item) are LLM decisions and say so.
+ * (judged not eligible, merged into another item) are LLM decisions and say so. Snoozed items show their end and
+ * "Wake now" (owner SN1).
  */
-export function ExcludedItems({ exclusions, onNavigate }: ExcludedItemsProps) {
+export function ExcludedItems({ exclusions, onNavigate, onWake, wakingKeys = [] }: ExcludedItemsProps) {
   const [open, setOpen] = useState(false);
   const toggle = useRef<HTMLButtonElement>(null);
   const panelId = useId();
@@ -114,6 +126,8 @@ export function ExcludedItems({ exclusions, onNavigate }: ExcludedItemsProps) {
                 count={count}
                 items={items.filter((item) => item.reason === reason)}
                 onNavigate={onNavigate}
+                onWake={onWake}
+                wakingKeys={wakingKeys}
               />
             ))}
             {items.length < exclusions.total && (
@@ -139,11 +153,15 @@ function Group({
   count,
   items,
   onNavigate,
+  onWake,
+  wakingKeys,
 }: {
   text: ReasonText;
   count: number;
   items: ExcludedItem[];
   onNavigate?: Navigate;
+  onWake?: (key: string) => void;
+  wakingKeys: string[];
 }) {
   const label = `${text.title}: ${count}`;
   return (
@@ -175,10 +193,38 @@ function Group({
               {item.merged_into && (
                 <span className="shrink-0 text-muted">merged into {item.merged_into}</span>
               )}
+              {item.reason === "snoozed" && item.snoozed_until && (
+                <span className="shrink-0 text-muted">Snoozed until {dateTimeText(item.snoozed_until)}</span>
+              )}
+              {item.reason === "snoozed" && onWake && (
+                <WakeButton
+                  item={item}
+                  waking={wakingKeys.includes(item.key)}
+                  onWake={() => onWake(item.key)}
+                />
+              )}
             </li>
           ))}
         </ul>
       )}
     </div>
+  );
+}
+
+function WakeButton({ item, waking, onWake }: { item: ExcludedItem; waking: boolean; onWake: () => void }) {
+  return (
+    <Tooltip tip={busyTip("Ends the snooze: the item is back in your list now.", waking)}>
+      <button
+        type="button"
+        aria-label={`Wake now ${item.id}`}
+        aria-disabled={waking || undefined}
+        onClick={() => {
+          if (!waking) onWake();
+        }}
+        className={`${buttonClass("plain", true)} shrink-0`}
+      >
+        Wake now
+      </button>
+    </Tooltip>
   );
 }

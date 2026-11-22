@@ -5,6 +5,9 @@
   use). Plan `docs/v1.1-dashboard-plan.md` §L. Extends ADR-017 (data sources) and ADR-020 (refresh machinery).
 - Amendment v1.3 (2026-11-22, `docs/review-workflow-plan.md` §2.8, §8, RQ16): second plug-in thepastaclaw status
   (§10); watched pull requests are a second presence source (§3).
+- Amendment DR1 (owner, 2026-11-22; plan K15, K17): the held-back list is removed (a held pull request stays in the
+  ranking with its note, §6); a statement may say whose move a pull request is, which decides Waiting on others
+  (K15 W3b, §11).
 - Overrides `CLAUDE.md` "no abstraction beyond the seams the brief names" for exactly this seam.
 
 ## Context
@@ -22,14 +25,15 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
    `poll()` → `Unchanged` or `Data { as_of, prs }`. Per pull request a plug-in may return a `PrStatement`:
    a note (summary, details, labelled facts, evidence URL), a Ready to merge opinion (`agrees` or `holds` with a
    reason) and a change mark. A pull request without a statement is not covered. Plug-ins live in
-   `server::dashboard::plugin::<name>`; wire types (`PluginNote`, `HeldBack`, `PluginStatus`) in
+   `server::dashboard::plugin::<name>`; wire types (`PluginNote`, `AwaitingReason`, `PluginStatus`) in
    `contracts::api::dashboard`. Dashboard core (view, score, refresh) depends on the host's output types only, so a
    second plug-in adds a module and a config line, nothing else.
 2. **What a plug-in may do.** Read its own external source over HTTP(S), unauthenticated. It never receives a
    GitHub token, a user token, a session, user data or the list of users; it never writes anywhere; it has no
    database access; nothing it returns is stored (in-memory only, lost on restart, rebuilt by the next poll).
    It may not change scores, tiers, tags, facts, judgements or the LLM's inputs; its only effects are its attributed
-   notes, a Ready to merge hold (point 6) and change signals (point 5).
+   notes, a Ready to merge hold (point 6), whose move it is for Waiting on others (point 11) and change signals
+   (point 5).
 3. **Lifecycle.** The host (`PluginHost`, in `AppState`) is built from configuration at start-up; one in-process
    task polls every plug-in at most once per 60 s server-wide (never per browser tab or user), and **only while a
    user is actively using the dashboard**: a summary (R1) or items (R1b) read in a browser session marks the reader
@@ -59,10 +63,10 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
    user's current one (`db::repo::dashboard::replace_current_snapshot`; a newer scan wins). Skipped while the user's
    refresh is scanning or rate-limited. No ranking job is created: judgements are reused at read time as before, and
    the next full refresh re-judges by the usual fingerprint rule. GitHub search usage does not change.
-6. **Ready to merge cross-check** (coordinator decision): a pull request K17 would list and a fresh plug-in holds
-   (PR Hygiene: governed, engine state other than `ready-to-merge`) is moved from `ready_to_merge` to
-   `ready_to_merge_held` with the plug-in's reason. Uncovered pull requests, `agrees`, stale data and an unconfigured
-   plug-in leave K17 as today. A plug-in never adds a pull request to Ready to merge.
+6. **Ready to merge cross-check** (coordinator decision; DR1): a pull request K17 would list and a fresh plug-in holds
+   (PR Hygiene: governed, engine state other than `ready-to-merge`) is left out of `ready_to_merge`; it stays in the
+   ranking only, with the plug-in's note (no held-back list). Uncovered pull requests, `agrees`, stale data and an
+   unconfigured plug-in leave K17 as today. A plug-in never adds a pull request to Ready to merge.
 7. **Trust and wording** (brief §1). Every statement is shown as an attributed external statement ("PR Hygiene: …"),
    never as a diffpilot badge, tag, fact or verdict; no numeric confidence, no "verified"/"no risk". Each note links to
    its evidence: the source's record of the pull request, built by the server from the configured base URL and the
@@ -95,6 +99,13 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
    are change signals. Records of another shape or an invalid repository name are left out and counted (logged once
    per change of the count).
 
+11. **Whose move** (DR1, K15 W3b): a statement may say the move is the author's or the reviewers'/maintainers', with
+   the logins owing a review. PR Hygiene: the stage's owner from `/stages` (`author`; `reviewers` or `maintainers`
+   with `asks[].approvers`, valid GitHub logins, at most 10, once each; `bots` and `nobody` say nothing) and the same
+   reason as its hold. A fresh statement of the reviewers' or maintainers' move lists the user's pull request under
+   Waiting on others (reason "PR Hygiene: …" with the evidence link) when nothing is the user's move; one of the
+   author's move keeps it ranked, even with the ready label. Read time only; the judge's input stays GitHub's.
+
 ## Alternatives considered
 | Alternative | Why not |
 |---|---|
@@ -107,9 +118,10 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
 | Plug-in verdict replaces K17 | an outage or uncovered repository would empty Ready to merge; a hold-only cross-check keeps today's behaviour as the floor |
 
 ## Consequences
-- `WorkItem.plugin_notes`, `SnapshotMeta.ready_to_merge_held`, `DashboardSummary.plugins` (all omitted when empty,
-  so the wire is unchanged with no plug-in); the snapshot document gains `prs_reread_at` (default absent, no version
-  bump); the summary/items revision includes the notes and holds, so a new statement changes the `ETag`.
+- `WorkItem.plugin_notes`, `DashboardSummary.plugins` (omitted when empty, so the wire is unchanged with no
+  plug-in), `AwaitingReason::Plugin` (DR1; `SnapshotMeta.ready_to_merge_held` and `HeldBack` were removed); the
+  snapshot document gains `prs_reread_at` (default absent, no version bump); the summary/items revision includes the
+  notes, the plug-in waits and, with them, the Ready to merge list, so a new statement changes the `ETag`.
 - One more outbound HTTP destination from the server (not the runner) per configured plug-in; with nobody active and
   nothing watched, none.
 - Targeted re-reads use the user's GitHub GraphQL budget (one query per 10 changed pull requests) only while that user

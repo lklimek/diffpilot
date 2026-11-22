@@ -38,6 +38,10 @@ interface WorkListProps {
   todos?: TodosState;
   /** A quiet note under the heading (the screen's excluded-items block). */
   notice?: ReactNode;
+  /** Snooze chosen in a row's menu (owner SN1); without it rows have no menu. P0 alarms are never snoozed. */
+  onSnooze?: (item: WorkItem, days: number) => void;
+  /** Keys of the items whose snooze is being saved. */
+  snoozingKeys?: string[];
   now: Date;
 }
 
@@ -88,6 +92,8 @@ export function WorkList({
   stale,
   todos,
   notice,
+  onSnooze,
+  snoozingKeys = [],
   now,
 }: WorkListProps) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -180,6 +186,8 @@ export function WorkList({
       onNavigate={onNavigate}
       expanderRef={register(item.key)}
       todos={todos}
+      onSnooze={onSnooze && ((days) => onSnooze(item, days))}
+      snoozing={snoozingKeys.includes(item.key)}
       now={now}
     />
   );

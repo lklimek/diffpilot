@@ -72,6 +72,17 @@ macro_rules! current_snapshot_id {
     };
 }
 
+/// A snoozed dashboard item of a user (owner SN1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snooze {
+    /// The item.
+    pub key: ItemKey,
+    /// When it was snoozed (a review request or mention after it wakes the item).
+    pub snoozed_at: Timestamp,
+    /// When it wakes.
+    pub until: Timestamp,
+}
+
 /// Access to the dashboard tables.
 #[derive(Debug)]
 pub struct Dashboard<'a> {
@@ -348,6 +359,87 @@ impl Dashboard<'_> {
         .execute(self.pool)
         .await?;
         Ok(())
+    }
+
+    /// The user's snoozes (owner SN1), by item key; ended ones included until a write removes them.
+    pub async fn snoozes(&self, tenant_id: &str, user_id: &str) -> Result<Vec<Snooze>, DbError> {
+        let rows = sqlx::query(
+            "SELECT item_key, snoozed_at, until FROM dashboard_snoozes
+             WHERE tenant_id = ? AND user_id = ? ORDER BY item_key",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_all(self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(Snooze {
+                    key: ItemKey::parse(row.try_get::<&str, _>("item_key")?)
+                        .map_err(|_| DbError::Corrupt { column: "item_key" })?,
+                    snoozed_at: parse_ts(row.try_get::<&str, _>("snoozed_at")?, "snoozed_at")?,
+                    until: parse_ts(row.try_get::<&str, _>("until")?, "until")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Snoozes `key` from `now` until `until` (a later snooze of the same item replaces it) and deletes the user's
+    /// snoozes that ended by `now`; never changes the snapshot or a judgement.
+    pub async fn snooze(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        key: &ItemKey,
+        now: Timestamp,
+        until: Timestamp,
+    ) -> Result<(), DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        sqlx::query(
+            "DELETE FROM dashboard_snoozes WHERE tenant_id = ? AND user_id = ? AND until <= ?",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(ts(now))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO dashboard_snoozes (tenant_id, user_id, item_key, snoozed_at, until) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (tenant_id, user_id, item_key) DO UPDATE SET snoozed_at = excluded.snoozed_at,
+                 until = excluded.until",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(key.as_str())
+        .bind(ts(now))
+        .bind(ts(until))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Ends the user's snoozes of `keys` (Wake now, or woken by a new review request or mention); returns how many
+    /// ended. Idempotent.
+    pub async fn wake(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        keys: &[ItemKey],
+    ) -> Result<u64, DbError> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let list = serde_json::to_string(&keys.iter().map(ItemKey::as_str).collect::<Vec<_>>())?;
+        let deleted = sqlx::query(
+            "DELETE FROM dashboard_snoozes WHERE tenant_id = ? AND user_id = ?
+                 AND item_key IN (SELECT value FROM json_each(?))",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(list)
+        .execute(self.pool)
+        .await?;
+        Ok(deleted.rows_affected())
     }
 
     /// The user's settings row; none means the defaults (`DashboardSettings::default`).
@@ -1520,6 +1612,72 @@ mod tests {
         );
     }
 
+    fn item(text: &str) -> ItemKey {
+        ItemKey::parse(text).unwrap()
+    }
+
+    /// SN1: a snooze is per user, a new snooze of the item replaces the old one, a snooze write drops the user's
+    /// ended snoozes, and Wake ends exactly the named ones (idempotent).
+    #[tokio::test]
+    async fn snoozes_are_per_user_replaced_pruned_and_woken() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let pr = item("acme~platform~pr~1203");
+        let issue = item("acme~platform~issue~1187");
+        dash.snooze(T, "u1", &pr, at(0), at(60)).await.unwrap();
+        dash.snooze(T, "u1", &issue, at(0), at(10)).await.unwrap();
+        dash.snooze(T, "u2", &pr, at(0), at(30)).await.unwrap();
+        dash.snooze(T, "u1", &pr, at(5), at(90)).await.unwrap();
+        assert_eq!(
+            dash.snoozes(T, "u1").await.unwrap(),
+            [
+                Snooze {
+                    key: issue.clone(),
+                    snoozed_at: at(0),
+                    until: at(10)
+                },
+                Snooze {
+                    key: pr.clone(),
+                    snoozed_at: at(5),
+                    until: at(90)
+                },
+            ]
+        );
+        let todo = item("memcan~3fa91c2e-0000-4000-8000-000000000000");
+        dash.snooze(T, "u1", &todo, at(10), at(20)).await.unwrap();
+        let keys: Vec<ItemKey> = dash
+            .snoozes(T, "u1")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.key)
+            .collect();
+        assert_eq!(
+            keys,
+            [pr.clone(), todo.clone()],
+            "the ended issue snooze is gone"
+        );
+        assert_eq!(
+            dash.wake(T, "u1", &[pr.clone(), issue.clone()])
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            dash.wake(T, "u1", std::slice::from_ref(&pr)).await.unwrap(),
+            0
+        );
+        assert_eq!(dash.wake(T, "u1", &[]).await.unwrap(), 0);
+        assert_eq!(
+            dash.snoozes(T, "u2").await.unwrap().len(),
+            1,
+            "another user's stays"
+        );
+        assert!(dash.snoozes("other", "u1").await.unwrap().is_empty());
+        let backwards = dash.snooze(T, "u1", &pr, at(10), at(10)).await;
+        assert!(backwards.is_err(), "a snooze ends after it starts");
+    }
+
     async fn seed_users(db: &Db) {
         sqlx::raw_sql(
             "INSERT INTO users (id, github_id, login, created_at, updated_at)
@@ -1725,6 +1883,7 @@ mod tests {
                     path: "policies/platform.json".to_owned(),
                 }),
                 branch_patterns: vec!["vX.Y-dev".to_owned()],
+                ignored_checks: Vec::new(),
             }],
             enumerate_owners: vec!["dashpay".to_owned()],
             lookback_days: 14,

@@ -371,6 +371,7 @@ pub(super) async fn scan<T: TokenSource>(
         merge_states_recorded: true,
         prs_reread_at: None,
         todos_hidden: false,
+        snoozes: Vec::new(),
     })
 }
 

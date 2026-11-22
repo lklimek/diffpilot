@@ -643,6 +643,8 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 | R9 | POST | `/api/v1/settings/access-tokens` | session_csrf | `CreateAccessToken` | 201 `CreatedAccessToken`; 409 `token_limit_reached` |
 | R10 | DELETE | `/api/v1/settings/access-tokens/{id}` | session_csrf | – | 204 (404 for an unknown, revoked or another user's token) |
 | R11 | POST | `/api/v1/dashboard/mentions/{id}/hide` | session_csrf | – | 204 (idempotent), 404 outside the user’s snapshot/hidden set |
+| R12 | PUT | `/api/v1/dashboard/items/{key}/snooze` | session_csrf | `SnoozeRequest` | 204; 400 `invalid_request` for days outside 1–365 or a malformed key; 404 for an item outside the user's current snapshot |
+| R13 | DELETE | `/api/v1/dashboard/items/{key}/snooze` | session_csrf | – | 204 (also when the item was not snoozed) |
 
 Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and shapes unchanged); only R8 stays
 `session`. How an agent reads with a token: `agent-api.md`.
@@ -667,19 +669,21 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   snapshot yet: an empty page. Pull request items carry `change_size` (plan §C.2 K16: `tiny` < 150, `small`
   150–499, `medium` 500–2999, `large` 3000–9999, `huge` ≥ 10 000 changed lines, with `additions`/`deletions` as
   evidence; absent for issues, TODOs and unknown totals; clients show an unknown class by its name). There is no
-  size filter on R1b. A pull request of the user that waits only on others (plan §C.2 K15) is not an
+  size filter on R1b. A pull request of the user that waits on others (plan §C.2 K15) is not an
   item: it is listed in `SnapshotMeta.awaiting` only (`AwaitingItem.total_tenths` is null), never ranked, counted
-  or excluded, so no tier filter hands it out as work. `SnapshotMeta.ready_to_merge` lists, by display id, the
-  user's pull requests ready to merge at the scan (plan §C.2 K17: into the default branch, every check passed,
-  nothing left to answer); they are ranked. `merge_state_pending` counts those of the user's pull requests into the
-  default branch whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
+  or excluded, so no tier filter hands it out as work; `waiting_on` names whom to ping and `reason` why
+  (`ready_label`, `plugin` with the source's reason and evidence, `review_requested`). `SnapshotMeta.ready_to_merge`
+  lists, by display id, the user's pull requests ready to merge at the scan (plan §C.2 K17: into the default branch
+  or a release branch, every check passed except ignored ones, nothing left to answer, no ready label, not held by a
+  current plug-in); they are ranked. `merge_state_pending` counts those of the user's pull requests Ready to merge
+  could list whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
 - **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
   with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
   recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per
   `ExclusionReason` (`excluded_author`, `outside_owned_areas`, `draft`, `judged_not_eligible`,
-  `merged_into_another`; clients treat an unknown value as "another rule"). `?excluded=true` adds `items`: at most
+  `merged_into_another`, `snoozed`; clients treat an unknown value as "another rule"). `?excluded=true` adds `items`: at most
   200 (`EXCLUDED_ITEMS_LIMIT`) `ExcludedItem`s by reason, then display id (key, kind, display id, repository,
-  number, URL, plain title, author, reason, `merged_into`); no LLM text, but `judged_not_eligible` and
+  number, URL, plain title, author, reason, `merged_into`, `snoozed_until` for `snoozed`); no LLM text, but `judged_not_eligible` and
   `merged_into_another` are LLM decisions (the web says "by the LLM"), the other reasons deterministic rules. Without the flag the summary carries the
   counts only (a few hundred bytes; the list can reach tens of KB). Same scope as the rest of the summary.
 - **Item keys** (normative; `ItemKey` in `api/dashboard.rs` is the only constructor and parser, and rejects any
@@ -781,6 +785,18 @@ without parsing or duplicating scan notes. Older snapshots default to an empty l
 204 (including repeated hides), 404 for an identity outside the user's snapshot/hidden set. A hide changes the
 summary revision and items ETag, persists per user across devices/refreshes, and leaves ranking/judgement alone.
 New posts on the same item have independent identities. Hides are not an update to GitHub.
+
+`PUT /api/v1/dashboard/items/{key}/snooze` (R12, owner SN1) takes `SnoozeRequest {days}` (1 to
+`MAX_SNOOZE_DAYS` = 365) and snoozes an item of the user's current snapshot (`{key}` is an `ItemKey`) from now
+for that many whole days; a new snooze of the same item replaces the old one. `DELETE` on the same path (R13, "Wake
+now") ends it. Session + CSRF only, no personal access tokens; per user, across devices; never an update to
+GitHub, the snapshot, the ranking or a judgement. A snoozed item that the rules would rank leaves Needs you and is
+listed under Excluded with reason `snoozed` and `snoozed_until`; another rule's exclusion wins, and a P0 alarm is
+never snoozed. The snooze ends at `snoozed_until`, or earlier when the snapshot shows a review request to the user
+on the pull request with a known request time after the snooze, or a mention of the user on the item (not hidden)
+newer than the snooze; it is then deleted when the next snapshot is stored (refresh or pull-request re-read), so a
+wake lasts after the request or mention is gone. Snoozes change the summary revision and items ETag. Waiting on
+others and Ready to merge are not affected.
 
 ## Review loop (v1.3)
 

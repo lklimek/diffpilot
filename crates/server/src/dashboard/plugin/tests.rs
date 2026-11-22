@@ -37,6 +37,7 @@ fn statement(mark: &str, readiness: Option<Readiness>) -> PrStatement {
             value: "self-review".to_owned(),
         }],
         ready_to_merge: readiness,
+        whose_move: None,
         mark: mark.to_owned(),
     }
 }
@@ -499,6 +500,73 @@ async fn pr_hygiene_states_governed_pull_requests_of_fresh_repositories() {
     assert_eq!(
         data.prs[&PrKey::new(&repo("dashpay", "platform"), 2)].ready_to_merge,
         Some(Readiness::Agrees)
+    );
+}
+
+/// K15 W3b: the stage's owner says whose move a governed pull request is: the author's, or the reviewers' or
+/// maintainers' with the `asks` approvers as those owing a review (bounded to valid logins, once each); bots' and
+/// nobody's stages say nothing.
+#[tokio::test]
+async fn pr_hygiene_says_whose_move_from_the_stage_owner() {
+    let staged = |number: u32, stage: &str| {
+        let mut r = record(
+            "dashpay/platform",
+            number,
+            Some("ready-for-human"),
+            "Review it",
+        );
+        r["stage"] = json!(stage);
+        r
+    };
+    let mut review = staged(1, "review");
+    review["asks"] = json!([
+        {"area": "sdk", "approvers": ["QuantumExplorer", "shumkov"]},
+        {"area": "fallback", "approvers": ["shumkov", "not a login", 7]},
+        "unexpected"
+    ]);
+    let fake = FakePrHygiene::start(
+        "2026-11-18T08:59:00Z",
+        vec![
+            review,
+            staged(2, "blocked"),
+            staged(3, "self-review"),
+            staged(4, "bots"),
+            staged(5, "ci"),
+        ],
+    )
+    .await;
+    let host = PluginHost::new(
+        vec![Arc::new(PrHygiene::new(fake.url.clone()).expect("plugin"))],
+        Timing::default(),
+    );
+    host.poll_once(now()).await;
+    let overlay = host.overlay(now());
+    let platform = repo("dashpay", "platform");
+    let whose = |number| overlay.whose_move(&platform, number).map(|m| m.whose);
+    assert_eq!(
+        whose(1),
+        Some(Move::People {
+            owed: vec!["QuantumExplorer".to_owned(), "shumkov".to_owned()],
+            reason: "Review it".to_owned()
+        })
+    );
+    assert_eq!(
+        whose(2),
+        Some(Move::People {
+            owed: Vec::new(),
+            reason: "Review it".to_owned()
+        })
+    );
+    assert_eq!(whose(3), Some(Move::Author));
+    assert_eq!((whose(4), whose(5)), (None, None));
+    let said = overlay.whose_move(&platform, 1).expect("statement");
+    assert_eq!(
+        (said.plugin.as_str(), said.source.as_str(), said.url),
+        (
+            "pr-hygiene",
+            "PR Hygiene",
+            format!("{}api/v1/prs/dashpay/platform/1", fake.url)
+        )
     );
 }
 

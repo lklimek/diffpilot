@@ -12,6 +12,10 @@ use db::repo::Db;
 const MAX_REPOSITORIES: usize = 50;
 /// Most release branch patterns per row.
 const MAX_BRANCH_PATTERNS: usize = 10;
+/// Most Ignored checks per row.
+const MAX_IGNORED_CHECKS: usize = 20;
+/// Most characters of an Ignored checks entry.
+const MAX_CHECK_CHARS: usize = 100;
 /// Most characters of the ready label.
 const MAX_READY_LABEL_CHARS: usize = 50;
 
@@ -217,7 +221,8 @@ fn check_list(field: ListField, list: &[String], own_login: &str) -> Result<(), 
     Ok(())
 }
 
-/// G3–G7 (repository rows), in the client's order: count, then per row repository, short name, policy, branches.
+/// G3–G7 (repository rows), in the client's order: count, then per row repository, short name, policy, branches,
+/// ignored checks.
 fn check_repositories(rows: &[RepositoryRule]) -> Result<(), InvalidSettings> {
     if rows.len() > MAX_REPOSITORIES {
         return invalid(format!("Repositories: at most {MAX_REPOSITORIES}."));
@@ -301,6 +306,16 @@ fn check_repositories(rows: &[RepositoryRule]) -> Result<(), InvalidSettings> {
                 "{label}: \"{bad}\" may use only letters, digits, . _ / - and *."
             ));
         }
+        if row.ignored_checks.len() > MAX_IGNORED_CHECKS {
+            return invalid(format!(
+                "{label}: at most {MAX_IGNORED_CHECKS} ignored checks."
+            ));
+        }
+        if let Some(bad) = row.ignored_checks.iter().find(|c| !valid_check(c)) {
+            return invalid(format!(
+                "{label}: \"{bad}\" is not a check name (1 to {MAX_CHECK_CHARS} characters, no commas)."
+            ));
+        }
     }
     Ok(())
 }
@@ -361,6 +376,14 @@ fn valid_branch(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'*' | b'-'))
 }
 
+/// An Ignored checks entry: 1 to [`MAX_CHECK_CHARS`] characters, no comma (the list separator) or control
+/// character, no white space at either end (the client trims).
+fn valid_check(value: &str) -> bool {
+    (1..=MAX_CHECK_CHARS).contains(&value.chars().count())
+        && js_trim(value) == value
+        && !value.chars().any(|c| c == ',' || c.is_control())
+}
+
 /// Relative, ending `.json`, no `..` segment once a backslash counts as a separator (the client's rule).
 fn valid_policy_path(path: &str) -> bool {
     let normalised = path.replace('\\', "/");
@@ -399,6 +422,7 @@ mod tests {
             watch_issues: false,
             ownership_policy: None,
             branch_patterns: Vec::new(),
+            ignored_checks: Vec::new(),
         }
     }
 
@@ -476,6 +500,7 @@ mod tests {
         platform.ownership_policy =
             with_policy("acme", "policies", "policies/platform.json").ownership_policy;
         platform.branch_patterns = strings(&["release/*", "vX.Y-dev", "main"]);
+        platform.ignored_checks = strings(&["*hygiene*", "PastaClaw review", "CI / lint (x.y)"]);
         assert_eq!(
             problem(|s| {
                 s.linked_logins = strings(&["alice-ci", "Corp_EMU"]);
@@ -741,6 +766,44 @@ mod tests {
             patterns(&eleven).as_deref(),
             Some("Repository 1: at most 10 release branch patterns.")
         );
+    }
+
+    /// Ignored checks: at most 20 names of 1 to 100 characters, without commas (the list separator), control
+    /// characters or white space at either end.
+    #[test]
+    fn ignored_checks_at_most_20_names_without_commas() {
+        let checks = |values: &[&str]| {
+            let rule = RepositoryRule {
+                ignored_checks: strings(values),
+                ..row("acme/x")
+            };
+            problem(|s| s.repositories = vec![rule])
+        };
+        let long = "x".repeat(100);
+        assert_eq!(
+            checks(&["PR Hygiene", "policy*", "ünïcode check", &long]),
+            None
+        );
+        assert_eq!(
+            checks(&["a, b"]).as_deref(),
+            Some("Repository 1: \"a, b\" is not a check name (1 to 100 characters, no commas).")
+        );
+        for bad in ["", " lead", "trail ", "tab\tin", &"x".repeat(101)] {
+            assert!(checks(&[bad]).is_some(), "{bad:?}");
+        }
+        let many: Vec<String> = (0..21).map(|i| format!("c{i}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(
+            checks(&many).as_deref(),
+            Some("Repository 1: at most 20 ignored checks.")
+        );
+        let stored = serde_json::json!({
+            "repo": {"owner": "acme", "name": "x"}, "alias": null, "watch_issues": false,
+            "ownership_policy": null, "branch_patterns": []
+        });
+        let old: RepositoryRule =
+            serde_json::from_value(stored).expect("a row stored before loads");
+        assert!(old.ignored_checks.is_empty(), "empty = the built-ins");
     }
 
     #[test]

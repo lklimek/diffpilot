@@ -658,21 +658,14 @@
           }
         },
         "ready_to_merge": {
-          "description": "The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked.",
+          "description": "The user's pull requests ready to merge at the scan (plan K17), by display id; also ranked. A pull request a\ncurrent plug-in statement holds back (ADR-022) is left out and stays ranked with its note.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/ReadyToMergeItem"
           }
         },
-        "ready_to_merge_held": {
-          "description": "Pull requests K17 would list that a current plug-in statement holds back (ADR-022), by display id.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/HeldBack"
-          }
-        },
         "merge_state_pending": {
-          "description": "The user's pull requests into the default branch whose merge state GitHub had not computed by the scan (read\nagain by the next refresh); null when the snapshot did not record merge states (stored before they were).",
+          "description": "The user's pull requests Ready to merge could list (into the default branch or a release branch) whose merge\nstate GitHub had not computed by the scan (read again by the next refresh); null when the snapshot did not\nrecord merge states (stored before they were).",
           "type": [
             "integer",
             "null"
@@ -833,14 +826,18 @@
           "type": "string"
         },
         "waiting_on": {
-          "description": "Logins and teams (`team:<slug>`) whose review is requested.",
+          "description": "Whom to ping: logins and teams (`team:<slug>`) whose review is requested, or those a plug-in says owe a\nreview; empty when nobody is named.",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
+        "reason": {
+          "description": "Why it waits on others.",
+          "$ref": "#/$defs/AwaitingReason"
+        },
         "waiting_since": {
-          "description": "Since when it waits (the oldest open request).",
+          "description": "Since when it waits (the oldest open request; else when the pull request was opened).",
           "type": "string",
           "format": "date-time"
         },
@@ -878,8 +875,78 @@
         "title",
         "url",
         "waiting_on",
+        "reason",
         "waiting_since",
         "tags"
+      ]
+    },
+    "AwaitingReason": {
+      "description": "Why a pull request of the user waits on other people (plan K15 W3), the first that applies.",
+      "oneOf": [
+        {
+          "description": "It carries the \"Ready for a human\" label (Settings): it needs a human, even if GitHub lets the user merge it.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ready_label"
+            },
+            "label": {
+              "description": "The label as on GitHub.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "label"
+          ]
+        },
+        {
+          "description": "A current plug-in statement says the move is the reviewers' or maintainers' (ADR-022).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "plugin"
+            },
+            "plugin": {
+              "description": "Plug-in id.",
+              "type": "string"
+            },
+            "source": {
+              "description": "Name of the plug-in, shown before the reason.",
+              "type": "string"
+            },
+            "reason": {
+              "description": "The plug-in's reason, plain text.",
+              "type": "string"
+            },
+            "url": {
+              "description": "Evidence: the source's record of the pull request.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "plugin",
+            "source",
+            "reason",
+            "url"
+          ]
+        },
+        {
+          "description": "A review is requested from others, it is not approved and GitHub does not let the user merge it.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "review_requested"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
       ]
     },
     "FactTag": {
@@ -958,7 +1025,7 @@
       ]
     },
     "ReadyToMergeItem": {
-      "description": "A pull request of the user ready to merge: into the default branch, not a draft, write access, every check passed\nand nothing left to answer (plan K17).",
+      "description": "A pull request of the user ready to merge: into the default branch or a release branch, not a draft, write\naccess, every check passed except ignored ones, nothing left to answer and no ready label (plan K17).",
       "type": "object",
       "properties": {
         "id": {
@@ -1009,39 +1076,6 @@
         "title",
         "url",
         "tags"
-      ]
-    },
-    "HeldBack": {
-      "description": "A pull request Ready to merge would list, held back by a plug-in's statement (ADR-022).",
-      "type": "object",
-      "properties": {
-        "item": {
-          "description": "The pull request as Ready to merge would list it.",
-          "$ref": "#/$defs/ReadyToMergeItem"
-        },
-        "plugin": {
-          "description": "Plug-in id.",
-          "type": "string"
-        },
-        "source": {
-          "description": "Name of the plug-in, shown before the reason.",
-          "type": "string"
-        },
-        "reason": {
-          "description": "The plug-in's reason, plain text.",
-          "type": "string"
-        },
-        "url": {
-          "description": "Evidence: the source's record of the pull request.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "item",
-        "plugin",
-        "source",
-        "reason",
-        "url"
       ]
     },
     "HistoryEvent": {
@@ -1280,6 +1314,11 @@
           "description": "The LLM merged it into another item covering the same work.",
           "type": "string",
           "const": "merged_into_another"
+        },
+        {
+          "description": "The user snoozed it (`ExcludedItem.snoozed_until`); it wakes then, or earlier on a new review request to the\nuser or a new mention of the user.",
+          "type": "string",
+          "const": "snoozed"
         }
       ]
     },
@@ -1347,6 +1386,14 @@
             "string",
             "null"
           ]
+        },
+        "snoozed_until": {
+          "description": "When the snooze ends (`snoozed` only).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
         }
       },
       "required": [

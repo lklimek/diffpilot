@@ -194,6 +194,7 @@ impl Thepastaclaw {
             details: Vec::new(),
             facts,
             ready_to_merge: None,
+            whose_move: None,
             mark: format!("reviewing {:?} {:?}", run.id, run.sha),
         }
     }
@@ -220,6 +221,7 @@ impl Thepastaclaw {
             details: Vec::new(),
             facts,
             ready_to_merge: None,
+            whose_move: None,
             mark: queued_mark(queued),
         }
     }

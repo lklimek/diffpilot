@@ -209,6 +209,7 @@ pub(super) fn pr(
                 .and_then(|n| n.commit.status_check_rollup.as_ref()),
         )
         .as_ref(),
+        |check| rules.is_ignored_check(&item.repo, check),
     );
     let default_branch = detail
         .base_repository
@@ -326,6 +327,7 @@ pub(super) fn pr(
         created_at: detail.created_at,
         ci_red: ci.red.iter().map(|c| name(c)).collect(),
         ci_pending: ci.pending.iter().map(|c| name(c)).collect(),
+        ci_ignored: ci.ignored_not_passing.iter().map(|c| name(c)).collect(),
         linked_issues: detail
             .closing_issues_references
             .nodes

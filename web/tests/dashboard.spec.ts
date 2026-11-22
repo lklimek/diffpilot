@@ -121,6 +121,33 @@ test.describe("My work (msw)", () => {
     await expect(page).toHaveURL(/\/settings\/help#skip_authors$/);
   });
 
+  test("snooze: a row's menu leaves the item out until Wake now in Excluded brings it back", async ({
+    page,
+  }) => {
+    await open(page);
+    const row = main(page).locator("li[data-item]").first();
+    const key = await row.getAttribute("data-item");
+    const id = (await row
+      .getByRole("button", { name: /^More actions for / })
+      .getAttribute("aria-label"))!.replace("More actions for ", "");
+    await row.getByRole("button", { name: `More actions for ${id}` }).click();
+    const menu = main(page).getByRole("group", { name: `Snooze ${id}` });
+    await menu.getByLabel("Days (1–365)").fill("400");
+    await menu.getByRole("button", { name: "Snooze", exact: true }).click();
+    await expect(menu.getByRole("alert")).toHaveText("Type a whole number of days from 1 to 365.");
+    await menu.getByRole("button", { name: "3 days" }).click();
+    await expect(main(page).locator(`li[data-item="${key}"]`)).toHaveCount(0);
+    const toggle = main(page).getByRole("button", { name: /^Excluded: 4/ });
+    await expect(toggle).toHaveText(/1 snoozed/);
+    await toggle.click();
+    const snoozed = main(page).getByRole("group", { name: "Snoozed: 1" });
+    await expect(snoozed.getByText(/^Snoozed until /)).toBeVisible();
+    await expectAccessible(page);
+    await snoozed.getByRole("button", { name: `Wake now ${id}` }).click();
+    await expect(main(page).locator(`li[data-item="${key}"]`)).toHaveCount(1);
+    await expect(main(page).getByRole("button", { name: /^Excluded: 3/ })).toBeVisible();
+  });
+
   test("size pills on PR rows and Waiting on others; Sizes shown filters pull requests only", async ({
     page,
   }) => {

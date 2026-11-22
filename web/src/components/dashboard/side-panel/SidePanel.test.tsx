@@ -123,40 +123,34 @@ describe("side panel sections", () => {
     expect(screen.queryByText(/None of your PRs/)).toBeNull();
   });
 
-  it("Ready to merge lists the PRs a plug-in holds back apart, each with its source's reason and evidence", () => {
-    const [ready] = SUMMARY.snapshot!.ready_to_merge;
-    const held = {
-      item: ready!,
-      plugin: "pr-hygiene",
-      source: "PR Hygiene",
-      reason: "Author must post /self-reviewed 1a2b3c",
-      url: "https://pr-hygiene.example.test/api/v1/prs/acme/wallet-ui/311",
-    };
-    const { unmount } = render(<ReadyToMerge items={[]} pending={0} held={[held]} />);
-    expect(screen.getByText("Ready to merge").closest("summary")).toHaveTextContent("0 PRs");
-    expect(screen.queryByText(/None of your PRs/)).toBeNull();
-    expect(
-      screen.getByText(
-        "All of your PRs that were ready to merge at the last scan are held back by another source:",
-      ),
-    ).toBeInTheDocument();
-    const list = screen.getByRole("list", { name: "Held back" });
-    const [row] = within(list).getAllByRole("listitem");
-    expect(row).toHaveTextContent("WUI-311");
-    expect(row).toHaveTextContent("PR Hygiene: Author must post /self-reviewed 1a2b3c");
-    expect(within(row!).getByRole("link", { name: "PR Hygiene data for WUI-311 (new tab)" })).toHaveAttribute(
+  it("Waiting on others names why each PR waits and whom to ping; a plug-in's reason links its evidence", () => {
+    render(<WaitingOnOthers items={SUMMARY.snapshot!.awaiting} now={NOW} />);
+    const reasons = [...document.querySelectorAll("[data-reason]")];
+    expect(reasons.map((r) => r.getAttribute("data-reason"))).toEqual([
+      "ready_label",
+      "review_requested",
+      "plugin",
+    ]);
+    expect(reasons[0]).toHaveTextContent(/^ready-for-human$/);
+    expect(reasons[1]).toHaveTextContent(/^review requested$/);
+    expect(reasons[2]).toHaveTextContent(/^PR Hygiene: Human approval or objection resolution is required/);
+    expect(screen.getByRole("link", { name: "PR Hygiene data for WUI-298 (new tab)" })).toHaveAttribute(
       "href",
-      held.url,
+      "https://pr-hygiene.example.test/api/v1/prs/acme/wallet-ui/298",
     );
-    expect(within(row!).getByRole("link", { name: "Open WUI-311 on GitHub (new tab)" })).toHaveAttribute(
-      "href",
-      ready!.url,
-    );
-    unmount();
-    render(
-      <ReadyToMerge items={[ready!]} pending={0} held={[{ ...held, item: { ...ready!, id: "WUI-298" } }]} />,
-    );
-    expect(screen.getByText("Left out because another source holds them back:")).toBeInTheDocument();
+    expect(screen.getByText(/waits on @jun-park, team:core for/)).toBeInTheDocument();
+  });
+
+  it("Waiting on others reads a wait without named people as a plain wait", () => {
+    const [first] = SUMMARY.snapshot!.awaiting;
+    render(<WaitingOnOthers items={[{ ...first!, waiting_on: [] }]} now={NOW} />);
+    expect(screen.getByText(/^waits for$/)).toBeInTheDocument();
+  });
+
+  it("Ready to merge has no held-back list: a held PR stays in the ranking only", () => {
+    render(<ReadyToMerge items={[]} pending={0} />);
+    expect(screen.getByText("None of your PRs was ready to merge at the last scan.")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Held back" })).toBeNull();
   });
 
   it("Ready to merge names a plug-in that can hold PRs back whose statements are not applied, and nothing for a current one", () => {

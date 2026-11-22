@@ -100,6 +100,7 @@ fn pr(number: u32, title: &str) -> StoredPr {
         created_at: now() - SignedDuration::from_hours(24 * 3),
         ci_red: Vec::new(),
         ci_pending: Vec::new(),
+        ci_ignored: Vec::new(),
         linked_issues: Vec::new(),
     }
 }
@@ -171,6 +172,7 @@ fn snapshot(prs: Vec<StoredPr>, issues: Vec<StoredIssue>, todos: Vec<StoredTodo>
         merge_states_recorded: true,
         prs_reread_at: None,
         todos_hidden: false,
+        snoozes: Vec::new(),
     }
 }
 
@@ -1566,8 +1568,9 @@ fn pull_requests_carry_their_size_mark() {
     assert_eq!(awaiting, [("wallet-ui#7", Some(SizeMark::Huge))]);
 }
 
-/// B10: a waiting PR whose state changes so that something is the user's move (a human approves; changes are
-/// requested) is back in Needs you on the next scan and is judged then; it leaves Waiting on others.
+/// K15: a waiting PR whose state changes so that something is the user's move (approved without the ready label;
+/// changes are requested) is back in Needs you on the next scan and is judged then; it leaves Waiting on others.
+/// While it carries the ready label it needs a human and keeps waiting, approved or not.
 #[test]
 fn a_waiting_pull_request_returns_to_needs_you_when_it_becomes_the_users_move() {
     use crate::dashboard::score::ReviewDecision as D;
@@ -1594,8 +1597,17 @@ fn a_waiting_pull_request_returns_to_needs_you_when_it_becomes_the_users_move() 
             f.review_decision = Some(D::Approved);
             f.approved_by.push("ana".to_owned());
         }),
+        (0, 1, 0),
+        "a human approved, the ready label kept"
+    );
+    assert_eq!(
+        moved(&|f| {
+            f.review_decision = Some(D::Approved);
+            f.approved_by.push("ana".to_owned());
+            f.labels.clear();
+        }),
         (1, 0, 1),
-        "a human approved"
+        "a human approved, no ready label"
     );
     assert_eq!(
         moved(&|f| {

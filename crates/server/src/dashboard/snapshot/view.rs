@@ -4,22 +4,22 @@
 use std::collections::HashMap;
 
 use contracts::api::dashboard::{
-    AwaitingItem, EXCLUDED_ITEMS_LIMIT, ExcludedItem, ExclusionCount, Exclusions, Fact, FactTag,
-    HeldBack, ItemCounts, ItemKey, ItemKind, ItemTarget, ItemText, RankingState, ReadyToMergeItem,
-    ScoreState, SnapshotMeta, Tier, WorkItem,
+    AwaitingItem, AwaitingReason, EXCLUDED_ITEMS_LIMIT, ExcludedItem, ExclusionCount,
+    ExclusionReason, Exclusions, Fact, FactTag, ItemCounts, ItemKey, ItemKind, ItemTarget,
+    ItemText, RankingState, ReadyToMergeItem, ScoreState, SnapshotMeta, Tier, WorkItem,
 };
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
-use db::repo::dashboard::RefreshRecord;
+use db::repo::dashboard::{RefreshRecord, Snooze};
 use jiff::SignedDuration;
 use jiff::tz::TimeZone;
 
 use super::{Snapshot, StoredIssue, StoredPr, StoredTodo};
-use crate::dashboard::plugin::Overlay;
+use crate::dashboard::plugin::{Move, Overlay};
 use crate::dashboard::refresh::rank::ItemJudgement;
 use crate::dashboard::score::{
-    self, CiEffective, Judgement, Mergeable, Milestone, Relation, ScoreError, ScoreRules, Scored,
-    TodoStatus, awaiting_others, merge_ready, todo_display_ids,
+    self, CiEffective, Judgement, Mergeable, Milestone, PrFacts, Relation, ScoreError, ScoreRules,
+    Scored, TodoStatus, merge_ready, todo_display_ids,
 };
 
 /// A ranked item with what the request-time review link needs.
@@ -42,10 +42,8 @@ pub struct View {
     pub exclusions: Exclusions,
     /// The user's pull requests waiting on others.
     pub awaiting: Vec<AwaitingItem>,
-    /// The user's pull requests ready to merge (K17).
+    /// The user's pull requests ready to merge (K17), without those a plug-in holds back (ADR-022).
     pub ready_to_merge: Vec<ReadyToMergeItem>,
-    /// Those K17 would list that a plug-in holds back (ADR-022).
-    pub ready_to_merge_held: Vec<HeldBack>,
     /// `SnapshotMeta.merge_state_pending`.
     pub merge_state_pending: Option<u32>,
 }
@@ -72,7 +70,6 @@ impl View {
             excluded: self.exclusions.total,
             awaiting: self.awaiting.clone(),
             ready_to_merge: self.ready_to_merge.clone(),
-            ready_to_merge_held: self.ready_to_merge_held.clone(),
             merge_state_pending: self.merge_state_pending,
             history: snapshot.history.clone(),
             todos: snapshot.todos_state.clone(),
@@ -91,7 +88,8 @@ enum Source<'a> {
 }
 
 /// Scores and ranks the snapshot's items with `judgements` at its scan time. `memcan_ui` is `SR_MEMCAN_UI_URL`;
-/// `overlay` holds the plug-in statements shown now (ADR-022): notes on pull requests and Ready to merge holds.
+/// `overlay` holds the plug-in statements shown now (ADR-022): notes on pull requests, Ready to merge holds and
+/// whose move a pull request is (Waiting on others).
 pub fn build(
     snapshot: &Snapshot,
     judgements: &HashMap<ItemKey, ItemJudgement>,
@@ -117,11 +115,11 @@ pub fn build(
     );
     let mut scored = Vec::new();
     let mut sources: HashMap<ItemKey, Source<'_>> = HashMap::new();
-    // A PR waiting only on others is listed under Waiting on others alone (B10).
+    // A PR waiting on others is listed under Waiting on others alone (K15).
     for pr in snapshot
         .pull_requests
         .iter()
-        .filter(|pr| !score::waits_on_others(&rules, &pr.facts))
+        .filter(|pr| waiting(&rules, &pr.facts, overlay).is_none())
     {
         let key = item_key(ItemTarget::PullRequest {
             repo: pr.facts.repo.clone(),
@@ -130,6 +128,7 @@ pub fn build(
         let item = scored_with(key.as_ref(), judgements, |j| {
             score::score_pr(&rules, &pr.facts, j, at)
         });
+        let item = item.map(|item| snoozed(item, &snapshot.snoozes));
         push(item, Source::Pr(pr), &mut scored, &mut sources);
     }
     for issue in &snapshot.issues {
@@ -140,6 +139,7 @@ pub fn build(
         let item = scored_with(key.as_ref(), judgements, |j| {
             score::score_issue(&rules, &issue.facts, j, at)
         });
+        let item = item.map(|item| snoozed(item, &snapshot.snoozes));
         push(item, Source::Issue(issue), &mut scored, &mut sources);
     }
     for todo in &snapshot.todos {
@@ -151,6 +151,7 @@ pub fn build(
         let item = scored_with(key.as_ref(), judgements, |j| {
             score::score_todo(&todo.facts, id.clone(), j, at)
         });
+        let item = item.map(|item| snoozed(item, &snapshot.snoozes));
         push(item, Source::Todo(todo), &mut scored, &mut sources);
     }
     let ranking = score::rank(scored);
@@ -180,8 +181,8 @@ pub fn build(
         }
         items.push(view_item);
     }
-    let awaiting = awaiting(&rules, snapshot);
-    let (ready_to_merge, ready_to_merge_held) = ready_to_merge(&rules, snapshot, overlay);
+    let awaiting = awaiting(&rules, snapshot, overlay);
+    let ready_to_merge = ready_to_merge(&rules, snapshot, overlay);
     let merge_state_pending = snapshot.merge_states_recorded.then(|| {
         let pending = snapshot
             .pull_requests
@@ -196,18 +197,31 @@ pub fn build(
     View {
         items,
         item_counts: counts,
-        exclusions: exclusions(ranking.excluded, &sources, memcan_ui),
+        exclusions: exclusions(ranking.excluded, &sources, &snapshot.snoozes, memcan_ui),
         awaiting,
         ready_to_merge,
-        ready_to_merge_held,
         merge_state_pending,
     }
+}
+
+/// Leaves a snoozed item the rules would rank out of the ranking (owner SN1); another rule's exclusion wins, and a
+/// P0 alarm stays listed (a snooze never hides an alarm).
+fn snoozed(mut item: Scored, snoozes: &[Snooze]) -> Scored {
+    if item.exclusion.is_none()
+        && item.score.tier != Tier::P0
+        && let Some(snooze) = snoozes.iter().find(|s| s.key == item.key)
+    {
+        item.exclusion = Some(ExclusionReason::Snoozed);
+        item.excluded = Some(format!("snoozed until {}", snooze.until));
+    }
+    item
 }
 
 /// Counts per rule and the first [`EXCLUDED_ITEMS_LIMIT`] items by rule, then display id (B4).
 fn exclusions(
     mut left_out: Vec<score::Excluded>,
     sources: &HashMap<ItemKey, Source<'_>>,
+    snoozes: &[Snooze],
     memcan_ui: Option<&str>,
 ) -> Exclusions {
     left_out.sort_by_key(|e| e.rule);
@@ -225,7 +239,10 @@ fn exclusions(
         .into_iter()
         .filter_map(|e| {
             let source = sources.get(&e.key)?;
-            Some(excluded_item(e, source, memcan_ui))
+            let until = (e.rule == ExclusionReason::Snoozed)
+                .then(|| snoozes.iter().find(|s| s.key == e.key).map(|s| s.until))
+                .flatten();
+            Some(excluded_item(e, source, until, memcan_ui))
         })
         .take(EXCLUDED_ITEMS_LIMIT)
         .collect();
@@ -236,7 +253,12 @@ fn exclusions(
     }
 }
 
-fn excluded_item(e: score::Excluded, source: &Source<'_>, memcan_ui: Option<&str>) -> ExcludedItem {
+fn excluded_item(
+    e: score::Excluded,
+    source: &Source<'_>,
+    snoozed_until: Option<Timestamp>,
+    memcan_ui: Option<&str>,
+) -> ExcludedItem {
     let (kind, repo, number, url, title, author) = match source {
         Source::Pr(pr) => {
             let f = &pr.facts;
@@ -280,6 +302,7 @@ fn excluded_item(e: score::Excluded, source: &Source<'_>, memcan_ui: Option<&str
         author,
         reason: e.rule,
         merged_into: e.merged_into,
+        snoozed_until,
     }
 }
 
@@ -462,9 +485,16 @@ fn work_item(
 
 fn ci_tag(pr: &StoredPr) -> Option<FactTag> {
     match pr.facts.ci {
-        CiEffective::Green => Some(tag(
+        CiEffective::Green if pr.ci_ignored.is_empty() => Some(tag(
             "CI passing",
             "Every build, test and lint check on the head commit passed",
+        )),
+        CiEffective::Green => Some(tag(
+            "CI passing",
+            format!(
+                "Every build, test and lint check on the head commit passed; ignored checks not passing: {}",
+                pr.ci_ignored.join(", ")
+            ),
         )),
         CiEffective::Red => Some(tag(
             "CI failing",
@@ -620,32 +650,78 @@ fn todo_facts(todo: &StoredTodo) -> Vec<Fact> {
     facts
 }
 
-/// The user's ready PRs waiting on others, longest wait first. `waiting_since` is the oldest open request to them;
-/// when the timeline did not show it (older than its last 50 events, or a team request), the PR's creation time.
-fn awaiting(rules: &ScoreRules, snapshot: &Snapshot) -> Vec<AwaitingItem> {
-    let facts: Vec<_> = snapshot
+/// Why the user's PR waits on others now (K15 W3), and whom to ping; `None` when it does not. A plug-in that says
+/// the move is the author's keeps it out; the ready label comes first, then the plug-in's reviewers' or
+/// maintainers' move (those it says owe a review, else the requested reviewers), then a requested review.
+fn waiting(
+    rules: &ScoreRules,
+    f: &PrFacts,
+    overlay: &Overlay,
+) -> Option<(AwaitingReason, Vec<String>)> {
+    if !score::nothing_is_users_move(rules, f) {
+        return None;
+    }
+    let stated = overlay.whose_move(&f.repo, f.number);
+    let requested = f.review_requested_from_others.clone();
+    if let Some(label) = score::ready_label(rules, f) {
+        let author_moves = stated.is_some_and(|s| s.whose == Move::Author);
+        return (!author_moves).then(|| {
+            (
+                AwaitingReason::ReadyLabel {
+                    label: label.to_owned(),
+                },
+                requested,
+            )
+        });
+    }
+    match stated {
+        Some(statement) => match statement.whose {
+            Move::Author => None,
+            Move::People { owed, reason } => Some((
+                AwaitingReason::Plugin {
+                    plugin: statement.plugin,
+                    source: statement.source,
+                    reason,
+                    url: statement.url,
+                },
+                if owed.is_empty() { requested } else { owed },
+            )),
+        },
+        None => score::waits_on_requested_review(rules, f)
+            .then_some((AwaitingReason::ReviewRequested, requested)),
+    }
+}
+
+/// The user's PRs waiting on others, longest wait first, each with why and whom to ping. `waiting_since` is the
+/// oldest open request to others; when the timeline did not show it (older than its last 50 events, a team request,
+/// or none), the PR's creation time.
+fn awaiting(rules: &ScoreRules, snapshot: &Snapshot, overlay: &Overlay) -> Vec<AwaitingItem> {
+    let mut rows: Vec<&PrFacts> = snapshot
         .pull_requests
         .iter()
-        .map(|pr| pr.facts.clone())
+        .map(|pr| &pr.facts)
+        .filter(|f| waiting(rules, f, overlay).is_some())
         .collect();
-    awaiting_others(rules, &facts)
-        .into_iter()
+    score::by_longest_wait(rules, &mut rows);
+    rows.into_iter()
         .filter_map(|f| {
             let stored = snapshot
                 .pull_requests
                 .iter()
                 .find(|pr| pr.facts.repo == f.repo && pr.facts.number == f.number)?;
+            let (reason, waiting_on) = waiting(rules, f, overlay)?;
             Some(AwaitingItem {
                 id: rules.display_id(&f.repo, f.number),
                 repo: f.repo.clone(),
                 number: f.number,
                 title: f.title.clone(),
                 url: github_url(&f.repo, "pull", f.number),
-                waiting_on: f.review_requested_from_others.clone(),
+                waiting_on,
+                reason,
                 waiting_since: waiting_since(f.others_review_requested_at, stored.created_at),
                 tags: ci_tag(stored).into_iter().collect(),
                 change_size: score::size_mark(f),
-                // Never ranked (B10).
+                // Never ranked (K15).
                 total_tenths: None,
             })
         })
@@ -653,56 +729,111 @@ fn awaiting(rules: &ScoreRules, snapshot: &Snapshot) -> Vec<AwaitingItem> {
 }
 
 /// `AwaitingItem.waiting_since`: the oldest open request to another reviewer (each login's newest request
-/// event). Unknown (only team requests, or the timeline missed the event): the PR's creation time, a documented
-/// over-estimate of the wait.
+/// event). Unknown (only team requests, no request, or the timeline missed the event): the PR's creation time, a
+/// documented over-estimate of the wait.
 fn waiting_since(requested: Option<Timestamp>, created: Timestamp) -> Timestamp {
     requested.unwrap_or(created)
 }
 
-/// The user's pull requests ready to merge ([`merge_ready`]; they stay ranked), and those of them a current
-/// plug-in statement holds back (ADR-022 §6).
+/// The user's pull requests ready to merge ([`merge_ready`]; they stay ranked), without those a current plug-in
+/// statement holds back (ADR-022 §6): those stay in the ranking only, with the plug-in's note.
 fn ready_to_merge(
     rules: &ScoreRules,
     snapshot: &Snapshot,
     overlay: &Overlay,
-) -> (Vec<ReadyToMergeItem>, Vec<HeldBack>) {
+) -> Vec<ReadyToMergeItem> {
     let facts: Vec<_> = snapshot
         .pull_requests
         .iter()
         .map(|pr| pr.facts.clone())
         .collect();
-    let mut held = Vec::new();
-    let ready = merge_ready(rules, &facts)
+    merge_ready(rules, &facts)
         .into_iter()
+        .filter(|f| overlay.hold(&f.repo, f.number).is_none())
         .filter_map(|f| {
             let stored = snapshot
                 .pull_requests
                 .iter()
                 .find(|pr| pr.facts.repo == f.repo && pr.facts.number == f.number)?;
-            let tags: Vec<FactTag> = ci_tag(stored).into_iter().collect();
             Some(ReadyToMergeItem {
                 id: rules.display_id(&f.repo, f.number),
                 repo: f.repo.clone(),
                 number: f.number,
                 title: f.title.clone(),
                 url: github_url(&f.repo, "pull", f.number),
-                tags,
+                tags: ci_tag(stored).into_iter().collect(),
                 change_size: score::size_mark(f),
             })
         })
-        .filter_map(|item| match overlay.hold(&item.repo, item.number) {
-            Some(hold) => {
-                held.push(HeldBack {
-                    item,
-                    plugin: hold.plugin,
-                    source: hold.source,
-                    reason: hold.reason,
-                    url: hold.url,
-                });
-                None
-            }
-            None => Some(item),
-        })
-        .collect();
-    (ready, held)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use contracts::api::dashboard::ItemTarget;
+    use jiff::SignedDuration;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::dashboard::score::{Freshness, Judgement, TodoFacts, TodoStatus};
+
+    fn at() -> Timestamp {
+        "2026-11-18T09:00:00Z".parse().expect("time")
+    }
+
+    fn todo(n: u128, alarm: bool) -> Scored {
+        let facts = TodoFacts {
+            id: Uuid::from_u128(n),
+            title: "t".into(),
+            status: TodoStatus::Pending,
+            priority: None,
+            changed_at: at(),
+        };
+        let judgement = Judgement {
+            parts: Vec::new(),
+            eligibility: None,
+            alarm,
+            also: Vec::new(),
+            judged_at: at(),
+            freshness: Freshness::Current,
+        };
+        score::score_todo(&facts, format!("TODO-{n}"), Some(&judgement), at()).expect("scores")
+    }
+
+    fn snooze(item: &Scored) -> Snooze {
+        Snooze {
+            key: item.key.clone(),
+            snoozed_at: at(),
+            until: at() + SignedDuration::from_hours(24),
+        }
+    }
+
+    /// SN1: a snooze leaves a ranked item out with its reason; a P0 alarm stays, and another rule's exclusion wins.
+    #[test]
+    fn a_snooze_never_hides_an_alarm_or_replaces_another_rule() {
+        let plain = todo(1, false);
+        let alarm = todo(2, true);
+        assert_eq!(alarm.score.tier, Tier::P0);
+        let mut merged = todo(3, false);
+        merged.exclusion = Some(ExclusionReason::MergedIntoAnother);
+        let other = ItemKey::new(&ItemTarget::Todo(Uuid::from_u128(9))).expect("key");
+        let snoozes = [snooze(&plain), snooze(&alarm), snooze(&merged)];
+
+        let left_out = snoozed(plain.clone(), &snoozes);
+        assert_eq!(left_out.exclusion, Some(ExclusionReason::Snoozed));
+        assert_eq!(
+            left_out.excluded.as_deref(),
+            Some("snoozed until 2026-11-19T09:00:00Z")
+        );
+        assert_eq!(snoozed(alarm, &snoozes).exclusion, None, "an alarm stays");
+        assert_eq!(
+            snoozed(merged, &snoozes).exclusion,
+            Some(ExclusionReason::MergedIntoAnother)
+        );
+        let unrelated = Snooze {
+            key: other,
+            ..snooze(&plain)
+        };
+        assert_eq!(snoozed(plain, &[unrelated]).exclusion, None);
+    }
 }

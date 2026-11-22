@@ -42,6 +42,39 @@ const rowIds = () =>
   [...document.querySelectorAll("li[data-item]")].map((li) => li.getAttribute("data-item"));
 
 describe("WorkList", () => {
+  it("each ranked row's menu snoozes that item; P0 alarms have none; without onSnooze no menu", async () => {
+    const onSnooze = vi.fn();
+    const { rerender } = render(
+      <WorkList
+        items={ITEMS}
+        kinds={ALL_KINDS}
+        onKindsChange={vi.fn()}
+        reviewHref={reviewHref}
+        onSnooze={onSnooze}
+        snoozingKeys={[]}
+        now={NOW}
+      />,
+    );
+    const ranked = ITEMS.filter((item) => item.score.tier !== "p0");
+    const menus = screen.getAllByRole("button", { name: /^More actions for / });
+    expect(ranked.length).toBeLessThan(ITEMS.length);
+    expect(menus.map((b) => b.getAttribute("aria-label")).sort()).toEqual(
+      ranked.map((item) => `More actions for ${item.id}`).sort(),
+    );
+    const first = ranked[0]!;
+    await userEvent.click(screen.getByRole("button", { name: `More actions for ${first.id}` }));
+    await userEvent.click(
+      within(screen.getByRole("group", { name: `Snooze ${first.id}` })).getByRole("button", {
+        name: "3 days",
+      }),
+    );
+    expect(onSnooze).toHaveBeenCalledWith(first, 3);
+    rerender(
+      <WorkList items={ITEMS} kinds={ALL_KINDS} onKindsChange={vi.fn()} reviewHref={reviewHref} now={NOW} />,
+    );
+    expect(screen.queryByRole("button", { name: /^More actions for / })).toBeNull();
+  });
+
   it("shows a plug-in's statement on its pull request's row, the further points once the row is expanded", async () => {
     const note = {
       plugin: "pr-hygiene",

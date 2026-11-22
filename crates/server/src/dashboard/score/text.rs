@@ -130,8 +130,9 @@ pub(super) fn version(text: &str, milestone: bool) -> Option<(u64, u64, u64)> {
     rest.is_empty().then_some((major, minor, patch))
 }
 
-/// An approval, policy or review-bot gate, never "CI red" (skill `POLICY_CHECK_RE`, plan K12).
-pub(super) fn is_policy_check(name: &str) -> bool {
+/// A built-in ignored check (K12, K17 R4): an approval, policy or review-bot gate (skill `POLICY_CHECK_RE`) or
+/// thepastaclaw's "PastaClaw review", used while a repository row lists no Ignored checks.
+pub(super) fn is_builtin_ignored_check(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     let policy_prefix = name
         .strip_prefix("policy")
@@ -143,6 +144,7 @@ pub(super) fn is_policy_check(name: &str) -> bool {
         || name.contains("milestone")
         || name.contains("coderabbit")
         || name == "review"
+        || name == "pastaclaw review"
 }
 
 /// Natural order of display ids (skill `_id_key`): prefix, then a numeric suffix before any other suffix.

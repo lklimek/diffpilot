@@ -294,6 +294,7 @@ mod tests {
                 watch_issues: true,
                 ownership_policy: None,
                 branch_patterns: Vec::new(),
+                ignored_checks: Vec::new(),
             });
         }
         serde_json::to_value(settings).expect("JSON")

@@ -21,10 +21,10 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use contracts::api::dashboard::{
-    DashboardEvent, DashboardSettings, DashboardSummary, ExcludedItem, ExclusionCount,
-    ExclusionReason, Exclusions, HistoryKind, ItemCounts, ItemKey, ItemKind, ItemPage, ItemTarget,
-    KindCounts, PolicyRef, RankingState, RefreshFailureCode, RefreshState, RefreshStatus,
-    RepositoryRule, ScanStepKey, ScoreState, StepState, Tier, TodosStatus, WorkItem,
+    AwaitingReason, DashboardEvent, DashboardSettings, DashboardSummary, ExcludedItem,
+    ExclusionCount, ExclusionReason, Exclusions, HistoryKind, ItemCounts, ItemKey, ItemKind,
+    ItemPage, ItemTarget, KindCounts, PolicyRef, RankingState, RefreshFailureCode, RefreshState,
+    RefreshStatus, RepositoryRule, ScanStepKey, ScoreState, StepState, Tier, TodosStatus, WorkItem,
 };
 use contracts::common::RepoRef;
 use contracts::ids::RefreshId;
@@ -88,6 +88,7 @@ fn row(name: &str, alias: &str, watch_issues: bool) -> RepositoryRule {
         watch_issues,
         ownership_policy: None,
         branch_patterns: Vec::new(),
+        ignored_checks: Vec::new(),
     }
 }
 
@@ -764,21 +765,22 @@ async fn full_refresh_stores_the_expected_snapshot() {
             author: Some("dependabot[bot]".to_owned()),
             reason: ExclusionReason::ExcludedAuthor,
             merged_into: None,
+            snoozed_until: None,
         }]
     );
     assert_eq!(summary.latest_refresh.as_ref().map(|r| r.id), Some(done.id));
     assert_eq!(
         meta.item_counts,
         ItemCounts {
-            total: 19,
-            pr: 12,
+            total: 18,
+            pr: 11,
             issue: 5,
             todo: 2,
             p0: 0,
             p1: 7,
             p2: 5,
-            p3: 7,
-            not_judged: 19,
+            p3: 6,
+            not_judged: 18,
         }
     );
     assert_eq!(meta.excluded, 1, "the excluded bot author");
@@ -793,15 +795,34 @@ async fn full_refresh_stores_the_expected_snapshot() {
     let awaiting: Vec<_> = meta
         .awaiting
         .iter()
-        .map(|a| (a.id.as_str(), a.waiting_on.clone(), a.waiting_since))
+        .map(|a| {
+            (
+                a.id.as_str(),
+                a.waiting_on.clone(),
+                a.reason.clone(),
+                a.waiting_since,
+            )
+        })
         .collect();
     assert_eq!(
         awaiting,
-        [(
-            "PLAT-1176",
-            vec!["jun-park".to_owned(), "team:core".to_owned()],
-            at("2026-11-07T10:00:00Z")
-        )]
+        [
+            (
+                "PLAT-1176",
+                vec!["jun-park".to_owned(), "team:core".to_owned()],
+                AwaitingReason::ReadyLabel {
+                    label: "ready-for-human".to_owned()
+                },
+                at("2026-11-07T10:00:00Z")
+            ),
+            (
+                "CON-1541",
+                vec!["jun-park".to_owned()],
+                AwaitingReason::ReviewRequested,
+                at("2026-11-17T12:00:00Z")
+            )
+        ],
+        "K15 W3a (the label) and W3c (a requested review, not approved, not mergeable; no label needed)"
     );
     assert_eq!(meta.awaiting[0].total_tenths, None, "not ranked");
     let ready: Vec<_> = meta
@@ -889,7 +910,6 @@ async fn full_refresh_stores_the_expected_snapshot() {
             "WUI-298",
             "NC-490",
             "PLAT-1210",
-            "CON-1541",
             "TODO-3fa91c2e",
             "CON-1520",
             "CON-1525",
@@ -1214,7 +1234,7 @@ async fn items_page_with_cursor_etag_and_expired_cursor() {
     let w = world().await;
     w.refreshed().await;
     let all = w.items("").await;
-    assert_eq!(all.items.len(), 19, "default limit 100");
+    assert_eq!(all.items.len(), 18, "default limit 100");
     let first = w.items("?limit=5").await;
     assert_eq!(alias_ids(&first.items), alias_ids(&all.items[..5]));
     let cursor = first.next_cursor.clone().expect("next page");
@@ -1309,14 +1329,14 @@ async fn items_filters() {
         "TODO items whatever kind says"
     );
     let prs = w.items("?kind=pr&todos=false").await;
-    assert_eq!(prs.items.len(), 12);
+    assert_eq!(prs.items.len(), 11);
     assert!(prs.items.iter().all(|i| i.kind == ItemKind::Pr));
     let wallet = w.items("?repo=ACME/wallet-ui").await;
     assert_eq!(alias_ids(&wallet.items), ["WUI-320", "WUI-311", "WUI-298"]);
     let unjudged = w.items("?state=unjudged&tier=p3&todos=false").await;
     assert_eq!(
         alias_ids(&unjudged.items),
-        ["PLAT-1210", "CON-1541", "CON-1520", "CON-1525", "PLAT-1215",]
+        ["PLAT-1210", "CON-1520", "CON-1525", "PLAT-1215",]
     );
     let all = w.items("").await;
     let since = all.items.iter().map(|i| i.updated_at).max().expect("items");
@@ -1609,7 +1629,7 @@ async fn search_outage_keeps_previous_snapshot() {
     let meta = summary.snapshot.expect("snapshot");
     assert_eq!(
         (second.state, meta.refresh_id, meta.item_counts.pr),
-        (RefreshState::Failed, first.id, 12),
+        (RefreshState::Failed, first.id, 11),
         "outage refresh: {:?}; current snapshot items {:?}",
         second.failure,
         meta.item_counts
@@ -1716,6 +1736,7 @@ async fn scan_over_the_time_limit_fails_as_timed_out() {
 
 mod judged;
 mod plugin;
+mod snooze;
 
 /// Pull requests the refused linked login `alice-helper` authored count in the charts whoever merged them: by the
 /// user (`acme/platform#1231`), by a third person (`acme/consensus#1536`, absent from its event feed), outside the

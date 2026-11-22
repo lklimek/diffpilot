@@ -1188,6 +1188,7 @@ mod ranked {
             watch_issues: false,
             ownership_policy: None,
             branch_patterns: Vec::new(),
+            ignored_checks: Vec::new(),
         }
     }
 

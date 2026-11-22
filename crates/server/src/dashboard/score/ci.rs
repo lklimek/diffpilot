@@ -1,9 +1,9 @@
-//! CI classification (skill `classify_ci`): build, test and lint checks apart from approval and policy gates.
+//! CI classification (skill `classify_ci`): build, test and lint checks apart from ignored checks (approval and
+//! policy gates, K17 R4).
 
 use contracts::time::Timestamp;
 
 use super::facts::CiEffective;
-use super::text;
 
 /// One context of a head commit's `statusCheckRollup`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,8 +50,8 @@ pub struct CiSummary {
     pub red: Vec<String>,
     /// Running build, test or lint checks.
     pub pending: Vec<String>,
-    /// Policy gates not passing, as `name (STATE)`.
-    pub policy_not_passing: Vec<String>,
+    /// Ignored checks not passing, as `name (STATE)`.
+    pub ignored_not_passing: Vec<String>,
 }
 
 const CHECK_FAILED: [&str; 5] = [
@@ -62,13 +62,14 @@ const CHECK_FAILED: [&str; 5] = [
     "STARTUP_FAILURE",
 ];
 
-/// Latest run per (workflow, check) wins; policy gates (K12) never make CI red; `None` = no rollup.
-pub fn classify_ci(rollup: Option<&CheckRollup>) -> CiSummary {
+/// Latest run per (workflow, check) wins; a check whose name is `ignored` (K17 R4) never makes CI red or pending;
+/// `None` = no rollup.
+pub fn classify_ci(rollup: Option<&CheckRollup>, ignored: impl Fn(&str) -> bool) -> CiSummary {
     let mut out = CiSummary {
         effective: CiEffective::None,
         red: vec![],
         pending: vec![],
-        policy_not_passing: vec![],
+        ignored_not_passing: vec![],
     };
     let Some(rollup) = rollup else {
         return out;
@@ -136,8 +137,8 @@ pub fn classify_ci(rollup: Option<&CheckRollup>) -> CiSummary {
         if !(failed || pending) {
             continue;
         }
-        if text::is_policy_check(name) {
-            out.policy_not_passing.push(format!("{label} ({state})"));
+        if ignored(name) {
+            out.ignored_not_passing.push(format!("{label} ({state})"));
         } else if failed {
             out.red.push(label);
         } else {

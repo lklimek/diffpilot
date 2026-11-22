@@ -10,7 +10,7 @@ use contracts::api::dashboard::{
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
-use db::repo::dashboard::RefreshRecord;
+use db::repo::dashboard::{RefreshRecord, Snooze};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -68,6 +68,9 @@ pub struct Snapshot {
     /// TODO rows hidden because the current settings hide TODOs (read time only, never stored).
     #[serde(skip)]
     pub todos_hidden: bool,
+    /// The user's snoozes that have not ended (read time only, never stored; owner SN1).
+    #[serde(skip)]
+    pub snoozes: Vec<Snooze>,
 }
 
 /// A pull request of the snapshot.
@@ -85,6 +88,9 @@ pub struct StoredPr {
     pub ci_red: Vec<String>,
     /// Running build, test and lint checks.
     pub ci_pending: Vec<String>,
+    /// Ignored checks not passing, as `name (STATE)` (K17 R4; info only); empty in a snapshot stored before.
+    #[serde(default)]
+    pub ci_ignored: Vec<String>,
     /// Issues it closes (`closingIssuesReferences`, first 5); empty in a snapshot stored before they were kept.
     #[serde(default)]
     pub linked_issues: Vec<StoredLinkedIssue>,
@@ -132,7 +138,8 @@ pub struct StoredTodo {
 
 /// The user's current snapshot with its refresh; `None` before the first scan, and for a document of an unknown
 /// version or shape (logged; the next refresh stores a readable one). TODO rows are left out while the user's
-/// current settings hide TODOs (T19), whatever the scan stored.
+/// current settings hide TODOs (T19), whatever the scan stored; hidden mentions are left out and the snoozes that
+/// have not ended are attached (owner SN1).
 pub async fn load(
     state: &AppState,
     tenant_id: &str,
@@ -163,6 +170,12 @@ pub async fn load(
     snapshot
         .mentions
         .retain(|mention| !hidden.contains(&mention.id));
+    let now = state.dashboard.now();
+    let snoozes = state.db.dashboard().snoozes(tenant_id, user_id).await?;
+    snapshot.snoozes = snoozes
+        .into_iter()
+        .filter(|s| !super::snooze::ended(s, &snapshot, &[], now))
+        .collect();
     Ok(Some((record, snapshot)))
 }
 

@@ -164,6 +164,7 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     const { onSave } = renderCard();
     await userEvent.type(screen.getByLabelText("Short name of acme/legacy-tools"), "lt");
     await userEvent.type(screen.getByLabelText("Release branches of acme/docs-site"), "main, stable/*");
+    await userEvent.type(screen.getByLabelText("Ignored checks of acme/docs-site"), "PR title, Docs preview");
     await userEvent.click(screen.getByLabelText("Refresh my dashboard automatically every day"));
     await userEvent.selectOptions(screen.getByLabelText("Time of day"), "07:45");
     await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
@@ -173,6 +174,7 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
       alias: "LT",
     });
     expect(settings.repositories[4]!.branch_patterns).toEqual(["main", "stable/*"]);
+    expect(settings.repositories[4]!.ignored_checks).toEqual(["PR title", "Docs preview"]);
     expect(settings).toMatchObject({
       schedule_enabled: false,
       schedule_time: "07:45",

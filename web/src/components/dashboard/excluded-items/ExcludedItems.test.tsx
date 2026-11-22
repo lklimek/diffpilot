@@ -108,6 +108,46 @@ describe("ExcludedItems", () => {
     expect(screen.getByText("Listed: the first 2 of 250.")).toBeTruthy();
   });
 
+  it("snoozed items show when they wake and Wake now, which is unavailable while it runs", async () => {
+    const onWake = vi.fn();
+    const until = "2026-11-25T09:00:00Z";
+    const exclusions: Exclusions = {
+      total: 3,
+      counts: [
+        { reason: "snoozed", count: 2 },
+        { reason: "draft", count: 1 },
+      ],
+      items: [
+        item(8, "snoozed", { snoozed_until: until }),
+        item(9, "snoozed", { snoozed_until: until }),
+        item(20, "draft"),
+      ],
+    };
+    const { rerender } = render(<ExcludedItems exclusions={exclusions} onWake={onWake} wakingKeys={[]} />);
+    expect(screen.getByText(/^Excluded: 3/).textContent).toBe("Excluded: 3 — 2 snoozed · 1 draft");
+    await userEvent.click(screen.getByRole("button", { name: /Excluded: 3/ }));
+    const snoozed = within(screen.getByRole("group", { name: "Snoozed: 2" }));
+    expect(snoozed.getByText(/^Items you snoozed\. Each comes back at its date/)).toBeTruthy();
+    const when = new Intl.DateTimeFormat("en-GB", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(until));
+    expect(snoozed.getAllByText(`Snoozed until ${when}`)).toHaveLength(2);
+    await userEvent.click(snoozed.getByRole("button", { name: "Wake now PLAT-8" }));
+    expect(onWake).toHaveBeenCalledWith("acme~platform~pr~8");
+    expect(
+      within(screen.getByRole("group", { name: "Drafts: 1" })).queryByRole("button", { name: /Wake now/ }),
+    ).toBeNull();
+    rerender(<ExcludedItems exclusions={exclusions} onWake={onWake} wakingKeys={["acme~platform~pr~9"]} />);
+    const busy = screen.getByRole("button", { name: "Wake now PLAT-9" });
+    expect(busy).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(busy);
+    expect(onWake).toHaveBeenCalledTimes(1);
+  });
+
   it("a snapshot without the record says so instead of 0; none excluded is a fact too", () => {
     const { rerender } = render(<ExcludedItems exclusions={undefined} />);
     expect(screen.getByText("Excluded: not recorded for this snapshot — refresh to see it.")).toBeTruthy();
