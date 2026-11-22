@@ -12,6 +12,10 @@
       "description": "Title.",
       "type": "string"
     },
+    "author": {
+      "description": "Author's GitHub login (`ghost` for a deleted account).",
+      "type": "string"
+    },
     "url": {
       "description": "GitHub link.",
       "type": "string"
@@ -95,6 +99,7 @@
   "required": [
     "pr",
     "title",
+    "author",
     "url",
     "state",
     "draft",

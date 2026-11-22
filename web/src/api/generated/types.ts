@@ -3199,13 +3199,21 @@ export type FlowStepRef = {
  */
 flow: FlowId,
 /**
+ * 1-based position of the flow in the tour.
+ */
+flow_position: number,
+/**
  * Flow title (LLM).
  */
 flow_title: string,
 /**
  * Step.
  */
-step: StepId, };
+step: StepId,
+/**
+ * 1-based number of the step within its flow.
+ */
+step_number: number, };
 
 /**
  * Kind of a step (fragment) of a flow (brief §3).
@@ -4914,6 +4922,10 @@ pr: PrRef,
  * Title.
  */
 title: string,
+/**
+ * Author's GitHub login (`ghost` for a deleted account).
+ */
+author: string,
 /**
  * GitHub link.
  */

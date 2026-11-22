@@ -175,6 +175,12 @@
           "description": "Flow.",
           "$ref": "#/$defs/FlowId"
         },
+        "flow_position": {
+          "description": "1-based position of the flow in the tour.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
         "flow_title": {
           "description": "Flow title (LLM).",
           "type": "string"
@@ -182,12 +188,20 @@
         "step": {
           "description": "Step.",
           "$ref": "#/$defs/StepId"
+        },
+        "step_number": {
+          "description": "1-based number of the step within its flow.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
         }
       },
       "required": [
         "flow",
+        "flow_position",
         "flow_title",
-        "step"
+        "step",
+        "step_number"
       ]
     },
     "FlowId": {

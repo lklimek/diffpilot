@@ -249,6 +249,84 @@ async fn unchanged_item_reuses_assessment() {
     assert_eq!(reused.fingerprint, stored.fingerprint);
 }
 
+/// "Assess again" sends its one item although its stored assessment is current, as a pass of its own cause; a
+/// PR-level question is never sent.
+#[tokio::test]
+async fn assess_again_sends_its_item_although_unchanged() {
+    let f = fixture(HEAD).await;
+    let again = item(&f.state, "again", "src/rpc/transport.rs", (1, 3)).await;
+    item(&f.state, "other", "src/rpc/client.rs", (40, 43)).await;
+    request_pass(&f.state, PR, PassReason::Opened)
+        .await
+        .expect("pass");
+    let first = live_pass(&f.state).await;
+    assert!(
+        ingest_all(&f.state, &first, None).await,
+        "every item assessed"
+    );
+
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::AssessAgain(again.id))
+            .await
+            .expect("pass"),
+        PassQueued::Queued
+    );
+    let pass = live_pass(&f.state).await;
+    assert_eq!(pass.cause, PassCause::AssessAgain);
+    assert_eq!(
+        pass.sent.iter().map(|sent| sent.item).collect::<Vec<_>>(),
+        vec![again.id]
+    );
+    assert!(ingest_all(&f.state, &pass, None).await);
+
+    let question = ObservedItem {
+        kind: CommentItemKind::PrQuestion,
+        stable_key: "pr:3:merge".to_owned(),
+        author: "diffpilot".to_owned(),
+        author_kind: AuthorKind::Diffpilot,
+        url: None,
+        location: None,
+        title: "Merge now, remaining items as follow-ups?".to_owned(),
+        body: "Bot round 3 has ended.".to_owned(),
+        body_hash: "hash:merge".to_owned(),
+        head: CommitSha(HEAD.to_owned()),
+        round: Some(3),
+        bot_severity: None,
+        github: ItemGithubFacts {
+            resolved: None,
+            resolved_by: None,
+            outdated: None,
+            bot_status: None,
+            edited_after_decision: false,
+            replies: 0,
+            marker: None,
+        },
+        outside: None,
+    };
+    let UpsertOutcome::New(merge) = f
+        .state
+        .db
+        .review_loop()
+        .upsert_item(
+            DEFAULT_TENANT,
+            PR,
+            &question,
+            ItemState::Undecided,
+            Timestamp::now(),
+        )
+        .await
+        .expect("upsert")
+    else {
+        panic!("expected a new item");
+    };
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::AssessAgain(merge.id))
+            .await
+            .expect("pass"),
+        PassQueued::Skipped
+    );
+}
+
 /// A pull request has one live pass with one job; a second request finds it running.
 #[tokio::test]
 async fn one_assessment_job_per_pr() {

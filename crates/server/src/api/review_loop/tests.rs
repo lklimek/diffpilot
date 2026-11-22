@@ -307,14 +307,32 @@ async fn comments_work_without_analysis() {
         13,
         "12 GitHub items and the round-3 merge question"
     );
+    // Opening Comments starts one `verify_comments` pass; its items show the assessment as running.
     for item in items.iter().filter(|item| item["kind"] != "pr_question") {
         assert_eq!(
             item["assessment_state"],
-            json!({"state": "not_assessed", "reason": "not_run"}),
+            json!({"state": "running"}),
             "{item}"
         );
         assert_eq!(item["assessment"], Value::Null);
     }
+    let passes = w
+        .state
+        .db
+        .review_loop()
+        .live_passes()
+        .await
+        .expect("passes");
+    assert_eq!(passes.len(), 1, "{passes:?}");
+    let job = w
+        .state
+        .db
+        .jobs()
+        .get(passes[0].job_id.expect("the pass's job"))
+        .await
+        .expect("job");
+    assert_eq!(job.spec.kind, contracts::agent::JobKind::VerifyComments);
+    assert_eq!(job.analysis_id, None, "no analysis is started");
     let numbers: Vec<u64> = items.iter().filter_map(|i| i["no"].as_u64()).collect();
     assert_eq!(
         numbers,
@@ -1007,4 +1025,81 @@ async fn pr_page_reads_mark_presence_for_browser_sessions_only() {
             "{rest}"
         );
     }
+}
+
+/// RC1 names the pull request's author.
+#[tokio::test]
+async fn pr_page_names_the_author() {
+    let w = world().await;
+    assert_eq!(w.get(PR).await["author"], "alice");
+}
+
+/// RC4 counts the reader's answered Ask questions about each item; open questions and other readers' answers are
+/// not counted.
+#[tokio::test]
+async fn items_count_the_readers_ask_answers() {
+    use contracts::agent::ask::AskOutput;
+    use contracts::ids::QuestionId;
+    use db::repo::questions::{Asked, NewPrQuestion, PrQuestionLimits, QuestionUpdate};
+    let w = world().await;
+    w.state
+        .db
+        .users()
+        .upsert_member(
+            DEFAULT_TENANT,
+            "u2",
+            &GithubProfile {
+                github_id: 2,
+                login: "bob".into(),
+                name: None,
+                avatar_url: None,
+            },
+            Timestamp::now(),
+        )
+        .await
+        .expect("user");
+    let item = w.item(L2).await;
+    assert_eq!(item["ask_answers"], 0);
+    let id = serde_json::from_value(item["id"].clone()).expect("id");
+    let pr = w.pr_id().await;
+    let questions = w.state.db.questions();
+    let limits = PrQuestionLimits {
+        per_pull_request: 10,
+        per_user: 10,
+        user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+    };
+    for (user, answered) in [("u1", true), ("u1", false), ("u2", true)] {
+        let Asked::Stored(stored) = questions
+            .create_for_pr(
+                NewPrQuestion {
+                    id: QuestionId::new_random(),
+                    pull_request_id: pr,
+                    item: id,
+                    parent_id: None,
+                    user_id: user.into(),
+                    text: "Why is this pre-existing?".into(),
+                },
+                limits,
+                Timestamp::now(),
+            )
+            .await
+            .expect("stored")
+        else {
+            panic!("expected a stored question");
+        };
+        if answered {
+            questions
+                .update(
+                    stored.question.id,
+                    &QuestionUpdate::Answered(AskOutput {
+                        answer: "Because the base has it.".into(),
+                        evidence: Vec::new(),
+                    }),
+                    Timestamp::now(),
+                )
+                .await
+                .expect("answered");
+        }
+    }
+    assert_eq!(w.item(L2).await["ask_answers"], 1);
 }

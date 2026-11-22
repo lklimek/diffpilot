@@ -164,7 +164,8 @@ fn repo_root() -> PathBuf {
 /// PKCE verifier of [`fake_github_sign_in`].
 const VERIFIER: &str = "work-client-verifier-0123456789-0123456789-0123456789";
 
-/// Starts the fake GitHub of fixture PR 482 (with the dashboard world `dashboard`, if any); returns its base URL.
+/// Starts the fake GitHub of fixture PR 482 with its review-loop reads (and the dashboard world `dashboard`, if
+/// any); returns its base URL.
 pub(crate) async fn spawn_fake_github(dashboard: Option<PathBuf>) -> String {
     let config = fake_github::Config {
         fixture_dir: repo_root().join("fixtures/pr-482/github"),
@@ -175,7 +176,7 @@ pub(crate) async fn spawn_fake_github(dashboard: Option<PathBuf>) -> String {
         app_public_key_file: None,
         dashboard_fixture_dir: dashboard,
         dashboard_world_at: None,
-        review_loop_fixture_dir: None,
+        review_loop_fixture_dir: Some(repo_root().join("fixtures/review-loop/github")),
     };
     let router = fake_github::router(&config).expect("fake GitHub");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

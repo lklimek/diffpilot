@@ -23,7 +23,7 @@ use contracts::api::pr::PrSummary;
 use contracts::api::questions::AskAnchor;
 use contracts::api::review_loop::{CommentItemKind, ItemState};
 use contracts::common::LlmLanguage;
-use contracts::ids::{CommitSha, JobId, PassId};
+use contracts::ids::{CommentItemId, CommitSha, JobId, PassId};
 use contracts::job::access::AgentAccess;
 use contracts::job::spec::{
     CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
@@ -73,6 +73,8 @@ pub enum PassReason {
     Watch,
     /// An owner question about an item without an analysis of the head (no spacing).
     Ask,
+    /// "Assess again" on one item (on demand): it is sent even when its stored assessment is current.
+    AssessAgain(CommentItemId),
 }
 
 /// What [`request_pass`] did.
@@ -111,7 +113,8 @@ static FOLLOWING: LazyLock<Mutex<HashSet<PassId>>> = LazyLock::new(Mutex::defaul
 
 /// Requests an assessment pass of pull request `pr` (`pull_requests.id`): at most one live pass per pull request;
 /// unchanged items reuse their stored assessment; an automatic pass keeps [`PASS_SPACING`] after the previous pass
-/// and stops at [`DAILY_PASSES_PER_USER`]; a question pass answers the oldest question no pass took yet.
+/// and stops at [`DAILY_PASSES_PER_USER`]; a question pass answers the oldest question no pass took yet; "Assess
+/// again" sends its one item.
 pub async fn request_pass(
     state: &AppState,
     pr: i64,
@@ -156,22 +159,26 @@ async fn request(
             Some(user) => (Some(user), None),
             None => return Ok(PassQueued::Skipped),
         },
-        PassReason::Opened | PassReason::NewComments => (None, None),
+        PassReason::Opened | PassReason::NewComments | PassReason::AssessAgain(_) => (None, None),
     };
     let items = db.review_loop().items(pr).await?;
-    let asked = question
-        .as_ref()
-        .and_then(|question| match question.question.anchor {
-            AskAnchor::CommentItem { item } => Some(item),
-            _ => None,
-        });
+    // The one item a question or "Assess again" pass sends, whatever its stored assessment.
+    let asked = match reason {
+        PassReason::AssessAgain(item) => Some(item),
+        _ => question
+            .as_ref()
+            .and_then(|question| match question.question.anchor {
+                AskAnchor::CommentItem { item } => Some(item),
+                _ => None,
+            }),
+    };
     let head = &record.pr.head_sha;
     let mut code = CodeReader::new(state, &record.pr);
     let mut sent = Vec::new();
     let mut sent_items = Vec::new();
     for item in &items {
         let wanted = match asked {
-            Some(asked) => item.id == asked,
+            Some(asked) => item.id == asked && item.kind != CommentItemKind::PrQuestion,
             None => assessable(item),
         };
         if !wanted {
@@ -208,6 +215,7 @@ async fn request(
             PassReason::NewComments => PassCause::Read,
             PassReason::Watch => PassCause::Watch,
             PassReason::Ask => PassCause::Question,
+            PassReason::AssessAgain(_) => PassCause::AssessAgain,
         },
         head: head.clone(),
         sent,

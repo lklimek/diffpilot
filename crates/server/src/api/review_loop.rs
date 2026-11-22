@@ -261,7 +261,7 @@ async fn items(
     let Query(query) = query?;
     mark_present(&state, &session);
     let handle = handle_of(&state, &session, path).await?;
-    Ok(Json(views::items(&state, handle, &query).await?))
+    Ok(Json(views::items(&state, &session, handle, &query).await?))
 }
 
 async fn context(
@@ -283,15 +283,16 @@ async fn assess_again(
     path: ItemPath,
 ) -> ApiResult<StatusCode> {
     let (handle, no) = item_of(&state, &session, path).await?;
-    state
+    let item = state
         .db
         .review_loop()
         .item_by_no(handle.id, no)
         .await
         .map_err(LoopError::from)?
         .ok_or(LoopError::NotFound)?;
-    // TODO(WP13-JOB): pass the item ("assess again") once the assessment hook takes one.
-    if let Err(error) = assess::request_pass(&state, handle.id, PassReason::Opened).await {
+    if let Err(error) =
+        assess::request_pass(&state, handle.id, PassReason::AssessAgain(item.id)).await
+    {
         tracing::warn!(
             ?error,
             pr = handle.id,
@@ -357,11 +358,16 @@ async fn act(
     let Json(request) = body?;
     let (handle, no) = item_of(&state, &session, path).await?;
     review_loop::act(&state, &session, &handle, no, request.item_revision, action).await?;
-    item_json(&state, handle, no).await
+    item_json(&state, &session, handle, no).await
 }
 
-async fn item_json(state: &AppState, handle: PrHandle, no: u32) -> ApiResult<Json<CommentItem>> {
-    let mut found = views::items(state, handle, &ItemsQuery::default()).await?;
+async fn item_json(
+    state: &AppState,
+    session: &Session,
+    handle: PrHandle,
+    no: u32,
+) -> ApiResult<Json<CommentItem>> {
+    let mut found = views::items(state, session, handle, &ItemsQuery::default()).await?;
     found.retain(|item| item.no == no);
     Ok(Json(found.pop().ok_or(LoopError::NotFound)?))
 }
@@ -413,7 +419,7 @@ async fn mark_gate(
         request.item_revision,
     )
     .await?;
-    item_json(&state, handle, no).await
+    item_json(&state, &session, handle, no).await
 }
 
 async fn preview(
@@ -482,5 +488,7 @@ async fn carry_overs(
     ))
 }
 
+#[cfg(test)]
+mod end_to_end;
 #[cfg(test)]
 mod tests;

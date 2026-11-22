@@ -1,6 +1,8 @@
 //! Read views of the review loop (RC1, RC2, RC4, RC5, RC10, RC11, RC16, RC17): built from the stored read, items,
 //! assessments and decisions; no GitHub call.
 
+use std::collections::HashMap;
+
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::review_loop::{
     AssessmentProgress, AssessmentState, CarryOverPage, CodeContext, CodeLine, CommentCounts,
@@ -11,7 +13,7 @@ use contracts::api::review_loop::{
 };
 use contracts::api::tour::CiState;
 use contracts::common::{LineRange, LineSide, PrRef};
-use contracts::ids::{AnalysisId, CarryEventId, CommitSha};
+use contracts::ids::{AnalysisId, CarryEventId, CommentItemId, CommitSha};
 use contracts::time::Timestamp;
 use db::repo::review_loop::{ItemRecord, PassRecord, PassState, StoredDecision};
 
@@ -34,11 +36,12 @@ fn pass_live(pass: Option<&PassRecord>) -> bool {
     pass.is_some_and(|pass| matches!(pass.state, PassState::Queued | PassState::Running))
 }
 
-/// The item as the API shows it.
+/// The item as the API shows it; `ask_answers` counts the reader's answered Ask questions about it.
 pub(crate) fn item_view(
     loaded: &Loaded,
     record: &ItemRecord,
     pass: Option<&PassRecord>,
+    ask_answers: u32,
 ) -> CommentItem {
     let assessment = loaded.assessments.get(&record.no);
     let assessment_state = if assessment.is_some() {
@@ -93,25 +96,35 @@ pub(crate) fn item_view(
             .filter(|stored| stored.item == record.id)
             .map(|stored| stored.decision.clone())
             .collect(),
-        // TODO(WP13-JOB): count the Ask chat's answers with subject `comment_item` once that subject exists.
-        ask_answers: 0,
+        ask_answers,
     }
 }
 
-/// RC4.
+/// RC4: the items with the reader's Ask answer counts.
 pub async fn items(
     state: &AppState,
+    session: &Session,
     handle: PrHandle,
     query: &ItemsQuery,
 ) -> Result<Vec<CommentItem>, LoopError> {
     let loaded = Loaded::of(state, handle).await?;
     let pass = state.db.review_loop().latest_pass(loaded.handle.id).await?;
+    let answers: HashMap<CommentItemId, u32> = state
+        .db
+        .questions()
+        .answers_per_item(loaded.handle.id, &session.user_id)
+        .await?
+        .into_iter()
+        .collect();
     Ok(loaded
         .items
         .iter()
         .filter(|record| query.state.is_none_or(|wanted| record.state == wanted))
         .filter(|record| query.kind.is_none_or(|wanted| record.kind == wanted))
-        .map(|record| item_view(&loaded, record, pass.as_ref()))
+        .map(|record| {
+            let asked = answers.get(&record.id).copied().unwrap_or(0);
+            item_view(&loaded, record, pass.as_ref(), asked)
+        })
         .collect())
 }
 
@@ -410,6 +423,13 @@ pub async fn pr_page(
     let pass = rl.latest_pass(loaded.handle.id).await?;
     let badge = badge_of(state, &loaded, waiting);
     let pr = &loaded.handle.pr;
+    let author = state
+        .db
+        .pull_requests()
+        .get(loaded.handle.id)
+        .await?
+        .pr
+        .author;
     let watch = rl
         .watches(&session.user_id)
         .await?
@@ -428,6 +448,7 @@ pub async fn pr_page(
     Ok(PrPage {
         pr: pr.clone(),
         title: snapshot.title.clone(),
+        author,
         url: if snapshot.url.is_empty() {
             pr_url(pr)
         } else {
@@ -774,8 +795,10 @@ async fn flows_containing(
                     })
                     .map(move |step| FlowStepRef {
                         flow: flow.id.clone(),
+                        flow_position: flow.position,
                         flow_title: flow.llm.title.clone(),
                         step: step.id.clone(),
+                        step_number: step.number,
                     })
             })
             .collect(),

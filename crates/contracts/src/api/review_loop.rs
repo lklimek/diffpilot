@@ -1127,6 +1127,8 @@ pub struct PrPage {
     pub pr: PrRef,
     /// Title.
     pub title: String,
+    /// Author's GitHub login (`ghost` for a deleted account).
+    pub author: String,
     /// GitHub link.
     pub url: String,
     /// GitHub state (`OPEN`, `CLOSED`, `MERGED`).
@@ -1187,10 +1189,14 @@ pub struct NoteElsewhere {
 pub struct FlowStepRef {
     /// Flow.
     pub flow: FlowId,
+    /// 1-based position of the flow in the tour.
+    pub flow_position: u32,
     /// Flow title (LLM).
     pub flow_title: String,
     /// Step.
     pub step: StepId,
+    /// 1-based number of the step within its flow.
+    pub step_number: u32,
 }
 
 /// One line of code.
