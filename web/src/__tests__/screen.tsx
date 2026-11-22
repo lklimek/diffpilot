@@ -13,6 +13,7 @@ import { resetSignOut } from "../mocks/handlers/get-me";
 import { setMockLanguage } from "../mocks/handlers/get-settings";
 import { resetLazyFlows } from "../mocks/lazy-flows";
 import { resetLive } from "../mocks/live-analysis";
+import { resetChannels, resetReviewLoop, resetWatch } from "../mocks/review-loop";
 import { resetStore } from "../mocks/review-store";
 import { setScenario } from "../mocks/scenarios";
 
@@ -29,6 +30,9 @@ export function startMockServer() {
     resetLazyFlows();
     resetSignOut();
     resetStore();
+    resetReviewLoop();
+    resetWatch();
+    resetChannels();
     reviewStates.reset();
     // Every test starts with the Ask chat hidden and empty, as on a first visit.
     for (const storage of [window.localStorage, window.sessionStorage])

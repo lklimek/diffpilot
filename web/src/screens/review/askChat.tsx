@@ -38,6 +38,8 @@ import { AskLauncher } from "../../components/ask/chat/AskLauncher";
 import { linesOf, subjectOf, threadsOf, unreadOf } from "../../components/ask/chat/model";
 import { answerComment } from "../../components/comment/prefill";
 import { filesHash } from "../../components/files/model";
+import type { ChatAnchor } from "../../api/pending";
+import { itemPath } from "../pr/paths";
 import { blockFragment } from "../tour/sequence";
 import { chatGeometry } from "./chatGeometry";
 
@@ -59,10 +61,10 @@ export interface AnswerDraft {
 /** The chat as screens see it. */
 export interface AskChatControl {
   /** Where the reader is (the composer's subject while it follows); null outside a place. */
-  place: AskAnchor | null;
-  setPlace: (place: AskAnchor | null) => void;
+  place: ChatAnchor | null;
+  setPlace: (place: ChatAnchor | null) => void;
   /** Opens the chat about the place (or `anchor`), or at a thread; focuses its field. Nothing is sent. */
-  open: (options?: { anchor?: AskAnchor; thread?: QuestionId }) => void;
+  open: (options?: { anchor?: ChatAnchor; thread?: QuestionId }) => void;
   setActions: (actions: ChatActions) => void;
   /** Says something politely to screen readers (e.g. where "Use as review comment" moved the review). */
   announce: (text: string) => void;
@@ -81,11 +83,11 @@ const Context = createContext<AskChatControl>(NONE);
 export const useAskChat = () => useContext(Context);
 
 /** Says where the reader is while the screen shows it. */
-export function useAskPlace(place: AskAnchor | null): void {
+export function useAskPlace(place: ChatAnchor | null): void {
   const { setPlace } = useAskChat();
   const key = place === null ? null : JSON.stringify(place);
   useEffect(() => {
-    setPlace(key === null ? null : (JSON.parse(key) as AskAnchor));
+    setPlace(key === null ? null : (JSON.parse(key) as ChatAnchor));
   }, [key, setPlace]);
 }
 
@@ -114,12 +116,14 @@ interface Remembered extends ChatSize {
 const FIRST: Remembered = { open: false, width: null, height: null, full: false };
 
 // Where a subject chip goes: lines (a step's too) are selected in Files, the rest open in Flows.
-const linkOf = (id: AnalysisId, anchor: AskAnchor, tour: Tour): string => {
+const linkOf = (id: AnalysisId, anchor: ChatAnchor, tour: Tour): string => {
   const base = `/analyses/${encodeURIComponent(id)}`;
   const lines = anchor.kind === "step" && anchor.lines ? linesOf(anchor, tour) : null;
   if (lines)
     return `${base}/files${filesHash({ file: lines.path, side: lines.side, line: lines.from, end: lines.to ?? lines.from })}`;
   switch (anchor.kind) {
+    case "comment_item":
+      return itemPath(tour.analysis.pr, anchor.no);
     case "pr":
       return `${base}#${blockFragment({ block: "pr_context" })}`;
     case "flow":
@@ -146,9 +150,9 @@ function ReviewActivity({ tour, questions }: { tour: Tour; questions: readonly A
 
 /** Provides the chat to the review's screens and draws it (or its launcher) over them. */
 export function AskChatProvider({ analysisId, children }: { analysisId: AnalysisId; children: ReactNode }) {
-  const [place, setPlaceState] = useState<AskAnchor | null>(null);
+  const [place, setPlaceState] = useState<ChatAnchor | null>(null);
   const actions = useRef<ChatActions>({});
-  const setPlace = useCallback((next: AskAnchor | null) => setPlaceState(next), []);
+  const setPlace = useCallback((next: ChatAnchor | null) => setPlaceState(next), []);
   const setActions = useCallback((next: ChatActions) => {
     actions.current = next;
   }, []);
@@ -171,7 +175,7 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
   // The subject: the place, unless × chose the whole PR; an Ask button's own subject until the place changes.
   const [wholePr, setWholePr] = useState(false);
   const placeKey = JSON.stringify(place);
-  const [chosen, setChosen] = useState<{ anchor: AskAnchor; at: string } | null>(null);
+  const [chosen, setChosen] = useState<{ anchor: ChatAnchor; at: string } | null>(null);
   const [focusThread, setFocusThread] = useState<{ id: QuestionId; nonce: number } | null>(null);
   const field = useRef<HTMLTextAreaElement>(null);
   const opener = useRef<HTMLElement | null>(null);
@@ -245,7 +249,7 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
   };
 
   // `a`, an Ask button or Open in chat: the place (or the button's own subject) becomes the subject again.
-  const open = (options: { anchor?: AskAnchor; thread?: QuestionId } = {}) => {
+  const open = (options: { anchor?: ChatAnchor; thread?: QuestionId } = {}) => {
     setWholePr(false);
     setChosen(options.anchor ? { anchor: options.anchor, at: placeKey } : null);
     show(options.thread);
@@ -272,7 +276,7 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
     [place, setPlace, stableOpen, setActions, announce],
   );
 
-  const subject: AskAnchor = wholePr
+  const subject: ChatAnchor = wholePr
     ? { kind: "pr" }
     : chosen && chosen.at === placeKey
       ? chosen.anchor
@@ -356,7 +360,9 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
   if (!tour.data) return <Context.Provider value={control}>{children}</Context.Provider>;
   const theTour = tour.data;
   const pr = tour.data.analysis.pr;
-  const send = (body: { text: string; anchor: AskAnchor; parent_id?: QuestionId }) => ask.mutateAsync(body);
+  // A `comment_item` subject is not in the contracts yet (api/pending.ts): sent as is, a real server refuses it.
+  const send = (body: { text: string; anchor: ChatAnchor; parent_id?: QuestionId }) =>
+    ask.mutateAsync(body as { text: string; anchor: AskAnchor; parent_id?: QuestionId });
   const busy = all.some((q) => q.state === "answering");
   return (
     <Context.Provider value={control}>

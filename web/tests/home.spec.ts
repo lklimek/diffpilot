@@ -2,7 +2,8 @@ import { expect, test } from "./fixtures";
 import { analyze, expectAccessible, expectTooltips, PR_URL, startAnalysis } from "./screens-support";
 import { ANALYSIS_ID, expectTrustWording } from "./support";
 
-const PROGRESS = new RegExp(`/analyses/${ANALYSIS_ID}/progress$`);
+// Starting an analysis opens the progress URL, which redirects to the PR page (review-workflow-plan §3.1).
+const PROGRESS = /\/pr\/acme\/node-client\/482$/;
 
 test("sign in → analyze → progress → resume review", async ({ page }) => {
   await page.goto("/review?scenario=signed-out");

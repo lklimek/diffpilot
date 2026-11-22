@@ -8,7 +8,8 @@ import {
   type PointerEvent,
   type Ref,
 } from "react";
-import type { AskAnchor, AskQuestion, Evidence, QuestionId, Tour } from "../../../api/generated/types";
+import type { AskQuestion, Evidence, QuestionId, Tour } from "../../../api/generated/types";
+import type { ChatAnchor } from "../../../api/pending";
 import { HEAD_BUTTON, busyTip } from "../../button/button";
 import { clockText } from "../../format/time";
 import { Kbd } from "../../help/Kbd";
@@ -68,7 +69,7 @@ export interface AskChatProps {
   /** The user's threads of the analysis, oldest first (`threadsOf`). */
   threads: ChatThread[];
   /** What the next question is about. */
-  subject: AskAnchor;
+  subject: ChatAnchor;
   /** The subject follows the reader's place (× asks about the whole PR instead). */
   following: boolean;
   /** "this step", "these lines"…: where the reader is, offered while the subject is the whole PR by choice. */
@@ -93,7 +94,7 @@ export interface AskChatProps {
   onUnanchor: () => void;
   onUsePlace: () => void;
   /** Opens what a thread is about (its subject chip); the chat stays open. */
-  onGoto: (anchor: AskAnchor) => void;
+  onGoto: (anchor: ChatAnchor) => void;
   onEvidence?: (evidence: Evidence) => void;
   /** "Use as review comment" on an answer about lines; absent while commenting is unavailable. */
   onUseAsComment?: (question: AskQuestion) => void;
@@ -125,7 +126,7 @@ const sends = (event: KeyboardEvent<HTMLTextAreaElement>) =>
   event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing;
 
 /** A subject as chip text: view, code, words. */
-function SubjectText({ anchor, tour }: { anchor: AskAnchor; tour: Tour }) {
+function SubjectText({ anchor, tour }: { anchor: ChatAnchor; tour: Tour }) {
   const s = subjectOf(anchor, tour);
   return (
     <>
@@ -747,7 +748,7 @@ function ChatAnswer({
   onAskAgain,
   onEvidence,
   onUseAsComment,
-}: { question: AskQuestion; anchor: AskAnchor; queued: boolean } & Pick<
+}: { question: AskQuestion; anchor: ChatAnchor; queued: boolean } & Pick<
   AskChatProps,
   "now" | "onAskAgain" | "onEvidence" | "onUseAsComment"
 >) {

@@ -4,7 +4,7 @@ import { NavIcon } from "../dashboard/common/icons";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 
 /** A place of the navigation shell (plan §F.2). */
-export type AppSection = "my-work" | "review" | "settings";
+export type AppSection = "my-work" | "review" | "watching" | "settings";
 
 /** localStorage key of the collapsed navigation. */
 export const NAV_STORAGE_KEY = "diffpilot.nav.collapsed";
@@ -15,6 +15,11 @@ const ENTRIES: { section: AppSection; name: string; tip: string }[] = [
     section: "review",
     name: "Review a PR",
     tip: "Open a pull request by URL and start or resume its analysis",
+  },
+  {
+    section: "watching",
+    name: "Watched PRs",
+    tip: "Pull requests you watch: new comments are found and assessed automatically",
   },
   {
     section: "settings",

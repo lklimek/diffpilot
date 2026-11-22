@@ -77,6 +77,7 @@ import { Workspace } from "../tour/Workspace";
 import { useAskChat, useAskPlace, type AnswerDraft } from "../review/askChat";
 import { rangeText } from "../../components/section/format";
 import { FileCode } from "./FileCode";
+import { commentsPath } from "../pr/paths";
 
 const short = (sha: string) => sha.slice(0, 7);
 const lastKey = (id: AnalysisId) => `diffpilot.files.last.${id}`;
@@ -961,6 +962,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
           flowsHref: flowsTarget(),
           filesHref: `${location.pathname}${location.hash}`,
           depsHref: `/analyses/${analysisId}/deps`,
+          commentsHref: commentsPath(tour.analysis.pr),
           prContextHref: `${flowsHref}#pr_context`,
           onNavigate: (href) => void navigate(href),
         }}

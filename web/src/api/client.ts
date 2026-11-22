@@ -3,6 +3,27 @@ import { routes, type RouteName } from "./generated/routes";
 import type {
   AccessToken,
   AnalysisEvent,
+  CarryOverPage,
+  CarryOverQuery,
+  ChannelKind,
+  ChannelTestResult,
+  CodeContext,
+  CommentItem,
+  CommentItemId,
+  CommentLog,
+  CommentsOverview,
+  ContextQuery,
+  DecideRequest,
+  Decision,
+  DecisionBatchRequest,
+  ItemsQuery,
+  NotificationChannel,
+  NotificationSettings,
+  PrPage,
+  PrRef,
+  PutChannelRequest,
+  UserEvent,
+  WatchList,
   AnalysisId,
   AnalysisSummary,
   AnchoredAskRequest,
@@ -152,6 +173,33 @@ function isErrorBody(value: unknown): value is { code: ApiErrorCode; message: st
     typeof (value as { message?: unknown }).message === "string"
   );
 }
+
+/** Callbacks of the per-user event stream (RW3). */
+export interface UserEventHandlers {
+  onEvent: (event: UserEvent) => void;
+  onError: (closed: boolean) => void;
+}
+
+/** SSE names of `UserEvent`s: the event's `kind` (assumed; `sse-events.md` RW3 does not name them yet). */
+// TODO(WP13-A CCR): RW3 does not name the SSE event; assumed to be the event `kind` (plus unnamed "message").
+const USER_EVENT_NAMES = ["message", "questions_ready", "round_executed", "test"] as const;
+
+const isUserEvent = (value: unknown): value is UserEvent =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as { kind?: unknown }).kind === "string" &&
+  typeof (value as { text?: unknown }).text === "string";
+
+/** Route parameters of a pull request (`{owner}/{name}/{number}`). */
+const prParams = (pr: PrRef) => ({ owner: pr.repo.owner, name: pr.repo.name, number: String(pr.number) });
+
+/** The defined values of a query object as query-string values. */
+const definedParams = (query: object): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(query)
+      .filter(([, value]) => value !== undefined && value !== null)
+      .map(([key, value]) => [key, String(value)]),
+  );
 
 /** Callbacks of an analysis event stream. */
 export interface AnalysisStreamHandlers {
@@ -319,6 +367,50 @@ export function createApiClient(baseUrl = "") {
       call<RefreshStatus>("cancelDashboardRefresh", { params: { id } }),
     rankDashboardRefresh: (id: RefreshId) => call<RefreshStatus>("rankDashboardRefresh", { params: { id } }),
     setDashboardTimeZone: (body: SetTimeZoneRequest) => call<void>("setDashboardTimeZone", { body }),
+    getPrPage: (pr: PrRef) => call<PrPage>("getPrPage", { params: prParams(pr) }),
+    getComments: (pr: PrRef) => call<CommentsOverview>("getComments", { params: prParams(pr) }),
+    readComments: (pr: PrRef) => call<void>("readComments", { params: prParams(pr) }),
+    listCommentItems: (pr: PrRef, query: ItemsQuery = { state: null, kind: null }) =>
+      call<CommentItem[]>("listCommentItems", { params: prParams(pr), query: definedParams(query) }),
+    getCommentContext: (pr: PrRef, item: CommentItemId, query: ContextQuery = { from: null, to: null }) =>
+      call<CodeContext>("getCommentContext", {
+        params: { ...prParams(pr), item },
+        query: definedParams(query),
+      }),
+    assessComment: (pr: PrRef, item: CommentItemId) =>
+      call<void>("assessComment", { params: { ...prParams(pr), item } }),
+    decideComment: (pr: PrRef, item: CommentItemId, body: DecideRequest) =>
+      call<Decision>("decideComment", { params: { ...prParams(pr), item }, body }),
+    decideCommentBatch: (pr: PrRef, body: DecisionBatchRequest) =>
+      call<Decision[]>("decideCommentBatch", { params: prParams(pr), body }),
+    getCommentLog: (pr: PrRef) => call<CommentLog>("getCommentLog", { params: prParams(pr) }),
+    listCarryOvers: (query: CarryOverQuery) =>
+      call<CarryOverPage>("listCarryOvers", { query: definedParams(query) }),
+    watchPr: (pr: PrRef) => call<void>("watchPr", { params: prParams(pr) }),
+    unwatchPr: (pr: PrRef) => call<void>("unwatchPr", { params: prParams(pr) }),
+    listWatches: () => call<WatchList>("listWatches"),
+    getNotificationSettings: () => call<NotificationSettings>("getNotificationSettings"),
+    putNotificationChannel: (kind: ChannelKind, body: PutChannelRequest) =>
+      call<NotificationChannel>("putNotificationChannel", { params: { kind }, body }),
+    deleteNotificationChannel: (kind: ChannelKind) =>
+      call<void>("deleteNotificationChannel", { params: { kind } }),
+    testNotificationChannel: (kind: ChannelKind) =>
+      call<ChannelTestResult>("testNotificationChannel", { params: { kind } }),
+    /** Opens the per-user event stream (RW3); returns a function that closes it. */
+    subscribeUserEvents(handlers: UserEventHandlers): () => void {
+      const source = new EventSource(baseUrl + routePath("userEvents"));
+      const onMessage = (message: MessageEvent<string>) => {
+        try {
+          const event: unknown = JSON.parse(message.data);
+          if (isUserEvent(event)) handlers.onEvent(event);
+        } catch {
+          // Not JSON: dropped, the stream stays open.
+        }
+      };
+      for (const name of USER_EVENT_NAMES) source.addEventListener(name, onMessage);
+      source.onerror = () => handlers.onError(source.readyState === EventSource.CLOSED);
+      return () => source.close();
+    },
     /** Opens a refresh's event stream; returns a function that closes it. */
     subscribeDashboardRefresh(id: RefreshId, handlers: DashboardStreamHandlers): () => void {
       return openEventStream<DashboardEvent>(

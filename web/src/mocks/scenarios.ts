@@ -23,6 +23,7 @@ import type {
   ThreadsStatus,
   Tour,
 } from "../api/generated/types";
+import type { CommentsMockState } from "./review-loop";
 import largeGraphs from "./diagrams/large-flow-graphs.json";
 import {
   mockDependenciesLimits,
@@ -74,6 +75,8 @@ export const REPO_SETTINGS: RepoSettings = {
 };
 
 interface Scenario {
+  /** Review-loop mockup state (review-loop.ts); absent: the full default. */
+  comments?: CommentsMockState;
   showLess?: boolean;
   lazy?: boolean;
   /** `background_analysis` of a lazy analysis (default off: flows run on request only). */
@@ -323,6 +326,12 @@ const REPORTED_USAGE: UsageTotals = {
 };
 
 const SCENARIOS = {
+  // Review loop (docs/mockups/10-review-loop.html states).
+  "comments-no-analysis": { comments: "no-analysis" },
+  "comments-running": { comments: "running" },
+  "comments-empty": { comments: "empty" },
+  "comments-github-error": { comments: "github-error" },
+  "comments-watched": { comments: "watched" },
   "show-less": { showLess: true },
   // Owner screenshot: one remark over a replaced line, unchanged lines and added comment lines that fold.
   "remark-layout": { tour: remarkLayoutTour, lines: remarkLayoutLines },

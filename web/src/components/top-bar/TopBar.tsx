@@ -10,7 +10,7 @@ interface TopBarProps {
   hideContextChanges?: boolean;
   onHideContextChanges?: (hide: boolean) => void;
   /** The pull request under review; absent outside the review. */
-  pr?: PrSummary;
+  pr?: TopBarPr;
   /** CI status of the head commit. */
   ci?: CiStatus;
   /** The PR's checks page on GitHub; the CI summary links to it (new tab) when given. */
@@ -33,19 +33,27 @@ interface TopBarProps {
   view?: ReviewViews;
 }
 
+/** What the bar shows of a pull request. */
+export type TopBarPr = Pick<PrSummary, "repo" | "number" | "title" | "html_url" | "head_sha">;
+
 /** The views of one analysis and where the breadcrumb leads (in-app links). */
 export interface ReviewViews {
-  current: "flows" | "files" | "deps";
-  flowsHref: string;
-  filesHref: string;
-  depsHref: string;
+  current: "flows" | "files" | "deps" | "comments";
+  /** Null without an analysis: the entry reads "Needs an analysis" and leads to `prPageHref`. */
+  flowsHref: string | null;
+  filesHref: string | null;
+  depsHref: string | null;
+  /** Comments (works without an analysis); no entry when absent. */
+  commentsHref?: string;
+  /** The PR page, where an analysis starts. */
+  prPageHref?: string;
   /** The PR context block of the Flows view. */
   prContextHref: string;
   /** Follows an in-app link (a plain click; other clicks keep the browser's behaviour). */
   onNavigate: (href: string) => void;
 }
 
-const VIEW_NAMES = { flows: "Flows", files: "Files", deps: "Dependencies" } as const;
+const VIEW_NAMES = { flows: "Flows", files: "Files", deps: "Dependencies", comments: "Comments" } as const;
 
 // A plain left click stays in the app; a modified or middle click opens the link the browser's way.
 const inApp = (event: MouseEvent, follow: () => void) => {
@@ -55,7 +63,7 @@ const inApp = (event: MouseEvent, follow: () => void) => {
 };
 
 /** `diffpilot › owner/repo #n [GitHub] › Flows ▾ / Files ▾ / Dependencies ▾` (brief §4 rule 5). */
-function Breadcrumb({ pr, view }: { pr: PrSummary; view: ReviewViews }) {
+function Breadcrumb({ pr, view }: { pr: TopBarPr; view: ReviewViews }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const button = useRef<HTMLButtonElement>(null);
@@ -68,7 +76,15 @@ function Breadcrumb({ pr, view }: { pr: PrSummary; view: ReviewViews }) {
     document.addEventListener("pointerdown", outside);
     return () => document.removeEventListener("pointerdown", outside);
   }, [open]);
-  const href = { flows: view.flowsHref, files: view.filesHref, deps: view.depsHref };
+  const href = {
+    flows: view.flowsHref,
+    files: view.filesHref,
+    deps: view.depsHref,
+    comments: view.commentsHref ?? null,
+  };
+  const entries = (["flows", "files", "deps", "comments"] as const).filter(
+    (v) => v !== "comments" || view.commentsHref !== undefined,
+  );
   const sep = (
     <span aria-hidden className="text-muted">
       ›
@@ -115,7 +131,9 @@ function Breadcrumb({ pr, view }: { pr: PrSummary; view: ReviewViews }) {
           button.current?.focus();
         }}
       >
-        <Tooltip tip="Switch between the views of this review: Flows (step by step), Files (one file at a time; s switches between these two) and Dependencies (crates this pull request changes, what they depend on in your organisations, and what was added for other crates' types).">
+        <Tooltip
+          tip={`Switch between the views of this review: Flows (step by step), Files (one file at a time; s switches between these two) and Dependencies (crates this pull request changes, what they depend on in your organisations, and what was added for other crates' types).${view.commentsHref ? " Comments: decisions on the review comments of this pull request; needs no analysis." : ""}`}
+        >
           <button
             ref={button}
             type="button"
@@ -133,26 +151,30 @@ function Breadcrumb({ pr, view }: { pr: PrSummary; view: ReviewViews }) {
           hidden={!open}
           className="absolute top-full left-0 z-40 m-0 mt-1 grid min-w-32 list-none gap-0.5 rounded-md border border-border bg-surface p-1 shadow-tip"
         >
-          {(["flows", "files", "deps"] as const).map((v) => (
-            <li key={v}>
-              <a
-                href={href[v]}
-                aria-current={v === view.current ? "page" : undefined}
-                onClick={(event) =>
-                  inApp(event, () => {
-                    setOpen(false);
-                    if (v !== view.current) view.onNavigate(href[v]);
-                  })
-                }
-                className="block min-h-6 rounded px-2 py-0.5 text-text no-underline hover:bg-accent-bg aria-[current=page]:font-bold"
-              >
-                <span aria-hidden className="inline-block w-4">
-                  {v === view.current ? "✓" : ""}
-                </span>
-                {VIEW_NAMES[v]}
-              </a>
-            </li>
-          ))}
+          {entries.map((v) => {
+            const target = href[v] ?? view.prPageHref ?? "/";
+            return (
+              <li key={v}>
+                <a
+                  href={target}
+                  aria-current={v === view.current ? "page" : undefined}
+                  onClick={(event) =>
+                    inApp(event, () => {
+                      setOpen(false);
+                      if (v !== view.current) view.onNavigate(target);
+                    })
+                  }
+                  className="block min-h-6 rounded px-2 py-0.5 text-text no-underline hover:bg-accent-bg aria-[current=page]:font-bold"
+                >
+                  <span aria-hidden className="inline-block w-4">
+                    {v === view.current ? "✓" : ""}
+                  </span>
+                  {VIEW_NAMES[v]}
+                  {href[v] === null && <span className="ml-2 text-xs text-muted">Needs an analysis</span>}
+                </a>
+              </li>
+            );
+          })}
         </ul>
       </div>
     </nav>

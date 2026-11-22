@@ -69,5 +69,5 @@ test("Home offers Resume for a user pause", async ({ page }) => {
   await analyze(page);
   await expect(page.getByText(/Resume when you want/)).toBeVisible();
   await page.getByRole("button", { name: "Resume", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}/progress`));
+  await expect(page).toHaveURL(/\/pr\/acme\/node-client\/482$/);
 });

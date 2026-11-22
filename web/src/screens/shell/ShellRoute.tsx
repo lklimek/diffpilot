@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 import { Navigate, Outlet, useLocation, useOutletContext } from "react-router";
 import { useMe } from "../../api/queries";
 import type { AppSection } from "../../components/app-shell/AppNav";
+import { useUserEventNotifications } from "../../app/userEvents";
+import { ALL_CARRY_OVERS_PATH, WATCHING_PATH } from "../pr/paths";
 import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_HELP_PATH, SETTINGS_PATH } from "./paths";
 import { ShellLayout } from "./ShellLayout";
 import { DashboardScreen } from "../dashboard/DashboardScreen";
@@ -21,12 +23,15 @@ const PAGES: Record<string, { section: AppSection; crumb: string }> = {
   [REVIEW_START_PATH]: { section: "review", crumb: "Review a PR" },
   [SETTINGS_PATH]: { section: "settings", crumb: "Settings" },
   [SETTINGS_HELP_PATH]: { section: "settings", crumb: "Settings guide" },
+  [WATCHING_PATH]: { section: "watching", crumb: "Watched PRs" },
+  [ALL_CARRY_OVERS_PATH]: { section: "watching", crumb: "Carry-overs" },
 };
 
 /** Layout route of `/`, `/review` and `/settings` (plan §F.2): the shell stays while its pages change. */
 export function ShellRoute() {
   const { pathname } = useLocation();
   const me = useMe();
+  useUserEventNotifications();
   // The router matches `/review/` as `/review`.
   const page = PAGES[pathname.replace(/(.)\/+$/, "$1")] ?? PAGES[MY_WORK_PATH]!;
   const [actions, setActions] = useState<HTMLElement | null>(null);

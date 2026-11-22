@@ -1,0 +1,227 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { expectTrustWording } from "../../__tests__/wording";
+import {
+  carryOvers,
+  log,
+  notificationSettings,
+  overview,
+  resetChannels,
+  resetReviewLoop,
+  watches,
+} from "../../mocks/review-loop";
+import { CollapsibleSection } from "../collapsible/CollapsibleSection";
+import { NotificationChannelCard } from "../settings/NotificationChannelCard";
+import { CarryOvers } from "./CarryOvers";
+import { DecisionLog } from "./DecisionLog";
+import { WatchToggle } from "./PrHeader";
+import { RoundsTable } from "./RoundsTable";
+import { StateBadge } from "./StateBadge";
+import { WatchedList } from "./WatchedList";
+
+const NOW = new Date("2026-11-18T09:27:00Z");
+const text = () => document.body.textContent ?? "";
+
+beforeEach(() => {
+  resetReviewLoop();
+  resetChannels();
+  window.localStorage.clear();
+});
+
+describe("CollapsibleSection (plan §3.9)", () => {
+  it("is a disclosure button: open by default, Enter and Space toggle, the state is remembered", async () => {
+    const { unmount } = render(
+      <CollapsibleSection title="Facts" storageKey="alice:view:facts">
+        <p>inside</p>
+      </CollapsibleSection>,
+    );
+    const button = screen.getByRole("button", { name: "Facts" });
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    expect(document.getElementById(button.getAttribute("aria-controls")!)).toBeVisible();
+    button.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("inside")).not.toBeVisible();
+    unmount();
+    render(
+      <CollapsibleSection title="Facts" storageKey="alice:view:facts">
+        <p>inside</p>
+      </CollapsibleSection>,
+    );
+    const again = screen.getByRole("button", { name: "Facts" });
+    expect(again).toHaveAttribute("aria-expanded", "false");
+    again.focus();
+    await userEvent.keyboard(" ");
+    expect(again).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("region", { name: "Facts" })).toBeVisible();
+  });
+});
+
+describe("StateBadge (B1–B5)", () => {
+  it.each([
+    ["blocked_failing", "✕", "Blocked / failing"],
+    ["questions_waiting", "?", "Questions waiting"],
+    ["executing", "▶", "Executing"],
+    ["waiting_for_bot_round", "⌛", "Waiting for bot round"],
+    ["ready_to_merge", "✓", "Ready to merge"],
+  ] as const)("%s: icon and text, facts in the tip", (badge, icon, label) => {
+    render(<StateBadge view={{ badge, facts: ["9 undecided questions"], missing: [] }} />);
+    const el = screen.getByText(label);
+    expect(el.textContent).toBe(`${icon}${label}`);
+    expect(el).toHaveAccessibleDescription("9 undecided questions");
+  });
+
+  it("unknown inputs: no badge, the tip names what is missing", () => {
+    render(<StateBadge view={{ badge: null, facts: [], missing: ["CI of the head not read"] }} />);
+    expect(screen.getByText("No state")).toHaveAccessibleDescription("Not known: CI of the head not read.");
+  });
+});
+
+describe("WatchToggle (US19)", () => {
+  it("toggles with aria-pressed and says what watching costs", async () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<WatchToggle watch={null} busy={false} onChange={onChange} now={NOW} />);
+    const button = screen.getByRole("button", { name: "Watch" });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(button).toHaveAccessibleDescription(/LLM tokens/);
+    await userEvent.click(button);
+    expect(onChange).toHaveBeenCalledWith(true);
+    rerender(<WatchToggle watch={watches().watches[0]!} busy={false} onChange={onChange} now={NOW} />);
+    expect(screen.getByRole("button", { name: "Watching" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(/Assessed automatically 09:12 · 5 questions/)).toBeVisible();
+  });
+});
+
+describe("WatchedList (V6)", () => {
+  it("lists watches with state badges and Unwatch; an ended watch says so", async () => {
+    const onUnwatch = vi.fn();
+    render(
+      <WatchedList
+        list={watches()}
+        prHref={() => "/pr/x"}
+        onNavigate={vi.fn()}
+        onUnwatch={onUnwatch}
+        busy={false}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText(/4 of 20 watched/)).toBeVisible();
+    expect(screen.getByText("Waiting for bot round")).toBeVisible();
+    expect(screen.getByText(/watching ended/)).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Unwatch acme/wire-codec #77" }));
+    expect(onUnwatch).toHaveBeenCalledWith({ repo: { owner: "acme", name: "wire-codec" }, number: 77 });
+    expectTrustWording(text());
+  });
+});
+
+describe("RoundsTable (V4)", () => {
+  it("one row per round with counts and a GitHub link-out", () => {
+    render(<RoundsTable rounds={overview().rounds} prNumber={482} />);
+    const table = screen.getByRole("table", { name: "Bot rounds of #482" });
+    expect(within(table).getAllByRole("row")).toHaveLength(5);
+    expect(screen.getByRole("link", { name: "Open round 4 on GitHub (new tab)" })).toHaveAttribute(
+      "target",
+      "_blank",
+    );
+  });
+});
+
+describe("CarryOvers (V5)", () => {
+  it("this PR: tiles with counts and the dated list with why", () => {
+    render(
+      <CarryOvers
+        page={carryOvers("acme/node-client/482")}
+        scope="pr"
+        prHref="/a"
+        allHref="/b"
+        onNavigate={vi.fn()}
+        now={NOW}
+      />,
+    );
+    expect(
+      within(screen.getByRole("list", { name: "Carry-over counts" })).getAllByRole("listitem"),
+    ).toHaveLength(5);
+    expect(screen.getByRole("link", { name: "This pull request" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByText(/the bot edited its comment \(text changed\)/)).toBeVisible();
+    expectTrustWording(text());
+  });
+
+  it("all PRs: one row per PR", () => {
+    render(
+      <CarryOvers
+        page={carryOvers(null)}
+        scope="all"
+        prHref={null}
+        allHref="/b"
+        onNavigate={vi.fn()}
+        now={NOW}
+      />,
+    );
+    expect(
+      within(screen.getByRole("table", { name: "Carry-overs per pull request" })).getAllByRole("row"),
+    ).toHaveLength(5);
+  });
+});
+
+describe("DecisionLog (V3)", () => {
+  it("agents with push targets, decisions with via, comment and agent reports", () => {
+    render(<DecisionLog log={log()} now={NOW} storageKey="t" />);
+    expect(screen.getByText("build-host-2")).toBeVisible();
+    expect(screen.getByText(/failing since 09:20: HTTP 502/)).toBeVisible();
+    expect(screen.getByText(/Accept despite the gate \(G-FUNDS\)/)).toBeVisible();
+    expect(screen.getByText(/Your comment \(sent to the agent, not posted\)/)).toBeVisible();
+    expect(screen.getAllByText(/Agent laptop-cli reports: done/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Found on GitHub/).length).toBeGreaterThan(0);
+    expectTrustWording(text());
+  });
+});
+
+describe("NotificationChannelCard (V7)", () => {
+  const [ntfy, webhook] = notificationSettings().channels;
+
+  it("shows the token masked, the last delivery and Send test", async () => {
+    const onTest = vi.fn();
+    render(
+      <NotificationChannelCard
+        kind="ntfy"
+        channel={ntfy!}
+        onSave={vi.fn()}
+        onRemove={vi.fn()}
+        onTest={onTest}
+        testResult={null}
+        busy={false}
+        error={null}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByLabelText("Access token (optional)")).toHaveValue("•••• 9f2a");
+    expect(screen.getByText(/Last delivery: questions ready, delivered 09:12/)).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Send test" }));
+    expect(onTest).toHaveBeenCalled();
+  });
+
+  it("a failing webhook says since when and why; saving keeps an untouched secret", async () => {
+    const onSave = vi.fn();
+    render(
+      <NotificationChannelCard
+        kind="webhook"
+        channel={webhook!}
+        onSave={onSave}
+        onRemove={vi.fn()}
+        onTest={vi.fn()}
+        testResult={{ outcome: "failed", http_status: null, error: "connection refused" }}
+        busy={false}
+        error={null}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText("Failing since 09:22")).toBeVisible();
+    expect(screen.getByText(/Test failed: connection refused; one attempt, no retry/)).toBeVisible();
+    fireEvent.click(screen.getByRole("checkbox", { name: "All decisions of a round executed" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save channel" }));
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ secret: null, events: ["questions_ready", "round_executed"], enabled: true }),
+    );
+  });
+});
