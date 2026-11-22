@@ -3,6 +3,7 @@
 pub(crate) mod github;
 pub(crate) mod logs;
 pub(crate) mod pr_hygiene;
+pub(crate) mod thepastaclaw;
 
 use contracts::time::Timestamp;
 use db::repo::sessions::NewSession;

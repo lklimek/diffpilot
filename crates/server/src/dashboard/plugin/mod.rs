@@ -1,13 +1,17 @@
 //! Dashboard plug-ins (ADR-022): external, read-only sources of statements about pull requests. The host polls
-//! them at most once per [`Timing::interval`] server-wide and only while a user reads the dashboard, keeps their
-//! data in memory, serves the current statements to the view ([`Overlay`]) and reports which pull requests changed
-//! (the change signal behind the targeted re-read, `refresh::reread`).
+//! them at most once per [`Timing::interval`] server-wide and only while a user reads the dashboard or any user
+//! watches a pull request ([`PluginHost::set_watching`]), keeps their data in memory, serves the current statements
+//! to the view ([`Overlay`]) and reports which pull requests changed (the change signal behind the targeted
+//! re-read, `refresh::reread`).
 
+mod fetch;
 pub mod pr_hygiene;
+pub mod thepastaclaw;
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -181,7 +185,9 @@ struct Inner {
     timing: Timing,
     /// Active readers (tenant, user) and their last dashboard read.
     active: Mutex<HashMap<(String, String), Instant>>,
-    /// Woken when a reader becomes active.
+    /// Some user watches a pull request.
+    watching: AtomicBool,
+    /// Woken when a reader becomes active or a first watch appears.
     woken: Notify,
 }
 
@@ -233,6 +239,14 @@ impl PluginHost {
                 }
             }
         }
+        if let Some(status) = &config.thepastaclaw_status_url {
+            match thepastaclaw::Thepastaclaw::new(status.clone()) {
+                Ok(plugin) => plugins.push(Arc::new(plugin)),
+                Err(error) => {
+                    tracing::error!(%error, "the thepastaclaw status plug-in could not be set up; it stays off")
+                }
+            }
+        }
         Self::new(plugins, Timing::default())
     }
 
@@ -249,6 +263,7 @@ impl PluginHost {
                     .collect(),
                 timing,
                 active: Mutex::default(),
+                watching: AtomicBool::new(false),
                 woken: Notify::new(),
             }),
         }
@@ -288,7 +303,30 @@ impl PluginHost {
         users
     }
 
-    /// Waits until a reader becomes active (returns at once when one may have become active since the last wait).
+    /// Records whether any user watches a pull request (the watch list's presence source; none until it reports);
+    /// a first watch wakes the poller.
+    pub fn set_watching(&self, watching: bool) {
+        if self.is_empty() {
+            return;
+        }
+        let was = self.inner.watching.swap(watching, Ordering::SeqCst);
+        if watching && !was {
+            self.inner.woken.notify_one();
+        }
+    }
+
+    /// Some user watches a pull request.
+    pub fn is_watching(&self) -> bool {
+        self.inner.watching.load(Ordering::SeqCst)
+    }
+
+    /// Whether the poller has a reason to poll: an active reader or a watched pull request.
+    fn present(&self) -> bool {
+        self.is_watching() || !self.active_users().is_empty()
+    }
+
+    /// Waits until a reader becomes active or a first watch appears (returns at once when either may have happened
+    /// since the last wait).
     pub async fn woken(&self) {
         self.inner.woken.notified().await;
     }
@@ -541,9 +579,9 @@ impl Overlay {
     }
 }
 
-/// Starts the poller when a plug-in is configured: while a user is active it polls every plug-in at most once per
-/// [`Timing::interval`] and re-reads changed pull requests of active users; with nobody active it waits and sends
-/// nothing. Stops with the server.
+/// Starts the poller when a plug-in is configured: while a user is active or watches a pull request it polls every
+/// plug-in at most once per [`Timing::interval`] and re-reads changed pull requests of active users; with nobody
+/// present it waits and sends nothing. Stops with the server.
 pub fn spawn(state: AppState) -> bool {
     if state.plugins.is_empty() {
         return false;
@@ -568,8 +606,8 @@ pub fn spawn(state: AppState) -> bool {
 }
 
 impl PluginHost {
-    /// The poller loop: waits while nobody is active, polls, hands a non-empty change signal to `on_change`, sleeps
-    /// [`Timing::interval`]; ends once `stopping` turns true.
+    /// The poller loop: waits while nobody is active or watching, polls, hands a non-empty change signal to
+    /// `on_change`, sleeps [`Timing::interval`]; ends once `stopping` turns true.
     async fn run<F, Fut>(
         self,
         mut stopping: watch::Receiver<bool>,
@@ -581,7 +619,7 @@ impl PluginHost {
     {
         tracing::info!(plugins = ?self, "dashboard plug-in poller started");
         loop {
-            while self.active_users().is_empty() {
+            while !self.present() {
                 tokio::select! {
                     () = self.woken() => {}
                     _ = stopping.wait_for(|stop| *stop) => return,

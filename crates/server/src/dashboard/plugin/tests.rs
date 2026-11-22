@@ -1,5 +1,8 @@
 //! The plug-in host (presence gating, cadence, freshness, change signal, logging) and the PR Hygiene plug-in
-//! against the in-process fake service (`test_support::pr_hygiene`); no real network.
+//! against the in-process fake service (`test_support::pr_hygiene`); no real network. The thepastaclaw status
+//! plug-in: `tests/thepastaclaw.rs`.
+
+mod thepastaclaw;
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -379,6 +382,43 @@ async fn nothing_is_polled_while_no_user_is_active_and_polls_follow_the_interval
         "one poller for every reader"
     );
     assert_eq!(changes.load(Ordering::SeqCst), 0, "nothing changed");
+    stop.send(true).expect("stop");
+    poller.await.expect("poller ends");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_watched_pull_request_keeps_the_poller_going_without_readers() {
+    let plugin = Scripted::new(Vec::new());
+    let host = host(
+        Arc::clone(&plugin) as Arc<dyn DashboardPlugin>,
+        Timing::default(),
+    );
+    assert!(!host.is_watching(), "nobody watches until told otherwise");
+    let (stop, stopping) = watch::channel(false);
+    let poller = tokio::spawn(host.clone().run(stopping, now, |_| async {}));
+    let minute = Duration::from_secs(60);
+    assert_eq!(polls_after(&plugin, 10 * minute).await, 0);
+
+    host.set_watching(true);
+    assert!(host.is_watching());
+    assert_eq!(
+        polls_after(&plugin, Duration::ZERO).await,
+        1,
+        "a first watch starts a poll at once"
+    );
+    host.set_watching(true);
+    assert_eq!(
+        polls_after(&plugin, 10 * minute).await,
+        11,
+        "polls follow the interval with no reader, past the 3-minute presence of a read"
+    );
+
+    host.set_watching(false);
+    assert_eq!(
+        polls_after(&plugin, 30 * minute).await,
+        11,
+        "no watch and no reader: no poll"
+    );
     stop.send(true).expect("stop");
     poller.await.expect("poller ends");
 }

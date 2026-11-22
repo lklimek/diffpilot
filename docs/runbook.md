@@ -223,6 +223,14 @@ sr up -d
 `... was previously applied but has been modified` means an applied migration was edited: the build is defective;
 roll back and report it, never delete the database.
 
+## Upgrade to v1.3
+
+One optional variable is new; add it to `/srv/diffpilot/.env` to use it (step 1 of "Upgrade"):
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `SR_THEPASTACLAW_STATUS_URL` | no | empty | URL of thepastaclaw's review-system status file, e.g. `https://thepastaclaw.github.io/review-system/data/status.json`. Set: the dashboard's thepastaclaw plug-in reads the file (no credential, revalidated by `ETag`) at most once a minute while someone uses the dashboard in a browser, and notes on the pull requests it lists "thepastaclaw: reviewing (phase, step n of m)" or "thepastaclaw: queued (reason)"; it never changes Ready to merge (ADR-022). The file trails by up to about 20 minutes. The server then needs outbound HTTPS to that host (`thepastaclaw.github.io`). Must be `http://` or `https://`. Empty: off, no request. A bad value stops the server at start (exit 1). |
+
 ## Upgrade to v1.2
 
 **Set `SR_ALLOWED_LOGINS` before upgrading** (step 1 of "Upgrade"): the v1.2 server does not start without it, and

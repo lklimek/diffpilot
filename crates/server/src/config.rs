@@ -50,6 +50,9 @@ pub const MEMCAN_TOKEN: &str = "SR_MEMCAN_TOKEN";
 pub const MEMCAN_UI_URL: &str = "SR_MEMCAN_UI_URL";
 /// Base URL of the PR Hygiene service; set, the dashboard's PR Hygiene plug-in is on (optional, ADR-022).
 pub const PR_HYGIENE_URL: &str = "SR_PR_HYGIENE_URL";
+/// URL of thepastaclaw's review-system `status.json`; set, the dashboard's thepastaclaw plug-in is on (optional,
+/// ADR-022).
+pub const THEPASTACLAW_STATUS_URL: &str = "SR_THEPASTACLAW_STATUS_URL";
 /// Path of a file holding `SR_SECRET_KEY`; exactly one of the two may be set.
 pub const SECRET_KEY_FILE: &str = "SR_SECRET_KEY_FILE";
 /// Path of a file holding `SR_RUNNER_SECRET`; exactly one of the two may be set.
@@ -99,6 +102,8 @@ pub struct Config {
     pub memcan_ui_url: Option<String>,
     /// PR Hygiene service base, the dashboard plug-in's source (default: none, plug-in off; ADR-022).
     pub pr_hygiene_url: Option<Url>,
+    /// thepastaclaw's status file, the dashboard plug-in's source (default: none, plug-in off; ADR-022).
+    pub thepastaclaw_status_url: Option<Url>,
 }
 
 /// GitHub App credentials and GitHub base URLs (configurable for the fake GitHub).
@@ -387,6 +392,9 @@ impl Config {
                 }),
             pr_hygiene_url: get(PR_HYGIENE_URL)?
                 .map(|value| parse_http_url(PR_HYGIENE_URL, &value))
+                .transpose()?,
+            thepastaclaw_status_url: get(THEPASTACLAW_STATUS_URL)?
+                .map(|value| parse_http_url(THEPASTACLAW_STATUS_URL, &value))
                 .transpose()?,
         })
     }
@@ -840,6 +848,39 @@ pub(crate) mod tests {
             parse(&env),
             Err(ConfigError::UnsupportedUrlScheme {
                 key: PR_HYGIENE_URL
+            })
+        ));
+    }
+
+    #[test]
+    fn thepastaclaw_status_url_is_optional_and_must_be_http() {
+        assert_eq!(
+            parse(&required_env())
+                .expect("valid")
+                .thepastaclaw_status_url,
+            None
+        );
+        let mut env = required_env();
+        let file = "https://thepastaclaw.example.test/review-system/data/status.json";
+        env.insert(THEPASTACLAW_STATUS_URL, file.to_owned());
+        let url = parse(&env).expect("valid").thepastaclaw_status_url;
+        assert_eq!(url.map(String::from).as_deref(), Some(file));
+        env.insert(THEPASTACLAW_STATUS_URL, "status.json".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidUrl {
+                key: THEPASTACLAW_STATUS_URL,
+                ..
+            })
+        ));
+        env.insert(
+            THEPASTACLAW_STATUS_URL,
+            "file:///srv/status.json".to_owned(),
+        );
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::UnsupportedUrlScheme {
+                key: THEPASTACLAW_STATUS_URL
             })
         ));
     }
