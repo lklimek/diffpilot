@@ -1,8 +1,11 @@
 import { HttpResponse, type HttpResponseResolver, type PathParams } from "msw";
 import type {
+  AnchoredAskRequest,
   ChannelKind,
   DecideRequest,
   DecisionBatchRequest,
+  GateMarkRequest,
+  ItemActionRequest,
   NotificationChannel,
   PutChannelRequest,
 } from "../../api/generated/types";
@@ -12,30 +15,36 @@ import {
   context,
   decide,
   decideBatch,
+  itemOfPath,
   listItems,
   log,
+  markGate,
   notificationSettings,
   overview,
   prPage,
+  reopen,
   setChannels,
   setWatched,
+  skip,
+  undo,
   watches,
   type Refusal,
 } from "../review-loop";
 import { readStore } from "../review-store";
+import { answerLater } from "./ask-question";
 import { apiError, route } from "./common";
 
-/** Items with the answers of the Ask chat about each (subject `comment_item`, pending contract) counted in. */
+/** The reader's questions about comment items (RC7). */
+const itemQuestions = () => readStore("questions").filter((q) => q.anchor.kind === "comment_item");
+
+/** Items with the answers of the Ask chat about each counted in. */
 const itemsWithAsks = () => {
-  const answered = readStore("questions").filter((q) => q.state === "answered");
+  const answered = itemQuestions().filter((q) => q.state === "answered");
   return listItems().map((i) => ({
     ...i,
     ask_answers:
       i.ask_answers +
-      answered.filter((q) => {
-        const anchor = q.anchor as { kind: string; item?: string };
-        return anchor.kind === "comment_item" && anchor.item === i.id;
-      }).length,
+      answered.filter((q) => q.anchor.kind === "comment_item" && q.anchor.item === i.id).length,
   }));
 };
 
@@ -52,8 +61,9 @@ const forPr =
   };
 
 const refused = (r: Refusal) => apiError(r[0], r[1], r[2]);
+const isRefusal = (value: unknown): value is Refusal => Array.isArray(value) && typeof value[0] === "number";
 
-/** RC1–RC11, RW1–RW2, RN1–RN3 of the review loop (plan §6) over the store of review-loop.ts. */
+/** RC1–RC15, RW1–RW2, RN1–RN3 of the review loop (plan §6) over the store of review-loop.ts. */
 export const reviewLoopHandlers = [
   route(
     "getPrPage",
@@ -74,7 +84,7 @@ export const reviewLoopHandlers = [
   route(
     "getCommentContext",
     forPr(({ params, request }) => {
-      const no = listItems().find((i) => i.id === params.item)?.no;
+      const no = itemOfPath(String(params.item))?.no;
       const query = new URL(request.url).searchParams;
       const num = (key: string) => (query.has(key) ? Number(query.get(key)) : null);
       const found = no === undefined ? null : context(no, num("from"), num("to"));
@@ -100,6 +110,58 @@ export const reviewLoopHandlers = [
       return typeof result[0] === "number"
         ? refused(result as Refusal)
         : HttpResponse.json(result, { status: 201 });
+    }),
+  ),
+  route(
+    "undoCommentDecision",
+    forPr(async ({ params, request }) => {
+      const body = (await request.json()) as ItemActionRequest;
+      const result = undo(String(params.item), body.item_revision);
+      return isRefusal(result) ? refused(result) : HttpResponse.json(result);
+    }),
+  ),
+  route(
+    "reopenCommentItem",
+    forPr(async ({ params, request }) => {
+      const body = (await request.json()) as ItemActionRequest;
+      const result = reopen(String(params.item), body.item_revision);
+      return isRefusal(result) ? refused(result) : HttpResponse.json(result);
+    }),
+  ),
+  route(
+    "skipCommentItem",
+    forPr(async ({ params, request }) => {
+      const body = (await request.json()) as ItemActionRequest;
+      const result = skip(String(params.item), body.item_revision);
+      return result ? refused(result) : new HttpResponse(null, { status: 204 });
+    }),
+  ),
+  route(
+    "markCommentGate",
+    forPr(async ({ params, request }) => {
+      const result = markGate(String(params.item), (await request.json()) as GateMarkRequest);
+      return isRefusal(result) ? refused(result) : HttpResponse.json(result);
+    }),
+  ),
+  // RC7: the reader's questions about comment items; answers follow by listing again (no event stream).
+  route(
+    "listPrQuestions",
+    forPr(() => HttpResponse.json(itemQuestions())),
+  ),
+  route(
+    "askPrQuestion",
+    forPr(async ({ request }) => {
+      const { text, anchor, parent_id } = (await request.json()) as AnchoredAskRequest;
+      if (anchor.kind !== "comment_item")
+        return apiError(400, "invalid_request", "Ask here about one review comment of the pull request.");
+      if (!listItems().some((i) => i.id === anchor.item))
+        return apiError(404, "not_found", "The comment is not part of this pull request. Reload the page.");
+      const questions = itemQuestions();
+      const parent = parent_id ? questions.find((q) => q.id === parent_id) : undefined;
+      const root = parent?.parent_id ? questions.find((q) => q.id === parent.parent_id) : parent;
+      if (parent_id && !root)
+        return apiError(404, "not_found", "The question to follow up was not found. Reload the review.");
+      return HttpResponse.json(answerLater(anchor, text, root?.id), { status: 202 });
     }),
   ),
   route(

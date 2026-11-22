@@ -6,7 +6,7 @@ import { expectTrustWording } from "../../../__tests__/wording";
 import type { AskAnchor, AskQuestion, Tour } from "../../../api/generated/types";
 import { seedFor } from "../../../mocks/fixtures";
 import { AskChat, type AskChatProps } from "./AskChat";
-import { threadsOf } from "./model";
+import { subjectOf, threadsOf } from "./model";
 
 const tour = seedFor("default", "tour") as Tour;
 const q = (id: string, minute: number, anchor: AskAnchor, extra: Partial<AskQuestion> = {}): AskQuestion => ({
@@ -29,7 +29,7 @@ function Harness(over: Partial<AskChatProps> & { questions?: AskQuestion[] }) {
   const [draft, setDraft] = useState("");
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const props: AskChatProps = {
-    tour,
+    describe: (anchor) => subjectOf(anchor, tour),
     threads: threadsOf(over.questions ?? QUESTIONS),
     subject: STEP,
     following: true,

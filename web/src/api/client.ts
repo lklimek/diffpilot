@@ -9,13 +9,14 @@ import type {
   ChannelTestResult,
   CodeContext,
   CommentItem,
-  CommentItemId,
   CommentLog,
   CommentsOverview,
   ContextQuery,
   DecideRequest,
   Decision,
   DecisionBatchRequest,
+  GateMarkRequest,
+  ItemActionRequest,
   ItemsQuery,
   NotificationChannel,
   NotificationSettings,
@@ -192,6 +193,9 @@ const isUserEvent = (value: unknown): value is UserEvent =>
 
 /** Route parameters of a pull request (`{owner}/{name}/{number}`). */
 const prParams = (pr: PrRef) => ({ owner: pr.repo.owner, name: pr.repo.name, number: String(pr.number) });
+
+/** Route parameters of a review-loop item: the PR and the item's per-PR number `C<no>`. */
+const itemParams = (pr: PrRef, no: number) => ({ ...prParams(pr), item: `C${no}` });
 
 /** The defined values of a query object as query-string values. */
 const definedParams = (query: object): Record<string, string> =>
@@ -372,15 +376,24 @@ export function createApiClient(baseUrl = "") {
     readComments: (pr: PrRef) => call<void>("readComments", { params: prParams(pr) }),
     listCommentItems: (pr: PrRef, query: ItemsQuery = { state: null, kind: null }) =>
       call<CommentItem[]>("listCommentItems", { params: prParams(pr), query: definedParams(query) }),
-    getCommentContext: (pr: PrRef, item: CommentItemId, query: ContextQuery = { from: null, to: null }) =>
-      call<CodeContext>("getCommentContext", {
-        params: { ...prParams(pr), item },
-        query: definedParams(query),
-      }),
-    assessComment: (pr: PrRef, item: CommentItemId) =>
-      call<void>("assessComment", { params: { ...prParams(pr), item } }),
-    decideComment: (pr: PrRef, item: CommentItemId, body: DecideRequest) =>
-      call<Decision>("decideComment", { params: { ...prParams(pr), item }, body }),
+    getCommentContext: (pr: PrRef, no: number, query: ContextQuery = { from: null, to: null }) =>
+      call<CodeContext>("getCommentContext", { params: itemParams(pr, no), query: definedParams(query) }),
+    assessComment: (pr: PrRef, no: number) => call<void>("assessComment", { params: itemParams(pr, no) }),
+    decideComment: (pr: PrRef, no: number, body: DecideRequest) =>
+      call<Decision>("decideComment", { params: itemParams(pr, no), body }),
+    undoCommentDecision: (pr: PrRef, no: number, body: ItemActionRequest) =>
+      call<CommentItem>("undoCommentDecision", { params: itemParams(pr, no), body }),
+    reopenCommentItem: (pr: PrRef, no: number, body: ItemActionRequest) =>
+      call<CommentItem>("reopenCommentItem", { params: itemParams(pr, no), body }),
+    skipCommentItem: (pr: PrRef, no: number, body: ItemActionRequest) =>
+      call<void>("skipCommentItem", { params: itemParams(pr, no), body }),
+    markCommentGate: (pr: PrRef, no: number, body: GateMarkRequest) =>
+      call<CommentItem>("markCommentGate", { params: itemParams(pr, no), body }),
+    /** Asks about a review-comment item; with an analysis of the head its Ask session answers, else a question pass. */
+    askPrQuestion: (pr: PrRef, body: AnchoredAskRequest) =>
+      call<AskQuestion>("askPrQuestion", { params: prParams(pr), body }),
+    /** The reader's own questions about the PR's review-comment items, oldest first. */
+    listPrQuestions: (pr: PrRef) => call<AskQuestion[]>("listPrQuestions", { params: prParams(pr) }),
     decideCommentBatch: (pr: PrRef, body: DecisionBatchRequest) =>
       call<Decision[]>("decideCommentBatch", { params: prParams(pr), body }),
     getCommentLog: (pr: PrRef) => call<CommentLog>("getCommentLog", { params: prParams(pr) }),

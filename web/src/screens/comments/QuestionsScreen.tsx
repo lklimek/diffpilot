@@ -2,7 +2,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { ApiError } from "../../api/client";
 import type { CommentItem, DecideRequest, DecisionBatchRow, QueueEntry } from "../../api/generated/types";
-import { useCommentContext, useCommentLog, useDecide, useDecideBatch } from "../../api/review-loop";
+import {
+  useCommentContext,
+  useCommentLog,
+  useDecide,
+  useDecideBatch,
+  useItemAction,
+} from "../../api/review-loop";
 import { CollapsibleSection } from "../../components/collapsible/CollapsibleSection";
 import { isTypingField } from "../../components/comments/DecisionForm";
 import { itemId } from "../../components/comments/parts";
@@ -17,7 +23,9 @@ import {
 } from "../../components/comments/QueueCards";
 import { entryKey, QueueList } from "../../components/comments/QueueList";
 import { Kbd } from "../../components/help/Kbd";
-import { useAskChat } from "../review/askChat";
+import { Tooltip } from "../../components/tooltip/Tooltip";
+import { buttonClass } from "../../components/button/button";
+import { useAskChat, useAskPlace } from "../review/askChat";
 import { commentsPath, prPath } from "../pr/paths";
 import { useComments } from "./CommentsRoute";
 
@@ -40,20 +48,23 @@ const KEYS: [string, string][] = [
 
 /** V1 Questions (plan §3.2, §2.4): one question at a time, groups, "Decide the rest", PR-level questions. */
 export function QuestionsScreen() {
-  const { pr, overview, items, askAnswers, askAvailable, login, now } = useComments();
+  const { pr, overview, items, askAnswers, login, now } = useComments();
   const [search, setSearch] = useSearchParams();
   const navigate = useNavigate();
   const chat = useAskChat();
   const decide = useDecide(pr);
   const batch = useDecideBatch(pr);
+  const action = useItemAction(pr);
   const log = useCommentLog(pr);
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(new Set());
   const [individual, setIndividual] = useState<ReadonlySet<number>>(new Set());
   const [rest, setRest] = useState(false);
   const [help, setHelp] = useState(false);
   const [announcement, setAnnouncement] = useState("");
-  const [lines, setLines] = useState<{ item: string; from: number | null; to: number | null }>({
-    item: "",
+  // The last single decision, offered for Undo until one of its effects is claimed (plan §3.2 item 9).
+  const [undoable, setUndoable] = useState<{ no: number } | null>(null);
+  const [lines, setLines] = useState<{ item: number | null; from: number | null; to: number | null }>({
+    item: null,
     from: null,
     to: null,
   });
@@ -91,7 +102,8 @@ export function QuestionsScreen() {
     if (first) setSearch({ item: itemId(first) });
   };
 
-  const contextItem = single && single.location ? single.id : null;
+  const contextItem = single && single.location ? single.no : null;
+  useAskPlace(single && single.kind !== "pr_question" ? { kind: "comment_item", item: single.id } : null);
   const range = lines.item === contextItem ? lines : { from: null, to: null };
   const context = useCommentContext(pr, contextItem, { from: range.from, to: range.to });
   const contextState: ContextState = !contextItem
@@ -109,15 +121,49 @@ export function QuestionsScreen() {
     setSkipped(new Set());
   };
   const onDecide = (item: CommentItem, request: DecideRequest) =>
-    decide.mutate({ item: item.id, body: request }, { onSuccess: () => afterDecided(itemId(item), 1) });
+    decide.mutate(
+      { no: item.no, body: request },
+      {
+        onSuccess: () => {
+          afterDecided(itemId(item), 1);
+          setUndoable({ no: item.no });
+        },
+      },
+    );
   const onBatch = (via: "group" | "bulk", rows: DecisionBatchRow[]) =>
-    batch.mutate({ via, rows }, { onSuccess: () => afterDecided(`${rows.length} items`, rows.length) });
+    batch.mutate(
+      { via, rows },
+      {
+        onSuccess: () => {
+          afterDecided(`${rows.length} items`, rows.length);
+          setUndoable(null);
+        },
+      },
+    );
+  const undo = () => {
+    const item = undoable && byNo.get(undoable.no);
+    if (!item) return;
+    action.mutate(
+      { action: "undo", no: item.no, revision: item.revision },
+      {
+        onSuccess: () => {
+          setUndoable(null);
+          setAnnouncement(`${itemId(item)}: decision undone; it is asked again.`);
+          setSearch({ item: itemId(item) });
+        },
+      },
+    );
+  };
+  // "Skip for now": last in this reader's queue, here at once and on the server until the item changes.
   const skip = () => {
     if (entry) setSkipped(new Set(skipped).add(entryKey(entry)));
+    for (const no of entry?.item_nos ?? []) {
+      const item = byNo.get(no);
+      if (item) action.mutate({ action: "skip", no, revision: item.revision });
+    }
     setSearch({}, { replace: true });
   };
-  const ask = (item: CommentItem) =>
-    chat.open({ anchor: { kind: "comment_item", item: item.id, no: item.no } });
+  const ask = (item: CommentItem) => chat.open({ anchor: { kind: "comment_item", item: item.id } });
 
   // Queue keys (plan §3.8); the card handles 1–8, Enter, a and s.
   const latestRef = useRef({ queue, index, single, navigate, pr, open });
@@ -170,6 +216,7 @@ export function QuestionsScreen() {
     .filter((i) => i && i.gates.length > 0);
   const running = overview.assessment.running;
   const error = decide.isError ? errorText(decide.error) : batch.isError ? errorText(batch.error) : null;
+  const undoError = undoable && action.isError ? errorText(action.error) : null;
 
   let card;
   if (rest)
@@ -245,9 +292,8 @@ export function QuestionsScreen() {
         prPageHref={prPath(pr)}
         onNavigate={(href) => void navigate(href)}
         askAnswers={askAnswers(single)}
-        onAsk={askAvailable ? () => ask(single) : undefined}
-        askUnavailable="Ask about a comment needs an analysis of this pull request for now. Start one on the PR page."
-        onOpenAnswers={askAvailable ? () => ask(single) : undefined}
+        onAsk={() => ask(single)}
+        onOpenAnswers={() => ask(single)}
         onDecide={(request) => onDecide(single, request)}
         onSkip={skip}
         onMoreLines={(direction) => {
@@ -255,7 +301,7 @@ export function QuestionsScreen() {
           const first = shown?.[0]?.line ?? 1;
           const last = shown?.at(-1)?.line ?? 1;
           setLines({
-            item: single.id,
+            item: single.no,
             from: direction === "above" ? Math.max(1, first - LINES_STEP) : first,
             to: direction === "below" ? last + LINES_STEP : last,
           });
@@ -285,6 +331,24 @@ export function QuestionsScreen() {
             {assessmentText(overview.assessment)}. You can already decide items assessed earlier.
           </p>
         )}
+        <div className={undoable ? "flex flex-wrap items-center gap-2 text-sm" : "sr-only"}>
+          <p className="m-0" aria-live="polite">
+            {announcement}
+          </p>
+          {undoable && (
+            <Tooltip tip="Takes the decision back while no external agent has claimed its effects; the comment is asked again.">
+              <button
+                type="button"
+                aria-disabled={action.isPending || undefined}
+                onClick={() => !action.isPending && undo()}
+                className={buttonClass("plain", true)}
+              >
+                Undo
+              </button>
+            </Tooltip>
+          )}
+          {undoError && <span className="text-high">{undoError}</span>}
+        </div>
         {card}
         {help && (
           <section
@@ -331,9 +395,6 @@ export function QuestionsScreen() {
           Replies and resolves: external agents. Press <Kbd>?</Kbd> for the keys.
         </p>
       </aside>
-      <p className="sr-only" aria-live="polite">
-        {announcement}
-      </p>
     </div>
   );
 }

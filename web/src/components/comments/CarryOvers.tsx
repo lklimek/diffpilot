@@ -1,7 +1,9 @@
 import type { CarryEvent, CarryOverPage, PrRef } from "../../api/generated/types";
+import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText, dateTimeText } from "../format/time";
+import { Tooltip } from "../tooltip/Tooltip";
 import { CHOICE_LABEL } from "./decisions";
 
 const TH = "border-b border-border px-2 py-1.5 text-left text-[11px] font-semibold text-muted uppercase";
@@ -26,11 +28,22 @@ interface CarryOversProps {
   onNavigate: Navigate;
   /** Questions with the item open (this PR's scope only). */
   itemHref?: (no: number) => string;
+  /** Asks a carried item again (this PR's scope only); absent: no Reopen. */
+  onReopen?: (event: CarryEvent) => void;
   now: Date;
 }
 
 /** V5: tiles of counts and the dated list (one PR), or one row per PR (all); counts only, no percentages. */
-export function CarryOvers({ page, scope, prHref, allHref, onNavigate, itemHref, now }: CarryOversProps) {
+export function CarryOvers({
+  page,
+  scope,
+  prHref,
+  allHref,
+  onNavigate,
+  itemHref,
+  onReopen,
+  now,
+}: CarryOversProps) {
   const t = page.totals;
   const tiles: [number, string][] = [
     [t.carried, "carried without asking"],
@@ -119,11 +132,13 @@ export function CarryOvers({ page, scope, prHref, allHref, onNavigate, itemHref,
           <caption className="sr-only">Carry-over events</caption>
           <thead>
             <tr>
-              {["When", "Item", "Repeat of", "Event", "Why", "Effects"].map((h) => (
-                <th key={h} scope="col" className={TH}>
-                  {h}
-                </th>
-              ))}
+              {["When", "Item", "Repeat of", "Event", "Why", "Effects", ...(onReopen ? ["Action"] : [])].map(
+                (h) => (
+                  <th key={h} scope="col" className={TH}>
+                    {h}
+                  </th>
+                ),
+              )}
             </tr>
           </thead>
           <tbody>
@@ -148,6 +163,23 @@ export function CarryOvers({ page, scope, prHref, allHref, onNavigate, itemHref,
                 <td className={TD}>{e.kind === "carried" ? "carried" : "asked again"}</td>
                 <td className={TD}>{why(e)}</td>
                 <td className={TD}>{e.effects_pending ? `${e.effects_pending} open` : "—"}</td>
+                {onReopen && (
+                  <td className={TD}>
+                    {e.kind === "carried" && (
+                      <Tooltip
+                        tip={`Asks C${e.item_no} again: effects of the carried decision not yet claimed are cancelled.`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onReopen(e)}
+                          className={buttonClass("plain", true)}
+                        >
+                          Reopen
+                        </button>
+                      </Tooltip>
+                    )}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

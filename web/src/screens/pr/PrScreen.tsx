@@ -63,7 +63,7 @@ export function PrScreen() {
                   <OpenExternal href={data.url} label={`Open ${display} on GitHub`} />
                 </h1>
                 <p className="m-0 text-xs text-muted">
-                  base <code>{data.base}</code>
+                  by {data.author} · base <code>{data.base}</code>
                   {data.stack_parent && ` (stacked on #${data.stack_parent.number})`} ·{" "}
                   {data.draft ? "draft" : data.state.toLowerCase()} · head{" "}
                   <code>{data.head.slice(0, 7)}</code>

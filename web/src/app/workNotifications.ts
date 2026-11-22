@@ -7,8 +7,7 @@ import type { AnalysisId, AnalysisSummary, AskQuestion, Tour } from "../api/gene
 import { filesHash } from "../components/files/model";
 import { rangeText } from "../components/section/format";
 import type { NotificationSupport } from "../components/settings/NotificationsCard";
-import type { ChatAnchor } from "../api/pending";
-import { itemPath } from "../screens/pr/paths";
+import { commentsPath } from "../screens/pr/paths";
 import { findStep } from "../screens/tour/sequence";
 import { usePrDisplayId } from "./tabStatus";
 
@@ -212,7 +211,7 @@ export function questionEvents(
     if (q.mine === false || (was !== "pending" && was !== "answering")) return [];
     if (q.state !== "answered" && q.state !== "failed") return [];
     const found = q.step_id === undefined ? undefined : findStep(tour, q.step_id);
-    const anchor = q.anchor as ChatAnchor | undefined;
+    const anchor = q.anchor as AskQuestion["anchor"] | undefined;
     const flow = anchor?.kind === "flow" ? tour.flows.find((f) => f.id === anchor.flow_id) : undefined;
     // Lines of a file open in the Files view; the rest in Flows.
     const [where, path] = found
@@ -222,7 +221,7 @@ export function questionEvents(
         : anchor?.kind === "pr"
           ? ["the whole PR", reviewPath(id, "pr_context")]
           : anchor?.kind === "comment_item"
-            ? [`comment C${anchor.no}`, itemPath(tour.analysis.pr, anchor.no)]
+            ? ["a review comment", commentsPath(tour.analysis.pr)]
             : anchor?.kind === "lines"
               ? [
                   anchor.range ? `${anchor.path}:${rangeText(anchor.range)}` : anchor.path,

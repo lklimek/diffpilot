@@ -2,8 +2,7 @@
 // the PR page, items with assessments and decisions, the log, rounds, carry-overs, watches and notification
 // channels of the fixture PR acme/node-client #482. Decisions change the store until `resetReviewLoop`.
 // Mockup states are selected with scenarios (`comments` of scenarios.ts).
-// FIXTURE (contract gaps, see TODO(WP13-A CCR)): Ask answer counts per comment item use the pending `comment_item`
-// anchor of api/pending.ts; there is no Undo or Reopen route, no daily auto-pass count and no PR author on PrPage.
+// Contract gap left to WP13-WATCH: the watched list has no daily automatic-pass count.
 import type {
   AnalysisSummary,
   CarryEvent,
@@ -19,6 +18,7 @@ import type {
   DecisionKind,
   Effect,
   Gate,
+  GateMarkRequest,
   NotificationSettings,
   PrBadgeView,
   PrPage,
@@ -466,9 +466,10 @@ function seedItems(): CommentItem[] {
   ];
 }
 
-let store: { items: CommentItem[]; decided: number } | null = null;
+/** Items, decisions stored so far and the reader's skips ("Skip for now": item → revision skipped at). */
+let store: { items: CommentItem[]; decided: number; skips: Map<number, number> } | null = null;
 const items = (): CommentItem[] => {
-  store ??= { items: seedItems(), decided: 0 };
+  store ??= { items: seedItems(), decided: 0, skips: new Map() };
   return store.items;
 };
 
@@ -497,8 +498,16 @@ export function listItems(): CommentItem[] {
   }
 }
 
-/** Queue order (plan §2.4): PR-level, asked again, answered, gate, blocking, single, groups. */
+/** Queue order (plan §2.4) with the reader's skipped entries last (RC14). */
 function queue(list: CommentItem[]): QueueEntry[] {
+  const skipped = (e: QueueEntry) =>
+    e.item_nos.every((n) => store?.skips.get(n) === list.find((i) => i.no === n)?.revision);
+  const entries = ordered(list).map((e) => (skipped(e) ? { ...e, skipped: true } : e));
+  return [...entries.filter((e) => !e.skipped), ...entries.filter((e) => e.skipped)];
+}
+
+/** Queue order (plan §2.4): PR-level, asked again, answered, gate, blocking, single, groups. */
+function ordered(list: CommentItem[]): QueueEntry[] {
   const open = list.filter(isOpen);
   const by = (reason: QueueEntry["reason"], pick: (i: CommentItem) => boolean) =>
     open.filter(pick).map((i) => ({ item_nos: [i.no], reason }));
@@ -641,6 +650,7 @@ export function prPage(): PrPage {
   return {
     pr: PR,
     title: "feat(rpc): retry with backoff on timeout",
+    author: "octo-dev",
     url: URL_PR,
     state: "OPEN",
     draft: false,
@@ -733,8 +743,20 @@ export function context(no: number, from: number | null, to: number | null): Cod
     analysis_head: withAnalysis ? HEAD : null,
     in_flows: base
       ? [
-          { flow: "f1", flow_title: "Send an RPC request with retry", step: "f1.2" },
-          { flow: "f5", flow_title: "Move of backoff helpers util/backoff.rs → rpc/retry.rs", step: "f5.1" },
+          {
+            flow: "f1",
+            flow_position: 1,
+            flow_title: "Send an RPC request with retry",
+            step: "f1.2",
+            step_number: 2,
+          },
+          {
+            flow: "f5",
+            flow_position: 5,
+            flow_title: "Move of backoff helpers util/backoff.rs → rpc/retry.rs",
+            step: "f5.1",
+            step_number: 1,
+          },
         ]
       : [],
     notes: base
@@ -801,13 +823,86 @@ function store_decision(it: CommentItem, body: DecideRequest, via: Decision["via
 }
 
 /** Why a request is refused, or null (status, code, message). */
-export type Refusal = [number, "not_found" | "item_changed" | "invalid_request", string];
+export type Refusal = [number, "not_found" | "item_changed" | "invalid_request" | "conflict", string];
+
+/** The item of a path's `{item}` (`C<no>`, or a bare number), as the server reads it. */
+export function itemOfPath(raw: string): CommentItem | undefined {
+  items();
+  const no = Number(raw.replace(/^[Cc]/, ""));
+  return store!.items.find((i) => i.no === no);
+}
+
+const NOT_FOUND: Refusal = [404, "not_found", "This comment is not known for this pull request."];
+const changedSince = (it: CommentItem): Refusal => [
+  409,
+  "item_changed",
+  `C${it.no} changed since you opened it. Read it again.`,
+];
+const now = () => new Date().toISOString();
+/** Effects of `decision` not yet claimed are cancelled. */
+const cancelUnclaimed = (decision: Decision) => {
+  decision.effects = decision.effects.map((e) =>
+    e.state === "waiting" || e.state === "open"
+      ? { ...e, state: "cancelled" as const, updated_at: now() }
+      : e,
+  );
+};
+
+/** RC12: the standing decision is undone while none of its effects is claimed; the item is asked again. */
+export function undo(raw: string, revision: number): CommentItem | Refusal {
+  const it = itemOfPath(raw);
+  if (!it) return NOT_FOUND;
+  if (it.revision !== revision) return changedSince(it);
+  const last = it.decisions.at(-1);
+  if (!last || last.undone_at) return [409, "conflict", `C${it.no} has no decision to undo.`];
+  if (last.effects.some((e) => e.state === "claimed" || e.state === "done" || e.state === "failed"))
+    return [409, "conflict", `An agent already claimed an effect of the decision on C${it.no}; it stays.`];
+  cancelUnclaimed(last);
+  last.undone_at = now();
+  it.state = "undecided";
+  it.revision += 1;
+  return it;
+}
+
+/** RC13: a decided or carried item is asked again; effects not yet claimed are cancelled. */
+export function reopen(raw: string, revision: number): CommentItem | Refusal {
+  const it = itemOfPath(raw);
+  if (!it) return NOT_FOUND;
+  if (it.revision !== revision) return changedSince(it);
+  const last = it.decisions.at(-1);
+  if (!last || last.undone_at || it.state === "outside")
+    return [409, "conflict", `C${it.no} has no decision to reopen.`];
+  cancelUnclaimed(last);
+  it.state = "reopened";
+  it.revision += 1;
+  return it;
+}
+
+/** RC14: "Skip for now" of the reader at the item's revision. */
+export function skip(raw: string, revision: number): Refusal | null {
+  const it = itemOfPath(raw);
+  if (!it) return NOT_FOUND;
+  if (it.revision !== revision) return changedSince(it);
+  store!.skips.set(it.no, revision);
+  return null;
+}
+
+/** RC15: the owner marks or clears his mark of a gate; assessment gates stay. */
+export function markGate(raw: string, body: GateMarkRequest): CommentItem | Refusal {
+  const it = itemOfPath(raw);
+  if (!it) return NOT_FOUND;
+  if (it.kind === "pr_question") return [409, "conflict", "A PR-level question has no gates."];
+  if (it.revision !== body.item_revision) return changedSince(it);
+  const kept = it.gates.filter((g) => !(g.gate === body.gate && g.source === "owner"));
+  it.gates = body.marked ? [...kept, { gate: body.gate, source: "owner" }] : kept;
+  it.revision += 1;
+  return it;
+}
 
 /** RC8. */
-export function decide(itemId: string, body: DecideRequest): Decision | Refusal {
-  items();
-  const it = store!.items.find((i) => i.id === itemId);
-  if (!it) return [404, "not_found", "This comment is not known for this pull request."];
+export function decide(raw: string, body: DecideRequest): Decision | Refusal {
+  const it = itemOfPath(raw);
+  if (!it) return NOT_FOUND;
   if (it.revision !== body.item_revision)
     return [409, "item_changed", `C${it.no} changed since you opened it. Read it again before you decide.`];
   if (body.kind === "reject" && !body.reason)

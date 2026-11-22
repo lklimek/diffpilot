@@ -6,6 +6,7 @@ import type {
   CommentItem,
   DecideRequest,
   FlowStepRef,
+  NotAssessedReason,
 } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
@@ -25,10 +26,11 @@ export type ContextState =
   | { state: "none" }
   | { state: "ready"; value: CodeContext };
 
-const NOT_ASSESSED = {
+const NOT_ASSESSED: Record<NotAssessedReason, string> = {
   daily_limit: "daily limit",
   failed: "the assessment failed",
   missing: "left out of the pass",
+  not_run: "no assessment has run for it yet",
 };
 
 interface QuestionCardProps {
@@ -300,7 +302,7 @@ export function QuestionCard(props: QuestionCardProps) {
               {ctx.in_flows.map((f) => (
                 <li key={`${f.flow}-${f.step}`}>
                   <a href={props.flowHref(f)} target="_blank" rel="noopener noreferrer">
-                    {f.flow_title} › step {f.step}
+                    Flow {f.flow_position} · {f.flow_title} · step {f.step_number}
                     <span className="sr-only"> (opens in a new tab)</span>
                   </a>
                 </li>

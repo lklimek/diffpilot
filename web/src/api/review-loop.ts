@@ -1,13 +1,17 @@
-// Queries and mutations of the review loop (docs/review-workflow-plan.md §6: RC1–RC11, RW1–RW2, RN1–RN3).
+// Queries and mutations of the review loop (docs/review-workflow-plan.md §6: RC1–RC17, RW1–RW2, RN1–RN3) and the
+// Ask questions about its items (RC7).
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
+import { withoutRetried } from "./queries";
 import type {
   AnalysisId,
+  AnchoredAskRequest,
+  AskQuestion,
   ChannelKind,
-  CommentItemId,
   ContextQuery,
   DecideRequest,
   DecisionBatchRequest,
+  Gate,
   PrRef,
   PutChannelRequest,
 } from "./generated/types";
@@ -33,20 +37,21 @@ export const useCommentsOverview = (pr: PrRef) =>
     refetchInterval: COMMENTS_POLL_MS,
   });
 
-/** Every item with its assessment, decisions and effects (RC4). */
-export const useCommentItems = (pr: PrRef) =>
+/** Every item with its assessment, decisions and effects (RC4); none without a PR or while not `enabled`. */
+export const useCommentItems = (pr: PrRef | null, enabled = true) =>
   useQuery({
-    queryKey: ["comment-items", ...prKey(pr)],
-    queryFn: () => api.listCommentItems(pr),
+    queryKey: ["comment-items", ...(pr ? prKey(pr) : [])],
+    queryFn: () => api.listCommentItems(pr!),
     refetchInterval: COMMENTS_POLL_MS,
+    enabled: pr !== null && enabled,
   });
 
-/** The code an item discusses, its flows and notes elsewhere (RC5); none without an item. */
-export const useCommentContext = (pr: PrRef, item: CommentItemId | null, query: ContextQuery) =>
+/** The code an item (`C<no>`) discusses, its flows and notes elsewhere (RC5); none without an item. */
+export const useCommentContext = (pr: PrRef, no: number | null, query: ContextQuery) =>
   useQuery({
-    queryKey: ["comment-context", ...prKey(pr), item, query.from, query.to],
-    queryFn: () => api.getCommentContext(pr, item!, query),
-    enabled: item !== null,
+    queryKey: ["comment-context", ...prKey(pr), no, query.from, query.to],
+    queryFn: () => api.getCommentContext(pr, no!, query),
+    enabled: no !== null,
   });
 
 /** Decision log and feed state (RC10). */
@@ -77,13 +82,77 @@ export function useReadComments(pr: PrRef) {
   return useMutation({ mutationFn: () => api.readComments(pr), onSuccess: invalidate });
 }
 
-/** One decision (RC8). */
+/** One decision on item `C<no>` (RC8). */
 export function useDecide(pr: PrRef) {
   const invalidate = useInvalidatePr(pr);
   return useMutation({
-    mutationFn: ({ item, body }: { item: CommentItemId; body: DecideRequest }) =>
-      api.decideComment(pr, item, body),
+    mutationFn: ({ no, body }: { no: number; body: DecideRequest }) => api.decideComment(pr, no, body),
     onSettled: invalidate,
+  });
+}
+
+/** An owner action on item `C<no>` at the revision the reader saw: Undo (RC12), Reopen (RC13), Skip for now (RC14). */
+export type ItemAction = "undo" | "reopen" | "skip";
+
+/** Undo, Reopen or Skip for now, then everything of the PR is read again. */
+export function useItemAction(pr: PrRef) {
+  const invalidate = useInvalidatePr(pr);
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ action, no, revision }: { action: ItemAction; no: number; revision: number }) => {
+      const body = { item_revision: revision };
+      if (action === "undo") await api.undoCommentDecision(pr, no, body);
+      else if (action === "reopen") await api.reopenCommentItem(pr, no, body);
+      else await api.skipCommentItem(pr, no, body);
+    },
+    onSettled: () => Promise.all([invalidate(), client.invalidateQueries({ queryKey: ["carry-overs"] })]),
+  });
+}
+
+/** The owner marks or clears a gate on item `C<no>` (RC15). */
+export function useMarkGate(pr: PrRef) {
+  const invalidate = useInvalidatePr(pr);
+  return useMutation({
+    mutationFn: ({
+      no,
+      gate,
+      marked,
+      revision,
+    }: {
+      no: number;
+      gate: Gate;
+      marked: boolean;
+      revision: number;
+    }) => api.markCommentGate(pr, no, { gate, marked, item_revision: revision }),
+    onSettled: invalidate,
+  });
+}
+
+/** How often the reader's open questions about comment items are read again (no event stream without an analysis). */
+export const PR_QUESTIONS_POLL_MS = 3_000;
+
+const openQuestion = (q: AskQuestion) => q.state === "pending" || q.state === "answering";
+
+/** The reader's questions about the PR's comment items (RC7), read again while one is open. */
+export const usePrQuestions = (pr: PrRef) =>
+  useQuery({
+    queryKey: ["pr-questions", ...prKey(pr)],
+    queryFn: () => api.listPrQuestions(pr),
+    // A failed question asked again shows once, as in the analysis chat.
+    select: withoutRetried,
+    refetchInterval: (query) => (query.state.data?.some(openQuestion) ? PR_QUESTIONS_POLL_MS : false),
+  });
+
+/** Asks about a comment item (RC7); the question joins the list at once. */
+export function useAskPrQuestion(pr: PrRef) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: AnchoredAskRequest) => api.askPrQuestion(pr, body),
+    onSuccess: (question) =>
+      client.setQueryData<AskQuestion[]>(["pr-questions", ...prKey(pr)], (all = []) => [
+        ...all.filter((q) => q.id !== question.id),
+        question,
+      ]),
   });
 }
 

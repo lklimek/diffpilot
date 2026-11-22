@@ -62,6 +62,30 @@ describe("api client", () => {
     expect(seen).toEqual({ method: "DELETE", path: "/api/v1/analyses/a1/feedback/fb%201", csrf: "tok-1" });
   });
 
+  it("names a review-loop item by its per-PR number C<no> in the path, as the server reads it", async () => {
+    const paths: string[] = [];
+    server.use(
+      me("tok-1"),
+      http.post(`${BASE}/api/v1/prs/acme/node-client/482/comments/items/:item/:action`, ({ request }) => {
+        paths.push(new URL(request.url).pathname);
+        return HttpResponse.json({});
+      }),
+      http.get(`${BASE}/api/v1/prs/acme/node-client/482/comments/items/:item/context`, ({ request }) => {
+        paths.push(new URL(request.url).pathname);
+        return HttpResponse.json({});
+      }),
+    );
+    const api = createApiClient(BASE);
+    const pr = { repo: { owner: "acme", name: "node-client" }, number: 482 };
+    await api.getCommentContext(pr, 14);
+    await api.undoCommentDecision(pr, 14, { item_revision: 3 });
+    await api.reopenCommentItem(pr, 15, { item_revision: 1 });
+    await api.markCommentGate(pr, 16, { gate: "G-FUNDS", marked: true, item_revision: 2 });
+    expect(paths.map((path) => path.replace("/api/v1/prs/acme/node-client/482/comments/items/", ""))).toEqual(
+      ["C14/context", "C14/undo", "C15/reopen", "C16/gates"],
+    );
+  });
+
   it("does not send the CSRF header on GET routes", async () => {
     let header: string | null = "unset";
     server.use(

@@ -1,9 +1,15 @@
 import { useCallback, useMemo, type ReactNode } from "react";
 import { Outlet, useLocation, useNavigate, useOutletContext, useParams } from "react-router";
 import { ApiError } from "../../api/client";
-import type { AnalysisId, CommentItem, CommentsOverview, PrPage, PrRef } from "../../api/generated/types";
-import { useMe, useQuestions } from "../../api/queries";
-import { useCommentItems, useCommentsOverview, usePrPage, useReadComments } from "../../api/review-loop";
+import type { CommentItem, CommentsOverview, PrPage, PrRef } from "../../api/generated/types";
+import { useMe } from "../../api/queries";
+import {
+  useCommentItems,
+  useCommentsOverview,
+  usePrPage,
+  usePrQuestions,
+  useReadComments,
+} from "../../api/review-loop";
 import { useNow } from "../../app/now";
 import { usePrTabSubject } from "../../app/tabStatus";
 import { useUserEventNotifications } from "../../app/userEvents";
@@ -15,7 +21,7 @@ import { clockText } from "../../components/format/time";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { TopBar } from "../../components/top-bar/TopBar";
-import { AskChatProvider } from "../review/askChat";
+import { PrAskChatProvider } from "../review/askChat";
 import { commentsPath, prOfParams, prPath } from "../pr/paths";
 
 /** What every Comments page gets from the layout. */
@@ -26,9 +32,6 @@ export interface CommentsContext {
   page: PrPage | undefined;
   /** Ask answers about an item (stored count, or the live chat's, whichever is higher). */
   askAnswers: (item: CommentItem) => number;
-  // TODO(WP13-A CCR): plan RC7 Ask without an analysis has no route yet; Ask stays disabled with a tip.
-  /** Ask is available (the PR has an analysis). */
-  askAvailable: boolean;
   login: string;
   now: Date;
 }
@@ -45,24 +48,30 @@ const READ_FAILURE = {
   sign_in_required: "sign in again",
 } as const;
 
-/** Counts the live chat's answers per comment item (with an analysis only). */
+/** The shared Ask chat over the reader's questions about the PR's comment items, with the live answer counts. */
 function WithAsk({
-  analysis,
+  pr,
+  items,
   children,
 }: {
-  analysis: AnalysisId;
+  pr: PrRef;
+  items: readonly CommentItem[] | undefined;
   children: (count: (id: string) => number) => ReactNode;
 }) {
-  const questions = useQuestions(analysis);
+  const questions = usePrQuestions(pr);
+  const numbers = useMemo(() => new Map((items ?? []).map((item) => [item.id, item.no])), [items]);
   const count = useCallback(
     (id: string) =>
-      (questions.data ?? []).filter((q) => {
-        const anchor = q.anchor as { kind: string; item?: string };
-        return q.state === "answered" && anchor.kind === "comment_item" && anchor.item === id;
-      }).length,
+      (questions.data ?? []).filter(
+        (q) => q.state === "answered" && q.anchor.kind === "comment_item" && q.anchor.item === id,
+      ).length,
     [questions.data],
   );
-  return <AskChatProvider analysisId={analysis}>{children(count)}</AskChatProvider>;
+  return (
+    <PrAskChatProvider key={commentsPath(pr)} pr={pr} numbers={numbers}>
+      {children(count)}
+    </PrAskChatProvider>
+  );
 }
 
 const PAGE_OF: [string, CommentsPage][] = [
@@ -114,7 +123,6 @@ export function CommentsRoute() {
       items: items.data,
       page: page.data,
       askAnswers: (item) => Math.max(item.ask_answers, count(item.id)),
-      askAvailable: analysis !== null,
       login,
       now,
     };
@@ -194,7 +202,9 @@ export function CommentsRoute() {
         )}
         {read.isError && <StatusMessage kind="error">{errorText(read.error)}</StatusMessage>}
         {o && <CommentsTabs current={current} hrefs={hrefs} questions={o.counts.undecided} onNavigate={go} />}
-        {analysis ? <WithAsk analysis={analysis}>{body}</WithAsk> : body(() => 0)}
+        <WithAsk pr={pr} items={items.data}>
+          {body}
+        </WithAsk>
       </main>
     </div>
   );

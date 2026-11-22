@@ -78,10 +78,9 @@ describe("QuestionCard (plan §3.2)", () => {
       expect(note).toHaveAttribute("target", "_blank");
       expect(note).toHaveAccessibleName(/\(new tab\)$/);
     }
-    expect(screen.getByRole("link", { name: /Send an RPC request with retry › step f1.2/ })).toHaveAttribute(
-      "target",
-      "_blank",
-    );
+    expect(
+      screen.getByRole("link", { name: /Flow 1 · Send an RPC request with retry · step 2/ }),
+    ).toHaveAttribute("target", "_blank");
   });
 
   it("without an analysis: 'No analysis yet' with the way to the PR page", () => {

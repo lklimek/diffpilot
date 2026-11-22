@@ -1,5 +1,7 @@
 // The floating Ask chat of a review (proposal AC1–AC14): it lives in the layout shared by Flows and Files, so it
 // survives their navigation. Screens say where the reader is and open it; the chat asks, follows and navigates.
+// The Comments pages draw the same chat over the reader's questions about the PR's comment items (RC7), with or
+// without an analysis.
 import {
   createContext,
   useCallback,
@@ -17,12 +19,14 @@ import { useTourNotifications } from "../../app/workNotifications";
 import { routes } from "../../api/generated/routes";
 import type {
   AnalysisId,
+  AnchoredAskRequest,
   AskAnchor,
   AskQuestion,
   Evidence,
   QuestionId,
   LineRange,
   LineSide,
+  PrRef,
   Tour,
 } from "../../api/generated/types";
 import {
@@ -33,13 +37,22 @@ import {
   useQuestions,
   useTour,
 } from "../../api/queries";
+import { useAskPrQuestion, useCommentItems, usePrQuestions } from "../../api/review-loop";
 import { AskChat, type ChatSize } from "../../components/ask/chat/AskChat";
 import { AskLauncher } from "../../components/ask/chat/AskLauncher";
-import { linesOf, subjectOf, threadsOf, unreadOf } from "../../components/ask/chat/model";
+import {
+  commentSubject,
+  linesOf,
+  subjectOf,
+  threadsOf,
+  unreadOf,
+  WHOLE_PR,
+  type ItemNumbers,
+  type Subject,
+} from "../../components/ask/chat/model";
 import { answerComment } from "../../components/comment/prefill";
 import { filesHash } from "../../components/files/model";
-import type { ChatAnchor } from "../../api/pending";
-import { itemPath } from "../pr/paths";
+import { commentsPath, itemPath } from "../pr/paths";
 import { blockFragment } from "../tour/sequence";
 import { chatGeometry } from "./chatGeometry";
 
@@ -61,10 +74,10 @@ export interface AnswerDraft {
 /** The chat as screens see it. */
 export interface AskChatControl {
   /** Where the reader is (the composer's subject while it follows); null outside a place. */
-  place: ChatAnchor | null;
-  setPlace: (place: ChatAnchor | null) => void;
+  place: AskAnchor | null;
+  setPlace: (place: AskAnchor | null) => void;
   /** Opens the chat about the place (or `anchor`), or at a thread; focuses its field. Nothing is sent. */
-  open: (options?: { anchor?: ChatAnchor; thread?: QuestionId }) => void;
+  open: (options?: { anchor?: AskAnchor; thread?: QuestionId }) => void;
   setActions: (actions: ChatActions) => void;
   /** Says something politely to screen readers (e.g. where "Use as review comment" moved the review). */
   announce: (text: string) => void;
@@ -83,11 +96,11 @@ const Context = createContext<AskChatControl>(NONE);
 export const useAskChat = () => useContext(Context);
 
 /** Says where the reader is while the screen shows it. */
-export function useAskPlace(place: ChatAnchor | null): void {
+export function useAskPlace(place: AskAnchor | null): void {
   const { setPlace } = useAskChat();
   const key = place === null ? null : JSON.stringify(place);
   useEffect(() => {
-    setPlace(key === null ? null : (JSON.parse(key) as ChatAnchor));
+    setPlace(key === null ? null : (JSON.parse(key) as AskAnchor));
   }, [key, setPlace]);
 }
 
@@ -115,15 +128,21 @@ interface Remembered extends ChatSize {
 }
 const FIRST: Remembered = { open: false, width: null, height: null, full: false };
 
-// Where a subject chip goes: lines (a step's too) are selected in Files, the rest open in Flows.
-const linkOf = (id: AnalysisId, anchor: ChatAnchor, tour: Tour): string => {
+/** Where a comment item opens: its question in Comments, or Comments when its number is not known. */
+const commentLink = (pr: PrRef, item: string, numbers: ItemNumbers) => {
+  const no = numbers.get(item);
+  return no === undefined ? commentsPath(pr) : itemPath(pr, no);
+};
+
+// Where a subject chip goes: lines (a step's too) are selected in Files, comment items in Comments, the rest in Flows.
+const linkOf = (id: AnalysisId, anchor: AskAnchor, tour: Tour, numbers: ItemNumbers): string => {
   const base = `/analyses/${encodeURIComponent(id)}`;
   const lines = anchor.kind === "step" && anchor.lines ? linesOf(anchor, tour) : null;
   if (lines)
     return `${base}/files${filesHash({ file: lines.path, side: lines.side, line: lines.from, end: lines.to ?? lines.from })}`;
   switch (anchor.kind) {
     case "comment_item":
-      return itemPath(tour.analysis.pr, anchor.no);
+      return commentLink(tour.analysis.pr, anchor.item, numbers);
     case "pr":
       return `${base}#${blockFragment({ block: "pr_context" })}`;
     case "flow":
@@ -148,34 +167,117 @@ function ReviewActivity({ tour, questions }: { tour: Tour; questions: readonly A
   return null;
 }
 
+/** Where a chat's questions come from and how its subjects are named and opened. */
+interface ChatSource {
+  /** Drafts, replies and seen answers are remembered per source (an analysis, or a PR's comment items). */
+  key: string;
+  questions: { data: AskQuestion[] | undefined; isSuccess: boolean };
+  ask: (body: AnchoredAskRequest) => Promise<AskQuestion>;
+  /** Names a subject; null while the source is not ready (its tour loads): the chat is not drawn yet. */
+  describe: ((anchor: AskAnchor) => Subject) | null;
+  /** In-app link of a subject. */
+  linkOf: (anchor: AskAnchor) => string;
+  /** "Use as review comment" is offered (the user's pending review accepts comments). */
+  commenting: boolean;
+  about: string;
+  notice: string | null;
+  /** Tab status and notifications of the source's work. */
+  activity: ReactNode;
+}
+
 /** Provides the chat to the review's screens and draws it (or its launcher) over them. */
 export function AskChatProvider({ analysisId, children }: { analysisId: AnalysisId; children: ReactNode }) {
-  const [place, setPlaceState] = useState<ChatAnchor | null>(null);
+  const tour = useTour(analysisId);
+  const questions = useQuestions(analysisId);
+  const stream = useQuestionEvents(analysisId);
+  const ask = useAskInChat(analysisId);
+  const pending = usePendingReview(analysisId);
+  const theTour = tour.data;
+  // Comment items are named "Comment C14" with the PR's items, read only when a question is about one.
+  const aboutItems = (questions.data ?? []).some((q) => q.anchor.kind === "comment_item");
+  const items = useCommentItems(theTour?.analysis.pr ?? null, aboutItems);
+  const numbers = useMemo<ItemNumbers>(
+    () => new Map((items.data ?? []).map((item) => [item.id, item.no])),
+    [items.data],
+  );
+  const source: ChatSource = {
+    key: analysisId,
+    questions,
+    ask: (body) => ask.mutateAsync(body),
+    describe: theTour ? (anchor) => subjectOf(anchor, theTour, numbers) : null,
+    linkOf: (anchor) => (theTour ? linkOf(analysisId, anchor, theTour, numbers) : ""),
+    commenting: pending.data?.commenting_available === true,
+    about: theTour ? `your private chat about PR #${theTour.analysis.pr.number}` : "",
+    notice: stream.lost
+      ? "The connection that delivers answers was lost. Reconnecting; answers already given are read again."
+      : null,
+    activity: theTour ? <ReviewActivity tour={theTour} questions={questions.data} /> : null,
+  };
+  return <ChatShell source={source}>{children}</ChatShell>;
+}
+
+/** The tab title's Ask status of a PR's comment-item questions. */
+function PrQuestionActivity({ questions }: { questions: readonly AskQuestion[] | undefined }) {
+  useTabActivity("ask", questionsActivity(questions ?? []));
+  return null;
+}
+
+/**
+ * The chat of the Comments pages: the reader's questions about the PR's comment items, asked on the PR (RC7) and
+ * read again while one is open; with an analysis of the head its Ask session answers, else a question pass.
+ */
+export function PrAskChatProvider({
+  pr,
+  numbers,
+  children,
+}: {
+  pr: PrRef;
+  /** `C<no>` of the PR's items. */
+  numbers: ItemNumbers;
+  children: ReactNode;
+}) {
+  const questions = usePrQuestions(pr);
+  const ask = useAskPrQuestion(pr);
+  const source: ChatSource = {
+    key: `pr:${pr.repo.owner}/${pr.repo.name}/${pr.number}`,
+    questions,
+    ask: (body) => ask.mutateAsync(body),
+    describe: (anchor) => (anchor.kind === "comment_item" ? commentSubject(anchor.item, numbers) : WHOLE_PR),
+    linkOf: (anchor) =>
+      anchor.kind === "comment_item" ? commentLink(pr, anchor.item, numbers) : commentsPath(pr),
+    commenting: false,
+    about: `your private chat about the comments of PR #${pr.number}`,
+    notice: null,
+    activity: <PrQuestionActivity questions={questions.data} />,
+  };
+  return <ChatShell source={source}>{children}</ChatShell>;
+}
+
+/** The chat's state, its context for screens and its drawing, over one source. */
+function ChatShell({ source, children }: { source: ChatSource; children: ReactNode }) {
+  const [place, setPlaceState] = useState<AskAnchor | null>(null);
   const actions = useRef<ChatActions>({});
-  const setPlace = useCallback((next: ChatAnchor | null) => setPlaceState(next), []);
+  const setPlace = useCallback((next: AskAnchor | null) => setPlaceState(next), []);
   const setActions = useCallback((next: ChatActions) => {
     actions.current = next;
   }, []);
   const navigate = useNavigate();
   const me = useMe();
   const login = me.data?.user?.login ?? "anonymous";
-  const tour = useTour(analysisId);
-  const questions = useQuestions(analysisId);
-  const stream = useQuestionEvents(analysisId);
-  const ask = useAskInChat(analysisId);
+  const { questions } = source;
   const all = questions.data ?? [];
 
   const layoutKey = `diffpilot.askChat.${login}`;
-  const draftKey = `diffpilot.askChat.draft.${login}.${analysisId}`;
-  const seenKey = `diffpilot.askChat.seen.${login}.${analysisId}`;
-  const repliesKey = `diffpilot.askChat.replies.${login}.${analysisId}`;
+  const draftKey = `diffpilot.askChat.draft.${login}.${source.key}`;
+  const seenKey = `diffpilot.askChat.seen.${login}.${source.key}`;
+  const repliesKey = `diffpilot.askChat.replies.${login}.${source.key}`;
   const [remembered, setRemembered] = useState(() => read(local, layoutKey, FIRST));
   const [draft, setDraft] = useState(() => read(session, draftKey, { text: "" }).text);
   const [replies, setReplies] = useState(() => read<Record<QuestionId, string>>(session, repliesKey, {}));
   // The subject: the place, unless × chose the whole PR; an Ask button's own subject until the place changes.
   const [wholePr, setWholePr] = useState(false);
   const placeKey = JSON.stringify(place);
-  const [chosen, setChosen] = useState<{ anchor: ChatAnchor; at: string } | null>(null);
+  const [chosen, setChosen] = useState<{ anchor: AskAnchor; at: string } | null>(null);
   const [focusThread, setFocusThread] = useState<{ id: QuestionId; nonce: number } | null>(null);
   const field = useRef<HTMLTextAreaElement>(null);
   const opener = useRef<HTMLElement | null>(null);
@@ -249,7 +351,7 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
   };
 
   // `a`, an Ask button or Open in chat: the place (or the button's own subject) becomes the subject again.
-  const open = (options: { anchor?: ChatAnchor; thread?: QuestionId } = {}) => {
+  const open = (options: { anchor?: AskAnchor; thread?: QuestionId } = {}) => {
     setWholePr(false);
     setChosen(options.anchor ? { anchor: options.anchor, at: placeKey } : null);
     show(options.thread);
@@ -276,7 +378,7 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
     [place, setPlace, stableOpen, setActions, announce],
   );
 
-  const subject: ChatAnchor = wholePr
+  const subject: AskAnchor = wholePr
     ? { kind: "pr" }
     : chosen && chosen.at === placeKey
       ? chosen.anchor
@@ -355,29 +457,24 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
     };
   }, [remembered]);
 
-  const pending = usePendingReview(analysisId);
-  const commenting = pending.data?.commenting_available === true;
-  if (!tour.data) return <Context.Provider value={control}>{children}</Context.Provider>;
-  const theTour = tour.data;
-  const pr = tour.data.analysis.pr;
-  // A `comment_item` subject is not in the contracts yet (api/pending.ts): sent as is, a real server refuses it.
-  const send = (body: { text: string; anchor: ChatAnchor; parent_id?: QuestionId }) =>
-    ask.mutateAsync(body as { text: string; anchor: AskAnchor; parent_id?: QuestionId });
+  const { describe, commenting } = source;
+  if (!describe) return <Context.Provider value={control}>{children}</Context.Provider>;
+  const send = (body: AnchoredAskRequest) => source.ask(body);
   const busy = all.some((q) => q.state === "answering");
   return (
     <Context.Provider value={control}>
       {children}
-      <ReviewActivity tour={theTour} questions={questions.data} />
+      {source.activity}
       <p className="sr-only" aria-live="polite">
         {announcement}
       </p>
       {remembered.open ? (
         <AskChat
-          tour={tour.data}
+          describe={describe}
           threads={threadsOf(all.filter((q) => q.mine !== false))}
           subject={subject}
           following={!wholePr}
-          placeWhat={place ? subjectOf(place, tour.data).what : null}
+          placeWhat={place ? describe(place).what : null}
           draft={draft}
           onDraft={(text) => {
             setDraft(text);
@@ -404,21 +501,17 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
             setWholePr(false);
             setChosen(null);
           }}
-          onGoto={(anchor) => void navigate(linkOf(analysisId, anchor, theTour))}
+          onGoto={(anchor) => void navigate(source.linkOf(anchor))}
           onEvidence={(evidence) =>
             actions.current.onEvidence
               ? actions.current.onEvidence(evidence)
               : void navigate(
-                  linkOf(
-                    analysisId,
-                    {
-                      kind: "lines",
-                      path: evidence.file,
-                      side: evidence.side,
-                      range: { start_line: evidence.line, end_line: evidence.line },
-                    },
-                    theTour,
-                  ),
+                  source.linkOf({
+                    kind: "lines",
+                    path: evidence.file,
+                    side: evidence.side,
+                    range: { start_line: evidence.line, end_line: evidence.line },
+                  }),
                 )
           }
           onUseAsComment={
@@ -438,15 +531,11 @@ export function AskChatProvider({ analysisId, children }: { analysisId: Analysis
           size={remembered}
           geometry={box}
           onSize={(size) => remember({ ...remembered, ...size })}
-          about={`your private chat about PR #${pr.number}`}
+          about={source.about}
           unread={marked}
           focusThread={focusThread}
           inputRef={field}
-          notice={
-            stream.lost
-              ? "The connection that delivers answers was lost. Reconnecting; answers already given are read again."
-              : null
-          }
+          notice={source.notice}
         />
       ) : (
         <div ref={launcher}>
