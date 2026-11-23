@@ -108,6 +108,23 @@ describe("QueueList state marks in Needs you (owner 2026-11-23, plan §3.9)", ()
     expectTrustWording(queue.textContent ?? "");
   });
 
+  it("the row's tooltip explains its tags; the tags inside the row's button have no tip of their own", () => {
+    const queue = showQueue();
+    const c14 = within(queue).getByRole("button", { name: /^C14(?!\d)/ });
+    expect(c14.querySelectorAll("[aria-describedby]")).toHaveLength(0);
+    expect(c14).toHaveAccessibleDescription(
+      "Opens this question. GitHub tag: Taken from GitHub as written there. LLM tag: This text was written by the LLM; it was not checked.",
+    );
+    const group = within(queue).getByRole("button", { name: /threat model \(2\)/ });
+    expect(group.querySelectorAll("[aria-describedby]")).toHaveLength(0);
+    expect(group).toHaveAccessibleDescription(
+      "Opens these questions as one group. LLM tag: This text was written by the LLM; it was not checked.",
+    );
+    expect(within(queue).getByRole("button", { name: /^P24(?!\d)/ })).toHaveAccessibleDescription(
+      "Opens this question.",
+    );
+  });
+
   it("an owner's gate mark has no LLM tag; a recommendation to resolve says already fixed in words", () => {
     const items = listItems().map((i) =>
       i.no === 15

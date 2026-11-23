@@ -218,9 +218,11 @@ decides; the owner's `comment` on a decision is an instruction for it and is nev
    `conflict`: the effect already ended (done, failed or cancelled); 400 `invalid_request` for `done` while the
    `after` effect is not done. A `failed` effect cancels the effects that wait for it, your claim on them included.
    `pr_comment` effects of one batch that name the same `review_id` answer one review: post them as one PR-level
-   comment listing their items, and report that comment's link for each. About 10 s after a `done` report
-   diffpilot reads the pull request from GitHub and marks each done effect it finds there (thread resolved, reply
-   or PR-level comment at the reported link, review dismissed) "seen on GitHub".
+   comment listing their items, and report that comment's link for each. The planned text of such an effect starts
+   with a line naming the review (`@<author>, re [your review](<review link>):`, for a bot
+   `Re [<bot>'s review](<review link>):`, no @-mention); the combined comment starts with it once. About 10 s after
+   a `done` report diffpilot reads the pull request from GitHub and marks each done effect it finds there (thread
+   resolved, reply or PR-level comment at the reported link, review dismissed) "seen on GitHub".
 7. **Lease.** A claim not renewed within 30 minutes returns to the feed for any agent.
 8. **Push target (optional).** To be woken without holding a stream:
    `PUT /api/v1/decision-feed/push-target` with `{"kind": "ntfy", "url": "https://ntfy.sh", "topic": "<topic>",
@@ -243,24 +245,38 @@ decides; the owner's `comment` on a decision is an instruction for it and is nev
 pull request branch. Its script `scripts/sr_decisions.py` (Python standard library) uses RF1–RF4 only: `check`,
 `list`, `wait` (RF2 stream, reconnects), `show`, `claim`, `renew`, `text` (an effect's text or a GitHub string,
 byte-exact, in a new file outside the checkout), `combine` (one PR-level comment per review for the `pr_comment`
-effects of claimed decisions) and `report` (one idempotency key per report attempt, reused when the same report is
-sent again; `--verify-head` refuses a fix's `done` unless the pull request head contains the reported commit). Exit
-codes: see `SKILL.md`.
+effects of claimed decisions, the line naming the review once), `footer` (appends the footer to a body the agent
+writes), `resolve` (every review thread of a run in one `gh api graphql` call, done only for threads GitHub returns as
+`isResolved`) and `report` (one idempotency key per report attempt, reused when the same report is sent again;
+`--verify-head` refuses a fix's `done` unless the pull request head contains the reported commit). Exit codes: see
+`SKILL.md`.
 
 1. **Install.** `cp -r tools/skills/diffpilot-decisions ~/.claude/skills/`.
 2. **Token.** Create one with the scopes `read` and `review_loop_execute` (§1). Put `SR_AGENT_KEY=<token>` and
    `SR_URL=<diffpilot base URL>` in `~/envs/diffpilot.env` (mode 0600), or in the file named by
    `SR_DECISIONS_ENV_FILE`: one file and token per agent on a host, since the token's name identifies the agent in
    the decision log. `SR_URL` uses `https`; plain `http` only for localhost or the LAN host named in `SR_HTTP_HOST`.
-   The skill never prints the token or asks for it.
-3. **Run.** In a Claude Code session in that checkout, paste the prompt the pull request page shows:
+   `SR_REPLY_FOOTER` there replaces the attribution footer; an empty value disables it. The skill never prints the
+   token or asks for it.
+3. **Run.** In a Claude Code session in a checkout of the repository, paste the prompt the pull request page shows.
+   It works in the current checkout or worktree when that is on the pull request head branch, else in a worktree
+   on it (created with `gh pr checkout` when none exists, named to the user at the end of the run and removed once
+   it is pushed and clean). It never switches another branch's checkout, and it stops at uncommitted changes or at
+   local commits the pull request head does not have (after `git pull --ff-only`):
 
    ```text
    Use the diffpilot-decisions skill to carry out my decisions on <owner>/<repo>#<number> from diffpilot at <server origin>: subscribe, claim each decision, carry out its effects in this repository's checkout of the PR branch, and report each effect done or failed with the commit or comment link.
    ```
 
-The session claims one decision at a time (the claim covers all its agent effects; decisions whose `pr_comment`
-effects answer one review are claimed together), executes the effects in `seq` order with its own git and `gh`, and
-reports each with its reference. It never decides, never pushes to a base branch, never amends or force-pushes, and
+The session works on one decision at a time; the claim covers all its agent effects. A decision stays claimed past
+its turn only together with the decisions whose `pr_comment` effects answer the same review, or while its `resolve`
+waits for the one batched call at the end of the run (held decisions are renewed with the others). It executes the
+effects in `seq` order with its own git and `gh` and reports each with its reference. It never decides, never pushes to a base branch, never amends or force-pushes, and
 posts the text `text` or `combine` wrote: the effect's text unchanged, a reply or PR-level comment waiting on a fix,
-follow-up PR or upstream issue ending with that effect's reported reference.
+follow-up PR or upstream issue ending with that effect's reported reference. Every reply, PR-level comment,
+follow-up PR body and upstream issue ends with the attribution footer as its last paragraph, after any reference
+line; the reference line and the footer are the only additions. The default footer:
+`<sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>`.
+When the agent's GitHub account may not resolve threads (`FORBIDDEN`), `resolve` exits 8 and prints the one command
+to rerun with elevated rights, so a run needs at most one approval; GitHub's rate limit (HTTP 429, a rate-limit
+message or `Retry-After`) exits 4 with how long to wait instead.

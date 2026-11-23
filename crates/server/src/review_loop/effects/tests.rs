@@ -9,7 +9,9 @@ fn thread(author_kind: AuthorKind) -> EffectItem {
     EffectItem {
         no: 14,
         kind: CommentItemKind::Thread,
+        author: "octo".into(),
         author_kind,
+        url: Some("https://github.com/acme/node-client/pull/482#discussion_r1".into()),
         thread_id: Some("PRRT_1".into()),
         review_id: Some("PRR_1".into()),
         gates: Vec::new(),
@@ -17,11 +19,16 @@ fn thread(author_kind: AuthorKind) -> EffectItem {
     }
 }
 
+/// The page of bob's review h1.
+const H1_URL: &str = "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000105";
+
 fn body_item() -> EffectItem {
     EffectItem {
         no: 9,
         kind: CommentItemKind::ReviewBody,
+        author: "bob".into(),
         author_kind: AuthorKind::Human,
+        url: Some(H1_URL.into()),
         thread_id: None,
         review_id: Some("PRR_h1".into()),
         gates: Vec::new(),
@@ -162,6 +169,9 @@ fn effects_follow_matrix() {
         );
         for effect in &planned.effects {
             if let Some(text) = &effect.params.text {
+                let text = text
+                    .strip_prefix(&format!("@bob, re [your review]({H1_URL}):\n"))
+                    .unwrap_or(text);
                 assert!(
                     text.starts_with("Per maintainer decision"),
                     "{case}: {text}"
@@ -393,7 +403,9 @@ fn pr_level_questions_plan_follow_ups_and_dismissals() {
     let merge = EffectItem {
         no: 20,
         kind: CommentItemKind::PrQuestion,
+        author: "diffpilot".into(),
         author_kind: AuthorKind::Diffpilot,
+        url: None,
         thread_id: None,
         review_id: None,
         gates: Vec::new(),
@@ -444,4 +456,173 @@ fn pr_level_questions_plan_follow_ups_and_dismissals() {
             .effects
             .is_empty()
     );
+}
+
+/// Plan §2.3 (owner, 2026-11-23): a PR-level comment answering a person's review starts with a line naming the review
+/// and its author; the stored reply text is the posted one.
+#[test]
+fn a_pr_level_comment_on_a_persons_review_names_it() {
+    let planned = planned(&body_item(), &request(DecisionKind::FixHere));
+    let expected = format!(
+        "@bob, re [your review]({H1_URL}):\nPer maintainer decision, this is fixed in this pull request."
+    );
+    assert_eq!(planned.effects[1].kind, EffectKind::PrComment);
+    assert_eq!(
+        planned.effects[1].params.text.as_deref(),
+        Some(expected.as_str())
+    );
+    assert_eq!(planned.reply_text.as_deref(), Some(expected.as_str()));
+    let resolved = planned_text(&body_item(), &request(DecisionKind::Resolve));
+    assert_eq!(
+        resolved,
+        format!(
+            "@bob, re [your review]({H1_URL}):\n\
+             Per maintainer decision, this is already addressed in this pull request."
+        )
+    );
+}
+
+/// The text of the reply or PR-level comment `request` plans on `item`.
+fn planned_text(item: &EffectItem, request: &DecideRequest) -> String {
+    planned(item, request)
+        .effects
+        .into_iter()
+        .find_map(|effect| {
+            matches!(effect.kind, EffectKind::Reply | EffectKind::PrComment)
+                .then_some(effect.params.text)?
+        })
+        .expect("a reply")
+}
+
+/// Plan §2.3: a bot's review is named without an @-mention, which would trigger the bot.
+#[test]
+fn a_pr_level_comment_on_a_bots_review_names_it_without_a_mention() {
+    let bot = EffectItem {
+        author: "thepastaclaw".into(),
+        author_kind: AuthorKind::Bot,
+        url: Some(
+            "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000101".into(),
+        ),
+        review_id: Some("PRR_r1".into()),
+        ..body_item()
+    };
+    let text = planned_text(
+        &bot,
+        &DecideRequest {
+            reason: Some("The caller bounds it.".into()),
+            ..request(DecisionKind::Reject)
+        },
+    );
+    assert_eq!(
+        text,
+        "Re [thepastaclaw's review](https://github.com/acme/node-client/pull/482#pullrequestreview-4000000101):\n\
+         Per maintainer decision, not changed: The caller bounds it."
+    );
+    assert!(!text.contains('@'), "{text}");
+}
+
+/// Plan §2.3: the line names the review only on a PR-level comment answering one; an edited reply text (prefilled
+/// with the planned one) is posted as written.
+#[test]
+fn only_a_pr_level_comment_answering_a_review_names_it() {
+    let fix = request(DecisionKind::FixHere);
+    let thread_reply = planned_text(&thread(AuthorKind::Human), &fix);
+    assert_eq!(
+        thread_reply,
+        "Per maintainer decision, this is fixed in this pull request."
+    );
+    let comment = EffectItem {
+        kind: CommentItemKind::PrComment,
+        url: Some("https://github.com/acme/node-client/pull/482#issuecomment-5000000103".into()),
+        review_id: None,
+        ..body_item()
+    };
+    assert_eq!(
+        planned_text(&comment, &fix),
+        "Per maintainer decision, this is fixed in this pull request.",
+        "a PR comment answers no review"
+    );
+    let edited = DecideRequest {
+        reply_text: Some("Thanks, fixed in the retry loop.".into()),
+        ..fix
+    };
+    assert_eq!(
+        planned_text(&body_item(), &edited),
+        "Thanks, fixed in the retry loop."
+    );
+}
+
+/// Plan §2.3 P1: each remaining body item's PR-level comment names its own review.
+#[test]
+fn merge_follow_up_comments_name_their_reviews() {
+    let merge = EffectItem {
+        no: 20,
+        kind: CommentItemKind::PrQuestion,
+        author: "diffpilot".into(),
+        author_kind: AuthorKind::Diffpilot,
+        url: None,
+        thread_id: None,
+        review_id: None,
+        gates: Vec::new(),
+        question: Some(PrQuestion::Merge),
+    };
+    let bot = EffectItem {
+        no: 10,
+        author: "coderabbitai".into(),
+        author_kind: AuthorKind::Bot,
+        url: Some(
+            "https://github.com/acme/node-client/pull/482#pullrequestreview-4000000106".into(),
+        ),
+        review_id: Some("PRR_c1".into()),
+        ..body_item()
+    };
+    let scope = PrScope {
+        number: 482,
+        remaining: vec![body_item(), bot],
+        stale_reviews: Vec::new(),
+    };
+    let p1 = plan(&merge, &request(DecisionKind::MergeWithFollowUps), &scope).expect("P1");
+    let texts: Vec<&str> = p1
+        .effects
+        .iter()
+        .filter_map(|effect| effect.params.text.as_deref())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            format!("@bob, re [your review]({H1_URL}):\n{FOLLOW_UP_REPLY}"),
+            format!(
+                "Re [coderabbitai's review]\
+                 (https://github.com/acme/node-client/pull/482#pullrequestreview-4000000106):\n{FOLLOW_UP_REPLY}"
+            ),
+        ]
+    );
+}
+
+/// Plan §2.5: a carried decision plans again with the stored reply text (`carry_over`), which already starts with the
+/// line naming the review; the line is not added a second time.
+#[test]
+fn a_carried_decision_names_the_review_once() {
+    for kind in [DecisionKind::FixHere, DecisionKind::Resolve] {
+        let first = planned(&body_item(), &request(kind));
+        let carried = DecideRequest {
+            reply_text: first.reply_text.clone(),
+            ..request(kind)
+        };
+        let again = planned(&body_item(), &carried);
+        assert_eq!(again.reply_text, first.reply_text, "{kind:?}");
+        assert_eq!(
+            planned_text(&body_item(), &carried),
+            planned_text(&body_item(), &request(kind)),
+            "{kind:?}"
+        );
+        assert_eq!(
+            again
+                .reply_text
+                .as_deref()
+                .map(|t| t.matches("re [your review]").count()),
+            Some(1),
+            "{kind:?}"
+        );
+    }
 }

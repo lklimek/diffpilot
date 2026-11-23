@@ -103,6 +103,11 @@ def done(eff: dict, reference: str) -> dict:
 
 
 SHA = "c" * 40
+FOOTER = "<sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>"
+
+
+def signed(*paragraphs: str) -> str:
+    return "\n\n".join([*paragraphs, FOOTER])
 
 
 def fix_effects(state="open"):
@@ -699,7 +704,7 @@ def test_text_writes_the_exact_effect_text_to_a_new_private_file(env, fake, caps
     target = env["tmp"] / "reply.md"
     code, out, _ = run(capsys, "text", DEC, E2, "--out", str(target))
     assert code == 0
-    assert target.read_bytes() == REPLY.encode()
+    assert target.read_bytes() == signed(REPLY).encode()
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert str(target) in out
 
@@ -714,7 +719,7 @@ def test_text_without_out_writes_a_private_temporary_file(env, fake, capsys, mon
     assert code == 0
     [written] = list(scratch.iterdir())
     assert str(written) in out
-    assert written.read_bytes() == REPLY.encode()
+    assert written.read_bytes() == signed(REPLY).encode()
     assert stat.S_IMODE(written.stat().st_mode) == 0o600
 
 
@@ -774,10 +779,10 @@ def test_text_appends_the_reported_commit_to_a_reply_waiting_on_a_fix(env, fake,
     target = env["tmp"] / "reply.md"
     code, _, errout = run(capsys, "text", DEC, E2, "--out", str(target))
     assert code == 0, errout
-    assert target.read_text(encoding="utf-8") == REPLY + "\n\n" + SHA
+    assert target.read_text(encoding="utf-8") == signed(REPLY, SHA)
     other = env["tmp"] / "reply2.md"
     assert run(capsys, "text", DEC, E2, "--reference", SHA, "--out", str(other))[0] == 0
-    assert other.read_text(encoding="utf-8") == REPLY + "\n\n" + SHA
+    assert other.read_text(encoding="utf-8") == signed(REPLY, SHA)
 
 
 def test_text_refuses_a_reference_other_than_the_reported_one(env, fake, capsys):
@@ -805,7 +810,7 @@ def test_text_skips_a_reference_the_text_already_contains(env, fake, capsys):
     fake.on("GET", decision_path(), (200, {}, feed_decision(effects=effects)))
     target = env["tmp"] / "reply.md"
     assert run(capsys, "text", DEC, E2, "--out", str(target))[0] == 0
-    assert target.read_text(encoding="utf-8") == text
+    assert target.read_text(encoding="utf-8") == signed(text)
 
 
 def test_text_adds_no_reference_after_a_todo(env, fake, capsys):
@@ -814,7 +819,7 @@ def test_text_adds_no_reference_after_a_todo(env, fake, capsys):
     fake.on("GET", decision_path(), (200, {}, feed_decision(effects=effects)))
     target = env["tmp"] / "reply.md"
     assert run(capsys, "text", DEC, E2, "--out", str(target))[0] == 0
-    assert target.read_text(encoding="utf-8") == text
+    assert target.read_text(encoding="utf-8") == signed(text)
     code, _, errout = run(capsys, "text", DEC, E2, "--reference", "memcan-todo-1", "--out", str(env["tmp"] / "x.md"))
     assert code == 2 and "no reference" in errout
 
@@ -826,7 +831,7 @@ def test_text_appends_the_follow_up_link_to_a_pr_level_comment(env, fake, capsys
     fake.on("GET", decision_path(), (200, {}, feed_decision(effects=effects)))
     target = env["tmp"] / "comment.md"
     assert run(capsys, "text", DEC, E2, "--out", str(target))[0] == 0
-    assert target.read_text(encoding="utf-8") == text + "\n\n" + link
+    assert target.read_text(encoding="utf-8") == signed(text, link)
 
 
 @pytest.mark.parametrize("argv", [[E3, "--reference", SHA], [E2, "--field", "title", "--reference", SHA]])
@@ -834,6 +839,80 @@ def test_text_reference_only_for_the_text_of_a_waiting_reply(env, fake, capsys, 
     fake.on("GET", decision_path(), (200, {}, reject_decision()))
     code, _, errout = run(capsys, "text", DEC, *argv, "--out", str(env["tmp"] / "x.md"))
     assert code == 2 and "no reference" in errout
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("SR_REPLY_FOOTER=-- posted by the bot", "-- posted by the bot"),
+        ("SR_REPLY_FOOTER='Agent: x'", "Agent: x"),
+        ("SR_REPLY_FOOTER=", None),
+    ],
+)
+def test_the_footer_comes_from_the_env_file_and_an_empty_value_disables_it(env, fake, capsys, line, expected):
+    write_env(env, fake.url, line)
+    fake.on("GET", decision_path(), (200, {}, reject_decision()))
+    target = env["tmp"] / "reply.md"
+    assert run(capsys, "text", DEC, E2, "--out", str(target))[0] == 0
+    assert target.read_text(encoding="utf-8") == (REPLY if expected is None else f"{REPLY}\n\n{expected}")
+
+
+def test_text_adds_the_footer_once(env, fake, capsys):
+    fake.on("GET", decision_path(), (200, {}, reject_decision(text=signed(REPLY))))
+    target = env["tmp"] / "reply.md"
+    assert run(capsys, "text", DEC, E2, "--out", str(target))[0] == 0
+    assert target.read_text(encoding="utf-8") == signed(REPLY)
+
+
+def test_a_dismissal_message_gets_no_footer(env, fake, capsys):
+    message = "Per maintainer decision, every item of this review is decided."
+    fd = feed_decision(effects=[effect(E1, 1, "dismiss_review", text=message, thread=None, review="PRR_a")])
+    fake.on("GET", decision_path(), (200, {}, fd))
+    target = env["tmp"] / "dismiss.md"
+    assert run(capsys, "text", DEC, E1, "--out", str(target))[0] == 0
+    assert target.read_text(encoding="utf-8") == message
+
+
+def test_a_footer_with_control_characters_is_a_configuration_error(env, fake, capsys):
+    write_env(env, fake.url, "SR_REPLY_FOOTER=bad\x1b[2J")
+    code, _, errout = run(capsys, "footer")
+    assert code == 2 and "SR_REPLY_FOOTER" in errout
+
+
+def test_footer_prints_the_footer_and_appends_it_to_the_agents_own_file_once(env, fake, capsys):
+    code, out, _ = run(capsys, "footer")
+    assert code == 0 and FOOTER in out
+    body = env["tmp"] / "follow-up.md"
+    body.write_text("Follow-up of #482: C3, C5.\n", encoding="utf-8")
+    assert run(capsys, "footer", "--append", str(body))[0] == 0
+    assert run(capsys, "footer", "--append", str(body))[0] == 0
+    assert body.read_text(encoding="utf-8") == "Follow-up of #482: C3, C5.\n\n" + FOOTER
+    assert fake.requests == []
+
+
+def test_footer_append_refuses_a_file_in_a_git_work_tree_a_symlink_or_a_missing_file(env, fake, capsys):
+    checkout = env["tmp"] / "checkout"
+    checkout.mkdir()
+    (checkout / ".git").mkdir()
+    inside = checkout / "body.md"
+    inside.write_text("x")
+    real = env["tmp"] / "real.md"
+    real.write_text("x")
+    link = env["tmp"] / "link.md"
+    link.symlink_to(real)
+    for path in (inside, link, env["tmp"] / "missing.md"):
+        code, _, errout = run(capsys, "footer", "--append", str(path))
+        assert code == 2, errout
+    assert inside.read_text() == "x" and real.read_text() == "x"
+
+
+def test_footer_append_with_the_footer_disabled_changes_nothing(env, fake, capsys):
+    write_env(env, fake.url, "SR_REPLY_FOOTER=")
+    body = env["tmp"] / "b.md"
+    body.write_text("text")
+    code, out, _ = run(capsys, "footer", "--append", str(body))
+    assert code == 0 and "disabled" in out
+    assert body.read_text() == "text"
 
 
 def test_text_of_an_effect_without_text_or_of_another_decision_exits_2(env, fake, capsys):
@@ -886,11 +965,47 @@ def test_combine_claims_each_decision_and_writes_one_comment_for_one_review(env,
     target = env["tmp"] / "comment.md"
     code, out, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
     assert code == 0, errout
-    assert target.read_text(encoding="utf-8") == f"C3: Fixed.\n\n{SHA}\n\nC5: Not changed."
+    assert target.read_text(encoding="utf-8") == signed(f"C3: Fixed.\n\n{SHA}\n\nC5: Not changed.")
     assert E1 in out and E2 in out
     claims = [r for r in fake.requests if r["method"] == "POST"]
     assert [r["path"] for r in claims] == [claim_path(DEC), claim_path(DEC2)]
     assert all(r["body"] == {"capabilities": ALL_KINDS.split(",")} for r in claims)
+
+
+def test_combine_names_the_review_once(env, fake, capsys):
+    line = "@bob, re [your review](https://github.com/acme/widget/pull/482#pullrequestreview-4000000105):"
+    serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, f"{line}\nNot changed."))
+    serve_claimed(fake, DEC2, review_comment_decision(DEC2, 3, E2, f"{line}\nFixed.", after_fix=SHA))
+    target = env["tmp"] / "comment.md"
+    code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
+    assert code == 0, errout
+    assert target.read_text(encoding="utf-8") == signed(f"{line}\nC3: Fixed.\n\n{SHA}\n\nC5: Not changed.")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "@bob, re [your review](https://github.com/acme/widget/pull/482):",
+        "Re [dependabot[bot]'s review](https://github.com/acme/widget/pull/482#pullrequestreview-7):",
+    ],
+)
+def test_combine_names_the_review_once_whatever_its_link(env, fake, capsys, line):
+    serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, f"{line}\nNot changed."))
+    serve_claimed(fake, DEC2, review_comment_decision(DEC2, 3, E2, f"{line}\nFixed."))
+    target = env["tmp"] / "comment.md"
+    code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
+    assert code == 0, errout
+    assert target.read_text(encoding="utf-8") == signed(f"{line}\nC3: Fixed.\n\nC5: Not changed.")
+
+
+def test_combine_names_the_review_once_beside_an_edited_text_without_the_line(env, fake, capsys):
+    line = "Re [thepastaclaw's review](https://github.com/acme/widget/pull/482#pullrequestreview-4000000101):"
+    serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, "Thanks, not changed."))
+    serve_claimed(fake, DEC2, review_comment_decision(DEC2, 3, E2, f"{line}\nFixed."))
+    target = env["tmp"] / "comment.md"
+    code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
+    assert code == 0, errout
+    assert target.read_text(encoding="utf-8") == signed(f"{line}\nC3: Fixed.\n\nC5: Thanks, not changed.")
 
 
 def test_combine_writes_one_comment_per_review_of_a_merge_decision(env, fake, capsys, monkeypatch):
@@ -915,8 +1030,8 @@ def test_combine_writes_one_comment_per_review_of_a_merge_decision(env, fake, ca
     assert code == 0, errout
     bodies = sorted(p.read_text(encoding="utf-8") for p in scratch.iterdir())
     assert bodies == [
-        f"C3: {reply}\n\n{link}\n\nC5: {reply}\n\n{link}",
-        f"C4: {reply}\n\n{link}",
+        signed(f"C3: {reply}\n\n{link}\n\nC5: {reply}\n\n{link}"),
+        signed(f"C4: {reply}\n\n{link}"),
     ]
     lines = out.splitlines()
     group_a = next(line for line in lines if "PRR_a" in line)
@@ -1107,7 +1222,11 @@ def fake_gh(env, monkeypatch):
         'case "$1" in\n'
         '  pr) [ -n "$FAKE_GH_VIEW_FAIL" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }\n'
         '      pick "$FAKE_GH_HEAD" "$n" ;;\n'
-        '  api) case "$FAKE_GH_API_FAIL" in\n'
+        '  api) if [ "$2" = graphql ]; then\n'
+        '        [ -n "$FAKE_GH_GRAPHQL_STDERR" ] && printf \'%s\\n\' "$FAKE_GH_GRAPHQL_STDERR" >&2\n'
+        '        printf \'%s\\n\' "$FAKE_GH_GRAPHQL"; exit "${FAKE_GH_GRAPHQL_EXIT:-0}"\n'
+        "      fi\n"
+        '      case "$FAKE_GH_API_FAIL" in\n'
         '        404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;\n'
         '        ?*) echo "gh: Server Error (HTTP 502)" >&2; exit 1 ;;\n'
         "      esac\n"
@@ -1336,6 +1455,153 @@ def test_symlinked_state_dir_is_refused(env, fake, capsys):
     assert fake.requests == []
 
 
+# ---------- resolve (one GraphQL call) ----------
+
+T1, T2 = "PRRT_kwDOAbc1", "PRRT_kwDOAbc2"
+RESOLVE_QUERY = (
+    "mutation($t0:ID!,$t1:ID!){"
+    "r0:resolveReviewThread(input:{threadId:$t0}){thread{id,isResolved}},"
+    "r1:resolveReviewThread(input:{threadId:$t1}){thread{id,isResolved}}}"
+)
+
+
+def gh_include(status: int, body: str, headers: dict | None = None) -> str:
+    """What `gh api --include` prints: status line, CRLF headers, blank CRLF line, body."""
+    reason = {200: "OK", 403: "Forbidden", 429: "Too Many Requests"}[status]
+    lines = "".join(
+        f"{name}: {value}\r\n" for name, value in {"Content-Type": "application/json", **(headers or {})}.items()
+    )
+    return f"HTTP/2.0 {status} {reason}\n{lines}\r\n{body}"
+
+
+def graphql(data: dict | None, errors: list | None = None, status: int = 200, headers: dict | None = None) -> str:
+    return gh_include(status, json.dumps({"data": data, **({"errors": errors} if errors else {})}), headers)
+
+
+SECONDARY = (
+    "You have exceeded a secondary rate limit. Please wait a few minutes before you try again. "
+    "If you reach out to GitHub Support for help, please include the request ID 0000:1111."
+)
+
+
+def resolved(thread: str, ok: bool = True) -> dict:
+    return {"thread": {"id": thread, "isResolved": ok}}
+
+
+def test_resolve_runs_one_graphql_call_with_the_thread_ids_as_variables(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_GRAPHQL", graphql({"r0": resolved(T1), "r1": resolved(T2)}))
+    code, out, errout = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", T1, T2, T1)
+    assert code == 0, errout
+    [call] = gh_calls(fake_gh)
+    assert call.split() == [
+        "api",
+        "graphql",
+        "--include",
+        "-f",
+        f"query={RESOLVE_QUERY}",
+        "-f",
+        f"t0={T1}",
+        "-f",
+        f"t1={T2}",
+    ]
+    assert f"resolved {T1}" in out and f"resolved {T2}" in out
+    assert fake.requests == []
+
+
+def test_resolve_forbidden_exits_8_naming_the_same_command_for_ghsudo(env, fake, capsys, fake_gh, monkeypatch):
+    errors = [
+        {"type": "FORBIDDEN", "path": ["r0"], "message": "Resource not accessible by integration"},
+        {"type": "FORBIDDEN", "path": ["r1"], "message": "Resource not accessible by integration"},
+    ]
+    monkeypatch.setenv("FAKE_GH_GRAPHQL", graphql({"r0": None, "r1": None}, errors))
+    monkeypatch.setenv("FAKE_GH_GRAPHQL_EXIT", "1")
+    code, out, errout = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", T1, T2)
+    assert code == 8
+    assert f"ghsudo --org dashpay python3 {sr_decisions.__file__}" in errout
+    assert f"resolve --repo dashpay/rust-dashcore {T1} {T2}" in errout
+    assert "resolved" not in out
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        graphql(None, [{"type": "FORBIDDEN", "message": "Resource not accessible by integration"}]),
+        gh_include(403, json.dumps({"message": "Resource not accessible by integration"})),
+        "",
+    ],
+)
+def test_resolve_forbidden_without_data_or_as_http_403_exits_8(env, fake, capsys, fake_gh, monkeypatch, answer):
+    monkeypatch.setenv("FAKE_GH_GRAPHQL", answer)
+    monkeypatch.setenv("FAKE_GH_GRAPHQL_EXIT", "1")
+    monkeypatch.setenv("FAKE_GH_GRAPHQL_STDERR", "gh: Resource not accessible by integration (HTTP 403)")
+    code, out, errout = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", T1)
+    assert code == 8 and "ghsudo" in errout
+    assert "resolved" not in out
+
+
+def test_resolve_reports_each_thread_and_exits_4_on_another_failure(env, fake, capsys, fake_gh, monkeypatch):
+    errors = [{"type": "NOT_FOUND", "path": ["r1"], "message": "Could not resolve to a node"}]
+    monkeypatch.setenv("FAKE_GH_GRAPHQL", graphql({"r0": resolved(T1), "r1": None}, errors))
+    monkeypatch.setenv("FAKE_GH_GRAPHQL_EXIT", "1")
+    code, out, errout = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", T1, T2)
+    assert code == 4
+    assert f"resolved {T1}" in out and f"resolved {T2}" not in out
+    assert T2 in errout and "NOT_FOUND" in errout
+
+
+def test_resolve_counts_only_threads_github_shows_resolved(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_GRAPHQL", graphql({"r0": resolved(T1), "r1": resolved(T2, ok=False)}))
+    code, out, errout = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", T1, T2)
+    assert code == 4
+    assert f"resolved {T2}" not in out and T2 in errout
+
+
+@pytest.mark.parametrize(
+    ("answer", "stderr"),
+    [
+        (gh_include(403, json.dumps({"message": SECONDARY})), f"gh: {SECONDARY} (HTTP 403)"),
+        ("", f"gh: {SECONDARY} (HTTP 403)"),
+        (gh_include(429, json.dumps({"message": "Too many requests"}), {"Retry-After": "60"}), "gh: x (HTTP 429)"),
+        (gh_include(403, json.dumps({"message": "Forbidden"}), {"Retry-After": "60"}), "gh: Forbidden (HTTP 403)"),
+        (graphql(None, [{"type": "RATE_LIMITED", "message": "API rate limit exceeded for user ID 1."}]), "gh: x"),
+    ],
+)
+def test_resolve_on_a_rate_limit_exits_4_to_wait_without_ghsudo(
+    env, fake, capsys, fake_gh, monkeypatch, answer, stderr
+):
+    monkeypatch.setenv("FAKE_GH_GRAPHQL", answer)
+    monkeypatch.setenv("FAKE_GH_GRAPHQL_EXIT", "1")
+    monkeypatch.setenv("FAKE_GH_GRAPHQL_STDERR", stderr)
+    code, out, errout = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", T1, T2)
+    assert code == 4
+    assert "rate limit" in errout and "wait" in errout and f"resolve --repo dashpay/rust-dashcore {T1} {T2}" in errout
+    assert "ghsudo" not in errout and "resolved" not in out
+    if "Retry-After" in answer:
+        assert "60 s" in errout
+
+
+@pytest.mark.parametrize("answer", ["not json", "[]", json.dumps({"data": None}), gh_include(200, "not json")])
+def test_resolve_on_an_unreadable_answer_exits_4(env, fake, capsys, fake_gh, monkeypatch, answer):
+    monkeypatch.setenv("FAKE_GH_GRAPHQL", answer)
+    code, out, errout = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", T1)
+    assert code == 4 and "gh" in errout
+    assert "resolved" not in out
+
+
+@pytest.mark.parametrize("ids", [["PRRT_a;rm -rf ~"], ["$(id)"], [f"PRRT_{n}" for n in range(101)]])
+def test_resolve_refuses_bad_or_too_many_ids_without_calling_gh(env, fake, capsys, fake_gh, ids):
+    code, _, _ = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", *ids)
+    assert code == 2
+    assert gh_calls(fake_gh) == []
+
+
+def test_resolve_needs_no_diffpilot_token(env, fake, capsys, fake_gh, monkeypatch):
+    env["env_file"].unlink()
+    monkeypatch.setenv("FAKE_GH_GRAPHQL", graphql({"r0": resolved(T1)}))
+    code, out, errout = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", T1)
+    assert code == 0, errout
+
+
 # ---------- wait (SSE) ----------
 
 
@@ -1521,3 +1787,16 @@ def test_combine_as_the_skill_writes_it_claims_with_capabilities_covering_pr_com
     claims = [r for r in fake.requests if r["method"] == "POST"]
     assert claims or code == 2, errout
     assert all("pr_comment" in r["body"]["capabilities"] for r in claims)
+
+
+def test_footer_append_refuses_a_symlinked_parent_that_leads_into_a_git_work_tree(env, fake, capsys):
+    checkout = env["tmp"] / "checkout"
+    (checkout / "docs").mkdir(parents=True)
+    (checkout / ".git").write_text("gitdir: /elsewhere\n")
+    tracked = checkout / "docs" / "body.md"
+    tracked.write_text("x")
+    link = env["tmp"] / "outside"
+    link.symlink_to(checkout / "docs")
+    code, _, errout = run(capsys, "footer", "--append", str(link / "body.md"))
+    assert code == 2 and "git work tree" in errout
+    assert tracked.read_text() == "x"

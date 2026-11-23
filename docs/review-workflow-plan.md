@@ -161,6 +161,11 @@ A = an external agent; E = an external agent in phases 1–2, diffpilot[bot] in 
 - **Gate items** (gate from the assessment or marked by the owner; G-FUNDS, G-SECRET, G-CRYPTO, G-DATA): never
   grouped, never in "Decide the rest", and on the table page their select starts empty (RQ4, RQ5, RQ21).
 - **Body and PR-comment items** have no thread: replies go into one PR-level comment per source review.
+- **Naming the review (owner, 2026-11-23):** the planned text of a PR-level comment answering a review starts with a
+  line naming it: `@<author>, re [your review](https://github.com/<o>/<n>/pull/<num>#pullrequestreview-<id>):` for a
+  person, `Re [<bot>'s review](…):` for a bot (no @-mention: it would trigger the bot). The preview and the stored
+  reply text show it as posted; an edited reply text (prefilled with the planned one) is posted as written. A comment
+  combining several items of one review starts with the line once.
 - Effects carry `seq` and `after` (a reply after a fix waits for the fix's commit); replies are English and say "per
   maintainer decision" (WM §6.5); a superseding decision cancels effects not yet claimed and lists done ones.
 
@@ -365,7 +370,8 @@ targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe 
   severity words with the GitHub tag (red outline for "Blocking"); the LLM's recommendation "recommends Fix here" with
   the LLM tag, dashed, coloured by what it asks (amber: fix here; teal: resolve, already fixed; grey: reject; blue:
   handled elsewhere, follow-up, upstream, TODO), never the green of a fact badge. Marks are not focusable (inside the
-  row's button); the axe sweeps check their contrast in both themes.
+  row's button) and their tags have no tooltip of their own: the row's tooltip says what it opens and what each of its
+  tags means; the axe sweeps check their contrast in both themes.
 - **State badges** (one per PR, on the watched list, the PR page and the Comments header), each colour
   paired with an icon and a text label, contrast ≥ 4.5:1 in both themes; first match wins:
 

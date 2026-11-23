@@ -225,7 +225,8 @@ impl Prepass {
 
     /// `files` with only the hunks given to the agent, without the lines that are context (see
     /// [`Prepass::context`]); a hunk the pre-pass does not know stays (only a deterministic rule takes material out).
-    /// Files left without hunks are dropped.
+    /// A context-only hunk ([`Prepass::context_only_hunks`]) stays without lines: no prompt lists it, so its blank
+    /// lines are no one's duty. Files left without hunks are dropped.
     pub fn agent_files(&self, files: &[FileDiff]) -> Vec<FileDiff> {
         let quiet: BTreeSet<&HunkId> = self
             .hunks
@@ -233,6 +234,7 @@ impl Prepass {
             .filter(|hunk| hunk.disposition != Disposition::Agent)
             .map(|hunk| &hunk.id)
             .collect();
+        let context_only = self.context_only_hunks(files);
         let context = self.context();
         let covered = |side: LineSide, path: Option<&str>, line: u32| {
             path.and_then(|path| context.get(&(side, path.to_owned())))
@@ -247,6 +249,11 @@ impl Prepass {
                     .filter(|hunk| !quiet.contains(&hunk.id))
                     .map(|hunk| {
                         let mut hunk = hunk.clone();
+                        if context_only.contains(&hunk.id) {
+                            hunk.added.clear();
+                            hunk.removed.clear();
+                            return hunk;
+                        }
                         let (head, base) =
                             (file.path_on(LineSide::Head), file.path_on(LineSide::Base));
                         hunk.added

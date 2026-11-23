@@ -30,7 +30,7 @@ export function RoundsTable({ rounds, prNumber }: { rounds: Round[]; prNumber: n
               Finished
             </th>
             <th scope="col" className={TH}>
-              Bot verdict <ProvenanceTag source="github" focusable={false} />
+              Bot verdict <ProvenanceTag source="github" />
             </th>
             {[
               "New",

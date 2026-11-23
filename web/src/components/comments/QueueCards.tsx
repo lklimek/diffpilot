@@ -174,7 +174,7 @@ export function GroupCard({
               Comment
             </th>
             <th scope="col" className="border-b border-border px-2 py-1">
-              LLM assessment <ProvenanceTag source="llm" focusable={false} />
+              LLM assessment <ProvenanceTag source="llm" />
             </th>
             <th scope="col" className="border-b border-border px-2 py-1">
               <span className="sr-only">Action</span>
@@ -376,7 +376,7 @@ export function DecideRestCard({
               </th>
             ))}
             <th scope="col" className="border-b border-border px-2 py-1">
-              Recommendation <ProvenanceTag source="llm" focusable={false} />
+              Recommendation <ProvenanceTag source="llm" />
             </th>
             <th scope="col" className="border-b border-border px-2 py-1">
               Effects

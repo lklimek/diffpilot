@@ -50,6 +50,9 @@ function previewOf(no: number, req: DecideRequest) {
   if (isRefused(result)) throw new Error(result[2]);
   return result[0]!.effects;
 }
+/** C23's review and the line naming it (effects.rs `EffectItem::on_review`). */
+const C23_URL = "https://github.com/acme/node-client/pull/482#pullrequestreview-77";
+const C23_LINE = `@octo-reviewer, re [your review](${C23_URL}):`;
 const REVIEWS_CHANGED =
   "the reviews this question lists changed since it was asked; keep the reviews, the next round asks again";
 
@@ -115,6 +118,16 @@ describe("mock effect function (effects.rs plan)", () => {
     expect(p.reply_text).toBe("Edited.");
   });
 
+  it("a PR-level comment answering a review names it: a person by an @-mention, a bot without one", () => {
+    const fixed = "Per maintainer decision, this is fixed in this pull request.";
+    expect(planned(byNo(23), request("fix_here")).reply_text).toBe(`${C23_LINE}\n${fixed}`);
+    const bot = { ...byNo(23), author: "coderabbitai", author_kind: "bot" as const };
+    expect(planned(bot, request("fix_here")).effects[1]!.params.text).toBe(
+      `Re [coderabbitai's review](${C23_URL}):\n${fixed}`,
+    );
+    expect(planned(byNo(22), request("fix_here")).reply_text).toBe(fixed);
+  });
+
   it("refuses this PR as the other PR and a TODO without title", () => {
     const item = byNo(22);
     expect(
@@ -135,7 +148,7 @@ describe("mock effect function (effects.rs plan)", () => {
     expect(p1.effects[0]!.params.item_nos).toEqual([22, 23]);
     expect(p1.effects.filter((e) => e.params.text !== null).map((e) => [e.kind, e.params.text])).toEqual([
       ["reply", "Per maintainer decision, this moves to a follow-up pull request."],
-      ["pr_comment", "Per maintainer decision, this moves to a follow-up pull request."],
+      ["pr_comment", `${C23_LINE}\nPer maintainer decision, this moves to a follow-up pull request.`],
     ]);
     const dismiss = { ...merge, stable_key: "pr:3:dismiss" };
     expect(planned(dismiss, request("dismiss_stale_reviews")).effects[0]!.params.text).toBe(DISMISS_MESSAGE);

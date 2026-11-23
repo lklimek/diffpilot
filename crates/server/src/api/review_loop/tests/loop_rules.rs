@@ -909,3 +909,48 @@ async fn a_repeated_done_report_reads_github_again() {
     )
     .await;
 }
+
+/// Plan §2.3 (owner, 2026-11-23): the PR-level comment answering a review starts with a line naming it, a person by
+/// an @-mention and a bot without one; the RC16 preview shows the text the decision stores and agents post.
+#[tokio::test]
+async fn pr_level_comments_name_the_review_they_answer() {
+    let w = world().await;
+    let latest_r2: &dyn Fn(&mut Value) = &without_r5;
+    serve(&w.server, &[("reviews.json", latest_r2)]).await;
+    w.get(&format!("{PR}/comments")).await;
+    let review = "https://github.com/acme/node-client/pull/482#pullrequestreview-";
+    for (key, line) in [
+        (
+            "review:PRR_fixture482_h1:1",
+            format!("@bob, re [your review]({review}4000000105):"),
+        ),
+        (
+            R1_BODY,
+            format!("Re [thepastaclaw's review]({review}4000000101):"),
+        ),
+    ] {
+        let item = w.item(key).await;
+        let mut row = decision("fix_here");
+        row["item_no"] = item["no"].clone();
+        row["item_revision"] = item["revision"].clone();
+        let (status, preview) = w
+            .post(
+                &format!("{PR}/comments/effects-preview"),
+                json!({"rows": [row]}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        let previewed = &preview[0]["effects"][1]["params"]["text"];
+        assert_eq!(
+            previewed,
+            &json!(format!(
+                "{line}\nPer maintainer decision, this is fixed in this pull request."
+            )),
+            "{preview}"
+        );
+        let decided = w.decide_ok(key, decision("fix_here")).await;
+        assert_eq!(decided["effects"][1]["kind"], "pr_comment");
+        assert_eq!(&decided["effects"][1]["params"]["text"], previewed);
+        assert_eq!(&decided["reply_text"], previewed);
+    }
+}

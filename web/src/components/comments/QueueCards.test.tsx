@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Planned, type Plan } from "../../__tests__/planned";
+import { expectTagsWithTips } from "../../__tests__/provenance";
 import { expectTrustWording } from "../../__tests__/wording";
 import type { CommentItem, DecisionBatchRow, PlannedEffect } from "../../api/generated/types";
 import { decideRestList, listItems, resetReviewLoop } from "../../mocks/review-loop";
@@ -68,6 +69,11 @@ describe("GroupCard (US5)", () => {
     const rows = onDecide.mock.calls[0]![0];
     expect(rows.map((r: { item_no: number }) => r.item_no)).toEqual([18, 19]);
     expect(rows[0]).toMatchObject({ kind: "reject", resolve_ticked: true });
+  });
+
+  it("the LLM tag of the assessment column header takes keyboard focus and shows its tip (brief §4 rule 3)", () => {
+    showGroup();
+    expectTagsWithTips(screen.getByRole("columnheader", { name: /^LLM assessment/ }), 1);
   });
 
   it("keys: s skips and Enter decides the group, as its tooltips say (plan §3.8)", () => {
@@ -287,6 +293,11 @@ describe("DecideRestCard (US7)", () => {
     );
     return onConfirm;
   };
+
+  it("the LLM tag of the recommendation column header takes keyboard focus and shows its tip (brief §4 rule 3)", () => {
+    showRest();
+    expectTagsWithTips(screen.getByRole("columnheader", { name: /^Recommendation/ }), 1);
+  });
 
   it.each(UNFIT)("%s: Apply stores nothing; the reason is announced", async (_, preview, reason) => {
     const onConfirm = showRest(preview);
@@ -511,6 +522,19 @@ describe("CommentsTable (US8, US27)", () => {
     render(table(listItems(), onSubmit));
     return onSubmit;
   };
+
+  it("the LLM tags of its column headers take keyboard focus and show their tips (brief §4 rule 3)", () => {
+    show();
+    const tagged = screen
+      .getAllByRole("columnheader")
+      .filter((header) => header.querySelector("[data-provenance]"));
+    expect(tagged.map((header) => header.firstChild?.textContent?.trim())).toEqual([
+      "Scope",
+      "Opinion",
+      "Recommendation",
+    ]);
+    for (const header of tagged) expectTagsWithTips(header, 1);
+  });
 
   it("a read that changes an item keeps typed rows; the changed row needs a look", async () => {
     const onSubmit = vi.fn();

@@ -853,7 +853,9 @@ fn effect_item(record: &ItemRecord, snapshot: &Snapshot, gates: &[Gate]) -> Effe
     EffectItem {
         no: record.no,
         kind: record.kind,
+        author: record.author.clone(),
         author_kind: record.author_kind,
+        url: record.url.clone(),
         thread_id: snapshot
             .thread_ids
             .get(&record.stable_key)
