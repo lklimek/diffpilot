@@ -15,6 +15,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
+use contracts::agent::pr_context::PrContextOutput;
 use contracts::agent::verify_comments::{
     EarlierDecision, InputError, ItemQuestion, ThreadEntry, VerifyCommentsInput, VerifyItem,
 };
@@ -31,6 +32,7 @@ use contracts::job::spec::{
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
+use db::repo::documents::DocumentKind;
 use db::repo::jobs::JobStage;
 use db::repo::questions::QuestionRecord;
 use db::repo::review_loop::{
@@ -47,6 +49,7 @@ use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::model::{ModelContext, select_model};
 use crate::pipeline::CREDENTIAL_ID;
+use crate::prompts;
 use crate::state::AppState;
 
 /// Items one `verify_comments` job assesses at most (plan §4.2).
@@ -58,7 +61,7 @@ pub const PASS_SPACING: SignedDuration = SignedDuration::from_mins(10);
 // TODO(S13-3): calibrate against real Codex runs (tokens and runtime per pass) once the spike is approved.
 pub const DAILY_PASSES_PER_USER: u32 = 30;
 /// Version of `prompts/verify_comments.md` with the output schema, stored with every assessment.
-pub const VERIFY_PROMPT_VERSION: u32 = 1;
+pub const VERIFY_PROMPT_VERSION: u32 = 2;
 /// The window of the daily cap.
 const DAY: SignedDuration = SignedDuration::from_hours(24);
 
@@ -116,6 +119,9 @@ pub enum AssessError {
     /// The job input could not be built.
     #[error("the verify_comments input could not be built")]
     Input(#[from] InputError),
+    /// The shared rules of the prompt could not be rendered.
+    #[error("the verify_comments prompt could not be rendered")]
+    Prompt(#[from] prompts::PromptError),
     /// The output schema could not be generated.
     #[error("the verify_comments output schema could not be generated")]
     Schema(#[from] StrictSchemaError),
@@ -136,15 +142,28 @@ pub async fn request_pass(
     pr: i64,
     reason: PassReason,
 ) -> Result<PassQueued, AssessError> {
-    request(state, pr, reason, false).await
+    request(state, pr, reason, false, None).await
 }
 
-/// [`request_pass`]; `continuation` (the rest of a detection after a pass) skips the spacing, never the cap.
+/// [`request_pass`] of an on-demand pass caused by `user`, who is charged with it: on-demand passes count toward
+/// the daily cap that stops automatic passes (plan §2.8) and still run when it is reached.
+pub async fn request_pass_for(
+    state: &AppState,
+    pr: i64,
+    reason: PassReason,
+    user: &str,
+) -> Result<PassQueued, AssessError> {
+    request(state, pr, reason, false, Some(user)).await
+}
+
+/// [`request_pass`]; `continuation` (the rest of a detection after a pass) skips the spacing, never the cap; `by`
+/// is the user charged with an on-demand pass.
 async fn request(
     state: &AppState,
     pr: i64,
     reason: PassReason,
     continuation: bool,
+    by: Option<&str>,
 ) -> Result<PassQueued, AssessError> {
     let db = &state.db;
     let Some(pr_state) = db.review_loop().pr_state(pr).await? else {
@@ -177,7 +196,9 @@ async fn request(
             Charge::DailyLimit => return Ok(PassQueued::DailyLimit),
             Charge::NoWatcher => return Ok(PassQueued::Skipped),
         },
-        PassReason::Opened | PassReason::NewComments | PassReason::AssessAgain(_) => (None, None),
+        PassReason::Opened | PassReason::NewComments | PassReason::AssessAgain(_) => {
+            (by.map(str::to_owned), None)
+        }
     };
     let items = db.review_loop().items(pr).await?;
     // The one item a question or "Assess again" pass sends, whatever its stored assessment.
@@ -191,6 +212,12 @@ async fn request(
             }),
     };
     let head = &record.pr.head_sha;
+    let description = pr_state
+        .github_snapshot
+        .clone()
+        .and_then(|value| serde_json::from_value::<super::observe::Snapshot>(value).ok())
+        .and_then(|snapshot| snapshot.description);
+    let purpose = purpose_hash(&record.pr.title, description.as_deref());
     let mut code = CodeReader::new(state, &record.pr);
     let mut sent = Vec::new();
     let mut sent_items = Vec::new();
@@ -202,7 +229,7 @@ async fn request(
         if !wanted {
             continue;
         }
-        let fingerprint = fingerprint(item, head, code.lines(item).await.as_deref());
+        let fingerprint = fingerprint(item, head, code.lines(item).await.as_deref(), &purpose);
         if asked.is_none()
             && let Some(stored) = db.review_loop().latest_assessment(item.id).await?
             && stored.fingerprint == fingerprint
@@ -247,17 +274,21 @@ async fn request(
         PassStart::Started(id) => id,
         PassStart::Busy(_) => return Ok(PassQueued::AlreadyRunning),
     };
-    let language = match &user {
-        Some(user) => db.users().get(user).await?.language,
-        None => LlmLanguage::En,
+    let language = match (&user, reason) {
+        (Some(user), PassReason::Ask | PassReason::Watch) => db.users().get(user).await?.language,
+        _ => LlmLanguage::En,
     };
+    let analysis = analysis_inputs(state, &record.tenant_id, pr, language).await?;
     let input = VerifyCommentsInput {
         pull_request: format!(
             "{}/{}#{}",
             record.pr.repo.owner, record.pr.repo.name, record.pr.number
         ),
         title: record.pr.title.clone(),
-        pr_context: pr_state.purpose.clone(),
+        description: description
+            .map(|text| text.chars().take(prompts::MAX_DESCRIPTION_CHARS).collect()),
+        pr_context: analysis.pr_context,
+        project_profile: analysis.profile,
         items: sent_items.iter().map(|item| verify_item(item)).collect(),
         earlier_decisions: earlier_decisions(state, pr, &sent_items).await?,
         question: match &question {
@@ -336,11 +367,25 @@ fn assessable(item: &ItemRecord) -> bool {
         )
 }
 
-/// SHA-256 hex of the prompt version, the normalised comment text and the code at its lines; code that cannot be
-/// read counts as changed at every new head.
-fn fingerprint(item: &ItemRecord, head: &CommitSha, code: Option<&str>) -> String {
+/// SHA-256 hex of the PR title and description (the purpose the author states).
+fn purpose_hash(title: &str, description: Option<&str>) -> String {
     let mut hash = Sha256::new();
-    hash.update(format!("{VERIFY_PROMPT_VERSION}\n{}\n", item.body_hash));
+    hash.update(format!("{title}\n{}", description.unwrap_or_default()));
+    hash.finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// SHA-256 hex of the prompt version, the PR purpose (`purpose_hash`), the normalised comment text and the code at
+/// its lines; code that cannot be read counts as changed at every new head. The claudius skills commit is
+/// provenance only, never part of it (Q28).
+fn fingerprint(item: &ItemRecord, head: &CommitSha, code: Option<&str>, purpose: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(format!(
+        "{VERIFY_PROMPT_VERSION}\n{purpose}\n{}\n",
+        item.body_hash
+    ));
     if let Some(location) = &item.location {
         hash.update(format!("{}\n", location.path));
         if let Some(lines) = location.lines {
@@ -450,7 +495,7 @@ pub(crate) fn verify_item(item: &ItemRecord) -> VerifyItem {
     }
 }
 
-/// The current decision of every other item of the pull request (an item's newest decision is current).
+/// The standing decision (not superseded, not undone) of every other item of the pull request.
 async fn earlier_decisions(
     state: &AppState,
     pr: i64,
@@ -458,20 +503,66 @@ async fn earlier_decisions(
 ) -> Result<Vec<EarlierDecision>, AssessError> {
     let items = state.db.review_loop().items(pr).await?;
     let decisions = state.db.review_loop().pr_decisions(pr).await?;
+    let standing = super::standing(&decisions);
     let mut current = Vec::new();
     for item in items
         .iter()
         .filter(|item| sent.iter().all(|sent| sent.id != item.id))
     {
-        if let Some(last) = decisions.iter().rev().find(|stored| stored.item == item.id) {
+        if let Some(stored) = standing.get(&item.id.to_string()) {
             current.push(EarlierDecision {
                 item: format!("C{}", item.no),
-                decision: last.decision.kind,
-                reason: last.decision.reason.clone(),
+                decision: stored.decision.kind,
+                reason: stored.decision.reason.clone(),
             });
         }
     }
     Ok(current)
+}
+
+/// What the PR's latest analysis adds to a pass's input.
+#[derive(Default)]
+struct AnalysisInputs {
+    /// Its PR context, as one text.
+    pr_context: Option<String>,
+    /// The project profile file at its base.
+    profile: Option<String>,
+}
+
+/// The PR context and project profile of the PR's latest analysis in the tenant (any head; `language` first), from
+/// its stored documents.
+async fn analysis_inputs(
+    state: &AppState,
+    tenant: &str,
+    pr: i64,
+    language: LlmLanguage,
+) -> Result<AnalysisInputs, AssessError> {
+    let Some(analysis) = state
+        .db
+        .analyses()
+        .latest_for_pr(pr, language)
+        .await?
+        .filter(|analysis| analysis.tenant_id == tenant)
+    else {
+        return Ok(AnalysisInputs::default());
+    };
+    let context: Option<PrContextOutput> = state
+        .db
+        .documents()
+        .get(analysis.id, DocumentKind::PrContext, "")
+        .await?;
+    let profile = crate::pipeline::prepass::stored(state, analysis.id)
+        .await?
+        .and_then(|prepass| prepass.profile_file);
+    Ok(AnalysisInputs {
+        pr_context: context.map(|context| {
+            format!(
+                "Problem: {} Why needed: {} What it gives: {}",
+                context.problem, context.why_needed, context.what_it_gives
+            )
+        }),
+        profile: profile.map(|text| text.chars().take(prompts::MAX_PROFILE_CHARS).collect()),
+    })
 }
 
 /// The owner's question with the earlier questions of its thread.
@@ -662,9 +753,9 @@ async fn next(state: &AppState, record: &PassRecord, complete: bool) {
         PassCause::Question => None,
     }
     .filter(|_| complete && record.sent.len() == MAX_ITEMS_PER_PASS);
-    let outcome = match request(state, pr, PassReason::Ask, true).await {
+    let outcome = match request(state, pr, PassReason::Ask, true, None).await {
         Ok(PassQueued::Skipped) => match rest {
-            Some(reason) => request(state, pr, reason, true).await,
+            Some(reason) => request(state, pr, reason, true, record.user_id.as_deref()).await,
             None => Ok(PassQueued::Skipped),
         },
         other => other,

@@ -3,7 +3,7 @@
     "method": "POST",
     "url": "https://api.github.com/graphql",
     "body": {
-      "query": "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){databaseId isPrivate pullRequest(number:$pr){title url state isDraft author{login} baseRefName baseRefOid headRefOid reviewDecision updatedAt}}}",
+      "query": "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){databaseId isPrivate pullRequest(number:$pr){title body url state isDraft author{login} baseRefName baseRefOid headRefOid reviewDecision updatedAt}}}",
       "variables": {
         "o": "acme",
         "n": "node-client",
@@ -19,6 +19,7 @@
         "isPrivate": false,
         "pullRequest": {
           "title": "feat(rpc): retry with backoff on timeout",
+          "body": "Retries timed-out RPC calls with exponential backoff.",
           "url": "https://github.com/acme/node-client/pull/482",
           "state": "OPEN",
           "isDraft": false,

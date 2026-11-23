@@ -177,8 +177,13 @@ pub async fn ensure_read(
     let read = read_if_due(state, &session.tenant_id, &session.user_id, pr, force).await?;
     if let ReadOutcome::Read { new } = read.outcome
         && new > 0
-        && let Err(error) =
-            assess::request_pass(state, read.handle.id, assess::PassReason::NewComments).await
+        && let Err(error) = assess::request_pass_for(
+            state,
+            read.handle.id,
+            assess::PassReason::NewComments,
+            &session.user_id,
+        )
+        .await
     {
         tracing::warn!(
             ?error,

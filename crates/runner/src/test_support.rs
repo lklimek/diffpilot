@@ -176,7 +176,9 @@ pub(crate) fn verify_input(
     VerifyCommentsInput {
         pull_request: "acme/node-client#482".to_owned(),
         title: "fix: retry timed-out RPC calls".to_owned(),
+        description: None,
         pr_context: None,
+        project_profile: None,
         items: vec![item("C1"), item("C2")],
         earlier_decisions: Vec::new(),
         question: question.map(|text| ItemQuestion {

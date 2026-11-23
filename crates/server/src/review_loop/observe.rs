@@ -87,6 +87,9 @@ pub enum GateFact {
 pub struct Snapshot {
     /// Title.
     pub title: String,
+    /// Description as its author wrote it (untrusted); none when empty.
+    #[serde(default)]
+    pub description: Option<String>,
     /// GitHub link.
     pub url: String,
     /// `OPEN`, `CLOSED`, `MERGED`.
@@ -416,6 +419,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         url: github_web_url(&read.pr.url).unwrap_or_default(),
         state: read.pr.state.clone(),
         draft: read.pr.is_draft,
+        description: Some(read.pr.body.trim().to_owned()).filter(|body| !body.is_empty()),
         base: read.pr.base_ref_name.clone(),
         head: read.pr.head_ref_oid.clone(),
         rounds,

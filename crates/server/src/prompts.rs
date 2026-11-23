@@ -84,8 +84,10 @@ const MAX_PROMPT_USES: usize = 20;
 const MAX_LOOKUP_REPOS: usize = 5;
 /// Most crate names listed per lookup repository.
 const MAX_LOOKUP_CRATES: usize = 10;
-const MAX_DESCRIPTION_CHARS: usize = 16_000;
-const MAX_PROFILE_CHARS: usize = 16_000;
+/// Longest PR description quoted in a prompt, in characters.
+pub(crate) const MAX_DESCRIPTION_CHARS: usize = 16_000;
+/// Longest project profile quoted in a prompt, in characters.
+pub(crate) const MAX_PROFILE_CHARS: usize = 16_000;
 const MAX_EXCERPT_CHARS: usize = 2_000;
 const MAX_QUESTION_CHARS: usize = 4_000;
 /// Classic diff quoted in an `ask` prompt about lines, at most.
@@ -1397,6 +1399,31 @@ fn flow_task(input: &FlowInput<'_>) -> Result<String, PromptError> {
             ("calibration", &calibration(input.calibration)?),
         ],
     )
+}
+
+/// Rules 4 (words never written), 5 (read-only), 6 (untrusted data) and 9 (GitHub tools) of the shared rules block
+/// as bullets, for a read-only job with its own template (`verify_comments`), so those rules have one source.
+pub(crate) fn read_only_rules() -> Result<String, PromptError> {
+    let rules = fill(
+        RULES,
+        &[
+            ("language", ""),
+            ("sub_agents", ""),
+            ("file_permission", ""),
+            ("output_instruction", ""),
+            ("defect_form", ""),
+        ],
+    )?;
+    Ok(rules
+        .lines()
+        .filter_map(|line| {
+            ["4. ", "5. ", "6. ", "9. "]
+                .iter()
+                .find_map(|number| line.strip_prefix(number))
+        })
+        .map(|rule| format!("- {}", rule.replace("  ", " ")))
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 /// Header, rules block and pre-pass notices, then the task.

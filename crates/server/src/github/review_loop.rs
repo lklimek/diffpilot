@@ -16,8 +16,8 @@ pub const MAX_PAGES: usize = 10;
 
 /// Q-L1: pull request facts and the repository's id and visibility.
 pub const PR_FACTS: &str = "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){databaseId isPrivate \
-pullRequest(number:$pr){title url state isDraft author{login} baseRefName baseRefOid headRefOid reviewDecision \
-updatedAt}}}";
+pullRequest(number:$pr){title body url state isDraft author{login} baseRefName baseRefOid headRefOid \
+reviewDecision updatedAt}}}";
 
 /// Q-L2: review threads with their comments (the first is the finding).
 pub const REVIEW_THREADS: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){\
@@ -51,6 +51,9 @@ pub struct Author {
 pub struct PrFacts {
     /// Title.
     pub title: String,
+    /// Description (untrusted).
+    #[serde(default)]
+    pub body: String,
     /// GitHub page.
     pub url: String,
     /// `OPEN`, `CLOSED`, `MERGED`.
