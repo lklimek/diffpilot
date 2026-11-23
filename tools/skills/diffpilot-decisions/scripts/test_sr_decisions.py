@@ -1429,8 +1429,23 @@ RESOLVE_QUERY = (
 )
 
 
-def graphql(data: dict, errors: list | None = None) -> str:
-    return json.dumps({"data": data, **({"errors": errors} if errors else {})})
+def gh_include(status: int, body: str, headers: dict | None = None) -> str:
+    """What `gh api --include` prints: status line, CRLF headers, blank CRLF line, body."""
+    reason = {200: "OK", 403: "Forbidden", 429: "Too Many Requests"}[status]
+    lines = "".join(
+        f"{name}: {value}\r\n" for name, value in {"Content-Type": "application/json", **(headers or {})}.items()
+    )
+    return f"HTTP/2.0 {status} {reason}\n{lines}\r\n{body}"
+
+
+def graphql(data: dict | None, errors: list | None = None, status: int = 200, headers: dict | None = None) -> str:
+    return gh_include(status, json.dumps({"data": data, **({"errors": errors} if errors else {})}), headers)
+
+
+SECONDARY = (
+    "You have exceeded a secondary rate limit. Please wait a few minutes before you try again. "
+    "If you reach out to GitHub Support for help, please include the request ID 0000:1111."
+)
 
 
 def resolved(thread: str, ok: bool = True) -> dict:
@@ -1442,7 +1457,17 @@ def test_resolve_runs_one_graphql_call_with_the_thread_ids_as_variables(env, fak
     code, out, errout = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", T1, T2, T1)
     assert code == 0, errout
     [call] = gh_calls(fake_gh)
-    assert call.split() == ["api", "graphql", "-f", f"query={RESOLVE_QUERY}", "-f", f"t0={T1}", "-f", f"t1={T2}"]
+    assert call.split() == [
+        "api",
+        "graphql",
+        "--include",
+        "-f",
+        f"query={RESOLVE_QUERY}",
+        "-f",
+        f"t0={T1}",
+        "-f",
+        f"t1={T2}",
+    ]
     assert f"resolved {T1}" in out and f"resolved {T2}" in out
     assert fake.requests == []
 
@@ -1463,7 +1488,11 @@ def test_resolve_forbidden_exits_8_naming_the_same_command_for_ghsudo(env, fake,
 
 @pytest.mark.parametrize(
     "answer",
-    [json.dumps({"errors": [{"type": "FORBIDDEN", "message": "Resource not accessible by integration"}]}), ""],
+    [
+        graphql(None, [{"type": "FORBIDDEN", "message": "Resource not accessible by integration"}]),
+        gh_include(403, json.dumps({"message": "Resource not accessible by integration"})),
+        "",
+    ],
 )
 def test_resolve_forbidden_without_data_or_as_http_403_exits_8(env, fake, capsys, fake_gh, monkeypatch, answer):
     monkeypatch.setenv("FAKE_GH_GRAPHQL", answer)
@@ -1491,7 +1520,31 @@ def test_resolve_counts_only_threads_github_shows_resolved(env, fake, capsys, fa
     assert f"resolved {T2}" not in out and T2 in errout
 
 
-@pytest.mark.parametrize("answer", ["not json", "[]", json.dumps({"data": None})])
+@pytest.mark.parametrize(
+    ("answer", "stderr"),
+    [
+        (gh_include(403, json.dumps({"message": SECONDARY})), f"gh: {SECONDARY} (HTTP 403)"),
+        ("", f"gh: {SECONDARY} (HTTP 403)"),
+        (gh_include(429, json.dumps({"message": "Too many requests"}), {"Retry-After": "60"}), "gh: x (HTTP 429)"),
+        (gh_include(403, json.dumps({"message": "Forbidden"}), {"Retry-After": "60"}), "gh: Forbidden (HTTP 403)"),
+        (graphql(None, [{"type": "RATE_LIMITED", "message": "API rate limit exceeded for user ID 1."}]), "gh: x"),
+    ],
+)
+def test_resolve_on_a_rate_limit_exits_4_to_wait_without_ghsudo(
+    env, fake, capsys, fake_gh, monkeypatch, answer, stderr
+):
+    monkeypatch.setenv("FAKE_GH_GRAPHQL", answer)
+    monkeypatch.setenv("FAKE_GH_GRAPHQL_EXIT", "1")
+    monkeypatch.setenv("FAKE_GH_GRAPHQL_STDERR", stderr)
+    code, out, errout = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", T1, T2)
+    assert code == 4
+    assert "rate limit" in errout and "wait" in errout and f"resolve --repo dashpay/rust-dashcore {T1} {T2}" in errout
+    assert "ghsudo" not in errout and "resolved" not in out
+    if "Retry-After" in answer:
+        assert "60 s" in errout
+
+
+@pytest.mark.parametrize("answer", ["not json", "[]", json.dumps({"data": None}), gh_include(200, "not json")])
 def test_resolve_on_an_unreadable_answer_exits_4(env, fake, capsys, fake_gh, monkeypatch, answer):
     monkeypatch.setenv("FAKE_GH_GRAPHQL", answer)
     code, out, errout = run(capsys, "resolve", "--repo", "dashpay/rust-dashcore", T1)

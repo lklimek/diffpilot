@@ -77,6 +77,8 @@ PENDING_TTL = 24 * 3600
 
 EXIT_OK, EXIT_CONFIG, EXIT_AUTH, EXIT_SERVER, EXIT_NONE, EXIT_GONE, EXIT_LEASE, EXIT_FORBIDDEN = 0, 2, 3, 4, 5, 6, 7, 8
 MAX_THREADS = 100
+GH_INCLUDE_RE = re.compile(r"HTTP/\S+ (\d{3})[^\n]*\n((?:[^\r\n]+\r?\n)*)\r?\n")
+GH_STATUS_RE = re.compile(r"\(HTTP (\d{3})\)")
 
 ME_PATH = "/api/v1/me"
 FEED_PATH = "/api/v1/decision-feed"
@@ -1175,6 +1177,43 @@ def cmd_footer(client: Client, args) -> int:
     return EXIT_OK
 
 
+def _gh_answer(done: subprocess.CompletedProcess) -> tuple[int | None, dict[str, str], dict]:
+    """Status, lower-case headers and JSON body of `gh api --include` output (status from stderr without headers)."""
+    body, status, headers = done.stdout, None, {}
+    head = GH_INCLUDE_RE.match(body)
+    if head:
+        status = int(head.group(1))
+        for line in head.group(2).splitlines():
+            name, _, value = line.partition(":")
+            headers[name.strip().lower()] = value.strip()
+        body = body[head.end() :]
+    elif match := GH_STATUS_RE.search(done.stderr):
+        status = int(match.group(1))
+    try:
+        answer = json.loads(body)
+    except ValueError:
+        answer = None
+    return status, headers, _obj(answer)
+
+
+def _rate_limit_wait(
+    status: int | None, headers: dict[str, str], answer: dict, errors: list[dict], stderr: str
+) -> str | None:
+    """How long to wait when GitHub's (secondary) rate limit stopped the call, else None."""
+    messages = [stderr, str(answer.get("message") or ""), *(str(error.get("message") or "") for error in errors)]
+    limited = (
+        status == 429
+        or "retry-after" in headers
+        or (status == 403 and headers.get("x-ratelimit-remaining") == "0")
+        or any(error.get("type") == "RATE_LIMITED" for error in errors)
+        or any("rate limit" in message.lower() for message in messages)
+    )
+    if not limited:
+        return None
+    after = headers.get("retry-after", "")
+    return f"wait {int(after)} s" if after.isdigit() and int(after) <= MAX_WAIT else "wait a few minutes"
+
+
 def cmd_resolve(args) -> int:
     """Resolves review threads in ONE GitHub call (one elevated approval when the account needs it)."""
     threads = list(dict.fromkeys(args.threads))
@@ -1187,27 +1226,23 @@ def cmd_resolve(args) -> int:
     fields = ",".join(
         f"r{i}:resolveReviewThread(input:{{threadId:$t{i}}}){{thread{{id,isResolved}}}}" for i in range(len(threads))
     )
-    command = ["gh", "api", "graphql", "-f", f"query=mutation({variables}){{{fields}}}"]
+    command = ["gh", "api", "graphql", "--include", "-f", f"query=mutation({variables}){{{fields}}}"]
     for i, thread in enumerate(threads):
         command += ["-f", f"t{i}={thread}"]
     done = _gh(command)
-    try:
-        answer = json.loads(done.stdout)
-    except ValueError:
-        answer = None
-    answer = _obj(answer)
+    status, headers, answer = _gh_answer(done)
     data = _obj(answer.get("data"))
-    listed = answer.get("errors") if isinstance(answer.get("errors"), list) else []
-    if "(HTTP 403)" in done.stderr:
-        listed = [*listed, {"type": "FORBIDDEN", "message": "HTTP 403"}]
-    if not data and not listed:
+    listed = [_obj(error) for error in answer.get("errors")] if isinstance(answer.get("errors"), list) else []
+    wait = _rate_limit_wait(status, headers, answer, listed, done.stderr)
+    if status == 403 and wait is None:
+        listed = [*listed, {"type": "FORBIDDEN", "message": answer.get("message") or "HTTP 403"}]
+    if not data and not listed and wait is None:
         raise SrError(
             f"gh answered no readable result ({_gh_failure(done)}); check the threads on GitHub, then retry",
             EXIT_SERVER,
         )
     errors: dict[str, tuple[str, str]] = {}
     for error in listed:
-        error = _obj(error)
         path = error.get("path")
         alias = path[0] if isinstance(path, list) and path and isinstance(path[0], str) else ""
         errors.setdefault(alias, (clean(error.get("type") or "ERROR"), clean(error.get("message") or "")[:200]))
@@ -1225,13 +1260,16 @@ def cmd_resolve(args) -> int:
         reasons.append(f"{thread} ({kind}: {message})")
     if not failed:
         return EXIT_OK
+    rerun = f"python3 {shlex.quote(os.path.abspath(__file__))} resolve --repo {args.repo} {' '.join(failed)}"
+    if wait is not None:
+        raise SrError(
+            f"GitHub's rate limit stopped resolving {len(failed)} thread(s); {wait} and run again: {rerun}",
+            EXIT_SERVER,
+        )
     if forbidden:
-        owner = args.repo.split("/", 1)[0]
-        script = shlex.quote(os.path.abspath(__file__))
-        rerun = f"ghsudo --org {owner} python3 {script} resolve --repo {args.repo} {' '.join(failed)}"
         raise SrError(
             f"GitHub refused resolving {len(failed)} thread(s) (FORBIDDEN: this GitHub account lacks the right); "
-            f"run this one command (one approval): {rerun}",
+            f"run this one command (one approval): ghsudo --org {args.repo.split('/', 1)[0]} {rerun}",
             EXIT_FORBIDDEN,
         )
     raise SrError("not resolved: " + "; ".join(reasons), EXIT_SERVER)

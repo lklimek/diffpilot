@@ -257,20 +257,23 @@ idempotency key per report attempt, reused when the same report is sent again; `
    token or asks for it.
 3. **Run.** In a Claude Code session in a checkout of the repository, paste the prompt the pull request page shows.
    It works in the current checkout or worktree when that is on the pull request head branch, else in a worktree
-   on it (created with `gh pr checkout` when none exists); it never switches another branch's checkout and stops
-   at uncommitted changes:
+   on it (created with `gh pr checkout` when none exists, named to the user at the end of the run and removed once
+   it is pushed and clean). It never switches another branch's checkout, and it stops at uncommitted changes or at
+   local commits the pull request head does not have (after `git pull --ff-only`):
 
    ```text
    Use the diffpilot-decisions skill to carry out my decisions on <owner>/<repo>#<number> from diffpilot at <server origin>: subscribe, claim each decision, carry out its effects in this repository's checkout of the PR branch, and report each effect done or failed with the commit or comment link.
    ```
 
-The session claims one decision at a time (the claim covers all its agent effects; decisions whose `pr_comment`
-effects answer one review are claimed together), executes the effects in `seq` order with its own git and `gh`, and
-reports each with its reference. It never decides, never pushes to a base branch, never amends or force-pushes, and
+The session works on one decision at a time; the claim covers all its agent effects. A decision stays claimed past
+its turn only together with the decisions whose `pr_comment` effects answer the same review, or while its `resolve`
+waits for the one batched call at the end of the run (held decisions are renewed with the others). It executes the
+effects in `seq` order with its own git and `gh` and reports each with its reference. It never decides, never pushes to a base branch, never amends or force-pushes, and
 posts the text `text` or `combine` wrote: the effect's text unchanged, a reply or PR-level comment waiting on a fix,
 follow-up PR or upstream issue ending with that effect's reported reference. Every reply, PR-level comment,
 follow-up PR body and upstream issue ends with the attribution footer as its last paragraph, after any reference
 line; the reference line and the footer are the only additions. The default footer:
 `<sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>`.
 When the agent's GitHub account may not resolve threads (`FORBIDDEN`), `resolve` exits 8 and prints the one command
-to rerun with elevated rights, so a run needs at most one approval.
+to rerun with elevated rights, so a run needs at most one approval; GitHub's rate limit (HTTP 429, a rate-limit
+message or `Retry-After`) exits 4 with how long to wait instead.
