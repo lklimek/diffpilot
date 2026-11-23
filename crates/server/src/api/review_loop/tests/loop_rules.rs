@@ -524,7 +524,6 @@ fn r5_dismissed(answer: &mut Value) {
 /// Plan §2.1 I2 with RQ11: dismissing the latest round (P3 "Dismiss stale bot reviews", or a maintainer on GitHub)
 /// does not reopen the earlier body findings that round superseded.
 #[tokio::test]
-#[ignore = "owner decision pending: whether a dismissed latest round re-opens the findings it superseded"]
 async fn dismissing_the_latest_round_does_not_reopen_superseded_body_findings() {
     let w = world().await;
     let latest_r2: &dyn Fn(&mut Value) = &without_r5;
@@ -545,6 +544,32 @@ async fn dismissing_the_latest_round_does_not_reopen_superseded_body_findings() 
         item["gone_at"].is_string() && !queued(&after, &no),
         "dismissing r5 brings r1's superseded finding back into the queue: {item}"
     );
+}
+
+/// Plan §2.1: an item asked again that a later round then supersedes waits for nobody, so the overview no longer
+/// counts it as asked again.
+#[tokio::test]
+async fn a_superseded_item_asked_again_is_not_counted_as_asked_again() {
+    let w = world().await;
+    let latest_r2: &dyn Fn(&mut Value) = &without_r5;
+    serve(&w.server, &[("reviews.json", latest_r2)]).await;
+    w.get(&format!("{PR}/comments")).await;
+    w.decide_ok(R1_BODY, decision("resolve")).await;
+    let item = w.item(R1_BODY).await;
+    let (status, reopened) = w
+        .post(
+            &format!("{PR}/comments/items/C{}/reopen", item["no"]),
+            json!({"item_revision": item["revision"]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{reopened}");
+    let before = w.get(&format!("{PR}/comments")).await;
+    assert_eq!(before["counts"]["asked_again"], 1, "{before}");
+
+    w.reread(&[]).await;
+    assert!(w.item(R1_BODY).await["gone_at"].is_string());
+    let after = w.get(&format!("{PR}/comments")).await;
+    assert_eq!(after["counts"]["asked_again"], 0, "{after}");
 }
 
 /// The RC16 preview of a decision of `kind` on the item `key`: (the decision body, its `plan_digest`).

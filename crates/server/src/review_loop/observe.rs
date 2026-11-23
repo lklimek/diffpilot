@@ -1,6 +1,7 @@
-//! From one GitHub read to items (plan §2.1 I1–I3), rounds (§2.6) and the PR snapshot the views use. Pure. The
-//! bot rule (RQ17): GitHub `Bot` type, a `[bot]` login or the reader's `known_bots`; thepastaclaw's markers are read
-//! from bot-authored text only, so a human cannot claim another item's key.
+//! From one GitHub read to items (plan §2.1 I1–I3), rounds (§2.6) and the PR snapshot the views use. Pure but for
+//! one log line (still-open entries without an earlier finding). The bot rule (RQ17): GitHub `Bot` type, a `[bot]`
+//! login or the reader's `known_bots`; thepastaclaw's markers are read from bot-authored text only, so a human cannot
+//! claim another item's key.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -12,7 +13,7 @@ use contracts::time::Timestamp;
 use db::repo::review_loop::ObservedItem;
 use serde::{Deserialize, Serialize};
 
-use super::markers::{self, GateState};
+use super::markers::{self, Fit, GateState};
 use crate::dashboard::score::is_bot;
 use crate::github::review_loop::{Author, PrRead, Review};
 use crate::github::threads::github_web_url;
@@ -197,16 +198,14 @@ fn rounds(read: &PrRead, bots: &BotRule) -> Vec<RoundFact> {
         .collect()
 }
 
-/// Each bot's latest round by lowercase login (plan §2.1 I2): its latest submitted, non-dismissed review with a body;
-/// for thepastaclaw that is its latest round, since its reviews without a round hold thread answers and no body (spike
-/// S13-1 R2). Only this review's body findings are items, with those it carries from earlier rounds.
+/// Each bot's latest round by lowercase login (plan §2.1 I2): its latest submitted review with a body, dismissed or
+/// not; for thepastaclaw that is its latest round, since its reviews without a round hold thread answers and no body
+/// (spike S13-1 R2). It supersedes the bot's earlier body findings except those it lists as still open; only a
+/// review that is not dismissed yields items, so a dismissed latest round (RQ11) yields none of its own.
 fn latest_rounds<'a>(read: &'a PrRead, bots: &BotRule) -> HashMap<String, (Timestamp, &'a Review)> {
     let mut latest: HashMap<String, (Timestamp, &Review)> = HashMap::new();
     for review in &read.reviews {
-        if review.state == "DISMISSED"
-            || review.body.trim().is_empty()
-            || bots.kind(review.author.as_ref()) != AuthorKind::Bot
-        {
+        if review.body.trim().is_empty() || bots.kind(review.author.as_ref()) != AuthorKind::Bot {
             continue;
         }
         let Some(at) = review.submitted_at.as_deref().and_then(parse_time) else {
@@ -220,19 +219,30 @@ fn latest_rounds<'a>(read: &'a PrRead, bots: &BotRule) -> HashMap<String, (Times
     latest
 }
 
-/// The earlier body findings (review id, ordinal) each bot's latest round carries without a thread (spike S13-1 R5):
-/// per entry, the matching finding of the bot's most recent earlier non-dismissed review.
+/// What the bots' latest rounds list as still open without a thread (spike S13-1 R5).
+#[derive(Debug)]
+struct Carried<'a> {
+    /// The earlier body findings kept: review id, ordinal.
+    kept: HashSet<(&'a str, usize)>,
+    /// The entries that match no earlier finding: review id, title.
+    unmatched: Vec<(&'a str, String)>,
+}
+
+/// What each bot's latest round lists as still open. An entry takes a finding of the bot's earlier non-dismissed
+/// reviews, the most recent first: one at the same lines if any, else one of the same title and path; each finding is
+/// taken once.
 fn carried<'a>(
     read: &'a PrRead,
-    latest_rounds: &HashMap<String, (Timestamp, &Review)>,
-) -> HashSet<(&'a str, usize)> {
+    latest_rounds: &HashMap<String, (Timestamp, &'a Review)>,
+) -> Carried<'a> {
     let mut carried = HashSet::new();
+    let mut unmatched = Vec::new();
     for (bot, (_, latest)) in latest_rounds {
         let entries = markers::carried_findings(&latest.body);
         if entries.is_empty() {
             continue;
         }
-        let earlier: Vec<(Timestamp, &Review, Vec<markers::BodyFinding>)> = read
+        let mut earlier: Vec<(Timestamp, &str, Vec<markers::BodyFinding>)> = read
             .reviews
             .iter()
             .filter(|review| {
@@ -243,23 +253,42 @@ fn carried<'a>(
             })
             .filter_map(|review| {
                 let at = review.submitted_at.as_deref().and_then(parse_time)?;
-                Some((at, review, markers::body_findings(&review.body)))
+                Some((at, review.id.as_str(), markers::body_findings(&review.body)))
             })
             .collect();
-        for entry in &entries {
-            let found = earlier
-                .iter()
-                .filter_map(|(at, review, findings)| {
-                    let index = findings.iter().position(|finding| entry.matches(finding))?;
-                    Some((*at, review.id.as_str(), index + 1))
-                })
-                .max_by_key(|(at, _, _)| *at);
-            if let Some((_, id, ordinal)) = found {
-                carried.insert((id, ordinal));
+        earlier.sort_by_key(|(at, _, _)| std::cmp::Reverse(*at));
+        let mut taken = vec![false; entries.len()];
+        // The exact pass first, so an entry naming its lines is not taken by a namesake's loose match.
+        for pass in [Fit::Exact, Fit::Loose] {
+            for (entry, taken) in entries.iter().zip(taken.iter_mut()) {
+                if *taken {
+                    continue;
+                }
+                let found = earlier.iter().find_map(|(_, id, findings)| {
+                    let (index, _) = findings.iter().enumerate().find(|(index, finding)| {
+                        !carried.contains(&(*id, index + 1))
+                            && entry.fit(finding).is_some_and(|fit| fit <= pass)
+                    })?;
+                    Some((*id, index + 1))
+                });
+                if let Some(key) = found {
+                    carried.insert(key);
+                    *taken = true;
+                }
             }
         }
+        unmatched.extend(
+            entries
+                .into_iter()
+                .zip(taken)
+                .filter(|(_, taken)| !taken)
+                .map(|(entry, _)| (latest.id.as_str(), entry.title)),
+        );
     }
-    carried
+    Carried {
+        kept: carried,
+        unmatched,
+    }
 }
 
 /// Items, rounds and the snapshot of one read (CI added by the caller).
@@ -380,7 +409,17 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         .collect();
 
     let latest_rounds = latest_rounds(read, bots);
-    let carried = carried(read, &latest_rounds);
+    let Carried {
+        kept: carried,
+        unmatched,
+    } = carried(read, &latest_rounds);
+    if !unmatched.is_empty() {
+        tracing::info!(
+            pr = %read.pr.url,
+            ?unmatched,
+            "bot round lists still-open body findings that match no earlier body finding; they are not items"
+        );
+    }
     let mut superseded = Vec::new();
     for review in &read.reviews {
         if review.submitted_at.is_none() || review.state == "DISMISSED" {

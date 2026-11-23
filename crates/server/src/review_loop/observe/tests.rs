@@ -260,8 +260,17 @@ fn only_the_latest_round_of_a_bot_keeps_its_body_findings() {
     let (observed, _) = observe(&read, &bots);
     assert_eq!(
         body_keys(&observed),
+        [H1_BODY],
+        "a dismissed round still supersedes (RQ11): r1's finding does not come back"
+    );
+    read.reviews
+        .retain(|review| review.id != "PRR_fixture482_r5");
+    review(&mut read, "PRR_fixture482_r2").state = "DISMISSED".into();
+    let (observed, _) = observe(&read, &bots);
+    assert_eq!(
+        body_keys(&observed),
         [R1_BODY, H1_BODY],
-        "a dismissed round does not count: r2 is the latest"
+        "a dismissed latest round yields no items of its own but still carries r1's finding"
     );
 
     let mut read = fixture_read();
@@ -327,7 +336,6 @@ fn repeated_title(carried: &[&str]) -> PrRead {
 /// S13-1 R5 with a repeated title: the latest round carries only the second of two earlier findings that share
 /// title and path; that finding, not its namesake, stays the item (plan §2.1 I2).
 #[test]
-#[ignore = "repro: carried entries match by title and path only; remove with the fix"]
 fn a_carried_entry_keeps_the_finding_it_names_when_titles_repeat() {
     let bots = BotRule::new(&default_known_bots());
     let mut read = repeated_title(&["src/rpc/retry.rs:40-44"]);
@@ -347,7 +355,6 @@ fn a_carried_entry_keeps_the_finding_it_names_when_titles_repeat() {
 /// S13-1 R5 with a repeated title: the latest round carries both earlier findings that share title and path; both
 /// stay items (plan §2.1 I2).
 #[test]
-#[ignore = "repro: carried entries match by title and path only; remove with the fix"]
 fn two_carried_entries_with_one_title_keep_both_findings() {
     let bots = BotRule::new(&default_known_bots());
     let read = repeated_title(&["src/rpc/retry.rs:20-26", "src/rpc/retry.rs:40-44"]);
@@ -356,5 +363,30 @@ fn two_carried_entries_with_one_title_keep_both_findings() {
         body_keys(&observed),
         [R1_BODY, "review:PRR_fixture482_r1:2", H1_BODY],
         "both entries are carried: neither finding is superseded"
+    );
+}
+
+/// QA: an entry of the latest round that matches no earlier body finding is reported (logged once per read), so no
+/// finding the bot still lists leaves the queue unnoticed.
+#[test]
+fn carried_entries_without_an_earlier_finding_are_reported() {
+    let bots = BotRule::new(&default_known_bots());
+    let mut read = fixture_read();
+    read.reviews
+        .retain(|review| review.id != "PRR_fixture482_r5");
+    let r2 = review(&mut read, "PRR_fixture482_r2");
+    r2.body = r2.body.replace(
+        "(carried)\n",
+        "(carried)\n- 🟡 **Suggestion**: Never raised before — `src/rpc/retry.rs:1-2` (carried)\n",
+    );
+    let latest = latest_rounds(&read, &bots);
+    let Carried { kept, unmatched } = carried(&read, &latest);
+    assert_eq!(
+        kept.into_iter().collect::<Vec<_>>(),
+        [("PRR_fixture482_r1", 1)]
+    );
+    assert_eq!(
+        unmatched,
+        [("PRR_fixture482_r2", "Never raised before".to_owned())]
     );
 }

@@ -206,7 +206,7 @@ fn counts(loaded: &Loaded, waiting: usize) -> CommentCounts {
             loaded
                 .items
                 .iter()
-                .filter(|item| item.state == ItemState::Reopened)
+                .filter(|item| item.state == ItemState::Reopened && item.gone_at.is_none())
                 .count(),
         ),
         waiting_for_agents: count(standing.values().filter(|s| effects_open(s)).count()),
