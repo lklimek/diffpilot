@@ -338,6 +338,10 @@ impl PrHygiene {
             facts,
             ready_to_merge: Some(ready_to_merge),
             whose_move,
+            github_updated_at: value
+                .get("updated_at")
+                .and_then(Value::as_str)
+                .and_then(|at| at.parse().ok()),
             mark: mark(value),
         })
     }

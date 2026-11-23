@@ -259,6 +259,103 @@ async fn a_statement_observed_before_a_new_human_objection_must_not_hide_it() {
 }
 
 #[tokio::test]
+async fn future_source_clock_must_not_hide_an_unanswered_github_objection() {
+    let (mut w, snapshot) = blocked_snapshot(
+        vec![change_request("ZocoLini", "User", "2026-11-18T08:59:30Z")],
+        "CHANGES_REQUESTED",
+    )
+    .await;
+    let fixture: Value =
+        serde_json::from_str(&review_blocked(Vec::new(), "CHANGES_REQUESTED")).expect("fixture");
+    // Captured at 08:59 with a clock 90s ahead; GitHub's objection follows 30s later.
+    let fake = FakePrHygiene::start("2026-11-18T09:00:30Z", vec![fixture["hygiene"].clone()]).await;
+    with_plugin(&mut w, &fake, Timing::default());
+    w.state.plugins.poll_once(w.state.dashboard.now()).await;
+    let view = snapshot::build(
+        &snapshot,
+        &Default::default(),
+        None,
+        &w.state.plugins.overlay(w.state.dashboard.now()),
+    );
+    assert_eq!(view.items.len(), 1, "a future clock cannot prove coverage");
+    assert!(view.awaiting.is_empty());
+}
+
+#[tokio::test]
+async fn a_human_request_with_unknown_submission_time_is_not_proved_covered() {
+    let mut review = change_request("ZocoLini", "User", "2026-11-18T08:58:30Z");
+    review["submittedAt"] = Value::Null;
+    for reviews in [
+        vec![review.clone()],
+        vec![
+            review,
+            change_request("xdustinface", "User", "2026-11-18T08:58:30Z"),
+        ],
+    ] {
+        let (w, snapshot) = blocked_snapshot(reviews, "CHANGES_REQUESTED").await;
+        assert!(snapshot.pull_requests[0].facts.changes_requested_by_human);
+        assert!(
+            snapshot.pull_requests[0]
+                .facts
+                .changes_requested_human_at
+                .is_none()
+        );
+        let view = snapshot::build(
+            &snapshot,
+            &Default::default(),
+            None,
+            &w.state.plugins.overlay(w.state.dashboard.now()),
+        );
+        assert_eq!(
+            view.items.len(),
+            1,
+            "an undated objection still needs a response"
+        );
+        assert!(view.awaiting.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn reviewer_statement_needs_a_newer_observed_github_version() {
+    for (updated, waits) in [
+        (Value::Null, false),
+        (json!("not a timestamp"), false),
+        (json!("2026-11-18T08:58:00Z"), false),
+        (json!("2026-11-18T08:58:30Z"), false),
+        (json!("2026-11-18T08:58:31Z"), true),
+        (json!("2026-11-18T09:00:01Z"), false),
+    ] {
+        let (mut w, mut snapshot) = blocked_snapshot(
+            vec![change_request("ZocoLini", "User", "2026-11-18T08:58:30Z")],
+            "CHANGES_REQUESTED",
+        )
+        .await;
+        snapshot.pull_requests[0].facts.updated_at =
+            "2026-11-18T09:00:00Z".parse().expect("GitHub time");
+        let mut fixture: Value =
+            serde_json::from_str(&review_blocked(Vec::new(), "CHANGES_REQUESTED"))
+                .expect("fixture");
+        fixture["hygiene"]["updated_at"] = updated.clone();
+        let fake =
+            FakePrHygiene::start("2026-11-18T08:59:00Z", vec![fixture["hygiene"].clone()]).await;
+        with_plugin(&mut w, &fake, Timing::default());
+        w.state.plugins.poll_once(w.state.dashboard.now()).await;
+        let view = snapshot::build(
+            &snapshot,
+            &Default::default(),
+            None,
+            &w.state.plugins.overlay(w.state.dashboard.now()),
+        );
+        assert_eq!(
+            view.awaiting.len(),
+            usize::from(waits),
+            "source GitHub time {updated}"
+        );
+        assert_eq!(view.items.len(), usize::from(!waits));
+    }
+}
+
+#[tokio::test]
 async fn reviewer_statement_only_covers_human_requests_older_than_its_data() {
     for (at, waits) in [
         ("2026-11-18T08:58:30Z", true),

@@ -39,6 +39,7 @@ fn statement(mark: &str, readiness: Option<Readiness>) -> PrStatement {
         }],
         ready_to_merge: readiness,
         whose_move: None,
+        github_updated_at: None,
         mark: mark.to_owned(),
     }
 }

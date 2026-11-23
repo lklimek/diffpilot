@@ -192,7 +192,7 @@ pub struct PrFacts {
     pub changes_requested_by_bot: Option<bool>,
     /// One of them is a human outside the scanned logins.
     pub changes_requested_by_human: bool,
-    /// Newest such human change request not re-requested since; null when none or re-requested.
+    /// Newest such human change request not re-requested since; null when none or any lacks a submission time.
     pub changes_requested_human_at: Option<Timestamp>,
     /// More reviews exist than were fetched.
     pub reviews_truncated: bool,

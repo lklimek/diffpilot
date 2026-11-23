@@ -106,6 +106,8 @@ pub struct PrStatement {
     pub ready_to_merge: Option<Readiness>,
     /// Whose move it is (Waiting on others, K15 W3b); `None`: no opinion.
     pub whose_move: Option<Move>,
+    /// GitHub's PR update time observed by the source; absent without GitHub clock evidence.
+    pub github_updated_at: Option<Timestamp>,
     /// Changes whenever the pull request's state at the source changes (time-only values excluded).
     pub mark: String,
 }
@@ -366,6 +368,7 @@ impl PluginHost {
     /// The statements shown at `now`: those of plug-ins whose data is fresh.
     pub fn overlay(&self, now: Timestamp) -> Overlay {
         Overlay {
+            now: Some(now),
             sources: self
                 .inner
                 .slots
@@ -552,6 +555,7 @@ fn bounded(mut data: PluginData, home: &Url) -> PluginData {
 /// The statements shown now, by plug-in in configuration order.
 #[derive(Clone, Debug, Default)]
 pub struct Overlay {
+    now: Option<Timestamp>,
     sources: Vec<Source>,
 }
 
@@ -586,6 +590,8 @@ pub struct MoveStatement {
     pub url: String,
     /// When the source data was generated, independent of subsequent successful polls.
     pub as_of: Timestamp,
+    /// GitHub's PR update time observed by the source.
+    pub github_updated_at: Option<Timestamp>,
     /// Whose move.
     pub whose: Move,
 }
@@ -620,12 +626,14 @@ impl Overlay {
     /// The first plug-in that says whose move `repo#number` is (K15 W3b).
     pub fn whose_move(&self, repo: &RepoRef, number: u32) -> Option<MoveStatement> {
         self.statements(repo, number)
+            .filter(|(source, _)| self.now.is_some_and(|now| source.data.as_of <= now))
             .find_map(|(source, statement)| {
                 Some(MoveStatement {
                     plugin: source.id.to_owned(),
                     source: source.name.to_owned(),
                     url: statement.url.clone(),
                     as_of: source.data.as_of,
+                    github_updated_at: statement.github_updated_at,
                     whose: statement.whose_move.clone()?,
                 })
             })

@@ -2304,6 +2304,7 @@ async fn stating(
         facts: Vec::new(),
         ready_to_merge: None,
         whose_move: Some(whose),
+        github_updated_at: None,
         mark: "stage".to_owned(),
     };
     let plugin = Stating {

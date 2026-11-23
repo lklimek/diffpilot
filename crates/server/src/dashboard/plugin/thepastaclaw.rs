@@ -195,6 +195,7 @@ impl Thepastaclaw {
             facts,
             ready_to_merge: None,
             whose_move: None,
+            github_updated_at: None,
             mark: format!("reviewing {:?} {:?}", run.id, run.sha),
         }
     }
@@ -222,6 +223,7 @@ impl Thepastaclaw {
             facts,
             ready_to_merge: None,
             whose_move: None,
+            github_updated_at: None,
             mark: queued_mark(queued),
         }
     }

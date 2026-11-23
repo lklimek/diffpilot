@@ -119,7 +119,12 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
    A fresh statement of the reviewers' or maintainers' move lists the user's pull request under Waiting on others
    (reason "PR Hygiene: …" with the evidence link) over human change requests, the review decision and unresolved
    threads only when the source data time (`as_of`, retained in the move statement) is later than the newest
-   unanswered human change request. A successful poll of unchanged older data does not advance that time. Active
+   unanswered human change request and is not in the future at overlay read time. The source must also have
+   observed a GitHub PR update (`github_updated_at`, PR Hygiene's `updated_at`) strictly after that request and no
+   later than the dashboard's GitHub `updatedAt`: both bounds use GitHub's clock, so source clock skew alone cannot
+   prove coverage. Missing or invalid evidence, or any unanswered human request without a submission time, keeps
+   the block. Re-requested reviews need no coverage comparison. A successful poll of unchanged older data does
+   not advance either source timestamp. Active
    bot change requests under DR2 always block, including alongside human requests; older snapshots with unknown
    requester types keep active requests blocking until refreshed. Human review signals can remain while the
    author has handed the PR back for review (rust-dashcore#1336). The PR must still be the user's, open and

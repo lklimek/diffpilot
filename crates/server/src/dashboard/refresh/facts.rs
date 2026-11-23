@@ -216,12 +216,12 @@ pub(super) fn pr(
         .iter()
         .filter(|(login, state, _, bot)| state == "CHANGES_REQUESTED" && !bot && !scanned(login))
         .collect();
-    let changes_requested_human_at = newest(
-        human_cr
-            .iter()
-            .filter(|(login, ..)| !requested_logins.contains(&login.to_lowercase()))
-            .filter_map(|(_, _, at, _)| *at),
-    );
+    let changes_requested_human_at = human_cr
+        .iter()
+        .filter(|(login, ..)| !requested_logins.contains(&login.to_lowercase()))
+        .map(|(_, _, at, _)| *at)
+        .collect::<Option<Vec<_>>>()
+        .and_then(|times| times.into_iter().max());
     let last_comment = detail.comments.nodes.iter().max_by_key(|c| c.created_at);
     let last_author = last_comment.and_then(|c| c.author.as_ref());
     let awaiting_our_reply = last_author.is_some_and(|a| {
