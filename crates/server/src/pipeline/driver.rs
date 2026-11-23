@@ -556,8 +556,10 @@ impl Driver<'_> {
         let verified = match checked {
             Ok(verified) => verified,
             Err(issues) => {
-                tracing::error!(analysis = %self.analysis, issues = issues.len(),
-                    "the merged plan fails verification against every agent hunk");
+                let codes: Vec<&str> = issues.iter().map(|issue| issue.kind.code()).collect();
+                let first = issues.first().map_or("", |issue| issue.message.as_str());
+                tracing::error!(analysis = %self.analysis, ?from, issues = ?codes, first_issue = %first,
+                    "the whole plan fails verification over the listed hunks; the analysis fails without a repair run");
                 return Err(PipelineError::RepairExhausted {
                     stage: "plan".to_owned(),
                     what: "plan of the flows",
