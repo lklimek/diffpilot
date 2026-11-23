@@ -110,6 +110,9 @@ pub struct Snapshot {
     pub changes_requested_by: Vec<String>,
     /// CI of the head; `None` when not read.
     pub ci: Option<CiStatus>,
+    /// Names of the check runs and statuses pending at the head when [`Snapshot::ci`] was read.
+    #[serde(default)]
+    pub pending_checks: Vec<String>,
     /// Threads, reviews and comments read.
     pub counts: (u32, u32, u32),
     /// Every page was read.
@@ -416,10 +419,10 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
 
     let snapshot = Snapshot {
         title: read.pr.title.clone(),
+        description: Some(read.pr.body.trim().to_owned()).filter(|body| !body.is_empty()),
         url: github_web_url(&read.pr.url).unwrap_or_default(),
         state: read.pr.state.clone(),
         draft: read.pr.is_draft,
-        description: Some(read.pr.body.trim().to_owned()).filter(|body| !body.is_empty()),
         base: read.pr.base_ref_name.clone(),
         head: read.pr.head_ref_oid.clone(),
         rounds,
@@ -427,6 +430,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         bot_change_requests,
         changes_requested_by,
         ci: None,
+        pending_checks: Vec::new(),
         counts: (
             u32::try_from(read.threads.len()).unwrap_or(u32::MAX),
             u32::try_from(read.reviews.len()).unwrap_or(u32::MAX),

@@ -359,8 +359,15 @@ async fn read_now(
         },
         id,
     };
-    let ci = match checks::fetch(config, &token, &handle.pr.repo, &summary.head_sha).await {
-        Ok(ci) => Some(ci),
+    let (ci, pending_checks) = match checks::fetch_with_pending(
+        config,
+        &token,
+        &handle.pr.repo,
+        &summary.head_sha,
+    )
+    .await
+    {
+        Ok((ci, pending)) => (Some(ci), pending),
         Err(error) => {
             tracing::debug!(
                 ?error,
@@ -377,8 +384,10 @@ async fn read_now(
         .map_or_else(default_known_bots, |stored| stored.settings.known_bots);
     let (observed, mut snapshot) = observe::observe(&read, &BotRule::new(&known_bots));
     snapshot.ci = ci;
+    snapshot.pending_checks = pending_checks;
     let new = apply(state, tenant, &handle, &observed, &snapshot).await?;
     add_pr_questions(state, tenant, &handle, &snapshot).await?;
+    seen::mark(state, &handle, &read).await?;
     let round_count = u32::try_from(snapshot.rounds.len()).unwrap_or(u32::MAX);
     let snapshot = serde_json::to_value(&snapshot).map_err(DbError::from)?;
     state
