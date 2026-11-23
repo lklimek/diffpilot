@@ -24,6 +24,7 @@ use super::observe::Snapshot;
 use super::queue;
 use super::{Loaded, LoopError, PrHandle, READ_INTERVAL};
 use crate::auth::Session;
+use crate::dashboard::plugin;
 use crate::github::mirror;
 use crate::pipeline::context::StoredResults;
 use crate::pipeline::tour::{self, TourLoadError};
@@ -717,8 +718,8 @@ pub async fn context(
             .into_iter()
             .filter_map(|note| {
                 let source = match note.plugin.as_str() {
-                    "pr-hygiene" => NoteSource::PrHygiene,
-                    "thepastaclaw" => NoteSource::Thepastaclaw,
+                    plugin::pr_hygiene::ID => NoteSource::PrHygiene,
+                    plugin::thepastaclaw::ID => NoteSource::Thepastaclaw,
                     _ => return None,
                 };
                 Some(NoteElsewhere {

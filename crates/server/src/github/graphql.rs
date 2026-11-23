@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use contracts::common::PrRef;
+
 use crate::config::GithubConfig;
 use crate::github::oauth::endpoint;
 
@@ -210,6 +212,71 @@ pub async fn execute<V: Serialize, D: DeserializeOwned>(
         None | Some(serde_json::Value::Null) => Err(GraphqlError::NoData),
         Some(data) => serde_json::from_value(data).map_err(GraphqlError::Malformed),
     }
+}
+
+/// `pageInfo` of a connection.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageInfo {
+    /// More nodes follow.
+    pub has_next_page: bool,
+    /// Cursor after the last node.
+    pub end_cursor: Option<String>,
+}
+
+/// One page of a connection.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Page<T> {
+    /// Paging state.
+    pub page_info: PageInfo,
+    /// The page's nodes.
+    pub nodes: Vec<T>,
+}
+
+/// Every node of one connection of `pr`, read page by page with `document` (variables `o`, `n`, `pr`, `after`), at
+/// most `max_pages`; `page_of` takes the page out of an answer. `None` when an answer has no page (no pull request);
+/// the flag is `false` when more nodes remain unread.
+pub async fn pr_pages<D: DeserializeOwned, T>(
+    config: &GithubConfig,
+    token: &SecretString,
+    pr: &PrRef,
+    document: &str,
+    max_pages: usize,
+    page_of: impl Fn(D) -> Option<Page<T>>,
+) -> Result<Option<(Vec<T>, bool)>, GraphqlError> {
+    let mut nodes = Vec::new();
+    let mut after: Option<String> = None;
+    for _ in 0..max_pages {
+        let data: D = execute(
+            config,
+            token,
+            document,
+            serde_json::json!({"o": pr.repo.owner, "n": pr.repo.name, "pr": pr.number, "after": after}),
+        )
+        .await?;
+        let Some(page) = page_of(data) else {
+            return Ok(None);
+        };
+        nodes.extend(page.nodes);
+        match page.page_info {
+            PageInfo {
+                has_next_page: true,
+                end_cursor: Some(cursor),
+            } => after = Some(cursor),
+            PageInfo {
+                has_next_page: true,
+                end_cursor: None,
+            } => return Ok(Some((nodes, false))),
+            _ => return Ok(Some((nodes, true))),
+        }
+    }
+    tracing::warn!(
+        count = nodes.len(),
+        max_pages,
+        "a pull request has more entries of one kind than are read; the list is partial"
+    );
+    Ok(Some((nodes, false)))
 }
 
 /// The answer's body, refused beyond [`MAX_RESPONSE_BYTES`].

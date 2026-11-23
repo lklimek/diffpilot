@@ -275,9 +275,12 @@ fn fact(label: &str, value: &str) -> Fact {
     }
 }
 
+/// The plug-in's id.
+pub const ID: &str = "thepastaclaw";
+
 impl DashboardPlugin for Thepastaclaw {
     fn id(&self) -> &'static str {
-        "thepastaclaw"
+        ID
     }
 
     fn name(&self) -> &'static str {

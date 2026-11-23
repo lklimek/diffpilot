@@ -2,7 +2,7 @@
 //! bot rule (RQ17): GitHub `Bot` type, a `[bot]` login or the reader's `known_bots`; thepastaclaw's markers are read
 //! from bot-authored text only, so a human cannot claim another item's key.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemGithubFacts, ItemLocation};
 use contracts::api::tour::CiStatus;
@@ -13,13 +13,14 @@ use db::repo::review_loop::ObservedItem;
 use serde::{Deserialize, Serialize};
 
 use super::markers::{self, GateState};
+use crate::dashboard::score::is_bot;
 use crate::github::review_loop::{Author, PrRead, Review};
 use crate::github::threads::github_web_url;
 
-/// The bot rule of one reader.
+/// The bot rule of one reader: the dashboard's (`dashboard::score::is_bot`).
 #[derive(Clone, Debug, Default)]
 pub struct BotRule {
-    known: BTreeSet<String>,
+    known: Vec<String>,
 }
 
 impl BotRule {
@@ -32,14 +33,11 @@ impl BotRule {
 
     /// The kind of `author`; a deleted account counts as a person.
     pub fn kind(&self, author: Option<&Author>) -> AuthorKind {
-        let Some(author) = author else {
-            return AuthorKind::Human;
-        };
-        let login = author.login.to_lowercase();
-        if author.typename == "Bot" || login.ends_with("[bot]") || self.known.contains(&login) {
-            AuthorKind::Bot
-        } else {
-            AuthorKind::Human
+        match author {
+            Some(author) if is_bot(&author.login, author.typename == "Bot", &self.known) => {
+                AuthorKind::Bot
+            }
+            _ => AuthorKind::Human,
         }
     }
 }

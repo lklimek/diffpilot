@@ -133,6 +133,7 @@ fn lock_key(tenant_id: &str, pr: &PrRef) -> String {
 async fn read_lock(tenant_id: &str, pr: &PrRef) -> tokio::sync::OwnedMutexGuard<()> {
     let lock = {
         let mut locks = READ_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+        locks.retain(|_, lock| Arc::strong_count(lock) > 1);
         Arc::clone(locks.entry(lock_key(tenant_id, pr)).or_default())
     };
     lock.lock_owned().await
@@ -402,7 +403,7 @@ pub(crate) fn bot_round_running(state: &AppState, pr: &PrRef, snapshot: Option<&
         .overlay(Timestamp::now())
         .notes(&pr.repo, pr.number)
         .iter()
-        .any(|note| note.plugin == "thepastaclaw");
+        .any(|note| note.plugin == crate::dashboard::plugin::thepastaclaw::ID);
     let gate = snapshot.is_some_and(|snapshot| {
         matches!(
             snapshot.gate,

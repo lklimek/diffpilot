@@ -21,7 +21,7 @@ use contracts::common::LineRange;
 use contracts::ids::{AnalysisId, JobId, QuestionId};
 use db::error::DbError;
 use db::repo::analyses::{AnalysisRecord, SessionState};
-use db::repo::questions::{Asked, NewQuestion, QuestionLimits, QuestionUpdate};
+use db::repo::questions::{Asked, NewQuestion, QuestionLimits, QuestionRecord, QuestionUpdate};
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
@@ -29,6 +29,7 @@ use contracts::time::Timestamp;
 use jiff::SignedDuration;
 
 pub use job::context_pack;
+pub(crate) use job::{CANCELLED, SERVER_ERROR, UNFIT_ANSWER};
 
 use crate::github::mirror::{MirrorError, is_tree_path, read_blob};
 use crate::pipeline::tour::{self, TourLoadError};
@@ -122,13 +123,7 @@ pub async fn ask(
     analysis: &AnalysisSummary,
     request: AnchoredAskRequest,
 ) -> Result<AskQuestion, AskError> {
-    let text = request.text.trim();
-    if text.is_empty() {
-        return Err(AskError::Empty);
-    }
-    if text.chars().count() > AskRequest::MAX_TEXT_CHARS {
-        return Err(AskError::TooLong);
-    }
+    let text = question_text(&request.text)?;
     if analysis.review_ready != Some(true)
         && !matches!(analysis.state, AnalysisState::Finished { .. })
     {
@@ -193,8 +188,37 @@ pub async fn ask(
     Ok(question)
 }
 
+/// The question text without surrounding space: not empty, at most [`AskRequest::MAX_TEXT_CHARS`].
+pub(crate) fn question_text(text: &str) -> Result<&str, AskError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(AskError::Empty);
+    }
+    if text.chars().count() > AskRequest::MAX_TEXT_CHARS {
+        return Err(AskError::TooLong);
+    }
+    Ok(text)
+}
+
 /// The first question of `parent`'s thread (one level: a follow-up's parent is its thread's first question); not
-/// found unless `parent` is this user's question on `analysis`, and refused unless `anchor` is the thread's.
+/// found unless `parent` is this user's question in the asker's scope (`in_scope`: its analysis or pull request), and
+/// refused unless `anchor` is the thread's.
+pub(crate) fn thread_root(
+    parent: &QuestionRecord,
+    user_id: &str,
+    in_scope: bool,
+    anchor: &AskAnchor,
+) -> Result<QuestionId, AskError> {
+    if !in_scope || parent.user_id != user_id {
+        return Err(AskError::UnknownParent);
+    }
+    if parent.question.anchor != *anchor {
+        return Err(AskError::FollowUpAnchor);
+    }
+    Ok(parent.question.parent_id.unwrap_or(parent.question.id))
+}
+
+/// [`thread_root`] of `parent` on `analysis`.
 async fn thread_of(
     state: &AppState,
     user_id: &str,
@@ -208,13 +232,12 @@ async fn thread_of(
         Err(DbError::NotFound) => return Err(AskError::UnknownParent),
         Err(error) => return Err(error.into()),
     };
-    if record.analysis_id != Some(analysis.id) || record.user_id != user_id {
-        return Err(AskError::UnknownParent);
-    }
-    if record.question.anchor != *anchor {
-        return Err(AskError::FollowUpAnchor);
-    }
-    Ok(record.question.parent_id.unwrap_or(record.question.id))
+    thread_root(
+        &record,
+        user_id,
+        record.analysis_id == Some(analysis.id),
+        anchor,
+    )
 }
 
 /// A step anchor names a stored step (and lines inside it); a lines anchor names a file of the diff on its side and

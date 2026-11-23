@@ -295,9 +295,12 @@ fn mark(value: &Value) -> String {
         .collect()
 }
 
+/// The plug-in's id.
+pub const ID: &str = "pr-hygiene";
+
 impl DashboardPlugin for PrHygiene {
     fn id(&self) -> &'static str {
-        "pr-hygiene"
+        ID
     }
 
     fn name(&self) -> &'static str {

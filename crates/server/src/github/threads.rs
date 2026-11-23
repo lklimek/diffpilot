@@ -5,11 +5,10 @@ use contracts::api::tour::{GithubThread, ThreadsStatus};
 use contracts::common::{LineSide, PrRef};
 use secrecy::SecretString;
 use serde::Deserialize;
-use serde_json::json;
 use url::Url;
 
 use crate::config::GithubConfig;
-use crate::github::graphql::{self, GraphqlError};
+use crate::github::graphql::{self, GraphqlError, Page};
 
 /// Threads are read in pages of 100; at most this many pages (1000 threads). More threads: the list is partial.
 pub const MAX_PAGES: usize = 10;
@@ -56,21 +55,7 @@ struct Repository {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PullRequest {
-    review_threads: Connection<ThreadNode>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Connection<T> {
-    page_info: PageInfo,
-    nodes: Vec<T>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PageInfo {
-    has_next_page: bool,
-    end_cursor: Option<String>,
+    review_threads: Page<ThreadNode>,
 }
 
 #[derive(Deserialize)]
@@ -161,41 +146,30 @@ pub async fn fetch(
     token: &SecretString,
     pr: &PrRef,
 ) -> Result<(Vec<GithubThread>, ThreadsStatus), GraphqlError> {
-    let mut threads = Vec::new();
-    let mut after: Option<String> = None;
-    for _ in 0..MAX_PAGES {
-        let data: Data = graphql::execute(
-            config,
-            token,
-            REVIEW_THREADS,
-            json!({"o": pr.repo.owner, "n": pr.repo.name, "pr": pr.number, "after": after}),
-        )
-        .await?;
-        let Some(page) = data
-            .repository
-            .and_then(|repository| repository.pull_request)
-            .map(|pull| pull.review_threads)
-        else {
-            return Err(GraphqlError::NoData);
-        };
-        threads.extend(page.nodes.into_iter().filter_map(|node| thread(pr, node)));
-        match page.page_info {
-            PageInfo {
-                has_next_page: true,
-                end_cursor: Some(cursor),
-            } => after = Some(cursor),
-            PageInfo {
-                has_next_page: true,
-                end_cursor: None,
-            } => return Ok((threads, ThreadsStatus::Partial)),
-            _ => return Ok((threads, ThreadsStatus::Checked)),
-        }
-    }
-    tracing::warn!(
-        count = threads.len(),
-        "the pull request has more review threads than are read; the thread list is partial"
-    );
-    Ok((threads, ThreadsStatus::Partial))
+    let (nodes, complete) = graphql::pr_pages(
+        config,
+        token,
+        pr,
+        REVIEW_THREADS,
+        MAX_PAGES,
+        |data: Data| {
+            data.repository
+                .and_then(|repository| repository.pull_request)
+                .map(|pull| pull.review_threads)
+        },
+    )
+    .await?
+    .ok_or(GraphqlError::NoData)?;
+    let threads = nodes
+        .into_iter()
+        .filter_map(|node| thread(pr, node))
+        .collect();
+    let status = if complete {
+        ThreadsStatus::Checked
+    } else {
+        ThreadsStatus::Partial
+    };
+    Ok((threads, status))
 }
 
 #[cfg(test)]
@@ -204,7 +178,7 @@ mod tests {
 
     use contracts::api::tour::Tour;
     use contracts::common::RepoRef;
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 

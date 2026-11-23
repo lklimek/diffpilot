@@ -33,7 +33,7 @@ pub use parts::{
     ESTIMATE, SIZE_MARKS, change_size_points, recency_points, size_mark, unblocks_points,
     waiting_points,
 };
-pub use rules::{BUILTIN_BRANCH_PATTERNS, ScoreRules, todo_display_ids};
+pub use rules::{BUILTIN_BRANCH_PATTERNS, ScoreRules, is_bot, todo_display_ids};
 
 pub(crate) use parts::pull_eligibility;
 use parts::{Eligibility, Part};

@@ -3,7 +3,7 @@
 //! `verify_comments` question pass. Either way the chat is the reader's own, per (pull request, user).
 
 use contracts::api::analyses::AnalysisState;
-use contracts::api::questions::{AnchoredAskRequest, AskAnchor, AskQuestion, AskRequest, AskState};
+use contracts::api::questions::{AnchoredAskRequest, AskAnchor, AskQuestion, AskState};
 use contracts::common::RepoRef;
 use contracts::ids::{AnalysisId, QuestionId};
 use contracts::time::Timestamp;
@@ -18,14 +18,8 @@ use crate::ask::{self, AskError, MAX_QUESTIONS_PER_ANALYSIS, MAX_QUESTIONS_PER_U
 use crate::auth::Session;
 use crate::state::AppState;
 
-/// Failure sentence of an answer that did not pass the checks; it is never shown.
-pub(super) const UNFIT_ANSWER: &str =
-    "The LLM's answer did not follow the answer rules, so it is not shown. Ask again.";
-/// Failure sentence of a question whose job was cancelled.
-pub(super) const CANCELLED: &str = "The question was cancelled before it was answered. Ask again.";
-/// Failure sentence of a server-side failure.
-pub(super) const SERVER_ERROR: &str =
-    "The question could not be answered because of a server error. Ask again later.";
+pub(super) use crate::ask::{CANCELLED, SERVER_ERROR, UNFIT_ANSWER};
+
 /// Failure sentence of a question whose comment is gone from the pull request.
 pub(super) const ITEM_GONE: &str =
     "The comment is no longer part of the pull request, so the question was not answered.";
@@ -59,13 +53,7 @@ pub async fn ask_about_item(
     number: u32,
     request: AnchoredAskRequest,
 ) -> Result<AskQuestion, ItemAskError> {
-    let text = request.text.trim();
-    if text.is_empty() {
-        return Err(AskError::Empty.into());
-    }
-    if text.chars().count() > AskRequest::MAX_TEXT_CHARS {
-        return Err(AskError::TooLong.into());
-    }
+    let text = ask::question_text(&request.text)?;
     let AskAnchor::CommentItem { item } = request.anchor else {
         return Err(ItemAskError::NotAnItem);
     };
@@ -105,15 +93,12 @@ pub async fn ask_about_item(
         return Ok(question);
     }
     let parent_id = match parent {
-        Some(parent) => {
-            if parent.pull_request_id != Some(pr) || parent.user_id != session.user_id {
-                return Err(AskError::UnknownParent.into());
-            }
-            if parent.question.anchor != (AskAnchor::CommentItem { item }) {
-                return Err(AskError::FollowUpAnchor.into());
-            }
-            Some(parent.question.parent_id.unwrap_or(parent.question.id))
-        }
+        Some(parent) => Some(ask::thread_root(
+            &parent,
+            &session.user_id,
+            parent.pull_request_id == Some(pr),
+            &AskAnchor::CommentItem { item },
+        )?),
         None => None,
     };
     let limits = PrQuestionLimits {

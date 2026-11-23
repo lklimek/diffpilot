@@ -17,6 +17,12 @@ pub const BUILTIN_BRANCH_PATTERNS: [&str; 6] = [
     "vX.Y-dev",
 ];
 
+/// Not a human: GitHub `Bot`, a `[bot]` login or one of `known_bots` (lower-case logins; K11, RQ17).
+pub fn is_bot(login: &str, typename_bot: bool, known_bots: &[String]) -> bool {
+    let low = login.to_lowercase();
+    typename_bot || low.ends_with("[bot]") || known_bots.contains(&low)
+}
+
 /// Rules of one user's ranking, from the dashboard settings and the signed-in login.
 #[derive(Clone, Debug)]
 pub struct ScoreRules {
@@ -89,8 +95,7 @@ impl ScoreRules {
 
     /// Not a human: GitHub `Bot`, a `[bot]` login or one of the user's known bots (K11).
     pub fn is_bot(&self, login: &str, typename_bot: bool) -> bool {
-        let low = login.to_lowercase();
-        typename_bot || low.ends_with("[bot]") || self.known_bots.contains(&low)
+        is_bot(login, typename_bot, &self.known_bots)
     }
 
     fn row(&self, repo: &RepoRef) -> Option<&RepoRule> {
