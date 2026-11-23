@@ -241,8 +241,10 @@ decides; the owner's `comment` on a decision is an instruction for it and is nev
 ### Using the diffpilot-decisions skill (Claude Code)
 `tools/skills/diffpilot-decisions/` is a Claude Code skill for an implementing agent working in a checkout of the
 pull request branch. Its script `scripts/sr_decisions.py` (Python standard library) uses RF1–RF4 only: `check`,
-`list`, `wait` (RF2 stream, reconnects), `show`, `text` (an effect's exact text to a file), `claim`, `renew` and
-`report` (one idempotency key per report attempt, reused when the same report is sent again). Exit codes:
+`list`, `wait` (RF2 stream, reconnects), `show`, `claim`, `renew`, `text` (an effect's text or a GitHub string,
+byte-exact, in a new file outside the checkout), `combine` (one PR-level comment for the `pr_comment` effects of one
+review) and `report` (one idempotency key per report attempt, reused when the same report is sent again;
+`--verify-head` refuses a fix's `done` unless the pull request head is the reported commit). Exit codes: see
 `SKILL.md`.
 
 1. **Install.** `cp -r tools/skills/diffpilot-decisions ~/.claude/skills/`.
@@ -254,10 +256,12 @@ pull request branch. Its script `scripts/sr_decisions.py` (Python standard libra
 3. **Run.** In a Claude Code session in that checkout, paste the prompt the pull request page shows:
 
    > Use the diffpilot-decisions skill to carry out my decisions on <owner>/<repo>#<number> from diffpilot at
-   > <server origin>: subscribe with capabilities fix,reply,resolve, claim each effect, do it in this repository's
-   > checkout of the PR branch, and report done or failed with the commit or comment link.
+   > <server origin>: subscribe with capabilities fix,reply,resolve, claim each decision, carry out its effects in
+   > this repository's checkout of the PR branch, and report each effect done or failed with the commit or comment
+   > link.
 
-The session claims one decision at a time (the claim covers all its agent effects), executes them in `seq` order
-with its own git and `gh`, and reports each with its reference. It never decides, never pushes to a base branch,
-never amends or force-pushes, and posts each effect's text unchanged (a reply waiting on a fix, follow-up PR or
-issue adds one line with that reference).
+The session claims one decision at a time (the claim covers all its agent effects; decisions whose `pr_comment`
+effects answer one review are claimed together), executes the effects in `seq` order with its own git and `gh`, and
+reports each with its reference. It never decides, never pushes to a base branch, never amends or force-pushes, and
+posts the text `text` or `combine` wrote: the effect's text unchanged, a reply or PR-level comment waiting on a fix,
+follow-up PR or upstream issue ending with that effect's reported reference.
