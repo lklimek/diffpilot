@@ -444,8 +444,15 @@ pub async fn report(
         Ok(ReportOutcomeRecord::Recorded) => {}
         Ok(ReportOutcomeRecord::Duplicate) => {
             tracing::debug!(%effect, "repeated agent report ignored (same idempotency key)");
-            // A retry after a failed round check announces the round now (the check is idempotent).
+            // A retry after a failed round check announces the round now (the check is idempotent); the read
+            // after the report runs again too.
             if request.outcome == ReportOutcome::Done {
+                super::seen::read_after_report(
+                    state,
+                    &owner.tenant_id,
+                    &principal.user_id,
+                    owner.pull_request_id,
+                );
                 round_executed(state, owner.pull_request_id).await?;
             }
             return Ok(());

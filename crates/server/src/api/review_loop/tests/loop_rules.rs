@@ -4,12 +4,12 @@
 
 use std::time::Duration;
 
-use contracts::api::review_loop::{EffectKind, WatchState};
+use contracts::api::review_loop::{DecisionBatchRow, DecisionVia, EffectKind, WatchState};
 use contracts::ids::CommentItemId;
 
 use super::feed::{EXECUTE, agent, with_token};
 use super::*;
-use crate::review_loop::seen;
+use crate::review_loop::{self, LoopError, seen};
 
 const FEED: &str = "/api/v1/decision-feed";
 
@@ -222,80 +222,22 @@ async fn a_new_recommendation_changes_the_item() {
 #[tokio::test]
 async fn read_after_a_report_marks_what_github_shows() {
     let w = world().await;
-    w.get(&format!("{PR}/comments")).await;
-    let decision = w
-        .decide_ok(L2, reject("The ceiling is the caller's."))
-        .await;
-    let (token, _) = agent(&w, &EXECUTE).await;
-    let (status, _, claim) = with_token(
-        &w,
-        &token,
-        "POST",
-        &claim_uri(&decision),
-        Some(json!({"capabilities": ["reply", "resolve"]})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{claim}");
-    let reply_url = "https://github.com/acme/node-client/pull/482#discussion_r3000000555";
-    for (effect, reference) in [
-        (&decision["effects"][0], reply_url),
-        (&decision["effects"][1], "PRRT_fixture482_l2"),
-    ] {
-        let (status, _, body) = with_token(
-            &w,
-            &token,
-            "POST",
-            &report_uri(effect),
-            Some(report("done", Some(reference))),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-    }
-    let acted: &dyn Fn(&mut Value) = &move |answer| {
-        let thread = thread_node(answer, "PRRT_fixture482_l2");
-        thread["isResolved"] = json!(true);
-        thread["resolvedBy"] = json!({"login": "lklimek"});
-        let mut reply = thread["comments"]["nodes"][0].clone();
-        reply["url"] = json!(reply_url);
-        reply["body"] = json!("Per maintainer decision, not changed.");
-        reply["author"] = json!({"login": "lklimek", "__typename": "User"});
-        let nodes = thread["comments"]["nodes"]
-            .as_array_mut()
-            .expect("comments");
-        nodes.push(reply);
-    };
-    let item: CommentItemId = serde_json::from_value(w.item(L2).await["id"].clone()).expect("id");
-    serve(&w.server, &[("review-threads.json", acted)]).await;
+    let reported = reported_reply_and_resolve(&w).await;
+    serve(&w.server, &[("review-threads.json", &acted_on_l2)]).await;
     w.age_read().await;
     // Only the read the reports scheduled reads GitHub here: the database is polled, no page is loaded.
-    let deadline = std::time::Instant::now() + seen::REPORT_READ_DELAY + Duration::from_secs(20);
-    let effects = loop {
-        let effects = w
-            .state
-            .db
-            .review_loop()
-            .item_decisions(item)
-            .await
-            .expect("decisions")[0]
-            .decision
-            .effects
-            .clone();
-        if effects
-            .iter()
-            .all(|effect| effect.seen_on_github_at.is_some())
-        {
-            break effects;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "not marked seen: {effects:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    assert_eq!(
-        effects.iter().map(|effect| effect.kind).collect::<Vec<_>>(),
-        [EffectKind::Reply, EffectKind::Resolve]
-    );
+    wait_until_seen(
+        &w,
+        reported.item,
+        seen::REPORT_READ_DELAY + Duration::from_secs(20),
+    )
+    .await;
+    let kinds: Vec<EffectKind> = reported
+        .reports
+        .iter()
+        .map(|(effect, _)| serde_json::from_value(effect["kind"].clone()).expect("kind"))
+        .collect();
+    assert_eq!(kinds, [EffectKind::Reply, EffectKind::Resolve]);
     assert_ne!(
         w.item(L2).await["state"],
         "outside",
@@ -451,4 +393,248 @@ async fn items_no_longer_read_leave_the_queue_and_stay_listed() {
     let back = w.item(L2).await;
     assert!(back.get("gone_at").is_none(), "{back}");
     assert!(queued(&w.get(&format!("{PR}/comments")).await, &no));
+}
+
+/// RQ4, RQ5, RQ11: a PR-level decision rests on what its scope was computed from. A gate marked on an item "Merge
+/// now" would follow up, or a listed bot's item asked again, between loading and storing refuses the decision instead
+/// of sweeping the gate item in or dismissing the review.
+#[tokio::test]
+async fn pr_level_decisions_refuse_a_scope_changed_meanwhile() {
+    let w = world().await;
+    w.get(&format!("{PR}/comments")).await;
+    let pr = crate::github::review_loop::tests::pr482();
+    let row = |item: &Value, kind: &str| -> DecisionBatchRow {
+        let mut body = decision(kind);
+        body["item_no"] = item["no"].clone();
+        body["item_revision"] = item["revision"].clone();
+        serde_json::from_value(body).expect("row")
+    };
+    let changed = |outcome: &Result<Vec<_>, LoopError>, item: &Value| {
+        let no = u32::try_from(item["no"].as_u64().expect("no")).expect("no");
+        matches!(outcome, Err(LoopError::ItemChanged(nos)) if nos.contains(&no))
+    };
+
+    let merge = row(&w.item("pr:3:merge").await, "merge_with_follow_ups");
+    let handle = review_loop::find(&w.state, DEFAULT_TENANT, &pr)
+        .await
+        .expect("pr");
+    let loaded = review_loop::Loaded::of(&w.state, handle)
+        .await
+        .expect("loaded");
+    w.assess(
+        L2,
+        recommend(DecisionKind::FixHere, "real bug"),
+        vec![Gate::Funds],
+    )
+    .await;
+    let outcome = review_loop::decide_loaded(
+        &w.state,
+        DEFAULT_TENANT,
+        "u1",
+        loaded,
+        &[merge],
+        DecisionVia::Question,
+    )
+    .await;
+    assert!(
+        changed(&outcome, &w.item(L2).await),
+        "the gate item is swept into the merge decision: {outcome:?}"
+    );
+
+    let w = world().await;
+    w.get(&format!("{PR}/comments")).await;
+    let rows: Vec<Value> = w
+        .items()
+        .await
+        .into_iter()
+        .filter(|item| item["author"] == "thepastaclaw" && item["state"] != "outside")
+        .map(|item| {
+            let mut row = reject("Per the maintainers, out of scope.");
+            row["item_no"] = item["no"].clone();
+            row["item_revision"] = item["revision"].clone();
+            row
+        })
+        .collect();
+    let (status, body) = w
+        .post(
+            &format!("{PR}/comments/decision-batches"),
+            json!({"via": "table", "rows": rows}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    w.reread(&[]).await;
+    let dismiss = row(&w.item("pr:3:dismiss").await, "dismiss_stale_reviews");
+    let handle = review_loop::find(&w.state, DEFAULT_TENANT, &pr)
+        .await
+        .expect("pr");
+    let loaded = review_loop::Loaded::of(&w.state, handle)
+        .await
+        .expect("loaded");
+    let l2 = w.item(L2).await;
+    let (status, reopened) = w
+        .post(
+            &format!("{PR}/comments/items/C{}/reopen", l2["no"]),
+            json!({"item_revision": l2["revision"]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{reopened}");
+    let outcome = review_loop::decide_loaded(
+        &w.state,
+        DEFAULT_TENANT,
+        "u1",
+        loaded,
+        &[dismiss],
+        DecisionVia::Question,
+    )
+    .await;
+    assert!(
+        changed(&outcome, &l2),
+        "the review of a finding asked again is dismissed: {outcome:?}"
+    );
+}
+
+const REPLY_URL: &str = "https://github.com/acme/node-client/pull/482#discussion_r3000000555";
+
+/// L2 decided, its reply and resolve claimed by an agent and reported `done` (each report sent once).
+struct Reported {
+    item: CommentItemId,
+    token: String,
+    /// (effect, report body) of the reply and of the resolve.
+    reports: Vec<(Value, Value)>,
+}
+
+async fn reported_reply_and_resolve(w: &World) -> Reported {
+    w.get(&format!("{PR}/comments")).await;
+    let decision = w
+        .decide_ok(L2, reject("The ceiling is the caller's."))
+        .await;
+    let (token, _) = agent(w, &EXECUTE).await;
+    let (status, _, claim) = with_token(
+        w,
+        &token,
+        "POST",
+        &claim_uri(&decision),
+        Some(json!({"capabilities": ["reply", "resolve"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{claim}");
+    let mut reports = Vec::new();
+    for (effect, reference) in [
+        (&decision["effects"][0], REPLY_URL),
+        (&decision["effects"][1], "PRRT_fixture482_l2"),
+    ] {
+        let body = report("done", Some(reference));
+        let (status, _, answer) =
+            with_token(w, &token, "POST", &report_uri(effect), Some(body.clone())).await;
+        assert_eq!(status, StatusCode::CREATED, "{answer}");
+        reports.push((effect.clone(), body));
+    }
+    Reported {
+        item: serde_json::from_value(w.item(L2).await["id"].clone()).expect("id"),
+        token,
+        reports,
+    }
+}
+
+/// GitHub after the agent acted on L2: the reply at [`REPLY_URL`], the thread resolved.
+fn acted_on_l2(answer: &mut Value) {
+    let thread = thread_node(answer, "PRRT_fixture482_l2");
+    thread["isResolved"] = json!(true);
+    thread["resolvedBy"] = json!({"login": "lklimek"});
+    let mut reply = thread["comments"]["nodes"][0].clone();
+    reply["url"] = json!(REPLY_URL);
+    reply["body"] = json!("Per maintainer decision, not changed.");
+    reply["author"] = json!({"login": "lklimek", "__typename": "User"});
+    thread["comments"]["nodes"]
+        .as_array_mut()
+        .expect("comments")
+        .push(reply);
+}
+
+/// Polls until every effect of the item's decision is seen on GitHub, at most `within`.
+async fn wait_until_seen(w: &World, item: CommentItemId, within: Duration) {
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        let effects = w
+            .state
+            .db
+            .review_loop()
+            .item_decisions(item)
+            .await
+            .expect("decisions")[0]
+            .decision
+            .effects
+            .clone();
+        if effects
+            .iter()
+            .all(|effect| effect.seen_on_github_at.is_some())
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not marked seen: {effects:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Plan §4.1: a read that ended moments before the reports' read makes that read too soon, not unnecessary; it is
+/// read again once allowed, so what the agent did is still marked.
+#[tokio::test]
+async fn a_read_just_before_the_reports_read_does_not_drop_it() {
+    let w = world().await;
+    let reported = reported_reply_and_resolve(&w).await;
+    tokio::time::sleep(seen::REPORT_READ_DELAY / 2).await;
+    w.reread(&[]).await;
+    serve(&w.server, &[("review-threads.json", &acted_on_l2)]).await;
+    wait_until_seen(
+        &w,
+        reported.item,
+        seen::REPORT_READ_DELAY * 2 + Duration::from_secs(15),
+    )
+    .await;
+}
+
+/// Plan §4.1: an agent repeating its `done` report (same idempotency key) schedules the read again too.
+#[tokio::test]
+async fn a_repeated_done_report_reads_github_again() {
+    let w = world().await;
+    let reported = reported_reply_and_resolve(&w).await;
+    let reported_at = Timestamp::now();
+    let id = w.pr_id().await;
+    let deadline = std::time::Instant::now() + seen::REPORT_READ_DELAY + Duration::from_secs(15);
+    while w
+        .state
+        .db
+        .review_loop()
+        .pr_state(id)
+        .await
+        .expect("state")
+        .and_then(|row| row.read_at)
+        .is_none_or(|at| at <= reported_at)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reports' read did not run"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    serve(&w.server, &[("review-threads.json", &acted_on_l2)]).await;
+    let (effect, body) = &reported.reports[1];
+    let (status, _, answer) = with_token(
+        &w,
+        &reported.token,
+        "POST",
+        &report_uri(effect),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{answer}");
+    wait_until_seen(
+        &w,
+        reported.item,
+        seen::REPORT_READ_DELAY + Duration::from_secs(15),
+    )
+    .await;
 }

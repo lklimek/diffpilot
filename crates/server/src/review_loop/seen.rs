@@ -21,8 +21,10 @@ pub const REPORT_READ_DELAY: Duration = Duration::from_secs(10);
 /// Pull requests with a read scheduled after a report.
 static SCHEDULED: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Mutex::default);
 
-/// After an agent's `done` report on pull request `pull_request_id`: reads it from GitHub [`REPORT_READ_DELAY`]
-/// later with the GitHub sign-in of `user` (the token's owner), which marks the effects it finds as seen.
+/// After an agent's `done` report on pull request `pull_request_id` (also a repeated one): reads it from GitHub
+/// [`REPORT_READ_DELAY`] later with the GitHub sign-in of `user` (the token's owner), which marks the effects it
+/// finds as seen. A read refused as too soon after another one is scheduled again: that read may have ended before
+/// a report this one covers.
 pub fn read_after_report(state: &AppState, tenant: &str, user: &str, pull_request_id: i64) {
     if !SCHEDULED
         .lock()
@@ -38,12 +40,14 @@ pub fn read_after_report(state: &AppState, tenant: &str, user: &str, pull_reques
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&pull_request_id);
-        if let Err(error) = read(&state, &tenant, &user, pull_request_id).await {
-            tracing::warn!(
+        match read(&state, &tenant, &user, pull_request_id).await {
+            Ok(()) => {}
+            Err(LoopError::TooSoon) => read_after_report(&state, &tenant, &user, pull_request_id),
+            Err(error) => tracing::warn!(
                 ?error,
                 pr = pull_request_id,
                 "the pull request could not be read from GitHub after an agent's report; the next read marks what agents did"
-            );
+            ),
         }
     });
 }
@@ -54,12 +58,7 @@ async fn read(state: &AppState, tenant: &str, user: &str, id: i64) -> Result<(),
         repo: stored.repo,
         number: stored.number,
     };
-    let read = match super::read_if_due(state, tenant, user, &pr, true).await {
-        Ok(read) => read,
-        // A read moments ago already saw the report's effect.
-        Err(LoopError::TooSoon) => return Ok(()),
-        Err(error) => return Err(error),
-    };
+    let read = super::read_if_due(state, tenant, user, &pr, true).await?;
     if let ReadOutcome::Read { new } = read.outcome
         && new > 0
         && let Err(error) =

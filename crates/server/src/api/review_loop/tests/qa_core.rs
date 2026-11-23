@@ -398,3 +398,36 @@ async fn thread_resolved_by_the_merge_decision_is_not_outside() {
         after["outside"]
     );
 }
+
+/// RQ3, plan §2.1, §2.5: a person who unresolves a thread somebody else resolved outside diffpilot objects again. The
+/// owner is asked again and the earlier decision's reply and resolve, which no agent claimed, are not executed.
+#[tokio::test]
+async fn human_thread_unresolved_after_an_outside_resolution_is_asked_again() {
+    let w = world().await;
+    w.get(&format!("{PR}/comments")).await;
+    w.decide_ok(L7, reject("Reads keep their own policy."))
+        .await;
+    let resolved: &dyn Fn(&mut Value) = &|answer| {
+        let thread = thread_node(answer, L7);
+        thread["isResolved"] = json!(true);
+        thread["resolvedBy"] = json!({"login": "alice"});
+    };
+    w.reread(&[("review-threads.json", resolved)]).await;
+    assert_eq!(w.item(L7).await["state"], "outside");
+    w.reread(&[]).await;
+    let item = w.item(L7).await;
+    assert_eq!(
+        item["state"], "reopened",
+        "the owner is asked again: {item}"
+    );
+    let decisions = item["decisions"].as_array().expect("decisions");
+    assert_eq!(decisions.len(), 1, "nothing is carried: {decisions:?}");
+    assert!(
+        decisions[0]["effects"]
+            .as_array()
+            .expect("effects")
+            .iter()
+            .all(|effect| effect["state"] == "cancelled"),
+        "the earlier rejection is still posted and resolved: {item}"
+    );
+}

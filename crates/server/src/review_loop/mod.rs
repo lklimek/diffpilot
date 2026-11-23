@@ -18,7 +18,7 @@ use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::review_loop::{
     ActionOutcome, DecideOutcome, ItemRecord, NewCarryEvent, NewDecision, NewEffect, ObservedItem,
-    ReadResult, StoredAssessment, StoredDecision, UpsertOutcome,
+    ReadResult, ScopeGuard, StoredAssessment, StoredDecision, UpsertOutcome,
 };
 use jiff::SignedDuration;
 
@@ -536,11 +536,13 @@ async fn apply(
             decided.is_some_and(|stored| stored.body_hash != item.body_hash);
         let state_if_new =
             decided.map_or(ItemState::Undecided, |stored| state_from(&stored.decision));
+        // A person's thread unresolved after a resolution outside diffpilot is an objection again; a bot's is not
+        // carried from there.
         let raised = before
             .filter(|record| {
                 item.outside.is_none()
                     && !queue::is_open(record.state)
-                    && record.state != ItemState::Outside
+                    && (record.state != ItemState::Outside || record.author_kind != AuthorKind::Bot)
             })
             .and_then(|record| carry::raised(record, &item));
         let verdict = match (before, decided, raised) {
@@ -724,6 +726,7 @@ async fn carry_over(
                 carried_from: Some(source),
                 head: CommitSha(snapshot.head.clone()),
                 effects: new_effects(planned.effects),
+                scope: ScopeGuard::default(),
             };
             match rl.decide(tenant, &[new], Timestamp::now()).await? {
                 DecideOutcome::Stored(_) => state.feed.wake_sync(),
@@ -1119,6 +1122,44 @@ impl Loaded {
             .collect()
     }
 
+    /// What the decision of `row` rests on besides its own item: P1 the items it follows up, P3 every item the
+    /// listed reviewers raised and no item raised since (RQ4, RQ5, RQ11).
+    fn scope_guard(
+        &self,
+        row: &DecisionBatchRow,
+        deciding: &[u32],
+    ) -> Result<ScopeGuard, LoopError> {
+        let record = self.item(row.item_no)?;
+        Ok(match (row.decision.kind, question_of(record)) {
+            (DecisionKind::MergeWithFollowUps, _) => ScopeGuard {
+                items: self
+                    .scope(deciding)?
+                    .remaining
+                    .iter()
+                    .map(|item| self.item(item.no).map(|item| (item.id, item.revision)))
+                    .collect::<Result<_, _>>()?,
+                last_no: None,
+            },
+            (DecisionKind::DismissStaleReviews, Some((PrQuestion::Dismiss, _))) => {
+                let listed = listed_reviews(&record.body);
+                ScopeGuard {
+                    items: self
+                        .items
+                        .iter()
+                        .filter(|item| {
+                            listed
+                                .iter()
+                                .any(|(login, _)| item.author.eq_ignore_ascii_case(login))
+                        })
+                        .map(|item| (item.id, item.revision))
+                        .collect(),
+                    last_no: self.items.iter().map(|item| item.no).max(),
+                }
+            }
+            _ => ScopeGuard::default(),
+        })
+    }
+
     /// Plans the effects of `rows` (validated against their items).
     pub(crate) fn plan(
         &self,
@@ -1161,6 +1202,27 @@ pub async fn decide(
     via: DecisionVia,
 ) -> Result<Vec<Decision>, LoopError> {
     let loaded = Loaded::of(state, handle).await?;
+    decide_loaded(
+        state,
+        &session.tenant_id,
+        &session.user_id,
+        loaded,
+        rows,
+        via,
+    )
+    .await
+}
+
+/// [`decide`] on the pull request as `loaded`; what a PR-level decision's scope rests on is checked again when
+/// the decisions are stored.
+pub(crate) async fn decide_loaded(
+    state: &AppState,
+    tenant: &str,
+    user: &str,
+    loaded: Loaded,
+    rows: &[DecisionBatchRow],
+    via: DecisionVia,
+) -> Result<Vec<Decision>, LoopError> {
     let mut seen = Vec::new();
     for row in rows {
         if seen.contains(&row.item_no) {
@@ -1212,14 +1274,19 @@ pub async fn decide(
         _ => {}
     }
     let planned = loaded.plan(rows)?;
+    let scopes = rows
+        .iter()
+        .map(|row| loaded.scope_guard(row, &seen))
+        .collect::<Result<Vec<_>, _>>()?;
     let head = CommitSha(loaded.snapshot()?.head.clone());
     let decisions: Vec<NewDecision> = rows
         .iter()
         .zip(planned)
-        .map(|(row, (record, planned))| NewDecision {
+        .zip(scopes)
+        .map(|((row, (record, planned)), scope)| NewDecision {
             item: record.id,
             item_revision: row.decision.item_revision,
-            user_id: session.user_id.clone(),
+            user_id: user.to_owned(),
             kind: row.decision.kind,
             reason: row
                 .decision
@@ -1247,12 +1314,13 @@ pub async fn decide(
             carried_from: None,
             head: head.clone(),
             effects: new_effects(planned.effects),
+            scope,
         })
         .collect();
     match state
         .db
         .review_loop()
-        .decide(&session.tenant_id, &decisions, Timestamp::now())
+        .decide(tenant, &decisions, Timestamp::now())
         .await?
     {
         DecideOutcome::Stored(stored) => {

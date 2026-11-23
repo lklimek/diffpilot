@@ -73,6 +73,17 @@ pub struct NewDecision {
     pub head: CommitSha,
     /// Effects.
     pub effects: Vec<NewEffect>,
+    /// What a PR-level decision's scope rests on; empty for other decisions.
+    pub scope: ScopeGuard,
+}
+
+/// What a PR-level decision's scope was computed from; a change since refuses the batch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScopeGuard {
+    /// Items and their revisions then.
+    pub items: Vec<(CommentItemId, u32)>,
+    /// The pull request's highest item number then; with it, an item raised since changes the scope too.
+    pub last_no: Option<u32>,
 }
 
 /// Result of [`ReviewLoop::decide`].
@@ -427,7 +438,8 @@ async fn settle(
 
 impl ReviewLoop<'_> {
     /// Stores decisions all or nothing, each superseding its item's current decision (whose effects not yet
-    /// claimed are cancelled). Every item must still be at the revision named.
+    /// claimed are cancelled). Every item, and every item a decision's scope rests on, must still be at the
+    /// revision named.
     pub async fn decide(
         &self,
         tenant_id: &str,
@@ -442,8 +454,26 @@ impl ReviewLoop<'_> {
             if item.revision != new.item_revision {
                 changed.push(item.no);
             }
+            for (scoped, revision) in &new.scope.items {
+                let scoped = item_in(&mut tx, *scoped).await?;
+                if scoped.revision != *revision {
+                    changed.push(scoped.no);
+                }
+            }
+            if let Some(last_no) = new.scope.last_no {
+                let raised: Vec<u32> = sqlx::query_scalar(
+                    "SELECT item_no FROM comment_items WHERE pull_request_id = ? AND item_no > ? ORDER BY item_no",
+                )
+                .bind(item.pull_request_id)
+                .bind(last_no)
+                .fetch_all(&mut *tx)
+                .await?;
+                changed.extend(raised);
+            }
             items.push(item);
         }
+        changed.sort_unstable();
+        changed.dedup();
         if !changed.is_empty() {
             return Ok(DecideOutcome::ItemChanged(changed));
         }
@@ -634,38 +664,24 @@ impl ReviewLoop<'_> {
         if !exists {
             return Err(DbError::NotFound);
         }
-        let superseded: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM comment_decisions WHERE supersedes = ?)",
+        // A claim whose lease ended ends here as the expiry sweep would end it, and the decision is settled (a
+        // failed effect's dependents and a reopened item's work cancelled) before anything is handed out again.
+        let lapsed: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM comment_effects WHERE decision_id = ? AND state = 'claimed'
+                            AND lease_until < ?)",
         )
         .bind(decision.to_string())
+        .bind(ts(now))
         .fetch_one(&mut *tx)
         .await?;
-        let rows = sqlx::query(
-            "SELECT kind, state, claim_token_id, lease_until FROM comment_effects
-             WHERE decision_id = ? AND executor = 'agent' AND state IN ('waiting', 'open', 'claimed')",
-        )
-        .bind(decision.to_string())
-        .fetch_all(&mut *tx)
-        .await?;
-        if superseded || rows.is_empty() {
-            return Ok(ClaimOutcome::NothingOpen);
+        if lapsed {
+            release(&mut tx, &decision.to_string(), None, now).await?;
+            settle(&mut tx, &decision.to_string(), false, now).await?;
         }
-        let allowed = capabilities
-            .iter()
-            .map(|kind| wire(*kind))
-            .collect::<Result<BTreeSet<_>, _>>()?;
-        for row in &rows {
-            let holder: Option<String> = row.try_get("claim_token_id")?;
-            let lease_until = opt_ts_col(row, "lease_until")?;
-            if holder.is_some_and(|holder| holder != token.0)
-                && lease_until.is_some_and(|until| until >= now)
-            {
-                return Ok(ClaimOutcome::Taken);
-            }
-            let kind: String = row.try_get("kind")?;
-            if !allowed.contains(&kind) {
-                return Ok(ClaimOutcome::CapabilityMissing);
-            }
+        let refused = claim_refusal(&mut tx, decision, token, capabilities, now).await?;
+        if let Some(refused) = refused {
+            tx.commit().await?;
+            return Ok(refused);
         }
         let until = now + lease;
         sqlx::query(
@@ -944,6 +960,49 @@ async fn release(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// Why `token` cannot claim the decision now, if it cannot.
+async fn claim_refusal(
+    tx: &mut Transaction<'static, Sqlite>,
+    decision: DecisionId,
+    token: &AccessTokenId,
+    capabilities: &[EffectKind],
+    now: Timestamp,
+) -> Result<Option<ClaimOutcome>, DbError> {
+    let superseded: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM comment_decisions WHERE supersedes = ?)")
+            .bind(decision.to_string())
+            .fetch_one(&mut **tx)
+            .await?;
+    let rows = sqlx::query(
+        "SELECT kind, state, claim_token_id, lease_until FROM comment_effects
+         WHERE decision_id = ? AND executor = 'agent' AND state IN ('waiting', 'open', 'claimed')",
+    )
+    .bind(decision.to_string())
+    .fetch_all(&mut **tx)
+    .await?;
+    if superseded || rows.is_empty() {
+        return Ok(Some(ClaimOutcome::NothingOpen));
+    }
+    let allowed = capabilities
+        .iter()
+        .map(|kind| wire(*kind))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    for row in &rows {
+        let holder: Option<String> = row.try_get("claim_token_id")?;
+        let lease_until = opt_ts_col(row, "lease_until")?;
+        if holder.is_some_and(|holder| holder != token.0)
+            && lease_until.is_some_and(|until| until >= now)
+        {
+            return Ok(Some(ClaimOutcome::Taken));
+        }
+        let kind: String = row.try_get("kind")?;
+        if !allowed.contains(&kind) {
+            return Ok(Some(ClaimOutcome::CapabilityMissing));
+        }
+    }
+    Ok(None)
 }
 
 /// Feed entries (decision, item and PR) matching `filter`.
