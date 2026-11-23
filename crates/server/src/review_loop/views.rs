@@ -348,8 +348,11 @@ fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize, my_work: &MyWork)
         read_failed: loaded.row.read_failure.is_some() || snapshot.is_none(),
         ci,
         ignored_not_passing: ignored_not_passing.unwrap_or_default(),
-        ready_to_merge: snapshot
-            .and_then(|snapshot| my_work.ready_to_merge(&pr.repo, pr.number, &snapshot.head)),
+        ready_to_merge: snapshot.and_then(|snapshot| {
+            my_work.ready_to_merge(&pr.repo, pr.number, &snapshot.head, &snapshot.base)
+        }),
+        draft: snapshot.is_some_and(|snapshot| snapshot.draft),
+        unresolved_threads: snapshot.map_or(0, |snapshot| snapshot.unresolved_threads),
         failed_effects: standing.values().map(|s| failed(s)).sum(),
         undecided: count(waiting),
         executing: count(standing.values().filter(|s| effects_open(s)).count()),

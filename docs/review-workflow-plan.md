@@ -320,8 +320,8 @@ targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe 
 | B2 | Questions waiting | amber (`med`) | undecided questions exist |
 | B3 | Executing | teal (`bot`) | decided effects are open or claimed |
 | B4 | Waiting for bot round | blue (`low`) | thepastaclaw reports this head reviewing or queued, or a watched pass waits for the round |
-| B5 | Ready to merge | green (`ok`) | none of B1–B4; CI passed; no review requests changes (or all such are dismissed); PR Hygiene, when present, agrees; My work lists it as Ready to merge (K17) at this head |
-  Unknown inputs (CI not read, GitHub read failed, My work's last scan did not read this head) show no B5; the
+| B5 | Ready to merge | green (`ok`) | none of B1–B4; CI passed; no review requests changes (or all such are dismissed); PR Hygiene, when present, agrees; My work lists it as Ready to merge (K17) at this head and base, and the last read shows no draft and no unresolved thread |
+  Unknown inputs (CI not read, GitHub read failed, My work's last scan did not read this head and base) show no B5; the
   tooltip says what is missing.
 
 ## 4. Data and sources
