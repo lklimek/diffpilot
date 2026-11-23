@@ -14,6 +14,9 @@ pub mod verify_comments;
 
 pub use strict::StrictSchemaError;
 
+/// The claudius skills the shared prompt rules require (analysis, repair and Ask jobs).
+pub const ANALYSIS_SKILLS: [&str; 1] = ["severity"];
+
 /// Kind of an agent job (brief §5 Job kinds).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -42,6 +45,16 @@ impl JobKind {
         Self::JudgeWork,
         Self::VerifyComments,
     ];
+
+    /// The claudius skills a job of this kind is given and needs (ADR-002, SK1); the runner gives only skills
+    /// its `SR_RUNNER_SKILLS` allows.
+    pub fn required_skills(self) -> &'static [&'static str] {
+        match self {
+            Self::Plan | Self::PrContext | Self::AnalyseFlow | Self::Ask => &ANALYSIS_SKILLS,
+            Self::JudgeWork => &[],
+            Self::VerifyComments => &verify_comments::SKILLS,
+        }
+    }
 
     /// The snake_case name used on the wire and in file names.
     pub fn as_str(self) -> &'static str {

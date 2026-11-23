@@ -225,6 +225,13 @@ roll back and report it, never delete the database.
 
 ## Upgrade to v1.3
 
+**Check `SR_RUNNER_SKILLS` before upgrading** (step 1 of "Upgrade"): comment assessments (`verify_comments`) need the
+claudius skill `check-pr-comments` besides `severity`. An `.env` made from an earlier `.env.example` may pin
+`SR_RUNNER_SKILLS=severity`; then every comment assessment fails. Set
+`SR_RUNNER_SKILLS=severity,check-pr-comments`, or delete the line to use that default. The runner logs an `error`
+"SR_RUNNER_SKILLS leaves out skills that jobs require" at start naming the missing ones, and
+`deploy/check-production-config.sh --env-file` fails while one is left out.
+
 Two optional variables are new; add them to `/srv/diffpilot/.env` to use them (step 1 of "Upgrade"):
 
 | Variable | Required | Default | Meaning |

@@ -963,16 +963,24 @@ async fn dropped_detached_attempt_holds_settled_until_it_has_stopped() {
     assert_removed(&stub.seen());
 }
 
+/// The failure names the skill and the setting to change.
 #[tokio::test]
 async fn missing_required_skill_reports_configuration() {
     let root = TempDir::new().unwrap();
     let stub = Stub::new(Behaviour::Fail(|| {
-        ProviderError::Configuration(crate::skills::SkillError::Unavailable)
+        ProviderError::Configuration(crate::skills::SkillError::NotAllowed(
+            "check-pr-comments".to_owned(),
+        ))
     }));
     let executor = Executor::new(stub, dirs(root.path()), credential());
     let (result, _) = execute_collect(&executor, spec(JobKind::Plan, shared_repo())).await;
     let wire = serde_json::to_value(&result).unwrap();
     assert_eq!(wire["outcome"]["kind"], "configuration");
+    let message = wire["outcome"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("check-pr-comments") && message.contains("SR_RUNNER_SKILLS"),
+        "{message}"
+    );
 }
 
 #[tokio::test]

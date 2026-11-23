@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use contracts::agent::JobKind;
+
 use crate::git;
 
 /// Largest total size of the skill files given to one job.
@@ -50,9 +52,18 @@ pub enum SkillError {
     /// No successfully refreshed checkout is configured.
     #[error("the analysis skills are unavailable; check the runner skills configuration")]
     Unavailable,
-    /// A requested skill is missing, empty or excluded by the allow-list.
-    #[error("a required analysis skill is missing; check the runner skills configuration")]
-    Missing,
+    /// A requested skill is not in the allow-list.
+    #[error(
+        "the job needs the skill {0}, which SR_RUNNER_SKILLS does not list; add it there (default \
+         severity,check-pr-comments) or remove the setting"
+    )]
+    NotAllowed(String),
+    /// A requested skill is missing or empty in the claudius checkout.
+    #[error(
+        "the job needs the skill {0}, which the claudius checkout lacks; check SR_RUNNER_CLAUDIUS_URL and \
+         SR_RUNNER_CLAUDIUS_REF"
+    )]
+    Missing(String),
     /// The runner cannot read its skill checkout.
     #[error("the analysis skills could not be read; check the runner skills permissions")]
     Read(#[from] io::Error),
@@ -127,6 +138,9 @@ impl Skills {
 
     /// Gives every required skill or fails before the agent can run without its instructions.
     pub fn required_files(&self, requested: &[String]) -> Result<SkillFiles, SkillError> {
+        if let Some(name) = requested.iter().find(|name| !self.allowed.contains(name)) {
+            return Err(SkillError::NotAllowed(name.clone()));
+        }
         let given = self.files(requested)?.ok_or(SkillError::Unavailable)?;
         for name in requested {
             let manifest = Path::new(name).join("SKILL.md");
@@ -135,10 +149,24 @@ impl Skills {
                 .iter()
                 .any(|(path, bytes)| path == &manifest && !bytes.is_empty())
             {
-                return Err(SkillError::Missing);
+                return Err(SkillError::Missing(name.clone()));
             }
         }
         Ok(given)
+    }
+
+    /// The skills some job kind requires that the allow-list leaves out, in job-kind order.
+    pub fn missing_required(&self) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        for kind in JobKind::ALL {
+            for skill in kind.required_skills() {
+                if !self.allowed.iter().any(|allowed| allowed == skill) && !missing.contains(skill)
+                {
+                    missing.push(*skill);
+                }
+            }
+        }
+        missing
     }
 
     /// The files of the requested skills that are allowed and present; `None` before the first refresh.
@@ -240,6 +268,42 @@ mod tests {
             );
         }
         format!("file://{}", repo.display())
+    }
+
+    /// A pinned `SR_RUNNER_SKILLS` without a skill some job kind requires is named at start-up, and a job asking
+    /// for it fails with a message naming the setting to change.
+    #[tokio::test]
+    async fn required_skills_outside_the_allow_list_are_named() {
+        let root = TempDir::new().unwrap();
+        let pinned = Skills::new(
+            claudius(root.path()),
+            "main".to_owned(),
+            root.path().join("checkout"),
+            vec!["severity".to_owned()],
+            Duration::from_secs(3600),
+        );
+        assert_eq!(pinned.missing_required(), ["check-pr-comments"]);
+        pinned.refresh_if_due().await;
+        let error = pinned
+            .required_files(&["severity".to_owned(), "check-pr-comments".to_owned()])
+            .unwrap_err();
+        assert!(
+            matches!(&error, SkillError::NotAllowed(name) if name == "check-pr-comments"),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("SR_RUNNER_SKILLS"), "{error}");
+        let error = pinned
+            .required_files(&["severity".to_owned(), "delegate".to_owned()])
+            .unwrap_err();
+        assert!(matches!(error, SkillError::NotAllowed(_)), "{error:?}");
+        let default = Skills::new(
+            String::new(),
+            "main".to_owned(),
+            root.path().join("other"),
+            vec!["severity".to_owned(), "check-pr-comments".to_owned()],
+            Duration::from_secs(3600),
+        );
+        assert!(default.missing_required().is_empty());
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ use contracts::agent::verify_comments::{
 use contracts::agent::{self as agent, JobKind};
 use contracts::api::review_loop::{CommentAssessment, DecisionTarget, Necessity, Recommendation};
 use contracts::ids::{CommitSha, JobId};
-use contracts::job::result::{JobOutcome, JobResult};
+use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use contracts::time::Timestamp;
 use db::repo::questions::QuestionUpdate;
 use db::repo::review_loop::PassRecord;
@@ -98,8 +98,13 @@ pub(super) async fn result(
             }
         },
         JobOutcome::Cancelled => ask::CANCELLED.to_owned(),
-        JobOutcome::Failed { kind, .. } => {
-            tracing::warn!(pass = %pass.id, ?kind, "the verify_comments job failed");
+        JobOutcome::Failed { kind, message } => {
+            if kind == JobFailureKind::Configuration {
+                // The runner's own text (not provider output): which setting lacks which skill.
+                tracing::error!(pass = %pass.id, %message, "the runner cannot run verify_comments jobs; fix its configuration");
+            } else {
+                tracing::warn!(pass = %pass.id, ?kind, "the verify_comments job failed");
+            }
             format!(
                 "{} Ask again.",
                 plain_failure(Some(CallFailure::Failed(kind)))
