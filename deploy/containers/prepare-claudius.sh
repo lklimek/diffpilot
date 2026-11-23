@@ -3,7 +3,7 @@
 set -eu
 source_tree=${1:?reference checkout required}
 context=${2:?empty output directory required}
-pin=460e5fd735acc642a8bba2c2ff78df37e3a6d5c9
+pin=71096d7d4481977added8761b2cfd63cd84852b4
 [ "$(git -C "$source_tree" rev-parse HEAD)" = "$pin" ]
 mkdir "$context"
 git -C "$source_tree" archive "$pin" \

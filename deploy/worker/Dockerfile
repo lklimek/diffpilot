@@ -42,7 +42,7 @@ COPY --chmod=0755 deploy/worker/dp-worker-entry deploy/worker/gh /usr/local/bin/
 COPY LICENSE.md /usr/share/doc/diffpilot/LICENSE.md
 RUN ln -s /opt/codex/bin/codex /usr/local/bin/codex \
  && ln -s /etc/codex/claudius/skills /etc/codex/skills \
- && test "$(cat /etc/codex/claudius/SOURCE_COMMIT)" = 460e5fd735acc642a8bba2c2ff78df37e3a6d5c9 \
+ && test "$(cat /etc/codex/claudius/SOURCE_COMMIT)" = 71096d7d4481977added8761b2cfd63cd84852b4 \
  && jq -e '.properties.schema_version.enum | index("4.2.0")' /etc/codex/claudius/schemas/review-report.schema.json \
  && python3 /etc/codex/claudius/scripts/validate_report.py /etc/codex/claudius/tests/fixtures/reports/v4-comment-assessments-host.json \
  && chmod -R a+rX,go-w /etc/codex /opt/codex \

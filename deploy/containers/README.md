@@ -7,7 +7,7 @@ W2's gateway and W4/W8's runner startup; it is not the deployment entry point ye
 1. Prepare the curated claudius context from the approved read-only checkout:
 
    ```sh
-   deploy/containers/prepare-claudius.sh /path/to/claudius-at-460e5fd /data/tmp/v13w3-claudius
+   deploy/containers/prepare-claudius.sh /path/to/claudius-at-71096d7 /data/tmp/v13w3-claudius
    ```
 
 2. Build sequentially under the host's heavy-job lock. On a restricted host, set `DOCKER_CONFIG` to an empty
