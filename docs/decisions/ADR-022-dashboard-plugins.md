@@ -8,6 +8,8 @@
 - Amendment DR1 (owner, 2026-11-22; plan K15, K17): the held-back list is removed (a held pull request stays in the
   ranking with its note, §6); a statement may say whose move a pull request is, which decides Waiting on others
   (K15 W3b, §11).
+- Amendment DR2 (owner, 2026-11-23; plan K15): a current statement of the reviewers' or maintainers' move comes before
+  the ready label, which is the fallback (§11).
 - Overrides `CLAUDE.md` "no abstraction beyond the seams the brief names" for exactly this seam.
 
 ## Context

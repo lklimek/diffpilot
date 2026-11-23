@@ -29,7 +29,7 @@ closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nod
 assignees(first: 10) { nodes { login } } \
 reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } \
 ... on Bot { login } ... on Team { name } } } } \
-reviews(last: 20) { totalCount nodes { author { __typename login } state submittedAt } } \
+reviews(last: 20) { totalCount nodes { author { __typename login } state submittedAt commit { oid } } } \
 comments(last: 30) { nodes { author { __typename login } body createdAt } } \
 reviewThreads(first: 100) { nodes { isResolved isOutdated \
 comments(first: 5) { nodes { author { __typename login } body createdAt } } } } \
@@ -70,6 +70,13 @@ pub struct Actor {
 pub struct Login {
     /// Login.
     pub login: String,
+}
+
+/// A node with an `oid`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct Oid {
+    /// Object id.
+    pub oid: String,
 }
 
 /// A node with a `name`.
@@ -151,6 +158,9 @@ pub struct ReviewNode {
     pub state: String,
     /// Submission time (null for a pending review).
     pub submitted_at: Option<Timestamp>,
+    /// Commit reviewed (null when GitHub no longer has it or the query does not select it).
+    #[serde(default)]
+    pub commit: Option<Oid>,
 }
 
 /// A comment (conversation or thread).
