@@ -276,6 +276,26 @@ describe("DecisionLog (V3)", () => {
     expect(screen.getByText('Reason (not posted): "Soft limit."')).toBeVisible();
   });
 
+  it("normalises the stored public reply", () => {
+    render(
+      <DecisionLog
+        log={withDecision({
+          reply_text:
+            "<!-- hidden --><b>Finding</b>: `nonce`. [docs](https://example.com)\n**Prompt for AI agents**\nDrop.",
+        })}
+        pr={PR}
+        now={NOW}
+        storageKey="t"
+        origin="http://agentic:3000"
+      />,
+    );
+    const reply = screen.getByText(/^Public reply: "Finding:/);
+    expect(reply).toHaveTextContent('Public reply: "Finding: nonce. docs (https://example.com)"');
+    expect(reply).not.toHaveTextContent(/hidden|<b>|Prompt|Drop/);
+    expect(reply.querySelector("a,img")).toBeNull();
+    expect(reply.querySelector("code")).toHaveTextContent("nonce");
+  });
+
   it("another user's push target shows its kind and delivery state, not its address", () => {
     const l = log();
     const webhook = l.subscribers.find((s) => s.push?.kind === "webhook")!;

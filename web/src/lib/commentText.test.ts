@@ -108,4 +108,113 @@ describe("GitHub comment display text", () => {
     ["literal comparisons", "Use x < y and Vec<T>.", "Use x < y and Vec<T>."],
     ["empty", "", ""],
   ])("handles %s", (_, body, expected) => expect(commentText(body)).toBe(expected));
+
+  it.each([
+    [
+      "quoted HTML link",
+      '<a href="https://example.com/docs"><b>docs</b></a>',
+      "docs (https://example.com/docs)",
+    ],
+    [
+      "single-quoted HTML link",
+      "<a title='Help' href='https://example.com/docs'>docs</a>",
+      "docs (https://example.com/docs)",
+    ],
+    [
+      "href inside another attribute",
+      `<a title="href='https://wrong.example'" data-href="https://also-wrong.example" href="https://example.com">docs</a>`,
+      "docs (https://example.com)",
+    ],
+    ["Windows paths", String.raw`src\_private_\file.ts`, String.raw`src\_private_\file.ts`],
+    [
+      "formatted HTML prompt heading",
+      "Finding.<h3>__Prompt for AI agents__</h3>Drop.<h3>Evidence</h3>Keep.",
+      "Finding.\nEvidence\nKeep.",
+    ],
+    ["unquoted HTML link", "<a href=https://example.com/docs>docs</a>", "docs (https://example.com/docs)"],
+    [
+      "HTML headings",
+      "Finding.<h3>Prompt for AI agents</h3>Drop.<h4>Nested</h4>Drop too.<h3>Evidence</h3>Keep.",
+      "Finding.\nEvidence\nKeep.",
+    ],
+    [
+      "bold heading",
+      "Finding.\n**Prompt for AI agents**\nDrop.\n**Evidence**\nKeep.",
+      "Finding.\nEvidence\nKeep.",
+    ],
+    [
+      "underscore heading",
+      "Finding.\n__Prompt to fix the issue:__\nDrop.\n__Evidence__\nKeep.",
+      "Finding.\nEvidence\nKeep.",
+    ],
+    [
+      "HTML bold heading",
+      "Finding.\n<strong>Prompt for AI agents</strong>\nDrop.\n<strong>Evidence</strong>\nKeep.",
+      "Finding.\nEvidence\nKeep.",
+    ],
+    [
+      "setext heading",
+      "Finding.\nPrompt for AI agents\n--------------------\nDrop.\nEvidence\n--------\nKeep.",
+      "Finding.\nEvidence\n--------\nKeep.",
+    ],
+    [
+      "flattened excerpt",
+      "Finding. ### Prompt for AI agents Drop. ### Evidence Keep.",
+      "Finding. ### Evidence Keep.",
+    ],
+    [
+      "flattened bold excerpt",
+      "Finding. **Prompt for AI agents** Drop. **Evidence** Keep.",
+      "Finding. Evidence Keep.",
+    ],
+    [
+      "inline bold inside a prompt",
+      "Finding.\n**Prompt for AI agents**\nUse **nonce** to fix it.\n**Evidence**\nKeep.",
+      "Finding.\nEvidence\nKeep.",
+    ],
+    [
+      "inline HTML bold inside a prompt",
+      "Finding.\n<strong>Prompt for AI agents</strong>\nUse <b>nonce</b> to fix it.\n<strong>Evidence</strong>\nKeep.",
+      "Finding.\nEvidence\nKeep.",
+    ],
+    ["emphasis", "*Important* and _careful_.", "Important and careful."],
+    ["one-character emphasis", "*x* _y_", "x y"],
+    ["markup in bold text", "**<section>Finding</section>** **Use `<T>`**", "Finding\n Use `<T>`"],
+    [
+      "headings in marker sections",
+      "<!-- ai-agent-prompt:start --><h3>Prompt for AI agents</h3>Drop.<!-- ai-agent-prompt:end -->Keep.",
+      "Keep.",
+    ],
+    [
+      "identifiers and paths",
+      "snake_case_name src/_private_/file.ts src/*glob*/file a*b*c *src/path*",
+      "snake_case_name src/_private_/file.ts src/*glob*/file a*b*c src/path",
+    ],
+    [
+      "generic HTML tags",
+      "<section><em>Warning</em></section><button>Start</button><svg><title>badge</title></svg><custom-note>Keep</custom-note>",
+      "Warning\nStartbadgeKeep",
+    ],
+    [
+      "literal markup in code",
+      "`Vec<T> *em* _em_ <custom-note>`\n```html\n<h3>Prompt for AI agents</h3>\n**Prompt for AI agents**\n```\nKeep.",
+      "`Vec<T> *em* _em_ <custom-note>`\n```html\n<h3>Prompt for AI agents</h3>\n**Prompt for AI agents**\n```\nKeep.",
+    ],
+  ])("normalises %s", (_, body, expected) => expect(commentText(body)).toBe(expected));
+
+  it.each([
+    ["unclosed links", "[x]("],
+    ["unclosed tags", '<custom-note attr="'],
+    ["unclosed comments", "<!--"],
+    ["long backtick runs", "`"],
+    ["unmatched backtick runs", Array.from({ length: 600 }, (_, i) => "`".repeat(i + 1) + "x").join(" ")],
+    ["unclosed labels", "["],
+    ["nested details", "<details>x"],
+    ["whitespace without a newline", " ".repeat(199_999) + "x"],
+  ])("normalises 200 kB of %s within 200 ms", (_, pattern) => {
+    const body = pattern.repeat(Math.ceil(200_000 / pattern.length)).slice(0, 200_000);
+    const start = performance.now();
+    commentText(body);
+    expect(performance.now() - start).toBeLessThan(200);
+  });
 });

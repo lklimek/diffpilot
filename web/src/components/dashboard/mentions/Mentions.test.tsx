@@ -44,7 +44,7 @@ describe("Mentions", () => {
     expect(screen.getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(
       ["1", "2", "3"].map((id) => mention(id).url),
     );
-    expect(screen.getAllByText(/<script>alert\(1\)<\/script> @alice/)).toHaveLength(3);
+    expect(screen.getAllByText(/· @alice$/)).toHaveLength(3);
     await user.click(screen.getByText("+1 more"));
     expect(screen.getAllByRole("link")).toHaveLength(4);
     await user.click(screen.getAllByRole("button", { name: /Hide mention/ })[0]!);
@@ -149,4 +149,23 @@ it("announces coverage once on the toggle without another tab stop", async () =>
   expect(coverage).toHaveAttribute("title", expect.stringContaining("@alice-helper"));
   await user.tab();
   expect(screen.getByRole("button", { name: "Next" })).toHaveFocus();
+});
+
+it("normalises the mention excerpt and its tooltip", () => {
+  const { container } = render(
+    <Mentions
+      {...props}
+      items={[
+        {
+          ...mention("1"),
+          text: '<!-- hidden --><section>*Finding*</section> <a href="https://example.com">docs</a> **Prompt for AI agents** Drop.',
+        },
+      ]}
+    />,
+  );
+  const excerpt = container.querySelector("p[title]")!;
+  expect(excerpt).toHaveTextContent("Finding docs (https://example.com)");
+  expect(excerpt).toHaveAttribute("title", "Finding\n docs (https://example.com)");
+  expect(excerpt).not.toHaveTextContent(/hidden|<section>|Prompt|Drop/);
+  expect(excerpt.querySelector("a,img")).toBeNull();
 });

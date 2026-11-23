@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { commentText } from "../../../lib/commentText";
 import type { Mention, MentionCoverage } from "../../../api/generated/types";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { dateTimeText } from "../../format/time";
@@ -54,7 +55,10 @@ export function Mentions({
   const visible = items
     .filter((item) => withBots || !item.is_bot)
     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at) || a.id.localeCompare(b.id));
-  const rows = all ? visible : visible.slice(0, 3);
+  const rows = (all ? visible : visible.slice(0, 3)).map((item) => ({
+    ...item,
+    text: commentText(item.text),
+  }));
   return (
     <section
       aria-label="Mentions"

@@ -710,7 +710,7 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     expect(
       within(panel)
         .getAllByRole("listitem")
-        .map((li) => li.querySelector("p")?.textContent),
+        .map((li) => li.querySelector(".whitespace-pre-wrap")?.textContent),
     ).toEqual(["Is the retry bounded?", "And the backoff?"]);
     await user.click(within(panel).getAllByRole("button", { name: /^Delete comment on/ })[1]!);
     expect(onDeleteComment).toHaveBeenCalledWith("c2");
@@ -937,6 +937,31 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     expect(within(popover).getByRole("link", { name: /Open on GitHub/ })).toHaveAttribute("href", thread.url);
     await user.click(within(popover).getByRole("button", { name: /^Show in Inspector/ }));
     expect(onShowInInspector).toHaveBeenCalledWith({ kind: "thread", id: thread.id });
+  });
+
+  it("normalises thread text in both hover and pinned previews", async () => {
+    const user = userEvent.setup();
+    render(
+      <CodeView
+        lines={plain(1, ["a", "b"])}
+        threads={[
+          {
+            ...thread,
+            excerpt:
+              "<!-- hidden --><b>Finding</b> [docs](https://example.com) ### Prompt for AI agents Drop.",
+          },
+        ]}
+      />,
+    );
+    const marker = screen.getByRole("button", { name: "GitHub thread by bob at line 2" });
+    await user.hover(marker);
+    const preview = screen.getByRole("dialog", { name: "GitHub thread at line 2" });
+    expect(preview).toHaveTextContent("Finding docs (https://example.com)");
+    expect(preview).not.toHaveTextContent(/hidden|<b>|Prompt|Drop/);
+    expect(preview.querySelector("a,img")).toBeNull();
+    await user.click(marker);
+    expect(preview).toHaveTextContent("Finding docs (https://example.com)");
+    expect(preview.querySelectorAll("a")).toHaveLength(1);
   });
 
   it("omits Open on GitHub without a thread URL and Show in Inspector for a thread outside the steps", async () => {
