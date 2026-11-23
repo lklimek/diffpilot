@@ -23,7 +23,10 @@ export function AnalyseAllButton({ enabled, busy, hint, onChange }: Props) {
         onClick={() => !busy && onChange(!enabled)}
         className={buttonClass(enabled ? "plain" : "primary", true)}
       >
-        {enabled ? "Analysing all remaining flows — Stop" : "Analyse all remaining flows"}
+        {/* Wraps in a narrow Flows column instead of widening it. */}
+        <span className="whitespace-normal">
+          {enabled ? "Analysing all remaining flows — Stop" : "Analyse all remaining flows"}
+        </span>
       </button>
     </Tooltip>
   );
