@@ -18,7 +18,7 @@ python3 $S text D E                               # effect E's text to post, byt
 python3 $S text D E --field title                 # or body | params.title | params.url: a GitHub/server string in a file
 python3 $S combine D1 D2                          # ONE PR-level comment for the pr_comment effects of one review_id
 python3 $S report E done --reference R            # or: failed --message M | released (gives the whole claim back)
-python3 $S report E done --reference SHA --verify-head O/N#N   # fix: refused unless the PR head is SHA
+python3 $S report E done --reference SHA --verify-head O/N#N   # fix: refused unless SHA is a commit of the PR
 python3 $S renew D                                # extends the lease (each report renews it too)
 ```
 `text`, `combine`: a reply or PR-level comment waiting on a `fix`, `follow_up_pr` or `upstream_issue` ends with that effect's reported reference (never after a `todo`; skipped when the text has it); refused until it is reported done. Files: omit `--out` (private temp file outside the checkout); `--out` only for a new path outside any git work tree, e.g. in `mktemp -d`.
@@ -32,12 +32,12 @@ Exit codes: 0 ok, 2 configuration or bad request, 3 token rejected or scope miss
 2. `list` with the prompt's `--repo`/`--pr` and capabilities; exit 5: `wait`.
 3. `show D`, then `claim D`. One decision at a time, except the decisions whose `pr_comment` effects share one `review_id` (step 4).
 4. Each `executor: agent` effect in `seq` order; one with `after` starts only after that effect is reported done:
-   - `fix`: change the item's location as the decision and the owner's comment direct; run the repo's checks; new commit (`git commit -F <message file>`); `git push` without remote or refspec. Report `done --reference "$(git rev-parse HEAD)" --verify-head O/N#N`; refused: push it right or report `failed`.
+   - `fix`: change the item's location as the decision and the owner's comment direct; run the repo's checks; new commit (`git commit -F <message file>`); `git push` without remote or refspec (several fixes may share one push). Report each `done --reference <its commit SHA> --verify-head O/N#N`; refused: push it or report `failed`; exit 4 "could not decide" (250+ commits): tell the user, do not report done.
    - `reply`: `text D E` → F; post to `params.thread_id`; reference: the comment URL.
    - `resolve`: resolve `params.thread_id`; reference: the thread id.
    - `pr_comment`: `text D E` → F, `gh pr comment N --repo O/N --body-file F`; reference: its URL. Effects naming the same `review_id`: claim all their decisions, `combine D1 D2 …` → F, post once, report its URL for each effect it lists.
    - `follow_up_pr` (`gh pr create --draft --title "$(cat T)" --body-file B`, T from `--field params.title`), `upstream_issue` (`gh issue create`, or the given `url`), `todo` (`memcan:todo`), `dismiss_review` (GraphQL `dismissPullRequestReview`): only when subscribed; reference: PR URL, issue URL, TODO id, review id.
-5. `report E done --reference R` right after each effect. Cannot do it: `report E failed --message "<reason>"` (cancels the effects waiting on it), stop, tell the user. Decision left untouched: `released`, then `--skip D`.
+5. `report E done --reference R` after each effect (a fix once pushed). Cannot do it: `report E failed --message "<reason>"` (cancels the effects waiting on it), stop, tell the user. Decision left untouched: `released`, then `--skip D`.
 6. Work past ~20 min: `renew D`.
 7. Next decision (step 2) until exit 5 or the user stops.
 

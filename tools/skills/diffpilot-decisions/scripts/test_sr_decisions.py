@@ -951,44 +951,68 @@ def fake_gh(env, monkeypatch):
         "#!/bin/sh\n"
         f"printf '%s\\n' \"$@\" > '{args_file}'\n"
         '[ -n "$FAKE_GH_FAIL" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }\n'
-        "printf '%s\\n' \"$FAKE_GH_HEAD\"\n"
+        "printf '%s\\n' \"$FAKE_GH_COMMITS\"\n"
     )
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("FAKE_GH_HEAD", SHA)
+    monkeypatch.setenv("FAKE_GH_COMMITS", "\n".join(["1" * 40, SHA, "2" * 40]))
     monkeypatch.delenv("FAKE_GH_FAIL", raising=False)
     return args_file
 
 
-def test_report_done_with_verify_head_checks_the_pr_head_first(env, fake, capsys, fake_gh):
+VERIFY = ("report", E1, "done", "--reference", SHA, "--verify-head", "acme/widget#482")
+
+
+def test_report_done_with_verify_head_accepts_a_commit_of_the_pr_not_its_head(env, fake, capsys, fake_gh):
     fake.on("POST", report_path(), (201, {}, None))
-    code, out, errout = run(capsys, "report", E1, "done", "--reference", SHA, "--verify-head", "acme/widget#482")
+    code, out, errout = run(capsys, *VERIFY)
     assert code == 0, errout
     assert fake_gh.read_text().split() == [
-        "pr",
-        "view",
-        "482",
-        "--repo",
-        "acme/widget",
-        "--json",
-        "headRefOid",
-        "--jq",
-        ".headRefOid",
-    ]
+        "pr", "view", "482", "--repo", "acme/widget", "--json", "commits", "--jq", ".commits[].oid",
+    ]  # fmt: skip
     assert fake.requests[0]["body"]["reference"] == SHA
 
 
-def test_report_done_is_refused_when_the_pr_head_differs(env, fake, capsys, fake_gh, monkeypatch):
-    monkeypatch.setenv("FAKE_GH_HEAD", "e" * 40)
-    code, _, errout = run(capsys, "report", E1, "done", "--reference", SHA, "--verify-head", "acme/widget#482")
+def test_report_verify_head_accepts_an_upper_case_sha(env, fake, capsys, fake_gh):
+    fake.on("POST", report_path(), (201, {}, None))
+    code, _, errout = run(capsys, "report", E1, "done", "--reference", SHA.upper(), "--verify-head", "acme/widget#482")
+    assert code == 0, errout
+
+
+def test_report_done_is_refused_when_the_pr_lacks_the_commit(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_COMMITS", "\n".join(["1" * 40, "e" * 40]))
+    code, _, errout = run(capsys, *VERIFY)
     assert code == 2
-    assert "e" * 40 in errout and "failed" in errout
+    assert "not among" in errout and "failed" in errout
+    assert fake.requests == []
+
+
+def test_report_verify_head_cannot_decide_on_a_truncated_commit_list(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_COMMITS", "\n".join(f"{n:040x}" for n in range(1, 251)))
+    code, _, errout = run(capsys, *VERIFY)
+    assert code == 4
+    assert "could not decide" in errout and "250" in errout
+    assert fake.requests == []
+
+
+def test_report_verify_head_finds_the_commit_in_a_long_list(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_COMMITS", "\n".join([*(f"{n:040x}" for n in range(1, 250)), SHA]))
+    fake.on("POST", report_path(), (201, {}, None))
+    code, _, errout = run(capsys, *VERIFY)
+    assert code == 0, errout
+
+
+@pytest.mark.parametrize("answer", ["", "not-a-sha", SHA + "\nnot-a-sha"])
+def test_report_verify_head_on_an_unreadable_gh_answer_exits_4(env, fake, capsys, fake_gh, monkeypatch, answer):
+    monkeypatch.setenv("FAKE_GH_COMMITS", answer)
+    code, _, errout = run(capsys, *VERIFY)
+    assert code == 4 and "gh" in errout
     assert fake.requests == []
 
 
 def test_report_verify_head_when_gh_fails_exits_4_without_a_report(env, fake, capsys, fake_gh, monkeypatch):
     monkeypatch.setenv("FAKE_GH_FAIL", "1")
-    code, _, errout = run(capsys, "report", E1, "done", "--reference", SHA, "--verify-head", "acme/widget#482")
+    code, _, errout = run(capsys, *VERIFY)
     assert code == 4 and "gh" in errout
     assert fake.requests == []
 

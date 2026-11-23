@@ -54,6 +54,8 @@ REFERENCED_KINDS = ("fix", "follow_up_pr", "upstream_issue")
 REPLY_KINDS = ("reply", "pr_comment")
 ENDED_STATES = ("done", "failed", "cancelled")
 GH_TIMEOUT = 60
+# GitHub lists at most this many commits of a pull request.
+GH_COMMIT_LIMIT = 250
 CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 30
 COMMAND_DEADLINE = 180
@@ -1033,15 +1035,15 @@ def _report_fields(args) -> tuple[str | None, str | None]:
     return reference, message
 
 
-def _pr_head(repo: str, number: str) -> str:
-    """The PR's head commit as GitHub reports it (`gh`, the agent's own GitHub sign-in)."""
-    command = ["gh", "pr", "view", number, "--repo", repo, "--json", "headRefOid", "--jq", ".headRefOid"]
+def _pr_commits(repo: str, number: str) -> list[str]:
+    """The PR's commits as GitHub lists them (`gh`, the agent's own GitHub sign-in; at most GH_COMMIT_LIMIT)."""
+    command = ["gh", "pr", "view", number, "--repo", repo, "--json", "commits", "--jq", ".commits[].oid"]
     try:
         done = subprocess.run(
             command, capture_output=True, text=True, timeout=GH_TIMEOUT, check=False, stdin=subprocess.DEVNULL
         )
     except FileNotFoundError:
-        raise SrError("gh is not installed; cannot check the pull request head", EXIT_SERVER) from None
+        raise SrError("gh is not installed; cannot check the pull request's commits", EXIT_SERVER) from None
     except subprocess.TimeoutExpired:
         raise SrError(f"gh did not answer within {GH_TIMEOUT} s; retry", EXIT_SERVER) from None
     except OSError as exc:
@@ -1050,13 +1052,13 @@ def _pr_head(repo: str, number: str) -> str:
         lines = done.stderr.strip().splitlines()
         why = f": {clean(lines[-1])[:200]}" if lines else ""
         raise SrError(
-            f"gh could not read the head of {repo}#{number} (exit {done.returncode}{why}); check gh, then retry",
+            f"gh could not read the commits of {repo}#{number} (exit {done.returncode}{why}); check gh, then retry",
             EXIT_SERVER,
         )
-    head = done.stdout.strip().lower()
-    if not SHA_RE.fullmatch(head):
-        raise SrError(f"gh answered no commit SHA for the head of {repo}#{number}", EXIT_SERVER)
-    return head
+    commits = [line.strip().lower() for line in done.stdout.splitlines() if line.strip()]
+    if not commits or not all(SHA_RE.fullmatch(c) for c in commits):
+        raise SrError(f"gh answered no commit list for {repo}#{number}; retry", EXIT_SERVER)
+    return commits
 
 
 def _verify_head(args, reference: str | None) -> None:
@@ -1067,13 +1069,20 @@ def _verify_head(args, reference: str | None) -> None:
         raise SrError("--verify-head expects owner/name#number", EXIT_CONFIG)
     if reference is None or not SHA_RE.fullmatch(reference.lower()):
         raise SrError("--verify-head needs --reference with the full 40-character commit SHA", EXIT_CONFIG)
-    head = _pr_head(*spec.groups())
-    if head != reference.lower():
+    commits = _pr_commits(*spec.groups())
+    if reference.lower() in commits:
+        return
+    if len(commits) >= GH_COMMIT_LIMIT:
         raise SrError(
-            f"the head of {args.verify_head} is {head}, not {reference}: the pull request does not hold the fix; "
-            "push it to the PR's head branch, or report the fix failed",
-            EXIT_CONFIG,
+            f"{args.verify_head} has {GH_COMMIT_LIMIT} or more commits and GitHub lists only {GH_COMMIT_LIMIT}; "
+            f"the check could not decide whether {reference} is among them. Do not report done; tell the user",
+            EXIT_SERVER,
         )
+    raise SrError(
+        f"{reference} is not among the commits of {args.verify_head}: the pull request does not hold the fix; "
+        "push it to the PR's head branch, or report the fix failed",
+        EXIT_CONFIG,
+    )
 
 
 def cmd_report(client: Client, args) -> int:
@@ -1187,7 +1196,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     rep.add_argument("outcome", choices=("done", "failed", "released"))
     rep.add_argument("--reference", help="done: commit SHA, comment URL, thread id, PR or TODO id")
     rep.add_argument("--message", help="failed: the reason")
-    rep.add_argument("--verify-head", metavar="OWNER/NAME#N", help="done of a fix: the PR head must be --reference")
+    rep.add_argument("--verify-head", metavar="OWNER/NAME#N", help="done of a fix: --reference must be a PR commit")
     args = parser.parse_args(argv)
     if args.cmd in ("list", "wait") and args.pr is not None and not args.repo:
         parser.error("--pr needs --repo")
