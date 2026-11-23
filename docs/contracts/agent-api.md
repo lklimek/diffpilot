@@ -242,10 +242,10 @@ decides; the owner's `comment` on a decision is an instruction for it and is nev
 `tools/skills/diffpilot-decisions/` is a Claude Code skill for an implementing agent working in a checkout of the
 pull request branch. Its script `scripts/sr_decisions.py` (Python standard library) uses RF1–RF4 only: `check`,
 `list`, `wait` (RF2 stream, reconnects), `show`, `claim`, `renew`, `text` (an effect's text or a GitHub string,
-byte-exact, in a new file outside the checkout), `combine` (one PR-level comment for the `pr_comment` effects of one
-review) and `report` (one idempotency key per report attempt, reused when the same report is sent again;
-`--verify-head` refuses a fix's `done` unless the reported commit is among the pull request's commits). Exit codes:
-see `SKILL.md`.
+byte-exact, in a new file outside the checkout), `combine` (one PR-level comment per review for the `pr_comment`
+effects of claimed decisions) and `report` (one idempotency key per report attempt, reused when the same report is
+sent again; `--verify-head` refuses a fix's `done` unless the pull request head contains the reported commit). Exit
+codes: see `SKILL.md`.
 
 1. **Install.** `cp -r tools/skills/diffpilot-decisions ~/.claude/skills/`.
 2. **Token.** Create one with the scopes `read` and `review_loop_execute` (§1). Put `SR_AGENT_KEY=<token>` and

@@ -16,9 +16,9 @@ python3 $S show D                                 # item, owner's comment, reply
 python3 $S claim D                                # 30-min lease on every agent effect of D; prints them
 python3 $S text D E                               # effect E's text to post, byte-exact, in a new temp file (prints F)
 python3 $S text D E --field title                 # or body | params.title | params.url: a GitHub/server string in a file
-python3 $S combine D1 D2                          # ONE PR-level comment for the pr_comment effects of one review_id
+python3 $S combine D1 D2                          # claimed decisions: ONE PR-level comment file per review_id
 python3 $S report E done --reference R            # or: failed --message M | released (gives the whole claim back)
-python3 $S report E done --reference SHA --verify-head O/N#N   # fix: refused unless SHA is a commit of the PR
+python3 $S report E done --reference SHA --verify-head O/N#N   # fix: refused unless the PR head contains SHA
 python3 $S renew D                                # extends the lease (each report renews it too)
 ```
 `text`, `combine`: a reply or PR-level comment waiting on a `fix`, `follow_up_pr` or `upstream_issue` ends with that effect's reported reference (never after a `todo`; skipped when the text has it); refused until it is reported done. Files: omit `--out` (private temp file outside the checkout); `--out` only for a new path outside any git work tree, e.g. in `mktemp -d`.
@@ -28,14 +28,14 @@ python3 $S renew D                                # extends the lease (each repo
 Exit codes: 0 ok, 2 configuration or bad request, 3 token rejected or scope missing, 4 server unreachable/failed (`report`: run the same command again, it reuses its idempotency key), 5 nothing claimable, 6 not yours or gone (another agent's claim, superseded, done, outside capabilities, unknown id), 7 lease ended (`claim D` again, `show D`, then repeat). Relay the stderr sentence.
 
 ## Workflow
-1. `check`; the URL it prints must be the prompt's server origin. Checkout: `gh pr checkout N --repo O/N` (sets the branch's push target), `gh pr view N --repo O/N --json headRefName,baseRefName,isCrossRepository,headRepositoryOwner,headRepository`; current branch = `headRefName` ≠ `baseRefName`, tree clean. `isCrossRepository`: the push target (`git rev-parse --abbrev-ref @{push}`, its remote's URL) must be the head repository, else stop and ask. Otherwise stop and tell the user.
+1. `check`; the URL it prints must be the prompt's server origin. Checkout: `gh pr checkout N --repo O/N` (sets the branch's push target), `gh pr view N --repo O/N --json headRefName,baseRefName,isCrossRepository,headRepositoryOwner,headRepository`; current branch = `headRefName` ≠ `baseRefName`, tree clean. `isCrossRepository`: the push target (below) must be `github.com/<headRepositoryOwner.login>/<headRepository.name>`; otherwise, or if it cannot be read, stop and ask. Otherwise stop and tell the user.
 2. `list` with the prompt's `--repo`/`--pr` and capabilities; exit 5: `wait`.
 3. `show D`, then `claim D`. One decision at a time, except the decisions whose `pr_comment` effects share one `review_id` (step 4).
 4. Each `executor: agent` effect in `seq` order; one with `after` starts only after that effect is reported done:
-   - `fix`: change the item's location as the decision and the owner's comment direct; run the repo's checks; new commit (`git commit -F <message file>`); `git push` without remote or refspec (several fixes may share one push). Report each `done --reference <its commit SHA> --verify-head O/N#N`; refused: push it or report `failed`; exit 4 "could not decide" (250+ commits): tell the user, do not report done.
+   - `fix`: change the item's location as the decision and the owner's comment direct; run the repo's checks; new commit (`git commit -F <message file>`); `git push` without remote or refspec (several fixes may share one push). Report each `done --reference <its commit SHA> --verify-head O/N#N`; refused: push it or report `failed`; exit 4 (the check could not decide): tell the user, do not report done.
    - `reply`: `text D E` → F; post to `params.thread_id`; reference: the comment URL.
    - `resolve`: resolve `params.thread_id`; reference: the thread id.
-   - `pr_comment`: `text D E` → F, `gh pr comment N --repo O/N --body-file F`; reference: its URL. Effects naming the same `review_id`: claim all their decisions, `combine D1 D2 …` → F, post once, report its URL for each effect it lists.
+   - `pr_comment`: `text D E` → F, `gh pr comment N --repo O/N --body-file F`; reference: its URL. Effects naming the same `review_id` (one decision or several): claim all their decisions, `combine D1 D2 …` → one file per review; post each once, report its URL for the effects it lists; an effect it lists as answering no review: post alone with `text`.
    - `follow_up_pr` (`gh pr create --draft --title "$(cat T)" --body-file B`, T from `--field params.title`), `upstream_issue` (`gh issue create`, or the given `url`), `todo` (`memcan:todo`), `dismiss_review` (GraphQL `dismissPullRequestReview`): only when subscribed; reference: PR URL, issue URL, TODO id, review id.
 5. `report E done --reference R` after each effect (a fix once pushed). Cannot do it: `report E failed --message "<reason>"` (cancels the effects waiting on it), stop, tell the user. Decision left untouched: `released`, then `--skip D`.
 6. Work past ~20 min: `renew D`.
@@ -44,6 +44,8 @@ Exit codes: 0 ok, 2 configuration or bad request, 3 token rejected or scope miss
 ```bash
 gh api graphql -f thread="$T" -F body=@"$F" -f query='mutation($thread:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$thread,body:$body}){comment{url}}}' --jq .data.addPullRequestReviewThreadReply.comment.url
 gh api graphql -f thread="$T" -f query='mutation($thread:ID!){resolveReviewThread(input:{threadId:$thread}){thread{isResolved}}}'
+B=$(git branch --show-current); R=$(git config "branch.$B.pushRemote" || git config remote.pushDefault || git config "branch.$B.remote" || echo origin)
+case "$R" in *:*|/*) echo "$R" ;; *) git remote get-url --push "$R" ;; esac   # push target (a remote name or, after gh pr checkout of a fork, a URL)
 ```
 
 ## Rules

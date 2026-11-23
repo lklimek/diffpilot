@@ -54,8 +54,6 @@ REFERENCED_KINDS = ("fix", "follow_up_pr", "upstream_issue")
 REPLY_KINDS = ("reply", "pr_comment")
 ENDED_STATES = ("done", "failed", "cancelled")
 GH_TIMEOUT = 60
-# GitHub lists at most this many commits of a pull request.
-GH_COMMIT_LIMIT = 250
 CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 30
 COMMAND_DEADLINE = 180
@@ -951,44 +949,57 @@ def cmd_text(client: Client, args) -> int:
     return EXIT_OK
 
 
+def _pr_comments(decision: dict, states: tuple[str, ...]) -> list[dict]:
+    return [
+        e
+        for e in _effects(decision)
+        if e.get("kind") == "pr_comment" and e.get("executor") == "agent" and e.get("state") in states
+    ]
+
+
 def cmd_combine(client: Client, args) -> int:
-    parts, reviews, prs = [], set(), set()
-    for did in dict.fromkeys(args.decisions):
-        fd = _feed_decision(client, did)
-        prs.add(_pr_name(fd.get("pr")))
-        found = [
-            e
-            for e in _effects(fd["decision"])
-            if e.get("kind") == "pr_comment" and e.get("executor") == "agent" and e.get("state") not in ENDED_STATES
-        ]
-        if not found:
-            raise SrError(f"decision {did} has no open pr_comment effect", EXIT_CONFIG)
-        for effect in found:
-            params = _obj(effect.get("params"))
-            review = params.get("review_id")
-            reviews.add(review if isinstance(review, str) and SAFE_ID_RE.fullmatch(review) else None)
-            nos = params.get("item_nos")
-            no = (
-                nos[0] if isinstance(nos, list) and nos and _int(nos[0]) is not None else _obj(fd.get("item")).get("no")
-            )
-            parts.append((_int(no) or 0, posted_text(fd["decision"], effect), clean(effect.get("id", "?"))))
+    decisions = list(dict.fromkeys(args.decisions))
+    shown = {did: _feed_decision(client, did) for did in decisions}
+    prs = {_pr_name(fd.get("pr")) for fd in shown.values()}
     if len(prs) != 1:
         raise SrError(f"the decisions belong to different pull requests ({', '.join(sorted(prs))})", EXIT_CONFIG)
-    if len(reviews) != 1 or None in reviews:
-        raise SrError(
-            "the pr_comment effects do not all name one review; combine only those of one review_id and post "
-            "the others one by one with text",
-            EXIT_CONFIG,
-        )
-    parts.sort(key=lambda part: part[0])
-    path = write_new("\n\n".join(f"C{no}: {text}" for no, text, _ in parts), args.out)
-    print(f"wrote one comment for review {next(iter(reviews))} ({len(parts)} items) to {path}")
-    print("report its URL as done for effects: " + " ".join(eid for _, _, eid in parts))
+    for did, fd in shown.items():
+        if not _pr_comments(fd["decision"], ("waiting", "open", "claimed")):
+            raise SrError(f"decision {did} has no claimed pr_comment effect left", EXIT_CONFIG)
+        if _pr_comments(fd["decision"], ("waiting", "open")):
+            raise SrError(f"decision {did} is not claimed; claim {did} first", EXIT_CONFIG)
+    groups: dict[str, list[tuple[int, str, str]]] = {}
+    alone: list[tuple[int, str, str]] = []
+    for did in decisions:
+        # Claiming again renews this agent's own claim and answers 409 for another agent's.
+        dec = _claim(client, did, args.capabilities)["decision"]["decision"]
+        mine = _pr_comments(dec, ("claimed",))
+        if not mine:
+            raise SrError(f"decision {did} has no claimed pr_comment effect left", EXIT_CONFIG)
+        for effect in mine:
+            params = _obj(effect.get("params"))
+            nos = params.get("item_nos")
+            no = _int(nos[0]) if isinstance(nos, list) and nos else None
+            eid = clean(effect.get("id", "?"))
+            review = params.get("review_id")
+            if isinstance(review, str) and SAFE_ID_RE.fullmatch(review):
+                groups.setdefault(review, []).append((no or 0, posted_text(dec, effect), eid))
+            else:
+                alone.append((no or 0, did, eid))
+    if args.out is not None and len(groups) != 1:
+        raise SrError(f"--out names one file, but the effects answer {len(groups)} reviews; omit --out", EXIT_CONFIG)
+    for review, parts in groups.items():
+        parts.sort(key=lambda part: part[0])
+        path = write_new("\n\n".join(f"C{no}: {text}" for no, text, _ in parts), args.out)
+        print(f"review {review}: wrote one comment ({len(parts)} items) to {path}")
+        print(f"  post it once; report its URL as done for effects: {' '.join(eid for _, _, eid in parts)}")
+    for no, did, eid in sorted(alone):
+        print(f"no review: effect {eid} (C{no}) answers no review; post it alone: text {did} {eid}")
     return EXIT_OK
 
 
-def _claim(client: Client, args) -> dict:
-    claim = client.post_json(decision_path(args.decision) + "/claim", {"capabilities": args.capabilities}, "decision")
+def _claim(client: Client, decision: str, capabilities: list[str]) -> dict:
+    claim = client.post_json(decision_path(decision) + "/claim", {"capabilities": capabilities}, "decision")
     fd = _obj(claim.get("decision"))
     if not isinstance(fd.get("decision"), dict) or not isinstance(claim.get("lease_until"), str):
         raise SrError("diffpilot answered the claim with an unexpected shape", EXIT_SERVER)
@@ -1000,7 +1011,7 @@ def _claim(client: Client, args) -> dict:
 
 
 def cmd_claim(client: Client, args) -> int:
-    claim = _claim(client, args)
+    claim = _claim(client, args.decision, args.capabilities)
     if args.json:
         print(exact_json(claim))
         return EXIT_OK
@@ -1011,7 +1022,7 @@ def cmd_claim(client: Client, args) -> int:
 
 
 def cmd_renew(client: Client, args) -> int:
-    claim = _claim(client, args)
+    claim = _claim(client, args.decision, args.capabilities)
     print(f"lease on decision {args.decision} renewed until {clean(claim['lease_until'])}")
     return EXIT_OK
 
@@ -1035,33 +1046,29 @@ def _report_fields(args) -> tuple[str | None, str | None]:
     return reference, message
 
 
-def _pr_commits(repo: str, number: str) -> list[str]:
-    """The PR's commits as GitHub lists them (`gh`, the agent's own GitHub sign-in; at most GH_COMMIT_LIMIT)."""
-    command = ["gh", "pr", "view", number, "--repo", repo, "--json", "commits", "--jq", ".commits[].oid"]
+def _gh(command: list[str]) -> subprocess.CompletedProcess:
+    """Runs gh (the agent's own GitHub sign-in) with an argument list, no shell."""
     try:
-        done = subprocess.run(
+        return subprocess.run(
             command, capture_output=True, text=True, timeout=GH_TIMEOUT, check=False, stdin=subprocess.DEVNULL
         )
     except FileNotFoundError:
-        raise SrError("gh is not installed; cannot check the pull request's commits", EXIT_SERVER) from None
+        raise SrError("gh is not installed; the check could not decide", EXIT_SERVER) from None
     except subprocess.TimeoutExpired:
-        raise SrError(f"gh did not answer within {GH_TIMEOUT} s; retry", EXIT_SERVER) from None
-    except OSError as exc:
-        raise SrError(f"gh could not run ({type(exc).__name__})", EXIT_SERVER) from None
-    if done.returncode != 0:
-        lines = done.stderr.strip().splitlines()
-        why = f": {clean(lines[-1])[:200]}" if lines else ""
         raise SrError(
-            f"gh could not read the commits of {repo}#{number} (exit {done.returncode}{why}); check gh, then retry",
-            EXIT_SERVER,
-        )
-    commits = [line.strip().lower() for line in done.stdout.splitlines() if line.strip()]
-    if not commits or not all(SHA_RE.fullmatch(c) for c in commits):
-        raise SrError(f"gh answered no commit list for {repo}#{number}; retry", EXIT_SERVER)
-    return commits
+            f"gh did not answer within {GH_TIMEOUT} s; the check could not decide, retry", EXIT_SERVER
+        ) from None
+    except OSError as exc:
+        raise SrError(f"gh could not run ({type(exc).__name__}); the check could not decide", EXIT_SERVER) from None
+
+
+def _gh_failure(done: subprocess.CompletedProcess) -> str:
+    lines = done.stderr.strip().splitlines()
+    return f"exit {done.returncode}" + (f": {clean(lines[-1])[:200]}" if lines else "")
 
 
 def _verify_head(args, reference: str | None) -> None:
+    """Refuses a fix's done unless the PR head contains the commit (REST compare of the commit with the head)."""
     if args.outcome != "done":
         raise SrError("--verify-head checks a done report of a fix", EXIT_CONFIG)
     spec = PR_SPEC_RE.fullmatch(args.verify_head)
@@ -1069,20 +1076,38 @@ def _verify_head(args, reference: str | None) -> None:
         raise SrError("--verify-head expects owner/name#number", EXIT_CONFIG)
     if reference is None or not SHA_RE.fullmatch(reference.lower()):
         raise SrError("--verify-head needs --reference with the full 40-character commit SHA", EXIT_CONFIG)
-    commits = _pr_commits(*spec.groups())
-    if reference.lower() in commits:
+    repo, number = spec.groups()
+    sha = reference.lower()
+    undecided = "the check could not decide; do not report done, retry or tell the user"
+    view = _gh(["gh", "pr", "view", number, "--repo", repo, "--json", "headRefOid", "--jq", ".headRefOid"])
+    if view.returncode != 0:
+        raise SrError(f"gh could not read the head of {repo}#{number} ({_gh_failure(view)}); {undecided}", EXIT_SERVER)
+    head = view.stdout.strip().lower()
+    if not SHA_RE.fullmatch(head):
+        raise SrError(f"gh answered no head commit for {repo}#{number}; {undecided}", EXIT_SERVER)
+    if head == sha:
         return
-    if len(commits) >= GH_COMMIT_LIMIT:
+    compare = _gh(["gh", "api", f"repos/{repo}/compare/{sha}...{head}", "--jq", ".status"])
+    if compare.returncode != 0 and "(HTTP 404)" in compare.stderr:
         raise SrError(
-            f"{args.verify_head} has {GH_COMMIT_LIMIT} or more commits and GitHub lists only {GH_COMMIT_LIMIT}; "
-            f"the check could not decide whether {reference} is among them. Do not report done; tell the user",
+            f"GitHub does not know {sha} in {repo}: push the fix to the PR's head branch, or report it failed",
+            EXIT_CONFIG,
+        )
+    if compare.returncode != 0:
+        raise SrError(
+            f"gh could not compare {sha} with the head of {repo}#{number} ({_gh_failure(compare)}); {undecided}",
             EXIT_SERVER,
         )
-    raise SrError(
-        f"{reference} is not among the commits of {args.verify_head}: the pull request does not hold the fix; "
-        "push it to the PR's head branch, or report the fix failed",
-        EXIT_CONFIG,
-    )
+    status = compare.stdout.strip()
+    if status in ("ahead", "identical"):
+        return
+    if status in ("behind", "diverged"):
+        raise SrError(
+            f"{sha} is not in the head {head} of {repo}#{number}: the pull request does not hold the fix; "
+            "push it to the PR's head branch, or report the fix failed",
+            EXIT_CONFIG,
+        )
+    raise SrError(f"gh answered the compare status {quoted(status)}; {undecided}", EXIT_SERVER)
 
 
 def cmd_report(client: Client, args) -> int:
@@ -1181,9 +1206,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     text.add_argument("--field", choices=FIELDS, default="params.text", help="what to write (default params.text)")
     text.add_argument("--reference", help="check: the reference the awaited fix, PR or issue was reported done with")
     text.add_argument("--out", help="new file outside any git work tree (default: a temporary file)")
-    combine = sub.add_parser("combine", help="one PR-level comment for the pr_comment effects of one review")
+    combine = sub.add_parser(
+        "combine", help="one PR-level comment per review for the pr_comment effects of decisions you claimed"
+    )
     combine.add_argument("decisions", type=_id, nargs="+", metavar="decision")
     combine.add_argument("--out", help="new file outside any git work tree (default: a temporary file)")
+    caps(combine)
     claim = sub.add_parser("claim", help="claim a decision for 30 minutes (RF3)")
     claim.add_argument("decision", type=_id)
     caps(claim)
@@ -1196,7 +1224,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     rep.add_argument("outcome", choices=("done", "failed", "released"))
     rep.add_argument("--reference", help="done: commit SHA, comment URL, thread id, PR or TODO id")
     rep.add_argument("--message", help="failed: the reason")
-    rep.add_argument("--verify-head", metavar="OWNER/NAME#N", help="done of a fix: --reference must be a PR commit")
+    rep.add_argument(
+        "--verify-head", metavar="OWNER/NAME#N", help="done of a fix: the PR head must contain --reference"
+    )
     args = parser.parse_args(argv)
     if args.cmd in ("list", "wait") and args.pr is not None and not args.repo:
         parser.error("--pr needs --repo")

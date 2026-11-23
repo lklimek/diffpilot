@@ -832,33 +832,120 @@ def review_comment_decision(did, no, eid, text, review="PRR_kwDOreview1", after_
     return fd
 
 
-def test_combine_builds_one_pr_level_comment_for_one_review(env, fake, capsys):
-    fake.on("GET", decision_path(DEC), (200, {}, review_comment_decision(DEC, 5, E1, "Not changed: by design.")))
-    fake.on("GET", decision_path(DEC2), (200, {}, review_comment_decision(DEC2, 3, E2, "Fixed here.", after_fix=SHA)))
+def as_claimed(fd: dict) -> dict:
+    """The claim response of `fd`: every agent effect not ended is claimed by this agent."""
+    for eff in fd["decision"]["effects"]:
+        if eff["state"] not in ("done", "failed", "cancelled"):
+            eff["state"] = "claimed"
+            eff["claim"] = {"token_name": "agent", "lease_until": "2026-11-23T10:30:00Z"}
+    return {"decision": fd, "lease_until": "2026-11-23T10:30:00Z"}
+
+
+def serve_claimed(fake, did: str, fd: dict, claim=None) -> None:
+    """RF1b and RF3 of a decision this agent holds; `claim` overrides the claim answer."""
+    body = as_claimed(fd)
+    fake.on("GET", decision_path(did), (200, {}, body["decision"]))
+    fake.on("POST", claim_path(did), claim or (201, {}, body))
+
+
+def test_combine_claims_each_decision_and_writes_one_comment_for_one_review(env, fake, capsys):
+    serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, "Not changed."))
+    serve_claimed(fake, DEC2, review_comment_decision(DEC2, 3, E2, "Fixed.", after_fix=SHA))
     target = env["tmp"] / "comment.md"
     code, out, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
     assert code == 0, errout
-    assert target.read_text(encoding="utf-8") == f"C3: Fixed here.\n\n{SHA}\n\nC5: Not changed: by design."
+    assert target.read_text(encoding="utf-8") == f"C3: Fixed.\n\n{SHA}\n\nC5: Not changed."
     assert E1 in out and E2 in out
+    claims = [r for r in fake.requests if r["method"] == "POST"]
+    assert [r["path"] for r in claims] == [claim_path(DEC), claim_path(DEC2)]
+    assert all(r["body"] == {"capabilities": ["fix", "reply", "resolve"]} for r in claims)
 
 
-@pytest.mark.parametrize("second", [{"review": "PRR_other"}, {"review": None}])
-def test_combine_refuses_effects_of_different_or_no_reviews(env, fake, capsys, second):
-    fake.on("GET", decision_path(DEC), (200, {}, review_comment_decision(DEC, 5, E1, "a")))
-    fake.on("GET", decision_path(DEC2), (200, {}, review_comment_decision(DEC2, 3, E2, "b", **second)))
-    target = env["tmp"] / "comment.md"
+def test_combine_writes_one_comment_per_review_of_a_merge_decision(env, fake, capsys, monkeypatch):
+    scratch = env["tmp"] / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    monkeypatch.setattr(sr_decisions.tempfile, "tempdir", None)
+    link = "https://github.com/acme/widget/pull/600"
+    reply = "Per maintainer decision, this moves to a follow-up pull request."
+    e4, e5, e6 = (str(uuid.uuid4()) for _ in range(3))
+    effects = [
+        done(effect(E1, 1, "follow_up_pr", thread=None, item_nos=(3, 4, 5, 6)), link),
+        effect(E2, 2, "pr_comment", after=1, text=reply, thread=None, review="PRR_a", item_nos=(5,)),
+        effect(e4, 3, "pr_comment", after=1, text=reply, thread=None, review="PRR_b", item_nos=(4,)),
+        effect(e5, 4, "pr_comment", after=1, text=reply, thread=None, review="PRR_a", item_nos=(3,)),
+        effect(e6, 5, "pr_comment", after=1, text=reply, thread=None, review=None, item_nos=(6,)),
+    ]
+    fd = feed_decision(DEC, effects=effects)
+    fd["decision"]["kind"] = "merge_with_follow_ups"
+    serve_claimed(fake, DEC, fd)
+    code, out, errout = run(capsys, "combine", DEC)
+    assert code == 0, errout
+    bodies = sorted(p.read_text(encoding="utf-8") for p in scratch.iterdir())
+    assert bodies == [
+        f"C3: {reply}\n\n{link}\n\nC5: {reply}\n\n{link}",
+        f"C4: {reply}\n\n{link}",
+    ]
+    lines = out.splitlines()
+    group_a = next(line for line in lines if "PRR_a" in line)
+    assert e5 in out and E2 in out and e4 in out
+    assert "PRR_b" in out
+    assert e6 in out and "alone" in out
+    assert e4 not in group_a
+
+
+def test_combine_with_out_and_several_reviews_exits_2(env, fake, capsys):
+    fd = review_comment_decision(DEC, 5, E1, "a")
+    fd["decision"]["effects"].append(
+        effect(E2, 2, "pr_comment", text="b", thread=None, review="PRR_other", item_nos=(4,))
+    )
+    serve_claimed(fake, DEC, fd)
+    target = env["tmp"] / "c.md"
+    code, _, errout = run(capsys, "combine", DEC, "--out", str(target))
+    assert code == 2 and "--out" in errout
+    assert not target.exists()
+
+
+def test_combine_refuses_a_decision_another_agent_holds(env, fake, capsys):
+    serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, "a"))
+    serve_claimed(fake, DEC2, review_comment_decision(DEC2, 3, E2, "b"), claim=(409, {}, err("claimed")))
+    target = env["tmp"] / "c.md"
     code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
-    assert code == 2 and "review" in errout
+    assert code == 6 and "another agent" in errout
+    assert not target.exists()
+
+
+def test_combine_refuses_a_decision_without_a_claimed_pr_level_comment(env, fake, capsys):
+    fd = review_comment_decision(DEC2, 3, E2, "b")
+    done(fd["decision"]["effects"][0], "https://github.com/acme/widget/pull/482#issuecomment-1")
+    fd["decision"]["effects"].append(effect(E3, 2, "todo", thread=None, title="later"))
+    serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, "a"))
+    serve_claimed(fake, DEC2, fd)
+    target = env["tmp"] / "c.md"
+    code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
+    assert code == 2 and "claimed pr_comment" in errout
+    assert not target.exists()
+    assert fake.sent("POST", claim_path(DEC)) == [] and fake.sent("POST", claim_path(DEC2)) == []
+
+
+def test_combine_refuses_a_decision_not_claimed_yet_without_claiming_it(env, fake, capsys):
+    serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, "a"))
+    fake.on("GET", decision_path(DEC2), (200, {}, review_comment_decision(DEC2, 3, E2, "b")))
+    target = env["tmp"] / "c.md"
+    code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
+    assert code == 2 and f"claim {DEC2}" in errout
+    assert [r for r in fake.requests if r["method"] == "POST"] == []
     assert not target.exists()
 
 
 def test_combine_refuses_decisions_of_different_pull_requests(env, fake, capsys):
     other = review_comment_decision(DEC2, 3, E2, "b")
     other["pr"]["number"] = 999
-    fake.on("GET", decision_path(DEC), (200, {}, review_comment_decision(DEC, 5, E1, "a")))
-    fake.on("GET", decision_path(DEC2), (200, {}, other))
+    serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, "a"))
+    serve_claimed(fake, DEC2, other)
     code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(env["tmp"] / "c.md"))
     assert code == 2 and "pull request" in errout
+    assert [r for r in fake.requests if r["method"] == "POST"] == []
 
 
 # ---------- claim and renew ----------
@@ -943,75 +1030,90 @@ def test_report_done_posts_reference_and_a_uuid_key(env, fake, capsys):
 
 @pytest.fixture
 def fake_gh(env, monkeypatch):
+    """A `gh` on PATH: `pr view` prints FAKE_GH_HEAD, `api` prints FAKE_GH_STATUS or fails as FAKE_GH_API_FAIL says."""
     bindir = env["tmp"] / "bin"
     bindir.mkdir()
-    args_file = env["tmp"] / "gh-args"
+    calls = env["tmp"] / "gh-calls"
     gh = bindir / "gh"
     gh.write_text(
         "#!/bin/sh\n"
-        f"printf '%s\\n' \"$@\" > '{args_file}'\n"
-        '[ -n "$FAKE_GH_FAIL" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }\n'
-        "printf '%s\\n' \"$FAKE_GH_COMMITS\"\n"
+        f"printf '%s ' \"$@\" >> '{calls}'; echo >> '{calls}'\n"
+        'case "$1" in\n'
+        '  pr) [ -n "$FAKE_GH_VIEW_FAIL" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }\n'
+        "      printf '%s\\n' \"$FAKE_GH_HEAD\" ;;\n"
+        '  api) case "$FAKE_GH_API_FAIL" in\n'
+        '        404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;\n'
+        '        ?*) echo "gh: Server Error (HTTP 502)" >&2; exit 1 ;;\n'
+        "      esac\n"
+        "      printf '%s\\n' \"$FAKE_GH_STATUS\" ;;\n"
+        "esac\n"
     )
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("FAKE_GH_COMMITS", "\n".join(["1" * 40, SHA, "2" * 40]))
-    monkeypatch.delenv("FAKE_GH_FAIL", raising=False)
-    return args_file
+    monkeypatch.setenv("FAKE_GH_HEAD", "9" * 40)
+    monkeypatch.setenv("FAKE_GH_STATUS", "ahead")
+    for name in ("FAKE_GH_VIEW_FAIL", "FAKE_GH_API_FAIL"):
+        monkeypatch.delenv(name, raising=False)
+    return calls
 
 
 VERIFY = ("report", E1, "done", "--reference", SHA, "--verify-head", "acme/widget#482")
 
 
-def test_report_done_with_verify_head_accepts_a_commit_of_the_pr_not_its_head(env, fake, capsys, fake_gh):
+def gh_calls(calls: Path) -> list[str]:
+    return calls.read_text().splitlines() if calls.exists() else []
+
+
+def test_report_verify_head_accepts_a_commit_the_pr_head_contains(env, fake, capsys, fake_gh):
     fake.on("POST", report_path(), (201, {}, None))
-    code, out, errout = run(capsys, *VERIFY)
+    code, _, errout = run(capsys, *VERIFY)
     assert code == 0, errout
-    assert fake_gh.read_text().split() == [
-        "pr", "view", "482", "--repo", "acme/widget", "--json", "commits", "--jq", ".commits[].oid",
-    ]  # fmt: skip
+    assert [c.split() for c in gh_calls(fake_gh)] == [
+        ["pr", "view", "482", "--repo", "acme/widget", "--json", "headRefOid", "--jq", ".headRefOid"],
+        ["api", f"repos/acme/widget/compare/{SHA}...{'9' * 40}", "--jq", ".status"],
+    ]
     assert fake.requests[0]["body"]["reference"] == SHA
 
 
-def test_report_verify_head_accepts_an_upper_case_sha(env, fake, capsys, fake_gh):
+def test_report_verify_head_accepts_the_head_itself_without_a_compare(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_HEAD", SHA)
     fake.on("POST", report_path(), (201, {}, None))
     code, _, errout = run(capsys, "report", E1, "done", "--reference", SHA.upper(), "--verify-head", "acme/widget#482")
     assert code == 0, errout
+    assert len(gh_calls(fake_gh)) == 1
 
 
-def test_report_done_is_refused_when_the_pr_lacks_the_commit(env, fake, capsys, fake_gh, monkeypatch):
-    monkeypatch.setenv("FAKE_GH_COMMITS", "\n".join(["1" * 40, "e" * 40]))
+def test_report_verify_head_accepts_an_identical_compare(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_STATUS", "identical")
+    fake.on("POST", report_path(), (201, {}, None))
+    assert run(capsys, *VERIFY)[0] == 0
+
+
+@pytest.mark.parametrize("status", ["behind", "diverged"])
+def test_report_done_is_refused_when_the_pr_head_lacks_the_commit(env, fake, capsys, fake_gh, monkeypatch, status):
+    monkeypatch.setenv("FAKE_GH_STATUS", status)
     code, _, errout = run(capsys, *VERIFY)
     assert code == 2
-    assert "not among" in errout and "failed" in errout
+    assert "not in" in errout and "failed" in errout
     assert fake.requests == []
 
 
-def test_report_verify_head_cannot_decide_on_a_truncated_commit_list(env, fake, capsys, fake_gh, monkeypatch):
-    monkeypatch.setenv("FAKE_GH_COMMITS", "\n".join(f"{n:040x}" for n in range(1, 251)))
+def test_report_done_is_refused_for_a_commit_github_does_not_know(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_API_FAIL", "404")
     code, _, errout = run(capsys, *VERIFY)
-    assert code == 4
-    assert "could not decide" in errout and "250" in errout
+    assert code == 2 and "push" in errout
     assert fake.requests == []
 
 
-def test_report_verify_head_finds_the_commit_in_a_long_list(env, fake, capsys, fake_gh, monkeypatch):
-    monkeypatch.setenv("FAKE_GH_COMMITS", "\n".join([*(f"{n:040x}" for n in range(1, 250)), SHA]))
-    fake.on("POST", report_path(), (201, {}, None))
-    code, _, errout = run(capsys, *VERIFY)
-    assert code == 0, errout
-
-
-@pytest.mark.parametrize("answer", ["", "not-a-sha", SHA + "\nnot-a-sha"])
-def test_report_verify_head_on_an_unreadable_gh_answer_exits_4(env, fake, capsys, fake_gh, monkeypatch, answer):
-    monkeypatch.setenv("FAKE_GH_COMMITS", answer)
-    code, _, errout = run(capsys, *VERIFY)
-    assert code == 4 and "gh" in errout
-    assert fake.requests == []
-
-
-def test_report_verify_head_when_gh_fails_exits_4_without_a_report(env, fake, capsys, fake_gh, monkeypatch):
-    monkeypatch.setenv("FAKE_GH_FAIL", "1")
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [("FAKE_GH_API_FAIL", "502"), ("FAKE_GH_STATUS", "weird"), ("FAKE_GH_STATUS", ""), ("FAKE_GH_VIEW_FAIL", "1"),
+     ("FAKE_GH_HEAD", "not-a-sha"), ("FAKE_GH_HEAD", "")],
+)  # fmt: skip
+def test_report_verify_head_that_cannot_decide_exits_4_without_a_report(
+    env, fake, capsys, fake_gh, monkeypatch, variable, value
+):
+    monkeypatch.setenv(variable, value)
     code, _, errout = run(capsys, *VERIFY)
     assert code == 4 and "gh" in errout
     assert fake.requests == []
@@ -1308,13 +1410,12 @@ def test_text_refuses_a_symlinked_parent_that_leads_into_a_git_work_tree(env, fa
     assert not (checkout / "src" / "reply.md").exists()
 
 
-@pytest.mark.xfail(
-    strict=True, reason="repro: gh pr view --json commits lists at most 100 commits; remove with the fix"
-)
-def test_report_verify_head_cannot_decide_when_gh_lists_a_full_page(env, fake, capsys, fake_gh, monkeypatch):
-    # gh 2.105 answers `pr view --json commits` with the first 100 commits only (dashpay/platform#5210: 289
-    # commits, 100 listed, the head not among them), so a full page proves nothing about a newer commit.
-    monkeypatch.setenv("FAKE_GH_COMMITS", "\n".join(f"{n:040x}" for n in range(1, 101)))
+def test_report_verify_head_accepts_a_fix_below_the_head_of_a_long_pr(env, fake, capsys, fake_gh, monkeypatch):
+    # gh 2.105 lists only the first 100 commits of `pr view --json commits` (dashpay/platform#5210: 289 commits,
+    # the head not among them); the compare against the head decides whatever the PR's length.
+    monkeypatch.setenv("FAKE_GH_HEAD", "9" * 40)
+    monkeypatch.setenv("FAKE_GH_STATUS", "ahead")
+    fake.on("POST", report_path(), (201, {}, None))
     code, _, errout = run(capsys, *VERIFY)
-    assert code == 4 and "could not decide" in errout, errout
-    assert fake.requests == []
+    assert code == 0, errout
+    assert all("commits" not in call for call in gh_calls(fake_gh))
