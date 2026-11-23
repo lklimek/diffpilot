@@ -330,9 +330,12 @@ impl Executor {
             SessionOutcome::StartedAfterLoss => "context pack after a lost session",
         };
         tracing::info!(job = %spec.job_id, kind = ?spec.kind, session = origin,
+            model = %spec.model.model, effort = ?spec.model.reasoning_effort,
             session_turns = %turns.map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
             input_tokens = usage.map(|u| u.input_tokens), cached_input_tokens = usage.map(|u| u.cached_input_tokens),
-            output_tokens = usage.map(|u| u.output_tokens), "job agent session summary");
+            output_tokens = usage.map(|u| u.output_tokens), requests = usage.and_then(|u| u.requests),
+            items = verify_comments::item_count(spec.kind, &spec.prompt),
+            "job agent session summary");
         to_result(spec, outcome, session_outcome, &scrubber)
     }
 

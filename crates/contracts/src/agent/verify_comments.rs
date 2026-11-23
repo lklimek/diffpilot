@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::agent::JobKind;
 use crate::agent::judge_work::escape_separators;
 use crate::api::review_loop::{
     AssessmentEvidence, AuthorKind, BotThreadStatus, CodeSummary, CommentItemKind, DecisionKind,
@@ -196,6 +197,14 @@ impl VerifyCommentsInput {
     }
 }
 
+/// The items a job's prompt sends, for logs: `Some` only for a `verify_comments` prompt with a data block.
+pub fn item_count(kind: JobKind, prompt: &str) -> Option<usize> {
+    (kind == JobKind::VerifyComments)
+        .then(|| VerifyCommentsInput::from_prompt(prompt))
+        .flatten()
+        .map(|input| input.items.len())
+}
+
 /// One pass over the items of a pull request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct VerifyCommentsOutput {
@@ -370,6 +379,16 @@ mod tests {
         assert!(block.contains("\"author_kind\": \"owner\""), "{block}");
         assert!(block.contains("\"bot_status\": \"deferred\""), "{block}");
         assert_eq!(VerifyCommentsInput::from_prompt(&block), Some(with_replies));
+    }
+
+    #[test]
+    fn item_count_reads_verify_prompts_only() {
+        let block = input(vec![item("C1"), item("C2")])
+            .data_block()
+            .expect("block");
+        assert_eq!(item_count(JobKind::VerifyComments, &block), Some(2));
+        assert_eq!(item_count(JobKind::Plan, &block), None);
+        assert_eq!(item_count(JobKind::VerifyComments, "Job: plan."), None);
     }
 
     #[test]

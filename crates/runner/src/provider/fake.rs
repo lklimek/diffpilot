@@ -706,17 +706,20 @@ mod tests {
             input_tokens: 48210,
             cached_input_tokens: 30976,
             output_tokens: 1904,
+            requests: None,
         };
         assert_eq!(cumulative_before(plan), Usage::default());
         let after_plan_compaction = Usage {
             input_tokens: 109_232,
             cached_input_tokens: 78080,
             output_tokens: 2884,
+            requests: None,
         };
         let pr_context = Usage {
             input_tokens: 180_776,
             cached_input_tokens: 130_304,
             output_tokens: 4414,
+            requests: None,
         };
         assert_eq!(cumulative_before(pr_context), after_plan_compaction);
     }

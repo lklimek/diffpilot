@@ -219,6 +219,7 @@ fn outcome(output: Value) -> ProviderOutcome {
             input_tokens: 10,
             cached_input_tokens: 5,
             output_tokens: 2,
+            requests: None,
         },
         skills_commit: None,
     }
@@ -756,6 +757,8 @@ mod fake {
                 format!("cached_input_tokens={}", usage.cached_input_tokens),
                 format!("output_tokens={}", usage.output_tokens),
                 "session_turns=".to_owned(),
+                "model=".to_owned(),
+                "effort=".to_owned(),
             ] {
                 assert!(line.contains(&expected), "{expected}: {line}");
             }

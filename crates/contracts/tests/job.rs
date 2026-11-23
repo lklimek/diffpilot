@@ -110,6 +110,7 @@ fn result() -> JobResult {
             input_tokens: 214_700,
             cached_input_tokens: 190_000,
             output_tokens: 3_000,
+            requests: None,
         }),
         skills_commit: Some("d31993add8b8332ae03352c471be2931c72f7c24".to_owned()),
         llm_call: Some(LlmCallOutcome {
