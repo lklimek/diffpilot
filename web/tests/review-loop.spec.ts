@@ -23,6 +23,20 @@ test("table_row_opens_question", async ({ page }) => {
   await expect(row).toContainText("seeded RNG from the test helper");
 });
 
+test("decide_from_the_middle_opens_the_next_question", async ({ page }) => {
+  await page.goto(`${PR}/comments`);
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  await expect(queue.getByRole("heading").last()).toHaveText("PR-level (1)");
+  await queue.getByRole("button", { name: /^C15(?!\d)/ }).click();
+  await expect(page.getByRole("heading", { level: 2, name: /C15 · Debug log prints/ })).toBeFocused();
+  const decide = page.getByRole("button", { name: "Decide", exact: true });
+  await expect(decide).not.toHaveAttribute("aria-disabled", "true");
+  await decide.click();
+  await expect(
+    page.getByRole("heading", { level: 2, name: /C11 · Backoff cap is not configurable/ }),
+  ).toBeFocused();
+});
+
 test("sections_collapse_by_keyboard", async ({ page }) => {
   await page.goto(`${PR}/comments?item=C14`);
   const section = page.getByRole("button", { name: "The discussed code" });

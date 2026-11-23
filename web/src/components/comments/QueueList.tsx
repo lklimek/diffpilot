@@ -9,6 +9,22 @@ import { itemId } from "./parts";
 /** The key of a queue entry (its item numbers). */
 export const entryKey = (entry: QueueEntry) => entry.item_nos.join("+");
 
+/** The queue in the list's order: the questions of Needs you, then the PR-level questions (owner 2026-11-23). */
+export const inListOrder = (queue: QueueEntry[]): QueueEntry[] => [
+  ...queue.filter((e) => e.reason !== "pr_question"),
+  ...queue.filter((e) => e.reason === "pr_question"),
+];
+
+/**
+ * Where Decide and Skip go next (plan §3.2 item 9): the items of the entries after `entry`, then those from the top,
+ * without `entry`'s own; the whole queue when `entry` is not in it (an item opened by link).
+ */
+export function itemsAfter(queue: QueueEntry[], entry: QueueEntry): number[] {
+  const at = queue.findIndex((e) => entryKey(e) === entryKey(entry));
+  const order = at < 0 ? queue : [...queue.slice(at + 1), ...queue.slice(0, at)];
+  return order.flatMap((e) => e.item_nos).filter((no) => !entry.item_nos.includes(no));
+}
+
 interface QueueListProps {
   queue: QueueEntry[];
   items: ReadonlyMap<number, CommentItem>;
@@ -27,7 +43,7 @@ interface QueueListProps {
 const ROW =
   "flex min-h-6 w-full cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent px-2 py-1 text-left text-text hover:bg-surface-2 aria-[current=true]:bg-accent-bg aria-[current=true]:font-semibold";
 
-/** The Questions queue (mockup left column): PR-level, questions, Ask answers, carried, decided, outside. */
+/** The Questions queue (mockup left column): questions, Ask answers, carried, decided, outside, then PR-level. */
 export function QueueList({
   queue,
   items,
@@ -84,12 +100,6 @@ export function QueueList({
   const h = "mt-3 mb-1 text-xs font-bold tracking-wide text-muted uppercase first:mt-0";
   return (
     <nav aria-label="Queue" className="rounded-lg border border-border bg-surface px-3 py-3">
-      {prLevel.length > 0 && (
-        <>
-          <h3 className={h}>PR-level ({prLevel.length})</h3>
-          <ol className="m-0 list-none p-0">{prLevel.map(row)}</ol>
-        </>
-      )}
       <h3 className={h}>Needs you ({questions.reduce((n, e) => n + e.item_nos.length, 0)})</h3>
       {questions.length ? (
         <ol className="m-0 list-none p-0">{questions.map(row)}</ol>
@@ -143,6 +153,12 @@ export function QueueList({
           {itemId(i)} resolved on GitHub by {i.outside?.by ?? i.github.resolved_by}, not through diffpilot
         </p>
       ))}
+      {prLevel.length > 0 && (
+        <>
+          <h3 className={h}>PR-level ({prLevel.length})</h3>
+          <ol className="m-0 list-none p-0">{prLevel.map(row)}</ol>
+        </>
+      )}
     </nav>
   );
 }

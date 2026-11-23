@@ -59,13 +59,19 @@ describe("V0 PR page (US1, US19)", () => {
 });
 
 describe("V1 Questions (US3, US4, US11)", () => {
-  it("opens the PR-level question first; j moves to the next question", async () => {
+  it("opens the first question of Needs you; PR-level questions come last; j moves to the next", async () => {
     const router = renderRoute(`${PR}/comments`);
-    expect(await screen.findByRole("heading", { name: "Merge now, or another round?" })).toHaveFocus();
-    expect(screen.getByRole("navigation", { name: "Queue" })).toHaveTextContent("PR-level (1)");
-    fireEvent.keyDown(document.body, { key: "j" });
-    await waitFor(() => expect(router.state.location.search).toBe("?item=C21"));
+    expect(await screen.findByRole("heading", { name: /C21 · Retry cap is checked/ })).toHaveFocus();
     expect(await screen.findByText("Why you are asked again")).toBeVisible();
+    const headings = within(screen.getByRole("navigation", { name: "Queue" })).getAllByRole("heading");
+    expect(headings.map((h) => h.textContent)).toEqual([
+      "Needs you (10)",
+      expect.stringMatching(/^Previously decided \(\d+\)$/),
+      "Outside diffpilot (1)",
+      "PR-level (1)",
+    ]);
+    fireEvent.keyDown(document.body, { key: "j" });
+    await waitFor(() => expect(router.state.location.search).toBe("?item=C12"));
   });
 
   it("?item=C14 opens it; a decision is stored and the next question opens with an announcement", async () => {
@@ -74,9 +80,32 @@ describe("V1 Questions (US3, US4, US11)", () => {
     expect(await screen.findByText(/pub async fn send_with_retry/)).toBeVisible();
     await decideWhenPlanned();
     expect(await screen.findByText(/C14: decision recorded\. \d+ questions left\./)).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Merge now, or another round?" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: /C15 · Debug log prints/ })).toBeVisible();
     await userEvent.click(screen.getByRole("link", { name: "Decision log and agents" }));
     expect(await screen.findByText(/C14 · Fix here/)).toBeVisible();
+  });
+
+  it("Decide on a question picked from the middle of the list opens the next one, not the first", async () => {
+    renderRoute(`${PR}/comments`);
+    const queue = await screen.findByRole("navigation", { name: "Queue" });
+    await userEvent.click(await within(queue).findByRole("button", { name: /^C15(?!\d)/ }));
+    expect(await screen.findByRole("heading", { name: /C15 · Debug log prints/ })).toBeVisible();
+    await decideWhenPlanned();
+    expect(
+      await screen.findByRole("heading", { name: /C11 · Backoff cap is not configurable/ }),
+    ).toBeVisible();
+  });
+
+  it("after a group the entry after it opens; after the last entry the first one still waiting", async () => {
+    renderRoute(`${PR}/comments?item=C18`);
+    expect(await screen.findByRole("heading", { name: /Same recommendation: Reject/ })).toBeVisible();
+    const decideGroup = screen.getByRole("button", { name: /Reject all 2/ });
+    await waitFor(() => expect(decideGroup).not.toHaveAttribute("aria-disabled"));
+    await userEvent.click(decideGroup);
+    expect(await screen.findByRole("heading", { name: "Merge now, or another round?" })).toBeVisible();
+    // P24 is the last entry; "Merge with follow-ups" hands the non-gate items to one follow-up PR.
+    await decideWhenPlanned();
+    expect(await screen.findByRole("heading", { name: /C14 · Retry may resend/ })).toBeVisible();
   });
 
   it("Undo takes a single decision back while no agent claimed it; the comment is asked again", async () => {

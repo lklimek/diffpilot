@@ -150,10 +150,12 @@ A = an external agent; E = an external agent in phases 1–2, diffpilot[bot] in 
 ### 2.4 Queue, groups, "Decide the rest", table page
 One question at a time, deterministic order: 1. PR-level questions (I4); 2. repeats asked again; 3. answers to the
 owner's questions; 4. gate items; 5. items the reviewer marked Blocking (the bot's claim, WM §11), by first round, then
-ID; 6. other single items; 7. groups. A **group** is two or more assessed non-gate items with the same recommended
-decision kind and reason class or target, with one decision and "Discuss individually" per row. **Decide the rest
-per recommendation** opens a confirmation list (rows untickable) with the count and the gate items named as left
-out; nothing is stored before confirmation; records carry `via = bulk`. The **table page** (RQ21) shows the columns of
+ID; 6. other single items; 7. groups. The Questions page lists and asks the PR-level questions after all the
+others, in a section at the end of its list (owner 2026-11-23); `j`/`k` and Decide follow that list. A **group** is
+two or more assessed non-gate items with the same recommended decision kind and reason class or target, with one
+decision and "Discuss individually" per row. **Decide the rest per recommendation** opens a confirmation list (rows
+untickable) with the count and the gate items named as left out; nothing is stored before confirmation; records
+carry `via = bulk`. The **table page** (RQ21) shows the columns of
 claudius `check-pr-comments` §4 (ID, Source, Problem, Scope, Elsewhere, Opinion, Recommendation) under one line
 "PR #N: <purpose>", plus a decision select per row (default = recommendation; empty for gate rows), the reason or
 target field the choice needs, "Resolve" (ticked by default), the owner's comment and an Ask indicator; one submit
@@ -264,8 +266,11 @@ thepastaclaw status, the Watch toggle with its badge. Two cards side by side:
    decision (C14)."
 9. Actions: **Decide** (Enter), **Ask about this comment** (`a`; the shared Ask button and floating Ask chat of Flows
    and Files, brief amendment 2026-11-19, subject chip "Comment C14"; no separate ask box), **Skip for now**. After
-   Decide the next card opens with focus on its heading; the live region announces the outcome and the count; Undo
-   until an effect is claimed. The Ask chat's threads about this item are counted on the card ("1 Ask answer").
+   Decide the next card opens with focus on its heading: the entry after the decided one in the list (after a group,
+   the entry after the group; after the last entry, the first one still waiting), skipping entries a decision took
+   out of the queue (owner 2026-11-23); Skip for now moves on the same way, and "Decide the rest" opens the first
+   entry still waiting. The live region announces the outcome and the count; Undo until an effect is claimed. The
+   Ask chat's threads about this item are counted on the card ("1 Ask answer").
 
 **Empty:** "No undecided questions in what was read at 10:41: 14 threads (all pages read), 4 reviews, 9 comments
 assessed at 9f3c2e1." **Error:** "GitHub could not be read (rate limit). Showing the read of 10:12; next read at 10:52."
