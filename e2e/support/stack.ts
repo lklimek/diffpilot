@@ -15,7 +15,7 @@ const STOP_TIMEOUT_MS = 20_000;
 /** One rule of the fake provider's script (crates/runner/src/provider/fake.rs). */
 export interface ScriptRule {
   id: string;
-  job: "plan" | "pr_context" | "analyse_flow" | "ask" | "judge_work";
+  job: "plan" | "pr_context" | "analyse_flow" | "ask" | "judge_work" | "verify_comments";
   flow?: number;
   prompt_contains?: string;
   times?: number;
@@ -126,14 +126,26 @@ function externalStack(url: string): Stack {
   };
 }
 
+/** What a spec file needs of its stack. */
+export interface StackOptions {
+  /**
+   * Fake GitHub serves the review-loop reads of PR 482 (`SR_DEV_REVIEW_LOOP_RECORDINGS`). Off by default: each
+   * read that finds new comments queues an assessment job, an LLM call the other journeys do not expect.
+   */
+  reviewLoop?: boolean;
+}
+
 /** Starts a stack (or names the external one) and returns it with the function that stops it. */
-export async function startStack(): Promise<{ stack: Stack; stop: () => Promise<void> }> {
+export async function startStack(
+  options: StackOptions = {},
+): Promise<{ stack: Stack; stop: () => Promise<void> }> {
   const external = process.env.SR_E2E_BASE_URL;
   if (external) return { stack: externalStack(external), stop: async () => {} };
 
   const args = (process.env.SR_E2E_STACK_ARGS ?? "").split(/\s+/).filter(Boolean);
+  const env = options.reviewLoop ? process.env : { ...process.env, SR_DEV_REVIEW_LOOP_RECORDINGS: "" };
   // Own process group: the launcher stops its components (each in a group of its own) on SIGTERM.
-  const launcher = spawn(LAUNCHER, args, { detached: true, stdio: ["ignore", "pipe", "inherit"] });
+  const launcher = spawn(LAUNCHER, args, { detached: true, env, stdio: ["ignore", "pipe", "inherit"] });
   const group = launcher.pid;
   if (group === undefined) throw new Error("the dev stack launcher could not be started");
   const exited = new Promise<void>((resolve) => launcher.once("exit", () => resolve()));

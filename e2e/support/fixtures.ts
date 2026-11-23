@@ -3,7 +3,7 @@
 // secrets when it stops (support/secrets.ts); a leak fails the run as an error of the worker's teardown.
 import { test as base } from "@playwright/test";
 import { logLeaks, stackSecrets } from "./secrets";
-import { startStack, type Stack } from "./stack";
+import { startStack, type Stack, type StackOptions } from "./stack";
 
 /** The stack of the spec file the worker is running. */
 class StackPool {
@@ -12,10 +12,10 @@ class StackPool {
   /** Leak reports of stacks stopped on a change of file; raised when the worker ends. */
   readonly failures: string[] = [];
 
-  async forFile(file: string): Promise<Stack> {
+  async forFile(file: string, options: StackOptions): Promise<Stack> {
     if (this.file !== file || !this.running) {
       await this.stop().catch((error: Error) => this.failures.push(error.message));
-      this.running = await startStack();
+      this.running = await startStack(options);
       this.file = file;
     }
     return this.running.stack;
@@ -40,7 +40,9 @@ class StackPool {
   }
 }
 
-export const test = base.extend<{ stack: Stack }, { stacks: StackPool }>({
+export const test = base.extend<{ stack: Stack; reviewLoop: boolean }, { stacks: StackPool }>({
+  /** `test.use({ reviewLoop: true })`: the file's stack serves the review-loop reads (`StackOptions`). */
+  reviewLoop: [false, { option: true }],
   stacks: [
     async ({}, use) => {
       const pool = new StackPool();
@@ -50,8 +52,8 @@ export const test = base.extend<{ stack: Stack }, { stacks: StackPool }>({
     },
     { scope: "worker" },
   ],
-  stack: async ({ stacks }, use, testInfo) => {
-    await use(await stacks.forFile(testInfo.file));
+  stack: async ({ stacks, reviewLoop }, use, testInfo) => {
+    await use(await stacks.forFile(testInfo.file, { reviewLoop }));
   },
   baseURL: async ({ stack }, use) => {
     await use(stack.url);
