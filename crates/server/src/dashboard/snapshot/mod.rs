@@ -83,6 +83,10 @@ pub struct StoredPr {
     pub private: bool,
     /// Head commit at scan time (review links compare it with the analysed head).
     pub head_sha: String,
+    /// Base commit at scan time (the PR badge takes Ready to merge only at this base); none in a snapshot stored
+    /// before it was kept.
+    #[serde(default)]
+    pub base_sha: Option<String>,
     /// Opened (the awaiting fallback when the request time is unknown).
     pub created_at: Timestamp,
     /// Failing build, test and lint checks.
