@@ -131,8 +131,10 @@ pub enum ReportOutcomeRecord {
     Duplicate,
     /// The effect is not claimed by this token.
     NotClaimer,
-    /// The token's lease has ended.
+    /// The token's lease has ended (the effect may be back in the feed).
     LeaseExpired,
+    /// The effect already ended (done, failed or cancelled).
+    Ended,
 }
 
 /// A claimable decision as the feed tracks it: no live claim, with these kinds of agent effects not yet ended.
@@ -616,7 +618,8 @@ impl ReviewLoop<'_> {
         }
         let until = now + lease;
         sqlx::query(
-            "UPDATE comment_effects SET state = 'claimed', claim_token_id = ?, lease_until = ?, updated_at = ?
+            "UPDATE comment_effects SET state = 'claimed', claim_token_id = ?, lease_until = ?, updated_at = ?,
+                 lapsed_token_id = NULL
              WHERE decision_id = ? AND executor = 'agent' AND state IN ('waiting', 'open', 'claimed')",
         )
         .bind(&token.0)
@@ -643,9 +646,11 @@ impl ReviewLoop<'_> {
     ) -> Result<ReportOutcomeRecord, DbError> {
         let mut tx = write_tx(self.pool).await?;
         let duplicate: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM comment_effect_reports WHERE token_id = ? AND idempotency_key = ?)",
+            "SELECT EXISTS (SELECT 1 FROM comment_effect_reports
+                            WHERE token_id = ? AND effect_id = ? AND idempotency_key = ?)",
         )
         .bind(&token.0)
+        .bind(effect.to_string())
         .bind(&report.idempotency_key)
         .fetch_one(&mut *tx)
         .await?;
@@ -653,7 +658,8 @@ impl ReviewLoop<'_> {
             return Ok(ReportOutcomeRecord::Duplicate);
         }
         let row = sqlx::query(
-            "SELECT decision_id, state, claim_token_id, lease_until FROM comment_effects WHERE id = ?",
+            "SELECT decision_id, state, claim_token_id, lease_until, lapsed_token_id FROM comment_effects
+             WHERE id = ?",
         )
         .bind(effect.to_string())
         .fetch_optional(&mut *tx)
@@ -661,9 +667,18 @@ impl ReviewLoop<'_> {
         .ok_or(DbError::NotFound)?;
         let decision: String = row.try_get("decision_id")?;
         let holder: Option<String> = row.try_get("claim_token_id")?;
+        let lapsed: Option<String> = row.try_get("lapsed_token_id")?;
         let state: EffectState = wire_col(&row, "state")?;
-        if state != EffectState::Claimed || holder.as_deref() != Some(token.0.as_str()) {
-            return Ok(ReportOutcomeRecord::NotClaimer);
+        let token_id = Some(token.0.as_str());
+        if terminal(state) {
+            return Ok(ReportOutcomeRecord::Ended);
+        }
+        if state != EffectState::Claimed || holder.as_deref() != token_id {
+            return Ok(if lapsed.as_deref() == token_id {
+                ReportOutcomeRecord::LeaseExpired
+            } else {
+                ReportOutcomeRecord::NotClaimer
+            });
         }
         if opt_ts_col(&row, "lease_until")?.is_some_and(|until| until < now) {
             return Ok(ReportOutcomeRecord::LeaseExpired);
@@ -850,7 +865,8 @@ fn terminal(state: EffectState) -> bool {
     )
 }
 
-/// Returns a decision's claimed effects (of `token`, or all) to `open`/`waiting`.
+/// Returns a decision's claimed effects (of `token`, or all) to `open`/`waiting`. Without `token` (lapsed leases) the
+/// former holder is kept in `lapsed_token_id`, so its late report is told the lease ended.
 async fn release(
     tx: &mut Transaction<'static, Sqlite>,
     decision: &str,
@@ -858,14 +874,14 @@ async fn release(
     now: Timestamp,
 ) -> Result<(), DbError> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
-        "UPDATE comment_effects AS e SET state = {RETURN_STATE}, claim_token_id = NULL, lease_until = NULL,
-             updated_at = ?
-         WHERE e.decision_id = ? AND e.state = 'claimed' AND (? IS NULL OR e.claim_token_id = ?)"
+        "UPDATE comment_effects AS e SET state = {RETURN_STATE},
+             lapsed_token_id = CASE WHEN ?2 IS NULL THEN e.claim_token_id END,
+             claim_token_id = NULL, lease_until = NULL, updated_at = ?1
+         WHERE e.decision_id = ?3 AND e.state = 'claimed' AND (?2 IS NULL OR e.claim_token_id = ?2)"
     )))
     .bind(ts(now))
+    .bind(token)
     .bind(decision)
-    .bind(token)
-    .bind(token)
     .execute(&mut **tx)
     .await?;
     Ok(())

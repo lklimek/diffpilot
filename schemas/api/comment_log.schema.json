@@ -143,31 +143,33 @@
           "$ref": "#/$defs/ChannelKind"
         },
         "url": {
-          "description": "ntfy server URL or webhook URL.",
-          "type": "string"
+          "description": "ntfy server URL or webhook URL; null in the decision log for another user's token.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "topic": {
-          "description": "ntfy topic.",
+          "description": "ntfy topic; null in the decision log for another user's token.",
           "type": [
             "string",
             "null"
           ]
         },
         "secret_last4": {
-          "description": "Last 4 characters of the stored secret.",
+          "description": "Last 4 characters of the stored secret; null in the decision log for another user's token.",
           "type": [
             "string",
             "null"
           ]
         },
         "delivery": {
-          "description": "Delivery state.",
+          "description": "Delivery state (in the decision log for another user's token without `last_error`).",
           "$ref": "#/$defs/DeliveryStatus"
         }
       },
       "required": [
         "kind",
-        "url",
         "delivery"
       ]
     },

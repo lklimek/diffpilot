@@ -318,29 +318,19 @@ impl ReviewLoop<'_> {
         Ok(())
     }
 
-    /// Stores a per-user event.
+    /// Stores a per-user event with a delivery to each of the user's enabled channels subscribed to its kind.
     pub async fn add_user_event(
         &self,
         tenant_id: &str,
         event: &NewUserEvent,
         now: Timestamp,
     ) -> Result<UserEventId, DbError> {
-        let id = UserEventId::new_random();
-        sqlx::query(
-            "INSERT INTO user_events (id, tenant_id, user_id, kind, pull_request_id, count, text, url, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(id.to_string())
-        .bind(tenant_id)
-        .bind(&event.user_id)
-        .bind(wire(event.kind)?)
-        .bind(event.pull_request_id)
-        .bind(event.count)
-        .bind(&event.text)
-        .bind(&event.url)
-        .bind(ts(now))
-        .execute(self.pool)
-        .await?;
+        let mut tx = write_tx(self.pool).await?;
+        // Without a round nothing but a (random) id can collide.
+        let id = super::notify::insert_event(&mut tx, tenant_id, event, None, now)
+            .await?
+            .ok_or(DbError::Conflict)?;
+        tx.commit().await?;
         Ok(id)
     }
 

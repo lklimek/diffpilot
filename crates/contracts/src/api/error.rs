@@ -85,11 +85,13 @@ pub enum ApiErrorCode {
     WatchLimitReached,
     /// A notification URL must use `http` or `https`.
     SchemeNotAllowed,
+    /// A changed kind or URL origin of a notification target needs its secret replaced or removed.
+    SecretRequired,
 }
 
 impl ApiErrorCode {
     /// Every code.
-    pub const ALL: [ApiErrorCode; 34] = [
+    pub const ALL: [ApiErrorCode; 35] = [
         Self::Configuration,
         Self::Unauthenticated,
         Self::LoginNotAllowed,
@@ -124,6 +126,7 @@ impl ApiErrorCode {
         Self::CapabilityMissing,
         Self::WatchLimitReached,
         Self::SchemeNotAllowed,
+        Self::SecretRequired,
     ];
 
     /// The HTTP status code of a response with this code.
@@ -154,7 +157,8 @@ impl ApiErrorCode {
             | Self::InvalidDashboardSettings
             | Self::GithubRefused
             | Self::CapabilityMissing
-            | Self::SchemeNotAllowed => 422,
+            | Self::SchemeNotAllowed
+            | Self::SecretRequired => 422,
             Self::GithubRateLimited | Self::RateLimited => 429,
             Self::Internal | Self::Configuration => 500,
             Self::GithubUnavailable => 502,

@@ -1350,7 +1350,7 @@ pub struct UserEvent {
     pub count: u32,
     /// Plain text, e.g. "acme/node-client #482: 5 questions ready".
     pub text: String,
-    /// The PR's Comments page.
+    /// The path of the PR's Comments page on this instance (`/pr/<owner>/<name>/<number>/comments`).
     pub url: Option<String>,
     /// When.
     pub at: Timestamp,
@@ -1511,13 +1511,13 @@ pub struct ChannelTestResult {
 pub struct PushTarget {
     /// Kind.
     pub kind: ChannelKind,
-    /// ntfy server URL or webhook URL.
-    pub url: String,
-    /// ntfy topic.
+    /// ntfy server URL or webhook URL; null in the decision log for another user's token.
+    pub url: Option<String>,
+    /// ntfy topic; null in the decision log for another user's token.
     pub topic: Option<String>,
-    /// Last 4 characters of the stored secret.
+    /// Last 4 characters of the stored secret; null in the decision log for another user's token.
     pub secret_last4: Option<String>,
-    /// Delivery state.
+    /// Delivery state (in the decision log for another user's token without `last_error`).
     pub delivery: DeliveryStatus,
 }
 

@@ -483,7 +483,12 @@ pub async fn log(
         .into_iter()
         .map(|subscription| FeedSubscriber {
             connected: state.feed.is_connected(&subscription.token_id),
-            push: super::notify::push_view(state, &subscription),
+            // Another user's target only as its kind and delivery state: its URL or topic can be a credential.
+            push: super::notify::push_view(
+                state,
+                &subscription,
+                subscription.user_id == session.user_id,
+            ),
             token_name: subscription.token_name,
             capabilities: subscription.capabilities,
             last_seen_at: subscription.last_seen_at,

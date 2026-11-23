@@ -6,8 +6,9 @@ use std::time::Duration;
 use axum::http::HeaderMap;
 use axum::http::header::WWW_AUTHENTICATE;
 use contracts::api::review_loop::{EffectKind, UserEventKind};
+use contracts::api::review_loop::{FeedEvent, ReportOutcome};
 use contracts::ids::DecisionId;
-use db::repo::review_loop::DeliveryTarget;
+use db::repo::review_loop::{DeliveryTarget, ReportRequest};
 use futures::StreamExt;
 
 use super::*;
@@ -404,7 +405,7 @@ async fn round_executed_once_every_decision_is_done() {
             );
             assert_eq!(
                 executed[0].url.as_deref(),
-                Some("https://review.example.test/pr/acme/node-client/482/comments")
+                Some("/pr/acme/node-client/482/comments")
             );
         }
     }
@@ -581,5 +582,160 @@ async fn late_report_after_the_feed_returned_the_claim_is_lease_expired() {
         (status, &error["code"]),
         (StatusCode::CONFLICT, &json!("lease_expired")),
         "{error}"
+    );
+}
+
+/// Every effect of the decision reported `done` straight in the database (as if the server stopped before its round
+/// check); returns the last report's idempotency key.
+async fn executed_without_round_check(
+    w: &World,
+    decision: &Value,
+    principal: &TokenPrincipal,
+) -> String {
+    let id: DecisionId = serde_json::from_value(decision["id"].clone()).expect("id");
+    let rl = w.state.db.review_loop();
+    let all = [EffectKind::Fix, EffectKind::Reply, EffectKind::Resolve];
+    rl.claim(id, &principal.token_id, &all, feed::LEASE, Timestamp::now())
+        .await
+        .expect("claim");
+    let mut key = String::new();
+    for effect in decision["effects"].as_array().expect("effects") {
+        key = uuid::Uuid::new_v4().to_string();
+        let effect = serde_json::from_value(effect["id"].clone()).expect("effect id");
+        rl.report(
+            DEFAULT_TENANT,
+            effect,
+            &principal.token_id,
+            &ReportRequest {
+                outcome: ReportOutcome::Done,
+                reference: Some("9f3c2e1".into()),
+                message: None,
+                idempotency_key: key.clone(),
+            },
+            feed::LEASE,
+            Timestamp::now(),
+        )
+        .await
+        .expect("report");
+    }
+    key
+}
+
+async fn rounds_executed(w: &World) -> usize {
+    w.state
+        .db
+        .review_loop()
+        .user_events("u1", None, 10)
+        .await
+        .expect("events")
+        .into_iter()
+        .filter(|event| event.kind == UserEventKind::RoundExecuted)
+        .count()
+}
+
+/// A retried report (same idempotency key) announces a round whose first check did not run, once.
+#[tokio::test]
+async fn a_retried_report_announces_a_round_its_first_check_missed() {
+    let w = world().await;
+    let decision = fix_here(&w).await;
+    let (a, principal) = agent(&w, &EXECUTE).await;
+    let key = executed_without_round_check(&w, &decision, &principal).await;
+    assert_eq!(rounds_executed(&w).await, 0);
+    let last = decision["effects"][2]["id"].as_str().expect("effect");
+    let retry =
+        json!({"outcome": "done", "reference": "9f3c2e1", "message": null, "idempotency_key": key});
+    for _ in 0..2 {
+        let (status, _, body) = with_token(
+            &w,
+            &a,
+            "POST",
+            &format!("{FEED}/effects/{last}/reports"),
+            Some(retry.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    assert_eq!(rounds_executed(&w).await, 1);
+    let (status, _, error) = with_token(
+        &w,
+        &a,
+        "POST",
+        &format!("{FEED}/effects/{last}/reports"),
+        Some(report("done", Some("9f3c2e1"), None)),
+    )
+    .await;
+    assert_eq!(
+        (status, &error["code"]),
+        (StatusCode::CONFLICT, &json!("conflict")),
+        "a new report on an effect that already ended: {error}"
+    );
+}
+
+/// The feed task announces at its start the rounds completed while the server was down, once.
+#[tokio::test]
+async fn rounds_completed_while_down_are_announced_at_start() {
+    let w = world().await;
+    let decision = fix_here(&w).await;
+    let (_, principal) = agent(&w, &EXECUTE).await;
+    executed_without_round_check(&w, &decision, &principal).await;
+    feed::recover_rounds(&w.state).await;
+    feed::recover_rounds(&w.state).await;
+    assert_eq!(rounds_executed(&w).await, 1);
+}
+
+/// A decision that stays claimable while its open effects shrink is announced to the agents it newly fits (stream
+/// and push), not again to those it fitted before.
+#[tokio::test]
+async fn a_decision_newly_within_capabilities_is_announced() {
+    let w = world().await;
+    feed::sync(&w.state).await.expect("initial sync");
+    let (narrow, narrow_principal) = agent(&w, &EXECUTE).await;
+    push_target(&w, &narrow, "reply,resolve", "http://hooks.example/narrow").await;
+    let decision = fix_here(&w).await;
+    feed::sync(&w.state).await.expect("sync");
+    assert!(
+        pushed_tokens(&w).await.is_empty(),
+        "fix is outside its capabilities"
+    );
+
+    // Between two syncs another agent claims, executes the fix and gives the rest back.
+    let (_, wide) = agent(&w, &EXECUTE).await;
+    let id: DecisionId = serde_json::from_value(decision["id"].clone()).expect("id");
+    let all = [EffectKind::Fix, EffectKind::Reply, EffectKind::Resolve];
+    let rl = w.state.db.review_loop();
+    rl.claim(id, &wide.token_id, &all, feed::LEASE, Timestamp::now())
+        .await
+        .expect("claim");
+    for (index, outcome, reference) in [
+        (0, ReportOutcome::Done, Some("9f3c2e1")),
+        (1, ReportOutcome::Released, None),
+    ] {
+        let effect = serde_json::from_value(decision["effects"][index]["id"].clone()).expect("id");
+        rl.report(
+            DEFAULT_TENANT,
+            effect,
+            &wide.token_id,
+            &ReportRequest {
+                outcome,
+                reference: reference.map(str::to_owned),
+                message: None,
+                idempotency_key: uuid::Uuid::new_v4().to_string(),
+            },
+            feed::LEASE,
+            Timestamp::now(),
+        )
+        .await
+        .expect("report");
+    }
+
+    let mut signals = w.state.feed.subscribe();
+    feed::sync(&w.state).await.expect("sync");
+    assert_eq!(pushed_tokens(&w).await, [narrow_principal.token_id.0]);
+    let signal = signals.try_recv().expect("announced");
+    assert!(matches!(signal.event, FeedEvent::DecisionAvailable { .. }));
+    assert!(signal.concerns(&[EffectKind::Reply, EffectKind::Resolve]));
+    assert!(
+        !signal.concerns(&all),
+        "an agent the decision fitted before was told already"
     );
 }

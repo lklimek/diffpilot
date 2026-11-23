@@ -3,8 +3,8 @@
 
 use std::fmt;
 
-use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
+use sqlx::{Row, Sqlite, Transaction};
 
 use contracts::api::access_tokens::AccessTokenId;
 use contracts::api::review_loop::{
@@ -14,9 +14,11 @@ use contracts::api::review_loop::{
 use contracts::common::{PrRef, RepoRef};
 use contracts::ids::{ChannelId, DecisionId, UserEventId};
 use contracts::time::Timestamp;
+use jiff::SignedDuration;
 
 use super::super::jobs::ts;
 use super::super::write_tx;
+use super::watches::NewUserEvent;
 use super::{
     ReviewLoop, json, json_col, opt_ts_col, opt_wire_col, ts_col, u32_col, wire, wire_col,
 };
@@ -115,6 +117,8 @@ pub struct PushInput {
 pub struct SubscriptionRecord {
     /// Token.
     pub token_id: AccessTokenId,
+    /// The token's user.
+    pub user_id: String,
     /// Token name.
     pub token_name: String,
     /// Capabilities.
@@ -133,6 +137,7 @@ impl fmt::Debug for SubscriptionRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SubscriptionRecord")
             .field("token_id", &self.token_id)
+            .field("user_id", &self.user_id)
             .field("token_name", &self.token_name)
             .field("capabilities", &self.capabilities)
             .field("last_seen_at", &self.last_seen_at)
@@ -181,6 +186,8 @@ pub enum DeliveryTarget {
 pub struct DeliveryRecord {
     /// Id.
     pub id: i64,
+    /// Tenant.
+    pub tenant_id: String,
     /// Target.
     pub target: DeliveryTarget,
     /// Attempts made.
@@ -228,6 +235,7 @@ fn subscription_from_row(row: &SqliteRow) -> Result<SubscriptionRecord, DbError>
     let url: Option<String> = row.try_get("push_url")?;
     Ok(SubscriptionRecord {
         token_id: AccessTokenId(row.try_get("token_id")?),
+        user_id: row.try_get("user_id")?,
         token_name: row.try_get("name")?,
         capabilities: json_col(row, "capabilities")?,
         last_seen_at: ts_col(row, "last_seen_at")?,
@@ -245,9 +253,14 @@ fn subscription_from_row(row: &SqliteRow) -> Result<SubscriptionRecord, DbError>
 const CHANNEL_COLUMNS: &str =
     "id, user_id, kind, url, topic, secret, events, enabled, last_delivery_at,
     last_delivery_event, last_delivery_outcome, last_error, failing_since";
-const SUBSCRIPTION_SELECT: &str = "SELECT s.token_id, t.name, s.capabilities, s.last_seen_at, s.push_kind,
+const SUBSCRIPTION_SELECT: &str = "SELECT s.token_id, t.user_id, t.name, s.capabilities, s.last_seen_at, s.push_kind,
     s.push_url, s.push_topic, s.push_secret, s.last_delivery_at, s.last_delivery_outcome, s.last_error,
     s.failing_since FROM agent_subscriptions s JOIN access_tokens t ON t.id = s.token_id";
+/// A live token (`t`) at `?2`: neither revoked nor expired, its user on the tenant's allow-list (as
+/// `access_tokens().credential()` requires).
+const LIVE_TOKEN: &str = "t.revoked_at IS NULL AND t.expires_at > ?2
+    AND EXISTS (SELECT 1 FROM users u JOIN tenant_allowed_logins a ON a.github_id = u.github_id
+                WHERE u.id = t.user_id AND a.tenant_id = t.tenant_id)";
 
 /// SQL setting a delivery outcome on a health row; binds `?1` at, `?2` outcome, `?3` error.
 const HEALTH_SET: &str = "last_delivery_at = ?1, last_delivery_outcome = ?2,
@@ -439,15 +452,15 @@ impl ReviewLoop<'_> {
         Ok(updated.rows_affected() > 0)
     }
 
-    /// The tenant's subscriptions of tokens that are neither revoked nor expired, most recently seen first.
+    /// The tenant's subscriptions of live tokens (neither revoked nor expired, user allowed), most recently seen
+    /// first.
     pub async fn subscriptions(
         &self,
         tenant_id: &str,
         now: Timestamp,
     ) -> Result<Vec<SubscriptionRecord>, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "{SUBSCRIPTION_SELECT} WHERE s.tenant_id = ? AND t.revoked_at IS NULL AND t.expires_at > ?
-             ORDER BY s.last_seen_at DESC"
+            "{SUBSCRIPTION_SELECT} WHERE s.tenant_id = ?1 AND {LIVE_TOKEN} ORDER BY s.last_seen_at DESC"
         )))
         .bind(tenant_id)
         .bind(ts(now))
@@ -531,7 +544,7 @@ impl ReviewLoop<'_> {
         limit: u32,
     ) -> Result<Vec<DeliveryRecord>, DbError> {
         sqlx::query(
-            "SELECT id, user_event_id, channel_id, decision_id, token_id, attempts, next_attempt_at
+            "SELECT id, tenant_id, user_event_id, channel_id, decision_id, token_id, attempts, next_attempt_at
              FROM notification_deliveries WHERE state = 'pending' AND next_attempt_at <= ?
              ORDER BY next_attempt_at, id LIMIT ?",
         )
@@ -562,6 +575,7 @@ impl ReviewLoop<'_> {
             };
             Ok(DeliveryRecord {
                 id: row.try_get("id")?,
+                tenant_id: row.try_get("tenant_id")?,
                 target,
                 attempts: u32_col(row, "attempts")?,
                 next_attempt_at: ts_col(row, "next_attempt_at")?,
@@ -583,14 +597,14 @@ impl ReviewLoop<'_> {
         .transpose()
     }
 
-    /// The token's subscription while the token is neither revoked nor expired.
+    /// The token's subscription while the token is live (neither revoked nor expired, user allowed).
     pub async fn subscription(
         &self,
         token: &AccessTokenId,
         now: Timestamp,
     ) -> Result<Option<SubscriptionRecord>, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "{SUBSCRIPTION_SELECT} WHERE s.token_id = ? AND t.revoked_at IS NULL AND t.expires_at > ?"
+            "{SUBSCRIPTION_SELECT} WHERE s.token_id = ?1 AND {LIVE_TOKEN}"
         )))
         .bind(&token.0)
         .bind(ts(now))
@@ -633,29 +647,6 @@ impl ReviewLoop<'_> {
         }))
     }
 
-    /// Queues one delivery per enabled channel subscribed to the event's kind, for every user event after `since`
-    /// (tests are sent by RN3 itself); a pair queued before is kept. Returns how many were queued.
-    pub async fn enqueue_event_deliveries(
-        &self,
-        since: Timestamp,
-        now: Timestamp,
-    ) -> Result<u64, DbError> {
-        let inserted = sqlx::query(
-            "INSERT INTO notification_deliveries (tenant_id, user_event_id, channel_id, state, next_attempt_at,
-                 created_at, updated_at)
-             SELECT e.tenant_id, e.id, c.id, 'pending', ?2, ?2, ?2
-             FROM user_events e JOIN notification_channels c ON c.user_id = e.user_id
-             WHERE e.at > ?1 AND e.kind <> 'test' AND c.enabled = 1
-               AND EXISTS (SELECT 1 FROM json_each(c.events) j WHERE j.value = e.kind)
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(ts(since))
-        .bind(ts(now))
-        .execute(self.pool)
-        .await?;
-        Ok(inserted.rows_affected())
-    }
-
     /// Moves a pending delivery to `at` without counting an attempt (the channel's hourly limit is used up).
     pub async fn postpone_delivery(&self, delivery: i64, at: Timestamp) -> Result<(), DbError> {
         let updated = sqlx::query(
@@ -671,21 +662,90 @@ impl ReviewLoop<'_> {
         Ok(())
     }
 
-    /// Time of the newest event of `kind` about a pull request, any user.
-    pub async fn last_user_event_at(
-        &self,
-        pull_request_id: i64,
-        kind: UserEventKind,
-    ) -> Result<Option<Timestamp>, DbError> {
+    /// How far the pull request's announced rounds reach: the newest `round_through` of its `round_executed` events
+    /// (an event without one counts with its time); `None` before the first round.
+    pub async fn rounds_through(&self, pull_request_id: i64) -> Result<Option<Timestamp>, DbError> {
         let at: Option<String> = sqlx::query_scalar(
-            "SELECT MAX(at) FROM user_events WHERE pull_request_id = ? AND kind = ?",
+            "SELECT MAX(COALESCE(round_through, at)) FROM user_events
+             WHERE pull_request_id = ? AND kind = 'round_executed'",
         )
         .bind(pull_request_id)
-        .bind(wire(kind)?)
         .fetch_one(self.pool)
         .await?;
-        at.map(|at| super::super::jobs::parse_ts(&at, "at"))
+        at.map(|at| super::super::jobs::parse_ts(&at, "round_through"))
             .transpose()
+    }
+
+    /// Pull requests with an agent effect done after their last announced round: candidates for a
+    /// `round_executed` check (the server decides whether the round is complete).
+    pub async fn unannounced_rounds(&self) -> Result<Vec<i64>, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT DISTINCT i.pull_request_id FROM comment_effects e
+             JOIN comment_decisions d ON d.id = e.decision_id JOIN comment_items i ON i.id = d.item_id
+             WHERE e.executor = 'agent' AND e.state = 'done'
+               AND e.updated_at > COALESCE((SELECT MAX(COALESCE(u.round_through, u.at)) FROM user_events u
+                                            WHERE u.pull_request_id = i.pull_request_id
+                                              AND u.kind = 'round_executed'), '')
+             ORDER BY i.pull_request_id",
+        )
+        .fetch_all(self.pool)
+        .await?)
+    }
+
+    /// Stores one `round_executed` event per entry of `events`, all for the round reaching `through`, with their
+    /// channel deliveries; a user already told about this round is left out. Returns how many were stored.
+    pub async fn add_round_events(
+        &self,
+        tenant_id: &str,
+        events: &[NewUserEvent],
+        through: Timestamp,
+        now: Timestamp,
+    ) -> Result<usize, DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        let mut stored = 0;
+        for event in events {
+            if insert_event(&mut tx, tenant_id, event, Some(through), now)
+                .await?
+                .is_some()
+            {
+                stored += 1;
+            }
+        }
+        tx.commit().await?;
+        Ok(stored)
+    }
+
+    /// Takes one of the `limit` messages `target` may receive within `window` before `now` and records it;
+    /// `Err(at)`, when the earliest the next may go, once `limit` were sent.
+    pub async fn take_send_slot(
+        &self,
+        tenant_id: &str,
+        target: &str,
+        limit: u32,
+        window: SignedDuration,
+        now: Timestamp,
+    ) -> Result<Result<(), Timestamp>, DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS sent, MIN(at) AS first FROM notification_sends WHERE target = ? AND at > ?",
+        )
+        .bind(target)
+        .bind(ts(now - window))
+        .fetch_one(&mut *tx)
+        .await?;
+        let sent: i64 = row.try_get("sent")?;
+        if sent >= i64::from(limit) {
+            let first = opt_ts_col(&row, "first")?.unwrap_or(now);
+            return Ok(Err(first + window));
+        }
+        sqlx::query("INSERT INTO notification_sends (tenant_id, target, at) VALUES (?, ?, ?)")
+            .bind(tenant_id)
+            .bind(target)
+            .bind(ts(now))
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(Ok(()))
     }
 
     /// Records one attempt: delivered, failed for good (`retry_at` none) or failed with a retry at `retry_at`.
@@ -725,4 +785,51 @@ impl ReviewLoop<'_> {
         }
         Ok(())
     }
+}
+
+/// Stores a per-user event with one delivery due at once per enabled channel of the user subscribed to its kind
+/// (tests are sent by RN3 itself). With `round_through`, an event of the same round for the same user is kept and
+/// nothing is stored (`None`).
+pub(super) async fn insert_event(
+    tx: &mut Transaction<'static, Sqlite>,
+    tenant_id: &str,
+    event: &NewUserEvent,
+    round_through: Option<Timestamp>,
+    now: Timestamp,
+) -> Result<Option<UserEventId>, DbError> {
+    let id = UserEventId::new_random();
+    let inserted = sqlx::query(
+        "INSERT INTO user_events (id, tenant_id, user_id, kind, pull_request_id, count, text, url, at, round_through)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(id.to_string())
+    .bind(tenant_id)
+    .bind(&event.user_id)
+    .bind(wire(event.kind)?)
+    .bind(event.pull_request_id)
+    .bind(event.count)
+    .bind(&event.text)
+    .bind(&event.url)
+    .bind(ts(now))
+    .bind(round_through.map(ts))
+    .execute(&mut **tx)
+    .await?;
+    if inserted.rows_affected() == 0 {
+        return Ok(None);
+    }
+    sqlx::query(
+        "INSERT INTO notification_deliveries (tenant_id, user_event_id, channel_id, state, next_attempt_at,
+             created_at, updated_at)
+         SELECT e.tenant_id, e.id, c.id, 'pending', ?2, ?2, ?2
+         FROM user_events e JOIN notification_channels c ON c.user_id = e.user_id
+         WHERE e.id = ?1 AND e.kind <> 'test' AND c.enabled = 1
+           AND EXISTS (SELECT 1 FROM json_each(c.events) j WHERE j.value = e.kind)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(id.to_string())
+    .bind(ts(now))
+    .execute(&mut **tx)
+    .await?;
+    Ok(Some(id))
 }

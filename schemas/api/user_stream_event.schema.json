@@ -76,7 +76,7 @@
           "type": "string"
         },
         "url": {
-          "description": "The PR's Comments page.",
+          "description": "The path of the PR's Comments page on this instance (`/pr/<owner>/<name>/<number>/comments`).",
           "type": [
             "string",
             "null"

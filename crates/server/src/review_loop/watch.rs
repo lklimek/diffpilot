@@ -4,9 +4,11 @@
 //! an automatic assessment pass due: it waits while thepastaclaw reviews the pull request (at most
 //! [`BOT_ROUND_WAIT`]), then goes through [`assess::request_pass`] (one pass per pull request, spacing, daily cap). A
 //! plug-in change signal probes its watched pull requests at once. A pass that leaves undecided questions writes one
-//! `questions_ready` user event per round and watcher; delivering it is the notification task's work.
+//! `questions_ready` user event per round and watcher; delivering it is the notification task's work. A user whose
+//! GitHub rate limit is used up is not probed until GitHub's reset or retry time.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use contracts::api::review_loop::{
     ItemState, PrBadgeView, UserEventKind, WatchList, WatchState, WatchedPr,
@@ -38,6 +40,22 @@ pub const PROBE_BATCH: usize = 10;
 pub const BOT_ROUND_WAIT: SignedDuration = SignedDuration::from_mins(90);
 /// The window of the daily cap.
 const DAY: SignedDuration = SignedDuration::from_hours(24);
+
+/// Users whose probes wait for GitHub's rate limit, and until when (kept after it passes, so a repeated limit is
+/// logged quietly; removed by the next successful probe).
+static RATE_LIMITED: LazyLock<Mutex<HashMap<String, Timestamp>>> = LazyLock::new(Mutex::default);
+
+/// Serialises marking a pass due with requesting it: a detection stored while a pass picks its items stays due.
+static DETECTION: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
+
+/// Whether `user`'s probes wait for GitHub's rate limit at `now`.
+fn waits_for_limit(user: &str, now: Timestamp) -> bool {
+    RATE_LIMITED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(user)
+        .is_some_and(|until| *until > now)
+}
 
 /// A watch operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -246,7 +264,9 @@ pub(crate) async fn tick_at(state: &AppState, now: Timestamp) -> Result<(), DbEr
         })
         .filter(|watch| watch.state != WatchState::Ended);
     for (user, list) in by_user(due) {
-        probe(state, user, &list, now).await;
+        if !waits_for_limit(user, now) {
+            probe(state, user, &list, now).await;
+        }
     }
     settle_all(state, None, now).await
 }
@@ -270,7 +290,9 @@ pub async fn plugin_changed(state: &AppState, changed: &HashSet<PrKey>) {
     }
     let now = Timestamp::now();
     for (user, list) in by_user(hit.iter().copied()) {
-        probe(state, user, &list, now).await;
+        if !waits_for_limit(user, now) {
+            probe(state, user, &list, now).await;
+        }
     }
     let prs: HashSet<i64> = hit.iter().map(|watch| watch.pull_request_id).collect();
     if let Err(error) = settle_all(state, Some(&prs), now).await {
@@ -306,12 +328,31 @@ async fn probe(state: &AppState, user: &str, watches: &[&WatchRecord], now: Time
             pause(state, watches, now).await;
             return;
         }
+        Err(WorkError::PrimaryRateLimit { reset }) => {
+            rate_limited(user, reset.unwrap_or(now + PROBE_INTERVAL), now);
+            return;
+        }
+        Err(WorkError::SecondaryRateLimit { retry_after }) => {
+            let wait = retry_after
+                .and_then(|wait| SignedDuration::try_from(wait).ok())
+                .unwrap_or(PROBE_INTERVAL);
+            rate_limited(user, now + wait, now);
+            return;
+        }
         Err(error) => {
             tracing::warn!(user, %error, error_chain = ?error,
                 "watched pull requests could not be probed; the next tick tries again");
             return;
         }
     };
+    if RATE_LIMITED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(user)
+        .is_some()
+    {
+        tracing::info!(user, "watch probes read GitHub again after its rate limit");
+    }
     if !answers.failed.is_empty() {
         tracing::debug!(
             user,
@@ -324,6 +365,20 @@ async fn probe(state: &AppState, user: &str, watches: &[&WatchRecord], now: Time
             tracing::warn!(pr = watch.pull_request_id, user, %error, error_chain = ?error,
                 "a watched pull request's probe could not be handled");
         }
+    }
+}
+
+/// GitHub's rate limit stops `user`'s probes until `until`: logged at `warn` when it starts, quietly while it lasts.
+fn rate_limited(user: &str, until: Timestamp, now: Timestamp) {
+    let was = RATE_LIMITED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(user.to_owned(), until);
+    if was.is_some_and(|was| was > now - PROBE_INTERVAL) {
+        tracing::debug!(user, %until, "GitHub's rate limit still stops this user's watch probes");
+    } else {
+        tracing::warn!(user, %until,
+            "GitHub's rate limit stops this user's watch probes; they resume after the limit resets");
     }
 }
 
@@ -353,8 +408,8 @@ async fn pause(state: &AppState, watches: &[&WatchRecord], now: Timestamp) {
 }
 
 /// One probe answer: a closed or merged pull request ends the watch; changed values read the pull request in full
-/// and make an automatic pass due. The values are stored only after a successful read, so a failed read is tried
-/// again by the next probe.
+/// and make an automatic pass due. The values are stored only after a read covering them: when the read fails or was
+/// skipped as too soon after another, the old values stay, so the next probe (after the interval) reads again.
 async fn observe(
     state: &AppState,
     watch: &WatchRecord,
@@ -372,9 +427,7 @@ async fn observe(
             pr,
             "a watched pull request was not found or not readable; it is probed again next time"
         );
-        let kept = watch.probe.clone().unwrap_or(Value::Null);
-        rl.record_probe(user, pr, &kept, now).await?;
-        return Ok(());
+        return keep_probe(state, watch, now).await;
     };
     if let Some(closed) = pull.state.as_deref().filter(|state| *state != "OPEN") {
         rl.set_watch_state(user, pr, WatchState::Ended, now).await?;
@@ -400,7 +453,13 @@ async fn observe(
     if stored.as_ref() != Some(&probe) {
         let read = match super::read_if_due(state, &watch.tenant_id, user, &watch.pr, true).await {
             Ok(read) => read.outcome,
-            Err(LoopError::TooSoon) => ReadOutcome::Fresh,
+            Err(LoopError::TooSoon) => {
+                tracing::debug!(
+                    pr,
+                    "a changed watched pull request was read moments ago; the next probe reads it"
+                );
+                return keep_probe(state, watch, now).await;
+            }
             Err(error) => return Err(error.into()),
         };
         if let ReadOutcome::Failed(failure) = read {
@@ -409,8 +468,9 @@ async fn observe(
                 ?failure,
                 "a changed watched pull request could not be read; the next probe tries again"
             );
-            return Ok(());
+            return keep_probe(state, watch, now).await;
         }
+        let _detection = DETECTION.lock().await;
         rl.set_pass_due(user, pr, Some(now)).await?;
         tracing::debug!(
             pr,
@@ -425,6 +485,21 @@ async fn observe(
             .await?;
         tracing::info!(pr, user, "watching resumed: the probe read GitHub again");
     }
+    Ok(())
+}
+
+/// Records the probe time with the watch's old values: the change stays unconfirmed for the next probe.
+async fn keep_probe(
+    state: &AppState,
+    watch: &WatchRecord,
+    now: Timestamp,
+) -> Result<(), WatchError> {
+    let kept = watch.probe.clone().unwrap_or(Value::Null);
+    state
+        .db
+        .review_loop()
+        .record_probe(&watch.user_id, watch.pull_request_id, &kept, now)
+        .await?;
     Ok(())
 }
 
@@ -504,6 +579,8 @@ async fn try_pass(
         );
     }
     let rl = state.db.review_loop();
+    // Held until the due marks are cleared: a detection stored meanwhile stays due for the next pass.
+    let _detection = DETECTION.lock().await;
     Ok(
         match assess::request_pass(state, pr, PassReason::Watch).await? {
             PassQueued::Queued => {
@@ -520,6 +597,19 @@ async fn try_pass(
             PassQueued::DailyLimit => WatchState::LimitReached,
             PassQueued::Skipped => {
                 rl.set_pass_due(user, pr, None).await?;
+                // Nothing new to assess (e.g. an on-demand pass assessed the change): the watcher still hears of
+                // the questions that wait.
+                let loaded = Loaded::of(
+                    state,
+                    PrHandle {
+                        pr: watch.pr.clone(),
+                        id: pr,
+                    },
+                )
+                .await?;
+                let head = state.db.pull_requests().get(pr).await?.pr.head_sha.0;
+                let round = round_key(loaded.snapshot.as_ref(), &head);
+                questions_ready(state, watch, ready_questions(&loaded), &round, now).await?;
                 WatchState::Active
             }
         },
@@ -527,12 +617,59 @@ async fn try_pass(
 }
 
 /// The round a "questions ready" event is for: the bot round, or the head while the pull request has none.
-fn round_key(snapshot: Option<&Snapshot>, pass: &PassRecord) -> String {
+fn round_key(snapshot: Option<&Snapshot>, head: &str) -> String {
     match snapshot {
         Some(snapshot) if !snapshot.rounds.is_empty() => format!("round:{}", snapshot.rounds.len()),
         Some(snapshot) => format!("head:{}", snapshot.head),
-        None => format!("head:{}", pass.head.0),
+        None => format!("head:{head}"),
     }
+}
+
+/// Questions ready for a decision: waiting items other than those a pass still assesses.
+fn ready_questions(loaded: &Loaded) -> u32 {
+    let ready = queue::waiting(&loaded.queue_items(&[]))
+        .iter()
+        .filter(|item| item.state != ItemState::Assessing)
+        .count();
+    u32::try_from(ready).unwrap_or(u32::MAX)
+}
+
+/// One `questions_ready` event for the watcher per round while questions wait.
+async fn questions_ready(
+    state: &AppState,
+    watch: &WatchRecord,
+    questions: u32,
+    round: &str,
+    now: Timestamp,
+) -> Result<(), WatchError> {
+    if questions == 0 || watch.notified_for.as_deref() == Some(round) {
+        return Ok(());
+    }
+    let (pr, pr_ref) = (watch.pull_request_id, &watch.pr);
+    let event = NewUserEvent {
+        user_id: watch.user_id.clone(),
+        kind: UserEventKind::QuestionsReady,
+        pull_request_id: Some(pr),
+        count: questions,
+        text: format!(
+            "{}/{} #{}: {questions} {} ready",
+            pr_ref.repo.owner,
+            pr_ref.repo.name,
+            pr_ref.number,
+            if questions == 1 {
+                "question"
+            } else {
+                "questions"
+            }
+        ),
+        url: Some(super::notify::comments_path(pr_ref)),
+    };
+    let rl = state.db.review_loop();
+    rl.add_user_event(&watch.tenant_id, &event, now).await?;
+    rl.set_notified(&watch.user_id, pr, round).await?;
+    state.notify.wake_deliveries();
+    tracing::info!(pr, user = %watch.user_id, questions, %round, "questions ready event written");
+    Ok(())
 }
 
 /// After an automatic pass: every watcher of its pull request records it with the undecided questions now, and
@@ -560,44 +697,13 @@ pub(crate) async fn pass_ended(state: &AppState, pass: &PassRecord) -> Result<()
         },
     )
     .await?;
-    // Questions ready for a decision: waiting items other than those another pass still assesses.
-    let ready = queue::waiting(&loaded.queue_items(&[]))
-        .iter()
-        .filter(|item| item.state != ItemState::Assessing)
-        .count();
-    let questions = u32::try_from(ready).unwrap_or(u32::MAX);
-    let round = round_key(loaded.snapshot.as_ref(), pass);
+    let questions = ready_questions(&loaded);
+    let round = round_key(loaded.snapshot.as_ref(), &pass.head.0);
     let now = Timestamp::now();
     for watch in &watchers {
         rl.record_auto_pass(&watch.user_id, pr, questions, now)
             .await?;
-        if questions > 0 && watch.notified_for.as_deref() != Some(round.as_str()) {
-            let pr_ref = &watch.pr;
-            let event = NewUserEvent {
-                user_id: watch.user_id.clone(),
-                kind: UserEventKind::QuestionsReady,
-                pull_request_id: Some(pr),
-                count: questions,
-                text: format!(
-                    "{}/{} #{}: {questions} {} ready",
-                    pr_ref.repo.owner,
-                    pr_ref.repo.name,
-                    pr_ref.number,
-                    if questions == 1 {
-                        "question"
-                    } else {
-                        "questions"
-                    }
-                ),
-                url: Some(format!(
-                    "/pr/{}/{}/{}/comments",
-                    pr_ref.repo.owner, pr_ref.repo.name, pr_ref.number
-                )),
-            };
-            rl.add_user_event(&watch.tenant_id, &event, now).await?;
-            rl.set_notified(&watch.user_id, pr, &round).await?;
-            tracing::info!(pr, user = %watch.user_id, questions, %round, "questions ready event written");
-        }
+        questions_ready(state, watch, questions, &round, now).await?;
         if watch.state == WatchState::JobRunning {
             rl.set_watch_state(&watch.user_id, pr, WatchState::Active, now)
                 .await?;
