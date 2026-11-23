@@ -130,12 +130,17 @@ function Agents({ subscribers, now }: { subscribers: FeedSubscriber[]; now: Date
               ) : (
                 <>
                   {s.push.kind}
-                  {s.push.url && ` · ${s.push.url}`}
+                  {s.push.url === null ? (
+                    // The server leaves out another user's address: a URL or topic can be a credential.
+                    <span className="text-muted"> · another user's token, address not shown</span>
+                  ) : (
+                    ` · ${s.push.url}`
+                  )}
                   {s.push.topic && `/${s.push.topic}`}{" "}
                   {s.push.delivery.failing_since ? (
                     <Chip
                       tone="fail"
-                      text={`failing since ${clockText(s.push.delivery.failing_since, now)}: ${s.push.delivery.last_error ?? "error"}`}
+                      text={`failing since ${clockText(s.push.delivery.failing_since, now)}${s.push.delivery.last_error ? `: ${s.push.delivery.last_error}` : ""}`}
                       tip="Delivery state of this push target, as diffpilot recorded it."
                     />
                   ) : s.push.delivery.last ? (
@@ -208,7 +213,10 @@ export function DecisionLog({ log, pr, now, storageKey }: DecisionLogProps) {
                     <ProvenanceTag source="llm" />
                   </>
                 )}
-                {d.reason && <div>Reason posted: &quot;{d.reason}&quot;</div>}
+                {d.reply_text && <div>Public reply: &quot;{d.reply_text}&quot;</div>}
+                {d.reason && !d.reply_text?.includes(d.reason) && (
+                  <div>Reason (not posted): &quot;{d.reason}&quot;</div>
+                )}
                 {d.comment && (
                   <div>Your comment (sent to the agent, not posted): &quot;{d.comment}&quot;</div>
                 )}

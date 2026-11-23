@@ -249,6 +249,43 @@ describe("DecisionLog (V3)", () => {
     expectTrustWording(text());
   });
 
+  it("shows the stored public reply; a reason left out of an edited reply is marked as not posted", () => {
+    const posted =
+      "Per maintainer decision, accepted despite G-FUNDS: Pre-existing fee display; tracked in #455.";
+    const { unmount } = render(<DecisionLog log={log()} pr={PR} now={NOW} storageKey="t" />);
+    expect(screen.getByText(`Public reply: "${posted}"`)).toBeVisible();
+    expect(screen.queryByText(/Reason \(not posted\)/)).toBeNull();
+    unmount();
+    const edited = withDecision({
+      kind: "reject",
+      reason: "Soft limit.",
+      reply_text: "Kept as is, see #490.",
+    });
+    render(<DecisionLog log={edited} pr={PR} now={NOW} storageKey="t" />);
+    expect(screen.getByText('Public reply: "Kept as is, see #490."')).toBeVisible();
+    expect(screen.getByText('Reason (not posted): "Soft limit."')).toBeVisible();
+  });
+
+  it("another user's push target shows its kind and delivery state, not its address", () => {
+    const l = log();
+    const webhook = l.subscribers.find((s) => s.push?.kind === "webhook")!;
+    const other = {
+      ...webhook,
+      push: {
+        ...webhook.push!,
+        url: null,
+        topic: null,
+        secret_last4: null,
+        delivery: { ...webhook.push!.delivery, last_error: null },
+      },
+    };
+    render(<DecisionLog log={{ ...l, subscribers: [other] }} pr={PR} now={NOW} storageKey="t" />);
+    expect(screen.getByText(/another user's token, address not shown/)).toBeVisible();
+    expect(screen.getByText(/^failing since 09:20$/)).toBeVisible();
+    expect(text()).not.toContain("ci.example.lan");
+    expect(text()).not.toContain("null");
+  });
+
   it("an undone decision says so; a PR-level decision is named P<n> as in Questions", () => {
     render(
       <DecisionLog

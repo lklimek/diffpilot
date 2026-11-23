@@ -214,6 +214,21 @@ export const reviewLoopHandlers = [
       return apiError(422, "scheme_not_allowed", "Only http and https addresses are allowed.");
     const current = notificationSettings();
     const old = current.channels.find((c) => c.kind === kind);
+    // notify.rs `check_target`: a kept secret never follows a changed URL origin (scheme, host, port).
+    const origin = (url: string) => {
+      try {
+        return new URL(url).origin;
+      } catch {
+        return null;
+      }
+    };
+    const kept = (body.secret?.action ?? "keep") === "keep";
+    if (old?.secret_last4 && kept && (origin(old.url) === null || origin(old.url) !== origin(body.url)))
+      return apiError(
+        422,
+        "secret_required",
+        "The kind or the URL's scheme, host or port changed: replace or remove the secret, it is not sent to a new destination.",
+      );
     const saved: NotificationChannel = {
       kind,
       url: body.url,

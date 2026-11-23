@@ -41,6 +41,7 @@ export function NotificationChannels() {
             channel={channel}
             busy={busy}
             error={error ? errorText(error) : null}
+            secretRequired={error instanceof ApiError && error.code === "secret_required"}
             testResult={tested?.kind === kind ? tested.result : null}
             now={now}
             onSave={(body) => {

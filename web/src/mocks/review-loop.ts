@@ -31,7 +31,19 @@ import type {
   WatchedPr,
   WatchList,
 } from "../api/generated/types";
-import { decideRest, plan, waiting, type PlanScope, type Planned } from "./effects-plan";
+import {
+  ASKED_AGAIN,
+  NOT_READ,
+  decideRest,
+  dismissal,
+  plan,
+  questionOf,
+  staleReviews,
+  waiting,
+  type BotChangeRequest,
+  type PlanScope,
+  type Planned,
+} from "./effects-plan";
 import { liveAnalysis } from "./live-analysis";
 import { scenario } from "./scenarios";
 
@@ -192,6 +204,7 @@ D8.effects = [
 const D5 = decision(5, {
   kind: "handled_in_pr",
   target: { type: "existing_pr", number: 490 },
+  reply_text: "Per maintainer decision, this is addressed in #490.",
   via: "table",
   decided_at: at("08:31"),
   recommendation: rec("handled_in_pr", "#490 changes the same constant.", "other_pr", {
@@ -206,6 +219,7 @@ D5.effects = [
 const D16 = decision(16, {
   kind: "reject",
   reason: "The retry is idempotent by design.",
+  reply_text: "Per maintainer decision, not changed: The retry is idempotent by design.",
   via: "carried",
   carried_from: "d0000000-0000-4000-8000-000000000003",
   decided_at: at("08:47"),
@@ -217,6 +231,7 @@ D16.effects = [
 const D17 = decision(17, {
   kind: "handled_in_pr",
   target: { type: "existing_pr", number: 490 },
+  reply_text: "Per maintainer decision, this is addressed in #490.",
   via: "carried",
   carried_from: D5.id,
   decided_at: at("08:47"),
@@ -262,7 +277,7 @@ function seedItems(): CommentItem[] {
       first_round: 3,
       github: facts({ resolved: null, outdated: null }),
       title: "Merge now, or another round?",
-      body: "Bot round 3 has ended. Merge with the remaining items as follow-ups (one follow-up pull request), or another round. Open items: 5 undecided, none with a gate. Remaining: C11, C22, C23, C18, C19.",
+      body: "Bot round 3 has ended. Merge with the remaining items as follow-ups (one follow-up pull request), or another round.",
     }),
     item(21, {
       state: "reopened",
@@ -482,7 +497,8 @@ export function resetReviewLoop(): void {
 }
 
 const OPEN_STATES = new Set(["undecided", "reopened", "asked_back"]);
-const isOpen = (i: CommentItem) => OPEN_STATES.has(i.state);
+/** Waiting for a decision: open and still produced by the read (an item with `gone_at` leaves the queue). */
+const isOpen = (i: CommentItem) => OPEN_STATES.has(i.state) && !i.gone_at;
 
 /** Items as RC4 answers them in the selected state. */
 export function listItems(): CommentItem[] {
@@ -555,7 +571,7 @@ function counts(list: CommentItem[]) {
 }
 
 function assessmentProgress(list: CommentItem[]) {
-  const needs = list.filter((i) => i.kind !== "pr_question" && i.state !== "outside");
+  const needs = list.filter((i) => i.kind !== "pr_question" && i.state !== "outside" && !i.gone_at);
   const assessed = needs.filter((i) => i.assessment_state.state === "assessed").length;
   return {
     running: state() === "running",
@@ -788,14 +804,19 @@ export function context(no: number, from: number | null, to: number | null): Cod
   };
 }
 
-/** Stale bot reviews of the fixture PR (P3 dismisses them). */
-const STALE_REVIEWS = ["PRR_round2", "PRR_round3"];
+/** Bots whose latest review on the fixture PR requests changes (the read's `bot_change_requests`). */
+export const BOT_CHANGE_REQUESTS: BotChangeRequest[] = [
+  { login: "thepastaclaw", review_id: "PRR_round3", url: `${URL_PR}#pullrequestreview-3` },
+];
 
-/** What a PR-level decision acts on while `deciding` are decided with it (mod.rs `Loaded::scope`). */
+/** What a PR-level decision acts on while `deciding` are decided with it (mod.rs `Loaded::scope`): P1 the waiting
+ * items except gate items, which keep their own decision. */
 const scopeOf = (deciding: number[]): PlanScope => ({
   number: PR.number,
-  remaining: waiting(items()).filter((i) => i.kind !== "pr_question" && !deciding.includes(i.no)),
-  staleReviews: STALE_REVIEWS,
+  remaining: waiting(items()).filter(
+    (i) => i.kind !== "pr_question" && i.gates.length === 0 && !deciding.includes(i.no),
+  ),
+  staleReviews: [],
 });
 
 /** A stored decision for `it` as the server plans it (RC8, RC9): effects and the reply text that gets posted. */
@@ -925,7 +946,13 @@ function planRows(rows: DecisionBatchRow[]): [CommentItem, Planned][] | Refusal 
   const scope = scopeOf(rows.map((r) => r.item_no));
   const out: [CommentItem, Planned][] = [];
   for (const [row, it] of found) {
-    const planned = plan(it!, row, scope);
+    let at = scope;
+    if (row.kind === "dismiss_stale_reviews" && questionOf(it!) === "dismiss") {
+      const listed = dismissal(it!, staleReviews(BOT_CHANGE_REQUESTS, store!.items));
+      if (typeof listed === "string") return [400, "invalid_request", `C${it!.no}: ${listed}.`];
+      at = { ...scope, staleReviews: listed };
+    }
+    const planned = plan(it!, row, at);
     if (typeof planned === "string") return [400, "invalid_request", `C${it!.no}: ${planned}.`];
     out.push([it!, planned]);
   }
@@ -947,12 +974,18 @@ export function previewEffects(rows: DecisionBatchRow[]): EffectsPreview[] | Ref
 /** RC17. */
 export const decideRestList = (): DecideRest => decideRest(listItems(), scopeOf);
 
-/** RC8, RC9 (mod.rs `decide`): one record per row, all or nothing; gate rows never under group or bulk. */
+/** RC8, RC9 (mod.rs `decide`): one record per row, all or nothing; gate rows never under group or bulk, items
+ * asked again or no longer read never in bulk. */
 function storeRows(via: Decision["via"], rows: DecisionBatchRow[]): Decision[] | Refusal {
   items();
   const twice = rows.find((r, i) => rows.findIndex((o) => o.item_no === r.item_no) !== i);
   if (twice)
     return [400, "invalid_request", `C${twice.item_no}: this decision is not offered for this item.`];
+  const own = rows
+    .map((r) => store!.items.find((i) => i.no === r.item_no))
+    .find((i) => i?.gone_at || i?.state === "reopened");
+  if (via === "bulk" && own)
+    return [400, "invalid_request", `C${own.no}: ${own.gone_at ? NOT_READ : ASKED_AGAIN}.`];
   const gated = rows
     .map((r) => store!.items.find((i) => i.no === r.item_no))
     .filter((i) => i && i.gates.length > 0)

@@ -566,7 +566,7 @@ export function PrQuestionCard({
                   <span className="text-xs text-muted">
                     {" "}
                     — an agent creates one follow-up PR listing them, replies with its link and resolves each
-                    thread; you merge on GitHub
+                    thread; gate items stay in the queue for their own decision; you merge on GitHub
                   </span>
                 )}
                 {c === "another_round" && (
