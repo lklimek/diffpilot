@@ -47,7 +47,8 @@ export function RepositoryTable({ rows, onChange, errors, unreachable }: Reposit
           No repositories yet. Pull requests and issues of yours are still found by search.
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="relative overflow-x-auto">
+          {/* `relative`: the cells' screen-reader text (absolutely placed) scrolls with the table, not the page. */}
           <table className="w-full border-collapse text-sm">
             <caption className="sr-only">Repositories</caption>
             <thead>
