@@ -1203,3 +1203,42 @@ async fn token_session_liveness_follows_revocation() {
 }
 
 mod sec_review;
+
+/// ADR-019 amendment (T22, T25): a token with `review_loop_execute` reaches no mutating route but the feed's
+/// `TokenOnly` ones; decisions, batches, undo, reopen, gate marks, watches, channel settings and snoozes answer it
+/// 403 `token_not_accepted` exactly as a `read` token.
+#[tokio::test]
+async fn an_execute_token_reaches_only_the_token_only_mutations() {
+    let s = setup().await;
+    let (execute, _) = stored_token(
+        &s.state.db,
+        "u1",
+        vec![TokenScope::Read, TokenScope::ReviewLoopExecute],
+        Timestamp::now() + SignedDuration::from_hours(24),
+    )
+    .await;
+    let mut checked = 0;
+    for route in ROUTES.iter().filter(|route| {
+        route.listener == Listener::Public
+            && route.method != HttpMethod::Get
+            && !matches!(route.auth, RouteAuth::TokenOnly(_))
+    }) {
+        let uri = uri(route, s.analysis);
+        let (status, body) = status_and_body(
+            &s.app,
+            request(route.method.as_str(), &uri, Some(&execute), None),
+        )
+        .await;
+        if status == StatusCode::NOT_FOUND && body.is_null() {
+            continue;
+        }
+        assert_eq!(
+            (status, &body["code"]),
+            (StatusCode::FORBIDDEN, &json!("token_not_accepted")),
+            "{} {uri}",
+            route.method.as_str()
+        );
+        checked += 1;
+    }
+    assert!(checked >= 20, "too few mutations checked: {checked}");
+}

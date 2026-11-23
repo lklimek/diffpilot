@@ -542,3 +542,44 @@ async fn feed_stream_lists_claimable_and_marks_the_agent_connected() {
         "{cancelled}"
     );
 }
+
+/// RF4 after the feed task returned a lapsed claim to the feed: the claimer's late report still answers 409
+/// `lease_expired` (agent-api step 6: "the lease ended and the decision went back to the feed (claim again)"), never
+/// `claimed` ("another agent holds it"), which would tell the agent to give up a decision nobody holds.
+#[tokio::test]
+async fn late_report_after_the_feed_returned_the_claim_is_lease_expired() {
+    let w = world().await;
+    let decision = fix_here(&w).await;
+    let id: DecisionId = serde_json::from_value(decision["id"].clone()).expect("id");
+    let (a, principal_a) = agent(&w, &EXECUTE).await;
+    let all = [EffectKind::Fix, EffectKind::Reply, EffectKind::Resolve];
+    w.state
+        .db
+        .review_loop()
+        .claim(
+            id,
+            &principal_a.token_id,
+            &all,
+            feed::LEASE,
+            Timestamp::now() - SignedDuration::from_mins(31),
+        )
+        .await
+        .expect("claim");
+    feed::sync(&w.state)
+        .await
+        .expect("the feed task returns the lapsed claim");
+    let fix = decision["effects"][0]["id"].as_str().expect("effect");
+    let (status, _, error) = with_token(
+        &w,
+        &a,
+        "POST",
+        &format!("{FEED}/effects/{fix}/reports"),
+        Some(report("done", Some("abc123"), None)),
+    )
+    .await;
+    assert_eq!(
+        (status, &error["code"]),
+        (StatusCode::CONFLICT, &json!("lease_expired")),
+        "{error}"
+    );
+}
