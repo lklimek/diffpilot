@@ -13,6 +13,7 @@ import {
   useHideMention,
   useSnoozeItem,
   useWakeItem,
+  useWatchItem,
   useDashboardItems,
   useDashboardSummary,
   useRankAgain,
@@ -156,6 +157,7 @@ export function useDashboardPage() {
   const hideMention = useHideMention();
   const snooze = useSnoozeItem();
   const wake = useWakeItem();
+  const watch = useWatchItem();
   const [withBots, setWithBots] = useMentionBots();
   const [mentionsExpanded, setMentionsExpanded] = useMentionsExpanded();
   const client = useQueryClient();
@@ -205,6 +207,7 @@ export function useDashboardPage() {
     hideMention,
     snooze,
     wake,
+    watch,
     mentionsExpanded,
     setMentionsExpanded,
     withBots,

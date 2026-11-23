@@ -26,6 +26,14 @@ interface WorkListProps {
   onSizesChange?: (sizes: SizeMark[]) => void;
   /** In-app href of a pull request's review (plan §F.1); built by the screen. */
   reviewHref: (item: WorkItem) => string;
+  /** In-app href of a pull request's Comments (owner 2026-11-23); built by the screen. */
+  commentsHref?: (item: WorkItem) => string;
+  /** Watch chosen on a pull request row without comment counts (RW1); without it rows offer no Watch. */
+  onWatch?: (item: WorkItem) => void;
+  /** Keys of the pull requests whose Watch is being saved. */
+  watchingKeys?: string[];
+  /** Keys of the pull requests watched in this visit. */
+  watchedKeys?: string[];
   /** In-app navigation (links and `v`); without it links load the page. */
   onNavigate?: Navigate;
   /** `?` pressed. */
@@ -86,6 +94,10 @@ export function WorkList({
   sizes = ALL_SIZES,
   onSizesChange,
   reviewHref,
+  commentsHref,
+  onWatch,
+  watchingKeys = [],
+  watchedKeys = [],
   onNavigate,
   onHelp,
   keysEnabled = true,
@@ -183,6 +195,11 @@ export function WorkList({
       onToggle={() => toggle(item.key)}
       current={item.key === cursor}
       reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
+      commentsHref={item.kind === "pr" ? commentsHref?.(item) : undefined}
+      onWatch={onWatch && (() => onWatch(item))}
+      watch={
+        watchingKeys.includes(item.key) ? "saving" : watchedKeys.includes(item.key) ? "watching" : undefined
+      }
       onNavigate={onNavigate}
       expanderRef={register(item.key)}
       todos={todos}

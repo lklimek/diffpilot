@@ -1409,6 +1409,21 @@ export type CommentScope = { "scope": "in_diff",
 line_thread_ranges: Array<LineRange>, } | { "scope": "not_in_diff" };
 
 /**
+ * Counts of a pull request's review comments in Comments (plan docs/review-workflow-plan.md §2.1): threads,
+ * review-body and PR-comment items of the last read, without PR-level questions and items the read no longer
+ * produces.
+ */
+export type CommentTally = {
+/**
+ * Comments in any state.
+ */
+total: number,
+/**
+ * Those waiting for a decision: the Needs you list of Comments.
+ */
+needs_you: number, };
+
+/**
  * The displayed line(s) a comment is written on.
  */
 export type CommentTarget = {
@@ -6579,6 +6594,11 @@ llm: ItemText | null,
  * The user's diffpilot analysis of this pull request, read at request time; null when none.
  */
 review: ReviewLink | null,
+/**
+ * Review comments diffpilot read for this pull request (Comments), counted at request time; absent before
+ * diffpilot's first successful read of them.
+ */
+comments?: CommentTally,
 /**
  * Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
  */

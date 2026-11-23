@@ -1600,6 +1600,86 @@ async fn review_link_reports_head_moved() {
     assert!(!link.has_my_state);
 }
 
+/// R1b `comments`: the comments diffpilot read for a pull request, counted at request time; none before a read.
+#[tokio::test]
+async fn pull_request_items_count_the_comments_diffpilot_read() {
+    use contracts::api::dashboard::CommentTally;
+    use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemGithubFacts, ItemState};
+    use db::repo::review_loop::{ObservedItem, ReadResult};
+    let w = world().await;
+    db::repo::analyses::testing::seed_analysis(&w.state.db)
+        .await
+        .expect("seed acme/node-client#482");
+    w.refreshed().await;
+    let comments = |page: &ItemPage| -> Vec<(String, CommentTally)> {
+        page.items
+            .iter()
+            .filter_map(|i| Some((i.id.clone(), i.comments?)))
+            .collect()
+    };
+    assert_eq!(comments(&w.items("").await), [], "nothing read yet");
+    let rl = w.state.db.review_loop();
+    let now = Timestamp::now();
+    rl.ensure_pr(DEFAULT_TENANT, 1, now).await.expect("row");
+    for (key, state) in [
+        ("dedupe-a", ItemState::Undecided),
+        ("dedupe-b", ItemState::Done),
+    ] {
+        let observed = ObservedItem {
+            kind: CommentItemKind::Thread,
+            stable_key: key.to_owned(),
+            author: "thepastaclaw".to_owned(),
+            author_kind: AuthorKind::Bot,
+            url: None,
+            location: None,
+            title: "Unbounded retry".to_owned(),
+            body: "The retry loop has no upper bound.".to_owned(),
+            body_hash: format!("hash:{key}"),
+            head: contracts::ids::CommitSha("h".to_owned()),
+            round: None,
+            bot_severity: None,
+            github: ItemGithubFacts {
+                resolved: Some(false),
+                resolved_by: None,
+                outdated: Some(false),
+                bot_status: None,
+                edited_after_decision: false,
+                replies: 0,
+                marker: None,
+            },
+            outside: None,
+        };
+        rl.upsert_item(DEFAULT_TENANT, 1, &observed, state, now)
+            .await
+            .expect("item");
+    }
+    assert_eq!(
+        comments(&w.items("").await),
+        [],
+        "items without a successful read"
+    );
+    rl.record_read(
+        1,
+        &ReadResult::Read {
+            snapshot: json!({}),
+            round_count: 0,
+        },
+        now,
+    )
+    .await
+    .expect("read");
+    assert_eq!(
+        comments(&w.items("").await),
+        [(
+            "NC-482".to_owned(),
+            CommentTally {
+                total: 2,
+                needs_you: 1
+            }
+        )]
+    );
+}
+
 #[tokio::test]
 async fn refresh_without_a_github_sign_in_fails_with_sign_in_required() {
     let w = world().await;

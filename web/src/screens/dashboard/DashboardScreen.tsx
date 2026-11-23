@@ -36,7 +36,7 @@ import {
 } from "./history";
 import { REVIEW_START_PATH, SETTINGS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
-import { railText, reviewHref } from "./state";
+import { commentsHref, railText, reviewHref } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
 const errorText = (error: unknown) =>
@@ -47,6 +47,12 @@ const snoozeErrorText = (error: unknown) =>
   error instanceof ApiError && error.status === 404
     ? "Could not snooze this item: it is no longer in your list. Refresh to see the current list."
     : `Could not snooze this item. Try again. ${errorText(error)}`;
+
+/** Why a Watch failed: the 20-PR limit, or the server's reason. */
+const watchErrorText = (error: unknown) =>
+  error instanceof ApiError && error.code === "watch_limit_reached"
+    ? "Could not watch this pull request: you watch 20 already. Unwatch one in Watched PRs first."
+    : `Could not watch this pull request. Try again. ${errorText(error)}`;
 
 /** My work (plan §F, ADR-016): refresh state, headline and charts, the ranked list and the side panel. */
 export function DashboardScreen() {
@@ -206,6 +212,16 @@ export function DashboardScreen() {
           </Tooltip>
         </StatusMessage>
       )}
+      {page.watch.isError && (
+        <StatusMessage kind="error">
+          {watchErrorText(page.watch.error)}{" "}
+          <Tooltip tip="Dismiss this error message">
+            <button type="button" className="underline" onClick={page.watch.dismissError}>
+              Dismiss
+            </button>
+          </Tooltip>
+        </StatusMessage>
+      )}
       {page.wake.isError && (
         <StatusMessage kind="error">
           Could not wake this item. Try again. {errorText(page.wake.error)}{" "}
@@ -242,6 +258,14 @@ export function DashboardScreen() {
           sizes={page.sizes}
           onSizesChange={page.setSizes}
           reviewHref={reviewHref}
+          commentsHref={commentsHref}
+          onWatch={(item) =>
+            item.repo &&
+            item.number !== null &&
+            page.watch.mutate({ key: item.key, pr: { repo: item.repo, number: item.number } })
+          }
+          watchingKeys={page.watch.pendingKeys}
+          watchedKeys={page.watch.watchedKeys}
           onNavigate={go}
           onHelp={() => setHelpOpen(true)}
           keysEnabled={!helpOpen}

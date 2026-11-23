@@ -76,6 +76,30 @@ test.describe("My work (msw)", () => {
     await expectKeyboardTooltips(page);
   });
 
+  test("a pull request's comment counts open its Comments; without counts Watch reads them (owner 2026-11-23)", async ({
+    page,
+  }) => {
+    await open(page);
+    await main(page)
+      .getByRole("link", { name: /^15 comments · 10 need you: comments of #482 / })
+      .click();
+    await expect(page).toHaveURL("/pr/acme/node-client/482/comments");
+    await expect(page.getByRole("navigation", { name: "Queue" })).toBeVisible();
+    await page.goBack();
+    await main(page)
+      .getByRole("button", { name: /^Watch #1203 / })
+      .click();
+    await expect(
+      main(page).getByRole("link", { name: /^0 comments · 0 need you: comments of #1203 / }),
+    ).toBeVisible();
+    await expect(main(page).getByRole("button", { name: /^Watch #1203 / })).toHaveCount(0);
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme });
+      await expectAccessible(page);
+    }
+    await expectKeyboardTooltips(page);
+  });
+
   test("every row shows a GitHub / MemCan icon link without hover; it opens a new tab, not the row", async ({
     page,
   }) => {

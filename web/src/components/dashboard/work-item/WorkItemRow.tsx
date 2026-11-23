@@ -7,7 +7,7 @@ import { KIND_LABEL, KindIcon } from "../common/icons";
 import { LlmLine } from "../common/LlmLine";
 import { PluginNotes } from "../plugin-notes/PluginNotes";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
-import type { Navigate } from "../common/navigate";
+import { navigateOnClick, type Navigate } from "../common/navigate";
 import { FactTags, ProvisionalPill, SizePill } from "../common/Tags";
 import { ScoreBreakdown } from "../score-breakdown/ScoreBreakdown";
 import { ScoreTip } from "../score-breakdown/ScoreTip";
@@ -28,6 +28,12 @@ interface WorkItemRowProps {
   expanderRef?: Ref<HTMLButtonElement>;
   /** State of the MemCan TODOs in the snapshot: a TODO row kept from an earlier scan says so (plan §G). */
   todos?: TodosState;
+  /** In-app href of a pull request's Comments (owner 2026-11-23); built by the screen. */
+  commentsHref?: string;
+  /** Watch chosen on a pull request diffpilot has no comment counts for (RW1); without it no Watch. */
+  onWatch?: () => void;
+  /** Watch of this pull request: being saved, or saved in this visit. */
+  watch?: "saving" | "watching";
   /** Snooze chosen in the row's menu (days); without it no menu. */
   onSnooze?: (days: number) => void;
   /** A snooze of this item is being saved. */
@@ -80,6 +86,9 @@ export function WorkItemRow({
   onNavigate,
   expanderRef,
   todos,
+  commentsHref,
+  onWatch,
+  watch,
   onSnooze,
   snoozing = false,
   now,
@@ -137,6 +146,15 @@ export function WorkItemRow({
             <FactTags tags={item.tags} />
             {provisionalPill(item)}
             {notRefreshedPill(item, todos, now)}
+            {item.kind === "pr" && (
+              <CommentsInfo
+                item={item}
+                href={commentsHref}
+                onNavigate={onNavigate}
+                onWatch={onWatch}
+                watch={watch}
+              />
+            )}
           </div>
           <PluginNotes notes={item.plugin_notes} itemId={item.id} full={expanded} now={now} />
         </div>
@@ -172,6 +190,70 @@ export function WorkItemRow({
         {expanded && <ScoreBreakdown item={item} now={now} />}
       </div>
     </li>
+  );
+}
+
+const WATCH_TIP =
+  "diffpilot has not read this pull request's comments. Watch reads them now, then checks for new ones and assesses them with its LLM (uses GitHub requests and LLM tokens).";
+
+/**
+ * A pull request's comments in diffpilot (owner 2026-11-23): "12 comments · 5 need you" opening its Comments, or
+ * Watch when diffpilot never read them.
+ */
+function CommentsInfo({
+  item,
+  href,
+  onNavigate,
+  onWatch,
+  watch,
+}: {
+  item: WorkItem;
+  href?: string;
+  onNavigate?: Navigate;
+  onWatch?: () => void;
+  watch?: "saving" | "watching";
+}) {
+  const subject = `#${item.number ?? ""} ${item.title}`;
+  const tally = item.comments;
+  if (tally && href) {
+    const text = `${tally.total} ${tally.total === 1 ? "comment" : "comments"} · ${tally.needs_you} ${
+      tally.needs_you === 1 ? "needs" : "need"
+    } you`;
+    return (
+      <>
+        <span aria-hidden="true">·</span>
+        <Tooltip tip="Opens the comments of this pull request in diffpilot: counted from its last read; those that need you wait for your decision.">
+          <a
+            href={href}
+            aria-label={`${text}: comments of ${subject}`}
+            data-comments-link
+            onClick={navigateOnClick(href, onNavigate)}
+            className="font-semibold text-accent"
+          >
+            {text}
+          </a>
+        </Tooltip>
+      </>
+    );
+  }
+  if (tally || !onWatch) return null;
+  const on = watch === "watching";
+  return (
+    <Tooltip tip={watch === "saving" ? `${WATCH_TIP} Saving…` : WATCH_TIP}>
+      <button
+        type="button"
+        aria-label={`${on ? "Watching" : "Watch"} ${subject}`}
+        aria-pressed={on}
+        aria-disabled={watch !== undefined || undefined}
+        onClick={() => watch === undefined && onWatch()}
+        className={`inline-flex min-h-6 cursor-pointer items-center gap-1 rounded-full border px-2 text-xs ${
+          on ? "border-low-bd bg-low-bg font-semibold text-low" : "border-border bg-surface text-text"
+        }`}
+      >
+        <span aria-hidden="true">{on ? "◉" : "○"}</span>
+        {on ? "Watching" : "Watch"}
+      </button>
+    </Tooltip>
   );
 }
 

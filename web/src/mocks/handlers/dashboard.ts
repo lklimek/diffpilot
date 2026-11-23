@@ -232,6 +232,8 @@ const changed = new Map<string, RefreshStatus>();
 const hiddenMentions = new Set<string>();
 /** Snoozed item keys with the time they wake (R12); they persist across mock refreshes. */
 const snoozed = new Map<string, string>();
+/** Pull requests watched from My work (RW1, keys); their rows count the comments the watch read (none). */
+const watchedPrs = new Set<string>();
 /** The time zone stored through R6b. */
 let timeZone: string | null = null;
 let runCount = 0;
@@ -244,6 +246,7 @@ export function resetDashboard(): void {
   changed.clear();
   hiddenMentions.clear();
   snoozed.clear();
+  watchedPrs.clear();
   timeZone = null;
 }
 
@@ -491,7 +494,11 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
     mention_coverage: summary.mention_coverage,
     mentions: cursor ? [] : (page.mentions ?? []).filter((m) => !hiddenMentions.has(m.id)),
     revision: page.revision,
-    items: matching.slice(offset, offset + limit),
+    items: matching
+      .slice(offset, offset + limit)
+      .map((item) =>
+        watchedPrs.has(item.key) && !item.comments ? { ...item, comments: { total: 0, needs_you: 0 } } : item,
+      ),
     next_cursor: next,
   };
   const headers = { ETag: etagOf(body), "Cache-Control": "no-store" };
@@ -499,6 +506,17 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
     return new HttpResponse(null, { status: 304, headers });
   }
   return HttpResponse.json(body, { headers });
+});
+
+/**
+ * RW1 PUT from a My work row: the server reads the pull request's comments, then watches it. The review module's
+ * fixture PR falls through to its own handler (review-loop.ts).
+ */
+export const watchDashboardPr = route("watchPr", ({ params }) => {
+  const { owner, name, number } = params as { owner: string; name: string; number: string };
+  if (owner === "acme" && name === "node-client" && number === "482") return undefined;
+  watchedPrs.add(`${owner}~${name}~pr~${number}`);
+  return new HttpResponse(null, { status: 204 });
 });
 
 /** Starts the script for `refresh` from step `from`; the replaced run keeps its snapshot as `previous`. */

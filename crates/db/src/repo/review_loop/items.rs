@@ -8,7 +8,7 @@ use contracts::api::review_loop::{
     AuthorKind, CommentAssessment, CommentItemKind, GateMark, ItemGithubFacts, ItemLocation,
     ItemState, OutsideResolution, ReadFailure,
 };
-use contracts::common::LineRange;
+use contracts::common::{LineRange, RepoRef};
 use contracts::ids::{CommentItemId, CommitSha, JobId, PassId, QuestionId};
 use contracts::time::Timestamp;
 
@@ -760,6 +760,68 @@ impl ReviewLoop<'_> {
         .ok_or(DbError::NotFound)
     }
 
+    /// For each of `prs` (repository and number) whose comments the tenant read successfully: its comment items
+    /// (no PR-level questions, none the read no longer produces) and those waiting for a decision, in list order.
+    /// Waiting matches the server's queue: an open state, and not listed in a standing "merge now" decision's
+    /// follow-up PR. One statement for the whole list. Read-only.
+    pub async fn comment_tallies(
+        &self,
+        tenant_id: &str,
+        prs: &[(RepoRef, u32)],
+    ) -> Result<Vec<PrCommentTally>, DbError> {
+        let wanted = serde_json::Value::Array(
+            prs.iter()
+                .map(|(repo, number)| serde_json::json!([repo.owner, repo.name, number]))
+                .collect(),
+        );
+        let rows: Vec<(i64, i64, i64)> = sqlx::query_as(
+            "WITH wanted AS (
+                 SELECT CAST(j.key AS INTEGER) AS idx, json_extract(j.value, '$[0]') AS owner,
+                     json_extract(j.value, '$[1]') AS name, json_extract(j.value, '$[2]') AS number
+                 FROM json_each(?1) j),
+             known AS (
+                 SELECT w.idx, p.id AS pr
+                 FROM wanted w
+                 JOIN repos r ON r.tenant_id = ?2 AND r.owner = w.owner AND r.name = w.name
+                 JOIN pull_requests p ON p.tenant_id = ?2 AND p.repo_id = r.id AND p.number = w.number
+                 JOIN comment_prs c ON c.pull_request_id = p.id AND c.tenant_id = ?2 AND c.read_at IS NOT NULL),
+             followed AS (
+                 SELECT k.pr, CAST(n.value AS INTEGER) AS no
+                 FROM known k
+                 JOIN comment_items q ON q.pull_request_id = k.pr
+                 JOIN comment_decisions d ON d.item_id = q.id AND d.kind = 'merge_with_follow_ups'
+                 JOIN comment_effects e ON e.decision_id = d.id AND e.kind = 'follow_up_pr'
+                     AND e.state <> 'cancelled'
+                 JOIN json_each(e.params, '$.item_nos') n
+                 WHERE NOT EXISTS (SELECT 1 FROM comment_decisions s WHERE s.supersedes = d.id)
+                   AND NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id))
+             SELECT k.idx, COUNT(i.id),
+                 COALESCE(SUM(i.state IN ('assessing', 'undecided', 'asked_back', 'reopened')
+                     AND NOT EXISTS (SELECT 1 FROM followed f WHERE f.pr = k.pr AND f.no = i.item_no)), 0)
+             FROM known k
+             LEFT JOIN comment_items i ON i.pull_request_id = k.pr AND i.kind <> 'pr_question'
+                 AND i.gone_at IS NULL
+             GROUP BY k.idx
+             ORDER BY k.idx",
+        )
+        .bind(wanted.to_string())
+        .bind(tenant_id)
+        .fetch_all(self.pool)
+        .await?;
+        let count = |value: i64, column: &'static str| {
+            u32::try_from(value).map_err(|_| DbError::Corrupt { column })
+        };
+        rows.into_iter()
+            .map(|(index, total, needs_you)| {
+                Ok(PrCommentTally {
+                    index: usize::try_from(index).unwrap_or(usize::MAX),
+                    total: count(total, "comment_items")?,
+                    needs_you: count(needs_you, "comment_items.state")?,
+                })
+            })
+            .collect()
+    }
+
     /// Passes charged to a user since `since` (the daily cap) and the end of the PR's latest pass (spacing).
     pub async fn pass_usage(
         &self,
@@ -910,6 +972,17 @@ pub(super) async fn upsert_item_in(
         }
     };
     Ok(outcome)
+}
+
+/// The comment counts of one pull request of a [`ReviewLoop::comment_tallies`] list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrCommentTally {
+    /// Position in the requested list.
+    pub index: usize,
+    /// Comment items.
+    pub total: u32,
+    /// Those waiting for a decision.
+    pub needs_you: u32,
 }
 
 /// The review-loop state of one pull request as one transaction reads it.

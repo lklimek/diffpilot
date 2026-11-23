@@ -8,6 +8,7 @@ import type {
   SnapshotMeta,
   WorkItem,
 } from "../../api/generated/types";
+import { commentsPath } from "../pr/paths";
 import { REVIEW_START_PATH } from "../shell/paths";
 
 /** The ranking banner of the shown snapshot (plan §B.3). */
@@ -137,6 +138,10 @@ export function reviewHref(item: WorkItem): string {
   if (review && !review.head_moved) return `/analyses/${review.analysis_id}`;
   return `${REVIEW_START_PATH}?pr=${encodeURIComponent(item.url ?? "")}`;
 }
+
+/** In-app href of a pull request row's Comments (owner 2026-11-23). */
+export const commentsHref = (item: WorkItem): string =>
+  item.repo && item.number !== null ? commentsPath({ repo: item.repo, number: item.number }) : "";
 
 /** Text of the collapsed side panel's rail: `More · waiting 3 · ready 2` (ready left out when not recorded). */
 export function railText(snapshot: SnapshotMeta): string {

@@ -697,7 +697,12 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   `why`, `next`, `alarm` and `also_keys` (items merged into this one, only from server-suggested pairs). `url` is
   built by the server only: GitHub `https://github.com/<owner>/<name>/pull|issues/<number>`, a TODO
   `<SR_MEMCAN_UI_URL>/tasks/<uuid>`, null without `SR_MEMCAN_UI_URL`. `review` is read from `analyses` at request
-  time (newest analysis of the PR, head moved, the reader's saved state), never stored in the snapshot. `tags` and
+  time (newest analysis of the PR, head moved, the reader's saved state), never stored in the snapshot. `comments`
+  (pull requests only) is read from the review-loop tables at request time, in one statement per page:
+  `CommentTally { total, needs_you }` counts the comment items of the tenant's last successful read of the PR
+  (PR-level questions and items the read no longer produces left out) and those waiting for a decision (Comments'
+  Needs you: an open state, not handed to a standing "merge now" decision's follow-up PR); absent before the first
+  successful read, when the web offers Watch (RW1) instead. Like `review` it is part of the page's `ETag`. `tags` and
   `facts` come from scan facts only; `llm` text is shown with the "LLM" tag.
 - **Scores.** Integers only: points in tenths. `total_tenths` is the sum of the parts' `points_tenths` (a pending
   part counts 0); `parts` lists the twelve `ScoreComponent`s in display order, each with `source` and a plain

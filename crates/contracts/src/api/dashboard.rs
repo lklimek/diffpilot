@@ -720,6 +720,11 @@ pub struct WorkItem {
     pub llm: Option<ItemText>,
     /// The user's diffpilot analysis of this pull request, read at request time; null when none.
     pub review: Option<ReviewLink>,
+    /// Review comments diffpilot read for this pull request (Comments), counted at request time; absent before
+    /// diffpilot's first successful read of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub comments: Option<CommentTally>,
     /// Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<PluginNote>>", optional)]
@@ -953,6 +958,17 @@ pub struct ReviewLink {
     pub head_moved: bool,
     /// The user has saved review state on it.
     pub has_my_state: bool,
+}
+
+/// Counts of a pull request's review comments in Comments (plan docs/review-workflow-plan.md §2.1): threads,
+/// review-body and PR-comment items of the last read, without PR-level questions and items the read no longer
+/// produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CommentTally {
+    /// Comments in any state.
+    pub total: u32,
+    /// Those waiting for a decision: the Needs you list of Comments.
+    pub needs_you: u32,
 }
 
 /// Server-sent event of `GET /api/v1/dashboard/refreshes/{id}/events`; the SSE `event` field is the tag.

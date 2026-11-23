@@ -229,7 +229,9 @@ read "Needs an analysis" and link to the PR page.
 | V5 | Carry-overs, this PR / all PRs | `…/comments/carry-overs`, `/comments/carry-overs` | — | 1 |
 | V6 | Watched PRs (list), Watch toggle on V0 | `/watching` | view 3 (partly) | 1 |
 | V7 | Settings → Notifications: browser toggle, ntfy, webhook, per-event toggles, Send test, last delivery | `/settings#notifications` | — | 1 |
-My work stays unchanged (owner 2026-11-22): no chips, toggles or badges there; the cross-PR view (WM view 3) is the watched list V6. WM view 4 (push
+My work stays unchanged (owner 2026-11-22): no chips, toggles or badges there, except one link per pull request
+(owner 2026-11-23): "12 comments · 5 need you" opening its Comments, or Watch when diffpilot never read its comments
+(`WorkItem.comments`, v1.1 plan §F.1); the cross-PR view (WM view 3) is the watched list V6. WM view 4 (push
 state) is out of scope (RQ15).
 
 ### 3.1 V0 PR page
