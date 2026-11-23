@@ -18,34 +18,40 @@ python3 $S claim D                                # 30-min lease on every agent 
 python3 $S text D E                               # effect E's text to post, byte-exact, in a new temp file (prints F)
 python3 $S text D E --field title                 # or body | params.title | params.url: a GitHub/server string in a file
 python3 $S combine D1 D2                          # claimed decisions: ONE PR-level comment file per review_id
+python3 $S footer --append B                      # your own body file B (follow-up PR, upstream issue): adds the footer
+python3 $S resolve --repo O/N T1 T2               # every thread of the run in ONE GitHub call (gh); prints "resolved T"
 python3 $S report E done --reference R            # or: failed --message M | released (gives the whole claim back)
 python3 $S report E done --reference SHA --verify-head O/N#N   # fix: refused unless the PR head contains SHA
 python3 $S renew D                                # extends the lease (each report renews it too)
 ```
-`text`, `combine`: a reply or PR-level comment waiting on a `fix`, `follow_up_pr` or `upstream_issue` ends with that effect's reported reference (never after a `todo`; skipped when the text has it); refused until it is reported done. Files: omit `--out` (private temp file outside the checkout); `--out` only for a new path outside any git work tree, e.g. in `mktemp -d`.
+`text`, `combine`: a reply or PR-level comment waiting on a `fix`, `follow_up_pr` or `upstream_issue` ends with that effect's reported reference (never after a `todo`; skipped when the text has it); refused until it is reported done. Every reply, PR-level comment, follow-up PR body and upstream issue then ends with the owner's footer as its own paragraph (`text`/`combine` add it; for a body you write, `footer --append`); `SR_REPLY_FOOTER` in the env file overrides it, an empty value disables it. Nothing else is ever added. Files: omit `--out` (private temp file outside the checkout); `--out` only for a new path outside any git work tree, e.g. in `mktemp -d`.
 
 `--capabilities` (list, wait, claim, renew, combine): default all eight kinds (`fix`, `reply`, `resolve`, `pr_comment`, `follow_up_pr`, `upstream_issue`, `todo`, `dismiss_review`); a decision is claimable only when every open effect is within them. Narrow only when the user asks, and then the same set everywhere.
 Drop a kind you cannot execute before claiming (e.g. `todo` without the `memcan:todo` skill, `dismiss_review` without write access): a claimed effect you then fail cancels the effects waiting on it.
 
-Exit codes: 0 ok, 2 configuration or bad request, 3 token rejected or scope missing, 4 server unreachable/failed (`report`: run the same command again, it reuses its idempotency key), 5 nothing claimable, 6 not yours or gone (another agent's claim, superseded, done, outside capabilities, unknown id), 7 lease ended (`claim D` again, `show D`, then repeat). Relay the stderr sentence.
+Exit codes: 0 ok, 2 configuration or bad request, 3 token rejected or scope missing, 4 server unreachable/failed (`report`: run the same command again, it reuses its idempotency key; `resolve` at GitHub's rate limit: wait as it says, then run it again), 5 nothing claimable, 6 not yours or gone (another agent's claim, superseded, done, outside capabilities, unknown id), 7 lease ended (`claim D` again, `show D`, then repeat), 8 GitHub refused `resolve` (FORBIDDEN): run the one `ghsudo` command it prints, once. Relay the stderr sentence.
 
 ## Workflow
-1. `check`; the URL it prints must name the prompt's server (same port; `localhost`, `127.0.0.1` and this machine's `hostname` are one host), else tell the user and stop. Checkout: `gh pr checkout N --repo O/N` (sets the branch's push target), `gh pr view N --repo O/N --json headRefName,baseRefName,isCrossRepository,headRepositoryOwner,headRepository`; current branch = `headRefName` ≠ `baseRefName`, tree clean. `isCrossRepository`: the push target (below) must be `github.com/<headRepositoryOwner.login>/<headRepository.name>`; otherwise, or if it cannot be read, stop and ask. Otherwise stop and tell the user.
+1. `check`; the URL it prints must name the prompt's server (same port; `localhost`, `127.0.0.1` and this machine's `hostname` are one host), else tell the user and stop. Checkout: `gh pr view N --repo O/N --json headRefName,baseRefName,isCrossRepository,headRepositoryOwner,headRepository`; `headRefName` = `baseRefName`: stop and tell the user. Never switch the current checkout:
+   - Tree: the current directory (checkout or worktree) if `git branch --show-current` = `headRefName`; else a worktree on it (`git worktree list`); else create one: `git worktree add --detach <dir>` (outside the checkout; the user's worktree location if their instructions name one), then `gh pr checkout N --repo O/N` in `<dir>` (sets the branch's push target).
+   - It must be clean, else stop and tell the user (never stash, reset or commit someone's changes). Then `git pull --ff-only`; `git rev-parse HEAD` must equal `gh pr view N --repo O/N --json headRefOid --jq .headRefOid` (not `@{u}`: it fails for a fork's URL remote), else stop and ask: your push would publish the user's unpushed commits.
+   - `isCrossRepository`: the push target (below) must be `github.com/<headRepositoryOwner.login>/<headRepository.name>`; otherwise, or if it cannot be read, stop and ask.
 2. `list` with the prompt's `--repo`/`--pr`; exit 5: `wait`.
-3. `show D`, then `claim D`. One decision at a time, except the decisions whose `pr_comment` effects share one `review_id` (step 4).
+3. `show D`, then `claim D`. Claims: one decision at a time; a decision stays claimed past its turn only together with the decisions whose `pr_comment` effects share its `review_id` (step 4), or while its `resolve` is held for step 7. Leave held decisions out of `list`/`wait` with `--skip D`.
 4. Each `executor: agent` effect in `seq` order; one with `after` starts only after that effect is reported done:
    - `fix`: change the item's location as the decision and the owner's comment direct; run the repo's checks; new commit (`git commit -F <message file>`); `git push` without remote or refspec (several fixes may share one push). Report each `done --reference <its commit SHA> --verify-head O/N#N`; refused: push it or report `failed`; exit 4 "has not moved the PR head yet": run it again shortly; other exit 4: the check could not decide, tell the user, do not report done.
    - `reply`: `text D E` → F; post to `params.thread_id`; reference: the comment URL.
-   - `resolve`: resolve `params.thread_id`; reference: the thread id.
+   - `resolve`: hold it (step 3) for the one call of step 7.
    - `pr_comment`: `text D E` → F, `gh pr comment N --repo O/N --body-file F`; reference: its URL. Effects naming the same `review_id` (one decision or several): claim all their decisions, `combine D1 D2 …` → one file per review; post each once, report its URL for the effects it lists; an effect it lists as answering no review: post alone with `text`.
    - `follow_up_pr` (`gh pr create --draft --title "$(cat T)" --body-file B`, T from `--field params.title`), `upstream_issue` (`gh issue create`, or the given `url`), `todo` (`memcan:todo`), `dismiss_review` (GraphQL `dismissPullRequestReview`): only when subscribed; reference: PR URL, issue URL, TODO id, review id.
 5. `report E done --reference R` after each effect (a fix once pushed). Cannot do it: `report E failed --message "<reason>"` (cancels the effects waiting on it), stop, tell the user. Decision left untouched: `released`, then `--skip D`.
-6. Work past ~20 min: `renew D`.
-7. Next decision (step 2) until exit 5 or the user stops.
+6. Work past ~20 min: `renew D` for every claimed decision, held ones included.
+7. Next decision (step 2) until exit 5 or the user stops. Then:
+   - ONE `resolve --repo O/N T1 T2 …` with the `params.thread_id` of every held `resolve` (never one call per thread). Exit 8: run the printed `ghsudo` command once (one approval); exit 4 at the rate limit: wait as it says, run it again. Report `done --reference <thread id>` only for a thread it printed `resolved`; any other: `failed` with its reason.
+   - A worktree you created: tell the user its path. Nothing unpushed (`HEAD` = `headRefOid`) and `git status --porcelain` empty: `git worktree remove <dir>`; else leave it and say why.
 
 ```bash
 gh api graphql -f thread="$T" -F body=@"$F" -f query='mutation($thread:ID!,$body:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$thread,body:$body}){comment{url}}}' --jq .data.addPullRequestReviewThreadReply.comment.url
-gh api graphql -f thread="$T" -f query='mutation($thread:ID!){resolveReviewThread(input:{threadId:$thread}){thread{isResolved}}}'
 B=$(git branch --show-current); R=$(git config "branch.$B.pushRemote" || git config remote.pushDefault || git config "branch.$B.remote" || echo origin)
 case "$R" in *:*|/*) echo "$R" ;; *) git remote get-url --push "$R" ;; esac   # push target (a remote name or, after gh pr checkout of a fork, a URL)
 ```

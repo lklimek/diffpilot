@@ -18,6 +18,7 @@ import ipaddress
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -30,7 +31,9 @@ from urllib.parse import urlencode, urlsplit
 
 ENV_FILE_OVERRIDE = "SR_DECISIONS_ENV_FILE"
 DEFAULT_ENV_FILE = "~/envs/diffpilot.env"
-ENV_KEYS = ("SR_AGENT_KEY", "SR_URL", "SR_HTTP_HOST")
+ENV_KEYS = ("SR_AGENT_KEY", "SR_URL", "SR_HTTP_HOST", "SR_REPLY_FOOTER")
+# Owner's attribution: last paragraph of every posted reply, comment, PR or issue body; SR_REPLY_FOOTER overrides.
+DEFAULT_FOOTER = "<sub>🤖 Co-authored by [Claudius the Magnificent](https://github.com/lklimek/claudius) AI Agent</sub>"
 DEFAULT_URL = "http://localhost:3000"
 SCOPE = "review_loop_execute"
 KINDS = ("fix", "reply", "resolve", "pr_comment", "follow_up_pr", "upstream_issue", "todo", "dismiss_review")
@@ -72,7 +75,10 @@ MAX_EVENT = 256 * 1024
 MAX_REPORT_TEXT = 2000
 PENDING_TTL = 24 * 3600
 
-EXIT_OK, EXIT_CONFIG, EXIT_AUTH, EXIT_SERVER, EXIT_NONE, EXIT_GONE, EXIT_LEASE = 0, 2, 3, 4, 5, 6, 7
+EXIT_OK, EXIT_CONFIG, EXIT_AUTH, EXIT_SERVER, EXIT_NONE, EXIT_GONE, EXIT_LEASE, EXIT_FORBIDDEN = 0, 2, 3, 4, 5, 6, 7, 8
+MAX_THREADS = 100
+GH_INCLUDE_RE = re.compile(r"HTTP/\S+ (\d{3})[^\n]*\n((?:[^\r\n]+\r?\n)*)\r?\n")
+GH_STATUS_RE = re.compile(r"\(HTTP (\d{3})\)")
 
 ME_PATH = "/api/v1/me"
 FEED_PATH = "/api/v1/decision-feed"
@@ -171,14 +177,15 @@ def _pr_name(pr: object) -> str:
 
 
 class Config:
-    """Base URL and token; the token never appears in repr/str."""
+    """Base URL, token and reply footer; the token never appears in repr/str."""
 
-    __slots__ = ("url", "env_file", "_token")
+    __slots__ = ("url", "env_file", "_token", "footer")
 
-    def __init__(self, url: str, env_file: Path, token: str) -> None:
+    def __init__(self, url: str, env_file: Path, token: str, footer: str | None = DEFAULT_FOOTER) -> None:
         self.url = url
         self.env_file = env_file
         self._token = token
+        self.footer = footer
 
     def __repr__(self) -> str:
         return f"Config(url={self.url!r}, env_file={str(self.env_file)!r}, token=<hidden>)"
@@ -240,6 +247,9 @@ def load_config() -> Config:
             f"SR_AGENT_KEY in {path} is not a diffpilot access token (expected srp_<id>_<secret>); {advice}",
             EXIT_CONFIG,
         )
+    footer = values.get("SR_REPLY_FOOTER", DEFAULT_FOOTER).strip() or None
+    if footer is not None and any(unicodedata.category(ch) == "Cc" for ch in footer):
+        raise SrError(f"SR_REPLY_FOOTER in {path} contains control characters", EXIT_CONFIG)
     http_host = values.get("SR_HTTP_HOST", "").strip().lower()
     if http_host and not HOST_RE.fullmatch(http_host):
         raise SrError(f"SR_HTTP_HOST in {path} must be a host name such as agentic.lan", EXIT_CONFIG)
@@ -266,7 +276,7 @@ def load_config() -> Config:
             f"or the LAN host named in SR_HTTP_HOST",
             EXIT_CONFIG,
         )
-    return Config(url, path, token)
+    return Config(url, path, token, footer)
 
 
 # ---------- HTTP ----------
@@ -903,8 +913,23 @@ def _done_reference(effect: dict) -> str | None:
     return None
 
 
-def posted_text(decision: dict, effect: dict, reference: str | None = None) -> str:
-    """The effect's text to post; after a fix, follow-up PR or upstream issue, its reported reference ends it."""
+def _paragraph(text: str, addition: str) -> str:
+    return text + ("\n" if text.endswith("\n") else "\n\n") + addition
+
+
+def signed(text: str, footer: str | None) -> str:
+    """`text` with the footer as its last paragraph (once; none when disabled)."""
+    return text if footer is None or text.rstrip().endswith(footer) else _paragraph(text, footer)
+
+
+def posted_text(decision: dict, effect: dict, reference: str | None = None, footer: str | None = None) -> str:
+    """The effect's text to post: after a fix, follow-up PR or upstream issue its reported reference, then the
+    footer for a reply or PR-level comment."""
+    text = _referenced_text(decision, effect, reference)
+    return signed(text, footer) if effect.get("kind") in REPLY_KINDS else text
+
+
+def _referenced_text(decision: dict, effect: dict, reference: str | None) -> str:
     eid = clean(effect.get("id", "?"))
     awaited = _awaited(decision, effect)
     takes = effect.get("kind") in REPLY_KINDS and awaited is not None and awaited.get("kind") in REFERENCED_KINDS
@@ -928,9 +953,7 @@ def posted_text(decision: dict, effect: dict, reference: str | None = None) -> s
         )
     if reference is not None and reference != reported:
         raise SrError(f"effect {clean(awaited.get('id', '?'))} was reported done with {clean(reported)}", EXIT_CONFIG)
-    if reported in text:
-        return text
-    return text + ("\n" if text.endswith("\n") else "\n\n") + reported
+    return text if reported in text else _paragraph(text, reported)
 
 
 def cmd_text(client: Client, args) -> int:
@@ -939,7 +962,7 @@ def cmd_text(client: Client, args) -> int:
     if effect is None:
         raise SrError(f"decision {args.decision} has no effect {args.effect}", EXIT_CONFIG)
     if args.field == "params.text":
-        value = posted_text(fd["decision"], effect, args.reference)
+        value = posted_text(fd["decision"], effect, args.reference, client.cfg.footer)
     else:
         if args.reference is not None:
             raise SrError(f"--field {args.field} takes no reference line; --reference is for params.text", EXIT_CONFIG)
@@ -993,7 +1016,8 @@ def cmd_combine(client: Client, args) -> int:
         raise SrError(f"--out names one file, but the effects answer {len(groups)} reviews; omit --out", EXIT_CONFIG)
     for review, parts in groups.items():
         parts.sort(key=lambda part: part[0])
-        path = write_new("\n\n".join(f"C{no}: {text}" for no, text, _ in parts), args.out)
+        body = "\n\n".join(f"C{no}: {text}" for no, text, _ in parts)
+        path = write_new(signed(body, client.cfg.footer), args.out)
         print(f"review {review}: wrote one comment ({len(parts)} items) to {path}")
         print(f"  post it once; report its URL as done for effects: {' '.join(eid for _, _, eid in parts)}")
     for no, did, eid in sorted(alone):
@@ -1056,13 +1080,11 @@ def _gh(command: list[str]) -> subprocess.CompletedProcess:
             command, capture_output=True, text=True, timeout=GH_TIMEOUT, check=False, stdin=subprocess.DEVNULL
         )
     except FileNotFoundError:
-        raise SrError("gh is not installed; the check could not decide", EXIT_SERVER) from None
+        raise SrError("gh is not installed; nothing was checked or changed", EXIT_SERVER) from None
     except subprocess.TimeoutExpired:
-        raise SrError(
-            f"gh did not answer within {GH_TIMEOUT} s; the check could not decide, retry", EXIT_SERVER
-        ) from None
+        raise SrError(f"gh did not answer within {GH_TIMEOUT} s; retry", EXIT_SERVER) from None
     except OSError as exc:
-        raise SrError(f"gh could not run ({type(exc).__name__}); the check could not decide", EXIT_SERVER) from None
+        raise SrError(f"gh could not run ({type(exc).__name__}); nothing was checked or changed", EXIT_SERVER) from None
 
 
 def _gh_failure(done: subprocess.CompletedProcess) -> str:
@@ -1122,6 +1144,135 @@ def _verify_head(args, reference: str | None) -> None:
         "run the same command again shortly",
         EXIT_SERVER,
     )
+
+
+def cmd_footer(client: Client, args) -> int:
+    footer = client.cfg.footer
+    if args.append is None:
+        print(footer if footer is not None else "footer disabled (SR_REPLY_FOOTER is empty)")
+        return EXIT_OK
+    path = Path(os.path.abspath(args.append))
+    try:
+        info = os.lstat(path)
+    except OSError as exc:
+        raise SrError(f"cannot read {path} ({type(exc).__name__})", EXIT_CONFIG) from None
+    if not stat.S_ISREG(info.st_mode):
+        raise SrError(f"{path} is not a regular file; write the body to a file of your own", EXIT_CONFIG)
+    tree = _inside_work_tree(Path(os.path.realpath(path.parent)))
+    if tree is not None:
+        raise SrError(f"{path} is inside the git work tree {tree}; keep the body outside the checkout", EXIT_CONFIG)
+    if footer is None:
+        print("footer disabled (SR_REPLY_FOOTER is empty); nothing appended")
+        return EXIT_OK
+    try:
+        text = path.read_text(encoding="utf-8")
+        addition = signed(text, footer)[len(text) :]
+        if addition:
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+                fh.write(addition)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise SrError(f"cannot append to {path} ({type(exc).__name__})", EXIT_CONFIG) from None
+    print(f"{path} ends with the footer" + ("" if addition else " already"))
+    return EXIT_OK
+
+
+def _gh_answer(done: subprocess.CompletedProcess) -> tuple[int | None, dict[str, str], dict]:
+    """Status, lower-case headers and JSON body of `gh api --include` output (status from stderr without headers)."""
+    body, status, headers = done.stdout, None, {}
+    head = GH_INCLUDE_RE.match(body)
+    if head:
+        status = int(head.group(1))
+        for line in head.group(2).splitlines():
+            name, _, value = line.partition(":")
+            headers[name.strip().lower()] = value.strip()
+        body = body[head.end() :]
+    elif match := GH_STATUS_RE.search(done.stderr):
+        status = int(match.group(1))
+    try:
+        answer = json.loads(body)
+    except ValueError:
+        answer = None
+    return status, headers, _obj(answer)
+
+
+def _rate_limit_wait(
+    status: int | None, headers: dict[str, str], answer: dict, errors: list[dict], stderr: str
+) -> str | None:
+    """How long to wait when GitHub's (secondary) rate limit stopped the call, else None."""
+    messages = [stderr, str(answer.get("message") or ""), *(str(error.get("message") or "") for error in errors)]
+    limited = (
+        status == 429
+        or "retry-after" in headers
+        or (status == 403 and headers.get("x-ratelimit-remaining") == "0")
+        or any(error.get("type") == "RATE_LIMITED" for error in errors)
+        or any("rate limit" in message.lower() for message in messages)
+    )
+    if not limited:
+        return None
+    after = headers.get("retry-after", "")
+    return f"wait {int(after)} s" if after.isdigit() and int(after) <= MAX_WAIT else "wait a few minutes"
+
+
+def cmd_resolve(args) -> int:
+    """Resolves review threads in ONE GitHub call (one elevated approval when the account needs it)."""
+    threads = list(dict.fromkeys(args.threads))
+    if len(threads) > MAX_THREADS:
+        raise SrError(f"at most {MAX_THREADS} threads per call", EXIT_CONFIG)
+    for thread in threads:
+        if not SAFE_ID_RE.fullmatch(thread):
+            raise SrError(f"{quoted(thread)} is not a thread id (expected e.g. PRRT_kwDO…)", EXIT_CONFIG)
+    variables = ",".join(f"$t{i}:ID!" for i in range(len(threads)))
+    fields = ",".join(
+        f"r{i}:resolveReviewThread(input:{{threadId:$t{i}}}){{thread{{id,isResolved}}}}" for i in range(len(threads))
+    )
+    command = ["gh", "api", "graphql", "--include", "-f", f"query=mutation({variables}){{{fields}}}"]
+    for i, thread in enumerate(threads):
+        command += ["-f", f"t{i}={thread}"]
+    done = _gh(command)
+    status, headers, answer = _gh_answer(done)
+    data = _obj(answer.get("data"))
+    listed = [_obj(error) for error in answer.get("errors")] if isinstance(answer.get("errors"), list) else []
+    wait = _rate_limit_wait(status, headers, answer, listed, done.stderr)
+    if status == 403 and wait is None:
+        listed = [*listed, {"type": "FORBIDDEN", "message": answer.get("message") or "HTTP 403"}]
+    if not data and not listed and wait is None:
+        raise SrError(
+            f"gh answered no readable result ({_gh_failure(done)}); check the threads on GitHub, then retry",
+            EXIT_SERVER,
+        )
+    errors: dict[str, tuple[str, str]] = {}
+    for error in listed:
+        path = error.get("path")
+        alias = path[0] if isinstance(path, list) and path and isinstance(path[0], str) else ""
+        errors.setdefault(alias, (clean(error.get("type") or "ERROR"), clean(error.get("message") or "")[:200]))
+    failed: list[str] = []
+    reasons: list[str] = []
+    forbidden = False
+    for i, thread in enumerate(threads):
+        node = _obj(_obj(data.get(f"r{i}")).get("thread"))
+        if node.get("id") == thread and node.get("isResolved") is True:
+            print(f"resolved {thread}")
+            continue
+        kind, message = errors.get(f"r{i}") or errors.get("") or ("NOT_RESOLVED", "GitHub did not mark it resolved")
+        forbidden = forbidden or kind == "FORBIDDEN"
+        failed.append(thread)
+        reasons.append(f"{thread} ({kind}: {message})")
+    if not failed:
+        return EXIT_OK
+    rerun = f"python3 {shlex.quote(os.path.abspath(__file__))} resolve --repo {args.repo} {' '.join(failed)}"
+    if wait is not None:
+        raise SrError(
+            f"GitHub's rate limit stopped resolving {len(failed)} thread(s); {wait} and run again: {rerun}",
+            EXIT_SERVER,
+        )
+    if forbidden:
+        raise SrError(
+            f"GitHub refused resolving {len(failed)} thread(s) (FORBIDDEN: this GitHub account lacks the right); "
+            f"run this one command (one approval): ghsudo --org {args.repo.split('/', 1)[0]} {rerun}",
+            EXIT_FORBIDDEN,
+        )
+    raise SrError("not resolved: " + "; ".join(reasons), EXIT_SERVER)
 
 
 def cmd_report(client: Client, args) -> int:
@@ -1241,6 +1392,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     rep.add_argument(
         "--verify-head", metavar="OWNER/NAME#N", help="done of a fix: the PR head must contain --reference"
     )
+    foot = sub.add_parser("footer", help="print the reply footer, or append it to a body file of your own")
+    foot.add_argument("--append", metavar="FILE", help="existing file outside any git work tree")
+    res = sub.add_parser("resolve", help="resolve review threads in one GitHub call (gh, the agent's own sign-in)")
+    res.add_argument("--repo", type=_repo, required=True, metavar="OWNER/NAME", help="the PR's repository")
+    res.add_argument("threads", nargs="+", metavar="thread_id")
     args = parser.parse_args(argv)
     if args.cmd in ("list", "wait") and args.pr is not None and not args.repo:
         parser.error("--pr needs --repo")
@@ -1257,12 +1413,15 @@ COMMANDS = {
     "claim": cmd_claim,
     "renew": cmd_renew,
     "report": cmd_report,
+    "footer": cmd_footer,
 }
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
+        if args.cmd == "resolve":
+            return cmd_resolve(args)
         client = Client(load_config())
         return COMMANDS[args.cmd](client, args)
     except SrError as exc:
