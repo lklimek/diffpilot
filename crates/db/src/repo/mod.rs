@@ -17,7 +17,9 @@ pub mod access_tokens;
 pub mod agent_sessions;
 pub mod analyses;
 mod analysis_progress;
+pub mod comment_sources;
 pub mod comments;
+pub mod container_sessions;
 pub mod dashboard;
 pub mod documents;
 pub mod feedback;
@@ -38,6 +40,8 @@ pub mod users;
 
 #[cfg(test)]
 mod concurrency_tests;
+#[cfg(test)]
+mod containers_tests;
 #[cfg(test)]
 mod schema_tests;
 
@@ -110,7 +114,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The schema migrations in order, as `(version, description, SQL)`: the initial schema, then additive
 /// changes that upgrade an existing database in place.
-const MIGRATIONS: [(i64, &str, &str); 26] = [
+const MIGRATIONS: [(i64, &str, &str); 27] = [
     (1, "init", include_str!("../../migrations/0001_init.sql")),
     (
         2,
@@ -236,6 +240,11 @@ const MIGRATIONS: [(i64, &str, &str); 26] = [
         29,
         "dashboard_trigger_automatic",
         include_str!("../../migrations/0029_dashboard_trigger_automatic.sql"),
+    ),
+    (
+        30,
+        "v13_containers",
+        include_str!("../../migrations/0030_v13_containers.sql"),
     ),
 ];
 

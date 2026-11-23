@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CommentReport",
+  "description": "Host report envelope; rows are decoded individually so a malformed row can be dropped.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "description": "Accepted versions are 4.2.x.",
+      "type": "string"
+    },
+    "report_type": {
+      "description": "Must be comment_check.",
+      "type": "string"
+    },
+    "metadata": {
+      "description": "Host provenance, matched against the server's input.",
+      "$ref": "#/$defs/ReportMetadata"
+    },
+    "comment_assessments": {
+      "description": "Independently parsed assessment rows; unknown report fields are ignored.",
+      "type": "array",
+      "items": true
+    }
+  },
+  "required": [
+    "schema_version",
+    "report_type",
+    "metadata",
+    "comment_assessments"
+  ],
+  "$defs": {
+    "ReportMetadata": {
+      "description": "Required host-supplied provenance; other metadata is ignored.",
+      "type": "object",
+      "properties": {
+        "input_mode": {
+          "description": "Host-supplied is the only accepted mode.",
+          "type": "string"
+        },
+        "pr_number": {
+          "description": "GitHub PR number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "commit": {
+          "description": "Commit assessed; a differing head is labelled rather than discarded.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input_mode",
+        "pr_number",
+        "commit"
+      ]
+    }
+  }
+}

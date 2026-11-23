@@ -1,5 +1,10 @@
 # ADR-005: GitHub access for the agent — per-job installation token
 
+> Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
+> gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
+> KL1 gates credential mode; older master-credential/no-paid-API rules do not decide that open question.
+
+
 - Status: accepted (coordinator, 2026-11-16, after spikes S4, S5 and the threat model WP1-T)
 - Source: `docs/spikes/S4-app-tokens.md`, `S5-github-mcp.md`, `docs/contracts/threat-model.md`; brief §5 GitHub
   access for the agent; plan §5.4 T3.

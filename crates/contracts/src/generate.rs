@@ -50,6 +50,8 @@ pub const SCHEMA_DIR: &str = "schemas/agent";
 pub const TS_DIR: &str = "web/src/api/generated";
 /// Directory of the JSON Schemas of what a token reads, relative to the repository root.
 pub const API_SCHEMA_DIR: &str = "schemas/api";
+/// Directory of provider-neutral runtime and gateway protocol schemas.
+pub const RUNTIME_SCHEMA_DIR: &str = "schemas/runtime";
 
 /// One JSON Schema of [`API_SCHEMA_DIR`]: a response body (SSE: event data), a query or the error body.
 #[derive(Clone, Copy, Debug)]
@@ -175,6 +177,56 @@ pub fn generated_files() -> Result<Vec<GeneratedFile>, GenerateError> {
             contents: serde_json::to_string_pretty(&(api.schema)())? + "\n",
         });
     }
+    for (name, schema) in [
+        ("job_spec", schema_of::<crate::job::spec::JobSpec>()),
+        ("job_result", schema_of::<crate::job::result::JobResult>()),
+        (
+            "claim_request",
+            schema_of::<crate::job::protocol::ClaimRequest>(),
+        ),
+        (
+            "claim_response",
+            schema_of::<crate::job::protocol::ClaimResponse>(),
+        ),
+        (
+            "launcher_request",
+            schema_of::<crate::launcher::LauncherRequest>(),
+        ),
+        (
+            "launcher_response",
+            schema_of::<crate::launcher::LauncherResponse>(),
+        ),
+        (
+            "credential_status",
+            schema_of::<crate::gateway::CredentialStatus>(),
+        ),
+        ("mint_key", schema_of::<crate::gateway::MintKey>()),
+        ("minted_key", schema_of::<crate::gateway::MintedKey>()),
+        ("revoke_keys", schema_of::<crate::gateway::RevokeKeys>()),
+        (
+            "unlink_credential",
+            schema_of::<crate::gateway::UnlinkCredential>(),
+        ),
+        ("payer_usage", schema_of::<crate::gateway::PayerUsage>()),
+        ("pr_data", schema_of::<crate::agent::pr_data::PrData>()),
+        (
+            "comment_report",
+            schema_of::<crate::agent::comment_report::CommentReport>(),
+        ),
+        (
+            "report_row",
+            schema_of::<crate::agent::comment_report::ReportRow>(),
+        ),
+        (
+            "comment_sources",
+            schema_of::<Vec<crate::api::review_loop::CommentSource>>(),
+        ),
+    ] {
+        files.push(GeneratedFile {
+            path: format!("{RUNTIME_SCHEMA_DIR}/{name}.schema.json"),
+            contents: serde_json::to_string_pretty(&schema)? + "\n",
+        });
+    }
     files.push(GeneratedFile {
         path: format!("{TS_DIR}/types.ts"),
         contents: typescript_types()?,
@@ -223,6 +275,19 @@ fn typescript_types() -> Result<String, GenerateError> {
         declarations: BTreeMap::new(),
         duplicate: None,
     };
+    collector.visit::<crate::gateway::CredentialStatus>();
+    collector.visit::<crate::gateway::MintKey>();
+    collector.visit::<crate::gateway::RevokeKeys>();
+    collector.visit::<crate::gateway::UnlinkCredential>();
+    collector.visit::<crate::runtime::AskPreflight>();
+    collector.visit::<crate::runtime::LastContext>();
+    collector.visit::<crate::runtime::ThreadKind>();
+    collector.visit::<crate::runtime::Workspace>();
+    collector.visit::<crate::launcher::WorkerStatus>();
+    collector.visit::<crate::agent::pr_data::PrData>();
+    collector.visit::<crate::agent::comment_report::CommentReport>();
+    collector.visit::<crate::agent::comment_report::ReportRow>();
+    collector.visit::<crate::api::review_loop::CommentSource>();
     collector.visit::<MeResponse>();
     collector.visit::<LogoutRequest>();
     collector.visit::<LoginError>();

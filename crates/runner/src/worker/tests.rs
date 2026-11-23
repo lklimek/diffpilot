@@ -189,6 +189,7 @@ async fn setup_with(provider: Scripted, claim_delay: Duration, detached: bool) -
     let root = TempDir::new().unwrap();
     let spec = spec(JobKind::Plan, shared_repo());
     let claim = ClaimResponse {
+        retire: Vec::new(),
         claim: Some(Claim {
             job_token: Secret::new(JOB_TOKEN),
             lease_expires_at: Timestamp::now(),
@@ -614,6 +615,7 @@ async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
     Mock::given(method("POST"))
         .and(path("/runner/v1/claim"))
         .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            retire: Vec::new(),
             claim: None,
             drop_sessions: vec![analysis],
         }))
@@ -623,6 +625,7 @@ async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
     Mock::given(method("POST"))
         .and(path("/runner/v1/claim"))
         .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            retire: Vec::new(),
             claim: None,
             drop_sessions: Vec::new(),
         }))
@@ -669,6 +672,7 @@ async fn below_the_reserve_the_runner_takes_no_job_but_still_drops_sessions() {
     Mock::given(method("POST"))
         .and(path("/runner/v1/claim"))
         .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            retire: Vec::new(),
             claim: None,
             drop_sessions: vec![analysis],
         }))
@@ -678,6 +682,7 @@ async fn below_the_reserve_the_runner_takes_no_job_but_still_drops_sessions() {
     Mock::given(method("POST"))
         .and(path("/runner/v1/claim"))
         .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            retire: Vec::new(),
             claim: None,
             drop_sessions: Vec::new(),
         }))
@@ -906,6 +911,7 @@ async fn claim_reports_a_blocked_credential_as_unusable() {
     Mock::given(method("POST"))
         .and(path("/runner/v1/claim"))
         .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            retire: Vec::new(),
             claim: None,
             drop_sessions: Vec::new(),
         }))

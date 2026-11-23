@@ -1,5 +1,10 @@
 # Agent API — reading diffpilot with a personal access token
 
+> v1.3 common amendment: [container contracts](containers.md) and [ADR-025](../decisions/ADR-025-container-runtime.md)
+> govern payer/container identity, gateway boundaries, guarded 0030 and report 4.2. Runtime integration is
+> owned by W3/W4/W5/W8; the older runtime description below applies until those packages replace it.
+
+
 For agents and scripts that read the user's dashboard ("My work"), its priorities and the review module without a
 browser. Decisions: ADR-019 (tokens), plan `docs/v1.1-dashboard-plan.md` §E. Authoritative types:
 `crates/contracts/src/api/**`; routes: `crates/contracts/src/routes.rs`; general rules: `http-api.md`.

@@ -8,3 +8,11 @@ pub mod ids;
 pub mod job;
 pub mod routes;
 pub mod time;
+
+/// Common gateway administration contracts.
+pub mod gateway;
+/// Common container runtime contracts.
+pub mod runtime;
+
+/// Private runner-to-launcher protocol.
+pub mod launcher;

@@ -782,3 +782,11 @@ states, wording, Playwright and axe.
 | m7 | Server-generated golden replaces "fields that exist so far". |
 | m8 | Spike Dockerfile, compose, JSONL and scripts archived with the evidence. |
 | Missing questions 1–8 | Answered by the owner (§16). |
+
+### v1.3 amendment to §5.4 (common W1)
+
+[ADR-025](decisions/ADR-025-container-runtime.md) and [container contracts](contracts/containers.md) replace
+§5.4's process/credential boundary with SG1–SG16. Containers, per-payer threads, gateway-only real credentials,
+read-only gh token files, fixed untrusted cwd/config and fake-only auth tests are mandatory for downstream
+implementation. KL1 remains open; common contracts do not select credential mode. W7 completes threat-model
+and deployment acceptance after W3/W4/W5/W8 integrate the runtime and W9 deletes the legacy path.

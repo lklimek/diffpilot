@@ -1,5 +1,10 @@
 # Database schema (summary)
 
+> v1.3 common amendment: [container contracts](containers.md) and [ADR-025](../decisions/ADR-025-container-runtime.md)
+> govern payer/container identity, gateway boundaries, guarded 0030 and report 4.2. Runtime integration is
+> owned by W3/W4/W5/W8; the older runtime description below applies until those packages replace it.
+
+
 Source of truth: `crates/db/migrations/` (`0001_init.sql`, then additive migrations that upgrade an existing
 database in place and keep its data: `0002_flow_auto_retries.sql`, `0003_dashboard.sql`, `0004_access_tokens.sql`, `0005_ranking_attempt.sql`, `0006_ask_effort.sql`, `0007_jobs_targets.sql`, `0008_ranking_sent.sql`, `0009_known_bots.sql`,
 `0010_language_ru.sql`, `0011_hidden_mentions.sql`, …, `0017_review_loop.sql`). An applied migration file is never edited

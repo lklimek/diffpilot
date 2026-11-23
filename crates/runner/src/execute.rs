@@ -191,7 +191,7 @@ impl Executor {
         // The runtime limit counts from the start of the attempt: a hanging fetch must not hold the lease.
         let deadline = tokio::time::Instant::now()
             + Duration::from_secs(u64::from(spec.limits.max_runtime_secs));
-        if spec.credential != self.credential {
+        if spec.payer.0 != self.credential.id {
             return failed(
                 spec,
                 JobFailureKind::Internal,
@@ -526,12 +526,15 @@ fn to_result(
     let at = Timestamp::now();
     match outcome {
         Ok(outcome) => JobResult {
+            report: None,
             job_id: spec.job_id,
             attempt: spec.attempt,
             outcome: JobOutcome::Succeeded {
                 output: scrubber.value(outcome.output),
             },
             session: outcome.session_id.map(|thread_id| SessionReport {
+                last_context: None,
+                preflight: None,
                 thread_id,
                 outcome: session_outcome,
             }),
@@ -567,6 +570,7 @@ fn to_result(
                 status: LlmCallStatus::NotWorking { message },
             });
             JobResult {
+                report: None,
                 job_id: spec.job_id,
                 attempt: spec.attempt,
                 outcome,
@@ -589,6 +593,7 @@ fn failure(kind: JobFailureKind, message: &str) -> JobOutcome {
 /// A failed result before any provider call.
 fn failed(spec: &JobSpec, kind: JobFailureKind, message: &str) -> JobResult {
     JobResult {
+        report: None,
         job_id: spec.job_id,
         attempt: spec.attempt,
         outcome: failure(kind, message),

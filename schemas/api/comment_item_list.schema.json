@@ -10,6 +10,28 @@
       "description": "A review-loop item with its assessment, decisions and effects (RC4).",
       "type": "object",
       "properties": {
+        "point": {
+          "description": "Grounded point read from a versioned source; absent on inline threads and PR questions.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommentPoint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "duplicate_of": {
+          "description": "Per-PR number of the linked point; each inline thread keeps its own item.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
         "id": {
           "description": "Database id.",
           "$ref": "#/$defs/CommentItemId"
@@ -188,6 +210,44 @@
         "assessment_state",
         "decisions",
         "ask_answers"
+      ]
+    },
+    "CommentPoint": {
+      "description": "Point provenance, grounded in the source's cleaned GitHub text.",
+      "type": "object",
+      "properties": {
+        "source_url": {
+          "description": "Server-validated source URL.",
+          "type": "string"
+        },
+        "source_kind": {
+          "description": "Submitted review body or PR comment.",
+          "$ref": "#/$defs/CommentSourceKind"
+        },
+        "quote": {
+          "description": "Distinct verbatim span: 12–600 characters, or the whole shorter source.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_url",
+        "source_kind",
+        "quote"
+      ]
+    },
+    "CommentSourceKind": {
+      "description": "Stored source kind; inline threads remain independent items.",
+      "oneOf": [
+        {
+          "description": "Submitted, non-empty review body.",
+          "type": "string",
+          "const": "review_body"
+        },
+        {
+          "description": "Non-empty PR comment.",
+          "type": "string",
+          "const": "pr_comment"
+        }
       ]
     },
     "CommentItemId": {
@@ -618,6 +678,26 @@
       "description": "The LLM assessment of one item at one head (`verify_comments`).",
       "type": "object",
       "properties": {
+        "evidence_text": {
+          "description": "Evidence from the report, labelled LLM text.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "recorded_decision": {
+          "description": "Attributed prior decision; authority and grounding are verified by server ingest.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordedDecision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "job": {
           "description": "The job that wrote it.",
           "$ref": "#/$defs/JobId"
@@ -655,7 +735,10 @@
         },
         "pre_existing": {
           "description": "The problem exists on the base already.",
-          "type": "boolean"
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "category": {
           "description": "Category slug (claudius #118 catalog).",
@@ -740,7 +823,6 @@
         "assessed_at",
         "validity",
         "evidence",
-        "pre_existing",
         "category",
         "necessity",
         "gates",
@@ -748,6 +830,109 @@
         "reply_drafts",
         "recommendation",
         "prompt_version"
+      ]
+    },
+    "RecordedDecision": {
+      "description": "Attributed prior decision; server verifies authority and grounding before treating it as a fact.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Recorded decision.",
+          "$ref": "#/$defs/RecordedDecisionKind"
+        },
+        "by": {
+          "description": "GitHub author login.",
+          "type": "string"
+        },
+        "comment_url": {
+          "description": "Link to the decision's comment.",
+          "type": "string"
+        },
+        "quote": {
+          "description": "Verbatim decision quote, at most 600 characters.",
+          "type": "string"
+        },
+        "target_pr": {
+          "description": "PR target, when supplied.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "target_url": {
+          "description": "URL target, when supplied.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "by",
+        "comment_url",
+        "quote"
+      ]
+    },
+    "RecordedDecisionKind": {
+      "description": "Recorded decision kind, including deferral and withdrawal.",
+      "anyOf": [
+        {
+          "description": "Maintainer deferred this point.",
+          "type": "string",
+          "const": "deferred"
+        },
+        {
+          "description": "Source author withdrew this point.",
+          "type": "string",
+          "const": "withdrawn"
+        },
+        {
+          "description": "Ordinary item decision.",
+          "$ref": "#/$defs/ProposedDecisionKind"
+        }
+      ]
+    },
+    "ProposedDecisionKind": {
+      "description": "Proposed decision kind; independent of PR-level decisions.",
+      "oneOf": [
+        {
+          "description": "Resolve as fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "Fix in this PR.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "Reject with a reason.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "Existing PR handles it.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "Follow-up PR handles it.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "Upstream issue handles it.",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "Record a TODO.",
+          "type": "string",
+          "const": "todo"
+        }
       ]
     },
     "JobId": {
@@ -762,6 +947,11 @@
           "description": "Valid.",
           "type": "string",
           "const": "valid"
+        },
+        {
+          "description": "Already fixed at the assessed head.",
+          "type": "string",
+          "const": "already_fixed"
         },
         {
           "description": "Partly valid.",

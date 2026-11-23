@@ -1,5 +1,10 @@
 # ADR-023: Processing PR comments — PR page, Comments view, Codex assessment, Watch, decision feed for external agents
 
+> Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
+> gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
+> KL1 gates credential mode; older master-credential/no-paid-API rules do not decide that open question.
+
+
 - Status: accepted (2026-11-22; the owner reviewed the mockup and started development). Owner model and answers
   RQ1–RQ23 of 2026-11-22 recorded in `docs/review-workflow-plan.md` (§0, §11). Spikes: `docs/spikes/S13-1-*`,
   `S13-2-*`. Contract names: `api::review_loop` and `db::repo::review_loop` (`api::comments` and

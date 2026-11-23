@@ -388,14 +388,23 @@ pub(crate) fn plain_failure(failure: Option<CallFailure>) -> &'static str {
     match failure {
         Some(CallFailure::UsageLimited) => USAGE_LIMIT,
         Some(CallFailure::Failed(kind)) => match kind {
-            JobFailureKind::CredentialUnusable => SIGN_IN_NEEDED,
+            JobFailureKind::CredentialUnusable
+            | JobFailureKind::CredentialMissing
+            | JobFailureKind::CredentialRelink => SIGN_IN_NEEDED,
             JobFailureKind::Configuration => {
                 "The server is misconfigured: a required agent skill is missing. Ask the administrator."
             }
             JobFailureKind::ProviderFailed => PROVIDER_REJECTED,
             JobFailureKind::OutputNotJson => ANSWER_FORMAT,
             JobFailureKind::Timeout => TIMED_OUT,
-            JobFailureKind::CheckoutFailed | JobFailureKind::Internal => OTHER_FAILURE,
+            JobFailureKind::InvalidJsonSchema => ANSWER_FORMAT,
+            JobFailureKind::WorkerUnavailable
+            | JobFailureKind::WorkerLost
+            | JobFailureKind::ModelUnavailable
+            | JobFailureKind::UpstreamRejected
+            | JobFailureKind::ReportVersionUnsupported
+            | JobFailureKind::CheckoutFailed
+            | JobFailureKind::Internal => OTHER_FAILURE,
         },
         None => OTHER_FAILURE,
     }
@@ -482,8 +491,12 @@ mod tests {
         let mut config = test_config();
         config.github.api_url = Url::parse(&format!("{}/api", github.uri())).expect("url");
         let db = Db::in_memory().await.expect("db");
+
         let state = AppState::with_queue(config, db);
         seed_analysis(&state.db).await.expect("analysis");
+        db::repo::analyses::testing::seed_payer(&state.db, "codex-1")
+            .await
+            .unwrap();
         let lock = lock_user("u1").await;
         let grant = TokenGrant {
             access_token: SecretString::from(ACCESS),
@@ -715,9 +728,12 @@ mod tests {
     /// Runs one job on credential `id` through the runner protocol (claim, result) ending with `outcome` and an LLM
     /// call that failed with `raw`, as the runner reports it.
     async fn fail_one_job(h: &Harness, id: &str, outcome: JobOutcome, raw: &str) {
+        db::repo::analyses::testing::seed_payer(&h.state.db, id)
+            .await
+            .unwrap();
         let analysis = seed_analysis(&h.state.db).await.expect("analysis");
         let mut spec = job_spec(analysis, JobKind::Plan);
-        spec.credential.id = id.to_owned();
+        spec.payer.0 = id.to_owned();
         h.state
             .db
             .jobs()
@@ -765,6 +781,7 @@ mod tests {
         let claimed: ClaimResponse = serde_json::from_slice(&bytes).expect("claim response");
         let claimed = claimed.claim.expect("a claimed job");
         let result = JobResult {
+            report: None,
             job_id: claimed.spec.job_id,
             attempt: claimed.spec.attempt,
             outcome,

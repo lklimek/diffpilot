@@ -400,13 +400,15 @@ pub(super) fn assessment(
         }
     };
     Ok(CommentAssessment {
+        evidence_text: None,
+        recorded_decision: None,
         job: made.job,
         head: head.clone(),
         assessed_at: now,
         reused_since: None,
-        validity: entry.validity,
+        validity: entry.validity.into(),
         evidence: entry.evidence.clone(),
-        pre_existing: entry.pre_existing,
+        pre_existing: Some(entry.pre_existing),
         category: entry.category.clone(),
         necessity: Necessity {
             verdict: entry.necessity,

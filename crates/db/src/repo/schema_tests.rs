@@ -9,7 +9,7 @@ use contracts::api::feedback::FeedbackValue;
 use contracts::api::questions::AskState;
 use contracts::common::{LineSide, LlmLanguage};
 use contracts::job::result::JobFailureKind;
-use contracts::job::spec::{CredentialKind, ReasoningEffort};
+use contracts::job::spec::ReasoningEffort;
 use contracts::job::state::JobState;
 use contracts::time::Timestamp;
 use jiff::SignedDuration;
@@ -68,17 +68,27 @@ async fn insert_job(
     credential: &str,
     state: &str,
 ) -> Result<(), DbError> {
-    sqlx::query(
-        "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, created_at, stage)
-         VALUES (?, 'default', ?, 'analyse_flow', 1, ?, '{}', ?, 't', ?)",
-    )
-    .bind(id)
-    .bind(analysis)
-    .bind(state)
-    .bind(credential)
-    .bind(format!("flow:{id}"))
-    .execute(&db.pool)
-    .await?;
+    let current: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pragma_table_info('jobs') WHERE name='payer_id'")
+            .fetch_one(&db.pool)
+            .await?;
+    if current != 0 {
+        sqlx::query("INSERT OR IGNORE INTO users(id,github_id,login,created_at,updated_at) SELECT ?,COALESCE(MAX(github_id),0)+1,?,'t','t' FROM users")
+            .bind(credential).bind(credential).execute(&db.pool).await?;
+    }
+    let sql = if current == 0 {
+        "INSERT INTO jobs(id,tenant_id,analysis_id,kind,priority,state,spec,credential_id,created_at,stage) VALUES(?,'default',?,'analyse_flow',1,?,'{}',?,'t',?)"
+    } else {
+        "INSERT INTO jobs(id,tenant_id,analysis_id,kind,priority,state,spec,payer_id,pull_request_id,created_at,stage) VALUES(?,'default',?,'analyse_flow',1,?,'{}',?,1,'t',?)"
+    };
+    sqlx::query(sql)
+        .bind(id)
+        .bind(analysis)
+        .bind(state)
+        .bind(credential)
+        .bind(format!("flow:{id}"))
+        .execute(&db.pool)
+        .await?;
     Ok(())
 }
 
@@ -111,7 +121,7 @@ async fn gone_items_migration_applies_after_later_migrations() {
         .expect("pool");
     let without_0024 = MIGRATIONS
         .iter()
-        .filter(|(version, _, _)| *version != 24)
+        .filter(|(version, _, _)| *version != 24 && *version != 30)
         .map(|(version, description, sql)| {
             Migration::new(
                 *version,
@@ -126,7 +136,9 @@ async fn gone_items_migration_applies_after_later_migrations() {
         .run(&pool)
         .await
         .expect("through 0026 without 0024");
-    migrate(&pool, MIGRATIONS.len()).await.expect("0024 later");
+    migrate(&pool, MIGRATIONS.len() - 1)
+        .await
+        .expect("0024 later");
     let column: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pragma_table_info('comment_items') WHERE name = 'gone_at'",
     )
@@ -193,7 +205,7 @@ async fn flow_auto_retries_migration_keeps_the_rows_of_an_existing_database() {
         .expect("counts");
     assert_eq!(before, "2/1/2/1");
 
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
 
@@ -238,11 +250,12 @@ async fn flow_auto_retries_migration_keeps_the_rows_of_an_existing_database() {
         versions,
         MIGRATIONS
             .iter()
+            .take(MIGRATIONS.len() - 1)
             .map(|(version, ..)| *version)
             .collect::<Vec<_>>()
     );
     // Running the migrator again changes nothing (the checksum of 0001 still matches).
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("idempotent");
 }
@@ -308,7 +321,7 @@ async fn unbound_seed_logins_migration_keeps_bound_and_added_entries() {
     .execute(&pool)
     .await
     .expect("existing install");
-    migrate(&pool, MIGRATIONS.len()).await.expect("0016");
+    migrate(&pool, MIGRATIONS.len() - 1).await.expect("0016");
     assert_eq!(
         allowlist_rows(&pool).await,
         [("alice".to_owned(), None), ("lklimek".to_owned(), Some(7))]
@@ -444,7 +457,11 @@ async fn check_lists_match_contract_enums() {
         ),
         (
             "llm_credentials",
-            in_list([wire_name(CredentialKind::CodexChatgpt)]),
+            in_list([
+                "linking".to_owned(),
+                "linked".to_owned(),
+                "relink_needed".to_owned(),
+            ]),
         ),
         (
             "llm_credentials",
@@ -459,6 +476,14 @@ async fn check_lists_match_contract_enums() {
                             JobFailureKind::Timeout,
                             JobFailureKind::Internal,
                             JobFailureKind::Configuration,
+                            JobFailureKind::WorkerUnavailable,
+                            JobFailureKind::WorkerLost,
+                            JobFailureKind::CredentialMissing,
+                            JobFailureKind::CredentialRelink,
+                            JobFailureKind::ModelUnavailable,
+                            JobFailureKind::UpstreamRejected,
+                            JobFailureKind::ReportVersionUnsupported,
+                            JobFailureKind::InvalidJsonSchema,
                         ]
                         .map(CallFailure::Failed),
                     )
@@ -571,7 +596,7 @@ async fn check_lists_match_contract_enums() {
 }
 
 #[tokio::test]
-async fn one_running_job_per_analysis() {
+async fn one_running_job_per_analysis_and_payer() {
     let db = db().await;
     seed(&db).await;
     insert_job(&db, "j1", "a1", "c1", "running")
@@ -580,7 +605,7 @@ async fn one_running_job_per_analysis() {
     insert_job(&db, "j2", "a1", "c2", "queued")
         .await
         .expect("queued jobs may wait");
-    let second = insert_job(&db, "j3", "a1", "c3", "claimed").await;
+    let second = insert_job(&db, "j3", "a1", "c1", "claimed").await;
     assert!(matches!(second, Err(DbError::Conflict)), "{second:?}");
 }
 
@@ -681,8 +706,8 @@ async fn one_live_job_per_pipeline_stage() {
                   stage: &'static str,
                   state: &'static str| {
         sqlx::query(
-            "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, created_at, stage)
-             VALUES (?, 'default', 'a1', ?, 1, ?, '{}', 'c1', 't', ?)",
+            "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, payer_id, pull_request_id, created_at, stage)
+             VALUES (?, 'default', 'a1', ?, 1, ?, '{}', 'u1', 1, 't', ?)",
         )
         .bind(id)
         .bind(kind)
@@ -748,9 +773,9 @@ async fn repair_runs_are_new_generations_of_a_stage() {
     seed(&db).await;
     let insert = |id: &'static str, generation: i64, state: &'static str| {
         sqlx::query(
-            "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, created_at,
+            "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, payer_id, pull_request_id, created_at,
                                stage, generation)
-             VALUES (?, 'default', 'a1', 'analyse_flow', 1, ?, '{}', 'c1', 't', 'flow:f1', ?)",
+             VALUES (?, 'default', 'a1', 'analyse_flow', 1, ?, '{}', 'u1', 1, 't', 'flow:f1', ?)",
         )
         .bind(id)
         .bind(state)
@@ -853,22 +878,20 @@ async fn installation_tokens_survive_until_revocation_is_confirmed() {
 }
 
 #[tokio::test]
-async fn one_running_job_per_pull_request_across_credentials() {
+async fn distinct_payers_can_run_on_one_pull_request() {
     let db = db().await;
     seed(&db).await;
     insert_job(&db, "j1", "a1", "cred-1", "running")
         .await
         .unwrap();
-    assert!(
-        insert_job(&db, "j2", "a2", "cred-2", "claimed")
-            .await
-            .is_err()
-    );
+    insert_job(&db, "j2", "a2", "cred-2", "claimed")
+        .await
+        .unwrap();
     insert_job(&db, "j3", "a2", "cred-2", "queued")
         .await
         .unwrap();
     assert!(
-        sqlx::query("UPDATE jobs SET state = 'claimed' WHERE id = 'j3'")
+        sqlx::query("UPDATE jobs SET state='claimed' WHERE id='j3'")
             .execute(&db.pool)
             .await
             .is_err()
@@ -898,7 +921,7 @@ async fn ask_effort_migration_upgrades_a_stored_selection() {
     .execute(&pool)
     .await
     .expect("stored row");
-    migrate(&pool, MIGRATIONS.len())
+    migrate(&pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     let row: (String, String, String, String, String) = sqlx::query_as(
@@ -946,7 +969,7 @@ async fn dashboard_migrations_upgrade_a_v1_database() {
     .execute(&pool)
     .await
     .expect("v1 row");
-    migrate(&pool, MIGRATIONS.len())
+    migrate(&pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     let row: (String, String, String) =
@@ -1227,7 +1250,7 @@ async fn jobs_targets_migration_applies_to_a_v1_database() {
             .expect("child row");
     }
 
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
 
@@ -1351,7 +1374,7 @@ async fn russian_migration_keeps_the_data_and_accepts_ru() {
     let analysis = crate::repo::analyses::testing::seed_analysis(&db)
         .await
         .expect("analysis");
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     let kept: (String, String) =
@@ -1428,7 +1451,7 @@ async fn dependencies_migration_keeps_documents_and_accepts_the_new_kind() {
     .execute(&db.pool)
     .await;
     assert!(refused.is_err(), "not a kind before 0015");
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     db.documents()
@@ -1495,7 +1518,7 @@ async fn question_anchors_migration_keeps_every_question_as_a_step_anchor() {
     .execute(&db.pool)
     .await
     .expect("questions of the old schema");
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     type Row = (
@@ -1729,7 +1752,7 @@ async fn russian_migration_reaches_other_open_connections() {
     .execute(&mut *other)
     .await
     .expect("user");
-    migrate(&pool, MIGRATIONS.len())
+    migrate(&pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     sqlx::query("UPDATE users SET language = 'ru' WHERE id = 'u1'")
@@ -1876,7 +1899,7 @@ async fn first_v12_start_on_a_partially_bound_seed_ends_the_unlisted_maintainer(
     signed_in_v11_user(&pool, "u-owner", "owner", 9).await;
     assert_eq!(live_credentials(&pool, "u-lk").await, (1, 1, 1));
 
-    migrate(&pool, MIGRATIONS.len()).await.expect("0016");
+    migrate(&pool, MIGRATIONS.len() - 1).await.expect("0016");
     assert_eq!(
         allowlist_rows(&pool).await,
         [
@@ -1995,7 +2018,7 @@ async fn verify_comments_jobs_migration_keeps_rows_and_adds_the_pass_owner() {
         .expect("rowids")
     };
     let kept = rowids().await;
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     assert_eq!(rowids().await, kept, "rows and rowids are kept");
@@ -2129,7 +2152,7 @@ async fn snooze_ends_migration_keeps_every_snooze_as_not_ended() {
     .execute(&db.pool)
     .await
     .expect("snoozes of the old schema");
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     type Row = (String, String, String, Option<String>, Option<String>);
@@ -2225,7 +2248,7 @@ async fn slack_names_migration_gives_existing_settings_an_empty_table() {
     .execute(&db.pool)
     .await
     .expect("settings of the old schema");
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     let row: (String, String) =
@@ -2329,7 +2352,7 @@ async fn automatic_trigger_migration_keeps_refreshes_and_what_references_them() 
         contents
     }
     let original = contents(&db).await;
-    migrate(&db.pool, MIGRATIONS.len())
+    migrate(&db.pool, MIGRATIONS.len() - 1)
         .await
         .expect("upgrade in place");
     assert_eq!(

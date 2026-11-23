@@ -159,7 +159,7 @@ pub async fn claim(
     let claimed = db
         .jobs()
         .claim(ClaimParams {
-            credential_ids: &usable,
+            payer_ids: &usable,
             job_token_hash: &hash,
             lease_until: lease_expires_at,
             now,
@@ -239,6 +239,7 @@ pub async fn claim(
         None => None,
     };
     Ok(ClaimResponse {
+        retire: Vec::new(),
         claim,
         drop_sessions,
     })
@@ -313,6 +314,9 @@ async fn prepare_spec(
             return Err(DbError::NotFound.into());
         }
         Some(WorkingSession {
+            kind: None,
+            preflight: None,
+            parent_context: None,
             user_key: Sha256::digest(record.user_id.as_bytes())
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
@@ -1241,6 +1245,7 @@ mod tests {
 
     fn result(job: JobId, outcome: JobOutcome) -> JobResult {
         JobResult {
+            report: None,
             job_id: job,
             attempt: 1,
             outcome,

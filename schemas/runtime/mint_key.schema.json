@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MintKey",
+  "description": "Mint a fresh, expiring key and revoke the previous key for this container.",
+  "type": "object",
+  "properties": {
+    "container": {
+      "description": "Worker identity and payer.",
+      "$ref": "#/$defs/ContainerId"
+    }
+  },
+  "required": [
+    "container"
+  ],
+  "$defs": {
+    "ContainerId": {
+      "description": "A worker's identity; each identity owns at most one running job.",
+      "oneOf": [
+        {
+          "description": "Persistent PR worker (CS1).",
+          "type": "object",
+          "properties": {
+            "shape": {
+              "type": "string",
+              "const": "pr"
+            },
+            "pull_request_id": {
+              "description": "Database PR key.",
+              "type": "integer",
+              "format": "int64"
+            },
+            "payer": {
+              "description": "User paying for this worker's turns.",
+              "$ref": "#/$defs/UserId"
+            }
+          },
+          "required": [
+            "shape",
+            "pull_request_id",
+            "payer"
+          ]
+        },
+        {
+          "description": "Ephemeral answer-only worker (CS2).",
+          "type": "object",
+          "properties": {
+            "shape": {
+              "type": "string",
+              "const": "judge"
+            },
+            "payer": {
+              "description": "Dashboard user paying for the turn.",
+              "$ref": "#/$defs/UserId"
+            }
+          },
+          "required": [
+            "shape",
+            "payer"
+          ]
+        }
+      ]
+    },
+    "UserId": {
+      "description": "Stable authenticated user id, also the payer key.",
+      "type": "string"
+    }
+  }
+}

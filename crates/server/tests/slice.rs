@@ -294,6 +294,7 @@ impl JobExecutor for ScriptedExecutor {
         }
         self.finished.lock().expect("lock").insert(handle.job_id);
         let result = JobResult {
+            report: None,
             job_id: handle.job_id,
             attempt: 1,
             outcome,
@@ -641,7 +642,7 @@ impl Harness {
         let request = json!({
             "runner_id": "runner-1",
             "credentials": [{
-                "credential": { "id": server::pipeline::CREDENTIAL_ID, "kind": "codex_chatgpt" },
+                "credential": { "id": self.user_id, "kind": "codex_chatgpt" },
                 "usable": true,
             }],
             "dropped_sessions": [],
@@ -690,6 +691,7 @@ impl Harness {
     /// Posts the claimed attempt's result as the runner does.
     async fn complete(&self, claim: &Claim, outcome: JobOutcome) {
         let result = JobResult {
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome,
@@ -2268,7 +2270,11 @@ async fn restart_with_failing_preparation_cancels_live_jobs() {
     };
     let pending = queue
         .submit(JobRequest {
-            spec: db::repo::analyses::testing::job_spec(id, JobKind::Plan),
+            spec: {
+                let mut spec = db::repo::analyses::testing::job_spec(id, JobKind::Plan);
+                spec.payer.0 = h.user_id.clone();
+                spec
+            },
             priority: JobPriority::Batch,
             stage: JobStage::Plan { batch: 1 },
             generation: 0,
@@ -3184,6 +3190,7 @@ async fn each_job_is_claimable_only_after_the_previous_result_is_stored() {
             );
         }
         let result = JobResult {
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome: JobOutcome::Succeeded {
@@ -3344,7 +3351,7 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
     let analysis = h.seed_analysis().await;
     let id = analysis.to_string();
     let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::Plan);
-    spec.credential.id = server::pipeline::CREDENTIAL_ID.to_owned();
+    spec.payer.0 = h.user_id.clone();
     let old = h
         .state
         .executor
@@ -3397,12 +3404,15 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
     assert!(queued, "the new round's plan job was not queued within 5 s");
     let resets_at = Timestamp::from_second(Timestamp::now().as_second() + 3).expect("time");
     let late = JobResult {
+        report: None,
         job_id: old.job_id,
         attempt: claim.spec.attempt,
         outcome: JobOutcome::UsageLimited {
             resets_at: Some(resets_at),
         },
         session: Some(contracts::job::result::SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "thread-of-the-old-round".to_owned(),
             outcome: contracts::job::result::SessionOutcome::Started,
         }),
@@ -3505,6 +3515,7 @@ async fn user_pause_keeps_the_running_result_and_next_job_uses_the_new_model() {
     assert_eq!(paused["state"]["reason"], "user");
     assert!(paused["state"]["paused_by"].is_string());
     let result = JobResult {
+        report: None,
         job_id: first.spec.job_id,
         attempt: first.spec.attempt,
         outcome: JobOutcome::Succeeded {
@@ -3674,6 +3685,7 @@ async fn lazy_review_opens_after_context_before_any_flow() {
         }
         let claim = claim.expect("job");
         let result = JobResult {
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome: JobOutcome::Succeeded {
@@ -3783,6 +3795,7 @@ async fn lazy_review_opens_after_context_before_any_flow() {
     );
     assert!(h.runner_claim().await.is_none());
     let result = JobResult {
+        report: None,
         job_id: claim.spec.job_id,
         attempt: claim.spec.attempt,
         outcome: JobOutcome::Succeeded {
@@ -3849,6 +3862,7 @@ async fn lazy_review_opens_after_context_before_any_flow() {
         StatusCode::OK
     );
     let result = JobResult {
+        report: None,
         job_id: next.spec.job_id,
         attempt: next.spec.attempt,
         outcome: JobOutcome::Succeeded {

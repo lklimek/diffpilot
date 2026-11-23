@@ -328,6 +328,9 @@ mod tests {
     #[test]
     fn raised_again_by_a_bot_repeat_or_reopened_by_a_person() {
         let item = ItemRecord {
+            source_id: None,
+            quote: None,
+            duplicate_of: None,
             id: CommentItemId::new_random(),
             pull_request_id: 1,
             no: 1,

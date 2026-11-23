@@ -654,7 +654,7 @@ mod tests {
             .db
             .jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.to_owned()],
+                payer_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
                 lease_until: claimed_at + SignedDuration::from_hours(1),
                 now: claimed_at,

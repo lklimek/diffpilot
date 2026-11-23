@@ -1199,18 +1199,6 @@ mod ranked {
         config.github.api_url = Url::parse(&github).expect("url");
         config.github.oauth_url = Url::parse(&github).expect("url");
         let db = Db::in_memory().await.expect("db");
-        db.llm_credentials()
-            .register(
-                DEFAULT_TENANT,
-                &LlmCredentialRef {
-                    id: crate::pipeline::CREDENTIAL_ID.to_owned(),
-                    kind: CredentialKind::CodexChatgpt,
-                },
-                true,
-                Timestamp::now(),
-            )
-            .await
-            .expect("credential");
         let mut state = AppState::with_queue(config, db);
         state.dashboard = DashboardHub::testing(
             Clock::starting_at(morning()),
@@ -1237,6 +1225,21 @@ mod ranked {
             )
             .await
             .expect("user");
+        state
+            .db
+            .llm_credentials()
+            .register(
+                DEFAULT_TENANT,
+                &LlmCredentialRef {
+                    id: db::repo::analyses::testing::CREDENTIAL.to_owned(),
+                    kind: CredentialKind::CodexChatgpt,
+                },
+                true,
+                Timestamp::now(),
+            )
+            .await
+            .expect("credential");
+
         let grant = sign_in(&github).await;
         let lock = lock_user("u1").await;
         store_sign_in_tokens(&state, &lock, DEFAULT_TENANT, &grant, Timestamp::now())

@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use contracts::generate::{API_SCHEMA_DIR, API_SCHEMAS, SCHEMA_DIR, TS_DIR, generated_files};
+use contracts::generate::{
+    API_SCHEMA_DIR, API_SCHEMAS, RUNTIME_SCHEMA_DIR, SCHEMA_DIR, TS_DIR, generated_files,
+};
 use contracts::routes::{GET_ME, Listener, ROUTES, RouteAuth};
 
 fn repo_root() -> PathBuf {
@@ -39,7 +41,7 @@ fn generated_artifacts_are_current() {
             stale.push(file.path.clone());
         }
     }
-    for dir in [SCHEMA_DIR, API_SCHEMA_DIR, TS_DIR] {
+    for dir in [SCHEMA_DIR, API_SCHEMA_DIR, RUNTIME_SCHEMA_DIR, TS_DIR] {
         for extra in files_in(&root.join(dir)).difference(&expected) {
             if update {
                 fs::remove_file(extra).expect("remove orphaned generated file");

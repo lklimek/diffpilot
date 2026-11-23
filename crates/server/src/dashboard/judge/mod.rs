@@ -21,9 +21,7 @@ use contracts::common::LlmLanguage;
 use contracts::ids::{JobId, RefreshId};
 use contracts::job::access::AgentAccess;
 use contracts::job::result::{JobOutcome, JobResult};
-use contracts::job::spec::{
-    CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
-};
+use contracts::job::spec::{JobLimits, JobPriority, JobSpec, JobTarget};
 use contracts::job::state::JobState;
 use db::error::DbError;
 use db::repo::Db;
@@ -54,7 +52,6 @@ use super::score::{Freshness, ScoreRules};
 use super::snapshot::{self, Snapshot};
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::model::{ModelContext, select_model};
-use crate::pipeline::CREDENTIAL_ID;
 use crate::state::AppState;
 
 /// Version of the judge prompt and output schema (`prompts/judge_work.md`, pinned by its golden); a bump
@@ -479,12 +476,10 @@ impl<'a> Ranking<'a> {
             prompt: prompt::render(input, self.language)?,
             output_schema: contracts::agent::output_schema(JobKind::JudgeWork)?,
             flow_file: None,
+            pr_data: None,
             model: select_model(JobKind::JudgeWork, &ModelContext::default(), saved.as_ref()),
             limits: JobLimits::default(),
-            credential: LlmCredentialRef {
-                id: CREDENTIAL_ID.to_owned(),
-                kind: CredentialKind::CodexChatgpt,
-            },
+            payer: contracts::ids::UserId(self.run.scope.user_id.clone()),
             session: None,
             working_session: None,
             context_pack: None,
@@ -550,7 +545,7 @@ impl<'a> Ranking<'a> {
         let live = match record.state {
             JobState::Paused => RankingState::Paused,
             JobState::Queued => {
-                let credential = match db.llm_credentials().get(&record.spec.credential.id).await {
+                let credential = match db.llm_credentials().get(&record.spec.payer.0).await {
                     Ok(credential) => Some(credential),
                     Err(DbError::NotFound) => None,
                     Err(error) => return Err(error.into()),
@@ -577,10 +572,7 @@ impl<'a> Ranking<'a> {
         };
         let unclaimed = record.state == JobState::Queued
             && live == RankingState::Running
-            && !db
-                .jobs()
-                .credential_busy(&record.spec.credential.id)
-                .await?;
+            && !db.jobs().credential_busy(&record.spec.payer.0).await?;
         self.unclaimed_since = unclaimed.then(|| {
             self.unclaimed_since
                 .unwrap_or_else(tokio::time::Instant::now)
@@ -1006,7 +998,7 @@ pub async fn status(state: &AppState, record: &RefreshRecord) -> RefreshStatus {
         .as_mut()
         .filter(|ranking| ranking.state == RankingState::Paused)
     {
-        ranking.resumes_at = match state.db.llm_credentials().get(CREDENTIAL_ID).await {
+        ranking.resumes_at = match state.db.llm_credentials().get(&record.user_id).await {
             Ok(credential) => credential
                 .paused_until
                 .filter(|until| *until > Timestamp::now()),

@@ -216,13 +216,36 @@ pub struct VerifyCommentsOutput {
     pub answer: Option<String>,
 }
 
+/// The LLM's validity reading ("The LLM says: …"). Open enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "Validity")]
+pub enum VerifyValidity {
+    /// Valid.
+    Valid,
+    /// Partly valid.
+    PartlyValid,
+    /// Invalid.
+    Invalid,
+}
+
+impl From<VerifyValidity> for Validity {
+    fn from(value: VerifyValidity) -> Self {
+        match value {
+            VerifyValidity::Valid => Self::Valid,
+            VerifyValidity::PartlyValid => Self::PartlyValid,
+            VerifyValidity::Invalid => Self::Invalid,
+        }
+    }
+}
+
 /// The assessment of one item at the head.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ItemAssessment {
     /// The item's id from the prompt, e.g. `C14`.
     pub item: String,
     /// Whether the comment is right about the code at the head.
-    pub validity: Validity,
+    pub validity: VerifyValidity,
     /// Lines read at the head that support the validity.
     pub evidence: Vec<AssessmentEvidence>,
     /// The problem exists on the base branch already.

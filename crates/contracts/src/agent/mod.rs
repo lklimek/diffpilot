@@ -97,3 +97,8 @@ pub fn output_schema(kind: JobKind) -> Result<Value, StrictSchemaError> {
         }
     }
 }
+
+/// Owned claudius host-report read types.
+pub mod comment_report;
+/// Host-supplied review data files.
+pub mod pr_data;

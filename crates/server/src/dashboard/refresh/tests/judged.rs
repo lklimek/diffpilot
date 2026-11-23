@@ -15,7 +15,7 @@ use super::*;
 use crate::dashboard::judge::JudgeRanker;
 use crate::dashboard::score::{EligibilityJudgement, Freshness, JudgedPart, Judgement};
 use crate::dashboard::snapshot::{self, StoredLinkedIssue};
-use crate::pipeline::CREDENTIAL_ID;
+use db::repo::analyses::testing::CREDENTIAL as CREDENTIAL_ID;
 
 /// The runner's fake-provider answer: every asked part 0 (defect 0 and 0), eligibility as computed.
 fn neutral(input: &JudgeWorkInput) -> Value {
@@ -92,7 +92,7 @@ fn serve_with(
                 .db
                 .jobs()
                 .claim(ClaimParams {
-                    credential_ids: &[CREDENTIAL_ID.to_owned()],
+                    payer_ids: &[CREDENTIAL_ID.to_owned()],
                     job_token_hash: b"hash",
                     lease_until: now + SignedDuration::from_hours(1),
                     now,
@@ -109,6 +109,7 @@ fn serve_with(
                 .expect("judged")
                 .extend(input.items.iter().cloned());
             let result = JobResult {
+                report: None,
                 job_id: job.id,
                 attempt: job.attempt,
                 outcome: JobOutcome::Succeeded {

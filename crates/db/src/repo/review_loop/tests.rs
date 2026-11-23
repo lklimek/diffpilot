@@ -306,13 +306,15 @@ async fn assessments_keep_their_fingerprint_and_newest_wins() {
     let rl = db.review_loop();
     let item = new_item(&db, "dedupe-a").await;
     let assessment = |reason: &str| CommentAssessment {
+        evidence_text: None,
+        recorded_decision: None,
         job: JobId::new_random(),
         head: head(),
         assessed_at: at(5),
         reused_since: None,
         validity: Validity::Valid,
         evidence: vec![],
-        pre_existing: false,
+        pre_existing: Some(false),
         category: "correctness".into(),
         necessity: Necessity {
             verdict: NecessityVerdict::In,

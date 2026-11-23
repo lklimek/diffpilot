@@ -1,0 +1,403 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReportRow",
+  "description": "Fields consumed from one upstream assessment; unknown fields, including severity floats, are discarded.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "description": "Upstream CMT identifier.",
+      "type": "string"
+    },
+    "reviewer": {
+      "description": "Source author.",
+      "type": "string"
+    },
+    "source_kind": {
+      "description": "Source role.",
+      "$ref": "#/$defs/SourceKind"
+    },
+    "comment_url": {
+      "description": "Source URL, checked against the host scope.",
+      "type": "string"
+    },
+    "thread_id": {
+      "description": "Required for an inline row.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_quote": {
+      "description": "Required for a body or PR-comment point; server checks a distinct verbatim span.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "description": {
+      "description": "Problem description.",
+      "type": "string"
+    },
+    "assessment": {
+      "description": "Validity assessment; absent on context rows.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReportAssessment"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reasoning": {
+      "description": "Reasoning text.",
+      "type": "string"
+    },
+    "evidence": {
+      "description": "Evidence text, labelled LLM.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "proposed_action": {
+      "description": "Human-readable proposed action.",
+      "type": "string"
+    },
+    "proposed_decision": {
+      "description": "Machine decision, required on assessed host rows.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProposedDecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recorded_decision": {
+      "description": "Earlier attributed decision.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecordedDecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "location": {
+      "description": "Optional location in file:lines notation.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "proposed_reply": {
+      "description": "Draft reply, passed through the server's wording guard.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pre_existing": {
+      "description": "Whether the problem exists on the base.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "category": {
+      "description": "Category slug.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fix_size": {
+      "description": "Fix size.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FixSize"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "gates": {
+      "description": "Named gates.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ReportGate"
+      },
+      "default": []
+    },
+    "merged_thread_ids": {
+      "description": "Threads grouped with this row, intersected with host scope.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "merged_urls": {
+      "description": "Additional source links, subject to the same-source and author rules.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    }
+  },
+  "required": [
+    "id",
+    "reviewer",
+    "source_kind",
+    "comment_url",
+    "description",
+    "reasoning",
+    "proposed_action"
+  ],
+  "$defs": {
+    "SourceKind": {
+      "description": "A row's source role in the upstream report.",
+      "oneOf": [
+        {
+          "description": "An inline review thread.",
+          "type": "string",
+          "const": "inline"
+        },
+        {
+          "description": "A point in a submitted review body.",
+          "type": "string",
+          "const": "review_body"
+        },
+        {
+          "description": "A point in a PR comment.",
+          "type": "string",
+          "const": "pr_comment"
+        },
+        {
+          "description": "Reply context only.",
+          "type": "string",
+          "const": "reply"
+        },
+        {
+          "description": "Status context only.",
+          "type": "string",
+          "const": "status"
+        }
+      ]
+    },
+    "ReportAssessment": {
+      "description": "The upstream assessment, before mapping into the API's validity and necessity.",
+      "oneOf": [
+        {
+          "description": "Valid at the assessed commit.",
+          "type": "string",
+          "const": "valid"
+        },
+        {
+          "description": "Already fixed at that commit.",
+          "type": "string",
+          "const": "already_fixed"
+        },
+        {
+          "description": "Valid concern, outside this PR's scope.",
+          "type": "string",
+          "const": "out_of_scope"
+        },
+        {
+          "description": "Invalid concern.",
+          "type": "string",
+          "const": "wrong"
+        }
+      ]
+    },
+    "ProposedDecision": {
+      "description": "Machine-readable proposed action; target semantics are validated by the server.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Decision kind.",
+          "$ref": "#/$defs/ProposedDecisionKind"
+        },
+        "fixed_in": {
+          "description": "Fix commit, if supplied.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_pr": {
+          "description": "Target PR number.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "target_url": {
+          "description": "Target issue or PR URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Follow-up title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "ProposedDecisionKind": {
+      "description": "Proposed decision kind; independent of PR-level decisions.",
+      "oneOf": [
+        {
+          "description": "Resolve as fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "Fix in this PR.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "Reject with a reason.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "Existing PR handles it.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "Follow-up PR handles it.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "Upstream issue handles it.",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "Record a TODO.",
+          "type": "string",
+          "const": "todo"
+        }
+      ]
+    },
+    "RecordedDecision": {
+      "description": "Attributed prior decision; server verifies authority and grounding before treating it as a fact.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Recorded decision.",
+          "$ref": "#/$defs/RecordedDecisionKind"
+        },
+        "by": {
+          "description": "GitHub author login.",
+          "type": "string"
+        },
+        "comment_url": {
+          "description": "Link to the decision's comment.",
+          "type": "string"
+        },
+        "quote": {
+          "description": "Verbatim decision quote, at most 600 characters.",
+          "type": "string"
+        },
+        "target_pr": {
+          "description": "PR target, when supplied.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "target_url": {
+          "description": "URL target, when supplied.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "by",
+        "comment_url",
+        "quote"
+      ]
+    },
+    "RecordedDecisionKind": {
+      "description": "Recorded decision kind, including deferral and withdrawal.",
+      "anyOf": [
+        {
+          "description": "Maintainer deferred this point.",
+          "type": "string",
+          "const": "deferred"
+        },
+        {
+          "description": "Source author withdrew this point.",
+          "type": "string",
+          "const": "withdrawn"
+        },
+        {
+          "description": "Ordinary item decision.",
+          "$ref": "#/$defs/ProposedDecisionKind"
+        }
+      ]
+    },
+    "FixSize": {
+      "description": "Size of a fix.",
+      "oneOf": [
+        {
+          "description": "Extra small.",
+          "type": "string",
+          "const": "XS"
+        },
+        {
+          "description": "Small.",
+          "type": "string",
+          "const": "S"
+        },
+        {
+          "description": "Medium.",
+          "type": "string",
+          "const": "M"
+        }
+      ]
+    },
+    "ReportGate": {
+      "description": "An upstream gate; only the four blocker gates map into stored gate items.",
+      "type": "object",
+      "properties": {
+        "gate": {
+          "description": "Upstream gate name, allowing gates beyond the four stored ones.",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "Gate evidence, labelled LLM.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gate",
+        "evidence"
+      ]
+    }
+  }
+}

@@ -11,6 +11,9 @@ use crate::ids::JobId;
 /// The end of one job attempt; posting it twice for one attempt is idempotent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct JobResult {
+    /// Host-supplied review report, validated by server ingest; absent for other jobs.
+    #[serde(default)]
+    pub report: Option<Box<crate::agent::comment_report::CommentReport>>,
     /// Job id.
     pub job_id: JobId,
     /// Attempt the result belongs to.
@@ -70,11 +73,47 @@ pub enum JobFailureKind {
     Timeout,
     /// A runner-side error.
     Internal,
+    /// The worker could not be started or attached.
+    WorkerUnavailable,
+    /// Relay or frame loss; stop the container before any subsequent turn.
+    WorkerLost,
+    /// No usable credential exists for the payer.
+    CredentialMissing,
+    /// Terminal or quarantined credentials require explicit relink (gateway HTTP 403).
+    CredentialRelink,
+    /// Model metadata or the selected model is unavailable.
+    ModelUnavailable,
+    /// The gateway rejected a request's body or tool type.
+    UpstreamRejected,
+    /// The report is not a supported host-supplied 4.2 report.
+    ReportVersionUnsupported,
+    /// The provider rejected the strict output schema; no model repair or retry.
+    InvalidJsonSchema,
+}
+
+impl JobFailureKind {
+    /// Whether another attempt may recover without changing user configuration or output contracts.
+    pub const fn retryable(self) -> bool {
+        matches!(
+            self,
+            Self::WorkerUnavailable
+                | Self::WorkerLost
+                | Self::ProviderFailed
+                | Self::Timeout
+                | Self::Internal
+        )
+    }
 }
 
 /// The agent session after a job (ADR-004).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionReport {
+    /// Last-context estimate, never a billable cumulative total.
+    #[serde(default)]
+    pub last_context: Option<Box<crate::runtime::LastContext>>,
+    /// Confirmed first-Ask preflight for this seed/generation, when applicable.
+    #[serde(default)]
+    pub preflight: Option<Box<crate::runtime::AskPreflight>>,
     /// Provider session (Codex thread) id.
     pub thread_id: String,
     /// How the session was obtained.
@@ -128,4 +167,64 @@ pub enum LlmCallStatus {
         /// Plain error message.
         message: String,
     },
+}
+
+/// Usage counters regressed or overflowed; do not substitute cumulative totals or silently undercharge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("provider usage counters are inconsistent")]
+pub struct InvalidUsage;
+
+impl Usage {
+    /// Billable delta of one turn, excluding the inherited baseline of a fork.
+    pub fn delta_from(self, baseline: Self) -> Result<Self, InvalidUsage> {
+        let delta = Self {
+            input_tokens: self
+                .input_tokens
+                .checked_sub(baseline.input_tokens)
+                .ok_or(InvalidUsage)?,
+            cached_input_tokens: self
+                .cached_input_tokens
+                .checked_sub(baseline.cached_input_tokens)
+                .ok_or(InvalidUsage)?,
+            output_tokens: self
+                .output_tokens
+                .checked_sub(baseline.output_tokens)
+                .ok_or(InvalidUsage)?,
+            requests: match (self.requests, baseline.requests) {
+                (Some(end), Some(start)) => Some(end.checked_sub(start).ok_or(InvalidUsage)?),
+                _ => None,
+            },
+        };
+        if delta.cached_input_tokens > delta.input_tokens {
+            return Err(InvalidUsage);
+        }
+        Ok(delta)
+    }
+
+    /// Sums independent turn deltas, including standalone compaction before an answer.
+    pub fn checked_add(self, other: Self) -> Result<Self, InvalidUsage> {
+        if self.cached_input_tokens > self.input_tokens
+            || other.cached_input_tokens > other.input_tokens
+        {
+            return Err(InvalidUsage);
+        }
+        Ok(Self {
+            input_tokens: self
+                .input_tokens
+                .checked_add(other.input_tokens)
+                .ok_or(InvalidUsage)?,
+            cached_input_tokens: self
+                .cached_input_tokens
+                .checked_add(other.cached_input_tokens)
+                .ok_or(InvalidUsage)?,
+            output_tokens: self
+                .output_tokens
+                .checked_add(other.output_tokens)
+                .ok_or(InvalidUsage)?,
+            requests: match (self.requests, other.requests) {
+                (Some(a), Some(b)) => Some(a.checked_add(b).ok_or(InvalidUsage)?),
+                _ => None,
+            },
+        })
+    }
 }

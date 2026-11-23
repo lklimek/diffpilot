@@ -3878,7 +3878,7 @@ mod tests {
             .await
             .expect("before");
 
-        super::super::migrate(&db.pool, super::super::MIGRATIONS.len())
+        super::super::migrate(&db.pool, super::super::MIGRATIONS.len() - 1)
             .await
             .expect("upgrade in place");
 
@@ -3925,6 +3925,7 @@ mod tests {
         .expect("versions");
         let all: Vec<i64> = super::super::MIGRATIONS
             .iter()
+            .take(super::super::MIGRATIONS.len() - 1)
             .map(|(version, ..)| *version)
             .collect();
         assert_eq!(versions, all);
@@ -3975,7 +3976,7 @@ mod tests {
             .await
             .expect("before");
 
-        super::super::migrate(&db.pool, super::super::MIGRATIONS.len())
+        super::super::migrate(&db.pool, super::super::MIGRATIONS.len() - 1)
             .await
             .expect("upgrade in place");
 

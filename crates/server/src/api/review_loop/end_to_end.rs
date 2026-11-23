@@ -146,7 +146,7 @@ impl World {
         let request = json!({
             "runner_id": "runner-1",
             "credentials": [{
-                "credential": { "id": crate::pipeline::CREDENTIAL_ID, "kind": "codex_chatgpt" },
+                "credential": { "id": db::repo::analyses::testing::CREDENTIAL, "kind": "codex_chatgpt" },
                 "usable": true,
             }],
             "dropped_sessions": [],
@@ -162,6 +162,7 @@ impl World {
     /// Posts the attempt's result as the runner does.
     async fn complete(&self, claim: &Claim, output: Value) {
         let result = JobResult {
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome: JobOutcome::Succeeded { output },

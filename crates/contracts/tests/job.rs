@@ -50,15 +50,13 @@ fn spec() -> JobSpec {
         prompt: "Job: analyse_flow f1.".to_owned(),
         output_schema: json!({"type": "object"}),
         flow_file: None,
+        pr_data: None,
         model: ModelChoice {
             model: "gpt-6.1-sol".to_owned(),
             reasoning_effort: ReasoningEffort::High,
         },
         limits: JobLimits::default(),
-        credential: LlmCredentialRef {
-            id: "codex-default".to_owned(),
-            kind: CredentialKind::CodexChatgpt,
-        },
+        payer: contracts::ids::UserId("codex-default".to_owned()),
         session: Some(SessionRef {
             pull_request_id: 1,
             thread_id: "019a0000-0000-7000-8000-000000000001".to_owned(),
@@ -86,6 +84,7 @@ fn spec() -> JobSpec {
 
 fn claim_response() -> ClaimResponse {
     ClaimResponse {
+        retire: Vec::new(),
         claim: Some(Claim {
             job_token: Secret::new(JOB_TOKEN),
             lease_expires_at: Timestamp::now(),
@@ -97,12 +96,15 @@ fn claim_response() -> ClaimResponse {
 
 fn result() -> JobResult {
     JobResult {
+        report: None,
         job_id: JobId::new_random(),
         attempt: 2,
         outcome: JobOutcome::Succeeded {
             output: json!({"answer": "x", "evidence": []}),
         },
         session: Some(SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "019a0000-0000-7000-8000-000000000001".to_owned(),
             outcome: SessionOutcome::StartedAfterLoss,
         }),

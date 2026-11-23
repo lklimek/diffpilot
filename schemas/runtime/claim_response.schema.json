@@ -1,0 +1,1003 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ClaimResponse",
+  "description": "Reply to a claim.",
+  "type": "object",
+  "properties": {
+    "retire": {
+      "description": "Retired PRs: remove their containers/volumes and revoke only local keys.",
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "int64"
+      },
+      "default": []
+    },
+    "claim": {
+      "description": "The claimed job, or none when nothing is runnable.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Claim"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "drop_sessions": {
+      "description": "Pull-request keys whose session files the runner must delete (explicit removal; ADR-004).",
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "int64"
+      }
+    }
+  },
+  "required": [
+    "drop_sessions"
+  ],
+  "$defs": {
+    "Claim": {
+      "description": "A claimed job.",
+      "type": "object",
+      "properties": {
+        "job_token": {
+          "description": "Bearer token for this job's events and result; never given to the agent.",
+          "$ref": "#/$defs/Secret"
+        },
+        "lease_expires_at": {
+          "description": "Server-side lease end, informational: the runner fences by [`LeaseTiming`] from its own send times.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "spec": {
+          "description": "The job, with `access` filled in.",
+          "$ref": "#/$defs/JobSpec"
+        }
+      },
+      "required": [
+        "job_token",
+        "lease_expires_at",
+        "spec"
+      ]
+    },
+    "Secret": {
+      "description": "A secret string: serialised as is, never shown by `Debug`. Opaque, without length limit.",
+      "type": "string"
+    },
+    "JobSpec": {
+      "description": "One agent job, self-contained (brief §5 item 1).",
+      "type": "object",
+      "properties": {
+        "job_id": {
+          "description": "Job id.",
+          "$ref": "#/$defs/JobId"
+        },
+        "attempt": {
+          "description": "Attempt number, 1-based; incremented when a lease expires.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "kind": {
+          "description": "Job kind.",
+          "$ref": "#/$defs/JobKind"
+        },
+        "target": {
+          "description": "What the job works on (ADR-018).",
+          "$ref": "#/$defs/JobTarget"
+        },
+        "prompt": {
+          "description": "The full prompt, built by the server.",
+          "type": "string"
+        },
+        "output_schema": {
+          "description": "The output JSON Schema (Codex strict subset), or null when `flow_file` is present."
+        },
+        "flow_file": {
+          "description": "Flow-only file output and no-secret checker context; absent for JSON jobs.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlowFile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pr_data": {
+          "description": "Host review files for a container verify pass; absent for other jobs.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PrData"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "description": "Model and reasoning effort from `select_model`.",
+          "$ref": "#/$defs/ModelChoice"
+        },
+        "limits": {
+          "description": "Limits.",
+          "$ref": "#/$defs/JobLimits"
+        },
+        "payer": {
+          "description": "User paying for the turn; container identity follows from kind, PR and payer.",
+          "$ref": "#/$defs/UserId"
+        },
+        "session": {
+          "description": "The pull request's analytic session to resume or fork, or none before its first checkpoint.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "working_session": {
+          "description": "Ask-only archive routing. Absent for analytic jobs; required for Ask.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkingSession"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "context_pack": {
+          "description": "Context to seed a new session when `session` is missing or unusable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skills": {
+          "description": "Names of the claudius skills exposed read-only to the agent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "access": {
+          "description": "Agent credentials, filled at claim.",
+          "$ref": "#/$defs/AgentAccess"
+        }
+      },
+      "required": [
+        "job_id",
+        "attempt",
+        "kind",
+        "target",
+        "prompt",
+        "output_schema",
+        "model",
+        "limits",
+        "payer",
+        "skills",
+        "access"
+      ]
+    },
+    "JobId": {
+      "description": "Identifier of a job (one agent run).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "JobKind": {
+      "description": "Kind of an agent job (brief §5 Job kinds).",
+      "oneOf": [
+        {
+          "description": "Partition the changed hunks into flows.",
+          "type": "string",
+          "const": "plan"
+        },
+        {
+          "description": "Describe the pull request context.",
+          "type": "string",
+          "const": "pr_context"
+        },
+        {
+          "description": "Analyse one flow.",
+          "type": "string",
+          "const": "analyse_flow"
+        },
+        {
+          "description": "Answer a reviewer's question about a step.",
+          "type": "string",
+          "const": "ask"
+        },
+        {
+          "description": "Judge dashboard items (no pull request, ADR-017).",
+          "type": "string",
+          "const": "judge_work"
+        },
+        {
+          "description": "Assess a pull request's review comments, or answer a question about one (ADR-023).",
+          "type": "string",
+          "const": "verify_comments"
+        }
+      ]
+    },
+    "JobTarget": {
+      "description": "What a job works on (ADR-018); exhaustive matches mark every pull-request-only site.",
+      "oneOf": [
+        {
+          "description": "A job of an analysis: checkout, the pull request's sessions, GitHub and MemCan access.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pull_request"
+            }
+          },
+          "$ref": "#/$defs/PullRequestTarget",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "A dashboard ranking job: no checkout, no session, no GitHub or MemCan access.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "dashboard"
+            },
+            "refresh_id": {
+              "description": "The refresh whose items are judged.",
+              "$ref": "#/$defs/RefreshId"
+            }
+          },
+          "required": [
+            "type",
+            "refresh_id"
+          ]
+        },
+        {
+          "description": "A `verify_comments` job (ADR-023): checkout and the read-only GitHub token, no session, no MemCan.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pull_request_comments"
+            }
+          },
+          "$ref": "#/$defs/PullRequestCommentsTarget",
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "AnalysisId": {
+      "description": "Identifier of an analysis (one per pull request, head commit and LLM language).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "RepoCheckout": {
+      "description": "Where the runner fetches the repository from.",
+      "type": "object",
+      "properties": {
+        "clone_url": {
+          "description": "Clone URL (any scheme; `file://` in development).",
+          "type": "string"
+        },
+        "base_sha": {
+          "description": "Base commit, fetched for diffs.",
+          "$ref": "#/$defs/CommitSha"
+        },
+        "head_sha": {
+          "description": "Head commit, checked out.",
+          "$ref": "#/$defs/CommitSha"
+        }
+      },
+      "required": [
+        "clone_url",
+        "base_sha",
+        "head_sha"
+      ]
+    },
+    "CommitSha": {
+      "description": "A full 40-character hexadecimal git commit id.",
+      "type": "string"
+    },
+    "PullRequestTarget": {
+      "description": "The pull request an analysis job works on.",
+      "type": "object",
+      "properties": {
+        "analysis_id": {
+          "description": "The analysis the job belongs to.",
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "pull_request_id": {
+          "description": "Stable database key of the pull request; root of its analytic and private working archives.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "repo": {
+          "description": "The repository to check out.",
+          "$ref": "#/$defs/RepoCheckout"
+        }
+      },
+      "required": [
+        "analysis_id",
+        "pull_request_id",
+        "repo"
+      ]
+    },
+    "RefreshId": {
+      "description": "Identifier of a dashboard refresh (one scan and its ranking).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "PassId": {
+      "description": "Identifier of a `verify_comments` pass over the items of one pull request.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "PullRequestCommentsTarget": {
+      "description": "What a `verify_comments` job works on (ADR-023, plan §4.2): the head checkout and the read-only PR-scoped token,\nno session, no MemCan.",
+      "type": "object",
+      "properties": {
+        "pull_request_id": {
+          "description": "Stable database key of the pull request.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "repo": {
+          "description": "The repository to check out (head).",
+          "$ref": "#/$defs/RepoCheckout"
+        },
+        "pass_id": {
+          "description": "The assessment pass.",
+          "$ref": "#/$defs/PassId"
+        }
+      },
+      "required": [
+        "pull_request_id",
+        "repo",
+        "pass_id"
+      ]
+    },
+    "FlowFile": {
+      "description": "Tagged flow output. Fixed paths are relative to the job directory, never model-controlled.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "description": "Versioned analysis checker context, written to `flow-context.json`."
+        },
+        "previous": {
+          "description": "Rejected document restored to `out/flow.md` for an edit-only repair.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "context"
+      ]
+    },
+    "PrData": {
+      "description": "Self-contained host-supplied review files; GitHub shapes are opaque to contracts.",
+      "type": "object",
+      "properties": {
+        "manifest": {
+          "description": "manifest.json.",
+          "$ref": "#/$defs/Manifest"
+        },
+        "threads": {
+          "description": "threads.json in the gh script shape."
+        },
+        "review_comments": {
+          "description": "review-comments.json in the gh script shape."
+        },
+        "reviews": {
+          "description": "reviews.json in the gh script shape."
+        },
+        "comments": {
+          "description": "comments.json in the gh script shape."
+        },
+        "conventions": {
+          "description": "Base-branch convention files, relative paths below conventions/.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "ids": {
+          "description": "ids.json, preserving durable point identities and standing decisions.",
+          "$ref": "#/$defs/ItemIds"
+        },
+        "scope": {
+          "description": "scope.json; all other handed-in material is context.",
+          "$ref": "#/$defs/ReviewScope"
+        }
+      },
+      "required": [
+        "manifest",
+        "threads",
+        "review_comments",
+        "reviews",
+        "comments",
+        "conventions",
+        "ids",
+        "scope"
+      ]
+    },
+    "Manifest": {
+      "description": "Host provenance and author facts.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "owner/repo.",
+          "type": "string"
+        },
+        "pr": {
+          "description": "PR number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "head": {
+          "description": "Assessed head.",
+          "type": "string"
+        },
+        "pr_author": {
+          "description": "PR author's login; only their own text is author context.",
+          "type": "string"
+        },
+        "maintainers": {
+          "description": "Tenant members' logins, independent of source roles.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "bots": {
+          "description": "Known bot logins.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "repo",
+        "pr",
+        "head",
+        "pr_author",
+        "maintainers",
+        "bots"
+      ]
+    },
+    "ItemIds": {
+      "description": "Durable CMT number allocation and previous item identities.",
+      "type": "object",
+      "properties": {
+        "next_id": {
+          "description": "Next unused number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "items": {
+          "description": "Known point identities.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PrDataItem"
+          }
+        }
+      },
+      "required": [
+        "next_id",
+        "items"
+      ]
+    },
+    "PrDataItem": {
+      "description": "One stable point in ids.json.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "CMT identifier.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Thread node id, review:id:k or comment:id:k.",
+          "type": "string"
+        },
+        "quote": {
+          "description": "Quote only for open and decided items.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decision": {
+          "description": "Standing maintainer decision.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordedDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "key"
+      ]
+    },
+    "RecordedDecision": {
+      "description": "Attributed prior decision; server verifies authority and grounding before treating it as a fact.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Recorded decision.",
+          "$ref": "#/$defs/RecordedDecisionKind"
+        },
+        "by": {
+          "description": "GitHub author login.",
+          "type": "string"
+        },
+        "comment_url": {
+          "description": "Link to the decision's comment.",
+          "type": "string"
+        },
+        "quote": {
+          "description": "Verbatim decision quote, at most 600 characters.",
+          "type": "string"
+        },
+        "target_pr": {
+          "description": "PR target, when supplied.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "target_url": {
+          "description": "URL target, when supplied.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "by",
+        "comment_url",
+        "quote"
+      ]
+    },
+    "RecordedDecisionKind": {
+      "description": "Recorded decision kind, including deferral and withdrawal.",
+      "anyOf": [
+        {
+          "description": "Maintainer deferred this point.",
+          "type": "string",
+          "const": "deferred"
+        },
+        {
+          "description": "Source author withdrew this point.",
+          "type": "string",
+          "const": "withdrawn"
+        },
+        {
+          "description": "Ordinary item decision.",
+          "$ref": "#/$defs/ProposedDecisionKind"
+        }
+      ]
+    },
+    "ProposedDecisionKind": {
+      "description": "Proposed decision kind; independent of PR-level decisions.",
+      "oneOf": [
+        {
+          "description": "Resolve as fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "Fix in this PR.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "Reject with a reason.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "Existing PR handles it.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "Follow-up PR handles it.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "Upstream issue handles it.",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "Record a TODO.",
+          "type": "string",
+          "const": "todo"
+        }
+      ]
+    },
+    "ReviewScope": {
+      "description": "What a pass may assess (10 points/threads and 5 new sources, with continuations).",
+      "type": "object",
+      "properties": {
+        "threads": {
+          "description": "Open thread node ids.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sources": {
+          "description": "Versioned source URLs.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "threads",
+        "sources"
+      ]
+    },
+    "ModelChoice": {
+      "description": "Model and reasoning effort (plan §5.2, ADR-002).",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "Provider model id, e.g. `gpt-6.1-sol`.",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "description": "Reasoning effort.",
+          "$ref": "#/$defs/ReasoningEffort"
+        }
+      },
+      "required": [
+        "model",
+        "reasoning_effort"
+      ]
+    },
+    "ReasoningEffort": {
+      "description": "Reasoning effort of the model.",
+      "oneOf": [
+        {
+          "description": "Low effort.",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Medium effort.",
+          "type": "string",
+          "const": "medium"
+        },
+        {
+          "description": "High effort (v1 default for every job kind).",
+          "type": "string",
+          "const": "high"
+        }
+      ]
+    },
+    "JobLimits": {
+      "description": "Limits of one job.",
+      "type": "object",
+      "properties": {
+        "max_runtime_secs": {
+          "description": "Wall-clock cap in seconds; below the 1-hour installation token lifetime.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "max_runtime_secs"
+      ]
+    },
+    "UserId": {
+      "description": "Stable authenticated user id, also the payer key.",
+      "type": "string"
+    },
+    "SessionRef": {
+      "description": "The agent session of a pull request (ADR-004).",
+      "type": "object",
+      "properties": {
+        "pull_request_id": {
+          "description": "The pull request that owns the session.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "thread_id": {
+          "description": "Provider session (Codex thread) id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pull_request_id",
+        "thread_id"
+      ]
+    },
+    "WorkingSession": {
+      "description": "Private Ask archive: restore this thread first, then the analytic `session`; save only here.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Immutable working-thread policy; verify Ask never gains MemCan access.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preflight": {
+          "description": "Bound first-Ask preflight; absence requires recovery before an answer.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AskPreflight"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "parent_context": {
+          "description": "Parent last-context estimate; absence or stale generation requires recovery.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LastContext"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "user_key": {
+          "description": "SHA-256 of the authenticated user's stable id (64 lowercase hex digits).",
+          "type": "string"
+        },
+        "analytic_generation": {
+          "description": "Analytic generation this fork is based on. Stale forks are never offered for restore.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "thread_id": {
+          "description": "Working thread to restore, or none for a lazy fork from the analytic session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "user_key",
+        "analytic_generation"
+      ]
+    },
+    "ThreadKind": {
+      "description": "Immutable thread policy; resend its full configuration on start, fork and resume.",
+      "oneOf": [
+        {
+          "description": "Analysis, including flow repairs.",
+          "type": "string",
+          "const": "analytic"
+        },
+        {
+          "description": "Private Ask with read-only MemCan.",
+          "type": "string",
+          "const": "ask"
+        },
+        {
+          "description": "Review pass or private review Ask, without MemCan.",
+          "type": "string",
+          "const": "verify"
+        },
+        {
+          "description": "Strict JSON answer, without model tools.",
+          "type": "string",
+          "const": "judge"
+        }
+      ]
+    },
+    "AskPreflight": {
+      "description": "First-Ask preflight bound to the working thread's seed and analytic generation.",
+      "type": "object",
+      "properties": {
+        "seed": {
+          "description": "Working-thread seed.",
+          "$ref": "#/$defs/SessionSeed"
+        },
+        "generation": {
+          "description": "Analytic generation at seeding.",
+          "type": "integer",
+          "format": "int64"
+        },
+        "state": {
+          "description": "Confirmed preflight state.",
+          "$ref": "#/$defs/PreflightState"
+        }
+      },
+      "required": [
+        "seed",
+        "generation",
+        "state"
+      ]
+    },
+    "SessionSeed": {
+      "description": "How a private working thread was seeded.",
+      "oneOf": [
+        {
+          "description": "Fork of the same payer's analytic thread.",
+          "type": "string",
+          "const": "fork"
+        },
+        {
+          "description": "Private context pack, including recovery after volume loss.",
+          "type": "string",
+          "const": "context_pack"
+        }
+      ]
+    },
+    "PreflightState": {
+      "description": "Durable first-Ask preflight state; pending is never interpreted as completed.",
+      "oneOf": [
+        {
+          "description": "Confirmed fresh parent context at or below 80k, or a context-pack seed.",
+          "type": "string",
+          "const": "not_needed"
+        },
+        {
+          "description": "Required, unknown, interrupted or not yet acknowledged.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "Standalone compaction succeeded with turn/completed.",
+          "type": "string",
+          "const": "done"
+        }
+      ]
+    },
+    "LastContext": {
+      "description": "Last-context estimate, separate from cumulative usage and billable job deltas.",
+      "type": "object",
+      "properties": {
+        "tokens": {
+          "description": "Input and output context tokens reported for the last completed turn.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "generation": {
+          "description": "Thread generation this estimate describes; missing/stale usage needs recovery.",
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "tokens",
+        "generation"
+      ]
+    },
+    "AgentAccess": {
+      "description": "What the agent may reach during one job. Empty in the stored spec; filled when a runner claims the job.",
+      "type": "object",
+      "properties": {
+        "github": {
+          "description": "Per-job read-only GitHub App token for the worker's `gh` token file; absent without PR-repository access.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstallationToken"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "memcan": {
+          "description": "MemCan MCP endpoint: search tools, plus `add_memory` for analytic jobs only (ADR-004; accepted risk T6).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/McpHttpEndpoint"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "InstallationToken": {
+      "description": "A read-only GitHub App installation token minted for one job (1 hour, revoked at job end). It covers the PR\nrepository only; related repositories are read as public data (ADR-005).",
+      "type": "object",
+      "properties": {
+        "token": {
+          "description": "The token.",
+          "$ref": "#/$defs/Secret"
+        },
+        "expires_at": {
+          "description": "Expiry set by GitHub.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "repository": {
+          "description": "The repository the token covers: the PR repository.",
+          "$ref": "#/$defs/RepoRef"
+        }
+      },
+      "required": [
+        "token",
+        "expires_at",
+        "repository"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "McpHttpEndpoint": {
+      "description": "A streamable-HTTP MCP endpoint with a bearer token.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "description": "Endpoint URL.",
+          "type": "string"
+        },
+        "token": {
+          "description": "Bearer token.",
+          "$ref": "#/$defs/Secret"
+        },
+        "allow_write": {
+          "description": "Whether the agent is offered write tools; absent means read-only (Ask jobs never get them, ADR-004).",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "url",
+        "token"
+      ]
+    }
+  }
+}

@@ -10,6 +10,21 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - `docs/v1.1-dashboard-plan.md` — stage v1.1 (GitHub work dashboard, ADR-016..020); mirrors the implementation plan's rules.
 - `docs/review-workflow-plan.md` — stage v1.3 (processing PR comments: PR page, Comments, Watch, decision feed; ADR-023).
 
+## v1.3 common contract amendment
+- [ADR-025](docs/decisions/ADR-025-container-runtime.md) and [container contracts](docs/contracts/containers.md)
+  govern W1 CCR1–CCR9; downstream W3/W4/W5/W8 implement runtime behavior and W9 removes the old runtime.
+- Containers replace the uid/supervisor boundary (SG1–SG16); no real provider credential enters a worker.
+  Agent GitHub access uses `gh` and a per-job read-only tmpfs token file; hosted web search stays disabled.
+- Workers egress via Squid, with LAN denied except MemCan. Gateway reaches fixed upstreams directly.
+- Analytic sessions belong to (PR,payer); Ask forks only its payer's analytic volume, otherwise uses a context pack.
+- Only `runner::provider` and `server::gateway` know Codex. Runner gains launcher mode and gateway admin client,
+  still no DB or GitHub API client. Gateway may use secrets/config/contracts, never db.
+- Full fixed thread config on start/fork/resume; existing threads attach/resume before operations; CS1 cwd `/work`.
+- Server and worker checker format v3 are rebuilt together. JobSpec stays self-contained; model selection,
+  fake provider and configured MemCan stay. Auth tests are fake-only; gateway lifecycle follows ADR-025.
+- KL1 blocks credential-mode DTOs and constraints (CCR10); no API-key mode or paid fallback is selected here.
+- Start v1.3 with an empty DB; guarded 0030 refuses non-empty rebuilt tables. Migrations remain append-only.
+
 ## Architecture rules (never break; details in plan §3–§5)
 - Crates: `contracts` (wire types, no IO) <- `analysis`, `db`, `runner`; `server` -> `contracts`, `analysis`, `db`.
   Nothing depends on `server` or `runner`. `server` may dev-depend on the test tool `fake-github` (tests only). `runner` has no DB access and no GitHub client code.

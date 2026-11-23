@@ -84,6 +84,7 @@ export function sourceText(item: Pick<CommentItem, "author" | "author_kind" | "k
 /** "The LLM says: …" (plan §3.7). */
 export const VALIDITY: Record<Validity, string> = {
   valid: "valid",
+  already_fixed: "already fixed",
   partly_valid: "partly valid",
   invalid: "invalid",
 };
