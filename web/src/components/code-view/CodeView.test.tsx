@@ -948,7 +948,7 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
           {
             ...thread,
             excerpt:
-              "<!-- hidden --><b>Finding</b> [docs](https://example.com) ### Prompt for AI agents Drop.",
+              "<!-- hidden --><b>Finding</b> [docs](https://example.com) <h3>Prompt for AI agents</h3>Drop.",
           },
         ]}
       />,
@@ -962,6 +962,22 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     await user.click(marker);
     expect(preview).toHaveTextContent("Finding docs (https://example.com)");
     expect(preview.querySelectorAll("a")).toHaveLength(1);
+  });
+
+  it("keeps literal code in a flattened excerpt cut inside a fence", async () => {
+    const user = userEvent.setup();
+    const body = ["Finding.", "```html", "<details>", "Vec<u8>", "literal **code** ".repeat(30), "```"].join(
+      "\n",
+    );
+    const excerpt = body.trim().split(/\s+/).join(" ").slice(0, 200) + "…";
+    render(<CodeView lines={plain(1, ["a", "b"])} threads={[{ ...thread, excerpt }]} />);
+    const marker = screen.getByRole("button", { name: "GitHub thread by bob at line 2" });
+    await user.hover(marker);
+    const preview = screen.getByRole("dialog", { name: "GitHub thread at line 2" });
+    expect(preview).toHaveTextContent(excerpt);
+    expect(preview.querySelector("details")).toBeNull();
+    await user.click(marker);
+    expect(preview).toHaveTextContent(excerpt);
   });
 
   it("omits Open on GitHub without a thread URL and Show in Inspector for a thread outside the steps", async () => {

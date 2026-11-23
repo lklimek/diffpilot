@@ -151,7 +151,7 @@ it("announces coverage once on the toggle without another tab stop", async () =>
   expect(screen.getByRole("button", { name: "Next" })).toHaveFocus();
 });
 
-it("normalises the mention excerpt and its tooltip", () => {
+it("normalises the mention excerpt and its tooltip while keeping inline prompt mentions", () => {
   const { container } = render(
     <Mentions
       {...props}
@@ -165,7 +165,8 @@ it("normalises the mention excerpt and its tooltip", () => {
   );
   const excerpt = container.querySelector("p[title]")!;
   expect(excerpt).toHaveTextContent("Finding docs (https://example.com)");
-  expect(excerpt).toHaveAttribute("title", "Finding\n docs (https://example.com)");
-  expect(excerpt).not.toHaveTextContent(/hidden|<section>|Prompt|Drop/);
+  expect(excerpt).toHaveAttribute("title", "Finding\n docs (https://example.com) Prompt for AI agents Drop.");
+  expect(excerpt).toHaveTextContent("Prompt for AI agents Drop.");
+  expect(excerpt).not.toHaveTextContent(/hidden|<section>/);
   expect(excerpt.querySelector("a,img")).toBeNull();
 });

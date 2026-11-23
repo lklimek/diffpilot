@@ -160,12 +160,12 @@ describe("GitHub comment display text", () => {
     [
       "flattened excerpt",
       "Finding. ### Prompt for AI agents Drop. ### Evidence Keep.",
-      "Finding. ### Evidence Keep.",
+      "Finding. ### Prompt for AI agents Drop. ### Evidence Keep.",
     ],
     [
       "flattened bold excerpt",
       "Finding. **Prompt for AI agents** Drop. **Evidence** Keep.",
-      "Finding. Evidence Keep.",
+      "Finding. Prompt for AI agents Drop. Evidence Keep.",
     ],
     [
       "inline bold inside a prompt",
@@ -179,7 +179,11 @@ describe("GitHub comment display text", () => {
     ],
     ["emphasis", "*Important* and _careful_.", "Important and careful."],
     ["one-character emphasis", "*x* _y_", "x y"],
-    ["markup in bold text", "**<section>Finding</section>** **Use `<T>`**", "Finding\n Use `<T>`"],
+    [
+      "ambiguous bold around block markup and code",
+      "**<section>Finding</section>** **Use `<T>`**",
+      "**\nFinding\n** **Use `<T>`**",
+    ],
     [
       "headings in marker sections",
       "<!-- ai-agent-prompt:start --><h3>Prompt for AI agents</h3>Drop.<!-- ai-agent-prompt:end -->Keep.",
@@ -188,12 +192,12 @@ describe("GitHub comment display text", () => {
     [
       "identifiers and paths",
       "snake_case_name src/_private_/file.ts src/*glob*/file a*b*c *src/path*",
-      "snake_case_name src/_private_/file.ts src/*glob*/file a*b*c src/path",
+      "snake_case_name src/_private_/file.ts src/*glob*/file a*b*c *src/path*",
     ],
     [
       "generic HTML tags",
       "<section><em>Warning</em></section><button>Start</button><svg><title>badge</title></svg><custom-note>Keep</custom-note>",
-      "Warning\nStartbadgeKeep",
+      "Warning\nStartbadge<custom-note>Keep</custom-note>",
     ],
     [
       "literal markup in code",
@@ -201,6 +205,116 @@ describe("GitHub comment display text", () => {
       "`Vec<T> *em* _em_ <custom-note>`\n```html\n<h3>Prompt for AI agents</h3>\n**Prompt for AI agents**\n```\nKeep.",
     ],
   ])("normalises %s", (_, body, expected) => expect(commentText(body)).toBe(expected));
+
+  it.each([
+    [
+      "autolink",
+      "See <https://example.com/docs> for evidence.",
+      "See https://example.com/docs for evidence.",
+    ],
+    ["angle-bracket link target", "[docs](<https://example.com/docs>)", "docs (https://example.com/docs)"],
+    [
+      "bold after a numbered step",
+      "Finding.\n**Prompt for AI agents**\nStep 1: **nonce** must be reused.\n**Evidence**\nKeep.",
+      "Finding.\nEvidence\nKeep.",
+    ],
+    [
+      "bold after a list number",
+      "Finding.\n**Prompt for AI agents**\n1. **nonce** must be reused.\n**Evidence**\nKeep.",
+      "Finding.\nEvidence\nKeep.",
+    ],
+    [
+      "inline prompt mention",
+      "Use **Prompt for AI agents** in the heading, then keep this finding.",
+      "Use Prompt for AI agents in the heading, then keep this finding.",
+    ],
+    [
+      "inline HTML prompt mention",
+      "Use <b>Prompt for AI agents</b> in the heading, then keep this finding.",
+      "Use Prompt for AI agents in the heading, then keep this finding.",
+    ],
+    [
+      "inline HTML bold after a colon",
+      "Finding.\n<strong>Prompt for AI agents</strong>\nStep 1: <strong>nonce</strong> must be reused.\n<strong>Evidence</strong>\nKeep.",
+      "Finding.\nEvidence\nKeep.",
+    ],
+    [
+      "Markdown URL parameter",
+      "[docs](https://example.com/?q=_cache_)",
+      "docs (https://example.com/?q=_cache_)",
+    ],
+    [
+      "HTML URL parameter",
+      '<a href="https://example.com/?q=_cache_">docs</a>',
+      "docs (https://example.com/?q=_cache_)",
+    ],
+    ["double delimiters in paths", "src/__init__.py src/**/file.ts", "src/__init__.py src/**/file.ts"],
+    [
+      "primitive generic",
+      "Use Vec<u8> and Vec<T> and Vec<String>.",
+      "Use Vec<u8> and Vec<T> and Vec<String>.",
+    ],
+    ["standalone generics", "Option<T> and <T>", "Option<T> and <T>"],
+    [
+      "heading in prompt summary",
+      "<details><summary><h3>Prompt for AI agents</h3></summary>Drop.</details>Keep.",
+      "Keep.",
+    ],
+    [
+      "formatted prompt summary",
+      "<details><summary>__Prompt to fix the issue:__</summary>Drop.</details>Keep.",
+      "Keep.",
+    ],
+    [
+      "ambiguous emphasis around identifiers",
+      "*snake_case_name* and _snake_case_name_",
+      "*snake_case_name* and _snake_case_name_",
+    ],
+    ["emphasis boundaries", "a*x* a_y_ *x*b _y_z", "a*x* a_y_ *x*b _y_z"],
+    ["bold before punctuation", "**Finding**: use nonce.", "Finding: use nonce."],
+    [
+      "multiline strong text is not a heading",
+      "<strong>Prompt for AI agents\nis only a quoted label</strong>\nKeep.",
+      "Prompt for AI agents\nis only a quoted label\nKeep.",
+    ],
+    [
+      "unknown tag names",
+      "<custom-note>Keep</custom-note> <u8> <T>",
+      "<custom-note>Keep</custom-note> <u8> <T>",
+    ],
+    ["case-insensitive known tags", "<SECTION><EM>Keep</EM></SECTION>", "Keep"],
+    [
+      "prompt scoped to details",
+      "<details><summary>Instructions</summary>\n### Prompt for AI agents\nDrop.</details>Keep.",
+      "Instructions\n\nKeep.",
+    ],
+    [
+      "prompt ending at a marker",
+      "### Prompt for AI agents\nDrop.<!-- ai-agent-prompt:end -->Keep.",
+      "Keep.",
+    ],
+    [
+      "unmatched details end inside a prompt",
+      "### Prompt for AI agents\nDrop.</details>Still drop.\n### Evidence\nKeep.",
+      "### Evidence\nKeep.",
+    ],
+    [
+      "lower-level heading inside a prompt",
+      "## Prompt for AI agents\nDrop.\n### Evidence\nDrop too.\n## Finding\nKeep.",
+      "## Finding\nKeep.",
+    ],
+    [
+      "URL and glob punctuation",
+      "https://example.com/?q=(**cache**) ./dir/(_cache_).ts **/*.ts _private_/* src/__init__.py",
+      "https://example.com/?q=(**cache**) ./dir/(_cache_).ts **/*.ts _private_/* src/__init__.py",
+    ],
+  ])("conservatively handles %s", (_, body, expected) => expect(commentText(body)).toBe(expected));
+
+  it.each(["```", "~~~"])("keeps code in an excerpt cut inside a %s fence", (fence) => {
+    const body = `Finding.\n${fence}html\n<details>\nVec<u8>\n${"literal **code** ".repeat(30)}\n${fence}`;
+    const excerpt = body.trim().split(/\s+/).join(" ").slice(0, 200) + "…";
+    expect(commentText(excerpt)).toBe(excerpt);
+  });
 
   it.each([
     ["unclosed links", "[x]("],

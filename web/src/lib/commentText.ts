@@ -4,6 +4,38 @@ type Details = { start: number; summary: string[] | null; prompt: boolean };
 const PROMPT = /\bprompt (?:to fix (?:the )?issue|for ai agents)\b/i;
 const BLOCK_TAG =
   /^(?:section|article|header|footer|main|aside|nav|details|summary|p|div|br|hr|dl|dd|dt|li|ul|ol|h[1-6]|blockquote|tr)$/;
+const HTML_TAGS = new Set(
+  `a abbr address area article aside audio b base bdi bdo blockquote body br button canvas caption
+  cite code col colgroup data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption
+  figure footer form h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label
+  legend li link main map mark menu meta meter nav noscript object ol optgroup option output p picture
+  pre progress q rp rt ruby s samp script search section select slot small source span strong style sub
+  summary sup svg table tbody td template textarea tfoot th thead time title tr track u ul var video wbr`.split(
+    /\s+/,
+  ),
+);
+
+function plainEmphasis(text: string): string {
+  const literals: { start: number; end: number }[] = [];
+  for (const token of text.matchAll(/\S+/g)) {
+    if (/[\\/=?#]|[a-z\d]:[^*_]/i.test(token[0])) {
+      literals.push({ start: token.index, end: token.index + token[0].length });
+    }
+  }
+  let literal = 0;
+  return text.replace(/(\*\*|__|\*|_)([^*_\n]*[^*_\s])\1/g, (raw, _delimiter, inner, offset: number) => {
+    const end = offset + raw.length;
+    while (literals[literal] && literals[literal]!.end <= offset) literal++;
+    if (literals[literal] && literals[literal]!.start < end) return raw;
+    const before = text[offset - 1];
+    const after = text[end];
+    return (before === undefined || /[\s([{"']/.test(before)) &&
+      (after === undefined || /[\s)\]}"'.,;!?:]/.test(after)) &&
+      !(after === "." && /\w/.test(text[end + 1] ?? ""))
+      ? inner
+      : raw;
+  });
+}
 
 /** Pair parentheses once, including malformed links, without rescanning any suffix. */
 function plainMarkdown(text: string): string {
@@ -28,10 +60,11 @@ function plainMarkdown(text: string): string {
     from = links.lastIndex = end + 1;
   }
   parts.push(text.slice(from));
-  return parts
-    .join("")
-    .replace(/\*\*|__/g, "")
-    .replace(/(?<![\w/\\.*])([*_])([^*_\n]*[^*_\s])\1(?![\w/\\*]|\.\w)/g, "$2");
+  return plainEmphasis(parts.join(""));
+}
+
+function isPromptHeading(text: string): boolean {
+  return PROMPT.test(plainMarkdown(text).replace(/\*\*|__/g, ""));
 }
 
 /** Index exact backtick runs on each line so unmatched delimiters never rescan the body. */
@@ -57,7 +90,7 @@ function linkUrl(tag: string): string {
   return "";
 }
 
-/** Display-only GitHub text: no HTML, images, agent prompts or active links; code stays literal. */
+/** Display-only GitHub text: strip known markup and agent sections; keep code and ambiguous text literal. */
 export function commentText(body: string): string {
   const parts: Part[] = [];
   const details: Details[] = [];
@@ -66,19 +99,15 @@ export function commentText(body: string): string {
   const inlineEnds = codeEnds(body);
   let promptDetails = 0;
   let agentPrompt = false;
-  let promptHeading: number | null = null;
-  let heading: { name: string; level: number; start: number; text: string[] } | null = null;
+  let promptHeading: { level: number; depth: number } | null = null;
+  let heading: { name: string; level: number; start: number; position: number; text: string[] } | null = null;
   const current = () => details.at(-1);
   const lineEnd = /[ \t]*(?=\n|$)/y;
-  // Server excerpts flatten newlines; a new section may follow sentence punctuation.
   const headingBoundary = (index: number) =>
-    /(?:^|\n) {0,3}$|[.!?:] ?$/.test(body.slice(Math.max(0, index - 4), index));
+    /(?:^|\n) {0,3}$/.test(body.slice(Math.max(0, index - 4), index));
   const headingLine = (start: number, end: number) => {
     lineEnd.lastIndex = end;
-    return (
-      headingBoundary(start) &&
-      (lineEnd.test(body) || /[.!?:] ?$/.test(body.slice(Math.max(0, start - 2), start)))
-    );
+    return headingBoundary(start) && lineEnd.test(body) && !body.slice(start, end).includes("\n");
   };
   const append = (text: string, code = false) => {
     if (!text || hidden.length) return;
@@ -91,11 +120,11 @@ export function commentText(body: string): string {
     if (last && !last.text.endsWith("\n")) append("\n");
   };
   const startHeading = (level: number) => {
-    if (promptHeading !== null && level <= promptHeading) promptHeading = null;
+    if (promptHeading !== null && level <= promptHeading.level) promptHeading = null;
   };
   const markPromptDetails = () => {
     const block = current();
-    if (block && !block.prompt && PROMPT.test(plainMarkdown(block.summary?.join("") ?? ""))) {
+    if (block && !block.prompt && isPromptHeading(block.summary?.join("") ?? "")) {
       block.prompt = true;
       promptDetails++;
       parts.length = Math.min(parts.length, block.start);
@@ -103,12 +132,13 @@ export function commentText(body: string): string {
   };
   const closeDetails = () => {
     markPromptDetails();
+    if (details.length && promptHeading && promptHeading.depth >= details.length) promptHeading = null;
     if (details.pop()?.prompt) promptDetails--;
     lineBreak();
   };
   // Quoted attributes, code and comments are consumed before any heading or tag structure.
   const tokens =
-    /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)|`+|<!--[\s\S]*?(?:-->|$)|<\/?[a-zA-Z][\w:-]*(?=[\s/>]|$)(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^'">])*(?:>|$)|(?<!\S)#{1,6}[ \t]+[^#<`\n]*|\*\*[^*<`\n]+\*\*|__[^_<`\n]+__|^[^<`\n]+\n {0,3}(?:={3,}|-{3,})[ \t]*(?=\n|$)/gm;
+    /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)|`+|~{3,}|<!--[\s\S]*?(?:-->|$)|<[a-zA-Z][\w+.-]*:[^\s<>]+>|<\/?[a-zA-Z][\w:-]*(?=[\s/>]|$)(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^'">])*(?:>|$)|^ {0,3}#{1,6}[ \t]+[^#<`\n]*|\*\*[^*<`\n]+\*\*|__[^_<`\n]+__|^[^<`\n]+\n {0,3}(?:={3,}|-{3,})[ \t]*(?=\n|$)/gm;
   let from = 0;
   for (let token = tokens.exec(body); token; token = tokens.exec(body)) {
     append(body.slice(from, token.index));
@@ -125,41 +155,49 @@ export function commentText(body: string): string {
       from = closing ? end.lastIndex : body.length;
       append(body.slice(token.index, from), true);
       tokens.lastIndex = from;
-    } else if (raw.startsWith("`")) {
+    } else if (raw.startsWith("`") || raw.startsWith("~~~")) {
       const closing = inlineEnds.get(token.index);
       if (closing !== undefined) {
         from = closing + raw.length;
         append(body.slice(token.index, from), true);
         tokens.lastIndex = from;
+      } else if (raw.length >= 3) {
+        // Flattened excerpts can end before a fence closes; the remaining code stays literal.
+        append(body.slice(token.index), true);
+        from = tokens.lastIndex = body.length;
       } else append(raw);
     } else if (raw.startsWith("<!--")) {
       if (hidden.length) continue;
       if (/ai-agent-prompt\s*:\s*start/i.test(raw)) agentPrompt = true;
-      if (/ai-agent-prompt\s*:\s*end/i.test(raw)) agentPrompt = false;
+      if (/ai-agent-prompt\s*:\s*end/i.test(raw)) {
+        agentPrompt = false;
+        promptHeading = null;
+      }
     } else if (!raw.startsWith("<")) {
       const hashes = raw.trimStart().match(/^#+/);
       const level = hashes ? hashes[0].length : raw.includes("\n") ? (raw.includes("=") ? 1 : 2) : 7;
-      const prompt = PROMPT.test(plainMarkdown(raw));
+      const prompt = isPromptHeading(raw);
       if (
         heading ||
         current()?.summary ||
         hidden.length ||
         agentPrompt ||
         promptDetails ||
-        (level === 7 && !prompt && !headingLine(token.index, from))
+        (level === 7 && !headingLine(token.index, from))
       )
         append(raw);
       else {
         startHeading(level);
-        if (prompt) promptHeading = level;
+        if (prompt) promptHeading = { level, depth: details.length };
         else append(raw);
       }
+    } else if (/^<[a-zA-Z][\w+.-]*:/.test(raw)) {
+      append(raw.slice(1, -1));
     } else {
       const tag = /^<(\/)?([\w:-]+)/.exec(raw)!;
       const closing = !!tag[1];
       const name = tag[2]!.toLowerCase();
-      // Preserve code-like generics attached to an identifier, even outside backticks.
-      if (/^<[A-Z][\w]*>$/.test(raw) && /\w/.test(body[token.index - 1] ?? "")) {
+      if (!HTML_TAGS.has(name)) {
         append(raw);
         continue;
       }
@@ -173,20 +211,29 @@ export function commentText(body: string): string {
       if (
         !agentPrompt &&
         !promptDetails &&
+        !current()?.summary &&
         (/^h[1-6]$/.test(name) ||
-          ((name === "strong" || name === "b") && !current()?.summary && (!heading || heading.name === name)))
+          ((name === "strong" || name === "b") && (!heading || heading.name === name)))
       ) {
         if (!closing) {
           const level: number = name.startsWith("h") ? Number(name[1]) : 7;
-          if (level < 7 || headingBoundary(token.index)) startHeading(level);
-          if (level < 7) lineBreak();
-          heading = { name, level, start: parts.length, text: [] };
+          if (level < 7) {
+            startHeading(level);
+            lineBreak();
+          }
+          if (level < 7 || headingBoundary(token.index)) {
+            heading = { name, level, start: parts.length, position: token.index, text: [] };
+          }
         } else if (heading?.name === name) {
           const finished = heading;
           heading = null;
-          if (PROMPT.test(plainMarkdown(finished.text.join("")))) {
-            parts.length = Math.min(parts.length, finished.start);
-            promptHeading = finished.level;
+          if (finished.level < 7 || headingLine(finished.position, from)) {
+            const wasHidden = promptHeading !== null;
+            startHeading(finished.level);
+            if (isPromptHeading(finished.text.join(""))) {
+              parts.length = Math.min(parts.length, finished.start);
+              promptHeading = { level: finished.level, depth: details.length };
+            } else if (wasHidden && promptHeading === null) append(finished.text.join(""));
           }
           if (finished.level < 7) lineBreak();
         }
