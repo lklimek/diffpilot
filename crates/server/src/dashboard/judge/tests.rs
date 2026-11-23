@@ -2256,3 +2256,111 @@ async fn a_retry_beyond_the_cap_is_not_sent() {
         "{ranking:?}"
     );
 }
+
+/// A plug-in that states the author's move for one pull request (K15 W3b), always fresh.
+#[derive(Debug)]
+struct AuthorsMove {
+    home: url::Url,
+    data: crate::dashboard::plugin::PluginData,
+}
+
+impl crate::dashboard::plugin::DashboardPlugin for AuthorsMove {
+    fn id(&self) -> &'static str {
+        "pr-hygiene"
+    }
+
+    fn name(&self) -> &'static str {
+        "PR Hygiene"
+    }
+
+    fn home(&self) -> &url::Url {
+        &self.home
+    }
+
+    fn poll(
+        &self,
+    ) -> BoxFuture<
+        '_,
+        Result<crate::dashboard::plugin::Polled, crate::dashboard::plugin::PluginError>,
+    > {
+        let data = self.data.clone();
+        Box::pin(async move { Ok(crate::dashboard::plugin::Polled::Data(data)) })
+    }
+}
+
+/// The overlay of a current statement that `repo#number` is the author's move.
+async fn authors_move(repo: &RepoRef, number: u32) -> crate::dashboard::plugin::Overlay {
+    use crate::dashboard::plugin::{Move, PluginData, PluginHost, PrKey, PrStatement, Timing};
+    let statement = PrStatement {
+        url: "https://hygiene.example.test/api/v1/prs/acme/wallet-ui/5949".to_owned(),
+        summary: Some("Author must post /self-reviewed".to_owned()),
+        details: Vec::new(),
+        facts: Vec::new(),
+        ready_to_merge: None,
+        whose_move: Some(Move::Author),
+        mark: "author".to_owned(),
+    };
+    let plugin = AuthorsMove {
+        home: url::Url::parse("https://hygiene.example.test/").expect("url"),
+        data: PluginData {
+            as_of: now(),
+            prs: HashMap::from([(PrKey::new(repo, number), statement)]),
+        },
+    };
+    let host = PluginHost::new(vec![Arc::new(plugin)], Timing::default());
+    host.poll_once(now()).await;
+    host.overlay(now())
+}
+
+/// K15 with the judge's input: a current statement of the author's move keeps a labelled PR ranked (the label
+/// notwithstanding); a ranked PR is judged like every other ranked item, never left "not judged yet" for good.
+#[tokio::test]
+async fn a_pull_request_ranked_by_an_authors_move_statement_is_judged() {
+    let mut labelled = pr(5949, "feat(sdk): ready for a human");
+    labelled.facts.labels = vec!["ready-for-human".to_owned()];
+    let snap = snapshot(vec![labelled, pr(2, "fix: other")], vec![], vec![]);
+    let overlay = authors_move(&repo("wallet-ui"), 5949).await;
+    let view = snapshot::build(&snap, &HashMap::new(), None, &overlay);
+    let ranked: Vec<_> = view.items.iter().map(|i| i.item.id.as_str()).collect();
+    assert!(
+        ranked.contains(&"wallet-ui#5949"),
+        "the author's move keeps it ranked: {ranked:?}"
+    );
+    assert!(view.awaiting.is_empty(), "{:?}", view.awaiting);
+    let judged: Vec<_> = candidates(&snap, LlmLanguage::En)
+        .into_iter()
+        .map(|c| c.item.id.clone())
+        .collect();
+    assert!(
+        judged.contains(&"wallet-ui#5949".to_owned()),
+        "a ranked pull request goes to the judge: {judged:?}"
+    );
+}
+
+/// K15 W5: Waiting on others lists the longest wait first; without a known request time (a labelled PR nobody was
+/// asked to review, a team request) the wait counts from the PR's opening time, as its `waiting_since` shows.
+#[test]
+fn waiting_on_others_counts_an_unknown_request_time_from_the_opening() {
+    let mut opened_long_ago = pr(1, "feat: labelled a month ago");
+    opened_long_ago.facts.labels = vec!["ready-for-human".to_owned()];
+    opened_long_ago.created_at = now() - SignedDuration::from_hours(24 * 30);
+    let mut asked_yesterday = pr(2, "feat: review requested yesterday");
+    asked_yesterday.facts.labels = vec!["ready-for-human".to_owned()];
+    asked_yesterday.facts.review_requested_from_others = vec!["ana".to_owned()];
+    asked_yesterday.facts.others_review_requested_at = Some(now() - SignedDuration::from_hours(24));
+    let snap = snapshot(vec![asked_yesterday, opened_long_ago], vec![], vec![]);
+    let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default());
+    let order: Vec<_> = view
+        .awaiting
+        .iter()
+        .map(|a| (a.id.as_str(), a.waiting_since))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("wallet-ui#1", now() - SignedDuration::from_hours(24 * 30)),
+            ("wallet-ui#2", now() - SignedDuration::from_hours(24)),
+        ],
+        "longest wait first"
+    );
+}
