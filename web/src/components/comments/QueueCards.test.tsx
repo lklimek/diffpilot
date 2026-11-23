@@ -141,12 +141,63 @@ describe("GroupCard (US5)", () => {
     expect(first).toHaveTextContent("Fixed in 7d8e9f0: the check reads the open file.");
     expect(first).toHaveTextContent("review body · Blocking");
     expect(second).toHaveTextContent("Fixed in 1a2b3c4: the directory is created without following links.");
+    expect(
+      screen.queryByRole("checkbox", { name: "Resolve these threads" }),
+      "review-body rows have no thread to resolve",
+    ).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Resolve (already fixed) all 2" }));
     const rows: DecisionBatchRow[] = onDecide.mock.calls[0]![0];
     expect(rows.map((r) => [r.item_no, r.kind])).toEqual([
       [18, "resolve"],
       [19, "resolve"],
     ]);
+  });
+
+  it("a group of one reason class keeps the first reason in its heading and the necessity per row", () => {
+    const worded = (no: number, reason: string, necessity: string): CommentItem => {
+      const item = byNo(no);
+      return {
+        ...item,
+        assessment: {
+          ...item.assessment!,
+          necessity: { verdict: "out", reason: necessity, better_pr: null },
+          recommendation: { ...item.assessment!.recommendation, reason },
+        },
+      };
+    };
+    render(
+      <Planned>
+        {(plan) => (
+          <GroupCard
+            items={[
+              worded(18, "Needs an attacker running as the same OS user.", "Local attacker: out of scope."),
+              worded(
+                19,
+                "Needs a process planting the symlink as the same user.",
+                "Same user: out of scope.",
+              ),
+            ]}
+            position={{ index: 7, total: 9 }}
+            onDecide={vi.fn()}
+            onDiscussIndividually={vi.fn()}
+            onSkip={vi.fn()}
+            busy={false}
+            error={null}
+            storageKey="t"
+            {...plan}
+          />
+        )}
+      </Planned>,
+    );
+    expect(
+      screen.getByRole("heading", {
+        name: "Same recommendation: Reject — Needs an attacker running as the same OS user. (2 items)",
+      }),
+    ).toBeVisible();
+    const [first, second] = screen.getAllByRole("row").slice(1);
+    expect(first).toHaveTextContent("Local attacker: out of scope.");
+    expect(second).toHaveTextContent("Same user: out of scope.");
+    expect(screen.getByRole("checkbox", { name: "Resolve these threads" })).toBeVisible();
   });
 });
 

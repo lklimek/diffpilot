@@ -109,8 +109,9 @@ export function GroupCard({
   const [problem, setProblem] = useState<string | null>(null);
   const discuss = useRef<HTMLButtonElement>(null);
   const label = CHOICE_LABEL[rec.kind] ?? rec.kind;
-  // Rows grouped across reason classes (resolved review-body items, plan §2.4) share no reason: each row shows its own.
-  const shared = items.every((item) => item.assessment?.recommendation.reason === rec.reason);
+  // A group across reason classes (resolved review-body items, plan §2.4) shares no reason: each row shows its own.
+  const shared = items.every((item) => item.assessment?.recommendation.reason_class === rec.reason_class);
+  const threads = items.some((item) => item.kind === "thread");
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "i" || /^(INPUT|TEXTAREA|SELECT)$/.test((event.target as HTMLElement).tagName))
@@ -209,15 +210,17 @@ export function GroupCard({
           onChange={(e) => (setValue(e.target.value), setProblem(null))}
           className={INPUT}
         />
-        <label className="mt-2 flex min-h-6 items-center gap-2 rounded-md border border-border bg-surface-2 px-2.5">
-          <input
-            type="checkbox"
-            checked={resolveLocked(rec.kind) || resolve}
-            disabled={resolveLocked(rec.kind)}
-            onChange={(e) => setResolve(e.target.checked)}
-          />
-          Resolve these threads
-        </label>
+        {threads && (
+          <label className="mt-2 flex min-h-6 items-center gap-2 rounded-md border border-border bg-surface-2 px-2.5">
+            <input
+              type="checkbox"
+              checked={resolveLocked(rec.kind) || resolve}
+              disabled={resolveLocked(rec.kind)}
+              onChange={(e) => setResolve(e.target.checked)}
+            />
+            Resolve these threads
+          </label>
+        )}
         <label htmlFor={`${id}-comment`} className="mt-2 mb-0.5 block text-xs font-semibold">
           Your comment (optional)
         </label>
