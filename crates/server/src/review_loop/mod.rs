@@ -10,7 +10,7 @@ use contracts::api::pr::PrSummary;
 use contracts::api::review_loop::{
     AuthorKind, BatchVia, CarryKind, CommentItemKind, DecideRequest, Decision, DecisionBatchRow,
     DecisionKind, DecisionVia, EffectKind, EffectState, Gate, GateMark, GateSource,
-    ItemGithubFacts, ItemState, OutsideResolution, ReadFailure,
+    ItemGithubFacts, ItemState, OutsideResolution, PlannedEffect, ReadFailure,
 };
 use contracts::common::PrRef;
 use contracts::ids::CommitSha;
@@ -788,7 +788,7 @@ async fn carry_over(
     Ok(())
 }
 
-fn new_effects(planned: Vec<contracts::api::review_loop::PlannedEffect>) -> Vec<NewEffect> {
+fn new_effects(planned: Vec<PlannedEffect>) -> Vec<NewEffect> {
     planned
         .into_iter()
         .map(|effect| NewEffect {
@@ -1146,12 +1146,14 @@ impl Loaded {
             .collect()
     }
 
-    /// The digest of what a PR-level decision's plan rests on (RC16 `plan_digest`): "Merge now" the items it follows
-    /// up with their revisions, the dismissal the reviews it dismisses, each still stale. `None` for other rows.
+    /// The digest of a PR-level decision's plan (RC16 `plan_digest`): every effect it plans (kind, executor, order,
+    /// targets and text) and what it rests on, "Merge now" the items it follows up with their revisions, the
+    /// dismissal the reviews it dismisses, each still stale. `None` for other rows.
     pub(crate) fn plan_digest(
         &self,
         row: &DecisionBatchRow,
         deciding: &[u32],
+        effects: &[PlannedEffect],
     ) -> Result<Option<String>, LoopError> {
         let record = self.item(row.item_no)?;
         let rests_on: Vec<String> = match (row.decision.kind, question_of(record)) {
@@ -1171,8 +1173,24 @@ impl Loaded {
                 .collect(),
             _ => return Ok(None),
         };
+        let planned = effects.iter().map(|effect| {
+            let params = &effect.params;
+            format!(
+                "effect {} after {:?} {:?} by {:?} thread {:?} review {:?} items {:?} url {:?} title {:?} text {:?}",
+                effect.seq,
+                effect.after,
+                effect.kind,
+                effect.executor,
+                params.thread_id,
+                params.review_id,
+                params.item_nos,
+                params.url,
+                params.title,
+                params.text
+            )
+        });
         let mut hash = Sha256::new();
-        for line in rests_on {
+        for line in rests_on.into_iter().chain(planned) {
             hash.update(line.as_bytes());
             hash.update(b"\n");
         }
@@ -1305,9 +1323,9 @@ impl Loaded {
         }
         let planned = self.plan(rows)?;
         let mut changed = Vec::new();
-        for row in rows {
+        for (row, (_, plan)) in rows.iter().zip(&planned) {
             if let Some(confirmed) = &row.decision.plan_digest
-                && self.plan_digest(row, &seen)?.as_ref() != Some(confirmed)
+                && self.plan_digest(row, &seen, &plan.effects)?.as_ref() != Some(confirmed)
             {
                 changed.push(row.item_no);
             }

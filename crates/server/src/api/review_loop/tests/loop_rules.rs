@@ -485,6 +485,40 @@ async fn merge_now_is_refused_when_its_confirmed_plan_grew() {
     );
 }
 
+/// RQ4, RQ5: the digest binds everything "Merge now" would do, not only which items at which revisions: a stored
+/// read that maps an item to its thread differently (no item revision changes) turns a PR comment into a thread
+/// reply and resolution, which refuses the confirmed plan.
+#[tokio::test]
+async fn merge_now_is_refused_when_its_effects_changed_without_a_revision() {
+    let w = world().await;
+    w.get(&format!("{PR}/comments")).await;
+    let (mut body, digest) = previewed(&w, "pr:3:merge", "merge_with_follow_ups").await;
+    let id = w.pr_id().await;
+    let rl = w.state.db.review_loop();
+    let row = rl.pr_state(id).await.expect("state").expect("row");
+    let mut snapshot = row.github_snapshot.expect("snapshot");
+    let mapped = snapshot["thread_ids"]
+        .as_object_mut()
+        .expect("thread ids")
+        .remove(L2);
+    assert!(mapped.is_some(), "{snapshot}");
+    rl.record_read(
+        id,
+        &ReadResult::Read {
+            snapshot,
+            round_count: row.round_count,
+        },
+        Timestamp::now(),
+    )
+    .await
+    .expect("read stored");
+    body["plan_digest"] = digest;
+    let merge = w.item("pr:3:merge").await;
+    let (status, refused) = w.decide(merge["no"].as_u64().expect("no"), body).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "conflict", "{refused}");
+}
+
 /// RQ11: the dismissal's digest covers the listed reviews and whether they are still stale, not the items' other
 /// changes: an item of the listed bot finishing its effects (executing to done) leaves it valid.
 #[tokio::test]

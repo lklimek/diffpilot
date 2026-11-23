@@ -854,8 +854,9 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 - **P3** (`dismiss_stale_reviews`): the dismissal message is `reason` (the default message when absent);
   `reply_text` is not read. Clients show the server's texts from RC16, never their own copies.
 - **Plan digest.** RC8/RC9 plan every row inside the transaction that stores it. For a PR-level row (P1
-  `merge_with_follow_ups`, P3 `dismiss_stale_reviews`) RC16 returns `plan_digest`: a digest of what the plan rests
-  on (P1 the items it follows up and their revisions; P3 the reviews it dismisses, each still stale). A row sent
+  `merge_with_follow_ups`, P3 `dismiss_stale_reviews`) RC16 returns `plan_digest`, an opaque digest of every
+  effect the row plans (kind, executor, order, targets, text) and of what the plan rests on (P1 the items it follows
+  up and their revisions; P3 the reviews it dismisses, each still stale). A row sent
   with the `plan_digest` the owner confirmed is refused with 409 `conflict` when the plan computed at storing
   differs; the client previews again and asks the owner to confirm the new plan. A row without it is stored as
   planned then.
