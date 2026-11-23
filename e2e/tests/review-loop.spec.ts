@@ -232,6 +232,6 @@ test("an execute token claims the decision (RF3) and reports its fix done (RF4);
   await expect(
     effects.nth(0).getByRole("link", { name: `Open commit ${head.slice(0, 7)} on GitHub` }),
   ).toBeVisible();
-  await expect(effects.nth(1)).toContainText(/^reply: .* by e2e agent \(lease until \d\d:\d\d\)/);
+  await expect(effects.nth(1)).toContainText(/^reply: .* by e2e agent \(lease until (?:[^)]+, )?\d\d:\d\d\)/);
   await checkScreen(page);
 });

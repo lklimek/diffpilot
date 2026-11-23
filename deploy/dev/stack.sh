@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Development stack of diffpilot on localhost: fake GitHub, fake MemCan, server (embedded web UI), runner
+# Development stack on localhost: fake GitHub, fake MemCan, fake gateway, server (embedded web UI), runner
 # (fake provider).
 # Runs in the foreground; Ctrl+C or SIGTERM stops every component. Fake credentials only: generated per state
 # dir or taken from the fixture recordings.
@@ -59,6 +59,8 @@
 #                SR_MEMCAN_URL             http://127.0.0.1:<fake-memcan port>/mcp (nothing listens with
 #                                          --without fake-memcan)
 #                SR_MEMCAN_TOKEN           random hex, shared with the fake MemCan
+#   fake-gateway SR_FAKE_GATEWAY_PORT    loopback-only admin fake; no provider traffic
+#                SR_GATEWAY_CREDENTIALS_TOKEN random credentials scope, shared with server
 #   runner       SR_RUNNER_SERVER_URL      http://<SR_RUNNER_LISTEN_ADDR>  (not started with --without runner)
 #                SR_RUNNER_SECRET          = the server's
 #                SR_RUNNER_ID              dev-runner
@@ -155,8 +157,8 @@ state="${SR_DEV_STATE_DIR:-$(mktemp -d /data/tmp/diffpilot-dev.XXXXXX)}"
 state="$(mkdir -p "$state" && cd "$state" && pwd)"
 mkdir -p "$state/logs" "$state/home" "$state/server" "$state/runner"
 chmod 700 "$state"
-read -r free_public github_port runner_port memcan_port < <(python3 -c 'import socket
-socks = [socket.socket() for _ in range(4)]
+read -r free_public github_port runner_port memcan_port gateway_port < <(python3 -c 'import socket
+socks = [socket.socket() for _ in range(5)]
 for s in socks:
     s.bind(("127.0.0.1", 0))
 print(*(s.getsockname()[1] for s in socks))')
@@ -202,6 +204,8 @@ server_env=(
   SR_MEMCAN_URL="http://127.0.0.1:$memcan_port/mcp"
   SR_MEMCAN_TOKEN="$memcan_token"
 )
+gateway_token="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+server_env+=(SR_GATEWAY_ADMIN_URL="http://127.0.0.1:$gateway_port" SR_GATEWAY_CREDENTIALS_TOKEN="$gateway_token")
 runner_env=(
   SR_RUNNER_SERVER_URL="http://$runner_addr"
   SR_RUNNER_SECRET="$runner_secret"
@@ -244,19 +248,33 @@ if ! skipped fake-memcan; then
     FAKE_MEMCAN_PATH=/mcp "$fake_memcan_bin"
   wait_for fake-memcan "http://127.0.0.1:$memcan_port/_fake/state"
 fi
+start fake-gateway "$state" SR_FAKE_GATEWAY_PORT="$gateway_port" SR_GATEWAY_CREDENTIALS_TOKEN="$gateway_token" \
+  /usr/bin/python3 "$repo/deploy/dev/fake-gateway.py"
+wait_for fake-gateway "http://127.0.0.1:$gateway_port/admin/credentials/health"
 # The server reads a `.env` of its working directory or a parent: run it in the state dir.
 start server "$state" "${server_env[@]}" "$server_bin"
 wait_for server "$url/api/v1/me"
 if ! skipped runner; then
-  # Fake claims register linked ChatGPT-plan status for the same payer as the UI's jobs.
+  # Link the synthetic payer through the authenticated Settings route and fake gateway.
   payer="$(python3 - "$url" "$state/server/diffpilot.sqlite" "$login" <<'PY'
 import http.cookiejar
+import json
 import sqlite3
 import sys
 import urllib.request
 
 client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 client.open(sys.argv[1] + "/auth/github/login", timeout=10).close()
+with client.open(sys.argv[1] + "/api/v1/me", timeout=10) as response:
+    me = json.load(response)
+request = urllib.request.Request(sys.argv[1] + "/api/v1/settings/codex/link",
+    data=json.dumps({"mode": "chatgpt_plan"}).encode(),
+    headers={"Content-Type": "application/json", "X-CSRF-Token": me["csrf_token"], "Origin": sys.argv[1]})
+client.open(request, timeout=20).close()
+client.open(sys.argv[1] + "/api/v1/settings/codex/link", timeout=20).close()
+with client.open(sys.argv[1] + "/api/v1/settings/codex", timeout=20) as response:
+    if json.load(response)["state"] != "linked":
+        raise SystemExit("fake gateway did not link the payer")
 with sqlite3.connect("file:" + sys.argv[2] + "?mode=ro", uri=True) as db:
     user = db.execute("SELECT id FROM users WHERE login = ?", (sys.argv[3],)).fetchone()
     if user is None:

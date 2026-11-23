@@ -2463,3 +2463,55 @@ fn waiting_on_others_counts_an_unknown_request_time_from_the_opening() {
 }
 
 const CREDENTIAL_ID: &str = db::repo::analyses::testing::CREDENTIAL;
+
+#[tokio::test]
+async fn nonretryable_failures_end_ranking_with_their_plain_cause() {
+    use contracts::job::result::JobFailureKind::*;
+    let link = "Link your Codex account in Settings";
+    let format = "The LLM answer was not in the expected format.";
+    let other = "The LLM call failed for another reason; the server log has the details.";
+    for (kind, message) in [
+        (
+            Configuration,
+            "The server is misconfigured: a required agent skill is missing. Ask the administrator.",
+        ),
+        (OutputNotJson, format),
+        (CredentialUnusable, link),
+        (CheckoutFailed, other),
+        (CredentialMissing, link),
+        (CredentialRelink, link),
+        (ModelUnavailable, other),
+        (UpstreamRejected, other),
+        (ReportVersionUnsupported, other),
+        (InvalidJsonSchema, format),
+    ] {
+        let h = harness().await;
+        let id = h.rank("u1", &snapshot(prs(1), vec![], vec![])).await;
+        h.serve(|_| JobOutcome::Failed {
+            kind,
+            message: "untrusted provider canary".into(),
+        })
+        .await;
+        let ended = h.ranked("u1", id).await;
+        let ranking = ended.ranking.unwrap();
+        assert_eq!(ranking.state, RankingState::Failed, "{kind:?}");
+        assert_eq!(ranking.message.as_deref(), Some(message), "{kind:?}");
+        assert_eq!(h.jobs(id).await.len(), 1, "no automatic retry for {kind:?}");
+    }
+}
+
+#[tokio::test]
+async fn retryable_worker_loss_is_judged_again() {
+    let h = harness().await;
+    let id = h.rank("u1", &snapshot(prs(1), vec![], vec![])).await;
+    h.serve(|_| JobOutcome::Failed {
+        kind: contracts::job::result::JobFailureKind::WorkerLost,
+        message: "lost".into(),
+    })
+    .await;
+    h.serve(|i| succeeded(neutral(i))).await;
+    assert_eq!(
+        h.ranked("u1", id).await.ranking.unwrap().state,
+        RankingState::Finished
+    );
+}

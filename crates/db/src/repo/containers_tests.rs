@@ -507,12 +507,12 @@ async fn container_retry_assigns_the_acting_payer_without_changing_creator() {
         )
         .await
         .unwrap();
-    assert!(
-        !db.analyses()
+    assert!(matches!(
+        db.analyses()
             .retry_as(analysis, "u2", Timestamp::now())
-            .await
-            .unwrap()
-    );
+            .await,
+        Err(crate::error::DbError::CredentialUnlinked)
+    ));
     assert_eq!(db.analyses().get(analysis).await.unwrap().payer_id, "u1");
     db.llm_credentials()
         .put_status(
@@ -563,12 +563,12 @@ async fn container_retry_assigns_the_acting_payer_without_changing_creator() {
     let record = db.analyses().get(analysis).await.unwrap();
     assert_eq!(record.payer_id, "u2");
     assert_eq!(record.created_by, "u1");
-    assert!(
-        !db.analyses()
+    assert!(matches!(
+        db.analyses()
             .retry_as(analysis, "u1", Timestamp::now())
-            .await
-            .unwrap()
-    );
+            .await,
+        Err(crate::error::DbError::CredentialUnlinked)
+    ));
     assert_eq!(db.analyses().get(analysis).await.unwrap().payer_id, "u2");
 }
 

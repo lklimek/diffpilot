@@ -3027,3 +3027,44 @@ async fn private_comment_ask_context_contains_only_its_payers_history() {
     assert!(!pack.contains("OTHER_PAYER_SECRET"));
     assert!(pack.contains("<<<DATA") && pack.contains("<<<END"));
 }
+
+#[tokio::test]
+async fn private_ask_admission_loss_records_the_link_sentence() {
+    let f = private_fixture(true).await;
+    let item = comment_item(&f.state, "admission-loss").await;
+    let id = QuestionId::new_random();
+    f.state
+        .db
+        .questions()
+        .create_private_for_pr(
+            db::repo::questions::NewPrQuestion {
+                id,
+                pull_request_id: 1,
+                item: item.id,
+                parent_id: None,
+                user_id: "u1".into(),
+                text: "Does this retry end?".into(),
+            },
+            db::repo::questions::PrQuestionLimits {
+                per_pull_request: 100,
+                per_user: 30,
+                user_window_start: Timestamp::now() - SignedDuration::from_hours(1),
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    f.state
+        .db
+        .llm_credentials()
+        .remove_status("u1")
+        .await
+        .unwrap();
+    super::job::run(&f.state, id).await;
+    let question = f.question(id).await;
+    assert_eq!(question.state, AskState::Failed);
+    assert_eq!(
+        question.failure.as_deref(),
+        Some("Link your Codex account in Settings")
+    );
+}

@@ -112,10 +112,12 @@ impl LlmCredentials<'_> {
         &self,
         user: &str,
     ) -> Result<Option<contracts::gateway::CredentialStatus>, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
         let row = sqlx::query("SELECT * FROM llm_credentials WHERE user_id=?")
             .bind(user)
-            .fetch_optional(self.pool)
+            .fetch_optional(&mut *tx)
             .await?;
+        tx.commit().await?;
         row.map(|r| {
             Ok(contracts::gateway::CredentialStatus {
                 mode: contracts::gateway::CredentialMode::ChatgptPlan,

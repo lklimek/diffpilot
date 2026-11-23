@@ -470,10 +470,12 @@ async fn save_working_checkpoint(
     if matches!(spec.target, JobTarget::PullRequestAsk(_))
         && route.and_then(|r| r.kind) != Some(ThreadKind::Verify)
     {
-        return Err(DbError::Conflict);
+        tracing::warn!(job = %result.job_id, "private Ask checkpoint has an incompatible thread kind; answer retained");
+        return Ok(());
     }
     if !matches!(kind, ThreadKind::Ask | ThreadKind::Verify) {
-        return Err(DbError::Conflict);
+        tracing::warn!(job = %result.job_id, "Ask checkpoint has an unsupported thread kind; answer retained");
+        return Ok(());
     }
     let generation = super::agent_sessions::generation(tx, row.try_get("pull_request_id")?).await?;
     let expected = route.and_then(|r| r.preflight.as_ref());
@@ -489,7 +491,10 @@ async fn save_working_checkpoint(
         // Unknown parent usage is recovered by the runner before it acknowledges NotNeeded.
         let known_large_parent = route
             .and_then(|r| r.parent_context.as_ref())
-            .is_some_and(|c| c.generation == expected.generation && c.tokens > 80_000);
+            .is_some_and(|c| {
+                c.generation == expected.generation
+                    && c.tokens > contracts::runtime::FIRST_ASK_COMPACTION_TOKENS
+            });
         let needs_compaction =
             known_large_parent && (expected.state == PreflightState::Pending || fresh_fork);
         if session.preflight.is_none()
@@ -507,7 +512,8 @@ async fn save_working_checkpoint(
                 .as_ref()
                 .is_some_and(|s| s.thread_id == session.thread_id)
         {
-            return Err(DbError::Conflict);
+            tracing::warn!(job = %result.job_id, "Ask checkpoint preflight does not match its route; answer retained");
+            return Ok(());
         }
     }
     // A generation advanced while another payer's container was running: keep the result, discard its checkpoint.
@@ -620,7 +626,7 @@ impl Jobs<'_> {
             .fetch_one(&mut *tx)
             .await?;
             if !linked {
-                return Err(DbError::Conflict);
+                return Err(DbError::CredentialUnlinked);
             }
         }
         // The stored spec never holds a credential (threat model T3b); access is filled at claim.

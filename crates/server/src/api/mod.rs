@@ -12,6 +12,7 @@ use crate::state::AppState;
 
 pub mod analyses;
 pub mod auth;
+pub mod codex;
 pub mod comments;
 pub mod dashboard;
 pub mod decision_feed;
@@ -65,6 +66,7 @@ pub fn router(state: AppState) -> Router {
         .merge(review_loop::routes())
         .merge(review_state::routes())
         .merge(settings::routes())
+        .merge(codex::routes())
         .merge(tour::routes())
         .route_layer(from_fn_with_state(
             TokenGate::new(state.clone()),

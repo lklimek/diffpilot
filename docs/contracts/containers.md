@@ -188,3 +188,18 @@ successful jobs for one private question/generation. Queue admission and claim u
 results and checkpoint publication retain their existing fencing. No assessment pass or daily quota row is
 created, including when the payer has already used all 80 daily assessment slots. Ask's own hourly/PR limits
 and linked-plan admission still apply. Only unapplied 0030 is amended, with its checksum re-recorded.
+
+
+### Admission and checkpoint failures
+
+Atomic linked-plan admission returns a distinct missing-connection error, including a link lost between
+analysis stages or before Ask submission. Analysis and Ask retain the Settings linking sentence.
+Checkpoint metadata disagreement discards only the checkpoint and logs a warning; a current attempt's answer
+is still stored. Attempt/lease fencing continues to reject stale results. The first-Ask threshold is shared
+as `contracts::runtime::FIRST_ASK_COMPACTION_TOKENS` (80,000 parent-context tokens).
+
+The judge follows `JobFailureKind::retryable()` for failed jobs: schema/credential/configuration and other
+non-retryable codes end the ranking with their fixed cause. This includes `OutputNotJson`: design v3.3 D12
+has no special retry exception for it. A successfully completed job whose JSON fails server validation still
+uses the existing bounded judge retry path; invalid strict schemas and credential relinking never trigger
+model repair. Flow tests pin both strict-schema and relink failures to a single unrepaired turn.

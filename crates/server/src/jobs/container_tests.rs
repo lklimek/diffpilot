@@ -288,7 +288,6 @@ async fn link(db: &Db, user: &str) {
 async fn container_claim_uses_gateway_status_without_runner_credentials() {
     let db = Db::in_memory().await.unwrap();
     let job = ask_job(&db, "u1").await;
-    link(&db, "u1").await;
     let dir = tempfile::tempdir().unwrap();
     let github = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("GET"))
@@ -300,20 +299,36 @@ async fn container_claim_uses_gateway_status_without_runner_credentials() {
         &github,
         crate::github::app_token::tests::write_key(dir.path()),
     );
-    let reply = claim(
-        &db,
-        &Arc::new(config),
-        &Packs,
-        &ClaimRequest {
-            runner_id: "fake".into(),
-            credentials: Vec::new(),
-            dropped_sessions: Vec::new(),
-        },
-        Timestamp::now(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(reply.claim.unwrap().spec.job_id, job.id);
+    let request = ClaimRequest {
+        runner_id: "fake".into(),
+        credentials: vec![contracts::job::protocol::CredentialStatus {
+            credential: contracts::job::spec::LlmCredentialRef {
+                id: "default".into(),
+                kind: contracts::job::spec::CredentialKind::CodexChatgpt,
+            },
+            usable: true,
+        }],
+        dropped_sessions: Vec::new(),
+    };
+    let config = Arc::new(config);
+    let unlinked = claim(&db, &config, &Packs, &request, Timestamp::now())
+        .await
+        .unwrap();
+    assert!(unlinked.claim.is_none());
+    assert!(
+        db.llm_credentials()
+            .status("default")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    link(&db, "u1").await;
+    let reply = claim(&db, &config, &Packs, &request, Timestamp::now())
+        .await
+        .unwrap();
+    let claimed = reply.claim.unwrap();
+    assert_eq!(claimed.spec.job_id, job.id);
+    assert_eq!(claimed.spec.payer.0, "u1");
 }
 
 #[tokio::test]
@@ -385,7 +400,8 @@ async fn container_result_requires_first_ask_acknowledgement_bound_to_seed() {
             )
             .await;
         if state == PreflightState::Pending {
-            assert!(matches!(outcome, Err(DbError::Conflict)));
+            outcome.unwrap();
+            assert!(db.jobs().get(spec.job_id).await.unwrap().result.is_some());
             assert!(
                 db.container_sessions()
                     .working(1, &spec.payer, ThreadKind::Ask)
@@ -418,12 +434,12 @@ async fn container_admission_requires_linked_payer_and_pause_stays_payer_scoped(
         stage: JobStage::Plan { batch: 1 },
         generation: 0,
     };
-    assert!(matches!(
-        db.jobs()
-            .enqueue_linked(new_job.clone(), Timestamp::now())
-            .await,
-        Err(DbError::Conflict)
-    ));
+    let refused = db
+        .jobs()
+        .enqueue_linked(new_job.clone(), Timestamp::now())
+        .await
+        .unwrap_err();
+    assert_eq!(refused.to_string(), "Link your Codex account in Settings");
     assert!(
         db.jobs()
             .list_for_analysis(analysis, &[])
@@ -528,5 +544,60 @@ async fn container_unknown_parent_context_can_be_recovered_below_compaction_thre
             .unwrap()
             .preflight,
         preflight
+    );
+}
+
+#[tokio::test]
+async fn container_missing_preflight_stores_answer_without_checkpoint() {
+    let db = Db::in_memory().await.unwrap();
+    let job = ask_job(&db, "u1").await;
+    analytic(&db, None).await;
+    let mut spec = prepare_spec(&db, &Packs, &job).await.unwrap();
+    spec.attempt = 1;
+    assert_eq!(
+        spec.working_session
+            .as_ref()
+            .unwrap()
+            .preflight
+            .as_ref()
+            .unwrap()
+            .state,
+        PreflightState::Pending
+    );
+    db.jobs()
+        .claim(ClaimParams {
+            payer_ids: &["u1".into()],
+            job_token_hash: &[1],
+            lease_until: lease_until(Timestamp::now()),
+            now: Timestamp::now(),
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    db.jobs().save_session_route(&spec).await.unwrap();
+    let mut answer = result(
+        &spec,
+        SessionReport {
+            thread_id: "recovered-small-fork".into(),
+            outcome: SessionOutcome::Started,
+            last_context: Some(Box::new(LastContext {
+                tokens: 50_000,
+                generation: 7,
+            })),
+            preflight: None,
+        },
+    );
+    answer.outcome = JobOutcome::Succeeded {
+        output: serde_json::json!({"answer":"The retry is bounded.", "evidence":[]}),
+    };
+    db.jobs().complete(&answer, Timestamp::now()).await.unwrap();
+    let stored = db.jobs().get(spec.job_id).await.unwrap();
+    assert_eq!(stored.result.unwrap().outcome, answer.outcome);
+    assert!(
+        db.container_sessions()
+            .working(1, &spec.payer, ThreadKind::Ask)
+            .await
+            .unwrap()
+            .is_none()
     );
 }

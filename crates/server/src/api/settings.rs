@@ -46,6 +46,12 @@ const OTHER_FAILURE: &str =
 /// A settings request failed.
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsApiError {
+    /// The deployment has no credentials administration connection.
+    #[error("the Codex gateway is not configured")]
+    GatewayNotConfigured,
+    /// The gateway did not return a common status or challenge.
+    #[error("the Codex gateway is unavailable")]
+    Gateway(#[from] crate::gateway::client::Error),
     /// Malformed JSON body, or a value outside the allowed list.
     #[error("the request body is not valid")]
     Json(#[from] JsonRejection),
@@ -72,6 +78,7 @@ pub enum SettingsApiError {
 impl ApiErrorSource for SettingsApiError {
     fn code(&self) -> ApiErrorCode {
         match self {
+            Self::GatewayNotConfigured | Self::Gateway(_) => ApiErrorCode::Unavailable,
             Self::Json(rejection) => rejection.code(),
             Self::Path(rejection) => rejection.code(),
             Self::InvalidRepository | Self::InvalidModel | Self::InvalidOwners => {
@@ -84,6 +91,9 @@ impl ApiErrorSource for SettingsApiError {
 
     fn public_message(&self) -> Cow<'static, str> {
         match self {
+            Self::GatewayNotConfigured | Self::Gateway(_) => {
+                Cow::Borrowed("The Codex connection is unavailable. Try again later.")
+            }
             Self::Json(rejection) => rejection.public_message(),
             Self::Path(rejection) => rejection.public_message(),
             Self::Db(error) => error.public_message(),
@@ -463,6 +473,8 @@ mod tests {
     use crate::test_support::session_cookie;
 
     use super::*;
+
+    include!("codex_tests.rs");
 
     const ACCESS: &str = "ghu_settings_access_canary";
 
@@ -1278,5 +1290,40 @@ mod tests {
             logs.text()
                 .contains("installation dashboard ranking effort changed")
         );
+    }
+}
+
+#[cfg(test)]
+mod codex_route_tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn codex_routes_require_a_signed_in_user() {
+        let state = crate::state::tests::test_state().await;
+        for (method, path) in [
+            ("GET", "/api/v1/settings/codex"),
+            ("DELETE", "/api/v1/settings/codex"),
+            ("POST", "/api/v1/settings/codex/link"),
+            ("GET", "/api/v1/settings/codex/link"),
+        ] {
+            let response = crate::api::router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {path}"
+            );
+        }
     }
 }

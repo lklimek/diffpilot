@@ -169,7 +169,7 @@ fn step_of<'f>(flow: &'f FlowAnalysisOutput, step: &StepId) -> Option<&'f AgentS
 
 /// Drives the question to `answered` or `failed`; a server-side error fails it with a plain sentence.
 pub(super) async fn run(state: &AppState, question: QuestionId) {
-    let analysis = match follow(state, question).await {
+    let (analysis, message) = match follow(state, question).await {
         Ok(()) => return,
         // Removed with its flow's steps (the flow is analysed again): nothing is left to answer.
         Err((_, FollowError::Db(DbError::NotFound)))
@@ -183,14 +183,21 @@ pub(super) async fn run(state: &AppState, question: QuestionId) {
         }
         Err((analysis, error)) => {
             tracing::error!(%question, error = ?error, "the question could not be answered");
-            analysis
+            let message = match error {
+                FollowError::Db(DbError::CredentialUnlinked)
+                | FollowError::Executor(ExecutorError::Db(DbError::CredentialUnlinked)) => {
+                    "Link your Codex account in Settings"
+                }
+                _ => SERVER_ERROR,
+            };
+            (analysis, message)
         }
     };
     if let Err(error) = set(
         state,
         analysis,
         question,
-        &QuestionUpdate::Failed(SERVER_ERROR.to_owned()),
+        &QuestionUpdate::Failed(message.to_owned()),
     )
     .await
     {

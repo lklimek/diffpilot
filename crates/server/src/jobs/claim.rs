@@ -363,8 +363,9 @@ async fn prepare_spec(
                 },
                 generation,
                 state: if spec.session.is_none()
-                    || parent_context.as_ref().is_some_and(|c| c.tokens <= 80_000)
-                {
+                    || parent_context.as_ref().is_some_and(|c| {
+                        c.tokens <= contracts::runtime::FIRST_ASK_COMPACTION_TOKENS
+                    }) {
                     PreflightState::NotNeeded
                 } else {
                     PreflightState::Pending

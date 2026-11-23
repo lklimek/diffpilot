@@ -47,7 +47,8 @@ pub(crate) const AUTO_COMPACT_TOKEN_LIMIT: u32 = 400_000;
 /// that turn (pre-turn compaction, S1b finding 3) and the turn continues on the compacted context; above the
 /// compacted size plus one turn, so the turn does not compact again (ADR-004 addendum 2026-11-18). Unproven on
 /// the deployed Codex with a ~300k-token fork: measure compaction time and per-request input on the real stack.
-pub(crate) const FORK_COMPACT_TOKEN_LIMIT: u32 = 80_000;
+pub(crate) const FORK_COMPACT_TOKEN_LIMIT: u32 =
+    contracts::runtime::FIRST_ASK_COMPACTION_TOKENS as u32;
 
 /// Settings of an answer-only job (dashboard ranking), checked against the pinned Codex 0.171: `shell_tool`
 /// off removes `exec_command` and `write_stdin` (its `unified_exec` opt-out is ignored but kept should a later

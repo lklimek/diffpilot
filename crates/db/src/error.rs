@@ -8,6 +8,9 @@ pub enum DbError {
     /// The record does not exist.
     #[error("the record was not found")]
     NotFound,
+    /// Atomic admission requires a linked payer.
+    #[error("Link your Codex account in Settings")]
+    CredentialUnlinked,
     /// The change conflicts with existing data (unique or state constraint).
     #[error("the change conflicts with existing data")]
     Conflict,
