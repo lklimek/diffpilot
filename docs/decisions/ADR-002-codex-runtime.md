@@ -63,5 +63,7 @@
 - **Sub-agents off** is now `[agents] enabled = false`. `features.multi_agent = false` never removed the sub-agent
   tools a model's catalog entry selects (`multi_agent_version = "v2"` for `gpt-6.1-sol`; the S7 rollout of 0.167
   still offered `spawn_agent`). Codex 0.168 deprecated the key and warns about it on every job; the runner no longer
-  writes it. An enabled `features.multi_agent_v2` would win over `[agents]`, so the config pins it off, and the
-  runner logs a warning when any job calls a sub-agent tool.
+  writes it. An enabled `features.multi_agent_v2` would win over `[agents]`, so the config pins it off. As a
+  best-effort signal the runner logs a warning when the `codex exec` JSONL reports a sub-agent call: it reports
+  `collab_tool_call` items for spawn, send_input, wait (also for resume) and close, but drops the V2 message tools
+  `send_message`, `followup_task`, `interrupt_agent` and `list_agents` (S1b saw only `wait`).

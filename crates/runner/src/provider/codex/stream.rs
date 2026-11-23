@@ -69,7 +69,8 @@ pub(crate) struct CodexStream {
     tool_used: Option<&'static str>,
     /// Hosted web search ran although every config disables it (the caller warns).
     web_search_used: bool,
-    /// A sub-agent tool ran although every config disables sub-agents (warned).
+    /// `codex exec` reported a sub-agent call although every config disables sub-agents (warned; best effort,
+    /// its JSONL drops the V2 message tools).
     sub_agent_used: bool,
 }
 
@@ -715,14 +716,14 @@ mod tests {
         assert_eq!(judge.tool_used(), Some("web_search"));
     }
 
-    /// Sub-agents are off for every job (ADR-002); a sub-agent call is only warned about, except in answer-only
-    /// jobs, where any tool fails the job.
+    /// Sub-agents are off for every job (ADR-002); a sub-agent call `codex exec` reports (S1b saw only `wait`)
+    /// is only warned about, except in answer-only jobs, where any tool fails the job.
     #[test]
     fn sub_agent_call_is_noted_in_every_job() {
-        let spawn = r#"{"type":"item.started","item":{"id":"k","type":"collab_tool_call","tool":"spawn_agent"}}"#;
+        let wait = r#"{"type":"item.completed","item":{"id":"u2","type":"collab_tool_call","tool":"wait","status":"completed"}}"#;
         let mut stream = CodexStream::for_job(JobId::new_random(), false);
         assert!(!stream.sub_agent_used());
-        stream.line(spawn);
+        stream.line(wait);
         stream.line(ANSWER);
         stream.line(DONE);
         assert!(stream.sub_agent_used());
@@ -731,7 +732,7 @@ mod tests {
             "a review job only warns"
         );
         let mut judge = CodexStream::for_job(JobId::new_random(), true);
-        judge.line(spawn);
+        judge.line(wait);
         assert!(judge.sub_agent_used());
         assert_eq!(judge.tool_used(), Some("collab_tool_call"));
     }
