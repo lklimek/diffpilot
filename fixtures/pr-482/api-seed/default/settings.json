@@ -29,6 +29,10 @@
   "llm_selection": {
     "models": [
       {
+        "id": "gpt-6.2-sol",
+        "label": "Sol 6.2"
+      },
+      {
         "id": "gpt-6.1-sol",
         "label": "Sol 6.1"
       },
@@ -39,6 +43,10 @@
       {
         "id": "gpt-5.6-sol",
         "label": "Sol 5.6"
+      },
+      {
+        "id": "gpt-6.2-astra",
+        "label": "Astra 6.2"
       },
       {
         "id": "gpt-6-astra",

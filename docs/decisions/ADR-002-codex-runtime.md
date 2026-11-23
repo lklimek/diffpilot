@@ -53,3 +53,13 @@
   provenance ("Assessed with claudius <short sha>"). Owner Q28 = c: it is not part of the assessment fingerprint, so
   a new claudius commit never re-assesses anything; only new or changed items and "Assess again" use the current
   skills. The prompt text change is recorded under the same `VERIFY_PROMPT_VERSION` for the same reason.
+
+## Amendment (2026-11-23, Codex CLI 0.171.0)
+- Codex CLI 0.171.0 replaces 0.167.0 (runner image and the S1a spike image `diffpilot-spike-codex:0.171.0`).
+- The catalog adds `gpt-6.2-sol` ("Sol 6.2") and `gpt-6.2-astra` ("Astra 6.2"): both in the subscription's
+  Codex 0.171 model list; the real schema smoke passed for Sol 6.2 (every default kind) and Astra 6.2 (`ask`).
+  The fallback stays `gpt-6.1-sol`, effort `high`.
+- **Sub-agents off** is now `[agents] enabled = false`. `features.multi_agent = false` never removed the sub-agent
+  tools a model's catalog entry selects (`multi_agent_version = "v2"` for `gpt-6.1-sol`; the S7 rollout of 0.167
+  still offered `spawn_agent`). Codex 0.168 deprecated the key and warns about it on every job; the runner no longer
+  writes it.
