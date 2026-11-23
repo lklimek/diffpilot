@@ -78,7 +78,7 @@ impl Launcher {
     }
 
     async fn list(&self) -> Result<Vec<WorkerStatus>, Error> {
-        Ok(self
+        let mut workers: Vec<_> = self
             .objects()
             .await?
             .into_iter()
@@ -94,7 +94,34 @@ impl Launcher {
                             == Some(bollard::models::ContainerSummaryStateEnum::RUNNING),
                     })
             })
-            .collect())
+            .collect();
+        let filters = HashMap::from([(
+            "label".to_owned(),
+            vec![format!("dp.managed={}", self.settings.prefix)],
+        )]);
+        let volumes = self
+            .docker
+            .list_volumes(Some(
+                q::ListVolumesOptionsBuilder::default()
+                    .filters(&filters)
+                    .build(),
+            ))
+            .await?;
+        for volume in volumes.volumes.unwrap_or_default() {
+            let Some(id @ ContainerId::Pr { .. }) = self.settings.identity(&volume.labels) else {
+                continue;
+            };
+            if volume.name == format!("{}-work", self.settings.name(&id, false))
+                && !workers.iter().any(|worker| worker.container == id)
+            {
+                // Only the runner knows whether a missing container's archive is retired.
+                workers.push(WorkerStatus {
+                    container: id,
+                    running: false,
+                });
+            }
+        }
+        Ok(workers)
     }
 
     async fn inspect(
@@ -448,39 +475,6 @@ impl Launcher {
                                 .build(),
                         ),
                     )
-                    .await?;
-            }
-        }
-        let objects = self.objects().await?;
-        let filters = HashMap::from([(
-            "label".to_owned(),
-            vec![format!("dp.managed={}", self.settings.prefix)],
-        )]);
-        let volumes = self
-            .docker
-            .list_volumes(Some(
-                q::ListVolumesOptionsBuilder::default()
-                    .filters(&filters)
-                    .build(),
-            ))
-            .await?;
-        for volume in volumes.volumes.unwrap_or_default() {
-            let Some(id @ ContainerId::Pr { .. }) = self.settings.identity(&volume.labels) else {
-                continue;
-            };
-            if volume.name != format!("{}-work", self.settings.name(&id, false)) {
-                continue;
-            }
-            let exists = objects.iter().any(|c| {
-                c.labels.as_ref().is_some_and(|labels| {
-                    labels.get("dp.managed") == volume.labels.get("dp.managed")
-                        && labels.get("dp.pr") == volume.labels.get("dp.pr")
-                        && labels.get("dp.user") == volume.labels.get("dp.user")
-                })
-            });
-            if !exists {
-                self.docker
-                    .remove_volume(&volume.name, None::<q::RemoveVolumeOptions>)
                     .await?;
             }
         }

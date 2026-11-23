@@ -244,7 +244,17 @@ async fn startup_reconciliation_stops_all_and_removes_retired() {
 }
 
 async fn fake_launcher() -> (wiremock::MockServer, Launcher) {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
     let server = wiremock::MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/volumes$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"Volumes":[]})))
+        .with_priority(10)
+        .mount(&server)
+        .await;
     let docker =
         bollard::Docker::connect_with_http(&server.uri(), 10, bollard::API_DEFAULT_VERSION)
             .unwrap();
@@ -818,7 +828,7 @@ async fn sweep_stops_only_expired_unattached_workers() {
 }
 
 #[tokio::test]
-async fn reconcile_removes_abandoned_fetch_and_only_orphan_work_volumes() {
+async fn reconcile_removes_abandoned_fetch_and_lists_all_work_volumes() {
     use wiremock::{
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
@@ -836,8 +846,14 @@ async fn reconcile_removes_abandoned_fetch_and_only_orphan_work_volumes() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"Volumes":[
             {"Name":"v13w3-test-pr-7-3-work","Driver":"local","Mountpoint":"/test","Options":{},"Scope":"local","Labels":s.template(&pr(),false,None).unwrap().labels},
             {"Name":"v13w3-test-pr-8-3-work","Driver":"local","Mountpoint":"/test","Options":{},"Scope":"local","Labels":orphan},
-            {"Name":"foreign-work","Driver":"local","Mountpoint":"/test","Options":{},"Scope":"local","Labels":{"dp.managed":"foreign"}}
-        ]}))).expect(1).mount(&server).await;
+            {"Name":"foreign-work","Driver":"local","Mountpoint":"/test","Options":{},"Scope":"local","Labels":{"dp.managed":"foreign"}},
+            {"Name":"wrong-name-work","Driver":"local","Mountpoint":"/test","Options":{},"Scope":"local","Labels":orphan}
+        ]}))).mount(&server).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/v13w3-test-pr-8-3/json$"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
     Mock::given(method("DELETE"))
         .and(path_regex(r"/containers/abandoned$"))
         .respond_with(ResponseTemplate::new(204))
@@ -847,10 +863,19 @@ async fn reconcile_removes_abandoned_fetch_and_only_orphan_work_volumes() {
     Mock::given(method("DELETE"))
         .and(path_regex(r"/volumes/v13w3-test-pr-8-3-work$"))
         .respond_with(ResponseTemplate::new(204))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
     launcher.reconcile().await.unwrap();
+    let workers = launcher.list().await.unwrap();
+    assert_eq!(workers.len(), 2);
+    assert!(workers.iter().all(|w| !w.running));
+    assert!(workers.iter().any(|w| w.container == pr()));
+    assert!(workers.iter().any(|w| w.container
+        == ContainerId::Pr {
+            pull_request_id: 8,
+            payer: UserId("3".into()),
+        }));
     assert!(
         !server
             .received_requests()
@@ -859,6 +884,189 @@ async fn reconcile_removes_abandoned_fetch_and_only_orphan_work_volumes() {
             .iter()
             .any(|r| r.method == "DELETE" && r.url.path().ends_with("pr-7-3-work"))
     );
+}
+
+async fn assert_missing_container_volume_is_recoverable(
+    server: &wiremock::MockServer,
+    launcher: &mut Launcher,
+) {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let labels = launcher
+        .settings
+        .template(&pr(), false, None)
+        .unwrap()
+        .labels;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/json$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/volumes$"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"Volumes":[{
+                "Name":"v13w3-test-pr-7-3-work","Driver":"local","Mountpoint":"/test",
+                "Options":{},"Scope":"local","Labels":labels
+            }]})),
+        )
+        .mount(server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path_regex(r"/volumes/v13w3-test-pr-7-3-work$"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(server)
+        .await;
+    launcher.reconcile().await.unwrap();
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.method == "DELETE" && r.url.path().contains("/volumes/"))
+    );
+    assert_eq!(
+        launcher.list().await.unwrap(),
+        vec![WorkerStatus {
+            container: pr(),
+            running: false,
+        }]
+    );
+    mock_runtime(server).await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/volumes/create$"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+            "Name":"v13w3-test-pr-7-3-work","Driver":"local","Mountpoint":"/test",
+            "Options":{},"Scope":"local","Labels":labels
+        })))
+        .with_priority(1)
+        .expect(1)
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/create$"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(serde_json::json!({"Id":"restored","Warnings":[]})),
+        )
+        .expect(1)
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/v13w3-test-pr-7-3/start$"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(server)
+        .await;
+    assert!(launcher.ensure(&pr(), None).await.unwrap());
+    let requests = server.received_requests().await.unwrap();
+    let create = requests
+        .iter()
+        .find(|r| r.url.path().ends_with("/containers/create"))
+        .unwrap();
+    let config: serde_json::Value = serde_json::from_slice(&create.body).unwrap();
+    assert!(
+        config["HostConfig"]["Mounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["Source"] == "v13w3-test-pr-7-3-work" && m["Target"] == "/work")
+    );
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.method == "DELETE" && r.url.path().contains("/volumes/"))
+    );
+}
+
+#[tokio::test]
+async fn reconcile_keeps_pruned_idle_worker_volume_until_explicit_remove() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let (server, mut launcher) = fake_launcher().await;
+    // Docker prune removed the stopped container; its labeled volume still holds the archive.
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/v13w3-test-pr-7-3/json$"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    assert_missing_container_volume_is_recoverable(&server, &mut launcher).await;
+    // Remove must also retire a volume when the container has gone missing again.
+    launcher.remove(&pr()).await.unwrap();
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method == "DELETE"
+                && r.url.path().ends_with("/volumes/v13w3-test-pr-7-3-work"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn reconcile_keeps_volume_when_shutdown_interrupts_recreation() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let (server, mut launcher) = fake_launcher().await;
+    let removed = Arc::new(AtomicBool::new(false));
+    let deleted = Arc::new(tokio::sync::Notify::new());
+    let mut config = launcher.settings.template(&pr(), false, None).unwrap();
+    config.image = Some(format!("old@sha256:{}", "c".repeat(64)));
+    let exists = Arc::clone(&removed);
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/v13w3-test-pr-7-3/json$"))
+        .respond_with(move |_: &wiremock::Request| {
+            if exists.load(Ordering::SeqCst) {
+                ResponseTemplate::new(404)
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "Config":{"Image":config.image,"Labels":config.labels},"State":{"Running":false}
+                }))
+            }
+        })
+        .mount(&server)
+        .await;
+    let missing = Arc::clone(&removed);
+    let signal = Arc::clone(&deleted);
+    Mock::given(method("DELETE"))
+        .and(path_regex(r"/containers/v13w3-test-pr-7-3$"))
+        .respond_with(move |_: &wiremock::Request| {
+            missing.store(true, Ordering::SeqCst);
+            signal.notify_one();
+            ResponseTemplate::new(204).set_delay(std::time::Duration::from_secs(1))
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+    {
+        let id = pr();
+        let ensure = launcher.ensure(&id, None);
+        tokio::pin!(ensure);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::select! {
+                result = &mut ensure => panic!("ensure completed before cancellation: {result:?}"),
+                () = deleted.notified() => {}
+            }
+        })
+        .await
+        .unwrap();
+    }
+    assert!(removed.load(Ordering::SeqCst));
+    assert_missing_container_volume_is_recoverable(&server, &mut launcher).await;
 }
 
 #[tokio::test]
@@ -1011,7 +1219,7 @@ async fn periodic_sweep_retries_docker_errors_and_skips_busy_lock() {
 }
 
 #[test]
-fn template_hash_is_stable_sensitive_to_limits_and_rotated_credentials() {
+fn template_hash_tracks_limits_but_ignores_per_job_memcan() {
     use contracts::job::access::{McpHttpEndpoint, Secret};
     let s = settings();
     let endpoint = |token| McpHttpEndpoint {
@@ -1029,7 +1237,17 @@ fn template_hash_is_stable_sensitive_to_limits_and_rotated_credentials() {
         );
     }
     let rotated = s.template(&pr(), false, Some(&endpoint("fake-B"))).unwrap();
-    assert_ne!(config.labels, rotated.labels);
+    assert_eq!(config.labels, rotated.labels);
+    assert_eq!(
+        config.labels,
+        s.template(&pr(), false, None).unwrap().labels
+    );
+    let mut moved = endpoint("fake-B");
+    moved.url = "http://other-memcan/mcp".into();
+    assert_eq!(
+        config.labels,
+        s.template(&pr(), false, Some(&moved)).unwrap().labels
+    );
     let mut changed = s.clone();
     changed.memory /= 2;
     assert_ne!(
@@ -1045,102 +1263,59 @@ fn template_hash_is_stable_sensitive_to_limits_and_rotated_credentials() {
 }
 
 #[tokio::test]
-async fn warm_ensure_resets_each_job_and_rotation_recreates_before_configuring() {
+async fn warm_ensure_changes_per_job_memcan_without_recreating() {
     use contracts::job::access::{McpHttpEndpoint, Secret};
     use wiremock::{
         Mock, ResponseTemplate,
         matchers::{method, path_regex},
     };
-    for rotated in [false, true] {
-        let (server, mut launcher) = fake_launcher().await;
-        let endpoint = |token| McpHttpEndpoint {
-            url: "http://memcan/mcp".into(),
-            token: Secret::new(token),
-            allow_write: true,
-        };
-        let old = endpoint("fake-A");
-        let next = endpoint(if rotated { "fake-B" } else { "fake-A" });
-        let config = launcher
-            .settings
-            .template(&pr(), false, Some(&old))
-            .unwrap();
-        Mock::given(method("GET"))
-            .and(path_regex(r"/containers/v13w3-test-pr-7-3/json$"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "Config":{"Image":config.image,"Labels":config.labels},"State":{"Running":true}})))
-            .mount(&server)
-            .await;
-        mock_runtime(&server).await;
-        Mock::given(method("GET"))
-            .and(path_regex(r"/containers/json$"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
-            .mount(&server)
-            .await;
-        for (verb, path, status, body) in [
-            (
-                "POST",
-                r"/containers/v13w3-test-pr-7-3/stop$",
-                204,
-                serde_json::json!(null),
-            ),
-            (
-                "DELETE",
-                r"/containers/v13w3-test-pr-7-3$",
-                204,
-                serde_json::json!(null),
-            ),
-            (
-                "POST",
-                r"/containers/create$",
-                201,
-                serde_json::json!({"Id":"worker","Warnings":[]}),
-            ),
-            (
-                "POST",
-                r"/containers/v13w3-test-pr-7-3/start$",
-                204,
-                serde_json::json!(null),
-            ),
-        ] {
-            Mock::given(method(verb))
-                .and(path_regex(path))
-                .respond_with(ResponseTemplate::new(status).set_body_json(body))
-                .mount(&server)
-                .await;
-        }
-        let count = if rotated { 1 } else { 2 };
-        for _ in 0..count {
-            assert_eq!(launcher.ensure(&pr(), Some(&next)).await.unwrap(), rotated);
-        }
-        let requests = server.received_requests().await.unwrap();
-        let resets: Vec<_> = requests
-            .iter()
-            .filter(|r| r.url.path().ends_with("/exec"))
-            .collect();
-        assert_eq!(resets.len(), count);
-        for reset in resets {
-            let body: serde_json::Value = serde_json::from_slice(&reset.body).unwrap();
-            assert_eq!(
-                body["Cmd"],
-                serde_json::json!(["python3", "/usr/local/bin/worker-config.py", "cs1"])
-            );
-            assert_eq!(
-                body["Env"],
-                serde_json::json!([
-                    "DP_MEMCAN_URL=http://memcan/mcp",
-                    format!("DP_MEMCAN_TOKEN={}", next.token.expose())
-                ])
-            );
-        }
-        assert_eq!(requests.iter().any(|r| r.method == "DELETE"), rotated);
-        for create in requests
-            .iter()
-            .filter(|r| r.url.path().ends_with("/containers/create"))
-        {
-            let text = String::from_utf8_lossy(&create.body);
-            assert!(!text.contains("fake-A") && !text.contains("fake-B"));
-        }
+    let (server, mut launcher) = fake_launcher().await;
+    let endpoint = |url: &str, token| McpHttpEndpoint {
+        url: url.into(),
+        token: Secret::new(token),
+        allow_write: true,
+    };
+    let old = endpoint("http://memcan/mcp", "fake-A");
+    let rotated = endpoint("http://memcan/mcp", "fake-B");
+    let moved = endpoint("http://other-memcan/mcp", "fake-B");
+    let config = launcher
+        .settings
+        .template(&pr(), false, Some(&old))
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/v13w3-test-pr-7-3/json$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Config":{"Image":config.image,"Labels":config.labels},"State":{"Running":true}})))
+        .mount(&server)
+        .await;
+    mock_runtime(&server).await;
+    let jobs = [None, Some(&old), Some(&rotated), None, Some(&moved)];
+    for next in jobs {
+        assert!(!launcher.ensure(&pr(), next).await.unwrap());
     }
+    let requests = server.received_requests().await.unwrap();
+    let resets: Vec<_> = requests
+        .iter()
+        .filter(|r| r.url.path().ends_with("/exec"))
+        .collect();
+    assert_eq!(resets.len(), jobs.len());
+    for (reset, next) in resets.iter().zip(jobs) {
+        let body: serde_json::Value = serde_json::from_slice(&reset.body).unwrap();
+        assert_eq!(
+            body["Cmd"],
+            serde_json::json!(["python3", "/usr/local/bin/worker-config.py", "cs1"])
+        );
+        assert_eq!(
+            body["Env"],
+            serde_json::json!(next.map(|e| vec![
+                format!("DP_MEMCAN_URL={}", e.url),
+                format!("DP_MEMCAN_TOKEN={}", e.token.expose()),
+            ]))
+        );
+    }
+    assert!(!requests.iter().any(|r| r.method == "DELETE"
+        || r.url.path().ends_with("/containers/create")
+        || r.url.path().ends_with("/start") && r.url.path().contains("/containers/")));
 }
 
 #[tokio::test]

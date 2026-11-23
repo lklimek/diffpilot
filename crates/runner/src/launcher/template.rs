@@ -240,18 +240,6 @@ impl Settings {
                 env.push(format!("{key}=codex-gateway"));
             }
         }
-        // Fingerprint runtime credentials without storing them in container env or labels.
-        if let Some(endpoint) = memcan {
-            let bytes = serde_json::to_vec(&(&endpoint.url, endpoint.token.expose()))
-                .map_err(|_| Error::Protocol)?;
-            labels.insert(
-                "dp.runtime".into(),
-                Sha256::digest(bytes)
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect(),
-            );
-        }
         let mut config = ContainerCreateBody {
             image: Some(
                 if fetch {

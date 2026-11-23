@@ -137,6 +137,16 @@ class WorkerAssets(unittest.TestCase):
                 for path in (root / "work").rglob("*"):
                     if path.is_file() and not path.is_symlink():
                         self.assertNotIn(token, path.read_text())
+            subprocess.run(
+                ["python3", ROOT / "deploy/worker/worker-config.py", "cs1"],
+                env={
+                    key: value for key, value in env.items() if key != "DP_MEMCAN_URL"
+                },
+                check=True,
+            )
+            self.assertNotIn(
+                "mcp_servers", tomllib.loads((codex / "config.toml").read_text())
+            )
 
     def test_debian_bases_are_digest_pinned(self):
         for relative in (
@@ -149,6 +159,89 @@ class WorkerAssets(unittest.TestCase):
                         line,
                         r"^FROM debian:bookworm-slim@sha256:[0-9a-f]{64}( AS [a-z]+)?$",
                     )
+
+    def test_warm_reset_preserves_live_runtime_files_and_removes_instructions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            codex = root / "work/codex"
+            home = root / "work/home"
+            home.mkdir(parents=True)
+            runtime_files = [
+                "tmp/arg0-linux/codex-arg0-test/apply_patch",
+                "tmp/arg0-linux/codex-arg0-test/codex-linux-sandbox",
+                "app-server-control/endpoint.json",
+                "installation_id",
+                "sessions/thread.jsonl",
+                "archived_sessions/thread.jsonl",
+                "history.jsonl",
+                "session_index.jsonl",
+            ]
+            for database in (
+                "state_5",
+                "logs_2",
+                "goals_1",
+                "memories_1",
+                "queue_1",
+                "thread_history_1",
+            ):
+                for suffix in ("", "-wal", "-shm"):
+                    runtime_files.append(database + ".sqlite" + suffix)
+            for name in runtime_files:
+                path = codex / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("live runtime data")
+            inodes = {name: (codex / name).stat().st_ino for name in runtime_files}
+            instruction_files = (
+                "AGENTS.md",
+                "AGENTS.override.md",
+                "AGENTS.custom.md",
+                "CLAUDE.md",
+                "CLAUDE.local.md",
+                "instructions.md",
+                "config.toml",
+            )
+            instruction_dirs = (
+                "skills",
+                "prompts",
+                "rules",
+                "hooks",
+                "plugins",
+                ".agents",
+                ".claude",
+                ".codex",
+                ".config",
+            )
+            env = {
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(home),
+                "CODEX_HOME": str(codex),
+                "DP_RUNTIME_DIR": str(root / "runtime"),
+            }
+            for _ in range(2):
+                for parent in (home, codex):
+                    for name in instruction_files:
+                        (parent / name).write_text("planted instruction")
+                    for name in instruction_dirs:
+                        (parent / name).mkdir()
+                        (parent / name / "planted").write_text("planted instruction")
+                subprocess.run(
+                    ["python3", ROOT / "deploy/worker/worker-config.py", "cs1"],
+                    env=env,
+                    check=True,
+                )
+                for name in runtime_files:
+                    path = codex / name
+                    self.assertTrue(path.is_file(), name)
+                    self.assertEqual(path.read_text(), "live runtime data", name)
+                    self.assertEqual(path.stat().st_ino, inodes[name], name)
+                for parent in (home, codex):
+                    for name in (*instruction_files, *instruction_dirs):
+                        if parent == codex and name == "config.toml":
+                            self.assertTrue((parent / name).is_symlink())
+                        else:
+                            self.assertFalse(
+                                (parent / name).exists(), str(parent / name)
+                            )
 
     def test_read_only_gh_reloads_token_and_rejects_writes(self):
         with tempfile.TemporaryDirectory() as temp:

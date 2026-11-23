@@ -58,27 +58,27 @@ change; automatic fetch failure currently logs a warning and Ensure still acknow
 
 At runner startup call `Client::reconcile(retired_prs)` before accepting jobs, then reconcile the gateway's
 local keys against all known worker identities, including missing workers. The launcher also stops existing
-workers on its own startup/shutdown, cleans abandoned CS3 containers and removes labeled orphan work volumes
-only if no container with that PR/user identity remains. Work volumes are explicitly created with namespace,
+workers on its own startup/shutdown and cleans abandoned CS3 containers. List includes labeled work volumes
+whose containers are missing as non-running workers; only an explicit Remove deletes their volumes. A later
+Ensure recreates the container on the surviving volume. Work volumes are created with namespace,
 shape, PR and user labels, including when Fetch precedes Ensure. Pre-release unlabeled volumes are reused
 without deleting data (Docker cannot relabel an existing volume). W4 owns key revocation on stop,
 relay loss and idle eviction; revoke the turn key before releasing the job attachment so autonomous idle/LRU
 eviction cannot leave a live key. W8 derives retirement from PR/watch state. No upstream unlink is involved.
 
-Every job calls Ensure before attaching. Image or template drift (including resource limits and MemCan
-URL/token rotation) recreates only an unattached container and keeps its work volume. A runtime fingerprint
-contains only a SHA-256 hash; credentials are absent from the container's environment and template labels.
+Every job calls Ensure before attaching. Image or template drift (including resource limits) recreates only
+an unattached container and keeps its work volume. Per-job MemCan presence, URL and token do not affect the
+template hash; credentials are absent from the container's environment and template labels.
 Ensure regenerates job config using a fixed short-lived Docker exec, and app-server waits for the initial
 runtime config. The token is passed only to that exec and written to `/run/dp/config.toml` on tmpfs;
 `$CODEX_HOME/config.toml` links there. Codex 0.171 config edits resolve symlink targets, keeping trust/skill
-writes on tmpfs. Rotation restarts app-server via recreation so even loaded MCP clients receive fresh credentials.
+writes on tmpfs. W4 supplies the fixed per-thread MCP configuration on every start/fork/resume (CCR2).
 
-Before every job the reset removes all HOME contents and all CODEX_HOME entries except `sessions/`,
-`archived_sessions/`, `history.jsonl`, `session_index.jsonl` and `state_<version>.sqlite` (including WAL/SHM).
-Those files retain thread transcripts and their discovery index for resume on the same work volume; preserved
-entries must not be symlinks. User instructions, skills, prompts, hooks, plugins, config and credentials are
-regenerated or removed, including HOME's `.codex`, `.claude`, `.agents` and `.config`. Checkout and job files
-remain on `/work`; W4 resets inputs/outputs and frozen checkout state separately. The immutable system preset
+Before every job the reset removes instruction sources from HOME and CODEX_HOME: `AGENTS*.md`, `CLAUDE*.md`,
+`instructions.md`, skills, prompts, rules, hooks, plugins, config, `.codex`, `.claude`, `.agents` and `.config`.
+It preserves thread transcripts and live app-server files, including `tmp/arg0-linux` helpers, SQLite databases
+and WAL/SHM files, `installation_id` and `app-server-control/`. Removed symlinks are never followed. Checkout and
+job files remain on `/work`; W4 resets inputs/outputs and frozen checkout state separately. The immutable system preset
 and curated skills stay in the read-only image. W4 must repeat config hygiene before thread operations within
 a job and must preserve this runtime symlink rather than writing a regular config on the volume.
 

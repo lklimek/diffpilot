@@ -4,7 +4,6 @@
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import sys
 import time
@@ -30,18 +29,31 @@ def remove(path):
 os.umask(0o077)
 codex = Path(os.environ["CODEX_HOME"])
 home = Path(os.environ["HOME"])
-# Only Codex thread transcripts and their index survive a job boundary.
+# Reset instruction sources without unlinking the running app-server's files.
 for parent in (home, codex):
     if parent.is_symlink():
         remove(parent)
     parent.mkdir(parents=True, exist_ok=True)
     for child in parent.iterdir():
-        thread_state = parent == codex and (
+        instruction_source = (
             child.name
-            in {"sessions", "archived_sessions", "history.jsonl", "session_index.jsonl"}
-            or re.fullmatch(r"state_\d+\.sqlite(?:-wal|-shm)?", child.name)
+            in {
+                "skills",
+                "prompts",
+                "rules",
+                "hooks",
+                "plugins",
+                ".agents",
+                ".claude",
+                ".codex",
+                ".config",
+                "instructions.md",
+                "config.toml",
+            }
+            or child.match("AGENTS*.md")
+            or child.match("CLAUDE*.md")
         )
-        if not thread_state or child.is_symlink():
+        if instruction_source:
             remove(child)
 
 preset = Path(__file__).with_name("config.toml").read_text()
