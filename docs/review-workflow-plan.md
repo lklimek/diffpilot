@@ -322,6 +322,13 @@ targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe 
 | ID | Label | Colour (token) | Rule (facts diffpilot read; tooltip lists them) |
 |---|---|---|---|
 | B1 | Blocked / failing | red (`high`) | a failed effect, CI failed (the reader's Ignored checks, failing or pending, left out as in My work), or a push channel failing for this PR's events |
+- **Queue marks** (Needs you rows, owner 2026-11-23): each row names its state in words, colour only as a second
+  signal: "asked again" (amber) and "Ask answer" (blue outline), facts of the queue; "Gate G-FUNDS" (red, tagged LLM
+  when the assessment named it, untagged when you marked it); the reviewer's severity words with the GitHub tag (red
+  outline for "Blocking"); the LLM's recommendation "recommends Fix here" with the LLM tag, dashed, coloured by what it
+  asks (amber: fix here; teal: resolve, already fixed; grey: reject; blue: handled elsewhere, follow-up, upstream,
+  TODO), never the green of a fact badge. Marks are not focusable (inside the row's button); the axe sweeps check
+  their contrast in both themes.
 | B2 | Questions waiting | amber (`med`) | undecided questions exist |
 | B3 | Executing | teal (`bot`) | decided effects are open or claimed |
 | B4 | Waiting for bot round | blue (`low`) | thepastaclaw reports this head reviewing or queued, or a watched pass waits for the round |

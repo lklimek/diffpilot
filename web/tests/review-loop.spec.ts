@@ -29,6 +29,11 @@ test("decide_from_the_middle_opens_the_next_question", async ({ page }) => {
   await expect(queue.getByRole("heading").last()).toHaveText("PR-level (1)");
   await queue.getByRole("button", { name: /^C15(?!\d)/ }).click();
   await expect(page.getByRole("heading", { level: 2, name: /C15 · Debug log prints/ })).toBeFocused();
+  const row = queue.getByRole("button", { name: /^C15(?!\d)/ });
+  await expect(row.locator("[data-gate='G-SECRET']")).toContainText("Gate G-SECRET");
+  const recommendation = row.locator("[data-recommendation='fix_here']");
+  await expect(recommendation).toContainText("recommends Fix here");
+  await expect(recommendation.locator("[data-provenance='llm']")).toHaveText("LLM");
   const decide = page.getByRole("button", { name: "Decide", exact: true });
   await expect(decide).not.toHaveAttribute("aria-disabled", "true");
   await decide.click();

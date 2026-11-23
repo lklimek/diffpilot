@@ -1,9 +1,9 @@
-import type { CommentItem, QueueEntry } from "../../api/generated/types";
+import type { CommentItem, DecisionKind, QueueEntry } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
+import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CHOICE_LABEL, decisionLabel } from "./decisions";
-import { GateChips } from "./QueueCards";
 import { itemId } from "./parts";
 
 /** The key of a queue entry (its item numbers). */
@@ -41,7 +41,90 @@ interface QueueListProps {
 }
 
 const ROW =
-  "flex min-h-6 w-full cursor-pointer items-center gap-1.5 rounded-md border-0 bg-transparent px-2 py-1 text-left text-text hover:bg-surface-2 aria-[current=true]:bg-accent-bg aria-[current=true]:font-semibold";
+  "flex min-h-6 w-full cursor-pointer items-start gap-1.5 rounded-md border-0 bg-transparent px-2 py-1 text-left text-text hover:bg-surface-2 aria-[current=true]:bg-accent-bg aria-[current=true]:font-semibold";
+
+const MARK = "inline-flex max-w-full items-center gap-1 border px-1.5 text-[11px]";
+
+// An LLM recommendation's colour by what it asks of you: change code here, nothing to change, a reply, elsewhere.
+// Never the green of a fact badge; dashed and tagged LLM; the decision is always written out (plan §3.9).
+const RECOMMENDATION_LOOK: Partial<Record<DecisionKind, string>> = {
+  fix_here: "border-med-bd bg-med-bg text-med",
+  resolve: "border-chg-bd bg-chg-bg text-chg",
+  reject: "border-mv-bd bg-mv-bg text-mv",
+  handled_in_pr: "border-low-bd bg-low-bg text-low",
+  follow_up_pr: "border-low-bd bg-low-bg text-low",
+  upstream_issue: "border-low-bd bg-low-bg text-low",
+  todo: "border-low-bd bg-low-bg text-low",
+};
+
+/**
+ * The state marks of a Needs you row, in words with colour (owner 2026-11-23): why it is asked, its gates (tagged LLM
+ * when the assessment named them), the reviewer's severity words (tagged GitHub) and the LLM's recommendation.
+ */
+function Marks({ entry, first }: { entry: QueueEntry; first: CommentItem }) {
+  const group = entry.item_nos.length > 1;
+  const rec = first.assessment?.recommendation;
+  const marks = [
+    entry.reason === "asked_again" && (
+      <span
+        key="reason"
+        data-mark="reason"
+        className={`${MARK} rounded-full border-med-bd bg-med-bg text-med`}
+      >
+        asked again
+      </span>
+    ),
+    entry.reason === "answered" && (
+      <span
+        key="reason"
+        data-mark="reason"
+        className={`${MARK} rounded-full border-accent bg-surface text-accent`}
+      >
+        Ask answer
+      </span>
+    ),
+    ...(group ? [] : first.gates).map((g) => (
+      <span
+        key={`gate-${g.gate}`}
+        data-mark="gate"
+        data-gate={g.gate}
+        className={`${MARK} rounded-full border-high-bd bg-high-bg font-semibold text-high`}
+      >
+        Gate {g.gate}
+        {g.source === "assessment" && <ProvenanceTag source="llm" focusable={false} />}
+      </span>
+    )),
+    !group && first.bot_severity && (
+      <span
+        key="marker"
+        data-mark="marker"
+        className={`${MARK} rounded-full bg-surface ${
+          first.bot_severity === "Blocking"
+            ? "border-high-bd font-semibold text-high"
+            : "border-border text-text"
+        }`}
+      >
+        <ProvenanceTag source="github" focusable={false} /> {first.bot_severity}
+      </span>
+    ),
+    rec && (
+      <span
+        key="recommendation"
+        data-mark="recommendation"
+        data-recommendation={rec.kind}
+        className={`${MARK} rounded border-dashed ${RECOMMENDATION_LOOK[rec.kind] ?? "border-border text-text"}`}
+      >
+        <ProvenanceTag source="llm" focusable={false} /> recommends {CHOICE_LABEL[rec.kind] ?? rec.kind}
+      </span>
+    ),
+  ].filter(Boolean);
+  if (marks.length === 0) return null;
+  return (
+    <span data-marks className="mt-0.5 flex flex-wrap items-center gap-1">
+      {marks.flatMap((mark, i) => (i === 0 ? [mark] : [" ", mark]))}
+    </span>
+  );
+}
 
 /** The Questions queue (mockup left column): questions, Ask answers, carried, decided, outside, then PR-level. */
 export function QueueList({
@@ -67,6 +150,8 @@ export function QueueList({
     if (!first) return null;
     const group = entry.item_nos.length > 1;
     const rec = first.assessment?.recommendation;
+    const title =
+      group && rec ? `${rec.reason_class.replaceAll("_", " ")} (${entry.item_nos.length})` : first.title;
     return (
       <li key={entryKey(entry)} className="flex items-center gap-0.5">
         <button
@@ -75,23 +160,10 @@ export function QueueList({
           onClick={() => onOpen(entry)}
           className={ROW}
         >
-          <span className="min-w-8 font-mono text-xs text-muted">{group ? "G" : itemId(first)}</span>
-          <span className="min-w-0 flex-1 truncate">
-            {group && rec
-              ? `${CHOICE_LABEL[rec.kind]}: ${rec.reason_class.replaceAll("_", " ")} (${entry.item_nos.length})`
-              : first.title}
+          <span className="min-w-8 font-mono text-xs text-muted">{group ? "G" : itemId(first)}</span>{" "}
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">{title}</span> <Marks entry={entry} first={first} />
           </span>
-          {entry.reason === "asked_again" && (
-            <span className="rounded-full border border-med-bd bg-med-bg px-1.5 text-[11px] text-med">
-              asked again
-            </span>
-          )}
-          {entry.reason === "answered" && (
-            <span className="rounded-full border border-accent px-1.5 text-[11px] text-accent">
-              Ask answer
-            </span>
-          )}
-          {!group && <GateChips item={first} />}
         </button>
         {!group && <OpenExternal href={first.url} label={`Open ${itemId(first)} on GitHub`} />}
       </li>

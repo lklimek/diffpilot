@@ -33,7 +33,7 @@ import {
   type Choice,
   type EffectsPreviewState,
 } from "./decisions";
-import { GateChip, itemId, sourceText } from "./parts";
+import { itemId, sourceText } from "./parts";
 import { DecideNote, PlannedEffects, useDraft } from "./PlannedEffects";
 
 const INPUT = "w-full rounded-md border border-muted bg-surface px-2 py-1 text-text";
@@ -752,12 +752,3 @@ export function EmptyQueueCard({
     </section>
   );
 }
-
-/** Gate chips of an item (queue rows, tables). */
-export const GateChips = ({ item }: { item: CommentItem }) => (
-  <>
-    {item.gates.map((g) => (
-      <GateChip key={g.gate} gate={g.gate} />
-    ))}
-  </>
-);
