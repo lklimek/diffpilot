@@ -58,7 +58,7 @@ pub const MAX_ITEMS_PER_PASS: usize = agent::verify_comments::MAX_ITEMS;
 /// twice a full pass at high effort (spike S13-3).
 pub const PASS_SPACING: SignedDuration = SignedDuration::from_mins(10);
 /// Passes charged to one user per 24 hours before automatic (Watch) passes stop (plan §2.8); the owner's busiest
-/// recorded day needed at most 55 automatic passes, plus on-demand ones (spike S13-3).
+/// recorded day needed about 55 automatic passes, plus on-demand ones (spike S13-3).
 pub const DAILY_PASSES_PER_USER: u32 = 80;
 /// Version of `prompts/verify_comments.md` with the output schema, stored with every assessment.
 pub const VERIFY_PROMPT_VERSION: u32 = 3;
