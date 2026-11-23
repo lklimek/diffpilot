@@ -598,3 +598,31 @@ fn merge_follow_up_comments_name_their_reviews() {
         ]
     );
 }
+
+/// Plan §2.5: a carried decision plans again with the stored reply text (`carry_over`), which already starts with the
+/// line naming the review; the line is not added a second time.
+#[test]
+fn a_carried_decision_names_the_review_once() {
+    for kind in [DecisionKind::FixHere, DecisionKind::Resolve] {
+        let first = planned(&body_item(), &request(kind));
+        let carried = DecideRequest {
+            reply_text: first.reply_text.clone(),
+            ..request(kind)
+        };
+        let again = planned(&body_item(), &carried);
+        assert_eq!(again.reply_text, first.reply_text, "{kind:?}");
+        assert_eq!(
+            planned_text(&body_item(), &carried),
+            planned_text(&body_item(), &request(kind)),
+            "{kind:?}"
+        );
+        assert_eq!(
+            again
+                .reply_text
+                .as_deref()
+                .map(|t| t.matches("re [your review]").count()),
+            Some(1),
+            "{kind:?}"
+        );
+    }
+}
