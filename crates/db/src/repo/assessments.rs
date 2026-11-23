@@ -226,7 +226,7 @@ impl Assessments<'_> {
             .find(|r| r.reference == *run)
             .ok_or(DbError::NotFound)?;
         // Complete retains the claim token; expiry and release clear it, including on exhausted jobs.
-        let eligible: bool = sqlx::query_scalar(
+        let live_attempt: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM jobs WHERE id=? AND attempt=? AND cancel_requested=0
              AND (state IN ('claimed','running') OR
                   (state IN ('succeeded','failed') AND job_token_hash IS NOT NULL
@@ -239,7 +239,23 @@ impl Assessments<'_> {
         .bind(result.status == AssessmentRunStatus::Succeeded)
         .fetch_one(&mut *tx)
         .await?;
-        if attempt == 0 || current.attempt != attempt || !eligible {
+        let terminal_status = !live_attempt
+            && result.items.is_empty()
+            && matches!(
+                result.status,
+                AssessmentRunStatus::Cancelled | AssessmentRunStatus::Failed
+            )
+            && sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE id=? AND attempt=? AND state=?
+                 AND json_extract(result,'$.attempt')=attempt
+                 AND json_extract(result,'$.outcome.outcome')=state)",
+            )
+            .bind(current.job_id.to_string())
+            .bind(attempt)
+            .bind(wire_name(result.status)?)
+            .fetch_one(&mut *tx)
+            .await?;
+        if attempt == 0 || current.attempt != attempt || !(live_attempt || terminal_status) {
             return Err(DbError::Conflict);
         }
         if current.status != AssessmentRunStatus::Running {

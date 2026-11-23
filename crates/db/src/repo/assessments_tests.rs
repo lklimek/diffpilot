@@ -575,6 +575,108 @@ async fn assessment_rejects_cancel_requested_and_cancelled_attempts() {
 }
 
 #[tokio::test]
+async fn assessment_cancelled_job_can_finalize_without_output() {
+    use contracts::job::result::JobOutcome;
+    let (db, job, run, mut result) = started_assessment().await;
+    let now = at("2026-11-23T12:00:30Z");
+    db.jobs().request_cancel(job.id, now).await.unwrap();
+    db.jobs()
+        .complete(&jobs::server_result(job.id, 1, JobOutcome::Cancelled), now)
+        .await
+        .unwrap();
+    result.status = AssessmentRunStatus::Cancelled;
+    assert!(matches!(
+        db.assessments()
+            .finish_attempt("default", &user(), &run, 1, &result)
+            .await,
+        Err(crate::error::DbError::Conflict)
+    ));
+    result.items.clear();
+    assert_terminal_assessment_recorded(&db, &run, 1, &result, now).await;
+}
+
+#[tokio::test]
+async fn assessment_exhausted_lease_can_finalize_without_output() {
+    use contracts::job::result::JobFailureKind;
+    let (db, job, run, mut result) = started_assessment().await;
+    let mut now = at("2026-11-23T12:02:00Z");
+    for attempt in 1..=3 {
+        assert_eq!(db.jobs().expire_leases(now).await.unwrap().len(), 1);
+        if attempt < 3 {
+            let replacement = claim_assessment(&db, now).await;
+            assert_eq!((replacement.id, replacement.attempt), (job.id, attempt + 1));
+            db.assessments()
+                .begin_attempt("default", &user(), &run, attempt + 1)
+                .await
+                .unwrap();
+            now += jiff::SignedDuration::from_secs(120);
+        }
+    }
+    assert_eq!(
+        db.jobs().get(job.id).await.unwrap().state,
+        contracts::job::state::JobState::Failed
+    );
+    result.items.clear();
+    result.status = AssessmentRunStatus::Cancelled;
+    assert!(matches!(
+        db.assessments()
+            .finish_attempt("default", &user(), &run, 3, &result)
+            .await,
+        Err(crate::error::DbError::Conflict)
+    ));
+    result.status = AssessmentRunStatus::Failed;
+    result.failure = Some(JobFailureKind::Internal);
+    assert!(matches!(
+        db.assessments()
+            .finish_attempt("default", &user(), &run, 2, &result)
+            .await,
+        Err(crate::error::DbError::Conflict)
+    ));
+    assert_terminal_assessment_recorded(&db, &run, 3, &result, now).await;
+}
+
+async fn assert_terminal_assessment_recorded(
+    db: &Db,
+    run: &AssessmentRunRef,
+    attempt: u32,
+    result: &MethodResult,
+    now: Timestamp,
+) {
+    assert!(
+        db.assessments()
+            .finish_attempt("default", &user(), run, attempt, result)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !db.assessments()
+            .finish_attempt("default", &user(), run, attempt, result)
+            .await
+            .unwrap()
+    );
+    let comparison = db
+        .assessments()
+        .comparison("default", &user(), run.pass_id, now)
+        .await
+        .unwrap();
+    assert!(comparison.items.is_empty());
+    let stored = &comparison.runs[0];
+    assert_eq!(stored.status, result.status);
+    assert_eq!(stored.accepted_attempt, None);
+    assert_eq!(stored.failure, result.failure);
+    assert_eq!(stored.usage.input_tokens, result.usage.input_tokens);
+    assert_eq!(stored.duration_ms, result.duration_ms);
+    assert_eq!(
+        db.assessments()
+            .quota(&user(), now)
+            .await
+            .unwrap()
+            .remaining,
+        79
+    );
+}
+
+#[tokio::test]
 async fn assessment_accepts_completed_attempt_without_replacing_failed_job_outcome() {
     use contracts::job::result::{JobFailureKind, JobOutcome};
     for failed in [false, true] {
