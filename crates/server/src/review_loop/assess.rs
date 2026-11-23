@@ -190,12 +190,8 @@ async fn request(
             Some(question) => (Some(question.user_id.clone()), Some(question)),
             None => return Ok(PassQueued::Skipped),
         },
-        PassReason::Watch => match charged_watcher(state, pr, now, continuation).await? {
-            Charge::To(user) => (Some(user), None),
-            Charge::Spaced => return Ok(PassQueued::Spaced),
-            Charge::DailyLimit => return Ok(PassQueued::DailyLimit),
-            Charge::NoWatcher => return Ok(PassQueued::Skipped),
-        },
+        // Charged once something needs assessing: the spacing and the cap hold passes back, not the questions.
+        PassReason::Watch => (None, None),
         PassReason::Opened | PassReason::NewComments | PassReason::AssessAgain(_) => {
             (by.map(str::to_owned), None)
         }
@@ -252,6 +248,39 @@ async fn request(
         }
         return Ok(PassQueued::Skipped);
     }
+    let user = match reason {
+        PassReason::Watch => match charged_watcher(state, pr, now, continuation).await? {
+            Charge::To(user) => Some(user),
+            Charge::Spaced => return Ok(PassQueued::Spaced),
+            Charge::DailyLimit => return Ok(PassQueued::DailyLimit),
+            Charge::NoWatcher => return Ok(PassQueued::Skipped),
+        },
+        _ => user,
+    };
+    // Everything fallible is read before the pass is stored: a live pass without a job would hold every later
+    // request back as already running.
+    let language = match (&user, reason) {
+        (Some(user), PassReason::Ask | PassReason::Watch) => db.users().get(user).await?.language,
+        _ => LlmLanguage::En,
+    };
+    let analysis = analysis_inputs(state, &record.tenant_id, pr, &record.pr, language).await?;
+    let input = VerifyCommentsInput {
+        pull_request: format!(
+            "{}/{}#{}",
+            record.pr.repo.owner, record.pr.repo.name, record.pr.number
+        ),
+        title: record.pr.title.clone(),
+        description: description
+            .map(|text| text.chars().take(prompts::MAX_DESCRIPTION_CHARS).collect()),
+        pr_context: analysis.pr_context,
+        project_profile: analysis.profile,
+        items: sent_items.iter().map(|item| verify_item(item)).collect(),
+        earlier_decisions: earlier_decisions(state, pr, &sent_items).await?,
+        question: match &question {
+            Some(question) => Some(item_question(state, question, &sent_items).await?),
+            None => None,
+        },
+    };
     let pass = NewPass {
         pull_request_id: pr,
         user_id: user.clone(),
@@ -274,44 +303,27 @@ async fn request(
         PassStart::Started(id) => id,
         PassStart::Busy(_) => return Ok(PassQueued::AlreadyRunning),
     };
-    let language = match (&user, reason) {
-        (Some(user), PassReason::Ask | PassReason::Watch) => db.users().get(user).await?.language,
-        _ => LlmLanguage::En,
-    };
-    let analysis = analysis_inputs(state, &record.tenant_id, pr, language).await?;
-    let input = VerifyCommentsInput {
-        pull_request: format!(
-            "{}/{}#{}",
-            record.pr.repo.owner, record.pr.repo.name, record.pr.number
-        ),
-        title: record.pr.title.clone(),
-        description: description
-            .map(|text| text.chars().take(prompts::MAX_DESCRIPTION_CHARS).collect()),
-        pr_context: analysis.pr_context,
-        project_profile: analysis.profile,
-        items: sent_items.iter().map(|item| verify_item(item)).collect(),
-        earlier_decisions: earlier_decisions(state, pr, &sent_items).await?,
-        question: match &question {
-            Some(question) => Some(item_question(state, question, &sent_items).await?),
-            None => None,
-        },
-    };
-    let submitted = submit(state, &record.pr, pr, id, &input, language).await;
-    let handle = match submitted {
+    let started = async {
+        let handle = submit(state, &record.pr, pr, id, &input, language).await?;
+        db.review_loop().pass_running(id, handle.job_id).await?;
+        if let Some(question) = &question {
+            db.questions()
+                .set_job(question.question.id, handle.job_id)
+                .await?;
+        }
+        Ok::<_, AssessError>(handle)
+    }
+    .await;
+    let handle = match started {
         Ok(handle) => handle,
         Err(error) => {
+            // Nothing follows this pass, so it ends here.
             db.review_loop()
                 .finish_pass(id, false, Timestamp::now())
                 .await?;
             return Err(error);
         }
     };
-    db.review_loop().pass_running(id, handle.job_id).await?;
-    if let Some(question) = &question {
-        db.questions()
-            .set_job(question.question.id, handle.job_id)
-            .await?;
-    }
     tracing::info!(pr, pass = %id, job = %handle.job_id, ?reason, items = input.items.len(),
         "comment assessment pass queued");
     follow(state, id);
@@ -522,23 +534,32 @@ async fn earlier_decisions(
     Ok(current)
 }
 
-/// What the PR's latest analysis adds to a pass's input.
+/// The PR context of the PR's latest analysis and the project profile a pass's input carries.
 #[derive(Default)]
 struct AnalysisInputs {
-    /// Its PR context, as one text.
+    /// The analysis's PR context, as one text.
     pr_context: Option<String>,
-    /// The project profile file at its base.
+    /// The project profile file at the PR's base.
     profile: Option<String>,
 }
 
-/// The PR context and project profile of the PR's latest analysis in the tenant (any head; `language` first), from
-/// its stored documents.
+/// The project profile file at the pull request's current base (`summary`), read from the server's mirror, and the
+/// PR context of the PR's latest analysis in the tenant (any head; `language` first). Only when the mirror cannot
+/// be read does the profile come from that analysis's stored prepass.
 async fn analysis_inputs(
     state: &AppState,
     tenant: &str,
     pr: i64,
+    summary: &PrSummary,
     language: LlmLanguage,
 ) -> Result<AnalysisInputs, AssessError> {
+    let base = match base_profile(state, summary).await {
+        Ok(profile) => Some(profile),
+        Err(error) => {
+            tracing::debug!(%error, "project profile not readable from the mirror; an analysis's is used");
+            None
+        }
+    };
     let Some(analysis) = state
         .db
         .analyses()
@@ -546,16 +567,24 @@ async fn analysis_inputs(
         .await?
         .filter(|analysis| analysis.tenant_id == tenant)
     else {
-        return Ok(AnalysisInputs::default());
+        return Ok(AnalysisInputs {
+            pr_context: None,
+            profile: base
+                .flatten()
+                .map(|text| text.chars().take(prompts::MAX_PROFILE_CHARS).collect()),
+        });
     };
     let context: Option<PrContextOutput> = state
         .db
         .documents()
         .get(analysis.id, DocumentKind::PrContext, "")
         .await?;
-    let profile = crate::pipeline::prepass::stored(state, analysis.id)
-        .await?
-        .and_then(|prepass| prepass.profile_file);
+    let profile = match base {
+        Some(profile) => profile,
+        None => crate::pipeline::prepass::stored(state, analysis.id)
+            .await?
+            .and_then(|prepass| prepass.profile_file),
+    };
     Ok(AnalysisInputs {
         pr_context: context.map(|context| {
             format!(
@@ -565,6 +594,16 @@ async fn analysis_inputs(
         }),
         profile: profile.map(|text| text.chars().take(prompts::MAX_PROFILE_CHARS).collect()),
     })
+}
+
+/// The project profile file at the pull request's base, from the server's mirror; `None` when it is absent or
+/// empty there.
+async fn base_profile(state: &AppState, pr: &PrSummary) -> Result<Option<String>, MirrorError> {
+    let mirror = mirror::ensure_commits(&state.config, &pr.repo, &[&pr.base_sha]).await?;
+    let bytes = mirror::read_blob(&mirror, &pr.base_sha, analysis::tech::PROFILE_PATH).await?;
+    Ok(bytes
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|text| !text.trim().is_empty()))
 }
 
 /// The owner's question with the earlier questions of its thread.
