@@ -27,17 +27,86 @@ A virtual key is a `Secret` delivered only to the runner for its tmpfs file; it 
 
 ## Persistence and cut-over
 
-`0030_v13_containers.sql` starts with a temporary `CHECK (n = 0)` table receiving the count of **each** rebuilt
-and dropped table: llm_credentials, installation_tokens, job_events, jobs, comment_assessments and working_sessions. A non-zero
-count aborts the migration transaction before any destructive statement. Start with a new empty database;
-never empty an existing production database to bypass this guard. W10 imports only non-secret settings.
+The owner's 2026-11-23 decision supersedes the empty-database/guarded-0030 and D18 export/import cut-over.
+`0030_v13_containers.sql` upgrades the existing database in place: SQLx's migration transaction deletes all
+old analysis/runtime tables' rows and rebuilds the container tables with foreign keys enabled. A failure rolls
+back both cleanup and schema changes; a fresh database follows the same migration path. Do not run an
+additional purge or settings import. Migrations 0001–0029 remain unchanged; only unmerged 0030 is edited.
+
+The keep list preserves complete rows byte-for-byte, including stored GitHub authentication, cookie/OAuth
+sign-in state, PAT hashes, channel/push secrets and existing configuration bookkeeping. No credential value is
+read, decrypted, exported or logged by 0030. Repository/PR identity and metadata stay so watches keep their
+original foreign keys. The only retained-table schema change removes the three legacy PR thread columns.
+Codex credentials are the explicit exception: `llm_credentials` is rebuilt empty and plan-only (CCR10);
+every user must link Codex again through the gateway. No legacy credential is adopted.
+
+The following inventory covers every application table in 0001–0030; “clean” means empty after migration,
+and “new” means created empty. Settings stored outside SQLite are untouched.
+
+| ID | Table | Action | Reason |
+|---|---|---|---|
+| M01 | `access_tokens` | Keep | PAT identity, hashes, scopes and revocation state. |
+| M02 | `agent_subscriptions` | Keep | PAT subscription capabilities and webhook/push configuration, including encrypted secret. |
+| M03 | `analyses` | Clean | Old analyses, progress and payer-free runtime. |
+| M04 | `analytic_threads` | New | Per-payer analytic thread checkpoints. |
+| M05 | `assessment_attempt_usage` | New | New attempt metering. |
+| M06 | `assessment_comparison_items` | New | New normalized A/B comparisons. |
+| M07 | `assessment_config` | New | New assessment configuration; defaults apply until saved. |
+| M08 | `assessment_daily_usage` | New | New atomic UTC quota counters. |
+| M09 | `assessment_method_runs` | New | New independent method runs. |
+| M10 | `assessment_owner_decisions` | New | New assessment owner-history attribution. |
+| M11 | `assessment_passes` | New | New frozen assessment inputs. |
+| M12 | `comment_assessments` | Clean | Drop/recreate empty with method/pass attribution. |
+| M13 | `comment_carry_events` | Clean | Old decision carry history. |
+| M14 | `comment_decision_undos` | Clean | Old decision undos. |
+| M15 | `comment_decisions` | Clean | Old review-loop decisions and feed tasks. |
+| M16 | `comment_effect_reports` | Clean | Old executor/idempotency reports. |
+| M17 | `comment_effects` | Clean | Old effect claims, leases and outcomes. |
+| M18 | `comment_item_skips` | Clean | Old item queue state. |
+| M19 | `comment_items` | Clean | Old findings/items; add source/quote/duplicate columns to empty table. |
+| M20 | `comment_passes` | Clean | Old comment assessment queue and quota history. |
+| M21 | `comment_prs` | Clean | Old GitHub comment snapshots, purposes, round/item counters. |
+| M22 | `comment_requests` | Clean | Old analysis comment request idempotency/cache. |
+| M23 | `comment_sources` | New | New versioned source/read cache. |
+| M24 | `controlled_owners` | Keep | Installation controlled owners. |
+| M25 | `controlled_owners_changed` | Keep | Settings editor and timestamp. |
+| M26 | `dashboard_hidden_mentions` | Keep | User visibility preference. |
+| M27 | `dashboard_judgements` | Clean | Old ranking/judgement cache. |
+| M28 | `dashboard_refreshes` | Clean | Old scans, snapshots, rankings and send counters (including 0029 automatic refreshes). |
+| M29 | `dashboard_settings` | Keep | Linked logins, repositories/aliases, release branches, ignored checks, ownership policy, skip authors, lookback, labels, TODO/MemCan options, bots, Slack names, schedule and time zone. |
+| M30 | `dashboard_snoozes` | Keep | Active and ended snoozes; unchanged schema. |
+| M31 | `documents` | Clean | All analysis outputs, flows, context and snapshot/profile caches. |
+| M32 | `feedback` | Clean | Old analysis feedback and MemCan write queue. |
+| M33 | `flow_work` | Clean | Old flow queue, retries and failures. |
+| M34 | `installation_tokens` | Clean | Drop/recreate empty; old per-job tokens are runtime data. |
+| M35 | `job_events` | Clean | Drop/recreate empty; old attempt logs. |
+| M36 | `jobs` | Clean | Drop/recreate empty with payer/container identity. |
+| M37 | `llm_credentials` | Clean | Drop/recreate empty plan-only status; gateway relinking required. |
+| M38 | `llm_selection` | Keep | Installation model, reasoning effort, Ask effort and judge effort. |
+| M39 | `memberships` | Keep | Tenant membership. |
+| M40 | `notification_channels` | Keep | Channel URLs/topics, enabled events and encrypted secrets. |
+| M41 | `notification_deliveries` | Clean | Old user/decision delivery queue and retries. |
+| M42 | `notification_sends` | Clean | Old delivery/rate-limit history. |
+| M43 | `oauth_logins` | Keep | In-progress sign-in state and encrypted PKCE verifier. |
+| M44 | `pr_watches` | Keep | Watched PRs and their saved state; unchanged schema. |
+| M45 | `pull_requests` | Keep; schema change | Keep identity/metadata; drop agent_thread_id, analytic_generation and session_state. |
+| M46 | `questions` | Clean | Old Ask/review questions, answers and threads. |
+| M47 | `repos` | Keep | Repository identity and GitHub installation mapping for retained PRs. |
+| M48 | `review_states` | Clean | Old analysis review progress. |
+| M49 | `sessions` | Keep | Browser sign-in sessions, token hashes and CSRF state (not agent threads). |
+| M50 | `tenant_allowed_logins` | Keep | Allow-list and bound GitHub identities. |
+| M51 | `tenants` | Keep | Tenant identity. |
+| M52 | `user_events` | Clean | Old browser events and round notification deduplication. |
+| M53 | `user_tokens` | Keep | Stored encrypted GitHub access/refresh tokens and refresh version. |
+| M54 | `users` | Keep | User IDs, linked GitHub identity, profile and language. |
+| M55 | `working_sessions` | Clean | Drop/recreate empty Ask/verify threads; no old runtime session adoption. |
 
 Jobs store payer and PR container identity; partial unique indexes enforce one claimed/running job per
 (PR,payer), or per payer for judge_work. Target triggers keep a job's explicit PR equal to its analysis/pass PR.
 The two shapes are independent: a payer's judge worker and PR worker may each own a job.
 `analytic_threads` is keyed by (PR,user), and last-context generation must equal its analytic generation.
 Working sessions are keyed by (PR,user,kind), preserving separate analytic Ask and review Ask threads.
-This requires rebuilding the empty working_sessions table as well. Working preflight is bound to seed, generation and immutable kind; repository acknowledgement additionally
+Migration 0030 cleans and rebuilds working_sessions as well. Working preflight is bound to seed, generation and immutable kind; repository acknowledgement additionally
 matches thread id. No `comment_reports` table or legacy credential adoption exists.
 
 `Db::container_sessions()` exposes generation-CAS checkpoints and fenced preflight acknowledgement.

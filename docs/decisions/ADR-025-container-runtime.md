@@ -33,8 +33,14 @@ fences; only the primary changes visible items and effects. The secondary stores
 logical pass, including a pair, consumes one of 80 UTC daily slots atomically with all method jobs; retries keep
 the same pass/day. Actual owner decision revisions are append-only comparison truth.
 
-The v1.3 cut-over starts empty. Guarded migration 0030 refuses non-empty rebuilt tables atomically; settings
-carry-over is W10 and excludes secrets. Database code and transactions remain behind the db repository API.
+The owner's 2026-11-23 cut-over decision supersedes the empty start, guarded 0030 and D18/W10 settings
+export/import. Migration 0030 upgrades the existing database in place, atomically cleaning analysis/runtime
+data while preserving users, sign-in/GitHub auth, tenants/allow-list, installation and dashboard settings,
+channels, PAT/webhook configuration, watches and snoozes. The complete keep/clean inventory is in the
+[container contracts](../contracts/containers.md#persistence-and-cut-over). No stored auth is read or logged.
+Old Codex credentials are dropped/recreated empty and plan-only (CCR10); gateway relinking is required.
+A fresh database remains supported. Applied migrations remain append-only; 0030 is still unmerged.
+Database code and transactions remain behind the db repository API.
 
 This supersedes ADR-013 and the unmerged ADR-024 design. It amends ADR-002/003/004/005/017/023 and plan §5.4.
 `runner::provider` and `server::gateway` alone know Codex; gateway may use secrets/config/contracts but not db.

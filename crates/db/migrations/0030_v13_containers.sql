@@ -1,19 +1,35 @@
--- v1.3 requires an empty runtime database; never purge a live deployment.
-CREATE TEMP TABLE v13_empty_guard (n INTEGER NOT NULL CHECK (n = 0));
-INSERT INTO v13_empty_guard SELECT count(*) FROM llm_credentials;
-INSERT INTO v13_empty_guard SELECT count(*) FROM installation_tokens;
-INSERT INTO v13_empty_guard SELECT count(*) FROM job_events;
-INSERT INTO v13_empty_guard SELECT count(*) FROM jobs;
-INSERT INTO v13_empty_guard SELECT count(*) FROM comment_assessments;
-INSERT INTO v13_empty_guard SELECT count(*) FROM working_sessions;
-DROP TABLE v13_empty_guard;
-
+-- Owner-approved v1.3 cut-over (2026-11-23): clean runtime/analysis data in place.
+-- Identity, stored GitHub auth and configuration stay untouched; see docs/contracts/containers.md.
+-- SQLx runs the entire cleanup/rebuild atomically with foreign keys enabled. Codex must be relinked.
 DROP TABLE installation_tokens;
 DROP TABLE job_events;
 DROP TABLE jobs;
 DROP TABLE llm_credentials;
 DROP TABLE comment_assessments;
 DROP TABLE working_sessions;
+
+-- Children before parents; keep PR/repository identity so watches retain their original keys.
+DELETE FROM notification_deliveries;
+DELETE FROM notification_sends;
+DELETE FROM user_events;
+DELETE FROM comment_effect_reports;
+DELETE FROM comment_effects;
+DELETE FROM comment_carry_events;
+DELETE FROM comment_decision_undos;
+DELETE FROM comment_item_skips;
+DELETE FROM comment_decisions;
+DELETE FROM comment_passes;
+DELETE FROM questions;
+DELETE FROM comment_items;
+DELETE FROM comment_prs;
+DELETE FROM documents;
+DELETE FROM review_states;
+DELETE FROM feedback;
+DELETE FROM comment_requests;
+DELETE FROM flow_work;
+DELETE FROM analyses;
+DELETE FROM dashboard_judgements;
+DELETE FROM dashboard_refreshes;
 
 -- Only non-secret ChatGPT-plan status is stored; rotation state stays gateway-only.
 CREATE TABLE llm_credentials (

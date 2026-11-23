@@ -1,7 +1,7 @@
 # Runner protocol (v1)
 
 > v1.3 common amendment: [container contracts](containers.md) and [ADR-025](../decisions/ADR-025-container-runtime.md)
-> govern payer/container identity, gateway boundaries, guarded 0030 and report 4.2. Runtime integration is
+> govern payer/container identity, gateway boundaries, in-place 0030 cleanup and report 4.2. Runtime integration is
 > owned by W3/W4/W5/W8; the older runtime description below applies until those packages replace it.
 
 

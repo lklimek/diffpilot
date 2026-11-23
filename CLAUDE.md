@@ -24,7 +24,9 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   fake provider and configured MemCan stay. Auth tests are fake-only; gateway lifecycle follows ADR-025.
 - KL1-A selects gateway-run ChatGPT-plan device linking only; CCR10 rejects API keys, secrets and base URLs.
 - CCR11–CCR13 freeze dual-method assessment passes with primary-only effects and atomic 80/day UTC quota.
-- Start v1.3 with an empty DB; guarded 0030 refuses non-empty rebuilt tables. Migrations remain append-only.
+- Owner decision 2026-11-23: 0030 upgrades the existing DB in place, cleaning analysis/runtime data while
+  preserving settings, identity and GitHub auth (table inventory: container contracts). Codex relinking is required.
+  Only unmerged 0030 may be edited; applied migrations remain append-only.
 
 ## Architecture rules (never break; details in plan §3–§5)
 - Crates: `contracts` (wire types, no IO) <- `analysis`, `db`, `runner`; `server` -> `contracts`, `analysis`, `db`.

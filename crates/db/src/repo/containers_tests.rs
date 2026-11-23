@@ -15,50 +15,6 @@ async fn containers_schema_exists_on_fresh_database() {
 }
 
 #[tokio::test]
-async fn container_migration_refuses_nonempty_rebuilt_tables_without_destroying_data() {
-    for table in [
-        "llm_credentials",
-        "jobs",
-        "installation_tokens",
-        "job_events",
-        "comment_assessments",
-        "working_sessions",
-    ] {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        migrate(&pool, MIGRATIONS.len() - 1).await.unwrap();
-        // Isolate the guard from legacy foreign-key and row-shape constraints.
-        sqlx::query("PRAGMA foreign_keys=OFF")
-            .execute(&pool)
-            .await
-            .unwrap();
-        let sql = format!(
-            "DROP TABLE {table}; CREATE TABLE {table} (sentinel TEXT); INSERT INTO {table} VALUES ('keep');"
-        );
-        sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
-            .execute(&pool)
-            .await
-            .unwrap();
-        assert!(migrate(&pool, MIGRATIONS.len()).await.is_err(), "{table}");
-        let kept: String =
-            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT sentinel FROM {table}")))
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(kept, "keep");
-        let exists: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE name='analytic_threads'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(exists, 0, "guard must run first for {table}");
-    }
-}
-
-#[tokio::test]
 async fn container_sessions_fence_generation_and_compaction_acknowledgements() {
     use super::container_sessions::{AnalyticThread, WorkingThread};
     use contracts::{

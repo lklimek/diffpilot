@@ -214,7 +214,7 @@ async fn migration_0010_on_a_seeded_v9_database() {
         .await
         .expect("prepared before");
 
-    // Pin the historical migration: v1.3 deliberately refuses a populated runtime database.
+    // Pin the historical migration: the later v1.3 cut-over intentionally cleans runtime data.
     migrate(&old, 10).await.expect("0010 applies");
     let version_after: i64 = sqlx::query_scalar("PRAGMA schema_version")
         .fetch_one(&mut *held)

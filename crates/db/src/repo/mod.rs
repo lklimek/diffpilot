@@ -44,6 +44,8 @@ mod concurrency_tests;
 #[cfg(test)]
 mod containers_tests;
 #[cfg(test)]
+mod migration_0030_tests;
+#[cfg(test)]
 mod schema_tests;
 
 /// Test helpers shared by dependent crates.
@@ -69,6 +71,30 @@ pub mod testing {
         busy_timeout: Duration,
     ) -> Result<Db, DbError> {
         Db::open_with(&dir.join("diffpilot.sqlite"), busy_timeout).await
+    }
+
+    /// Creates a populated pre-0030 database with synthetic auth, for migration/startup tests only.
+    pub async fn pre_container_database(path: &Path) -> Result<(), DbError> {
+        let options = super::SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .journal_mode(super::SqliteJournalMode::Wal)
+            .foreign_keys(true);
+        let pool = super::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        super::migrate(&pool, super::MIGRATIONS.len() - 1).await?;
+        sqlx::raw_sql(include_str!("../../tests/fixtures/pre_0030.sql"))
+            .execute(&pool)
+            .await?;
+        // Keep the synthetic browser session live regardless of when the fixture is used.
+        sqlx::query("UPDATE sessions SET last_seen_at = ?")
+            .bind(super::jobs::ts(contracts::time::Timestamp::now()))
+            .execute(&pool)
+            .await?;
+        pool.close().await;
+        Ok(())
     }
 
     /// Makes the next `count` writes of a pass's job link change nothing (so each reports a conflict), as links
