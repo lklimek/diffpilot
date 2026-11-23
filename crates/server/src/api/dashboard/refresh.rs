@@ -198,18 +198,17 @@ async fn current_view(
     else {
         return Ok(None);
     };
-    let overlay = state.plugins.overlay(state.dashboard.now());
     let judgements: HashMap<ItemKey, ItemJudgement> = state
         .dashboard
         .ranker()
-        .judgements(state, scope, &snapshot, &overlay)
+        .judgements(state, scope, &snapshot)
         .await?;
     let older = judgements.values().filter(|j| j.older_prompt).count();
     let view = snapshot::build(
         &snapshot,
         &judgements,
         state.config.memcan_ui_url.as_deref(),
-        &overlay,
+        &state.plugins.overlay(state.dashboard.now()),
     );
     Ok(Some((
         snapshot::revision(&record, &snapshot, &view),
