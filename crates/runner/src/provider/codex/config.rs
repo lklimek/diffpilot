@@ -107,6 +107,7 @@ hooks = false
 tool_suggest = false
 goals = false
 daemon_auto_start = false
+multi_agent_v2 = false
 {extra_features}"#,
         model = toml_string(&model.model),
     );
@@ -444,7 +445,8 @@ required = false
     }
 
     /// Sub-agents off (ADR-002): `[agents] enabled = false` also wins over a model whose catalog entry selects
-    /// sub-agents; the deprecated `features.multi_agent` does not, and Codex 0.168+ warns about it on every job.
+    /// sub-agents, unless `features.multi_agent_v2` is on, so that is pinned off; the deprecated
+    /// `features.multi_agent` does neither, and Codex 0.168+ warns about it on every job.
     #[test]
     fn every_job_config_disables_sub_agents() {
         for answer_only in [false, true] {
@@ -457,7 +459,16 @@ required = false
                 answer_only,
             );
             assert!(config.contains("\n[agents]\nenabled = false\n"), "{config}");
-            assert!(!config.contains("multi_agent"), "{config}");
+            let features = &config[config.find("\n[features]\n").expect("a features table")..];
+            let features = &features[..features[1..].find("\n[").map_or(features.len(), |i| i + 1)];
+            assert!(
+                features.lines().any(|l| l == "multi_agent_v2 = false"),
+                "{config}"
+            );
+            assert!(
+                !config.lines().any(|l| l.starts_with("multi_agent =")),
+                "{config}"
+            );
         }
     }
 
