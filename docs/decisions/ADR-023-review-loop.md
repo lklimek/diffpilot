@@ -133,8 +133,9 @@ read with tokens (ADR-019).
   `human`, `bot` or `owner` = the PR's author) and `earlier_replies`, from the replies the Q-L2 read already holds,
   for open threads.
   `EarlierDecision.decision` is null when a reply in the item's thread records the maintainer's decision ("maintainer
-  decision", "deferred", "won't fix"); `reason` then quotes it. Bot bodies lose HTML, `<details>` sections and agent
-  prompts; the description loses CodeRabbit's summary and the PR Hygiene block. Stored texts and hashes are unchanged.
+  decision", "deferred", "won't fix"); `reason` then quotes it. Bot bodies lose HTML, `<details>` sections (a
+  suggested fix keeps its summary and code) and agent prompts; code spans are kept as written; the description loses
+  CodeRabbit's summary and the PR Hygiene block. Stored texts and hashes are unchanged.
 - **Prompt v4** states the gates, the category catalogue, the necessity rule and the checking rules itself and the
   job mounts no skill (ADR-002 amendment 2026-11-23). `resolve` names a commit in `<commit>..HEAD`.
 - **Fingerprint** format 2: purpose hash of the cleaned description, the item's comment, its bot status class, the
