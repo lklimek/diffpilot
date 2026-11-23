@@ -128,3 +128,109 @@ async fn pr_hygiene_history_is_cached_until_the_record_changes_and_failure_keeps
             .contains(&"Stage history: unavailable".to_owned())
     );
 }
+
+#[tokio::test]
+async fn pr_hygiene_slow_history_keeps_notes_and_thepastaclaw_within_poll_budget() {
+    use crate::dashboard::plugin::thepastaclaw::Thepastaclaw;
+    use crate::test_support::thepastaclaw::{FakeThepastaclaw, active, status};
+
+    let records: Vec<_> = (1..=132)
+        .map(|number| {
+            record(
+                "acme/node-client",
+                number,
+                Some("waiting-author"),
+                "Review needed",
+            )
+        })
+        .collect();
+    let fake = FakePrHygiene::start(&now().to_string(), records).await;
+    for number in 1..=132 {
+        fake.set_detail(
+            "acme/node-client",
+            number,
+            json!({
+                "generated_at": now(), "pr": {"repo": "acme/node-client", "number": number},
+                "stage_changes": [], "stale": false
+            }),
+        );
+    }
+    fake.set_detail_delay(Duration::from_millis(600));
+    let claw = FakeThepastaclaw::start(status(
+        &now().to_string(),
+        vec![active("acme/node-client", 1, 42, "phase1", 5)],
+        vec![],
+    ))
+    .await;
+    let host = PluginHost::new(
+        vec![
+            Arc::new(PrHygiene::new(fake.url.clone()).expect("hygiene")),
+            Arc::new(Thepastaclaw::new(claw.url.clone()).expect("thepastaclaw")),
+        ],
+        Timing::default(),
+    );
+
+    for pass in 0..2 {
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(3), host.poll_once(now()))
+            .await
+            .expect("optional history must not block aggregate notes or thepastaclaw");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(
+            host.statuses(now())
+                .iter()
+                .all(|s| s.state == PluginState::Current)
+        );
+        let overlay = host.overlay(now());
+        let mut with_history = 0;
+        let mut without_history = 0;
+        for number in 1..=132 {
+            let notes = overlay.notes(&repo("acme", "node-client"), number);
+            let note = notes
+                .iter()
+                .find(|note| note.plugin == "pr-hygiene")
+                .expect("core note");
+            assert_eq!(
+                note.summary.as_deref(),
+                Some(if pass == 0 {
+                    "Review needed"
+                } else {
+                    "Updated action"
+                })
+            );
+            with_history += usize::from(note.details.contains(&"Stale: No".to_owned()));
+            without_history += usize::from(
+                note.details
+                    .contains(&"Stage history: unavailable".to_owned()),
+            );
+        }
+        assert!(
+            with_history > 0,
+            "completed history survives the shared deadline"
+        );
+        assert!(without_history > 0, "pending history is optional");
+        assert_eq!(with_history + without_history, 132);
+        assert!(
+            overlay
+                .notes(&repo("acme", "node-client"), 1)
+                .iter()
+                .any(|note| note.plugin == "thepastaclaw")
+        );
+        assert_eq!(claw.served().len(), pass + 1);
+        let started_details = fake
+            .served()
+            .iter()
+            .filter(|s| s.path.starts_with("/api/v1/prs/"))
+            .count();
+        assert!(
+            started_details <= 16 * (pass + 1),
+            "history concurrency is bounded"
+        );
+
+        let mut prs = fake.prs();
+        for record in prs["prs"].as_array_mut().expect("records") {
+            record["next_action"] = json!("Updated action");
+        }
+        fake.set_prs(prs);
+    }
+}

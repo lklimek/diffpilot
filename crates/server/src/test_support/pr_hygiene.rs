@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Request, State};
@@ -31,6 +32,7 @@ struct World {
     prs: Value,
     stages: Value,
     details: HashMap<String, Value>,
+    detail_delay: Duration,
     status: Option<StatusCode>,
     raw: Option<String>,
     served: Vec<Served>,
@@ -114,6 +116,11 @@ impl FakePrHygiene {
             .insert(format!("/api/v1/prs/{repo}/{number}"), body);
     }
 
+    /// Delays every per-PR response without delaying the aggregate endpoints.
+    pub(crate) fn set_detail_delay(&self, delay: Duration) {
+        self.world().detail_delay = delay;
+    }
+
     /// The `/prs` body.
     pub(crate) fn prs(&self) -> Value {
         self.world().prs.clone()
@@ -136,6 +143,20 @@ impl FakePrHygiene {
 }
 
 async fn serve(State(world): State<Arc<Mutex<World>>>, request: Request) -> Response {
+    let delay = if request.uri().path().starts_with("/api/v1/prs/") {
+        world
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .detail_delay
+    } else {
+        Duration::ZERO
+    };
+    let response = respond(&world, request);
+    tokio::time::sleep(delay).await;
+    response
+}
+
+fn respond(world: &Mutex<World>, request: Request) -> Response {
     let path = request.uri().path().to_owned();
     let if_none_match = request
         .headers()

@@ -7,6 +7,7 @@
 mod context;
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use contracts::api::dashboard::Fact;
 use contracts::time::Timestamp;
@@ -18,6 +19,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
+use tokio::time::{Instant, timeout_at};
 use url::Url;
 
 use super::fetch::{self, Answer};
@@ -32,6 +34,8 @@ const READY_TO_MERGE: &str = "ready-to-merge";
 const PEOPLE_OWNERS: [&str; 2] = ["reviewers", "maintainers"];
 /// Values of a record that change with time alone, left out of its change mark.
 const TIME_ONLY: [&str; 2] = ["lateness", "idle"];
+/// Optional history must leave time for the aggregate notes and the other plug-ins.
+const HISTORY_BUDGET: Duration = Duration::from_secs(2);
 
 /// The PR Hygiene service at a base URL.
 #[derive(Debug)]
@@ -182,15 +186,14 @@ impl PrHygiene {
                 Some((key.clone(), statement.mark.clone()))
             })
             .collect();
-        let results = stream::iter(pending)
+        let deadline = Instant::now() + HISTORY_BUDGET;
+        let mut results = stream::iter(pending)
             .map(|(key, mark)| async move {
                 let path = format!("api/v1/prs/{}/{}/{}", key.owner, key.name, key.number);
                 (key, mark, self.get::<DetailBody>(&path, None).await)
             })
-            .buffer_unordered(4)
-            .collect::<Vec<_>>()
-            .await;
-        for (key, mark, result) in results {
+            .buffer_unordered(4);
+        while let Ok(Some((key, mark, result))) = timeout_at(deadline, results.next()).await {
             if let Ok(Answer::Body { body, .. }) = result
                 && body
                     .pr

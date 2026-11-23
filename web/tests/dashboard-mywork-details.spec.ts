@@ -1,6 +1,18 @@
 import { expect, test } from "./fixtures";
 import { expectAccessible } from "./screens-support";
 
+test("long PR Hygiene tooltip fits a 320 px viewport with 16 px gutters", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.goto("/?dashboard=mywork-details");
+  const note = page.getByRole("note", { name: "PR Hygiene statement for NC-482" });
+  await note.focus();
+  const tip = page.getByRole("tooltip");
+  await expect(tip).toContainText("Latest review by alice: Approved");
+  const bounds = (await tip.boundingBox())!;
+  expect(bounds.x).toBeGreaterThanOrEqual(16);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(304);
+});
+
 for (const colorScheme of ["light", "dark"] as const) {
   test(`My work Comments action and PR Hygiene context (${colorScheme})`, async ({ page }) => {
     await page.emulateMedia({ colorScheme });
