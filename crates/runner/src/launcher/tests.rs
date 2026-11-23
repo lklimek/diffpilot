@@ -231,6 +231,8 @@ async fn startup_reconciliation_stops_all_and_removes_retired() {
             serve::write_message(
                 &mut socket,
                 &LauncherResponse {
+                    error: None,
+                    fetch: None,
                     id: request.id,
                     workers,
                 },
@@ -506,6 +508,8 @@ async fn relay_forwards_stdout_only_and_keeps_worker_warm() {
 async fn reconciliation_list_can_exceed_the_request_size_limit() {
     let (mut tx, mut rx) = tokio::net::UnixStream::pair().unwrap();
     let response = contracts::launcher::LauncherResponse {
+        error: None,
+        fetch: None,
         id: "list".into(),
         workers: (1..=300)
             .map(|pull_request_id| contracts::launcher::WorkerStatus {
@@ -1363,4 +1367,131 @@ async fn ensure_refuses_when_every_running_slot_is_attached() {
             .iter()
             .all(|r| r.method == "GET")
     );
+}
+
+#[tokio::test]
+async fn client_preserves_correlated_typed_launcher_failure() {
+    use contracts::launcher::{LauncherAction, LauncherFailure, LauncherRequest, LauncherResponse};
+    let temp = tempfile::TempDir::new().unwrap();
+    let path = temp.path().join("launcher.sock");
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let request: LauncherRequest = serve::read_message(&mut socket).await.unwrap();
+        serve::write_message(
+            &mut socket,
+            &LauncherResponse {
+                id: request.id,
+                workers: vec![],
+                fetch: None,
+                error: Some(LauncherFailure::Busy),
+            },
+        )
+        .await
+        .unwrap();
+    });
+    let result = Client::new(&path)
+        .call(LauncherRequest {
+            id: "ensure".into(),
+            action: LauncherAction::Ensure {
+                container: pr(),
+                memcan: None,
+            },
+        })
+        .await;
+    assert!(matches!(result, Err(Error::Remote(LauncherFailure::Busy))));
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn fetch_reports_sources_resolved_without_a_lock_file() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let (server, launcher) = fake_launcher().await;
+    mock_runtime(&server).await;
+    for (verb, route, response) in [
+        (
+            "GET",
+            r"/containers/v13w3-test-fetch-7-3/json$",
+            ResponseTemplate::new(404),
+        ),
+        (
+            "POST",
+            r"/containers/create$",
+            ResponseTemplate::new(201)
+                .set_body_json(serde_json::json!({"Id":"fetch","Warnings":[]})),
+        ),
+        (
+            "POST",
+            r"/containers/v13w3-test-fetch-7-3/start$",
+            ResponseTemplate::new(204),
+        ),
+        (
+            "POST",
+            r"/containers/v13w3-test-fetch-7-3/wait$",
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"StatusCode":0})),
+        ),
+        (
+            "DELETE",
+            r"/containers/v13w3-test-fetch-7-3$",
+            ResponseTemplate::new(204),
+        ),
+    ] {
+        Mock::given(method(verb))
+            .and(path_regex(route))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+    }
+    let marker = b"dependency sources resolved without a lock file\n";
+    let mut frame = vec![1, 0, 0, 0];
+    frame.extend_from_slice(&(marker.len() as u32).to_be_bytes());
+    frame.extend_from_slice(marker);
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/v13w3-test-fetch-7-3/logs$"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(frame, "application/vnd.docker.raw-stream"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    assert_eq!(
+        launcher.fetch(&pr()).await.unwrap(),
+        contracts::launcher::DependencySources::ResolvedWithoutLock
+    );
+}
+
+#[tokio::test]
+async fn service_replies_with_safe_error_before_any_relay_upgrade() {
+    use contracts::launcher::{LauncherAction, LauncherFailure, LauncherRequest, LauncherResponse};
+    let (_server, launcher) = fake_launcher().await;
+    let (socket, mut client) = tokio::net::UnixStream::pair().unwrap();
+    let handler = tokio::spawn(serve::connection(
+        socket,
+        std::sync::Arc::new(tokio::sync::Mutex::new(launcher)),
+    ));
+    serve::write_message(
+        &mut client,
+        &LauncherRequest {
+            id: "bad-worker".into(),
+            action: LauncherAction::Ensure {
+                container: ContainerId::Pr {
+                    pull_request_id: -1,
+                    payer: UserId("payer".into()),
+                },
+                memcan: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let response: LauncherResponse = serve::read_message(&mut client).await.unwrap();
+    assert_eq!(response.id, "bad-worker");
+    assert_eq!(response.error, Some(LauncherFailure::InvalidTemplate));
+    assert!(matches!(
+        handler.await.unwrap(),
+        Err(Error::InvalidTemplate)
+    ));
 }

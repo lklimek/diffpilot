@@ -130,6 +130,7 @@ impl LlmProvider for Scripted {
                 .send(ProviderEvent::OutputReady(self.output.clone()))
                 .await;
             Ok(ProviderOutcome {
+                runtime_session: None,
                 session_turns: None,
                 output: self.output.clone(),
                 session_id: Some("thread-1".to_owned()),

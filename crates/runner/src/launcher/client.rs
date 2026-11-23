@@ -51,6 +51,9 @@ impl Client {
         if response.id != request.id {
             return Err(Error::Protocol);
         }
+        if let Some(error) = response.error {
+            return Err(Error::Remote(error));
+        }
         Ok((socket, response))
     }
 
