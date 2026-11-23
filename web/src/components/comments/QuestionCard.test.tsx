@@ -90,23 +90,28 @@ describe("QuestionCard (plan §3.2)", () => {
     expectTrustWording(document.body.textContent ?? "");
   });
 
-  it("names the round a comment was raised in with that round's commit, not the head of the first read", () => {
+  it("names a round only for a comment its round's review raised; any other where GitHub says it was written", () => {
     const header = () => screen.getByText(/^C22 · 2 of 9/);
     const c22 = byNo(22);
     const { rerender } = show({
       ...c22,
       first_round: 1,
-      first_round_commit: {
-        head: "a797ee1c0ffee000000000000000000000000000",
-        finished_at: "2026-10-26T12:00:00Z",
-      },
+      written: { round: 1, commit: "a797ee1c0ffee000000000000000000000000000", at: "2026-10-26T12:00:00Z" },
     });
     expect(header()).toHaveTextContent(/raised in round 1 on a797ee1, 26 Oct 2026/);
     expect(header()).not.toHaveTextContent(c22.first_seen_head.slice(0, 7));
-    rerender({ ...c22, first_round: 2, first_round_commit: undefined });
-    expect(header()).toHaveTextContent(/raised in round 2$/);
-    rerender({ ...c22, first_round: null, first_round_commit: undefined });
-    expect(header()).toHaveTextContent(`first seen at ${c22.first_seen_head.slice(0, 7)}`);
+    // A person's thread after round 2: its review's commit and its own time, no round.
+    rerender({
+      ...c22,
+      first_round: 2,
+      written: { commit: "52d2da140191a9d47becf6a446310be803c007fc", at: "2026-11-12T09:00:00Z" },
+    });
+    expect(header()).toHaveTextContent(/written on 52d2da1, 12 Nov 2026/);
+    expect(header()).not.toHaveTextContent(/round/);
+    rerender({ ...c22, first_round: 2, written: { at: "2026-11-12T09:05:00Z" } });
+    expect(header()).toHaveTextContent(/written 12 Nov 2026/);
+    rerender({ ...c22, first_round: 2, written: undefined });
+    expect(header()).toHaveTextContent(new RegExp(`first seen at ${c22.first_seen_head.slice(0, 7)}$`));
   });
 
   it("says validity is judged at the PR head, so a comment fixed since is not read as a mistaken reviewer", () => {

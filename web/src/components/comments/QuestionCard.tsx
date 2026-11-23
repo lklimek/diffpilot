@@ -144,27 +144,28 @@ const Row = ({ term, children }: { term: string; children: ReactNode }) => (
 );
 
 /**
- * Where the comment comes from: its bot round with that round's own commit and end, else the head diffpilot first
- * read it at (never the head of a later first read paired with an old round).
+ * Where GitHub says the comment was written: a round's own review names the round with its commit and end, any
+ * other comment its review's commit and its own time; without them the head diffpilot first read it at.
  */
 function Raised({ item }: { item: CommentItem }) {
-  const round = item.first_round_commit;
-  if (item.first_round === null)
+  const written = item.written;
+  if (!written)
     return (
       <>
         {" "}
         · first seen at <code>{item.first_seen_head.slice(0, 7)}</code>
       </>
     );
+  const on = written.commit && (
+    <>
+      {" "}
+      on <code>{written.commit.slice(0, 7)}</code>,
+    </>
+  );
   return (
     <>
-      {` · raised in round ${item.first_round}`}
-      {round && (
-        <>
-          {" "}
-          on <code>{round.head.slice(0, 7)}</code>, {dateTimeText(round.finished_at)}
-        </>
-      )}
+      {written.round !== undefined ? ` · raised in round ${written.round}` : " · written"}
+      {on} {dateTimeText(written.at)}
     </>
   );
 }

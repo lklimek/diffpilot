@@ -1108,38 +1108,51 @@ async fn pr_page_names_the_author() {
     assert_eq!(w.get(PR).await["author"], "alice");
 }
 
-/// RC4 names the commit and end of an item's first round from the read's rounds, not the head diffpilot first read
-/// it at; an item without a round has none.
+/// RC4 says where GitHub records each comment as written: a bot round's own review names that round with its head
+/// and end; any other review comment its review's commit and its own time, never a round's; a PR comment its time
+/// only.
 #[tokio::test]
-async fn items_name_the_commit_of_their_first_round() {
+async fn items_name_where_github_says_they_were_written() {
     let w = world().await;
     let rounds = w.get(&format!("{PR}/comments")).await["rounds"].clone();
     let items = w.items().await;
-    let mut named = 0;
+    let by_url = |part: &str| {
+        items
+            .iter()
+            .find(|item| item["url"].as_str().is_some_and(|url| url.ends_with(part)))
+            .unwrap_or_else(|| panic!("an item at {part}"))
+    };
+    // bob's thread in his review on 52d2da1, after rounds 1 and 2 ended: not "round 2 on 9f3c2e1".
+    assert_eq!(
+        by_url("#discussion_r3000000701")["written"],
+        json!({"commit": "52d2da140191a9d47becf6a446310be803c007fc", "at": "2026-11-12T09:00:00Z"})
+    );
+    assert_eq!(
+        by_url("#issuecomment-5000000103")["written"],
+        json!({"at": "2026-11-12T09:05:00Z"})
+    );
+    let mut in_rounds = 0;
     for item in &items {
-        match item["first_round"].as_u64() {
-            Some(number) => {
-                let round = rounds
-                    .as_array()
-                    .expect("rounds")
-                    .iter()
-                    .find(|round| round["number"] == number)
-                    .expect("its round");
-                assert_eq!(
-                    item["first_round_commit"],
-                    json!({"head": round["head"], "finished_at": round["finished_at"]}),
-                    "{item}"
-                );
-                named += 1;
-            }
-            None => assert!(item.get("first_round_commit").is_none(), "{item}"),
-        }
+        let Some(number) = item["written"]["round"].as_u64() else {
+            continue;
+        };
+        let round = rounds
+            .as_array()
+            .expect("rounds")
+            .iter()
+            .find(|round| round["number"] == number)
+            .expect("its round");
+        assert_eq!(item["author"], "thepastaclaw", "{item}");
+        assert_eq!(
+            item["written"],
+            json!({"round": number, "commit": round["head"], "at": round["finished_at"]}),
+            "{item}"
+        );
+        in_rounds += 1;
     }
-    assert!(named > 0, "the fixture has items of a round");
     assert!(
-        items.iter().any(|item| item["first_round"].is_u64()
-            && item["first_round_commit"]["head"] != item["first_seen_head"]),
-        "a round's commit differs from the head diffpilot first read"
+        in_rounds > 0,
+        "the fixture has items of a round's own review"
     );
 }
 

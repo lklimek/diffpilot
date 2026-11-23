@@ -11,7 +11,7 @@ use contracts::api::review_loop::{
     CommentItem, CommentLog, CommentsOverview, CommentsSummary, ContextQuery, DecideRest,
     DecideRestRow, DecisionBatchRow, EffectState, EffectsPreview, FeedSubscriber, FlowStepRef,
     GithubRead, ItemState, ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource,
-    PrBadgeView, PrPage, Round, RoundCommit, WatchState,
+    PrBadgeView, PrPage, Round, WatchState,
 };
 use contracts::api::tour::{CiState, Tour};
 use contracts::common::{AnnotationType, LineRange, LineSide, PrRef};
@@ -108,17 +108,11 @@ pub(crate) fn item_view(
         revision: record.revision,
         first_seen_head: record.first_seen_head.clone(),
         first_round: record.first_round,
-        first_round_commit: record.first_round.and_then(|number| {
-            let snapshot = loaded.snapshot.as_ref()?;
-            let round = snapshot
-                .rounds
-                .iter()
-                .find(|round| round.number == number)?;
-            Some(RoundCommit {
-                head: CommitSha(round.head.clone()),
-                finished_at: round.finished_at,
-            })
-        }),
+        written: loaded
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.written.get(&record.stable_key))
+            .cloned(),
         github: record.github.clone(),
         outside: record.outside.clone(),
         gone_at: record.gone_at,

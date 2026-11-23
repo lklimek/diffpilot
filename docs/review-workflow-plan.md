@@ -244,8 +244,10 @@ thepastaclaw status, the Watch toggle with its badge. Two cards side by side:
 
 ### 3.2 V1 Questions: the card (top to bottom: context, evidence, assessment, recommendation, decision)
 1. Header: `C14 · 2 of 9`; source and author ("thepastaclaw · bot · inline thread"); "raised in round 1 on a797ee1,
-   26 Oct 2026, 14:05" (the round's own commit and end, `first_round_commit`; owner 2026-11-23), else "first seen at"
-   the head of diffpilot's first read; the
+   26 Oct 2026, 14:05" for a comment of that round's own review (the round's commit and end, `written`; owner
+   2026-11-23); any other comment, a person's thread or a PR comment, "written on 52d2da1, 12 Nov 2026, 09:00" (its
+   review's commit and its own time; a PR comment has no commit), never a round it merely followed; without either
+   "first seen at" the head of diffpilot's first read; the
    bot's severity marker as a GitHub-tagged claim; gate chip; category; repeat-of link; **notes elsewhere**: icons only,
    each with an accessible name and a tooltip on hover and focus ("Flows: the LLM flagged these lines (1 flag)",
    "Files: incidental-change note", "Dependencies: 3 changed callers", "PR Hygiene: 2 blockers", "thepastaclaw:

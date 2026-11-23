@@ -130,10 +130,10 @@ function item(no: number, fields: Partial<CommentItem> & Pick<CommentItem, "titl
     ask_answers: 0,
     ...fields,
   };
-  // RC4: the first round's own commit and end, from the read's rounds.
-  const round = ROUNDS.find((r) => r.number === built.first_round);
-  return round
-    ? { ...built, first_round_commit: { head: round.head, finished_at: round.finished_at } }
+  // RC4: a comment of thepastaclaw's round review is written in that round, on its head at its end.
+  const round = built.author === "thepastaclaw" && ROUNDS.find((r) => r.number === built.first_round);
+  return round && !("written" in fields)
+    ? { ...built, written: { round: round.number, commit: round.head, at: round.finished_at } }
     : built;
 }
 
@@ -387,6 +387,7 @@ function seedItems(): CommentItem[] {
       bot_severity: null,
       stable_key: "review-77:1",
       url: `${URL_PR}#pullrequestreview-77`,
+      written: { commit: HEAD, at: "2026-11-17T15:20:00Z" },
       title: "Doc comment names the old default",
       body: "The doc comment of RetryPolicy still says 30 s.",
       location: { path: "src/config.rs", lines: { start_line: 12, end_line: 12 } },

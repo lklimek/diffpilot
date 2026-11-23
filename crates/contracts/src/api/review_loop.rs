@@ -227,11 +227,11 @@ pub struct CommentItem {
     pub first_seen_head: CommitSha,
     /// Bot round when first read; null before the first round.
     pub first_round: Option<u32>,
-    /// The commit `first_round` reviewed and when it ended, from the latest read; absent without a round or when
-    /// that read lists no such round.
+    /// Where GitHub says the comment was written, from the latest read; absent when that read gives no time (an
+    /// item it no longer produces, a read stored before this was kept).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub first_round_commit: Option<RoundCommit>,
+    pub written: Option<Written>,
     /// GitHub facts.
     pub github: ItemGithubFacts,
     /// Set when resolved outside diffpilot.
@@ -254,13 +254,20 @@ pub struct CommentItem {
     pub ask_answers: u32,
 }
 
-/// A bot round's reviewed commit and end.
+/// The commit and time a comment was written on, as GitHub records them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-pub struct RoundCommit {
-    /// Head the round reviewed.
-    pub head: CommitSha,
-    /// When the round's review was submitted.
-    pub finished_at: Timestamp,
+pub struct Written {
+    /// The bot round whose own review raised it (then `commit` and `at` are that round's head and end); absent for
+    /// any other comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub round: Option<u32>,
+    /// The commit its review was made on; absent for a PR comment or a review GitHub did not list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub commit: Option<CommitSha>,
+    /// When it was written (the review's submission, the comment's creation).
+    pub at: Timestamp,
 }
 
 /// Query of RC4.

@@ -1325,10 +1325,10 @@ first_seen_head: CommitSha,
  */
 first_round: number | null,
 /**
- * The commit `first_round` reviewed and when it ended, from the latest read; absent without a round or when
- * that read lists no such round.
+ * Where GitHub says the comment was written, from the latest read; absent when that read gives no time (an
+ * item it no longer produces, a read stored before this was kept).
  */
-first_round_commit?: RoundCommit,
+written?: Written,
 /**
  * GitHub facts.
  */
@@ -5719,19 +5719,6 @@ undecided: number,
 decisions: Array<KindCount>, };
 
 /**
- * A bot round's reviewed commit and end.
- */
-export type RoundCommit = {
-/**
- * Head the round reviewed.
- */
-head: CommitSha,
-/**
- * When the round's review was submitted.
- */
-finished_at: string, };
-
-/**
  * Kind of rule.
  */
 export type RuleKind = "path_glob" | "line_regex" | "lexer" | "header" | "binary";
@@ -6643,3 +6630,21 @@ watched?: boolean,
  * Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
  */
 plugin_notes?: Array<PluginNote>, };
+
+/**
+ * The commit and time a comment was written on, as GitHub records them.
+ */
+export type Written = {
+/**
+ * The bot round whose own review raised it (then `commit` and `at` are that round's head and end); absent for
+ * any other comment.
+ */
+round?: number,
+/**
+ * The commit its review was made on; absent for a PR comment or a review GitHub did not list.
+ */
+commit?: CommitSha,
+/**
+ * When it was written (the review's submission, the comment's creation).
+ */
+at: string, };
