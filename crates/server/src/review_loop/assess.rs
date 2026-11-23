@@ -22,7 +22,7 @@ use contracts::agent::verify_comments::{
 use contracts::agent::{self as agent, JobKind, StrictSchemaError};
 use contracts::api::pr::PrSummary;
 use contracts::api::questions::AskAnchor;
-use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemState};
+use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemState, Written};
 use contracts::common::LlmLanguage;
 use contracts::ids::{CommentItemId, CommitSha, JobId, PassId, QuestionId};
 use contracts::job::access::AgentAccess;
@@ -238,6 +238,10 @@ async fn request(
         .as_ref()
         .map(|snapshot| snapshot.item_context.clone())
         .unwrap_or_default();
+    let written = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.written.clone())
+        .unwrap_or_default();
     let purpose = purpose_hash(&record.pr.title, description.as_deref());
     let mut code = CodeReader::new(state, &record.pr);
     let mut sent = Vec::new();
@@ -319,7 +323,10 @@ async fn request(
         project_profile: analysis.profile,
         items: sent_items
             .iter()
-            .map(|item| with_context(verify_item(item), contexts.get(&item.stable_key)))
+            .map(|item| {
+                let key = &item.stable_key;
+                with_context(verify_item(item), contexts.get(key), written.get(key))
+            })
             .collect(),
         earlier_decisions: earlier_decisions(state, pr, &sent_items, &contexts).await?,
         question: match &question {
@@ -434,7 +441,7 @@ fn purpose_hash(title: &str, description: Option<&str>) -> String {
 }
 
 /// SHA-256 hex of the PR purpose (`purpose_hash`), the normalised comment text, the bot's status, the item's context
-/// from the read (commit, replies) and the code at its lines; code that cannot be read counts as changed at every new
+/// from the read (replies) and the code at its lines; code that cannot be read counts as changed at every new
 /// head. The prompt version is compared beside it; the claudius skills commit is provenance only, never part of it
 /// (Q28).
 fn fingerprint(
@@ -590,10 +597,17 @@ pub(crate) fn verify_item(item: &ItemRecord) -> VerifyItem {
     }
 }
 
-/// `item` with its commit and the replies of its thread from the last read.
-fn with_context(mut item: VerifyItem, context: Option<&ItemContext>) -> VerifyItem {
+/// `item` with the commit it was written on (the queue's `written` fact) and the replies of its thread from the last
+/// read.
+fn with_context(
+    mut item: VerifyItem,
+    context: Option<&ItemContext>,
+    written: Option<&Written>,
+) -> VerifyItem {
+    item.commit = written
+        .and_then(|written| written.commit.as_ref())
+        .map(|commit| commit.0.clone());
     if let Some(context) = context {
-        item.commit.clone_from(&context.commit);
         item.replies.clone_from(&context.replies);
         item.earlier_replies = context.earlier_replies;
     }

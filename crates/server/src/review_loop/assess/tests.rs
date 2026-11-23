@@ -309,15 +309,17 @@ async fn item_by(
 }
 
 /// Stores a read of the pull request with `description` and the context of items by key.
-async fn store_read(state: &AppState, description: &str, context: Value) {
-    let snapshot = json!({
+async fn store_read(state: &AppState, description: &str, extra: Value) {
+    let mut snapshot = json!({
         "title": "Retry RPC calls", "description": description,
         "url": "https://github.com/acme/node-client/pull/482", "state": "OPEN", "draft": false,
         "base": "main", "head": HEAD, "base_sha": BASE, "rounds": [], "gate": null,
         "bot_change_requests": [], "changes_requested_by": [], "ci": null, "counts": [1, 0, 0],
         "complete": true, "unresolved_threads": 1, "thread_ids": {}, "review_ids": {},
-        "item_context": context,
     });
+    if let (Some(fields), Some(extra)) = (snapshot.as_object_mut(), extra.as_object()) {
+        fields.extend(extra.clone());
+    }
     state
         .db
         .review_loop()
@@ -344,8 +346,9 @@ async fn pass_input(state: &AppState, pass: &PassRecord) -> VerifyCommentsInput 
     VerifyCommentsInput::from_prompt(&job.spec.prompt).expect("input in the prompt")
 }
 
-/// Comparison report R2, R3: the input has a bot's comment without HTML, `<details>` and its prompt for AI agents,
-/// the description without the PR Hygiene block, the bot's status and the thread's replies, and a reply that
+/// Comparison report R2, R3 and spike S13-3 O10: the input has a bot's comment without HTML, `<details>` and its
+/// prompt for AI agents, the description without the PR Hygiene block, the bot's status, the commit of the read's
+/// `written` fact and the thread's replies, and a reply that
 /// records a maintainer's decision as an earlier decision; a hygiene update is no change of the PR's purpose.
 #[tokio::test]
 async fn pass_input_is_clean_and_carries_the_reply_chain() {
@@ -355,7 +358,10 @@ async fn pass_input_is_clean_and_carries_the_reply_chain() {
     store_read(
         &f.state,
         "Retries timed-out calls.\n\n<!-- pr-hygiene:start -->\n# PR Hygiene · `52d2da1`\n<!-- pr-hygiene:end -->",
-        json!({"rabbit": {"commit": "e1525efb", "replies": [reply.clone()], "earlier_replies": 0}}),
+        json!({
+            "item_context": {"rabbit": {"replies": [reply.clone()], "earlier_replies": 0}},
+            "written": {"rabbit": {"round": 2, "commit": "e1525efb", "at": "2026-11-20T10:00:00Z"}},
+        }),
     )
     .await;
     let rabbit = item_by(
@@ -400,7 +406,10 @@ async fn pass_input_is_clean_and_carries_the_reply_chain() {
     store_read(
         &f.state,
         "Retries timed-out calls.\n\n<!-- pr-hygiene:start -->\n# PR Hygiene · `0d7c324`\n<!-- pr-hygiene:end -->",
-        json!({"rabbit": {"commit": "e1525efb", "replies": [reply], "earlier_replies": 0}}),
+        json!({
+            "item_context": {"rabbit": {"replies": [reply], "earlier_replies": 0}},
+            "written": {"rabbit": {"round": 2, "commit": "e1525efb", "at": "2026-11-20T10:00:00Z"}},
+        }),
     )
     .await;
     assert_eq!(
@@ -477,7 +486,7 @@ async fn reassessment_for_a_new_prompt_version_charges_nobody() {
     store_read(
         &f.state,
         "Retries timed-out calls.",
-        json!({"a": {"replies": [{"author": "alice", "author_kind": "owner", "body": "Fixed in 4a46539."}]}}),
+        json!({"item_context": {"a": {"replies": [{"author": "alice", "author_kind": "owner", "body": "Fixed in 4a46539."}]}}}),
     )
     .await;
     assert_eq!(

@@ -592,7 +592,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         });
     }
 
-    let item_context = context::of(read, bots, &rounds, &thread_ids, &review_ids);
+    let item_context = context::of(read, bots, &thread_ids);
     let snapshot = Snapshot {
         title: read.pr.title.clone(),
         description: Some(read.pr.body.trim().to_owned()).filter(|body| !body.is_empty()),

@@ -1,6 +1,6 @@
 //! What a `verify_comments` input carries of an item beyond its stored row (plan §4.2), kept with the read's
-//! snapshot: the commit its comment was written on, the replies of its open thread, without bot markup and cut, and
-//! which of them record a maintainer's decision. Pure.
+//! snapshot: the replies of its open thread, without bot markup and cut, and which of them record a maintainer's
+//! decision. Pure.
 
 use std::collections::BTreeMap;
 
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::clean;
 use super::markers;
-use super::observe::{BotRule, RoundFact};
+use super::observe::BotRule;
 use crate::github::review_loop::{PrRead, Thread};
 
 /// Words of a reply that records a maintainer's decision ("Per maintainer decision, …", thepastaclaw's
@@ -27,10 +27,6 @@ const DECISION_WORDS: [&str; 4] = [
 /// An item's context from the read.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemContext {
-    /// The commit its comment was written on: the head of the bot round whose review holds it, else its review's
-    /// commit.
-    #[serde(default)]
-    pub commit: Option<String>,
     /// The latest replies of its open thread, oldest first.
     #[serde(default)]
     pub replies: Vec<ThreadReply>,
@@ -39,49 +35,20 @@ pub struct ItemContext {
     pub earlier_replies: u32,
 }
 
-/// The context of the items of open threads and of review bodies, by stable key (`thread_ids`, `review_ids`: stable
-/// key to thread or review node id).
+/// The context of the items of open threads, by stable key (`thread_ids`: stable key to thread node id).
 pub fn of(
     read: &PrRead,
     bots: &BotRule,
-    rounds: &[RoundFact],
     thread_ids: &BTreeMap<String, String>,
-    review_ids: &BTreeMap<String, String>,
 ) -> BTreeMap<String, ItemContext> {
     let owner = read.pr.author.as_ref().map(|author| author.login.as_str());
-    let commit_of = |review: &str| match rounds.iter().find(|round| round.review_id == review) {
-        Some(round) => Some(round.head.clone()),
-        None => read
-            .reviews
-            .iter()
-            .find(|candidate| candidate.id == review)
-            .and_then(|review| review.commit.as_ref())
-            .map(|commit| commit.oid.clone()),
-    };
-    let threads = thread_ids.iter().filter_map(|(key, id)| {
-        let thread = read
-            .threads
-            .iter()
-            .find(|thread| thread.id == *id && !thread.is_resolved)?;
-        let mut context = thread_context(thread, bots, owner);
-        context.commit = thread
-            .comments
-            .nodes
-            .first()
-            .and_then(|first| first.pull_request_review.as_ref())
-            .and_then(|review| commit_of(&review.id));
-        Some((key.clone(), context))
-    });
-    let reviews = review_ids.iter().map(|(key, review)| {
-        let context = ItemContext {
-            commit: commit_of(review),
-            ..ItemContext::default()
-        };
-        (key.clone(), context)
-    });
-    threads
-        .chain(reviews)
-        .filter(|(_, context)| *context != ItemContext::default())
+    thread_ids
+        .iter()
+        .filter_map(|(key, id)| {
+            let thread = read.threads.iter().find(|thread| thread.id == *id)?;
+            let context = thread_context(thread, bots, owner);
+            (!thread.is_resolved && !context.replies.is_empty()).then(|| (key.clone(), context))
+        })
         .collect()
 }
 
@@ -123,7 +90,6 @@ fn thread_context(thread: &Thread, bots: &BotRule, owner: Option<&str>) -> ItemC
     let left_out = replies.len().saturating_sub(MAX_REPLIES);
     replies.drain(..left_out);
     ItemContext {
-        commit: None,
         replies,
         earlier_replies: u32::try_from(left_out).unwrap_or(u32::MAX),
     }
@@ -148,9 +114,7 @@ pub fn decision_reply(context: &ItemContext) -> Option<&ThreadReply> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::review_loop::{
-        Author, CommitRef, CountedNodes, NodeRef, PrFacts, Review, ThreadComment,
-    };
+    use crate::github::review_loop::{Author, CountedNodes, PrFacts, ThreadComment};
 
     fn comment(login: &str, typename: &str, body: &str) -> ThreadComment {
         ThreadComment {
@@ -247,13 +211,7 @@ mod tests {
             ),
             thread("T3", false, vec![finding]),
         ]);
-        let contexts = of(
-            &pr_read,
-            &BotRule::new(&["thepastaclaw".to_owned()]),
-            &[],
-            &ids,
-            &BTreeMap::new(),
-        );
+        let contexts = of(&pr_read, &BotRule::new(&["thepastaclaw".to_owned()]), &ids);
         assert_eq!(
             contexts.keys().collect::<Vec<_>>(),
             ["open"],
@@ -282,75 +240,11 @@ mod tests {
             false,
             [vec![comment("bob", "User", "Finding")], many].concat(),
         )]);
-        let kept = &of(&read_many, &BotRule::default(), &[], &ids, &BTreeMap::new())["open"];
+        let kept = &of(&read_many, &BotRule::default(), &ids)["open"];
         assert_eq!(kept.replies.len(), MAX_REPLIES);
         assert_eq!(kept.earlier_replies, 2);
         assert_eq!(kept.replies[0].body, "Reply 2");
         assert_eq!(decision_reply(kept), None);
-    }
-
-    /// Spike S13-3 O10: a thread's item and a review body's item carry the commit of their review, or the head of the
-    /// bot round that review is.
-    #[test]
-    fn items_carry_the_commit_of_their_review() {
-        let review = |id: &str, commit: &str| Review {
-            id: id.to_owned(),
-            author: None,
-            state: "COMMENTED".to_owned(),
-            submitted_at: Some("2026-11-20T10:00:00Z".to_owned()),
-            last_edited_at: None,
-            commit: Some(CommitRef {
-                oid: commit.to_owned(),
-            }),
-            body: String::new(),
-            url: String::new(),
-        };
-        let mut finding = comment("thepastaclaw", "User", "**🔴 Blocking: Bound the retries**");
-        finding.pull_request_review = Some(NodeRef {
-            id: "R1".to_owned(),
-        });
-        let mut pr_read = read(vec![
-            thread("T1", false, vec![finding.clone()]),
-            thread("T2", true, vec![finding]),
-        ]);
-        pr_read.reviews = vec![
-            review("R1", "aad9fcba"),
-            review("R2", "e1525efb"),
-            review("R3", "963cfa39"),
-        ];
-        let round = RoundFact {
-            number: 1,
-            review_id: "R3".to_owned(),
-            url: String::new(),
-            head: "171e4796".to_owned(),
-            finished_at: "2026-11-20T10:00:00Z".parse().expect("time"),
-            verdict: "CHANGES_REQUESTED".to_owned(),
-        };
-        let contexts = of(
-            &pr_read,
-            &BotRule::default(),
-            &[round],
-            &BTreeMap::from([
-                ("thread".to_owned(), "T1".to_owned()),
-                ("resolved".to_owned(), "T2".to_owned()),
-            ]),
-            &BTreeMap::from([
-                ("review:R2:1".to_owned(), "R2".to_owned()),
-                ("review:R3:1".to_owned(), "R3".to_owned()),
-            ]),
-        );
-        assert_eq!(
-            contexts
-                .iter()
-                .map(|(key, context)| (key.as_str(), context.commit.as_deref()))
-                .collect::<Vec<_>>(),
-            [
-                ("review:R2:1", Some("e1525efb")),
-                ("review:R3:1", Some("171e4796")),
-                ("thread", Some("aad9fcba"))
-            ],
-            "a round's own review names the head it validated"
-        );
     }
 
     #[test]

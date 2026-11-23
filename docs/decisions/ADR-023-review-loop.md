@@ -127,17 +127,18 @@ read with tokens (ADR-019).
 - **"Assess again" while a pass runs** answers 409 `conflict` instead of being dropped.
 
 ## Amendment (2026-11-23, owner decisions on the comparison report R2, R3, R8, R12, R13 and spike S13-3 O10)
-- **Input** (`VerifyItem`, all optional and left out when empty): `commit`, the commit the comment was written on (the
-  head of the bot round whose review holds it, else its review's commit; the same rule as the queue's `written`);
-  `bot_status`, the bot's own thread status; `replies` (at most 8, 600 characters each, author kind `human`, `bot` or
-  `owner` = the PR's author) and `earlier_replies`, from the replies the Q-L2 read already holds, for open threads.
+- **Input** (`VerifyItem`, all optional and left out when empty): `commit`, the commit the comment was written on,
+  from the read's `written` fact that the queue shows (the head of the bot round whose own review holds it, else its
+  review's commit); `bot_status`, the bot's own thread status; `replies` (at most 8, 600 characters each, author kind
+  `human`, `bot` or `owner` = the PR's author) and `earlier_replies`, from the replies the Q-L2 read already holds,
+  for open threads.
   `EarlierDecision.decision` is null when a reply in the item's thread records the maintainer's decision ("maintainer
   decision", "deferred", "won't fix"); `reason` then quotes it. Bot bodies lose HTML, `<details>` sections and agent
   prompts; the description loses CodeRabbit's summary and the PR Hygiene block. Stored texts and hashes are unchanged.
 - **Prompt v4** states the gates, the category catalogue, the necessity rule and the checking rules itself and the
   job mounts no skill (ADR-002 amendment 2026-11-23). `resolve` names a commit in `<commit>..HEAD`.
-- **Fingerprint** format 2: purpose hash of the cleaned description, the item's comment, its bot status and context
-  (commit, replies) and its lines; the prompt version is compared beside it. A pass whose every item has a stored
+- **Fingerprint** format 2: purpose hash of the cleaned description, the item's comment, its bot status and replies
+  and its lines; the prompt version is compared beside it. A pass whose every item has a stored
   assessment that only a new prompt version or the format change made stale is the system's: `comment_passes.user_id`
   stays null and no user's daily cap is charged. A pass with any other change is charged as before.
 - **Logs.** `Usage.requests` (job result) estimates the model requests of a call from the provider's events (one per
