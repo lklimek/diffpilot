@@ -44,6 +44,9 @@ pub struct ItemContext {
     /// The latest replies of its open thread, oldest first; people's are not cut (see [`cut`]).
     #[serde(default)]
     pub replies: Vec<ThreadReply>,
+    /// People and concessions from the full thread, before the input window; absent in older snapshots.
+    #[serde(default)]
+    pub fingerprint_replies: Option<Vec<ThreadReply>>,
     /// Earlier replies left out of `replies`.
     #[serde(default)]
     pub earlier_replies: u32,
@@ -101,9 +104,15 @@ fn thread_context(thread: &Thread, bots: &BotRule, owner: Option<&str>) -> ItemC
             })
         })
         .collect();
+    let fingerprint_replies = replies
+        .iter()
+        .filter(|reply| reply.author_kind != ReplyAuthorKind::Bot || concedes(reply))
+        .cloned()
+        .collect();
     let left_out = replies.len().saturating_sub(MAX_REPLIES);
     replies.drain(..left_out);
     ItemContext {
+        fingerprint_replies: Some(fingerprint_replies),
         replies,
         earlier_replies: u32::try_from(left_out).unwrap_or(u32::MAX),
     }

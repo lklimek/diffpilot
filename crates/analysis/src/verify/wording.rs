@@ -208,11 +208,11 @@ pub const ASSESSOR_NOTES: [(&str, &str); 5] = [
     ),
     (
         "data_handling",
-        r"\btreated\s+as\s+(?:untrusted\s+)?(?:data|text)\s*,?\s+(?:rather\s+than|not)\s+(?:executed|followed|obeyed|acted\s+(?:up)?on)\b|\b(?:i|we)\s+(?:treated|handled|read)\s+(?:the|this|its|that)\s+(?:\w+\s+){0,2}?(?:comment|reply|thread|text|input|instructions?|directives?)\b[^.!?\n]{0,20}\bas\s+(?:untrusted\s+)?(?:data|text)\b|\b(?:po)?traktował(?:em|am|iśmy|yśmy)\b[^.!?\n]{0,40}\bjako\s+dane\b|\b(?:я|мы)\s+(?:рассматривал\w*|обрабатывал\w*|воспринимал\w*)\b[^.!?\n]{0,40}\bкак\s+данные\b",
+        r"\b(?:comment|reply|thread|assessment\s+input)\b[^.!?\n]{0,40}\btreated\s+as\s+(?:untrusted\s+)?(?:data|text)\s*,?\s+(?:rather\s+than|not)\s+(?:executed|followed|obeyed|acted\s+(?:up)?on)\b|\b(?:i|we)\s+(?:treated|handled|read)\s+(?:the|this|its|that)\s+(?:\w+\s+){0,2}?(?:comment|reply|thread|text|input|instructions?|directives?)\b[^.!?\n]{0,20}\bas\s+(?:untrusted\s+)?(?:data|text)\b|\b(?:po)?traktował(?:em|am|iśmy|yśmy)\b[^.!?\n]{0,40}\bjako\s+dane\b|\b(?:я|мы)\s+(?:рассматривал\w*|обрабатывал\w*|воспринимал\w*)\b[^.!?\n]{0,40}\bкак\s+данные\b",
     ),
     (
         "checks_not_run",
-        r"\bno\s+(?:\w+\s+){0,3}(?:tests?|checks?|compilation|builds?|benchmarks?|commands?)\s+(?:was|were|have\s+been|has\s+been)\s+(?:run|executed|performed|attempted)\b|^(?:the\s+)?(?:tests?|checks?|compilation|builds?|benchmarks?|commands?|test\s+suite)\s+(?:was|were|have|has)\s+not\s+(?:been\s+)?(?:run|executed|performed|attempted)(?:\s+here)?\s*[.!]?$|\b(?:i|we)\s+(?:did\s+not|didn't|could\s+not|couldn't|was\s+unable\s+to|were\s+unable\s+to|have\s+not|haven't)\s+(?:run|execute|compile|build|test)\b|\bnot\s+(?:run|executed|compiled|tested)\s+(?:here|in\s+this\s+(?:job|assessment|review))\b|\bwithout\s+(?:running|executing|compiling|building)\b[^.!?\n]{0,40}\b(?:here|in\s+this\s+(?:job|assessment|review))\b|\bnie\s+(?:uruchomiono|wykonano|skompilowano|przeprowadzono|uruchomiłem|uruchomiłam)\b|\bне\s+(?:запускал\w*|запускались|выполнял\w*|компилировал\w*)\b",
+        r"\bno\s+(?:\w+\s+){0,3}(?:tests?|checks?|compilation|builds?|benchmarks?|commands?)\s+(?:was|were|have\s+been|has\s+been)\s+(?:run|executed|performed|attempted)\b|^(?:the\s+)?(?:tests?|checks?|compilation|builds?|benchmarks?|commands?|test\s+suite)\s+(?:was|were|have|has)\s+not\s+(?:been\s+)?(?:run|executed|performed|attempted)(?:\s+here)?\s*[.!]?$|\b(?:i|we)\s+(?:did\s+not|didn't|could\s+not|couldn't|was\s+unable\s+to|were\s+unable\s+to|have\s+not|haven't)\s+(?:run|execute|compile|build|test)\b|\bnot\s+(?:run|executed|compiled|tested)\s+(?:here|in\s+this\s+(?:job|assessment|review))\b|\bwithout\s+(?:running|executing|compiling|building)\b[^.!?\n]{0,40}\b(?:here|in\s+this\s+(?:job|assessment|review))\b|\bnie\s+(?:uruchomiono|wykonano|skompilowano|przeprowadzono)\s+(?:test\w*|kompilacj\w*|benchmark\w*)(?:\s+tej\s+ścieżki)?\s*[.!]?$|\bnie\s+(?:uruchomiłem|uruchomiłam)\b|\bне\s+(?:запускал\w*|запускались|выполнял\w*|компилировал\w*)\b",
     ),
     (
         "self_reference",
@@ -418,6 +418,8 @@ mod tests {
     #[test]
     fn code_review_text_is_no_assessor_note() {
         for text in [
+            "The parser's input is treated as data rather than executed.",
+            "Nie wykonano migracji, więc tabela nie istnieje.",
             "The query builder allows SQL injection through `name`.",
             "The setup instructions in README.md name the old flag.",
             "The password prompt shows twice after a failed unlock.",

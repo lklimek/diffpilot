@@ -529,6 +529,7 @@ async fn bot_rounds_alone_never_make_an_item_stale() {
         ));
         let left_out = all.len().saturating_sub(MAX_REPLIES);
         let context = ItemContext {
+            fingerprint_replies: None,
             replies: all[left_out..].to_vec(),
             earlier_replies: u32::try_from(left_out).expect("few"),
         };
@@ -587,6 +588,123 @@ async fn bot_rounds_alone_never_make_an_item_stale() {
         fingerprint(&c1, &head, Some("code"), "purpose", Some(&acknowledged)),
         answered_print,
         "a bot's other reply is not"
+    );
+}
+
+/// Builds the real read context before its LLM reply window is applied.
+fn thread_context(replies: &[ThreadReply]) -> ItemContext {
+    use crate::github::review_loop::{PrRead, Thread};
+    let comment = |reply: &ThreadReply| {
+        json!({
+            "author": {"login": reply.author, "__typename": if reply.author_kind == ReplyAuthorKind::Bot { "Bot" } else { "User" }},
+            "body": reply.body, "createdAt": "2026-11-23T10:00:00Z", "url": "https://github.com/acme/node-client/pull/482#discussion_r1"
+        })
+    };
+    let finding = ThreadReply {
+        author: "bot".to_owned(),
+        author_kind: ReplyAuthorKind::Bot,
+        body: "Finding".to_owned(),
+    };
+    let comments: Vec<_> = std::iter::once(&finding)
+        .chain(replies)
+        .map(comment)
+        .collect();
+    let thread: Thread = serde_json::from_value(json!({
+        "id": "T1", "isResolved": false, "isOutdated": false, "path": "src/rpc/client.rs",
+        "comments": {"totalCount": comments.len(), "nodes": comments}
+    }))
+    .expect("thread");
+    let read = PrRead {
+        repo_github_id: 1, private: false,
+        pr: serde_json::from_value(json!({
+            "title": "Retries", "url": "https://github.com/acme/node-client/pull/482", "state": "OPEN",
+            "isDraft": false, "baseRefName": "main", "baseRefOid": BASE, "headRefOid": HEAD,
+            "author": {"login": "alice", "__typename": "User"}
+        })).expect("PR"),
+        threads: vec![thread], reviews: Vec::new(), comments: Vec::new(), complete: true,
+    };
+    context::of(
+        &read,
+        &super::super::observe::BotRule::default(),
+        &BTreeMap::from([("c1".to_owned(), "T1".to_owned())]),
+    )
+    .remove("c1")
+    .expect("context")
+}
+
+#[tokio::test]
+async fn bot_rounds_do_not_evict_people_or_concessions_from_fingerprint() {
+    let f = fixture(HEAD).await;
+    let c1 = item(&f.state, "c1", "src/rpc/client.rs", (40, 43)).await;
+    let head = CommitSha(HEAD.to_owned());
+    for (author, author_kind, body) in [
+        (
+            "alice",
+            ReplyAuthorKind::Owner,
+            "Deferred until upstream lands.",
+        ),
+        (
+            "bot",
+            ReplyAuthorKind::Bot,
+            "You're right, the caller bounds it.",
+        ),
+    ] {
+        let mut replies = vec![ThreadReply {
+            author: author.to_owned(),
+            author_kind,
+            body: body.to_owned(),
+        }];
+        let before = fingerprint(
+            &c1,
+            &head,
+            Some("code"),
+            "purpose",
+            Some(&thread_context(&replies)),
+        );
+        replies.extend((0..MAX_REPLIES + 2).map(|_| ThreadReply {
+            author: "bot".to_owned(),
+            author_kind: ReplyAuthorKind::Bot,
+            body: "Still applies at this head.".to_owned(),
+        }));
+        let after = thread_context(&replies);
+        let input = with_context(verify_item(&c1), Some(&after), None);
+        assert_eq!(input.replies.len(), MAX_REPLIES);
+        assert_eq!(input.earlier_replies, 3);
+        assert_eq!(
+            fingerprint(&c1, &head, Some("code"), "purpose", Some(&after)),
+            before,
+            "{author}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn repeated_concessions_hash_each_bot_once_in_login_order() {
+    let f = fixture(HEAD).await;
+    let c1 = item(&f.state, "c1", "src/rpc/client.rs", (40, 43)).await;
+    let head = CommitSha(HEAD.to_owned());
+    let reply = |author: &str| ThreadReply {
+        author: author.to_owned(),
+        author_kind: ReplyAuthorKind::Bot,
+        body: "You're right.".to_owned(),
+    };
+    let hash = |replies: &[ThreadReply]| {
+        fingerprint(
+            &c1,
+            &head,
+            Some("code"),
+            "purpose",
+            Some(&thread_context(replies)),
+        )
+    };
+    assert_eq!(hash(&[reply("Bot")]), hash(&[reply("bot"), reply("BOT")]));
+    assert_eq!(
+        hash(&[reply("zbot"), reply("abot")]),
+        hash(&[reply("abot"), reply("zbot")])
+    );
+    assert_ne!(
+        hash(&[reply("abot")]),
+        hash(&[reply("abot"), reply("zbot")])
     );
 }
 

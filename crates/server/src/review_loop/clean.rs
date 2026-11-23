@@ -209,12 +209,16 @@ fn run_len(text: &str, mark: char) -> usize {
 fn details_end(lines: &[&str], start: usize) -> Option<usize> {
     let mut depth = 0usize;
     let mut index = start;
+    let mut comment = false;
     while index < lines.len() {
         let trimmed = lines[index].trim();
-        if let Some(fence) = Fence::of(trimmed) {
+        if !comment && let Some(fence) = Fence::of(trimmed) {
             index = fence.end(lines, index) + 1;
             continue;
         }
+        let (text, open) = without_comments(lines[index], comment);
+        comment = open;
+        let trimmed = text.trim();
         if trimmed.starts_with("<details") {
             depth += 1;
         }
@@ -641,6 +645,24 @@ Identities with `ECDSA_HASH160` keys cannot publish; `Option<Key>` stays empty."
             ),
             "🧩 Analysis chain\n```diff\n+x\n```"
         );
+    }
+
+    #[test]
+    fn html_comments_inside_findings_do_not_change_section_boundaries() {
+        for hidden in [
+            "</details>\n```rust\nhidden();\n```",
+            "<details>",
+            "```rust\n<details>",
+        ] {
+            let body = format!(
+                "<details>\n<summary>🧹 Nitpick comments (1)</summary>\nVisible finding.\n<!--\n{hidden}\n-->\nStill visible.\n</details>\nAfter."
+            );
+            assert_eq!(
+                bot_body(&body),
+                "🧹 Nitpick comments (1)\nVisible finding.\n\nStill visible.\nAfter.",
+                "{hidden}"
+            );
+        }
     }
 
     /// dash-evo-tool#1102: CodeRabbit's summary and the PR Hygiene block were 2 KB of its description.

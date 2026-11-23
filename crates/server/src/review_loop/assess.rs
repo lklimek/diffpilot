@@ -11,7 +11,7 @@ mod prompt;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
@@ -430,14 +430,19 @@ fn fingerprint(
 ) -> String {
     let mut hash = Sha256::new();
     hash.update(format!("fingerprint 2\n{purpose}\n{}\n", item.body_hash));
-    let replies = context.iter().flat_map(|context| &context.replies);
+    let replies = context.iter().flat_map(|context| {
+        context
+            .fingerprint_replies
+            .as_ref()
+            .unwrap_or(&context.replies)
+    });
     let people: Vec<&ThreadReply> = replies
         .clone()
         .filter(|reply| reply.author_kind != ReplyAuthorKind::Bot)
         .collect();
-    let conceded: Vec<&str> = replies
+    let conceded: BTreeSet<String> = replies
         .filter(|reply| context::concedes(reply))
-        .map(|reply| reply.author.as_str())
+        .map(|reply| reply.author.to_ascii_lowercase())
         .collect();
     hash.update(
         serde_json::to_vec(&(item.github.bot_status, people, conceded)).unwrap_or_default(),
