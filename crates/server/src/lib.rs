@@ -7,6 +7,7 @@ pub mod auth;
 pub mod config;
 pub mod dashboard;
 pub mod frontend;
+pub mod gateway;
 pub mod github;
 pub mod jobs;
 pub mod memcan;

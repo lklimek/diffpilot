@@ -63,7 +63,8 @@
 #                SR_RUNNER_SECRET          = the server's
 #                SR_RUNNER_ID              dev-runner
 #                SR_RUNNER_STATE_DIR       <state>/runner
-#                SR_RUNNER_PROVIDER        fake (fixture replay; ignores SR_RUNNER_CREDENTIAL_ID, default "default")
+#                SR_RUNNER_PROVIDER        fake (fixture replay)
+#                SR_RUNNER_CREDENTIAL_ID   user id of alice, created through fake GitHub sign-in
 #                SR_RUNNER_FAKE_SCRIPT     <state>/fake-provider-script.json (absent: plain replay; format in
 #                                          crates/runner/src/provider/fake.rs)
 #                SR_RUNNER_DEV_NO_ISOLATION 1 (no supervisor in the dev stack; never in the image)
@@ -247,6 +248,24 @@ fi
 start server "$state" "${server_env[@]}" "$server_bin"
 wait_for server "$url/api/v1/me"
 if ! skipped runner; then
+  # Fake claims register linked ChatGPT-plan status for the same payer as the UI's jobs.
+  payer="$(python3 - "$url" "$state/server/diffpilot.sqlite" "$login" <<'PY'
+import http.cookiejar
+import sqlite3
+import sys
+import urllib.request
+
+client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+client.open(sys.argv[1] + "/auth/github/login", timeout=10).close()
+with sqlite3.connect("file:" + sys.argv[2] + "?mode=ro", uri=True) as db:
+    user = db.execute("SELECT id FROM users WHERE login = ?", (sys.argv[3],)).fetchone()
+    if user is None:
+        raise SystemExit("fake GitHub sign-in did not create the runner's payer")
+    print(user[0])
+PY
+  )"
+  runner_env+=(SR_RUNNER_CREDENTIAL_ID="$payer")
+  (umask 077 && printf '%s\n' "SR_RUNNER_CREDENTIAL_ID=$payer" >> "$state/stack.env")
   start runner "$state" "${runner_env[@]}" "$runner_bin"
 fi
 

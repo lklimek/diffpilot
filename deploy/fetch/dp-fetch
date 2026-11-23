@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+umask 077
+# Cargo starts above the checkout so repository .cargo/config.toml cannot apply.
+cd /
+if [ ! -f /work/repo/Cargo.toml ]; then exit 0; fi
+if [ -f /work/repo/Cargo.lock ]; then
+    exec cargo fetch --locked --manifest-path /work/repo/Cargo.toml
+fi
+mkdir /tmp/ws
+tar -C /work/repo --exclude=.git -cf /tmp/workspace.tar .
+tar -C /tmp/ws -xf /tmp/workspace.tar
+printf '%s\n' 'dependency sources resolved without a lock file'
+exec cargo fetch --manifest-path /tmp/ws/Cargo.toml

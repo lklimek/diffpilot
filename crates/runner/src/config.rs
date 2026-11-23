@@ -23,8 +23,8 @@ pub const RUNNER_ID: &str = "SR_RUNNER_ID";
 pub const STATE_DIR: &str = "SR_RUNNER_STATE_DIR";
 /// Directory for job work dirs (a disposable volume, emptied at start); default `<state>/work`.
 pub const WORK_DIR: &str = "SR_RUNNER_WORK_DIR";
-/// Id of the LLM credential the runner holds (`<state>/credentials/<id>/auth.json`). Reserved: v1 has one
-/// credential and the server assigns every job to `default`, so any other value is rejected.
+/// Id of the LLM credential the runner holds (`<state>/credentials/<id>/auth.json`).
+/// Codex requires `default`; the fake provider accepts its fake payer's user id.
 pub const CREDENTIAL_ID: &str = "SR_RUNNER_CREDENTIAL_ID";
 /// The `codex` binary.
 pub const CODEX_BIN: &str = "SR_RUNNER_CODEX_BIN";
@@ -129,9 +129,9 @@ pub enum ConfigError {
         "environment variable {0} must not point below /tmp; use the runner's persistent volume"
     )]
     UnderTmp(&'static str),
-    /// The credential id is not `default`, the only credential the server assigns jobs to in v1.
+    /// The credential id is unsupported by the provider or unsafe as a path component.
     #[error(
-        "environment variable {0} is reserved: v1 supports only the credential 'default'; unset it"
+        "environment variable {0} must be 'default' for Codex, or a safe payer id for the fake provider"
     )]
     UnsupportedCredentialId(&'static str),
     /// A number variable is not a positive whole number.
@@ -215,9 +215,6 @@ impl Config {
             None => state_dir.join("work"),
         };
         let credential_id = get(CREDENTIAL_ID).unwrap_or_else(|| DEFAULT_CREDENTIAL_ID.to_owned());
-        if credential_id != DEFAULT_CREDENTIAL_ID {
-            return Err(ConfigError::UnsupportedCredentialId(CREDENTIAL_ID));
-        }
         let egress_proxy = get(EGRESS_PROXY);
         if let Some(proxy) = &egress_proxy
             && !(proxy.starts_with("http://") || proxy.starts_with("https://"))
@@ -230,6 +227,16 @@ impl Config {
             Some("fake") => ProviderKind::Fake,
             Some(_) => return Err(ConfigError::UnknownProvider(PROVIDER)),
         };
+        let supported_id = match provider {
+            ProviderKind::Codex => credential_id == DEFAULT_CREDENTIAL_ID,
+            #[cfg(feature = "fake-provider")]
+            ProviderKind::Fake => credential_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')),
+        };
+        if !supported_id {
+            return Err(ConfigError::UnsupportedCredentialId(CREDENTIAL_ID));
+        }
         let retention_days = match get(SESSION_RETENTION_DAYS) {
             Some(days) => days
                 .parse::<u64>()
@@ -468,6 +475,26 @@ mod tests {
         let mut pairs = BASE.to_vec();
         pairs.push((CREDENTIAL_ID, "default"));
         assert_eq!(config(&pairs).unwrap().credential.id, "default");
+    }
+
+    #[cfg(feature = "fake-provider")]
+    #[test]
+    fn fake_provider_can_claim_for_its_fake_user_only_with_a_safe_id() {
+        let mut pairs = BASE.to_vec();
+        pairs.push((PROVIDER, "fake"));
+        pairs.push((CREDENTIAL_ID, "00000000-0000-4000-8000-000000000001"));
+        assert_eq!(
+            config(&pairs).unwrap().credential.id,
+            "00000000-0000-4000-8000-000000000001"
+        );
+        for id in ["../x", "..", "a/b"] {
+            pairs.pop();
+            pairs.push((CREDENTIAL_ID, id));
+            assert!(matches!(
+                config(&pairs),
+                Err(ConfigError::UnsupportedCredentialId(_))
+            ));
+        }
     }
 
     #[test]

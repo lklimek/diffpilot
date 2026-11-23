@@ -1,0 +1,106 @@
+# v1.3 runtime foundation. W2 supplies the gateway; W4/W8 wire the provider and server.
+# This file is independent of the legacy/local stacks. Supply digest-pinned worker/fetch images.
+name: v13w3-runtime
+x-hardening: &hardening
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+services:
+  launcher:
+    <<: *hardening
+    image: ${SR_RUNNER_IMAGE:-v13w3-runner:local}
+    build: { context: .., dockerfile: deploy/containers/runner.Dockerfile }
+    command: [--launcher]
+    network_mode: none
+    group_add: ["${SR_DOCKER_GID:?set Docker socket group id}"]
+    environment:
+      SR_LAUNCHER_SOCKET: /run/launcher/launcher.sock
+      SR_CONTAINER_PREFIX: v13w3-runtime
+      SR_WORKER_IMAGE: ${SR_WORKER_IMAGE:?set IM3 repo@sha256 digest}
+      SR_FETCH_IMAGE: ${SR_FETCH_IMAGE:?set IM4 repo@sha256 digest}
+      SR_WORKER_NETWORK: v13w3-runtime-worker
+      SR_JUDGE_NETWORK: v13w3-runtime-judge
+      SR_WORKER_PROXY: http://egress-proxy:3128
+      SR_WORKER_MEMORY: ${SR_WORKER_MEMORY:-2147483648}
+      SR_WORKER_CPUS: ${SR_WORKER_CPUS:-2}
+      SR_WORKER_PIDS: ${SR_WORKER_PIDS:-1024}
+      SR_WORKER_MAX_RUNNING: ${SR_WORKER_MAX_RUNNING:-3}
+      SR_WORKER_IDLE_STOP: ${SR_WORKER_IDLE_STOP:-1200}
+    volumes:
+      - launcher-socket:/run/launcher
+      - /var/run/docker.sock:/var/run/docker.sock
+    tmpfs: ["/tmp:uid=10002,gid=10002,mode=0700,size=16m"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+  # TODO(W4/W8): enable the runner service after its app-server provider replaces legacy startup.
+  runner:
+    <<: *hardening
+    profiles: [integration]
+    image: ${SR_RUNNER_IMAGE:-v13w3-runner:local}
+    environment:
+      SR_LAUNCHER_SOCKET: /run/launcher/launcher.sock
+      SR_RUNNER_SERVER_URL: ${SR_RUNNER_SERVER_URL:-http://server:3001}
+    volumes:
+      - launcher-socket:/run/launcher
+      - c1:/mirror
+      - runner-state:/var/lib/diffpilot-runner
+    tmpfs: ["/tmp:uid=10002,gid=10002,mode=0700,size=64m"]
+    networks: [control]
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 128
+  # TODO(W2): join the model listener to worker/judge and bind admin only on control.
+  # The gateway must bind separate model addresses on both internal networks.
+  codex-gateway:
+    <<: *hardening
+    profiles: [integration]
+    image: ${SR_GATEWAY_IMAGE:-v13w3-gateway:local}
+    # Shutdown can wait up to 50s for an in-flight token refresh.
+    stop_grace_period: 55s
+    networks:
+      control: { ipv4_address: 172.30.84.2 }
+      worker: { ipv4_address: 172.30.85.2, aliases: [codex-gateway] }
+      judge: { ipv4_address: 172.30.86.2, aliases: [codex-gateway] }
+      egress: {}
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+  egress-proxy:
+    <<: *hardening
+    image: ${SR_PROXY_IMAGE:-v13w3-proxy:local}
+    build: { context: egress-proxy, additional_contexts: { workspace: .. } }
+    environment:
+      SR_MEMCAN_URL: ${SR_MEMCAN_URL:-}
+    tmpfs: ["/run/squid:uid=13,gid=13,mode=0750,size=1m"]
+    networks: [worker, egress]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+volumes:
+  launcher-socket: {}
+  runner-state: {}
+  c1: { name: v13w3-runtime-c1 }
+  # CS1 and CS3 create C2 lazily from IM4's uid-owned /c2; no host paths.
+networks:
+  control:
+    name: v13w3-runtime-control
+    internal: true
+    driver_opts: &isolated
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+      com.docker.network.bridge.gateway_mode_ipv6: isolated
+    ipam: { config: [{ subnet: 172.30.84.0/24 }] }
+  worker:
+    name: v13w3-runtime-worker
+    internal: true
+    driver_opts: *isolated
+    ipam: { config: [{ subnet: 172.30.85.0/24 }] }
+  judge:
+    name: v13w3-runtime-judge
+    internal: true
+    driver_opts: *isolated
+    ipam: { config: [{ subnet: 172.30.86.0/24 }] }
+  egress:
+    name: v13w3-runtime-egress

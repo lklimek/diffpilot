@@ -181,6 +181,7 @@ pub fn generated_files() -> Result<Vec<GeneratedFile>, GenerateError> {
         });
     }
     for (name, schema) in [
+        ("device_link", schema_of::<crate::gateway::DeviceLink>()),
         (
             "link_credential",
             schema_of::<crate::gateway::LinkCredential>(),
@@ -296,6 +297,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     };
     collector.visit::<crate::gateway::CredentialStatus>();
     collector.visit::<crate::gateway::LinkCredential>();
+    collector.visit::<crate::gateway::DeviceLink>();
     collector.visit::<crate::api::assessment::AssessmentSettings>();
     collector.visit::<crate::api::assessment::AssessmentComparison>();
     collector.visit::<crate::assessment::AssessmentAdmissionFailure>();

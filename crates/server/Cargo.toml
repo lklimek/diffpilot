@@ -10,6 +10,10 @@ license.workspace = true
 name = "diffpilot-server"
 path = "src/main.rs"
 
+[[bin]]
+name = "diffpilot-gateway"
+path = "src/gateway_main.rs"
+
 [features]
 # Serve the built web UI (web/dist) from the binary; off in development and test builds.
 embed-ui = ["dep:rust-embed", "dep:mime_guess"]
@@ -18,7 +22,7 @@ embed-ui = ["dep:rust-embed", "dep:mime_guess"]
 aes-gcm.workspace = true
 getrandom.workspace = true
 jiff.workspace = true
-reqwest = { workspace = true, features = ["form"] }
+reqwest = { workspace = true, features = ["form", "stream"] }
 serde.workspace = true
 sha2.workspace = true
 subtle.workspace = true

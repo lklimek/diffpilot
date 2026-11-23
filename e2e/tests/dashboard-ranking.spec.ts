@@ -34,8 +34,9 @@ test("a review analysis running first: the ranking waits for it, then ranks", as
   await expect(page.getByText("Planning flows…")).toBeVisible();
 
   await page.goto("/");
+  const previous = await latestRefresh(page);
   await refreshButton(page).click();
-  await waitForRefresh(page, (r) => r.ranking?.state === "waiting_for_analysis");
+  await waitForRefresh(page, (r) => r.id !== previous?.id && r.ranking?.state === "waiting_for_analysis");
   await expect(page.getByText("Waiting for the review analysis to finish.")).toBeVisible();
   await expect(
     page.getByText(/^Refreshed \d\d:\d\d · LLM ranking waits for a review analysis$/),
