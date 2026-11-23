@@ -8,6 +8,7 @@ import { decideRestList, listItems, resetReviewLoop } from "../../mocks/review-l
 import type { EffectsPreviewState } from "./decisions";
 import { CommentsTable } from "./CommentsTable";
 import { DecideRestCard, EmptyQueueCard, GroupCard, PrQuestionCard } from "./QueueCards";
+import { QueueList } from "./QueueList";
 
 const byNo = (no: number) => listItems().find((i) => i.no === no)!;
 const NOW = new Date("2026-11-18T09:27:00Z");
@@ -97,6 +98,138 @@ describe("GroupCard (US5)", () => {
       "href",
       byNo(18).url,
     );
+  });
+
+  it("review-body items recommended Resolve: each row's reason and the bot's claim, no shared reason (plan §2.4)", async () => {
+    const resolved = (no: number, reason: string): CommentItem => {
+      const item = byNo(no);
+      return {
+        ...item,
+        kind: "review_body",
+        bot_severity: "Blocking",
+        assessment: {
+          ...item.assessment!,
+          recommendation: { kind: "resolve", reason, target: null, reason_class: `fixed_${no}` },
+        },
+      };
+    };
+    const onDecide = vi.fn();
+    render(
+      <Planned>
+        {(plan) => (
+          <GroupCard
+            items={[
+              resolved(18, "Fixed in 7d8e9f0: the check reads the open file."),
+              resolved(19, "Fixed in 1a2b3c4: the directory is created without following links."),
+            ]}
+            position={{ index: 7, total: 9 }}
+            onDecide={onDecide}
+            onDiscussIndividually={vi.fn()}
+            onSkip={vi.fn()}
+            busy={false}
+            error={null}
+            storageKey="t"
+            {...plan}
+          />
+        )}
+      </Planned>,
+    );
+    expect(
+      screen.getByRole("heading", { name: "Same recommendation: Resolve (already fixed) (2 items)" }),
+    ).toBeVisible();
+    const [first, second] = screen.getAllByRole("row").slice(1);
+    expect(first).toHaveTextContent("Fixed in 7d8e9f0: the check reads the open file.");
+    expect(first).toHaveTextContent("review body · Blocking");
+    expect(second).toHaveTextContent("Fixed in 1a2b3c4: the directory is created without following links.");
+    expect(
+      screen.queryByRole("checkbox", { name: "Resolve these threads" }),
+      "review-body rows have no thread to resolve",
+    ).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Resolve (already fixed) all 2" }));
+    const rows: DecisionBatchRow[] = onDecide.mock.calls[0]![0];
+    expect(rows.map((r) => [r.item_no, r.kind])).toEqual([
+      [18, "resolve"],
+      [19, "resolve"],
+    ]);
+  });
+
+  it("a group of one reason class keeps the first reason in its heading and the necessity per row", () => {
+    const worded = (no: number, reason: string, necessity: string): CommentItem => {
+      const item = byNo(no);
+      return {
+        ...item,
+        assessment: {
+          ...item.assessment!,
+          necessity: { verdict: "out", reason: necessity, better_pr: null },
+          recommendation: { ...item.assessment!.recommendation, reason },
+        },
+      };
+    };
+    render(
+      <Planned>
+        {(plan) => (
+          <GroupCard
+            items={[
+              worded(18, "Needs an attacker running as the same OS user.", "Local attacker: out of scope."),
+              worded(
+                19,
+                "Needs a process planting the symlink as the same user.",
+                "Same user: out of scope.",
+              ),
+            ]}
+            position={{ index: 7, total: 9 }}
+            onDecide={vi.fn()}
+            onDiscussIndividually={vi.fn()}
+            onSkip={vi.fn()}
+            busy={false}
+            error={null}
+            storageKey="t"
+            {...plan}
+          />
+        )}
+      </Planned>,
+    );
+    expect(
+      screen.getByRole("heading", {
+        name: "Same recommendation: Reject — Needs an attacker running as the same OS user. (2 items)",
+      }),
+    ).toBeVisible();
+    const [first, second] = screen.getAllByRole("row").slice(1);
+    expect(first).toHaveTextContent("Local attacker: out of scope.");
+    expect(second).toHaveTextContent("Same user: out of scope.");
+    expect(screen.getByRole("checkbox", { name: "Resolve these threads" })).toBeVisible();
+  });
+});
+
+describe("QueueList", () => {
+  const showList = (items: CommentItem[]) =>
+    render(
+      <QueueList
+        queue={[{ item_nos: items.map((i) => i.no), reason: "group" }]}
+        items={new Map(items.map((i) => [i.no, i]))}
+        current={null}
+        onOpen={vi.fn()}
+        restCount={0}
+        onDecideRest={vi.fn()}
+        onOpenLog={vi.fn()}
+        onOpenCarryOvers={vi.fn()}
+      />,
+    );
+
+  it("names a group's reason class only when its rows share one (plan §2.4)", () => {
+    const { unmount } = showList([byNo(18), byNo(19)]);
+    expect(screen.getByText("Reject: threat model (2)")).toBeVisible();
+    unmount();
+    const resolved = (no: number, reason_class: string): CommentItem => ({
+      ...byNo(no),
+      kind: "review_body",
+      assessment: {
+        ...byNo(no).assessment!,
+        recommendation: { kind: "resolve", reason: "Fixed.", target: null, reason_class },
+      },
+    });
+    showList([resolved(18, "fixed_since"), resolved(19, "moved_upstream")]);
+    expect(screen.getByText("Resolve (already fixed) (2)")).toBeVisible();
   });
 });
 

@@ -51,6 +51,10 @@ export function QueueList({
     if (!first) return null;
     const group = entry.item_nos.length > 1;
     const rec = first.assessment?.recommendation;
+    // Resolved review-body items form one group across reason classes (plan §2.4).
+    const oneClass = entry.item_nos.every(
+      (no) => items.get(no)?.assessment?.recommendation.reason_class === rec?.reason_class,
+    );
     return (
       <li key={entryKey(entry)} className="flex items-center gap-0.5">
         <button
@@ -62,7 +66,7 @@ export function QueueList({
           <span className="min-w-8 font-mono text-xs text-muted">{group ? "G" : itemId(first)}</span>
           <span className="min-w-0 flex-1 truncate">
             {group && rec
-              ? `${CHOICE_LABEL[rec.kind]}: ${rec.reason_class.replaceAll("_", " ")} (${entry.item_nos.length})`
+              ? `${CHOICE_LABEL[rec.kind]}${oneClass ? `: ${rec.reason_class.replaceAll("_", " ")}` : ""} (${entry.item_nos.length})`
               : first.title}
           </span>
           {entry.reason === "asked_again" && (
