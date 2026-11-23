@@ -38,6 +38,7 @@ import {
   dismissal,
   followedUp,
   plan,
+  planDigest,
   questionOf,
   staleReviews,
   waiting,
@@ -945,12 +946,12 @@ export function markGate(raw: string, body: GateMarkRequest): CommentItem | Refu
   return it;
 }
 
-/** The server's plans of `rows` (all or nothing), or its refusal (mod.rs `Loaded::plan`). */
-function planRows(rows: DecisionBatchRow[]): [CommentItem, Planned][] | Refusal {
+/** The server's plans of `rows` (all or nothing) with their plan digests, or its refusal (mod.rs `Loaded::plan`). */
+function planRows(rows: DecisionBatchRow[]): [CommentItem, Planned, string | null][] | Refusal {
   const found = rows.map((r) => [r, store!.items.find((i) => i.no === r.item_no)] as const);
   if (found.some(([, it]) => !it)) return NOT_FOUND;
   const scope = scopeOf(rows.map((r) => r.item_no));
-  const out: [CommentItem, Planned][] = [];
+  const out: [CommentItem, Planned, string | null][] = [];
   for (const [row, it] of found) {
     let at = scope;
     if (row.kind === "dismiss_stale_reviews" && questionOf(it!) === "dismiss") {
@@ -960,7 +961,7 @@ function planRows(rows: DecisionBatchRow[]): [CommentItem, Planned][] | Refusal 
     }
     const planned = plan(it!, row, at);
     if (typeof planned === "string") return [400, "invalid_request", `C${it!.no}: ${planned}.`];
-    out.push([it!, planned]);
+    out.push([it!, planned, planDigest(it!, row, at)]);
   }
   return out;
 }
@@ -974,7 +975,11 @@ export function previewEffects(rows: DecisionBatchRow[]): EffectsPreview[] | Ref
   items();
   const planned = planRows(rows);
   if (isRefused(planned)) return planned;
-  return planned.map(([it, p]) => ({ item_no: it.no, effects: p.effects }));
+  return planned.map(([it, p, digest]) => ({
+    item_no: it.no,
+    effects: p.effects,
+    ...(digest === null ? {} : { plan_digest: digest }),
+  }));
 }
 
 /** RC17. */
@@ -1007,6 +1012,16 @@ function storeRows(via: Decision["via"], rows: DecisionBatchRow[]): Decision[] |
   }
   const planned = planRows(rows);
   if (isRefused(planned)) return planned;
+  // A row sent with the digest the owner confirmed is refused when its plan rests on something else now.
+  const replanned = planned
+    .filter(([, , digest], i) => (rows[i]!.plan_digest ?? null) !== null && rows[i]!.plan_digest !== digest)
+    .map(([it]) => `C${it.no}`);
+  if (replanned.length)
+    return [
+      409,
+      "conflict",
+      `What the decision would do changed since you confirmed it: ${replanned.join(", ")}. Check the plan again.`,
+    ];
   const changed = planned
     .filter(([it], i) => it.revision !== rows[i]!.item_revision)
     .map(([it]) => `C${it.no}`);

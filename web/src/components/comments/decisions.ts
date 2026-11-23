@@ -262,6 +262,10 @@ export function decideBlocked(preview: EffectsPreviewState, rows: DecisionBatchR
 export const previewFor = (preview: EffectsPreviewState | undefined, no: number): PlannedEffect[] | null =>
   preview?.state === "ready" ? (preview.items.find((i) => i.item_no === no)?.effects ?? null) : null;
 
+/** The digest of what the planned decision on `C<no>` rests on (PR-level questions), or null. */
+export const digestFor = (preview: EffectsPreviewState | undefined, no: number): string | null =>
+  preview?.state === "ready" ? (preview.items.find((i) => i.item_no === no)?.plan_digest ?? null) : null;
+
 /** The reply text the server would post (the first reply or PR-level comment of the plan), or null. */
 export const plannedReply = (effects: PlannedEffect[]): string | null =>
   effects.find((e) => e.kind === "reply" || e.kind === "pr_comment")?.params.text ?? null;
