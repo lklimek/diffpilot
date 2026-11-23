@@ -51,7 +51,20 @@ def report_path(eid: str = E1) -> str:
 # ---------- fixtures built from schemas/api ----------
 
 
-def effect(eid, seq, kind, after=None, state="open", text=None, thread=THREAD, executor="agent"):
+def effect(
+    eid,
+    seq,
+    kind,
+    after=None,
+    state="open",
+    text=None,
+    thread=THREAD,
+    executor="agent",
+    review=None,
+    title=None,
+    url=None,
+    item_nos=(3,),
+):
     return {
         "id": eid,
         "seq": seq,
@@ -61,10 +74,10 @@ def effect(eid, seq, kind, after=None, state="open", text=None, thread=THREAD, e
         "params": {
             "text": text,
             "thread_id": thread,
-            "review_id": None,
-            "title": None,
-            "url": None,
-            "item_nos": [3],
+            "review_id": review,
+            "title": title,
+            "url": url,
+            "item_nos": list(item_nos),
         },
         "state": state,
         "claim": None,
@@ -72,6 +85,23 @@ def effect(eid, seq, kind, after=None, state="open", text=None, thread=THREAD, e
         "seen_on_github_at": None,
         "updated_at": "2026-11-23T10:00:00Z",
     }
+
+
+def done(eff: dict, reference: str) -> dict:
+    eff["state"] = "done"
+    eff["reports"] = [
+        {
+            "outcome": "done",
+            "reference": reference,
+            "message": None,
+            "token_name": "agent",
+            "at": "2026-11-23T10:05:00Z",
+        }
+    ]
+    return eff
+
+
+SHA = "c" * 40
 
 
 def fix_effects(state="open"):
@@ -628,24 +658,207 @@ def test_show_rejects_a_malformed_id_locally(env, fake):
     assert fake.requests == []
 
 
-def test_text_writes_the_exact_effect_text_to_a_private_file(env, fake, capsys):
-    fake.on("GET", decision_path(), (200, {}, feed_decision()))
+def reject_decision(text=REPLY, did=DEC):
+    return feed_decision(did, effects=[effect(E2, 1, "reply", text=text), effect(E3, 2, "resolve", after=1)])
+
+
+def test_text_writes_the_exact_effect_text_to_a_new_private_file(env, fake, capsys):
+    fake.on("GET", decision_path(), (200, {}, reject_decision()))
     target = env["tmp"] / "reply.md"
     code, out, _ = run(capsys, "text", DEC, E2, "--out", str(target))
     assert code == 0
-    assert target.read_text(encoding="utf-8") == REPLY
+    assert target.read_bytes() == REPLY.encode()
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
     assert str(target) in out
 
 
+def test_text_without_out_writes_a_private_temporary_file(env, fake, capsys, monkeypatch):
+    scratch = env["tmp"] / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    monkeypatch.setattr(sr_decisions.tempfile, "tempdir", None)
+    fake.on("GET", decision_path(), (200, {}, reject_decision()))
+    code, out, _ = run(capsys, "text", DEC, E2)
+    assert code == 0
+    [written] = list(scratch.iterdir())
+    assert str(written) in out
+    assert written.read_bytes() == REPLY.encode()
+    assert stat.S_IMODE(written.stat().st_mode) == 0o600
+
+
+def test_text_refuses_an_existing_file(env, fake, capsys):
+    fake.on("GET", decision_path(), (200, {}, reject_decision()))
+    target = env["tmp"] / "keep.md"
+    target.write_text("keep")
+    code, _, errout = run(capsys, "text", DEC, E2, "--out", str(target))
+    assert code == 2 and "exists" in errout
+    assert target.read_text() == "keep"
+
+
+@pytest.mark.parametrize("marker", ["dir", "file"])
+def test_text_refuses_a_path_inside_a_git_work_tree(env, fake, capsys, monkeypatch, marker):
+    fake.on("GET", decision_path(), (200, {}, reject_decision()))
+    checkout = env["tmp"] / "checkout"
+    (checkout / "src").mkdir(parents=True)
+    if marker == "dir":
+        (checkout / ".git").mkdir()
+    else:
+        (checkout / ".git").write_text("gitdir: /elsewhere\n")
+    monkeypatch.chdir(checkout)
+    for out in ("reply.md", str(checkout / "src" / "reply.md")):
+        code, _, errout = run(capsys, "text", DEC, E2, "--out", out)
+        assert code == 2 and "git work tree" in errout
+    assert not (checkout / "reply.md").exists() and not (checkout / "src" / "reply.md").exists()
+
+
+TRICKY = 'Fix `id` and $(touch /tmp/pwned) "quoted" \\ $HOME ;|& żółw'
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [("title", TRICKY), ("body", TRICKY + "\nsecond line"), ("params.title", TRICKY + " follow-up")],
+)
+def test_text_field_writes_github_strings_byte_exact(env, fake, capsys, field, expected):
+    fd = feed_decision(
+        effects=[
+            effect(E1, 1, "follow_up_pr", title=TRICKY + " follow-up"),
+            effect(E2, 2, "reply", after=1, text=REPLY),
+        ]
+    )
+    fd["item"]["title"] = TRICKY
+    fd["item"]["body"] = TRICKY + "\nsecond line"
+    fake.on("GET", decision_path(), (200, {}, fd))
+    target = env["tmp"] / "field.txt"
+    code, out, errout = run(capsys, "text", DEC, E1, "--field", field, "--out", str(target))
+    assert code == 0, errout
+    assert target.read_bytes() == expected.encode()
+    assert "$(" not in out
+
+
+def test_text_appends_the_reported_commit_to_a_reply_waiting_on_a_fix(env, fake, capsys):
+    effects = fix_effects("claimed")
+    done(effects[0], SHA)
+    fake.on("GET", decision_path(), (200, {}, feed_decision(effects=effects)))
+    target = env["tmp"] / "reply.md"
+    code, _, errout = run(capsys, "text", DEC, E2, "--out", str(target))
+    assert code == 0, errout
+    assert target.read_text(encoding="utf-8") == REPLY + "\n\n" + SHA
+    other = env["tmp"] / "reply2.md"
+    assert run(capsys, "text", DEC, E2, "--reference", SHA, "--out", str(other))[0] == 0
+    assert other.read_text(encoding="utf-8") == REPLY + "\n\n" + SHA
+
+
+def test_text_refuses_a_reference_other_than_the_reported_one(env, fake, capsys):
+    effects = fix_effects("claimed")
+    done(effects[0], SHA)
+    fake.on("GET", decision_path(), (200, {}, feed_decision(effects=effects)))
+    target = env["tmp"] / "reply.md"
+    code, _, errout = run(capsys, "text", DEC, E2, "--reference", "d" * 40, "--out", str(target))
+    assert code == 2 and SHA in errout
+    assert not target.exists()
+
+
+def test_text_refuses_while_the_awaited_effect_is_not_done(env, fake, capsys):
+    fake.on("GET", decision_path(), (200, {}, feed_decision(effects=fix_effects("claimed"))))
+    target = env["tmp"] / "reply.md"
+    code, _, errout = run(capsys, "text", DEC, E2, "--out", str(target))
+    assert code == 2 and "done first" in errout and E1 in errout
+    assert not target.exists()
+
+
+def test_text_skips_a_reference_the_text_already_contains(env, fake, capsys):
+    url = "https://github.com/up/stream/issues/7"
+    text = f"Per maintainer decision, this is tracked upstream: {url}"
+    effects = [done(effect(E1, 1, "upstream_issue", url=url), url), effect(E2, 2, "reply", after=1, text=text)]
+    fake.on("GET", decision_path(), (200, {}, feed_decision(effects=effects)))
+    target = env["tmp"] / "reply.md"
+    assert run(capsys, "text", DEC, E2, "--out", str(target))[0] == 0
+    assert target.read_text(encoding="utf-8") == text
+
+
+def test_text_adds_no_reference_after_a_todo(env, fake, capsys):
+    text = "Per maintainer decision, out of scope for this PR."
+    effects = [done(effect(E1, 1, "todo", title="later"), "memcan-todo-1"), effect(E2, 2, "reply", after=1, text=text)]
+    fake.on("GET", decision_path(), (200, {}, feed_decision(effects=effects)))
+    target = env["tmp"] / "reply.md"
+    assert run(capsys, "text", DEC, E2, "--out", str(target))[0] == 0
+    assert target.read_text(encoding="utf-8") == text
+    code, _, errout = run(capsys, "text", DEC, E2, "--reference", "memcan-todo-1", "--out", str(env["tmp"] / "x.md"))
+    assert code == 2 and "no reference" in errout
+
+
+def test_text_appends_the_follow_up_link_to_a_pr_level_comment(env, fake, capsys):
+    link = "https://github.com/acme/widget/pull/500"
+    text = "Per maintainer decision, this moves to a follow-up pull request."
+    effects = [done(effect(E1, 1, "follow_up_pr"), link), effect(E2, 2, "pr_comment", after=1, text=text, thread=None)]
+    fake.on("GET", decision_path(), (200, {}, feed_decision(effects=effects)))
+    target = env["tmp"] / "comment.md"
+    assert run(capsys, "text", DEC, E2, "--out", str(target))[0] == 0
+    assert target.read_text(encoding="utf-8") == text + "\n\n" + link
+
+
+@pytest.mark.parametrize("argv", [[E3, "--reference", SHA], [E2, "--field", "title", "--reference", SHA]])
+def test_text_reference_only_for_the_text_of_a_waiting_reply(env, fake, capsys, argv):
+    fake.on("GET", decision_path(), (200, {}, reject_decision()))
+    code, _, errout = run(capsys, "text", DEC, *argv, "--out", str(env["tmp"] / "x.md"))
+    assert code == 2 and "no reference" in errout
+
+
 def test_text_of_an_effect_without_text_or_of_another_decision_exits_2(env, fake, capsys):
-    fake.on("GET", decision_path(), (200, {}, feed_decision()))
+    fake.on("GET", decision_path(), (200, {}, reject_decision()))
     target = env["tmp"] / "x.md"
-    code, _, errout = run(capsys, "text", DEC, E1, "--out", str(target))
+    code, _, errout = run(capsys, "text", DEC, E3, "--out", str(target))
     assert code == 2 and "no text" in errout
     code, _, errout = run(capsys, "text", DEC, str(uuid.uuid4()), "--out", str(target))
     assert code == 2 and "has no effect" in errout
     assert not target.exists()
+
+
+# ---------- combine ----------
+
+
+def review_comment_decision(did, no, eid, text, review="PRR_kwDOreview1", after_fix=None):
+    effects = [effect(eid, 1, "pr_comment", text=text, thread=None, review=review, item_nos=(no,))]
+    if after_fix:
+        fix_id = str(uuid.uuid4())
+        effects = [
+            done(effect(fix_id, 1, "fix", thread=None, item_nos=(no,)), after_fix),
+            effect(eid, 2, "pr_comment", after=1, text=text, thread=None, review=review, item_nos=(no,)),
+        ]
+    fd = feed_decision(did, effects=effects)
+    fd["item"]["no"] = no
+    fd["item"]["kind"] = "review_body"
+    fd["decision"]["item_no"] = no
+    return fd
+
+
+def test_combine_builds_one_pr_level_comment_for_one_review(env, fake, capsys):
+    fake.on("GET", decision_path(DEC), (200, {}, review_comment_decision(DEC, 5, E1, "Not changed: by design.")))
+    fake.on("GET", decision_path(DEC2), (200, {}, review_comment_decision(DEC2, 3, E2, "Fixed here.", after_fix=SHA)))
+    target = env["tmp"] / "comment.md"
+    code, out, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
+    assert code == 0, errout
+    assert target.read_text(encoding="utf-8") == f"C3: Fixed here.\n\n{SHA}\n\nC5: Not changed: by design."
+    assert E1 in out and E2 in out
+
+
+@pytest.mark.parametrize("second", [{"review": "PRR_other"}, {"review": None}])
+def test_combine_refuses_effects_of_different_or_no_reviews(env, fake, capsys, second):
+    fake.on("GET", decision_path(DEC), (200, {}, review_comment_decision(DEC, 5, E1, "a")))
+    fake.on("GET", decision_path(DEC2), (200, {}, review_comment_decision(DEC2, 3, E2, "b", **second)))
+    target = env["tmp"] / "comment.md"
+    code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(target))
+    assert code == 2 and "review" in errout
+    assert not target.exists()
+
+
+def test_combine_refuses_decisions_of_different_pull_requests(env, fake, capsys):
+    other = review_comment_decision(DEC2, 3, E2, "b")
+    other["pr"]["number"] = 999
+    fake.on("GET", decision_path(DEC), (200, {}, review_comment_decision(DEC, 5, E1, "a")))
+    fake.on("GET", decision_path(DEC2), (200, {}, other))
+    code, _, errout = run(capsys, "combine", DEC, DEC2, "--out", str(env["tmp"] / "c.md"))
+    assert code == 2 and "pull request" in errout
 
 
 # ---------- claim and renew ----------
@@ -675,7 +888,6 @@ def test_claim_json_prints_the_claim(env, fake, capsys):
         (409, "conflict", "nothing left"),
         (422, "capability_missing", "capabilities"),
         (404, "not_found", "no such decision"),
-        (410, "gone", "gone"),
     ],
 )
 def test_claim_refusals_exit_6(env, fake, capsys, status, code_, fragment):
@@ -727,6 +939,73 @@ def test_report_done_posts_reference_and_a_uuid_key(env, fake, capsys):
     assert body["outcome"] == "done" and body["reference"] == "b" * 40 and body["message"] is None
     assert uuid.UUID(body["idempotency_key"]).version == 4
     assert "done" in out and E1 in out
+
+
+@pytest.fixture
+def fake_gh(env, monkeypatch):
+    bindir = env["tmp"] / "bin"
+    bindir.mkdir()
+    args_file = env["tmp"] / "gh-args"
+    gh = bindir / "gh"
+    gh.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$@\" > '{args_file}'\n"
+        '[ -n "$FAKE_GH_FAIL" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }\n'
+        "printf '%s\\n' \"$FAKE_GH_HEAD\"\n"
+    )
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_GH_HEAD", SHA)
+    monkeypatch.delenv("FAKE_GH_FAIL", raising=False)
+    return args_file
+
+
+def test_report_done_with_verify_head_checks_the_pr_head_first(env, fake, capsys, fake_gh):
+    fake.on("POST", report_path(), (201, {}, None))
+    code, out, errout = run(capsys, "report", E1, "done", "--reference", SHA, "--verify-head", "acme/widget#482")
+    assert code == 0, errout
+    assert fake_gh.read_text().split() == [
+        "pr",
+        "view",
+        "482",
+        "--repo",
+        "acme/widget",
+        "--json",
+        "headRefOid",
+        "--jq",
+        ".headRefOid",
+    ]
+    assert fake.requests[0]["body"]["reference"] == SHA
+
+
+def test_report_done_is_refused_when_the_pr_head_differs(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_HEAD", "e" * 40)
+    code, _, errout = run(capsys, "report", E1, "done", "--reference", SHA, "--verify-head", "acme/widget#482")
+    assert code == 2
+    assert "e" * 40 in errout and "failed" in errout
+    assert fake.requests == []
+
+
+def test_report_verify_head_when_gh_fails_exits_4_without_a_report(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_FAIL", "1")
+    code, _, errout = run(capsys, "report", E1, "done", "--reference", SHA, "--verify-head", "acme/widget#482")
+    assert code == 4 and "gh" in errout
+    assert fake.requests == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["done", "--reference", "abc123", "--verify-head", "acme/widget#482"],
+        ["done", "--reference", SHA, "--verify-head", "acme/widget"],
+        ["failed", "--message", "x", "--verify-head", "acme/widget#482"],
+    ],
+)
+def test_report_verify_head_needs_a_full_sha_a_pr_and_done(env, fake, capsys, fake_gh, argv):
+    code, _, _ = run(capsys, "report", E1, *argv)
+    assert code == 2
+    assert fake.requests == []
+    assert not fake_gh.exists()
 
 
 def test_report_failed_and_released_bodies(env, fake, capsys):
@@ -806,7 +1085,7 @@ def test_report_lease_expired_exits_7_with_advice(env, fake, capsys):
         (409, "claimed", 6, "another agent"),
         (409, "conflict", 6, "already ended"),
         (404, "not_found", 6, "no such"),
-        (410, "gone", 6, "gone"),
+        (410, "gone", 4, "HTTP 410"),
         (400, "invalid_request", 2, "waits for"),
     ],
 )

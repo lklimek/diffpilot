@@ -19,6 +19,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -43,6 +44,16 @@ RETRY_AFTER_RE = re.compile(r"[0-9]{1,6}")
 HIDDEN_RE = re.compile("[︀-️\U000e0100-\U000e01efᅟᅠㅤﾠ⠀]")
 UNSAFE_CATEGORIES = ("Cc", "Cf", "Co", "Cs", "Zl", "Zp")
 NIL_ID = "00000000-0000-0000-0000-000000000000"
+SHA_RE = re.compile(r"[0-9a-f]{40}")
+PR_SPEC_RE = re.compile(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]{0,9})")
+SAFE_ID_RE = re.compile(r"[A-Za-z0-9_=-]{1,200}")
+FIELDS = ("params.text", "params.title", "params.url", "title", "body")
+# Plan §2.3: a reply or PR-level comment after a fix (D2), follow-up PR (D5) or upstream issue (D6) carries its
+# reference; never after a TODO (D7).
+REFERENCED_KINDS = ("fix", "follow_up_pr", "upstream_issue")
+REPLY_KINDS = ("reply", "pr_comment")
+ENDED_STATES = ("done", "failed", "cancelled")
+GH_TIMEOUT = 60
 CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 30
 COMMAND_DEADLINE = 180
@@ -425,8 +436,6 @@ class Client:
             return fail(f"no such {subject} (unknown id, or not in your diffpilot); leave it", EXIT_GONE)
         if status == 404:
             return fail(f"diffpilot has no {path}; check that SR_URL points at diffpilot", EXIT_SERVER)
-        if status == 410:
-            return fail(f"diffpilot says the {subject or path} is gone ({code or status}); leave it", EXIT_GONE)
         if status in (400, 422):
             return fail(f"diffpilot rejected the request: {message or code or status}", EXIT_CONFIG)
         if status == 429:
@@ -662,12 +671,15 @@ def format_decision(fd: dict) -> list[str]:
         out.append(f"    {_effect_head(effect)} effect {eid}{mine}")
         params = _obj(effect.get("params"))
         if params.get("text"):
-            out.append(
-                f"      text (post exactly; write it with: text {did} {eid} --out FILE): {quoted(params['text'])}"
-            )
-        for name in ("thread_id", "review_id", "title", "url"):
+            out.append(f"      text (post exactly; file: text {did} {eid}): {quoted(params['text'])}")
+        for name in ("thread_id", "review_id"):
             if params.get(name):
-                out.append(f"      {name}: {quoted(params[name]) if name == 'title' else clean(params[name])}")
+                value = params[name]
+                shown = value if isinstance(value, str) and SAFE_ID_RE.fullmatch(value) else "(withheld: not an id)"
+                out.append(f"      {name}: {shown}")
+        for name in ("title", "url"):
+            if params.get(name):
+                out.append(f"      {name} (file: text {did} {eid} --field params.{name}): {quoted(params[name])}")
         nos = params.get("item_nos")
         if isinstance(nos, list) and nos:
             out.append("      items: " + ", ".join(f"C{n}" for n in nos if _int(n) is not None))
@@ -836,20 +848,140 @@ def cmd_show(client: Client, args) -> int:
     return EXIT_OK
 
 
+def _inside_work_tree(directory: Path) -> Path | None:
+    for candidate in (directory, *directory.parents):
+        if os.path.lexists(candidate / ".git"):
+            return candidate
+    return None
+
+
+def write_new(text: str, out: str | None) -> Path:
+    """Writes `text` byte-exact into a new 0600 file outside any git work tree; a temporary file without `out`."""
+    directory = Path(os.path.realpath(tempfile.gettempdir() if out is None else os.path.dirname(os.path.abspath(out))))
+    tree = _inside_work_tree(directory)
+    if tree is not None:
+        raise SrError(
+            f"{directory} is inside the git work tree {tree}; write the file outside the checkout "
+            "(omit --out for a temporary file)",
+            EXIT_CONFIG,
+        )
+    try:
+        if out is None:
+            fd, name = tempfile.mkstemp(prefix="diffpilot-", suffix=".txt")
+            path = Path(name)
+        else:
+            path = Path(os.path.abspath(out))
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        raise SrError(f"{out} exists; give a new path, or omit --out for a temporary file", EXIT_CONFIG) from None
+    except OSError as exc:
+        raise SrError(f"cannot create {out or 'a temporary file'} ({type(exc).__name__})", EXIT_CONFIG) from None
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(text.encode("utf-8"))
+    except OSError as exc:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+        raise SrError(f"cannot write {path} ({type(exc).__name__})", EXIT_CONFIG) from None
+    return path
+
+
+def _awaited(decision: dict, effect: dict) -> dict | None:
+    after = _int(effect.get("after"))
+    return None if after is None else next((e for e in _effects(decision) if _int(e.get("seq")) == after), None)
+
+
+def _done_reference(effect: dict) -> str | None:
+    reports = effect.get("reports") if effect.get("state") == "done" else None
+    for report in reversed(reports if isinstance(reports, list) else []):
+        report = _obj(report)
+        if report.get("outcome") == "done" and isinstance(report.get("reference"), str) and report["reference"]:
+            return report["reference"]
+    return None
+
+
+def posted_text(decision: dict, effect: dict, reference: str | None = None) -> str:
+    """The effect's text to post; after a fix, follow-up PR or upstream issue, its reported reference ends it."""
+    eid = clean(effect.get("id", "?"))
+    awaited = _awaited(decision, effect)
+    takes = effect.get("kind") in REPLY_KINDS and awaited is not None and awaited.get("kind") in REFERENCED_KINDS
+    if reference is not None and not takes:
+        raise SrError(
+            f"effect {eid} takes no reference line (only a reply or PR-level comment waiting on a fix, "
+            "follow-up PR or upstream issue)",
+            EXIT_CONFIG,
+        )
+    text = _obj(effect.get("params")).get("text")
+    if not isinstance(text, str) or not text:
+        raise SrError(f"effect {eid} ({clean(effect.get('kind', '?'))}) has no text to post", EXIT_CONFIG)
+    if not takes:
+        return text
+    reported = _done_reference(awaited)
+    if reported is None:
+        raise SrError(
+            f"effect {eid} waits on effect {clean(awaited.get('id', '?'))} ({clean(awaited.get('kind'))}); "
+            "report that one done first",
+            EXIT_CONFIG,
+        )
+    if reference is not None and reference != reported:
+        raise SrError(f"effect {clean(awaited.get('id', '?'))} was reported done with {clean(reported)}", EXIT_CONFIG)
+    if reported in text:
+        return text
+    return text + ("\n" if text.endswith("\n") else "\n\n") + reported
+
+
 def cmd_text(client: Client, args) -> int:
     fd = _feed_decision(client, args.decision)
     effect = next((e for e in _effects(fd["decision"]) if e.get("id") == args.effect), None)
     if effect is None:
         raise SrError(f"decision {args.decision} has no effect {args.effect}", EXIT_CONFIG)
-    text = _obj(effect.get("params")).get("text")
-    if not isinstance(text, str) or not text:
-        raise SrError(f"effect {args.effect} ({clean(effect.get('kind', '?'))}) has no text to post", EXIT_CONFIG)
-    target = Path(args.out)
-    try:
-        _write_private(target, text)
-    except OSError as exc:
-        raise SrError(f"cannot write {target} ({type(exc).__name__})", EXIT_CONFIG) from None
-    print(f"wrote the text of effect {args.effect} ({len(text)} characters) to {target}")
+    if args.field == "params.text":
+        value = posted_text(fd["decision"], effect, args.reference)
+    else:
+        if args.reference is not None:
+            raise SrError(f"--field {args.field} takes no reference line; --reference is for params.text", EXIT_CONFIG)
+        source = _obj(effect.get("params")) if args.field.startswith("params.") else _obj(fd.get("item"))
+        value = source.get(args.field.removeprefix("params."))
+        if not isinstance(value, str) or not value:
+            raise SrError(f"effect {args.effect} has no {args.field} to write", EXIT_CONFIG)
+    path = write_new(value, args.out)
+    print(f"wrote {args.field} of effect {args.effect} ({len(value)} characters) to {path}")
+    return EXIT_OK
+
+
+def cmd_combine(client: Client, args) -> int:
+    parts, reviews, prs = [], set(), set()
+    for did in dict.fromkeys(args.decisions):
+        fd = _feed_decision(client, did)
+        prs.add(_pr_name(fd.get("pr")))
+        found = [
+            e
+            for e in _effects(fd["decision"])
+            if e.get("kind") == "pr_comment" and e.get("executor") == "agent" and e.get("state") not in ENDED_STATES
+        ]
+        if not found:
+            raise SrError(f"decision {did} has no open pr_comment effect", EXIT_CONFIG)
+        for effect in found:
+            params = _obj(effect.get("params"))
+            review = params.get("review_id")
+            reviews.add(review if isinstance(review, str) and SAFE_ID_RE.fullmatch(review) else None)
+            nos = params.get("item_nos")
+            no = (
+                nos[0] if isinstance(nos, list) and nos and _int(nos[0]) is not None else _obj(fd.get("item")).get("no")
+            )
+            parts.append((_int(no) or 0, posted_text(fd["decision"], effect), clean(effect.get("id", "?"))))
+    if len(prs) != 1:
+        raise SrError(f"the decisions belong to different pull requests ({', '.join(sorted(prs))})", EXIT_CONFIG)
+    if len(reviews) != 1 or None in reviews:
+        raise SrError(
+            "the pr_comment effects do not all name one review; combine only those of one review_id and post "
+            "the others one by one with text",
+            EXIT_CONFIG,
+        )
+    parts.sort(key=lambda part: part[0])
+    path = write_new("\n\n".join(f"C{no}: {text}" for no, text, _ in parts), args.out)
+    print(f"wrote one comment for review {next(iter(reviews))} ({len(parts)} items) to {path}")
+    print("report its URL as done for effects: " + " ".join(eid for _, _, eid in parts))
     return EXIT_OK
 
 
@@ -901,8 +1033,53 @@ def _report_fields(args) -> tuple[str | None, str | None]:
     return reference, message
 
 
+def _pr_head(repo: str, number: str) -> str:
+    """The PR's head commit as GitHub reports it (`gh`, the agent's own GitHub sign-in)."""
+    command = ["gh", "pr", "view", number, "--repo", repo, "--json", "headRefOid", "--jq", ".headRefOid"]
+    try:
+        done = subprocess.run(
+            command, capture_output=True, text=True, timeout=GH_TIMEOUT, check=False, stdin=subprocess.DEVNULL
+        )
+    except FileNotFoundError:
+        raise SrError("gh is not installed; cannot check the pull request head", EXIT_SERVER) from None
+    except subprocess.TimeoutExpired:
+        raise SrError(f"gh did not answer within {GH_TIMEOUT} s; retry", EXIT_SERVER) from None
+    except OSError as exc:
+        raise SrError(f"gh could not run ({type(exc).__name__})", EXIT_SERVER) from None
+    if done.returncode != 0:
+        lines = done.stderr.strip().splitlines()
+        why = f": {clean(lines[-1])[:200]}" if lines else ""
+        raise SrError(
+            f"gh could not read the head of {repo}#{number} (exit {done.returncode}{why}); check gh, then retry",
+            EXIT_SERVER,
+        )
+    head = done.stdout.strip().lower()
+    if not SHA_RE.fullmatch(head):
+        raise SrError(f"gh answered no commit SHA for the head of {repo}#{number}", EXIT_SERVER)
+    return head
+
+
+def _verify_head(args, reference: str | None) -> None:
+    if args.outcome != "done":
+        raise SrError("--verify-head checks a done report of a fix", EXIT_CONFIG)
+    spec = PR_SPEC_RE.fullmatch(args.verify_head)
+    if spec is None:
+        raise SrError("--verify-head expects owner/name#number", EXIT_CONFIG)
+    if reference is None or not SHA_RE.fullmatch(reference.lower()):
+        raise SrError("--verify-head needs --reference with the full 40-character commit SHA", EXIT_CONFIG)
+    head = _pr_head(*spec.groups())
+    if head != reference.lower():
+        raise SrError(
+            f"the head of {args.verify_head} is {head}, not {reference}: the pull request does not hold the fix; "
+            "push it to the PR's head branch, or report the fix failed",
+            EXIT_CONFIG,
+        )
+
+
 def cmd_report(client: Client, args) -> int:
     reference, message = _report_fields(args)
+    if args.verify_head is not None:
+        _verify_head(args, reference)
     key = pending_key(args.effect, args.outcome, reference, message)
     body = {"outcome": args.outcome, "reference": reference, "message": message, "idempotency_key": key}
     try:
@@ -989,10 +1166,15 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     show = sub.add_parser("show", help="one decision: item, owner's comment, reply text, effects (RF1b)")
     show.add_argument("decision", type=_id)
     show.add_argument("--json", action="store_true")
-    text = sub.add_parser("text", help="write an effect's exact text to post into a file (mode 0600)")
+    text = sub.add_parser("text", help="write an effect's text or a GitHub string byte-exact into a new 0600 file")
     text.add_argument("decision", type=_id)
     text.add_argument("effect", type=_id)
-    text.add_argument("--out", required=True, help="file to write")
+    text.add_argument("--field", choices=FIELDS, default="params.text", help="what to write (default params.text)")
+    text.add_argument("--reference", help="check: the reference the awaited fix, PR or issue was reported done with")
+    text.add_argument("--out", help="new file outside any git work tree (default: a temporary file)")
+    combine = sub.add_parser("combine", help="one PR-level comment for the pr_comment effects of one review")
+    combine.add_argument("decisions", type=_id, nargs="+", metavar="decision")
+    combine.add_argument("--out", help="new file outside any git work tree (default: a temporary file)")
     claim = sub.add_parser("claim", help="claim a decision for 30 minutes (RF3)")
     claim.add_argument("decision", type=_id)
     caps(claim)
@@ -1005,6 +1187,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     rep.add_argument("outcome", choices=("done", "failed", "released"))
     rep.add_argument("--reference", help="done: commit SHA, comment URL, thread id, PR or TODO id")
     rep.add_argument("--message", help="failed: the reason")
+    rep.add_argument("--verify-head", metavar="OWNER/NAME#N", help="done of a fix: the PR head must be --reference")
     args = parser.parse_args(argv)
     if args.cmd in ("list", "wait") and args.pr is not None and not args.repo:
         parser.error("--pr needs --repo")
@@ -1017,6 +1200,7 @@ COMMANDS = {
     "wait": cmd_wait,
     "show": cmd_show,
     "text": cmd_text,
+    "combine": cmd_combine,
     "claim": cmd_claim,
     "renew": cmd_renew,
     "report": cmd_report,
