@@ -109,6 +109,8 @@ export function GroupCard({
   const [problem, setProblem] = useState<string | null>(null);
   const discuss = useRef<HTMLButtonElement>(null);
   const label = CHOICE_LABEL[rec.kind] ?? rec.kind;
+  // Rows grouped across reason classes (resolved review-body items, plan §2.4) share no reason: each row shows its own.
+  const shared = items.every((item) => item.assessment?.recommendation.reason === rec.reason);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "i" || /^(INPUT|TEXTAREA|SELECT)$/.test((event.target as HTMLElement).tagName))
@@ -144,7 +146,7 @@ export function GroupCard({
       </p>
       <Heading
         id={`${id}-h`}
-        text={`Same recommendation: ${label} — ${rec.reason} (${items.length} items)`}
+        text={`Same recommendation: ${label}${shared ? ` — ${rec.reason}` : ""} (${items.length} items)`}
       />
       <table className="w-full border-collapse text-[13px]">
         <thead>
@@ -172,9 +174,14 @@ export function GroupCard({
               <td className="border-b border-border px-2 py-1.5 whitespace-nowrap">
                 {itemId(item)} <OpenItem item={item} />
               </td>
-              <td className="border-b border-border px-2 py-1.5">{sourceText(item)}</td>
+              <td className="border-b border-border px-2 py-1.5">
+                {sourceText(item)}
+                {item.bot_severity && ` · ${item.bot_severity}`}
+              </td>
               <td className="border-b border-border px-2 py-1.5">{item.title}</td>
-              <td className="border-b border-border px-2 py-1.5">{item.assessment?.necessity.reason}</td>
+              <td className="border-b border-border px-2 py-1.5">
+                {shared ? item.assessment?.necessity.reason : item.assessment?.recommendation.reason}
+              </td>
               <td className="border-b border-border px-2 py-1.5">
                 <Tooltip tip={`Takes ${itemId(item)} out of this group; it is asked on its own (i).`}>
                   <button
