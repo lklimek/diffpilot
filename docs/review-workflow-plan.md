@@ -101,7 +101,10 @@ included; out of scope now, all data kept; RQ14, RQ22).
 
 Bot: GitHub `Bot` type, a `[bot]` login, or Settings `known_bots`; `claude` stays human unless listed (RQ17). Each
 item gets a per-PR number (`C1`, `C2`, …) at first sight, never reused. Threads resolved or answered outside
-diffpilot keep their GitHub state and leave the queue when resolved (US17).
+diffpilot keep their GitHub state and leave the queue when resolved (US17). An item a complete read no longer produces
+(deleted on GitHub, or no longer an item by these rules) is marked `gone_at`, labelled "Not in the latest read from
+GitHub" (never "resolved"), and leaves the queue, "Decide the rest" and bulk decisions; its row and decisions stay,
+and a later read that produces it again clears the mark.
 
 ### 2.2 LLM assessment (`verify_comments` job, RQ20)
 Per item at the PR head: validity (`valid`, `partly_valid`, `invalid`) with `file:line` evidence; pre-existing on base;
@@ -177,7 +180,8 @@ header shows the round counter. When round 3 ends, and after each later round, P
 a decision, P3/P4 is asked once (RQ11).
 
 ### 2.7 States
-Item: `assessing` → `undecided` → `asked_back` → `decided` → `executing` (effects claimed or pending) → `done`;
+Item: `undecided` → `asked_back` → `decided` → `executing` (effects claimed or pending) → `done` (`assessing` is
+reserved: a running pass shows as the item's assessment state);
 `repeat` (carried); `reopened`; `outside` (resolved or answered on GitHub outside diffpilot). Decision: append-only.
 
 ### 2.8 Watch: detection, assessment, notification
@@ -312,7 +316,7 @@ targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe 
 
 | ID | Label | Colour (token) | Rule (facts diffpilot read; tooltip lists them) |
 |---|---|---|---|
-| B1 | Blocked / failing | red (`high`) | a failed effect, CI failed (the reader's Ignored checks left out, as in My work), or a push channel failing for this PR's events |
+| B1 | Blocked / failing | red (`high`) | a failed effect, CI failed (the reader's Ignored checks, failing or pending, left out as in My work), or a push channel failing for this PR's events |
 | B2 | Questions waiting | amber (`med`) | undecided questions exist |
 | B3 | Executing | teal (`bot`) | decided effects are open or claimed |
 | B4 | Waiting for bot round | blue (`low`) | thepastaclaw reports this head reviewing or queued, or a watched pass waits for the round |
@@ -354,7 +358,7 @@ demand), served by range (brief §7).
 | ID | Table | Key columns |
 |---|---|---|
 | T-L1 | `comment_prs` | id, repo, number, last_read_at, read_state, `github_snapshot` JSON, round_count |
-| T-L2 | `comment_items` | id, pr_id, display_no, kind, stable_key, author, author_kind, path, lines, title, url, body_hash, first_seen_head, first_round, bot_severity, gate_marks JSON, state, revision, outside JSON |
+| T-L2 | `comment_items` | id, pr_id, display_no, kind, stable_key, author, author_kind, path, lines, title, url, body_hash, first_seen_head, first_round, bot_severity, gate_marks JSON, state, revision, outside JSON, gone_at |
 | T-L3 | `comment_assessments` | id, item_id, job_id, head, fingerprint, fields of §2.2, recommendation JSON, prompt_version |
 | T-L4 | Ask chat storage (existing) | subject kind gains `comment_item` (item id); without an analysis the chat is keyed by (PR, user) **[A]** (CCR) |
 | T-L5 | `comment_decisions` | id, item_id, user_id, kind, reason, target, override, resolve_ticked, reply_text, comment, recommendation JSON, via, carried_from, supersedes, head, body_hash, decided_at (append-only) |

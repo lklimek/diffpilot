@@ -650,10 +650,10 @@ fn todo_facts(todo: &StoredTodo) -> Vec<Fact> {
     facts
 }
 
-/// Why the user's PR waits on others now (K15 W3), and whom to ping; `None` when it does not. A plug-in that says
-/// the move is the author's keeps it out; the ready label comes first, then the plug-in's reviewers' or
-/// maintainers' move (those it says owe a review, else the requested reviewers), then a requested review. The one
-/// rule of ranked versus Waiting on others: the read path and the judge's input both apply it.
+/// Why the user's PR waits on others now (K15 W3), and whom to ping; `None` when it does not. The first that
+/// applies: the ready label, a plug-in's statement that reviewers or maintainers own the stage (those it says owe a
+/// review, else the requested reviewers), a requested review. A statement that the move is the author's adds
+/// nothing. The one rule of ranked versus Waiting on others: the read path and the judge's input both apply it.
 pub(crate) fn waiting(
     rules: &ScoreRules,
     f: &PrFacts,
@@ -662,35 +662,26 @@ pub(crate) fn waiting(
     if !score::nothing_is_users_move(rules, f) {
         return None;
     }
-    let stated = overlay.whose_move(&f.repo, f.number);
     let requested = f.review_requested_from_others.clone();
     if let Some(label) = score::ready_label(rules, f) {
-        let author_moves = stated.is_some_and(|s| s.whose == Move::Author);
-        return (!author_moves).then(|| {
-            (
-                AwaitingReason::ReadyLabel {
-                    label: label.to_owned(),
-                },
-                requested,
-            )
-        });
+        let reason = AwaitingReason::ReadyLabel {
+            label: label.to_owned(),
+        };
+        return Some((reason, requested));
     }
-    match stated {
-        Some(statement) => match statement.whose {
-            Move::Author => None,
-            Move::People { owed, reason } => Some((
-                AwaitingReason::Plugin {
-                    plugin: statement.plugin,
-                    source: statement.source,
-                    reason,
-                    url: statement.url,
-                },
-                if owed.is_empty() { requested } else { owed },
-            )),
-        },
-        None => score::waits_on_requested_review(rules, f)
-            .then_some((AwaitingReason::ReviewRequested, requested)),
+    if let Some(statement) = overlay.whose_move(&f.repo, f.number)
+        && let Move::People { owed, reason } = statement.whose
+    {
+        let reason = AwaitingReason::Plugin {
+            plugin: statement.plugin,
+            source: statement.source,
+            reason,
+            url: statement.url,
+        };
+        return Some((reason, if owed.is_empty() { requested } else { owed }));
     }
+    score::waits_on_requested_review(rules, f)
+        .then_some((AwaitingReason::ReviewRequested, requested))
 }
 
 /// The user's PRs waiting on others, longest wait first, each with why and whom to ping. `waiting_since` is the

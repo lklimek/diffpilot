@@ -364,7 +364,6 @@ impl Ranker for StallingRanker {
         _state: &'a AppState,
         _scope: &'a Scope,
         _snapshot: &'a crate::dashboard::snapshot::Snapshot,
-        _overlay: &'a crate::dashboard::plugin::Overlay,
     ) -> BoxFuture<'a, Result<HashMap<contracts::api::dashboard::ItemKey, ItemJudgement>, DbError>>
     {
         Box::pin(async { Ok(HashMap::new()) })
@@ -385,7 +384,6 @@ impl Ranker for PanickingRanker {
         _state: &'a AppState,
         _scope: &'a Scope,
         _snapshot: &'a crate::dashboard::snapshot::Snapshot,
-        _overlay: &'a crate::dashboard::plugin::Overlay,
     ) -> BoxFuture<'a, Result<HashMap<contracts::api::dashboard::ItemKey, ItemJudgement>, DbError>>
     {
         Box::pin(async { Ok(HashMap::new()) })

@@ -143,7 +143,7 @@ async fn a_current_statement_holds_a_pull_request_out_of_ready_to_merge_and_note
     assert!(meta.ready_to_merge.is_empty(), "held back");
     assert!(
         meta.awaiting.iter().all(|a| a.id != "NC-476"),
-        "the author's move: not waiting on others"
+        "ready to merge, held back: merging is the user's move, not waiting on others"
     );
     let items = w.items("").await;
     let noted: Vec<_> = items
@@ -332,7 +332,7 @@ fn plat_1176(summary: &DashboardSummary) -> &contracts::api::dashboard::Awaiting
 
 /// K15 W3b: a current statement that the reviewers or maintainers have the move lists the user's PR under Waiting
 /// on others with the approvers it asks for, also when GitHub's signals alone would rank it; the ready label comes
-/// first (whom: the requested reviewers); the author's move keeps the PR ranked, even with the label.
+/// first (whom: the requested reviewers); a statement of the author's move adds nothing and vetoes nothing.
 #[tokio::test]
 async fn a_statement_of_whose_move_decides_waiting_on_others() {
     let mut w = world().await;
@@ -402,10 +402,29 @@ async fn a_statement_of_whose_move_decides_waiting_on_others() {
     );
     fake.set_prs(json!({"generated_at": GENERATED, "stale_repos": [], "prs": [author]}));
     w.state.plugins.poll_once(w.state.dashboard.now()).await;
-    assert!(!awaiting_ids(&w.summary(ALICE).await).contains(&"PLAT-1176"));
+    let summary = w.summary(ALICE).await;
+    assert_eq!(
+        plat_1176(&summary).reason,
+        AwaitingReason::ReadyLabel {
+            label: "ready-for-human".to_owned()
+        },
+        "the author's move does not veto the label"
+    );
+    assert!(
+        w.items("").await.items.iter().all(|i| i.id != "PLAT-1176"),
+        "not ranked"
+    );
+
+    let facts = &mut pr_mut(&mut snapshot, "acme/platform", 1176).facts;
+    facts.labels.clear();
+    write(&w, id, &snapshot).await;
+    assert!(
+        !awaiting_ids(&w.summary(ALICE).await).contains(&"PLAT-1176"),
+        "approved, no label: the user's move; the author's move adds nothing"
+    );
     assert!(
         w.items("").await.items.iter().any(|i| i.id == "PLAT-1176"),
-        "the author's move: ranked with its note"
+        "ranked with its note"
     );
 }
 

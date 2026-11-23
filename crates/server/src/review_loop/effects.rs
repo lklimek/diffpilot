@@ -86,6 +86,9 @@ pub enum DecisionError {
     /// A bulk decision includes an item asked again; it is decided on its own (as "Decide the rest" leaves it out).
     #[error("it was asked again, so it is decided on its own, not in bulk")]
     AskedAgain,
+    /// A bulk decision includes an item the latest complete read no longer produced.
+    #[error("it is not in the latest read from GitHub, so it is decided on its own, not in bulk")]
+    NotRead,
 }
 
 /// The planned effects and the reply text that gets posted (stored with the decision).

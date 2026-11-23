@@ -79,10 +79,9 @@ const OPEN = new Set(["undecided", "reopened", "asked_back"]);
 export function CommentsTable(props: CommentsTableProps) {
   const { items, now } = props;
   const missingId = useId();
-  const open = items.filter((i) => OPEN.has(i.state) && i.kind !== "pr_question");
-  const closed = items.filter(
-    (i) => !OPEN.has(i.state) && i.state !== "assessing" && i.kind !== "pr_question",
-  );
+  const isOpen = (i: CommentItem) => OPEN.has(i.state) && !i.gone_at;
+  const open = items.filter((i) => isOpen(i) && i.kind !== "pr_question");
+  const closed = items.filter((i) => !isOpen(i) && i.state !== "assessing" && i.kind !== "pr_question");
   const [rows, setRows] = useState<Record<string, Row>>({});
   const [showAll, setShowAll] = useState(false);
   const rowOf = (item: CommentItem) => rows[item.id] ?? initial(item);
@@ -148,6 +147,7 @@ export function CommentsTable(props: CommentsTableProps) {
             <GateChip key={g.gate} gate={g.gate} />
           ))}
           {item.state === "reopened" && <span className="text-xs text-med"> asked again</span>}
+          {item.gone_at && <span className="text-xs text-muted"> not in the latest read from GitHub</span>}
         </td>
         <td className={TD}>
           {item.kind.replace("_", " ")} · {item.author_kind}
@@ -308,7 +308,7 @@ export function CommentsTable(props: CommentsTableProps) {
             })}
             <tr>
               <th scope="rowgroup" colSpan={12} className={`${TD} bg-surface-2 text-left`}>
-                Previously decided and outside diffpilot ({closed.length})
+                Previously decided, outside diffpilot or no longer read ({closed.length})
                 {closed.length > 2 && (
                   <Tooltip tip="Shows or hides the previously decided and outside rows beyond the first two.">
                     <button

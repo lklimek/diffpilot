@@ -432,7 +432,7 @@ impl Harness {
 
     async fn judgements(&self, user: &str, snapshot: &Snapshot) -> HashMap<ItemKey, ItemJudgement> {
         JudgeRanker
-            .judgements(&self.state, &scope(user), snapshot, &Overlay::default())
+            .judgements(&self.state, &scope(user), snapshot)
             .await
             .expect("judgements")
     }
@@ -523,7 +523,7 @@ impl Harness {
 // Fingerprint (plan §B.4)
 
 fn fingerprints(snapshot: &Snapshot) -> HashMap<ItemKey, String> {
-    candidates(snapshot, &Overlay::default(), LlmLanguage::En)
+    candidates(snapshot, LlmLanguage::En)
         .into_iter()
         .map(|c| (c.item.key.clone(), c.fingerprint))
         .collect()
@@ -604,7 +604,7 @@ fn judge_input_shows_no_age_and_only_plan_facts() {
     p.facts.review_requested_at = Some(now() - SignedDuration::from_hours(24));
     p.facts.body = format!("{}  tail", "word ".repeat(100));
     let snap = snapshot(vec![p], vec![], vec![]);
-    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
+    let items = candidates(&snap, LlmLanguage::En);
     let item = &items[0].item;
     let block = JudgeWorkInput {
         items: vec![item.clone()],
@@ -630,7 +630,7 @@ fn unsure_human_waiting_default_is_sent_with_its_age_class() {
     p.facts.review_request_age_is_approx = true;
     p.facts.review_requested_at = Some(now() - SignedDuration::from_hours(24));
     let snap = snapshot(vec![p], vec![], vec![]);
-    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
+    let items = candidates(&snap, LlmLanguage::En);
     let item = &items[0].item;
     assert!(item.asks.contains(&ScoreComponent::HumanWaiting), "premise");
     let default = item
@@ -660,7 +660,7 @@ fn closing_issues_are_judged_inputs_and_old_snapshots_load() {
         title: "Crash on start".to_owned(),
     }];
     let snap = snapshot(vec![p.clone()], vec![], vec![]);
-    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
+    let items = candidates(&snap, LlmLanguage::En);
     assert_eq!(
         items[0].item.facts.linked_issues,
         vec![LinkedIssue {
@@ -688,7 +688,7 @@ fn excluded_author_items_never_reach_the_judge() {
         vec![],
         vec![todo("Check acme/wallet-ui#9 before the release")],
     );
-    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
+    let items = candidates(&snap, LlmLanguage::En);
     let pr_item = items.iter().find(|c| c.item.key == key(9)).expect("scored");
     assert!(!pr_item.asked());
     assert!(pr_item.item.suggested_merges.is_empty());
@@ -699,12 +699,8 @@ fn excluded_author_items_never_reach_the_judge() {
 #[test]
 fn language_changes_the_fingerprint() {
     let snap = snapshot(vec![pr(1, "fix: x")], vec![], vec![]);
-    let english = candidates(&snap, &Overlay::default(), LlmLanguage::En)[0]
-        .fingerprint
-        .clone();
-    let polish = candidates(&snap, &Overlay::default(), LlmLanguage::Pl)[0]
-        .fingerprint
-        .clone();
+    let english = candidates(&snap, LlmLanguage::En)[0].fingerprint.clone();
+    let polish = candidates(&snap, LlmLanguage::Pl)[0].fingerprint.clone();
     assert_ne!(english, polish);
 }
 
@@ -733,7 +729,7 @@ fn todo_naming_a_pull_request_is_a_suggested_merge() {
         vec![],
         vec![todo("Follow up acme/wallet-ui#5 after release")],
     );
-    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
+    let items = candidates(&snap, LlmLanguage::En);
     let todo_key = items
         .iter()
         .find(|c| c.item.kind == contracts::api::dashboard::ItemKind::Todo)
@@ -787,7 +783,7 @@ fn golden_input() -> JudgeWorkInput {
         vec![todo("Write docs")],
     );
     JudgeWorkInput {
-        items: candidates(&snap, &Overlay::default(), LlmLanguage::En)
+        items: candidates(&snap, LlmLanguage::En)
             .into_iter()
             .map(|c| c.item)
             .collect(),
@@ -1175,7 +1171,7 @@ async fn also_ids_limited_to_suggestions() {
         vec![todo("Follow up acme/wallet-ui#5")],
     );
     let id = h.rank("u1", &snap).await;
-    let todo_key = candidates(&snap, &Overlay::default(), LlmLanguage::En)
+    let todo_key = candidates(&snap, LlmLanguage::En)
         .iter()
         .find(|c| c.item.kind == contracts::api::dashboard::ItemKind::Todo)
         .map(|c| c.item.key.clone())
@@ -1351,9 +1347,7 @@ fn unasked_eligibility_answer_is_dropped() {
         next: "n".into(),
     };
     let snap = snapshot(vec![pr(1, "fix: x")], vec![], vec![]);
-    let mut item = candidates(&snap, &Overlay::default(), LlmLanguage::En)[0]
-        .item
-        .clone();
+    let mut item = candidates(&snap, LlmLanguage::En)[0].item.clone();
     assert!(!item.asks_eligibility, "premise");
     assert_eq!(
         store::Body::of(answer.clone(), &item, LlmLanguage::En).eligibility,
@@ -1527,7 +1521,7 @@ fn a_pull_request_waiting_only_on_others_is_not_in_needs_you() {
         "ranked: {ranked:?}"
     );
     assert_eq!(view.item_counts.total, 1);
-    let judged: Vec<_> = candidates(&snap, &Overlay::default(), LlmLanguage::En)
+    let judged: Vec<_> = candidates(&snap, LlmLanguage::En)
         .into_iter()
         .map(|c| c.item.id.clone())
         .collect();
@@ -1591,7 +1585,7 @@ fn a_waiting_pull_request_returns_to_needs_you_when_it_becomes_the_users_move() 
         change(&mut item.facts);
         let snap = snapshot(vec![item], vec![], vec![]);
         let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default());
-        let judged = candidates(&snap, &Overlay::default(), LlmLanguage::En)
+        let judged = candidates(&snap, LlmLanguage::En)
             .iter()
             .filter(|c| c.asked())
             .count();
@@ -1683,11 +1677,7 @@ async fn unclaimed_judge_job_ends_the_ranking() {
         provisional: None,
     };
     let input = JudgeWorkInput {
-        items: vec![
-            candidates(&snap, &Overlay::default(), LlmLanguage::En)[0]
-                .item
-                .clone(),
-        ],
+        items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
     };
     let job = ranking.submit(1, 0, &input).await.expect("submit").job_id;
     // Paused for the usage limit: the wait does not count, and starts again after the pause.
@@ -1748,11 +1738,7 @@ async fn ask_holding_the_credential_does_not_count_as_unclaimed() {
         provisional: None,
     };
     let input = JudgeWorkInput {
-        items: vec![
-            candidates(&snap, &Overlay::default(), LlmLanguage::En)[0]
-                .item
-                .clone(),
-        ],
+        items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
     };
     let job = ranking.submit(1, 0, &input).await.expect("submit").job_id;
     let analysis = db::repo::analyses::testing::seed_analysis(h.db())
@@ -1937,7 +1923,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
             .expect("refresh")),
         before
     );
-    let candidates = candidates(&snap, &Overlay::default(), LlmLanguage::En);
+    let candidates = candidates(&snap, LlmLanguage::En);
     let queued = Queued {
         item: candidates[0].item.clone(),
         fingerprint: candidates[0].fingerprint.clone(),
@@ -2157,7 +2143,7 @@ fn release_tag_that_keeps_the_milestone_bonus_keeps_the_fingerprint() {
             milestone_titles: Some(vec!["v1.8.0".into()]),
         };
         let snap = snapshot(vec![p], vec![], vec![]);
-        let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
+        let items = candidates(&snap, LlmLanguage::En);
         let bonus = items[0]
             .item
             .known
@@ -2179,7 +2165,7 @@ fn release_tag_that_keeps_the_milestone_bonus_keeps_the_fingerprint() {
 #[test]
 fn judge_sees_the_computed_default_it_confirms() {
     let snap = snapshot(vec![], vec![issue(7, "Crash")], vec![]);
-    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
+    let items = candidates(&snap, LlmLanguage::En);
     let item = &items[0].item;
     assert!(
         item.asks.contains(&ScoreComponent::HumanWaiting),
@@ -2271,14 +2257,14 @@ async fn a_retry_beyond_the_cap_is_not_sent() {
     );
 }
 
-/// A plug-in that states the author's move for one pull request (K15 W3b), always fresh.
+/// A plug-in that states whose move one pull request is (K15 W3b), always fresh.
 #[derive(Debug)]
-struct AuthorsMove {
+struct Stating {
     home: url::Url,
     data: crate::dashboard::plugin::PluginData,
 }
 
-impl crate::dashboard::plugin::DashboardPlugin for AuthorsMove {
+impl crate::dashboard::plugin::DashboardPlugin for Stating {
     fn id(&self) -> &'static str {
         "pr-hygiene"
     }
@@ -2302,90 +2288,137 @@ impl crate::dashboard::plugin::DashboardPlugin for AuthorsMove {
     }
 }
 
-/// The overlay of a current statement that `repo#number` is the author's move.
-async fn authors_move(repo: &RepoRef, number: u32) -> crate::dashboard::plugin::Overlay {
-    authors_move_host(repo, number).await.overlay(now())
-}
-
-/// A plug-in host whose current statement says `repo#number` is the author's move.
-async fn authors_move_host(repo: &RepoRef, number: u32) -> crate::dashboard::plugin::PluginHost {
-    use crate::dashboard::plugin::{Move, PluginData, PluginHost, PrKey, PrStatement, Timing};
+/// The overlay of a current statement that `wallet-ui#number` is `whose` move.
+async fn stating(
+    number: u32,
+    whose: crate::dashboard::plugin::Move,
+) -> crate::dashboard::plugin::Overlay {
+    use crate::dashboard::plugin::{PluginData, PluginHost, PrKey, PrStatement, Timing};
     let statement = PrStatement {
-        url: "https://hygiene.example.test/api/v1/prs/acme/wallet-ui/5949".to_owned(),
-        summary: Some("Author must post /self-reviewed".to_owned()),
+        url: format!("https://hygiene.example.test/api/v1/prs/acme/wallet-ui/{number}"),
+        summary: Some("Stage owner".to_owned()),
         details: Vec::new(),
         facts: Vec::new(),
         ready_to_merge: None,
-        whose_move: Some(Move::Author),
-        mark: "author".to_owned(),
+        whose_move: Some(whose),
+        mark: "stage".to_owned(),
     };
-    let plugin = AuthorsMove {
+    let plugin = Stating {
         home: url::Url::parse("https://hygiene.example.test/").expect("url"),
         data: PluginData {
             as_of: now(),
-            prs: HashMap::from([(PrKey::new(repo, number), statement)]),
+            prs: HashMap::from([(PrKey::new(&repo("wallet-ui"), number), statement)]),
         },
     };
     let host = PluginHost::new(vec![Arc::new(plugin)], Timing::default());
     host.poll_once(now()).await;
-    host
+    host.overlay(now())
 }
 
-/// K15 with the judge's input: a current statement of the author's move keeps a labelled PR ranked (the label
-/// notwithstanding); a ranked PR is judged like every other ranked item, never left "not judged yet" for good.
+fn reviewers_move() -> crate::dashboard::plugin::Move {
+    crate::dashboard::plugin::Move::People {
+        owed: vec!["renata-s".to_owned()],
+        reason: "Human approval is required".to_owned(),
+    }
+}
+
+/// K15 W3: a statement that the move is the author's adds nothing and vetoes nothing. A #5949-shaped PR (ready
+/// label, PR Hygiene `waiting-self-review`) waits on others for its label and is not judged; a requested review
+/// keeps waiting; a PR GitHub's signals rank stays ranked.
 #[tokio::test]
-async fn a_pull_request_ranked_by_an_authors_move_statement_is_judged() {
+async fn an_authors_move_statement_changes_neither_waiting_on_others_nor_the_judge() {
+    use crate::dashboard::plugin::Move;
+    use contracts::api::dashboard::AwaitingReason;
     let mut labelled = pr(5949, "feat(sdk): ready for a human");
     labelled.facts.labels = vec!["ready-for-human".to_owned()];
-    let snap = snapshot(vec![labelled, pr(2, "fix: other")], vec![], vec![]);
-    let overlay = authors_move(&repo("wallet-ui"), 5949).await;
-    let view = snapshot::build(&snap, &HashMap::new(), None, &overlay);
-    let ranked: Vec<_> = view.items.iter().map(|i| i.item.id.as_str()).collect();
-    assert!(
-        ranked.contains(&"wallet-ui#5949"),
-        "the author's move keeps it ranked: {ranked:?}"
+    let mut requested = pr(7, "feat: review requested");
+    requested.facts.review_requested_from_others = vec!["ana".to_owned()];
+    let snap = snapshot(
+        vec![labelled, requested, pr(2, "fix: other")],
+        vec![],
+        vec![],
     );
-    assert!(view.awaiting.is_empty(), "{:?}", view.awaiting);
-    let judged: Vec<_> = candidates(&snap, &overlay, LlmLanguage::En)
+    for number in [5949, 7, 2] {
+        let view = snapshot::build(
+            &snap,
+            &HashMap::new(),
+            None,
+            &stating(number, Move::Author).await,
+        );
+        let ranked: Vec<_> = view.items.iter().map(|i| i.item.id.as_str()).collect();
+        let awaiting: Vec<_> = view
+            .awaiting
+            .iter()
+            .map(|a| (a.id.as_str(), a.reason.clone()))
+            .collect();
+        assert_eq!(ranked, ["wallet-ui#2"], "statement on #{number}");
+        assert_eq!(
+            awaiting,
+            [
+                ("wallet-ui#7", AwaitingReason::ReviewRequested),
+                (
+                    "wallet-ui#5949",
+                    AwaitingReason::ReadyLabel {
+                        label: "ready-for-human".to_owned()
+                    }
+                ),
+            ],
+            "statement on #{number} (same opening time: by display id)"
+        );
+    }
+    let judged: Vec<_> = candidates(&snap, LlmLanguage::En)
         .into_iter()
         .map(|c| c.item.id.clone())
         .collect();
-    assert!(
-        judged.contains(&"wallet-ui#5949".to_owned()),
-        "a ranked pull request goes to the judge: {judged:?}"
-    );
+    assert_eq!(judged, ["wallet-ui#2"], "only the ranked PR is judged");
 }
 
-/// K15 at ranking time: the ranking reads the plug-in statements current then, so a PR an author's-move statement
-/// keeps ranked is sent to the judge, and its judgement applies on the read path with the same statements.
+/// K15 with the judge's input: plug-in statements can only list a PR under Waiting on others (W3b), so the ranking
+/// judges without them and every PR the read path ranks is judged, whatever the statements are when it reads. A PR
+/// a current reviewers'-move statement holds under Waiting on others is judged too; its judgement applies once the
+/// statement is gone.
 #[tokio::test]
-async fn the_ranking_judges_a_pull_request_an_authors_move_statement_keeps_ranked() {
-    let mut h = harness().await;
-    h.state.plugins = authors_move_host(&repo("wallet-ui"), 5949).await;
-    let mut labelled = pr(5949, "feat(sdk): ready for a human");
-    labelled.facts.labels = vec!["ready-for-human".to_owned()];
-    let snap = snapshot(vec![labelled, pr(2, "fix: other")], vec![], vec![]);
+async fn every_pull_request_the_read_path_ranks_is_judged_whatever_the_statements() {
+    let h = harness().await;
+    let snap = snapshot(
+        vec![pr(7, "feat: in review"), pr(2, "fix: other")],
+        vec![],
+        vec![],
+    );
+    let held = snapshot::build(
+        &snap,
+        &HashMap::new(),
+        None,
+        &stating(7, reviewers_move()).await,
+    );
+    assert_eq!(
+        held.awaiting
+            .iter()
+            .map(|a| a.id.as_str())
+            .collect::<Vec<_>>(),
+        ["wallet-ui#7"],
+        "a current reviewers'-move statement: Waiting on others"
+    );
     let id = h.rank("u1", &snap).await;
     let (_, input) = h.serve(|input| succeeded(neutral(input))).await;
     let mut sent: Vec<_> = input.items.iter().map(|i| i.id.as_str()).collect();
     sent.sort_unstable();
-    assert_eq!(sent, ["wallet-ui#2", "wallet-ui#5949"]);
+    assert_eq!(sent, ["wallet-ui#2", "wallet-ui#7"]);
     assert_eq!(h.ranked("u1", id).await.state, RefreshState::Finished);
     let key = ItemKey::new(&ItemTarget::PullRequest {
         repo: repo("wallet-ui"),
-        number: 5949,
+        number: 7,
     })
     .expect("key");
-    let overlay = h.state.plugins.overlay(now());
-    let applied = JudgeRanker
-        .judgements(&h.state, &scope("u1"), &snap, &overlay)
-        .await
-        .expect("judgements");
-    assert!(applied.contains_key(&key), "{applied:?}");
-    assert!(
-        !h.judgements("u1", &snap).await.contains_key(&key),
-        "without the statement it waits on others: no judgement applies"
-    );
+    let judgements = h.judgements("u1", &snap).await;
+    assert!(judgements.contains_key(&key), "{judgements:?}");
+    let ranked = snapshot::build(&snap, &judgements, None, &Default::default());
+    let seven = ranked
+        .items
+        .iter()
+        .find(|i| i.item.id == "wallet-ui#7")
+        .expect("ranked without the statement");
+    assert_ne!(seven.item.score.state, ScoreState::Unjudged, "judged");
 }
 
 /// K15 W5: Waiting on others lists the longest wait first; without a known request time (a labelled PR nobody was

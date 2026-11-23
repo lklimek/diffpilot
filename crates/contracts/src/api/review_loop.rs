@@ -51,7 +51,7 @@ pub enum AuthorKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemState {
-    /// The LLM assessment is running.
+    /// Reserved: the server does not set it; a pass running for an item shows as its `assessment_state` `running`.
     Assessing,
     /// Waiting for the owner's decision.
     Undecided,
@@ -231,6 +231,12 @@ pub struct CommentItem {
     pub github: ItemGithubFacts,
     /// Set when resolved outside diffpilot.
     pub outside: Option<OutsideResolution>,
+    /// When a complete read of the pull request first no longer produced it (deleted on GitHub, or no longer an
+    /// item by the read rules, such as a person's earlier review); absent while reads produce it. Such an item
+    /// leaves the queue, "Decide the rest" and bulk decisions; its decisions stay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub gone_at: Option<Timestamp>,
     /// The item whose decision this repeat carried or re-asks (`C<no>`).
     pub repeat_of: Option<u32>,
     /// Assessment state.

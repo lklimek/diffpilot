@@ -97,6 +97,45 @@ async fn migrations_apply_to_an_empty_file_and_reopen() {
     assert_eq!(applied, i64::try_from(MIGRATIONS.len()).expect("count"));
 }
 
+/// Migration 0024 came after 0025 and 0026: a database that already applied those gets it in place on the next start.
+#[tokio::test]
+async fn gone_items_migration_applies_after_later_migrations() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new().in_memory(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let without_0024 = MIGRATIONS
+        .iter()
+        .filter(|(version, _, _)| *version != 24)
+        .map(|(version, description, sql)| {
+            Migration::new(
+                *version,
+                (*description).into(),
+                MigrationType::Simple,
+                sql.into_sql_str(),
+                false,
+            )
+        })
+        .collect();
+    Migrator::with_migrations(without_0024)
+        .run(&pool)
+        .await
+        .expect("through 0026 without 0024");
+    migrate(&pool, MIGRATIONS.len()).await.expect("0024 later");
+    let column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('comment_items') WHERE name = 'gone_at'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("columns");
+    assert_eq!(column, 1);
+}
+
 /// A binary that knows fewer migrations than the database has applied does not open it.
 #[tokio::test]
 async fn older_binary_refuses_a_newer_database() {

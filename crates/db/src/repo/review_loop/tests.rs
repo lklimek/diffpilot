@@ -834,6 +834,63 @@ async fn a_reopened_item_stays_asked_through_reports_and_lease_ends() {
     );
 }
 
+/// Plan §2.1: an item a complete read no longer produces is marked gone once (its row stays) and is no longer gone
+/// when a read produces it again; PR-level questions are never gone.
+#[tokio::test]
+async fn items_no_longer_read_are_marked_gone_and_kept() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let kept = new_item(&db, "dedupe-kept").await;
+    let left = new_item(&db, "dedupe-left").await;
+    let mut question = observed("pr:3:merge", "Merge now?");
+    question.kind = CommentItemKind::PrQuestion;
+    rl.upsert_item(T, PR, &question, ItemState::Undecided, at(1))
+        .await
+        .expect("question");
+    assert_eq!(
+        rl.mark_gone(PR, &["dedupe-kept"], at(5))
+            .await
+            .expect("gone"),
+        [left.no]
+    );
+    let gone = rl
+        .item_by_no(PR, left.no)
+        .await
+        .expect("read")
+        .expect("kept row");
+    assert_eq!(
+        (gone.gone_at, gone.revision, gone.state),
+        (Some(at(5)), left.revision + 1, ItemState::Undecided)
+    );
+    assert!(
+        rl.mark_gone(PR, &["dedupe-kept"], at(6))
+            .await
+            .expect("again")
+            .is_empty(),
+        "gone once"
+    );
+    let still = rl
+        .item_by_no(PR, kept.no)
+        .await
+        .expect("read")
+        .expect("item");
+    assert_eq!((still.gone_at, still.revision), (None, kept.revision));
+    let UpsertOutcome::Changed(back) = rl
+        .upsert_item(
+            T,
+            PR,
+            &observed("dedupe-left", "body"),
+            ItemState::Undecided,
+            at(7),
+        )
+        .await
+        .expect("back")
+    else {
+        panic!("a returning item changes");
+    };
+    assert_eq!((back.gone_at, back.revision), (None, gone.revision + 1));
+}
+
 /// Plan §2.4: an answer landing on an undecided item asks it back; other states keep theirs.
 #[tokio::test]
 async fn an_answer_asks_an_undecided_item_back() {

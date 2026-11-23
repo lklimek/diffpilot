@@ -129,6 +129,8 @@ pub struct ItemRecord {
     pub outside: Option<OutsideResolution>,
     /// The item whose decision this repeat carries or re-asks.
     pub repeat_of: Option<CommentItemId>,
+    /// When a complete read first no longer produced it; `None` while reads produce it.
+    pub gone_at: Option<Timestamp>,
     /// Last change.
     pub updated_at: Timestamp,
 }
@@ -265,7 +267,7 @@ pub enum PassStart {
 
 const ITEM_COLUMNS: &str = "id, pull_request_id, item_no, kind, stable_key, author, author_kind, url, path,
     start_line, end_line, title, body, body_hash, first_seen_head, first_round, bot_severity, gate_marks, github,
-    state, revision, outside, repeat_of, updated_at";
+    state, revision, outside, repeat_of, gone_at, updated_at";
 
 fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     let path: Option<String> = row.try_get("path")?;
@@ -308,6 +310,7 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
         revision: u32_col(row, "revision")?,
         outside: opt_json_col(row, "outside")?,
         repeat_of: opt_wire_col(row, "repeat_of")?,
+        gone_at: opt_ts_col(row, "gone_at")?,
         updated_at: ts_col(row, "updated_at")?,
     })
 }
@@ -446,8 +449,9 @@ impl ReviewLoop<'_> {
     }
 
     /// Stores what a read observed. A new stable key gets the next `C<no>` and `state_if_new`; a known one is
-    /// updated and its revision raised only when an observed value changed. `outside` set moves the item to
-    /// `outside`; cleared again (reopened on GitHub) it returns to `state_if_new`. Needs [`Self::ensure_pr`].
+    /// updated and its revision raised only when an observed value changed or it was gone. `outside` set moves the
+    /// item to `outside`; cleared again (reopened on GitHub) it returns to `state_if_new`. Needs
+    /// [`Self::ensure_pr`].
     pub async fn upsert_item(
         &self,
         tenant_id: &str,
@@ -533,12 +537,14 @@ impl ReviewLoop<'_> {
                     || item.bot_severity != observed.bot_severity
                     || item.github != observed.github
                     || item.outside != observed.outside
-                    || item.state != state;
+                    || item.state != state
+                    || item.gone_at.is_some();
                 if changed {
                     sqlx::query(
                         "UPDATE comment_items SET kind = ?, author = ?, author_kind = ?, url = ?, path = ?,
                              start_line = ?, end_line = ?, title = ?, body = ?, body_hash = ?, bot_severity = ?,
-                             github = ?, state = ?, outside = ?, revision = revision + 1, updated_at = ?
+                             github = ?, state = ?, outside = ?, gone_at = NULL, revision = revision + 1,
+                             updated_at = ?
                          WHERE id = ?",
                     )
                     .bind(wire(observed.kind)?)
@@ -567,6 +573,33 @@ impl ReviewLoop<'_> {
         };
         tx.commit().await?;
         Ok(outcome)
+    }
+
+    /// After a complete read that produced the items keyed `read_keys`: marks the PR's other GitHub items (not its
+    /// PR-level questions) gone, raising their revision; rows and decisions stay. Returns the newly gone `C<no>`s.
+    pub async fn mark_gone(
+        &self,
+        pull_request_id: i64,
+        read_keys: &[&str],
+        now: Timestamp,
+    ) -> Result<Vec<u32>, DbError> {
+        let rows = sqlx::query(
+            "UPDATE comment_items SET gone_at = ?1, revision = revision + 1, updated_at = ?1
+             WHERE pull_request_id = ?2 AND kind <> 'pr_question' AND gone_at IS NULL
+               AND stable_key NOT IN (SELECT value FROM json_each(?3))
+             RETURNING item_no",
+        )
+        .bind(ts(now))
+        .bind(pull_request_id)
+        .bind(json(&read_keys)?)
+        .fetch_all(self.pool)
+        .await?;
+        let mut gone = rows
+            .iter()
+            .map(|row| u32_col(row, "item_no"))
+            .collect::<Result<Vec<u32>, DbError>>()?;
+        gone.sort_unstable();
+        Ok(gone)
     }
 
     /// The PR's items by `C<no>`.
