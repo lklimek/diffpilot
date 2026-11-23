@@ -161,6 +161,11 @@ A = an external agent; E = an external agent in phases 1–2, diffpilot[bot] in 
 - **Gate items** (gate from the assessment or marked by the owner; G-FUNDS, G-SECRET, G-CRYPTO, G-DATA): never
   grouped, never in "Decide the rest", and on the table page their select starts empty (RQ4, RQ5, RQ21).
 - **Body and PR-comment items** have no thread: replies go into one PR-level comment per source review.
+- **Naming the review (owner, 2026-11-23):** the planned text of a PR-level comment answering a review starts with a
+  line naming it: `@<author>, re [your review](https://github.com/<o>/<n>/pull/<num>#pullrequestreview-<id>):` for a
+  person, `Re [<bot>'s review](…):` for a bot (no @-mention: it would trigger the bot). The preview and the stored
+  reply text show it as posted; an edited reply text (prefilled with the planned one) is posted as written. A comment
+  combining several items of one review starts with the line once.
 - Effects carry `seq` and `after` (a reply after a fix waits for the fix's commit); replies are English and say "per
   maintainer decision" (WM §6.5); a superseding decision cancels effects not yet claimed and lists done ones.
 
