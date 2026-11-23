@@ -30,7 +30,7 @@ Drop a kind you cannot execute before claiming (e.g. `todo` without the `memcan:
 Exit codes: 0 ok, 2 configuration or bad request, 3 token rejected or scope missing, 4 server unreachable/failed (`report`: run the same command again, it reuses its idempotency key), 5 nothing claimable, 6 not yours or gone (another agent's claim, superseded, done, outside capabilities, unknown id), 7 lease ended (`claim D` again, `show D`, then repeat). Relay the stderr sentence.
 
 ## Workflow
-1. `check`; the URL it prints must be the prompt's server origin. Checkout: `gh pr checkout N --repo O/N` (sets the branch's push target), `gh pr view N --repo O/N --json headRefName,baseRefName,isCrossRepository,headRepositoryOwner,headRepository`; current branch = `headRefName` ≠ `baseRefName`, tree clean. `isCrossRepository`: the push target (below) must be `github.com/<headRepositoryOwner.login>/<headRepository.name>`; otherwise, or if it cannot be read, stop and ask. Otherwise stop and tell the user.
+1. `check`; the URL it prints must name the prompt's server (same port; `localhost`, `127.0.0.1` and this machine's `hostname` are one host), else tell the user and stop. Checkout: `gh pr checkout N --repo O/N` (sets the branch's push target), `gh pr view N --repo O/N --json headRefName,baseRefName,isCrossRepository,headRepositoryOwner,headRepository`; current branch = `headRefName` ≠ `baseRefName`, tree clean. `isCrossRepository`: the push target (below) must be `github.com/<headRepositoryOwner.login>/<headRepository.name>`; otherwise, or if it cannot be read, stop and ask. Otherwise stop and tell the user.
 2. `list` with the prompt's `--repo`/`--pr`; exit 5: `wait`.
 3. `show D`, then `claim D`. One decision at a time, except the decisions whose `pr_comment` effects share one `review_id` (step 4).
 4. Each `executor: agent` effect in `seq` order; one with `after` starts only after that effect is reported done:
@@ -60,7 +60,7 @@ case "$R" in *:*|/*) echo "$R" ;; *) git remote get-url --push "$R" ;; esac   # 
 - Unclear, conflicting or impossible effect: `failed` with the reason, tell the user; never guess.
 
 ## Secrets
-- Token: `SR_AGENT_KEY` in `~/envs/diffpilot-agent.env`, or the file named by `SR_DECISIONS_ENV_FILE` (one file per agent; the token's name is the agent's identity). Base URL `SR_URL` there (default `http://localhost:3000`; plain http only for localhost or the LAN host in `SR_HTTP_HOST`, else https).
+- Token: `SR_AGENT_KEY` in `~/envs/diffpilot.env`, or the file named by `SR_DECISIONS_ENV_FILE` (one file per agent; the token's name is the agent's identity). Base URL `SR_URL` there (default `http://localhost:3000`; plain http only for localhost or the LAN host in `SR_HTTP_HOST`, else https).
 - Never print, `cat`, `grep`, Read or copy that file; never put the token in a URL, argument, log, file or message. `check` tests it.
 - Missing or rejected token: tell the user to create one in Settings → Access tokens with scopes `read` and `review_loop_execute` and put it in that file; never ask for it in chat.
 - State `~/.local/state/diffpilot-decisions/` (0700/0600): pending idempotency keys only.

@@ -249,7 +249,7 @@ codes: see `SKILL.md`.
 
 1. **Install.** `cp -r tools/skills/diffpilot-decisions ~/.claude/skills/`.
 2. **Token.** Create one with the scopes `read` and `review_loop_execute` (§1). Put `SR_AGENT_KEY=<token>` and
-   `SR_URL=<diffpilot base URL>` in `~/envs/diffpilot-agent.env` (mode 0600), or in the file named by
+   `SR_URL=<diffpilot base URL>` in `~/envs/diffpilot.env` (mode 0600), or in the file named by
    `SR_DECISIONS_ENV_FILE`: one file and token per agent on a host, since the token's name identifies the agent in
    the decision log. `SR_URL` uses `https`; plain `http` only for localhost or the LAN host named in `SR_HTTP_HOST`.
    The skill never prints the token or asks for it.

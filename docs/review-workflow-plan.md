@@ -309,7 +309,7 @@ Settings › Access tokens). "Copy prompt" copies, as plain text, the prompt for
 `window.location.origin` filled in: "Use the diffpilot-decisions skill to carry out my decisions on
 <owner>/<repo>#<number> from diffpilot at <origin>: subscribe, claim each decision, carry out its effects in this
 repository's checkout of the PR branch, and report each effect done or failed with the commit or comment link." The
-prompt holds no token: the skill reads it from `~/envs/diffpilot-agent.env` (`SR_AGENT_KEY`, `SR_URL`; plain http
+prompt holds no token: the skill reads it from `~/envs/diffpilot.env` (`SR_AGENT_KEY`, `SR_URL`; plain http
 needs `SR_HTTP_HOST`), never from the chat. The agent API is named as text (`docs/contracts/agent-api.md` §7). The
 skill subscribes to every effect kind by default, so a decision with a PR comment, follow-up PR or review dismissal is
 claimed too. Shown open while no agent is subscribed, else a closed disclosure.

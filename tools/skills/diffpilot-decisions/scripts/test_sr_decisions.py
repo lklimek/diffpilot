@@ -473,8 +473,8 @@ def test_env_file_override_selects_the_agent_identity(env, fake, capsys, monkeyp
 def test_default_env_file_is_envs_diffpilot_agent_in_home(env, fake, capsys, monkeypatch):
     monkeypatch.delenv("SR_DECISIONS_ENV_FILE")
     (env["home"] / "envs").mkdir()
-    (env["home"] / "envs" / "diffpilot-agent.env").write_text(f"SR_AGENT_KEY={TOKEN}\nSR_URL={fake.url}\n")
-    assert sr_decisions.load_config().env_file == env["home"] / "envs" / "diffpilot-agent.env"
+    (env["home"] / "envs" / "diffpilot.env").write_text(f"SR_AGENT_KEY={TOKEN}\nSR_URL={fake.url}\n")
+    assert sr_decisions.load_config().env_file == env["home"] / "envs" / "diffpilot.env"
 
 
 @pytest.mark.parametrize("url", ["http://review.example:3000", "http://10.0.0.5", "http://[fe80::1]:3000"])

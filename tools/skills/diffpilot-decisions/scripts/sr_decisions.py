@@ -29,7 +29,7 @@ from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
 ENV_FILE_OVERRIDE = "SR_DECISIONS_ENV_FILE"
-DEFAULT_ENV_FILE = "~/envs/diffpilot-agent.env"
+DEFAULT_ENV_FILE = "~/envs/diffpilot.env"
 ENV_KEYS = ("SR_AGENT_KEY", "SR_URL", "SR_HTTP_HOST")
 DEFAULT_URL = "http://localhost:3000"
 SCOPE = "review_loop_execute"

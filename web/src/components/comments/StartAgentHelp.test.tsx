@@ -56,7 +56,7 @@ describe("StartAgentHelp (owner 2026-11-23)", () => {
       "an access token with the review_loop_execute scope (its checkbox in Settings › Access tokens)",
     );
     expect(help).toHaveTextContent(
-      "the skill reads it from ~/envs/diffpilot-agent.env (SR_AGENT_KEY, SR_URL; plain http needs SR_HTTP_HOST), never from the chat",
+      "the skill reads it from ~/envs/diffpilot.env (SR_AGENT_KEY, SR_URL; plain http needs SR_HTTP_HOST), never from the chat",
     );
     expect(help).toHaveTextContent("docs/contracts/agent-api.md §7");
     expect(within(help).getByText(PROMPT)).toBeVisible();

@@ -38,7 +38,7 @@ function Steps({ pr, origin }: { pr: PrRef; origin: string }) {
       />
       <p className="mt-1.5 mb-0 text-xs text-muted">
         The prompt holds no token: the skill reads it from{" "}
-        <code className="font-mono">~/envs/diffpilot-agent.env</code> (
+        <code className="font-mono">~/envs/diffpilot.env</code> (
         <code className="font-mono">SR_AGENT_KEY</code>, <code className="font-mono">SR_URL</code>; plain http
         needs <code className="font-mono">SR_HTTP_HOST</code>), never from the chat. The agent API is
         described in <code className="font-mono">docs/contracts/agent-api.md</code> §7 of diffpilot.
