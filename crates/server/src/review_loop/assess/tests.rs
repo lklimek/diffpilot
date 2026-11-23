@@ -411,6 +411,83 @@ async fn pass_input_is_clean_and_carries_the_reply_chain() {
     );
 }
 
+/// Owner decision 2026-11-23: a pass whose items only a new prompt version or fingerprint format made stale is the
+/// system's and charges nobody's daily cap; a new reply or a changed comment makes the item stale for real, and that
+/// pass is charged.
+#[tokio::test]
+async fn reassessment_for_a_new_prompt_version_charges_nobody() {
+    let f = fixture(HEAD).await;
+    store_read(&f.state, "Retries timed-out calls.", json!({})).await;
+    let a = item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
+    let charged = |reason| request_pass_for(&f.state, PR, reason, "u1");
+    assert_eq!(
+        charged(PassReason::Opened).await.expect("pass"),
+        PassQueued::Queued
+    );
+    let first = live_pass(&f.state).await;
+    assert_eq!(
+        first.user_id.as_deref(),
+        Some("u1"),
+        "a new item is the user's"
+    );
+    assert!(ingest_all(&f.state, &first, None).await);
+    let stored = f
+        .state
+        .db
+        .review_loop()
+        .latest_assessment(a.id)
+        .await
+        .expect("read")
+        .expect("assessment");
+    let mut older = stored.assessment.clone();
+    older.prompt_version = VERIFY_PROMPT_VERSION - 1;
+    let record = f
+        .state
+        .db
+        .pull_requests()
+        .get(PR)
+        .await
+        .expect("pull request");
+    let code = CodeReader::new(&f.state, &record.pr).lines(&a).await;
+    let purpose = purpose_hash(&record.pr.title, Some("Retries timed-out calls."));
+    let head = CommitSha(HEAD.to_owned());
+    for (made_with, fingerprint) in [
+        ("an older prompt version", stored.fingerprint.clone()),
+        (
+            "the fingerprint format before version 4",
+            legacy_fingerprint(&a, &head, code.as_deref(), &purpose, older.prompt_version),
+        ),
+    ] {
+        f.state
+            .db
+            .review_loop()
+            .add_assessment(DEFAULT_TENANT, a.id, &older, &fingerprint)
+            .await
+            .expect("stored");
+        assert_eq!(
+            charged(PassReason::Opened).await.expect("pass"),
+            PassQueued::Queued
+        );
+        let pass = live_pass(&f.state).await;
+        assert_eq!(pass.user_id, None, "{made_with}: nobody is charged");
+        assert!(ingest_all(&f.state, &pass, None).await);
+    }
+
+    store_read(
+        &f.state,
+        "Retries timed-out calls.",
+        json!({"a": {"replies": [{"author": "alice", "author_kind": "owner", "body": "Fixed in 4a46539."}]}}),
+    )
+    .await;
+    assert_eq!(
+        charged(PassReason::NewComments).await.expect("pass"),
+        PassQueued::Queued,
+        "a new reply is a change"
+    );
+    let pass = live_pass(&f.state).await;
+    assert_eq!(pass.user_id.as_deref(), Some("u1"));
+}
+
 /// SK1: the job reads its own claudius skills; each assessment keeps the claudius commit it was made with
 /// (provenance), also when reused, and a new claudius commit never makes an item stale (owner Q28 = c).
 #[tokio::test]
