@@ -15,7 +15,11 @@ class WorkerAssets(unittest.TestCase):
         for shape in ("cs1", "cs2"):
             with self.subTest(shape=shape), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
-                (root / "config.toml").write_text(
+                codex = root / "work/codex"
+                home = root / "work/home"
+                codex.mkdir(parents=True)
+                home.mkdir()
+                (codex / "config.toml").write_text(
                     '[projects."/work/repo"]\ntrust_level="trusted"\n'
                 )
                 fake = root / "codex"
@@ -23,11 +27,27 @@ class WorkerAssets(unittest.TestCase):
                 fake.chmod(0o755)
                 env = {
                     "PATH": f"{root}:/usr/bin:/bin",
-                    "HOME": temp,
-                    "CODEX_HOME": temp,
+                    "HOME": str(home),
+                    "CODEX_HOME": str(codex),
                     "DP_MEMCAN_URL": "http://memcan:8190/mcp",
                     "DP_MEMCAN_TOKEN": 'fake"\\token',
+                    "DP_RUNTIME_DIR": str(root / "runtime"),
                 }
+                # A prior job can write instructions but must not teach the next job.
+                for parent in (home, codex):
+                    for name in ("AGENTS.md", "AGENTS.override.md", "CLAUDE.md"):
+                        (parent / name).write_text("planted instruction")
+                    for name in ("skills", "prompts", ".codex", ".claude", ".agents"):
+                        (parent / name).mkdir()
+                        (parent / name / "planted").write_text("planted instruction")
+                (codex / "sessions").mkdir()
+                (codex / "sessions/thread.jsonl").write_text("thread history")
+                (codex / "state_5.sqlite").write_text("thread index")
+                subprocess.run(
+                    ["python3", ROOT / "deploy/worker/worker-config.py", shape],
+                    env=env,
+                    check=True,
+                )
                 result = subprocess.run(
                     [ROOT / "deploy/worker/dp-worker-entry", shape],
                     env=env,
@@ -35,7 +55,28 @@ class WorkerAssets(unittest.TestCase):
                     text=True,
                     check=True,
                 )
-                config = tomllib.loads((root / "config.toml").read_text())
+                config = tomllib.loads((codex / "config.toml").read_text())
+                self.assertTrue((codex / "config.toml").is_symlink())
+                self.assertEqual(
+                    (codex / "config.toml").resolve().parent, root / "runtime"
+                )
+                self.assertEqual(config["model_auto_compact_token_limit"], 400000)
+                for name in (
+                    "AGENTS.md",
+                    "AGENTS.override.md",
+                    "CLAUDE.md",
+                    "skills",
+                    "prompts",
+                    ".codex",
+                    ".claude",
+                    ".agents",
+                ):
+                    self.assertFalse((codex / name).exists(), name)
+                    self.assertFalse((home / name).exists(), name)
+                self.assertEqual(
+                    (codex / "sessions/thread.jsonl").read_text(), "thread history"
+                )
+                self.assertEqual((codex / "state_5.sqlite").read_text(), "thread index")
                 self.assertEqual(
                     config["projects"]["/work"]["trust_level"], "untrusted"
                 )
@@ -56,6 +97,57 @@ class WorkerAssets(unittest.TestCase):
                             "Authorization"
                         ],
                         'Bearer fake"\\token',
+                    )
+
+    def test_job_reset_rotates_runtime_credentials_and_does_not_follow_links(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            codex = root / "work/codex"
+            home = root / "work/home"
+            codex.mkdir(parents=True)
+            home.mkdir()
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "keep").write_text("untouched")
+            env = {
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(home),
+                "CODEX_HOME": str(codex),
+                "DP_RUNTIME_DIR": str(root / "runtime"),
+                "DP_MEMCAN_URL": "http://memcan/mcp",
+            }
+            for token in ("fake-A", "fake-B"):
+                (codex / "AGENTS.md").symlink_to(outside / "keep")
+                (codex / "skills").symlink_to(outside, target_is_directory=True)
+                (home / ".codex").symlink_to(codex, target_is_directory=True)
+                subprocess.run(
+                    ["python3", ROOT / "deploy/worker/worker-config.py", "cs1"],
+                    env={**env, "DP_MEMCAN_TOKEN": token},
+                    check=True,
+                )
+                self.assertFalse((codex / "AGENTS.md").exists())
+                self.assertFalse((codex / "skills").exists())
+                self.assertFalse((home / ".codex").exists())
+                self.assertEqual((outside / "keep").read_text(), "untouched")
+                config = tomllib.loads((codex / "config.toml").read_text())
+                self.assertEqual(
+                    config["mcp_servers"]["memcan"]["http_headers"]["Authorization"],
+                    "Bearer " + token,
+                )
+                for path in (root / "work").rglob("*"):
+                    if path.is_file() and not path.is_symlink():
+                        self.assertNotIn(token, path.read_text())
+
+    def test_debian_bases_are_digest_pinned(self):
+        for relative in (
+            "deploy/worker/Dockerfile",
+            "deploy/containers/runner.Dockerfile",
+        ):
+            for line in (ROOT / relative).read_text().splitlines():
+                if line.startswith("FROM debian:bookworm-slim"):
+                    self.assertRegex(
+                        line,
+                        r"^FROM debian:bookworm-slim@sha256:[0-9a-f]{64}( AS [a-z]+)?$",
                     )
 
     def test_read_only_gh_reloads_token_and_rejects_writes(self):

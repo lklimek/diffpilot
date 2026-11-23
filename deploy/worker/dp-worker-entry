@@ -4,6 +4,6 @@ umask 077
 case "${1:-}" in cs1|cs2) ;; *) echo 'expected cs1 or cs2' >&2; exit 64 ;; esac
 mkdir -p "$HOME" "$CODEX_HOME"
 worker_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-python3 "$worker_dir/worker-config.py" "$1"
+python3 "$worker_dir/worker-config.py" "$1" --wait
 exec codex app-server -c project_doc_max_bytes=0 -c skills.include_instructions=false \
     -c features.hooks=false --listen unix:///run/dp/app.sock

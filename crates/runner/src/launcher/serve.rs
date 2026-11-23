@@ -66,17 +66,28 @@ pub(super) async fn connection(
         id: request.id,
         workers: vec![],
     };
-    match request.action {
-        LauncherAction::Ensure { container, memcan } => {
-            launcher.ensure(&container, memcan.as_ref()).await?
+    let fetch = match request.action {
+        LauncherAction::Ensure { container, memcan } => launcher
+            .ensure(&container, memcan.as_ref())
+            .await?
+            .then_some((container, true)),
+        LauncherAction::Stop { container } => {
+            launcher.stop(&container).await?;
+            None
         }
-        LauncherAction::Stop { container } => launcher.stop(&container).await?,
-        LauncherAction::Remove { container } => launcher.remove(&container).await?,
-        LauncherAction::Fetch { container } => launcher.fetch(&container).await?,
-        LauncherAction::List => response.workers = launcher.list().await?,
+        LauncherAction::Remove { container } => {
+            launcher.remove(&container).await?;
+            None
+        }
+        LauncherAction::Fetch { container } => Some((container, false)),
+        LauncherAction::List => {
+            response.workers = launcher.list().await?;
+            None
+        }
         LauncherAction::Attach { container } => {
             let name = launcher.settings.name(&container, false);
             if launcher.inspect(&container, false).await?.is_none()
+                || launcher.fetching.contains(&name)
                 || !launcher.attached.insert(name.clone())
             {
                 return Err(Error::Busy);
@@ -107,16 +118,47 @@ pub(super) async fn connection(
                 tokio::select! { result = incoming => { result?; }, result = outgoing => { result?; } }
                 Ok::<(), Error>(())
             }.await;
-            // A dropped relay must kill the turn before another attachment/turn is accepted (FR2-2).
+            // W4 stops an interrupted turn explicitly; clean detach begins the idle interval.
             let mut launcher = shared.lock().await;
             launcher.attached.remove(&name);
-            launcher.stop(&container).await?;
+            launcher.used.insert(name, std::time::Instant::now());
             return result;
         }
+    };
+    if let Some((container, automatic)) = fetch {
+        let name = launcher.settings.name(&container, false);
+        if !launcher.fetching.insert(name.clone()) {
+            return Err(Error::Busy);
+        }
+        let fetcher = launcher.clone();
+        drop(launcher);
+        let result = fetcher.fetch(&container).await;
+        shared.lock().await.fetching.remove(&name);
+        // TODO(W4): report fetch/no-lock outcomes and typed errors after the response contract is amended.
+        if automatic {
+            if result.is_err() {
+                tracing::warn!(worker = %name, "dependency sources unavailable after worker start");
+            }
+        } else {
+            result?;
+        }
+    } else {
+        drop(launcher);
     }
-    drop(launcher);
     write_message(&mut socket, &response).await?;
     super::client::close(&mut socket).await
+}
+
+pub(super) async fn housekeeping(shared: Arc<Mutex<Launcher>>, period: Duration) {
+    let mut interval = tokio::time::interval(period);
+    loop {
+        interval.tick().await;
+        if let Ok(mut launcher) = shared.try_lock()
+            && let Err(error) = launcher.sweep().await
+        {
+            tracing::warn!(%error, "worker idle sweep failed; retrying on next interval");
+        }
+    }
 }
 
 /// Serve until SIGTERM/Ctrl+C; drain connections and stop managed workers before returning.
@@ -129,6 +171,7 @@ pub async fn serve(path: &Path, settings: Settings) -> Result<(), Error> {
         settings,
         used: HashMap::new(),
         attached: HashSet::new(),
+        fetching: HashSet::new(),
     };
     if path.exists() {
         if UnixStream::connect(path).await.is_ok() {
@@ -145,14 +188,13 @@ pub async fn serve(path: &Path, settings: Settings) -> Result<(), Error> {
     let shared = Arc::new(Mutex::new(launcher));
     let permits = Arc::new(Semaphore::new(16));
     let mut tasks = JoinSet::new();
-    let mut sweep = tokio::time::interval(Duration::from_secs(30));
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let sweep = tokio::spawn(housekeeping(Arc::clone(&shared), Duration::from_secs(30)));
     let mut failure = None;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
             _ = term.recv() => break,
-            _ = sweep.tick() => { if let Err(error) = shared.lock().await.sweep().await { failure = Some(error); break; } }
             Some(result) = tasks.join_next(), if !tasks.is_empty() => {
                 if !matches!(result, Ok(Ok(()))) { tracing::debug!("launcher connection ended without acknowledgement"); }
             }
@@ -164,6 +206,8 @@ pub async fn serve(path: &Path, settings: Settings) -> Result<(), Error> {
             }
         }
     }
+    sweep.abort();
+    let _ = sweep.await;
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
     shared.lock().await.reconcile().await?;

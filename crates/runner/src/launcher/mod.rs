@@ -8,7 +8,12 @@ use std::{
     time::Instant,
 };
 
-use bollard::{Docker, models::ContainerSummary, query_parameters as q};
+use bollard::{
+    Docker,
+    exec::StartExecOptions,
+    models::{ContainerSummary, ExecConfig, VolumeCreateRequest},
+    query_parameters as q,
+};
 use contracts::{job::access::McpHttpEndpoint, launcher::WorkerStatus, runtime::ContainerId};
 use futures::StreamExt;
 
@@ -40,14 +45,19 @@ pub enum Error {
     /// Dependency fetching failed; caller continues without dependency sources.
     #[error("dependency fetch failed or exceeded its deadline")]
     Fetch,
+    /// Worker could not prepare the isolated job configuration.
+    #[error("worker runtime configuration failed or exceeded its deadline")]
+    RuntimeConfig,
 }
 
 /// Container state is serialized under the service's lifecycle mutex.
+#[derive(Clone)]
 struct Launcher {
     docker: Docker,
     settings: Settings,
     used: HashMap<String, Instant>,
     attached: HashSet<String>,
+    fetching: HashSet<String>,
 }
 
 impl Launcher {
@@ -153,6 +163,9 @@ impl Launcher {
     }
 
     async fn remove(&mut self, id: &ContainerId) -> Result<(), Error> {
+        if self.fetching.contains(&self.settings.name(id, false)) {
+            return Err(Error::Busy);
+        }
         self.stop(id).await?;
         let name = self.settings.name(id, false);
         if self.inspect(id, false).await?.is_some() {
@@ -174,43 +187,157 @@ impl Launcher {
         Ok(())
     }
 
+    async fn work_volume(&self, id: &ContainerId) -> Result<(), Error> {
+        if !matches!(id, ContainerId::Pr { .. }) {
+            return Ok(());
+        }
+        let mut labels = self
+            .settings
+            .template(id, false, None)?
+            .labels
+            .ok_or(Error::InvalidTemplate)?;
+        labels.remove("dp.template");
+        let volume = self
+            .docker
+            .create_volume(VolumeCreateRequest {
+                name: Some(format!("{}-work", self.settings.name(id, false))),
+                labels: Some(labels),
+                ..Default::default()
+            })
+            .await?;
+        // Existing pre-release volumes have no labels; never discard their thread history.
+        if !volume.labels.is_empty() && self.settings.identity(&volume.labels).as_ref() != Some(id)
+        {
+            return Err(Error::InvalidTemplate);
+        }
+        Ok(())
+    }
+
+    async fn configure(
+        &self,
+        id: &ContainerId,
+        memcan: Option<&McpHttpEndpoint>,
+    ) -> Result<(), Error> {
+        let shape = if matches!(id, ContainerId::Pr { .. }) {
+            "cs1"
+        } else {
+            "cs2"
+        };
+        let env = memcan.map(|endpoint| {
+            vec![
+                format!("DP_MEMCAN_URL={}", endpoint.url),
+                format!("DP_MEMCAN_TOKEN={}", endpoint.token.expose()),
+            ]
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            // Credentials belong only to this short-lived exec, never the container's env.
+            let exec = self
+                .docker
+                .create_exec(
+                    &self.settings.name(id, false),
+                    ExecConfig {
+                        cmd: Some(vec![
+                            "python3".into(),
+                            "/usr/local/bin/worker-config.py".into(),
+                            shape.into(),
+                        ]),
+                        env,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            self.docker
+                .start_exec(
+                    &exec.id,
+                    Some(StartExecOptions {
+                        detach: true,
+                        ..Default::default()
+                    }),
+                )
+                .await?;
+            loop {
+                let state = self.docker.inspect_exec(&exec.id).await?;
+                if state.running == Some(false) {
+                    return if state.exit_code == Some(0) {
+                        Ok(())
+                    } else {
+                        Err(Error::RuntimeConfig)
+                    };
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or(Err(Error::RuntimeConfig))
+    }
+
+    // Return whether a CS1 start needs CS3; the service performs it outside the lifecycle lock.
     async fn ensure(
         &mut self,
         id: &ContainerId,
         memcan: Option<&McpHttpEndpoint>,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let config = self.settings.template(id, false, memcan)?;
         let name = self.settings.name(id, false);
-        let existing = self.inspect(id, false).await?;
-        if existing
-            .as_ref()
-            .and_then(|c| c.config.as_ref())
-            .and_then(|c| c.image.as_ref())
-            .is_some_and(|image| Some(image) != config.image.as_ref())
-        {
-            return Err(Error::InvalidTemplate);
+        if self.attached.contains(&name) || self.fetching.contains(&name) {
+            return Err(Error::Busy);
         }
-        let running = self.list().await?;
-        if !running.iter().any(|w| &w.container == id && w.running) {
-            if self.attached.contains(&name) {
-                return Err(Error::Busy);
+        let mut existing = self.inspect(id, false).await?;
+        let drifted = existing.as_ref().is_some_and(|c| {
+            c.config.as_ref().is_none_or(|c| {
+                c.image != config.image
+                    || c.labels.as_ref().and_then(|l| l.get("dp.template"))
+                        != config.labels.as_ref().and_then(|l| l.get("dp.template"))
+            })
+        });
+        if drifted {
+            if existing
+                .as_ref()
+                .and_then(|c| c.state.as_ref())
+                .and_then(|s| s.running)
+                == Some(true)
+            {
+                self.docker
+                    .stop_container(
+                        &name,
+                        Some(q::StopContainerOptionsBuilder::default().t(5).build()),
+                    )
+                    .await?;
             }
-            let mut candidates: Vec<_> = running.iter().filter(|w| w.running).collect();
+            self.docker.remove_container(&name, None).await?;
+            existing = None;
+        }
+        let started = existing
+            .as_ref()
+            .and_then(|c| c.state.as_ref())
+            .and_then(|s| s.running)
+            != Some(true);
+        if started {
+            let running = self.list().await?;
+            let mut candidates: Vec<_> = running
+                .iter()
+                .filter(|w| w.running && &w.container != id)
+                .collect();
             if candidates.len() >= self.settings.max_running {
+                let needed = candidates.len() - self.settings.max_running + 1;
                 candidates.retain(|w| {
-                    !self
-                        .attached
-                        .contains(&self.settings.name(&w.container, false))
+                    let name = self.settings.name(&w.container, false);
+                    !self.attached.contains(&name) && !self.fetching.contains(&name)
                 });
                 candidates.sort_by_key(|w| {
                     self.used
                         .get(&self.settings.name(&w.container, false))
                         .copied()
                 });
-                self.stop(&candidates.first().ok_or(Error::Busy)?.container)
-                    .await?;
+                if candidates.len() < needed {
+                    return Err(Error::Busy);
+                }
+                for candidate in candidates.into_iter().take(needed) {
+                    self.stop(&candidate.container).await?;
+                }
             }
             if existing.is_none() {
+                self.work_volume(id).await?;
                 self.docker
                     .create_container(
                         Some(
@@ -223,16 +350,18 @@ impl Launcher {
                     .await?;
             }
             self.docker.start_container(&name, None).await?;
-            if matches!(id, ContainerId::Pr { .. }) && self.fetch(id).await.is_err() {
-                tracing::warn!(worker = %name, "dependency sources unavailable after worker start");
-            }
+        }
+        if let Err(error) = self.configure(id, memcan).await {
+            self.stop(id).await?;
+            return Err(error);
         }
         self.used.insert(name, Instant::now());
-        Ok(())
+        Ok(started && matches!(id, ContainerId::Pr { .. }))
     }
 
     async fn fetch(&self, id: &ContainerId) -> Result<(), Error> {
         let config = self.settings.template(id, true, None)?;
+        self.work_volume(id).await?;
         let name = self.settings.name(id, true);
         if self.inspect(id, true).await?.is_some() {
             self.docker
@@ -285,6 +414,7 @@ impl Launcher {
         for worker in self.list().await?.into_iter().filter(|w| w.running) {
             let name = self.settings.name(&worker.container, false);
             if !self.attached.contains(&name)
+                && !self.fetching.contains(&name)
                 && self
                     .used
                     .get(&name)
@@ -318,6 +448,39 @@ impl Launcher {
                                 .build(),
                         ),
                     )
+                    .await?;
+            }
+        }
+        let objects = self.objects().await?;
+        let filters = HashMap::from([(
+            "label".to_owned(),
+            vec![format!("dp.managed={}", self.settings.prefix)],
+        )]);
+        let volumes = self
+            .docker
+            .list_volumes(Some(
+                q::ListVolumesOptionsBuilder::default()
+                    .filters(&filters)
+                    .build(),
+            ))
+            .await?;
+        for volume in volumes.volumes.unwrap_or_default() {
+            let Some(id @ ContainerId::Pr { .. }) = self.settings.identity(&volume.labels) else {
+                continue;
+            };
+            if volume.name != format!("{}-work", self.settings.name(&id, false)) {
+                continue;
+            }
+            let exists = objects.iter().any(|c| {
+                c.labels.as_ref().is_some_and(|labels| {
+                    labels.get("dp.managed") == volume.labels.get("dp.managed")
+                        && labels.get("dp.pr") == volume.labels.get("dp.pr")
+                        && labels.get("dp.user") == volume.labels.get("dp.user")
+                })
+            });
+            if !exists {
+                self.docker
+                    .remove_volume(&volume.name, None::<q::RemoveVolumeOptions>)
                     .await?;
             }
         }

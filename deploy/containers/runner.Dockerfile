@@ -7,7 +7,7 @@ RUN --mount=type=cache,id=v13w3-cargo-registry,target=/usr/local/cargo/registry 
     --mount=type=cache,id=v13w3-cargo-target,target=/src/target \
     cargo +1.100.0 build --release --locked -p runner --bin diffpilot-runner \
  && install -D -m 0755 /src/target/release/diffpilot-runner /out/diffpilot-runner
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 ENV CARGO_BUILD_JOBS=2
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
  && rm -rf /var/lib/apt/lists/* \

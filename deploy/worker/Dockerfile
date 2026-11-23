@@ -9,7 +9,7 @@ RUN --mount=type=cache,id=v13w3-cargo-registry,target=/usr/local/cargo/registry 
     cargo +1.100.0 build --release --locked -p analysis --bin sr-check \
  && install -D -m 0755 /src/target/release/sr-check /out/sr-check
 
-FROM debian:bookworm-slim AS codex
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS codex
 ENV CARGO_BUILD_JOBS=2
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 ARG CODEX_VERSION=0.171.0
@@ -25,7 +25,7 @@ RUN curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_
  && echo '9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915  /opt/notices/NOTICE' | sha256sum -c - \
  && echo 'b7993225104d90ddd8024fd838faf300bea5e83d91203eab98e29512acebd69c  /opt/notices/bubblewrap/COPYING' | sha256sum -c -
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 ENV CARGO_BUILD_JOBS=2 CLAUDE_PLUGIN_ROOT=/etc/codex/claudius
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git gh ripgrep coreutils python3 python3-jsonschema jq \
  && rm -rf /var/lib/apt/lists/* \

@@ -35,7 +35,14 @@ fn worker_template_has_no_host_access_or_real_credentials() {
     assert_eq!(host.init, Some(true));
     assert_eq!(host.cap_drop.unwrap(), ["ALL"]);
     assert_eq!(host.security_opt.unwrap(), ["no-new-privileges:true"]);
+    assert_eq!(host.memory, Some(s.memory));
     assert_eq!(host.memory, host.memory_swap);
+    assert_eq!(host.nano_cpus, Some(2_000_000_000));
+    assert_eq!(host.pids_limit, Some(1024));
+    assert_eq!(host.network_mode.as_deref(), Some("v13w3-test-worker"));
+    let tmpfs = host.tmpfs.unwrap();
+    assert_eq!(tmpfs["/tmp"], "uid=10002,gid=10002,mode=0700,size=2g");
+    assert_eq!(tmpfs["/run/dp"], "uid=10002,gid=10002,mode=0700,size=1m");
     assert!(host.binds.is_none());
     assert!(host.port_bindings.is_none());
     let mounts = host.mounts.unwrap();
@@ -48,6 +55,15 @@ fn worker_template_has_no_host_access_or_real_credentials() {
         mounts.iter().filter(|m| m.read_only == Some(true)).count(),
         2
     );
+    for (source, target, read_only) in [
+        ("v13w3-test-pr-7-3-work", "/work", false),
+        ("v13w3-test-c1", "/mirror", true),
+        ("v13w3-test-c2", "/cargo", true),
+    ] {
+        assert!(mounts.iter().any(|m| m.source.as_deref() == Some(source)
+            && m.target.as_deref() == Some(target)
+            && m.read_only == Some(read_only)));
+    }
     let env = config.env.unwrap().join("\n");
     assert!(env.contains("HOME=/work/home"));
     assert!(env.contains("CODEX_HOME=/work/codex"));
@@ -239,6 +255,7 @@ async fn fake_launcher() -> (wiremock::MockServer, Launcher) {
             settings: settings(),
             used: HashMap::new(),
             attached: HashSet::new(),
+            fetching: HashSet::new(),
         },
     )
 }
@@ -250,6 +267,7 @@ async fn failed_fetch_is_removed_and_does_not_hide_failure() {
         matchers::{method, path_regex},
     };
     let (server, launcher) = fake_launcher().await;
+    mock_runtime(&server).await;
     Mock::given(method("GET"))
         .and(path_regex(r"/containers/v13w3-test-fetch-7-3/json$"))
         .respond_with(ResponseTemplate::new(404))
@@ -350,7 +368,7 @@ async fn ensure_does_not_restart_a_worker_whose_old_relay_is_still_attached() {
 }
 
 #[tokio::test]
-async fn relay_forwards_stdout_only_and_stops_after_disconnect() {
+async fn relay_forwards_stdout_only_and_keeps_worker_warm() {
     use std::sync::Arc;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -365,7 +383,7 @@ async fn relay_forwards_stdout_only_and_stops_after_disconnect() {
         .labels
         .unwrap();
     let fake = tokio::spawn(async move {
-        for step in 0..5 {
+        for step in 0..3 {
             let (mut socket, _) = engine.accept().await.unwrap();
             let mut headers = vec![];
             while !headers.ends_with(b"\r\n\r\n") {
@@ -441,6 +459,7 @@ async fn relay_forwards_stdout_only_and_stops_after_disconnect() {
         settings: settings(),
         used: HashMap::new(),
         attached: HashSet::new(),
+        fetching: HashSet::new(),
     }));
     let (socket, mut client) = tokio::net::UnixStream::pair().unwrap();
     let handler = tokio::spawn(serve::connection(socket, Arc::clone(&shared)));
@@ -468,7 +487,9 @@ async fn relay_forwards_stdout_only_and_stops_after_disconnect() {
     assert_eq!(output, b"pong");
     handler.await.unwrap().unwrap();
     fake.await.unwrap();
-    assert!(shared.lock().await.attached.is_empty());
+    let launcher = shared.lock().await;
+    assert!(launcher.attached.is_empty());
+    assert!(launcher.used.contains_key("v13w3-test-pr-7-3"));
 }
 
 #[tokio::test]
@@ -494,4 +515,677 @@ async fn reconciliation_list_can_exceed_the_request_size_limit() {
         serve::read_message(&mut rx).await.unwrap();
     assert_eq!(response.workers.len(), 300);
     writer.await.unwrap();
+}
+
+fn summary(s: &Settings, id: &ContainerId, running: bool) -> serde_json::Value {
+    serde_json::json!({"Id":s.name(id, false), "Names":[format!("/{}", s.name(id, false))],
+        "Labels":s.template(id, false, None).unwrap().labels,
+        "State":if running {"running"} else {"exited"}})
+}
+
+async fn mock_inspect(
+    server: &wiremock::MockServer,
+    s: &Settings,
+    id: &ContainerId,
+    running: bool,
+) {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let config = s.template(id, false, None).unwrap();
+    Mock::given(method("GET"))
+        .and(path_regex(format!(
+            "/containers/{}/json$",
+            s.name(id, false)
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Config":{"Image":config.image,"Labels":config.labels},"State":{"Running":running}})))
+        .mount(server)
+        .await;
+}
+
+async fn mock_runtime(server: &wiremock::MockServer) {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    for (verb, path, body) in [
+        (
+            "POST",
+            r"/containers/.+/exec$",
+            serde_json::json!({"Id":"reset"}),
+        ),
+        ("POST", r"/exec/reset/start$", serde_json::json!({})),
+        (
+            "GET",
+            r"/exec/reset/json$",
+            serde_json::json!({"Running":false,"ExitCode":0}),
+        ),
+    ] {
+        Mock::given(method(verb))
+            .and(path_regex(path))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+    Mock::given(method("POST")).and(path_regex(r"/volumes/create$"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"Name":"work","Driver":"local","Mountpoint":"/test","Labels":{},"Options":{},"Scope":"local"})))
+        .mount(server).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/volumes/.+$"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn ensure_recreates_stale_image_or_template_and_keeps_work_volume() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    for (running, stale_image) in [(false, true), (true, true), (false, false)] {
+        let (server, mut launcher) = fake_launcher().await;
+        let s = launcher.settings.clone();
+        let mut config = s.template(&pr(), false, None).unwrap();
+        if stale_image {
+            config.image = Some(format!("old@sha256:{}", "c".repeat(64)));
+        } else {
+            config
+                .labels
+                .as_mut()
+                .unwrap()
+                .insert("dp.template".into(), "old".into());
+        }
+        Mock::given(method("GET")).and(path_regex(r"/containers/v13w3-test-pr-7-3/json$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Config":{"Image":config.image,"Labels":config.labels},"State":{"Running":running}})))
+            .mount(&server).await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"/containers/json$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        for (verb, path, status, body) in [
+            (
+                "POST",
+                r"/containers/v13w3-test-pr-7-3/stop$",
+                204,
+                serde_json::json!(null),
+            ),
+            (
+                "DELETE",
+                r"/containers/v13w3-test-pr-7-3$",
+                204,
+                serde_json::json!(null),
+            ),
+            (
+                "POST",
+                r"/containers/create$",
+                201,
+                serde_json::json!({"Id":"worker","Warnings":[]}),
+            ),
+            (
+                "POST",
+                r"/containers/v13w3-test-pr-7-3/start$",
+                204,
+                serde_json::json!(null),
+            ),
+        ] {
+            Mock::given(method(verb))
+                .and(path_regex(path))
+                .respond_with(ResponseTemplate::new(status).set_body_json(body))
+                .mount(&server)
+                .await;
+        }
+        mock_runtime(&server).await;
+        launcher.ensure(&pr(), None).await.unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let deleted = requests.iter().position(|r| r.method == "DELETE").unwrap();
+        let created = requests
+            .iter()
+            .position(|r| r.url.path().ends_with("/containers/create"))
+            .unwrap();
+        let started = requests
+            .iter()
+            .position(|r| {
+                r.url.path().ends_with("/pr-7-3/start") || r.url.path().ends_with("-pr-7-3/start")
+            })
+            .unwrap();
+        assert!(deleted < created && created < started);
+        assert!(
+            !requests
+                .iter()
+                .any(|r| r.method == "DELETE" && r.url.path().contains("/volumes/"))
+        );
+        let volume = requests
+            .iter()
+            .find(|r| r.url.path().ends_with("/volumes/create"))
+            .unwrap();
+        let volume: serde_json::Value = serde_json::from_slice(&volume.body).unwrap();
+        assert_eq!(volume["Name"], "v13w3-test-pr-7-3-work");
+        assert_eq!(volume["Labels"]["dp.pr"], "7");
+        assert_eq!(volume["Labels"]["dp.user"], "3");
+        assert_eq!(volume["Labels"]["dp.managed"], "v13w3-test");
+    }
+}
+
+#[tokio::test]
+async fn ensure_evicts_lru_unattached_worker_before_starting() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let (server, mut launcher) = fake_launcher().await;
+    launcher.settings.max_running = 2;
+    let s = launcher.settings.clone();
+    let old = ContainerId::Judge {
+        payer: UserId("old".into()),
+    };
+    let recent = ContainerId::Judge {
+        payer: UserId("recent".into()),
+    };
+    launcher.used.insert(s.name(&recent, false), Instant::now());
+    let attached = ContainerId::Judge {
+        payer: UserId("attached".into()),
+    };
+    let new = ContainerId::Judge {
+        payer: UserId("new".into()),
+    };
+    launcher.attached.insert(s.name(&attached, false));
+    mock_inspect(&server, &s, &old, true).await;
+    mock_inspect(&server, &s, &recent, true).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/v13w3-test-user-new/json$"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/json$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            summary(&s, &attached, true),
+            summary(&s, &recent, true),
+            summary(&s, &old, true)
+        ])))
+        .mount(&server)
+        .await;
+    for (verb, path, status) in [
+        ("POST", r"/containers/v13w3-test-user-old/stop$", 204),
+        ("DELETE", r"/containers/v13w3-test-user-old$", 204),
+        ("POST", r"/containers/v13w3-test-user-recent/stop$", 204),
+        ("DELETE", r"/containers/v13w3-test-user-recent$", 204),
+        ("POST", r"/containers/v13w3-test-user-new/start$", 204),
+    ] {
+        Mock::given(method(verb))
+            .and(path_regex(path))
+            .respond_with(ResponseTemplate::new(status))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/create$"))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(serde_json::json!({"Id":"new","Warnings":[]})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    mock_runtime(&server).await;
+    launcher.ensure(&new, None).await.unwrap();
+    let requests = server.received_requests().await.unwrap();
+    let stop = requests
+        .iter()
+        .position(|r| r.url.path().ends_with("/stop"))
+        .unwrap();
+    let create = requests
+        .iter()
+        .position(|r| r.url.path().ends_with("/containers/create"))
+        .unwrap();
+    let second_stop = requests
+        .iter()
+        .position(|r| r.url.path().ends_with("user-recent/stop"))
+        .unwrap();
+    assert!(stop < second_stop && second_stop < create);
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.method != "GET" && r.url.path().contains("user-attached"))
+    );
+}
+
+#[tokio::test]
+async fn sweep_stops_only_expired_unattached_workers() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let (server, mut launcher) = fake_launcher().await;
+    let s = launcher.settings.clone();
+    let ids: Vec<_> = ["old", "recent", "attached", "untracked"]
+        .map(|v| ContainerId::Judge {
+            payer: UserId(v.into()),
+        })
+        .into();
+    launcher.used.insert(s.name(&ids[1], false), Instant::now());
+    launcher.used.insert(
+        s.name(&ids[0], false),
+        Instant::now() - std::time::Duration::from_secs(1201),
+    );
+    launcher.attached.insert(s.name(&ids[2], false));
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/json$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!(ids.iter().map(|id|summary(&s,id,true)).collect::<Vec<_>>()),
+        ))
+        .mount(&server)
+        .await;
+    mock_inspect(&server, &s, &ids[0], true).await;
+    mock_inspect(&server, &s, &ids[3], true).await;
+    for (verb, path) in [
+        ("POST", r"/containers/v13w3-test-user-untracked/stop$"),
+        ("DELETE", r"/containers/v13w3-test-user-untracked$"),
+    ] {
+        Mock::given(method(verb))
+            .and(path_regex(path))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    for (verb, path) in [
+        ("POST", r"/containers/v13w3-test-user-old/stop$"),
+        ("DELETE", r"/containers/v13w3-test-user-old$"),
+    ] {
+        Mock::given(method(verb))
+            .and(path_regex(path))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    launcher.sweep().await.unwrap();
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.method != "GET"
+                && (r.url.path().contains("recent") || r.url.path().contains("attached")))
+    );
+}
+
+#[tokio::test]
+async fn reconcile_removes_abandoned_fetch_and_only_orphan_work_volumes() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let (server, mut launcher) = fake_launcher().await;
+    let s = launcher.settings.clone();
+    mock_inspect(&server, &s, &pr(), false).await;
+    Mock::given(method("GET")).and(path_regex(r"/containers/json$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            summary(&s,&pr(),false), {"Id":"abandoned","Names":["/v13w3-test-fetch-7-3"],"Labels":{"dp.managed":s.prefix,"dp.shape":"cs3"}}
+        ]))).mount(&server).await;
+    let mut orphan = s.template(&pr(), false, None).unwrap().labels.unwrap();
+    orphan.insert("dp.pr".into(), "8".into());
+    Mock::given(method("GET")).and(path_regex(r"/volumes$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"Volumes":[
+            {"Name":"v13w3-test-pr-7-3-work","Driver":"local","Mountpoint":"/test","Options":{},"Scope":"local","Labels":s.template(&pr(),false,None).unwrap().labels},
+            {"Name":"v13w3-test-pr-8-3-work","Driver":"local","Mountpoint":"/test","Options":{},"Scope":"local","Labels":orphan},
+            {"Name":"foreign-work","Driver":"local","Mountpoint":"/test","Options":{},"Scope":"local","Labels":{"dp.managed":"foreign"}}
+        ]}))).expect(1).mount(&server).await;
+    Mock::given(method("DELETE"))
+        .and(path_regex(r"/containers/abandoned$"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path_regex(r"/volumes/v13w3-test-pr-8-3-work$"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    launcher.reconcile().await.unwrap();
+    assert!(
+        !server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.method == "DELETE" && r.url.path().ends_with("pr-7-3-work"))
+    );
+}
+
+#[tokio::test]
+async fn fetch_releases_lifecycle_lock_and_reserves_its_identity() {
+    use contracts::launcher::{LauncherAction, LauncherRequest, LauncherResponse};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let (server, launcher) = fake_launcher().await;
+    mock_runtime(&server).await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/v13w3-test-fetch-7-3/json$"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/create$"))
+        .respond_with(
+            ResponseTemplate::new(201)
+                .set_body_json(serde_json::json!({"Id":"fetch","Warnings":[]})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/v13w3-test-fetch-7-3/start$"))
+        .respond_with(ResponseTemplate::new(204))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex(r"/containers/v13w3-test-fetch-7-3/wait$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"StatusCode":0}))
+                .set_delay(std::time::Duration::from_millis(500)),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path_regex(r"/containers/v13w3-test-fetch-7-3$"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/json$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(&server)
+        .await;
+    let shared = Arc::new(Mutex::new(launcher));
+    let (socket, mut client) = tokio::net::UnixStream::pair().unwrap();
+    let task = tokio::spawn(serve::connection(socket, Arc::clone(&shared)));
+    serve::write_message(
+        &mut client,
+        &LauncherRequest {
+            id: "fetch".into(),
+            action: LauncherAction::Fetch { container: pr() },
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.url.path().ends_with("/wait"))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let (socket, mut list) = tokio::net::UnixStream::pair().unwrap();
+    let listing = tokio::spawn(serve::connection(socket, Arc::clone(&shared)));
+    serve::write_message(
+        &mut list,
+        &LauncherRequest {
+            id: "list".into(),
+            action: LauncherAction::List,
+        },
+    )
+    .await
+    .unwrap();
+    let response: LauncherResponse = tokio::time::timeout(
+        std::time::Duration::from_millis(150),
+        serve::read_message(&mut list),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(response.id, "list");
+    {
+        let mut launcher = shared.lock().await;
+        assert!(matches!(
+            launcher.ensure(&pr(), None).await,
+            Err(Error::Busy)
+        ));
+        assert!(matches!(launcher.remove(&pr()).await, Err(Error::Busy)));
+    }
+    let _: LauncherResponse = serve::read_message(&mut client).await.unwrap();
+    task.await.unwrap().unwrap();
+    listing.await.unwrap().unwrap();
+    assert!(shared.lock().await.fetching.is_empty());
+}
+
+#[tokio::test]
+async fn periodic_sweep_retries_docker_errors_and_skips_busy_lock() {
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let (server, launcher) = fake_launcher().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/json$"))
+        .respond_with(
+            ResponseTemplate::new(500).set_body_json(serde_json::json!({"message":"transient"})),
+        )
+        .mount(&server)
+        .await;
+    let shared = Arc::new(Mutex::new(launcher));
+    let guard = shared.lock().await;
+    let sweep = tokio::spawn(serve::housekeeping(
+        Arc::clone(&shared),
+        std::time::Duration::from_millis(5),
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(server.received_requests().await.unwrap().is_empty());
+    drop(guard);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if server.received_requests().await.unwrap().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    sweep.abort();
+    assert!(sweep.await.unwrap_err().is_cancelled());
+    result.unwrap();
+}
+
+#[test]
+fn template_hash_is_stable_sensitive_to_limits_and_rotated_credentials() {
+    use contracts::job::access::{McpHttpEndpoint, Secret};
+    let s = settings();
+    let endpoint = |token| McpHttpEndpoint {
+        url: "http://memcan/mcp".into(),
+        token: Secret::new(token),
+        allow_write: true,
+    };
+    let config = s.template(&pr(), false, Some(&endpoint("fake-A"))).unwrap();
+    for _ in 0..10 {
+        assert_eq!(
+            config.labels,
+            s.template(&pr(), false, Some(&endpoint("fake-A")))
+                .unwrap()
+                .labels
+        );
+    }
+    let rotated = s.template(&pr(), false, Some(&endpoint("fake-B"))).unwrap();
+    assert_ne!(config.labels, rotated.labels);
+    let mut changed = s.clone();
+    changed.memory /= 2;
+    assert_ne!(
+        config.labels,
+        changed
+            .template(&pr(), false, Some(&endpoint("fake-A")))
+            .unwrap()
+            .labels
+    );
+    let json = serde_json::to_string(&config).unwrap();
+    assert!(!json.contains("fake-A"));
+    assert!(!json.contains("DP_MEMCAN_TOKEN"));
+}
+
+#[tokio::test]
+async fn warm_ensure_resets_each_job_and_rotation_recreates_before_configuring() {
+    use contracts::job::access::{McpHttpEndpoint, Secret};
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    for rotated in [false, true] {
+        let (server, mut launcher) = fake_launcher().await;
+        let endpoint = |token| McpHttpEndpoint {
+            url: "http://memcan/mcp".into(),
+            token: Secret::new(token),
+            allow_write: true,
+        };
+        let old = endpoint("fake-A");
+        let next = endpoint(if rotated { "fake-B" } else { "fake-A" });
+        let config = launcher
+            .settings
+            .template(&pr(), false, Some(&old))
+            .unwrap();
+        Mock::given(method("GET"))
+            .and(path_regex(r"/containers/v13w3-test-pr-7-3/json$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Config":{"Image":config.image,"Labels":config.labels},"State":{"Running":true}})))
+            .mount(&server)
+            .await;
+        mock_runtime(&server).await;
+        Mock::given(method("GET"))
+            .and(path_regex(r"/containers/json$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        for (verb, path, status, body) in [
+            (
+                "POST",
+                r"/containers/v13w3-test-pr-7-3/stop$",
+                204,
+                serde_json::json!(null),
+            ),
+            (
+                "DELETE",
+                r"/containers/v13w3-test-pr-7-3$",
+                204,
+                serde_json::json!(null),
+            ),
+            (
+                "POST",
+                r"/containers/create$",
+                201,
+                serde_json::json!({"Id":"worker","Warnings":[]}),
+            ),
+            (
+                "POST",
+                r"/containers/v13w3-test-pr-7-3/start$",
+                204,
+                serde_json::json!(null),
+            ),
+        ] {
+            Mock::given(method(verb))
+                .and(path_regex(path))
+                .respond_with(ResponseTemplate::new(status).set_body_json(body))
+                .mount(&server)
+                .await;
+        }
+        let count = if rotated { 1 } else { 2 };
+        for _ in 0..count {
+            assert_eq!(launcher.ensure(&pr(), Some(&next)).await.unwrap(), rotated);
+        }
+        let requests = server.received_requests().await.unwrap();
+        let resets: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path().ends_with("/exec"))
+            .collect();
+        assert_eq!(resets.len(), count);
+        for reset in resets {
+            let body: serde_json::Value = serde_json::from_slice(&reset.body).unwrap();
+            assert_eq!(
+                body["Cmd"],
+                serde_json::json!(["python3", "/usr/local/bin/worker-config.py", "cs1"])
+            );
+            assert_eq!(
+                body["Env"],
+                serde_json::json!([
+                    "DP_MEMCAN_URL=http://memcan/mcp",
+                    format!("DP_MEMCAN_TOKEN={}", next.token.expose())
+                ])
+            );
+        }
+        assert_eq!(requests.iter().any(|r| r.method == "DELETE"), rotated);
+        for create in requests
+            .iter()
+            .filter(|r| r.url.path().ends_with("/containers/create"))
+        {
+            let text = String::from_utf8_lossy(&create.body);
+            assert!(!text.contains("fake-A") && !text.contains("fake-B"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn ensure_refuses_when_every_running_slot_is_attached() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let (server, mut launcher) = fake_launcher().await;
+    launcher.settings.max_running = 1;
+    let old = ContainerId::Judge {
+        payer: UserId("old".into()),
+    };
+    let new = ContainerId::Judge {
+        payer: UserId("new".into()),
+    };
+    launcher
+        .attached
+        .insert(launcher.settings.name(&old, false));
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/v13w3-test-user-new/json$"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"/containers/json$"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!([summary(
+                &launcher.settings,
+                &old,
+                true
+            )])),
+        )
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        launcher.ensure(&new, None).await,
+        Err(Error::Busy)
+    ));
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.method == "GET")
+    );
 }

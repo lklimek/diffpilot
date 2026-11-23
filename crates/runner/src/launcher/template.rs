@@ -4,6 +4,7 @@ use bollard::models::{ContainerCreateBody, HostConfig, Mount, MountType};
 use contracts::{ids::UserId, job::access::McpHttpEndpoint, runtime::ContainerId};
 
 use super::Error;
+use sha2::{Digest, Sha256};
 
 /// Operator-owned limits and image pins; none are accepted from socket requests.
 #[derive(Clone)]
@@ -225,10 +226,6 @@ impl Settings {
                 ]
                 .map(str::to_owned),
             );
-            if let Some(endpoint) = memcan {
-                env.push(format!("DP_MEMCAN_URL={}", endpoint.url));
-                env.push(format!("DP_MEMCAN_TOKEN={}", endpoint.token.expose()));
-            }
         } else {
             env.extend(["HOME=/home/worker", "CODEX_HOME=/codex"].map(str::to_owned));
             for path in ["/home/worker", "/codex"] {
@@ -243,7 +240,19 @@ impl Settings {
                 env.push(format!("{key}=codex-gateway"));
             }
         }
-        Ok(ContainerCreateBody {
+        // Fingerprint runtime credentials without storing them in container env or labels.
+        if let Some(endpoint) = memcan {
+            let bytes = serde_json::to_vec(&(&endpoint.url, endpoint.token.expose()))
+                .map_err(|_| Error::Protocol)?;
+            labels.insert(
+                "dp.runtime".into(),
+                Sha256::digest(bytes)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect(),
+            );
+        }
+        let mut config = ContainerCreateBody {
             image: Some(
                 if fetch {
                     &self.fetch_image
@@ -289,6 +298,22 @@ impl Settings {
                 ..Default::default()
             }),
             ..Default::default()
-        })
+        };
+        // Sort recursively even when serde_json's preserve_order feature is unified in.
+        let mut value = serde_json::to_value(&config).map_err(|_| Error::Protocol)?;
+        value.sort_all_objects();
+        let bytes = serde_json::to_vec(&value).map_err(|_| Error::Protocol)?;
+        config
+            .labels
+            .as_mut()
+            .ok_or(Error::InvalidTemplate)?
+            .insert(
+                "dp.template".into(),
+                Sha256::digest(bytes)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect(),
+            );
+        Ok(config)
     }
 }
