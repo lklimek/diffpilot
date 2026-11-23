@@ -103,6 +103,7 @@ fn pr(number: u32, title: &str) -> StoredPr {
         ci_pending: Vec::new(),
         ci_ignored: Vec::new(),
         linked_issues: Vec::new(),
+        mark: None,
     }
 }
 

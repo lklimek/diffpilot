@@ -117,7 +117,7 @@ pub async fn start(
         .filter(|failure| failure.code == RefreshFailureCode::GithubRateLimited)
         .and_then(|failure| failure.retry_at)
         .filter(|retry_at| *retry_at > now);
-    if let Some(retry_at) = limited {
+    if let Some(retry_at) = limited.max(state.dashboard.readers().limited_until(scope, now)) {
         return Err(StartError::RateLimited { retry_at });
     }
     let (refresh, superseded) = match dashboard
@@ -467,6 +467,7 @@ async fn scan_and_store(
     let trigger_text = match trigger {
         RefreshTrigger::Manual => "manual",
         RefreshTrigger::Scheduled => "scheduled",
+        RefreshTrigger::Automatic => "automatic",
     };
     progress.log(format!("refresh started ({trigger_text})"));
     let tokens = UserTokens {

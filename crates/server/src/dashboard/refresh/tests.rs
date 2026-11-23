@@ -122,6 +122,7 @@ fn settings() -> DashboardSettings {
 /// Holds the fake GitHub's dashboard requests while closed, and counts them.
 #[derive(Default)]
 struct Gate {
+    missing: std::sync::Mutex<Option<(bool, usize)>>,
     closed: AtomicBool,
     requests: AtomicUsize,
     arrived: Notify,
@@ -165,7 +166,33 @@ async fn github_gate(State(gate): State<Arc<Gate>>, request: Request, next: Next
             opened.await;
         }
     }
-    next.run(request).await
+    let response = next.run(request).await;
+    let missing = *gate.missing.lock().expect("missing responses");
+    let Some((details, count)) = missing else {
+        return response;
+    };
+    let (parts, body) = response.into_parts();
+    let bytes = body.collect().await.expect("GitHub response").to_bytes();
+    let Ok(mut value) = serde_json::from_slice::<Value>(&bytes) else {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    };
+    if let Some(data) = value["data"].as_object_mut() {
+        let mut left = count;
+        for entry in data.values_mut() {
+            if left > 0
+                && let Some(pr) = entry.get_mut("pullRequest")
+                && pr.is_object()
+                && pr.get("title").is_some() == details
+            {
+                *pr = Value::Null;
+                left -= 1;
+            }
+        }
+    }
+    Response::from_parts(
+        parts,
+        axum::body::Body::from(serde_json::to_vec(&value).expect("JSON")),
+    )
 }
 
 async fn spawn_github(gate: Arc<Gate>, fixture: PathBuf) -> String {
@@ -1832,6 +1859,7 @@ async fn scan_over_the_time_limit_fails_as_timed_out() {
     assert_eq!(w.summary(ALICE).await.snapshot, None);
 }
 
+mod fresh;
 mod judged;
 mod plugin;
 mod snooze;

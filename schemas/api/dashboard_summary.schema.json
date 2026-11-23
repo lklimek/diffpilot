@@ -330,6 +330,11 @@
           "description": "The daily schedule.",
           "type": "string",
           "const": "scheduled"
+        },
+        {
+          "description": "My work was open and the newest refresh was old (plan §M).",
+          "type": "string",
+          "const": "automatic"
         }
       ]
     },
@@ -712,6 +717,14 @@
               "type": "null"
             }
           ]
+        },
+        "facts_checked_at": {
+          "description": "When the listed pull requests' facts (CI, reviews, merge state) were last checked against GitHub after the scan,\nwhile My work was open (plan §M); absent when none was since the scan or the server restarted since.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
         }
       },
       "required": [

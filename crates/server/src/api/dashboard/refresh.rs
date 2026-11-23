@@ -179,6 +179,16 @@ pub(crate) fn mark_present(state: &AppState, session: &Session) {
     }
 }
 
+/// Counts a summary read in a browser session as My work being open (plan §M); never an access token read.
+fn mark_open(state: &AppState, session: &Session) {
+    if !session.is_access_token() {
+        state
+            .dashboard
+            .readers()
+            .mark_open(&scope(session), state.dashboard.now());
+    }
+}
+
 /// The current snapshot scored with the judgements present now, and how many of those judgements an older ranking
 /// prompt made; `None` without a readable snapshot.
 async fn current_view(
@@ -228,6 +238,7 @@ async fn summary(
     let list_excluded = query.excluded.unwrap_or(false);
     let scope = scope(&session);
     mark_present(&state, &session);
+    mark_open(&state, &session);
     let dashboard = state.db.dashboard();
     let latest_refresh = match dashboard
         .latest_refresh(&scope.tenant_id, &scope.user_id)
@@ -240,7 +251,12 @@ async fn summary(
         match current_view(&state, &scope).await? {
             Some((revision, snapshot, view, record, older)) => (
                 revision,
-                Some(view.meta(&snapshot, &record, list_excluded)),
+                Some(view.meta(
+                    &snapshot,
+                    &record,
+                    list_excluded,
+                    state.dashboard.readers().checked_at(&scope, record.id),
+                )),
                 older,
                 record.scanned_at,
                 snapshot.mentions,

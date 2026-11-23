@@ -403,6 +403,9 @@ async fn recheck_merge_states<T: TokenSource>(
     for pr in pulls.iter_mut() {
         if let Some(state) = states.get(&item(pr)) {
             pr.facts.merge_state = facts::merge_state(state);
+            if let Some(mark) = pr.mark.as_mut() {
+                mark.merge_state.clone_from(state);
+            }
         }
     }
     let unknown = pulls
