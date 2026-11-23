@@ -312,7 +312,7 @@ targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe 
 
 | ID | Label | Colour (token) | Rule (facts diffpilot read; tooltip lists them) |
 |---|---|---|---|
-| B1 | Blocked / failing | red (`high`) | a failed effect, CI failed (the reader's Ignored checks left out, as in My work), or a push channel failing for this PR's events |
+| B1 | Blocked / failing | red (`high`) | a failed effect, CI failed (the reader's Ignored checks, failing or pending, left out as in My work), or a push channel failing for this PR's events |
 | B2 | Questions waiting | amber (`med`) | undecided questions exist |
 | B3 | Executing | teal (`bot`) | decided effects are open or claimed |
 | B4 | Waiting for bot round | blue (`low`) | thepastaclaw reports this head reviewing or queued, or a watched pass waits for the round |
