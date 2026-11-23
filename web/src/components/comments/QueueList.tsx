@@ -1,7 +1,7 @@
 import type { CommentItem, DecisionKind, QueueEntry } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
-import { ProvenanceTag } from "../section/ProvenanceTag";
+import { ProvenanceTag, provenanceNote, type ProvenanceSource } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CHOICE_LABEL, decisionLabel } from "./decisions";
 import { itemId } from "./parts";
@@ -93,7 +93,7 @@ function Marks({ entry, first }: { entry: QueueEntry; first: CommentItem }) {
         }`}
       >
         Gate {g.gate}
-        {g.source === "assessment" && <ProvenanceTag source="llm" focusable={false} />}
+        {g.source === "assessment" && <ProvenanceTag source="llm" tip={false} />}
       </span>
     )),
     !group && first.bot_severity && (
@@ -106,7 +106,7 @@ function Marks({ entry, first }: { entry: QueueEntry; first: CommentItem }) {
             : "border-border text-text"
         }`}
       >
-        <ProvenanceTag source="github" focusable={false} /> {first.bot_severity}
+        <ProvenanceTag source="github" tip={false} /> {first.bot_severity}
       </span>
     ),
     rec && (
@@ -116,7 +116,7 @@ function Marks({ entry, first }: { entry: QueueEntry; first: CommentItem }) {
         data-recommendation={rec.kind}
         className={`${MARK} rounded border-dashed ${RECOMMENDATION_LOOK[rec.kind] ?? "border-border text-text"}`}
       >
-        <ProvenanceTag source="llm" focusable={false} /> recommends {CHOICE_LABEL[rec.kind] ?? rec.kind}
+        <ProvenanceTag source="llm" tip={false} /> recommends {CHOICE_LABEL[rec.kind] ?? rec.kind}
       </span>
     ),
   ].filter(Boolean);
@@ -127,6 +127,26 @@ function Marks({ entry, first }: { entry: QueueEntry; first: CommentItem }) {
     </span>
   );
 }
+
+/** The sources of the tags among a row's marks ({@link Marks}), GitHub first. */
+function tagSources(entry: QueueEntry, first: CommentItem): ProvenanceSource[] {
+  const group = entry.item_nos.length > 1;
+  const github = !group && first.bot_severity;
+  const llm =
+    first.assessment?.recommendation !== undefined ||
+    (!group && first.gates.some((g) => g.source === "assessment"));
+  return [...(github ? ["github" as const] : []), ...(llm ? ["llm" as const] : [])];
+}
+
+/**
+ * The row's tooltip: what a click opens and what its marks' tags mean (the marks are not focusable inside the
+ * row's button, plan §3.9).
+ */
+const rowTip = (entry: QueueEntry, first: CommentItem) =>
+  [
+    entry.item_nos.length > 1 ? "Opens these questions as one group." : "Opens this question.",
+    ...tagSources(entry, first).map(provenanceNote),
+  ].join(" ");
 
 /** The Questions queue (mockup left column): questions, Ask answers, carried, decided, outside, then PR-level. */
 export function QueueList({
@@ -162,17 +182,19 @@ export function QueueList({
         : first.title;
     return (
       <li key={entryKey(entry)} className="flex items-center gap-0.5">
-        <button
-          type="button"
-          aria-current={current === entryKey(entry)}
-          onClick={() => onOpen(entry)}
-          className={ROW}
-        >
-          <span className="min-w-8 font-mono text-xs text-muted">{group ? "G" : itemId(first)}</span>{" "}
-          <span className="min-w-0 flex-1">
-            <span className="block truncate">{title}</span> <Marks entry={entry} first={first} />
-          </span>
-        </button>
+        <Tooltip tip={rowTip(entry, first)} placement="right" className="min-w-0 flex-1">
+          <button
+            type="button"
+            aria-current={current === entryKey(entry)}
+            onClick={() => onOpen(entry)}
+            className={ROW}
+          >
+            <span className="min-w-8 font-mono text-xs text-muted">{group ? "G" : itemId(first)}</span>{" "}
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">{title}</span> <Marks entry={entry} first={first} />
+            </span>
+          </button>
+        </Tooltip>
         {!group && <OpenExternal href={first.url} label={`Open ${itemId(first)} on GitHub`} />}
       </li>
     );
