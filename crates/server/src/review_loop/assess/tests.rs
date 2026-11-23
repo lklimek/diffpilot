@@ -926,7 +926,6 @@ fn prompt_hash(template: &str) -> String {
 /// The template with the output schema is recorded under the current [`VERIFY_PROMPT_VERSION`]
 /// (`RECORD_PROMPT_HASH=1` records it; a semantic change bumps the version, which makes every stored assessment
 /// stale through its fingerprint), and the rendered prompt is pinned (`UPDATE_GOLDEN=1` rewrites it).
-// TODO(S13-3): calibrate the prompt against real Codex runs once the spike is approved.
 #[test]
 fn golden_verify_comments_prompt() {
     let prompt = prompt::render(&golden_input(), &summary(HEAD), LlmLanguage::En).expect("prompt");

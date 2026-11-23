@@ -54,14 +54,14 @@ use crate::state::AppState;
 
 /// Items one `verify_comments` job assesses at most (plan §4.2).
 pub const MAX_ITEMS_PER_PASS: usize = agent::verify_comments::MAX_ITEMS;
-/// Least time between the end of a pass and an automatic (Watch) pass of the same pull request (plan §2.8).
-// TODO(S13-3): calibrate the spacing against real Codex pass runtimes once the spike is approved.
+/// Least time between the end of a pass and an automatic (Watch) pass of the same pull request (plan §2.8); about
+/// twice a full pass at high effort (spike S13-3).
 pub const PASS_SPACING: SignedDuration = SignedDuration::from_mins(10);
-/// Passes charged to one user per 24 hours before automatic (Watch) passes stop (plan §2.8).
-// TODO(S13-3): calibrate against real Codex runs (tokens and runtime per pass) once the spike is approved.
-pub const DAILY_PASSES_PER_USER: u32 = 30;
+/// Passes charged to one user per 24 hours before automatic (Watch) passes stop (plan §2.8); above the owner's
+/// busiest recorded day of 44 bot rounds (spike S13-3).
+pub const DAILY_PASSES_PER_USER: u32 = 50;
 /// Version of `prompts/verify_comments.md` with the output schema, stored with every assessment.
-pub const VERIFY_PROMPT_VERSION: u32 = 2;
+pub const VERIFY_PROMPT_VERSION: u32 = 3;
 /// The window of the daily cap.
 const DAY: SignedDuration = SignedDuration::from_hours(24);
 

@@ -40,8 +40,8 @@ pub fn select_model(
             reasoning_effort: saved.map_or(DEFAULT_JUDGE_EFFORT, |saved| saved.judge_effort),
             ..choice
         },
-        // `verify_comments` uses the installation choice (plan §4.2; no own setting).
-        // TODO(S13-3): check whether a lower effort suffices once real Codex runs are approved.
+        // `verify_comments` uses the installation choice (plan §4.2; no own setting); at medium effort it misread
+        // pre-existing code (spike S13-3).
         JobKind::Plan | JobKind::PrContext | JobKind::AnalyseFlow | JobKind::VerifyComments => {
             choice
         }

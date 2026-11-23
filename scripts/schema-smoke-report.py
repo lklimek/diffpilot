@@ -1,4 +1,5 @@
-"""Host-side part of schema-smoke.sh: judge each job's output and archive a sanitised copy of the run.
+"""Host-side part of schema-smoke.sh and verify-comments-smoke.sh: judge each job's output, measure it and archive a
+sanitised copy of the run.
 
 The job directories are bind-mounted into the agent container, so the agent can plant symlinks there. Every
 read walks the path component by component with O_NOFOLLOW, accepts only expected names and regular files,
@@ -84,6 +85,29 @@ def credential(job_dir: Path) -> str:
         return "credential state unknown"
 
 
+def measures(job_dir: Path) -> dict:
+    """Token usage of the last `turn.completed` event, the output's item count and size."""
+    found: dict = {}
+    try:
+        for line in read_safe(job_dir, "stdout.jsonl").splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and event.get("type") == "turn.completed":
+                found = {k: v for k, v in (event.get("usage") or {}).items() if isinstance(v, int)}
+    except NotRegular:
+        pass
+    found.update(items=None, output_bytes=None)
+    try:
+        text = read_safe(job_dir, "output.json")
+        found["output_bytes"] = len(text.encode())
+        found["items"] = len(json.loads(text).get("items", []))
+    except (NotRegular, ValueError, AttributeError):
+        pass
+    return found
+
+
 def sanitise(text: str) -> str:
     for rx, rep in PATTERNS:
         text = rx.sub(rep, text)
@@ -109,10 +133,13 @@ def main(argv: list[str]) -> int:
         print(verdict(Path(argv[2]), Path(argv[3])))
     elif len(argv) == 3 and argv[1] == "credential":
         print(credential(Path(argv[2])))
+    elif len(argv) == 3 and argv[1] == "measures":
+        print(json.dumps(measures(Path(argv[2]))))
     elif len(argv) == 4 and argv[1] == "archive":
         archive(Path(argv[2]), Path(argv[3]))
     else:
-        print("usage: schema-smoke-report.py verdict SCHEMA JOB_DIR | credential JOB_DIR | archive WORK DST",
+        print("usage: schema-smoke-report.py verdict SCHEMA JOB_DIR | credential JOB_DIR | measures JOB_DIR"
+              " | archive WORK DST",
               file=sys.stderr)
         return 2
     return 0

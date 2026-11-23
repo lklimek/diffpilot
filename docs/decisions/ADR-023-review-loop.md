@@ -114,7 +114,7 @@ read with tokens (ADR-019).
   values changed is read in full. A change makes an automatic pass due (`pr_watches.pass_due_at`, migration 0023);
   it waits while thepastaclaw reviews the PR (its status plug-in or its gate comment in progress or queued on the
   head), for at most 90 minutes from the change, then goes through `request_pass(Watch)`: one pass per PR, 10-minute
-  spacing, 30 passes per user and 24 hours (shown in RW2). A plug-in change signal (PR Hygiene, the end of a
+  spacing, 50 passes per user and 24 hours (shown in RW2; spike S13-3). A plug-in change signal (PR Hygiene, the end of a
   thepastaclaw round) probes its watched PRs at once. A user whose GitHub rate limit is used up is not probed until
   GitHub's reset or retry time. A merged or closed PR ends the watch; a user without a usable token pair pauses.
 - **Questions ready.** A watch pass that leaves undecided questions (or a due change an on-demand pass already

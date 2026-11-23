@@ -14,8 +14,7 @@ use crate::api::review_loop::{
     Gate, ItemLocation, NecessityVerdict, Validity,
 };
 
-/// Items per job at most (plan §4.2).
-// TODO(S13-3): calibrate the batch size against real Codex runs (output size, runtime) once the spike is approved.
+/// Items per job at most (plan §4.2); 10 take about 5 minutes and 23 KB of output at high effort (spike S13-3).
 pub const MAX_ITEMS: usize = 10;
 /// The claudius skills a `verify_comments` job reads, mounted read-only (ADR-002 amendment, SK1); `report-format`
 /// stays unmounted. The runner refuses a job of this kind that names any other skill.
