@@ -146,6 +146,11 @@ fn the_fixture_reads_into_items_rounds_and_a_snapshot() {
     assert_eq!(snapshot.unresolved_threads, 6);
     assert_eq!(snapshot.counts, (8, 9, 5));
     assert_eq!(
+        (snapshot.base.as_str(), snapshot.base_sha.as_deref()),
+        ("main", Some("92f2274efbb93570cc8f820a49c058cf66b0dbe9")),
+        "the base branch and commit of the read"
+    );
+    assert_eq!(
         snapshot
             .thread_ids
             .get("821d7cdc93fec6e1")

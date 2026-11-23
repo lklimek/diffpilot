@@ -97,6 +97,7 @@ fn pr(number: u32, title: &str) -> StoredPr {
         },
         private: false,
         head_sha: "a".repeat(40),
+        base_sha: None,
         created_at: now() - SignedDuration::from_hours(24 * 3),
         ci_red: Vec::new(),
         ci_pending: Vec::new(),

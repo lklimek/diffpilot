@@ -190,8 +190,14 @@ async fn request(
             Some(question) => (Some(question.user_id.clone()), Some(question)),
             None => return Ok(PassQueued::Skipped),
         },
-        // Charged once something needs assessing: the spacing and the cap hold passes back, not the questions.
-        PassReason::Watch => (None, None),
+        // Decided before any code is read: the watch task holds its detection lock meanwhile. Watchers hear of
+        // questions on-demand passes assessed when those passes end (`watch::pass_ended`).
+        PassReason::Watch => match charged_watcher(state, pr, now, continuation).await? {
+            Charge::To(user) => (Some(user), None),
+            Charge::Spaced => return Ok(PassQueued::Spaced),
+            Charge::DailyLimit => return Ok(PassQueued::DailyLimit),
+            Charge::NoWatcher => return Ok(PassQueued::Skipped),
+        },
         PassReason::Opened | PassReason::NewComments | PassReason::AssessAgain(_) => {
             (by.map(str::to_owned), None)
         }
@@ -248,15 +254,6 @@ async fn request(
         }
         return Ok(PassQueued::Skipped);
     }
-    let user = match reason {
-        PassReason::Watch => match charged_watcher(state, pr, now, continuation).await? {
-            Charge::To(user) => Some(user),
-            Charge::Spaced => return Ok(PassQueued::Spaced),
-            Charge::DailyLimit => return Ok(PassQueued::DailyLimit),
-            Charge::NoWatcher => return Ok(PassQueued::Skipped),
-        },
-        _ => user,
-    };
     // Everything fallible is read before the pass is stored: a live pass without a job would hold every later
     // request back as already running.
     let language = match (&user, reason) {
@@ -303,27 +300,30 @@ async fn request(
         PassStart::Started(id) => id,
         PassStart::Busy(_) => return Ok(PassQueued::AlreadyRunning),
     };
-    let started = async {
-        let handle = submit(state, &record.pr, pr, id, &input, language).await?;
-        db.review_loop().pass_running(id, handle.job_id).await?;
-        if let Some(question) = &question {
-            db.questions()
-                .set_job(question.question.id, handle.job_id)
-                .await?;
-        }
-        Ok::<_, AssessError>(handle)
-    }
-    .await;
-    let handle = match started {
+    let handle = match submit(state, &record.pr, pr, id, &input, language).await {
         Ok(handle) => handle,
         Err(error) => {
-            // Nothing follows this pass, so it ends here.
+            // No job exists, so nothing follows this pass: it ends here.
             db.review_loop()
                 .finish_pass(id, false, Timestamp::now())
                 .await?;
             return Err(error);
         }
     };
+    // The question's link first: while the pass has no job, its follower adopts the submitted job and links both.
+    let linked = async {
+        if let Some(question) = &question {
+            db.questions()
+                .set_job(question.question.id, handle.job_id)
+                .await?;
+        }
+        db.review_loop().pass_running(id, handle.job_id).await
+    }
+    .await;
+    if let Err(error) = linked {
+        tracing::warn!(pr, pass = %id, job = %handle.job_id, ?error,
+            "the submitted assessment job could not be linked to its pass; the pass's follower adopts it");
+    }
     tracing::info!(pr, pass = %id, job = %handle.job_id, ?reason, items = input.items.len(),
         "comment assessment pass queued");
     follow(state, id);
@@ -545,7 +545,7 @@ struct AnalysisInputs {
 
 /// The project profile file at the pull request's current base (`summary`), read from the server's mirror, and the
 /// PR context of the PR's latest analysis in the tenant (any head; `language` first). Only when the mirror cannot
-/// be read does the profile come from that analysis's stored prepass.
+/// be read does the profile come from that analysis's stored prepass, and only if it read the same base.
 async fn analysis_inputs(
     state: &AppState,
     tenant: &str,
@@ -581,6 +581,8 @@ async fn analysis_inputs(
         .await?;
     let profile = match base {
         Some(profile) => profile,
+        // Another base's profile is not the current one.
+        None if analysis.base_sha != summary.base_sha => None,
         None => crate::pipeline::prepass::stored(state, analysis.id)
             .await?
             .and_then(|prepass| prepass.profile_file),

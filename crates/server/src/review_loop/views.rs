@@ -349,7 +349,13 @@ fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize, my_work: &MyWork)
         ci,
         ignored_not_passing: ignored_not_passing.unwrap_or_default(),
         ready_to_merge: snapshot.and_then(|snapshot| {
-            my_work.ready_to_merge(&pr.repo, pr.number, &snapshot.head, &snapshot.base)
+            my_work.ready_to_merge(
+                &pr.repo,
+                pr.number,
+                &snapshot.head,
+                &snapshot.base,
+                snapshot.base_sha.as_deref()?,
+            )
         }),
         draft: snapshot.is_some_and(|snapshot| snapshot.draft),
         unresolved_threads: snapshot.map_or(0, |snapshot| snapshot.unresolved_threads),
@@ -648,14 +654,17 @@ pub async fn preview(
     rows: &[DecisionBatchRow],
 ) -> Result<Vec<EffectsPreview>, LoopError> {
     let loaded = Loaded::of(state, handle).await?;
-    Ok(loaded
-        .plan(rows)?
-        .into_iter()
-        .map(|(record, planned)| EffectsPreview {
-            item_no: record.no,
-            effects: planned.effects,
+    let deciding: Vec<u32> = rows.iter().map(|row| row.item_no).collect();
+    rows.iter()
+        .zip(loaded.plan(rows)?)
+        .map(|(row, (record, planned))| {
+            Ok(EffectsPreview {
+                item_no: record.no,
+                effects: planned.effects,
+                plan_digest: loaded.plan_digest(row, &deciding)?,
+            })
         })
-        .collect())
+        .collect()
 }
 
 /// RC17.

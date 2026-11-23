@@ -815,15 +815,15 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC4 | GET | `…/comments/items` | read | `ItemsQuery` | `CommentItem[]` |
 | RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
 | RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202; 409 `conflict` while an assessment pass of the PR is queued or running (assess again once it ends) |
-| RC8 | POST | `…/comments/items/{item}/decisions` | session_csrf | `DecideRequest` | 201 `Decision`; 409 `item_changed` |
-| RC9 | POST | `…/comments/decision-batches` | session_csrf | `DecisionBatchRequest` | 201 `Decision[]`; 400 `invalid_request` for a gate row under `bulk`/`group`, an item asked again or no longer read (`gone_at`) under `bulk`, or, under `table`, a batch that leaves out a waiting gate item; 409 `item_changed` naming the changed items |
+| RC8 | POST | `…/comments/items/{item}/decisions` | session_csrf | `DecideRequest` | 201 `Decision`; 409 `item_changed`; 409 `conflict` when its `plan_digest` no longer matches the plan |
+| RC9 | POST | `…/comments/decision-batches` | session_csrf | `DecisionBatchRequest` | 201 `Decision[]`; 400 `invalid_request` for a gate row under `bulk`/`group`, an item asked again or no longer read (`gone_at`) under `bulk`, or, under `table`, a batch that leaves out a waiting gate item; 409 `item_changed` naming the changed items; 409 `conflict` naming the rows whose `plan_digest` no longer matches the plan |
 | RC10 | GET | `…/comments/log` | read | – | `CommentLog`; subscribers of the tenant's live tokens; a push target of another user's token shows only its kind and delivery state (`url`, `topic`, `secret_last4`, `last_error` null) |
 | RC11 | GET | `/api/v1/comments/carry-overs` | read | `CarryOverQuery` | `CarryOverPage` |
 | RC12 | POST | `…/comments/items/{item}/undo` | session_csrf | `ItemActionRequest` | `CommentItem` (asked again; the undone decision keeps `undone_at`); 409 `conflict` without a standing decision or once an effect is claimed; 409 `item_changed` |
 | RC13 | POST | `…/comments/items/{item}/reopen` | session_csrf | `ItemActionRequest` | `CommentItem` (state `reopened`; effects not yet claimed are cancelled); 409 `conflict` without a standing decision; 409 `item_changed` |
 | RC14 | POST | `…/comments/items/{item}/skip` | session_csrf | `ItemActionRequest` | 204; the item comes last in the caller's queue while it stays at that revision |
 | RC15 | POST | `…/comments/items/{item}/gates` | session_csrf | `GateMarkRequest` | `CommentItem`; marks or clears the owner's mark of one gate (assessment gates stay); 409 `item_changed` |
-| RC16 | POST | `…/comments/effects-preview` | session_csrf | `EffectsPreviewRequest` | `EffectsPreview[]` (the effects the rows would get; nothing stored); 400 `invalid_request` as RC8/RC9 |
+| RC16 | POST | `…/comments/effects-preview` | session_csrf | `EffectsPreviewRequest` | `EffectsPreview[]` (the effects the rows would get, with a `plan_digest` for PR-level rows; nothing stored); 400 `invalid_request` as RC8/RC9 |
 | RC17 | GET | `…/comments/decide-rest` | read | – | `DecideRest` (the confirmation list of "Decide the rest per recommendation"; gate items and items without a complete recommendation are left out with their reason) |
 | RW1 | PUT / DELETE | `…/watch` | session_csrf | – | 204; 409 `watch_limit_reached` |
 | RW2 | GET | `/api/v1/watches` | read | – | `WatchList` (with the reader's assessment passes of the last 24 h and the daily limit) |
@@ -853,6 +853,12 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
   what gets posted.
 - **P3** (`dismiss_stale_reviews`): the dismissal message is `reason` (the default message when absent);
   `reply_text` is not read. Clients show the server's texts from RC16, never their own copies.
+- **Plan digest.** RC8/RC9 plan every row inside the transaction that stores it. For a PR-level row (P1
+  `merge_with_follow_ups`, P3 `dismiss_stale_reviews`) RC16 returns `plan_digest`: a digest of what the plan rests
+  on (P1 the items it follows up and their revisions; P3 the reviews it dismisses, each still stale). A row sent
+  with the `plan_digest` the owner confirmed is refused with 409 `conflict` when the plan computed at storing
+  differs; the client previews again and asks the owner to confirm the new plan. A row without it is stored as
+  planned then.
 - **Claims.** A claim covers every open agent effect of a current decision, for 30 minutes, renewed by each report;
   only decisions whose open effects all fall within the claimer's capabilities can be claimed. A report on another
   token's claim answers 409 `claimed`; after the claimer's lease ended 409 `lease_expired` (also once the feed task

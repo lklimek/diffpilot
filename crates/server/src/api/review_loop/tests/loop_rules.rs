@@ -4,12 +4,12 @@
 
 use std::time::Duration;
 
-use contracts::api::review_loop::{DecisionBatchRow, DecisionVia, EffectKind, WatchState};
+use contracts::api::review_loop::{EffectKind, ItemState, WatchState};
 use contracts::ids::CommentItemId;
 
 use super::feed::{EXECUTE, agent, with_token};
 use super::*;
-use crate::review_loop::{self, LoopError, seen};
+use crate::review_loop::seen;
 
 const FEED: &str = "/api/v1/decision-feed";
 
@@ -395,53 +395,27 @@ async fn items_no_longer_read_leave_the_queue_and_stay_listed() {
     assert!(queued(&w.get(&format!("{PR}/comments")).await, &no));
 }
 
-/// RQ4, RQ5, RQ11: a PR-level decision rests on what its scope was computed from. A gate marked on an item "Merge
-/// now" would follow up, or a listed bot's item asked again, between loading and storing refuses the decision instead
-/// of sweeping the gate item in or dismissing the review.
-#[tokio::test]
-async fn pr_level_decisions_refuse_a_scope_changed_meanwhile() {
-    let w = world().await;
-    w.get(&format!("{PR}/comments")).await;
-    let pr = crate::github::review_loop::tests::pr482();
-    let row = |item: &Value, kind: &str| -> DecisionBatchRow {
-        let mut body = decision(kind);
-        body["item_no"] = item["no"].clone();
-        body["item_revision"] = item["revision"].clone();
-        serde_json::from_value(body).expect("row")
-    };
-    let changed = |outcome: &Result<Vec<_>, LoopError>, item: &Value| {
-        let no = u32::try_from(item["no"].as_u64().expect("no")).expect("no");
-        matches!(outcome, Err(LoopError::ItemChanged(nos)) if nos.contains(&no))
-    };
+/// The RC16 preview of a decision of `kind` on the item `key`: (the decision body, its `plan_digest`).
+async fn previewed(w: &World, key: &str, kind: &str) -> (Value, Value) {
+    let item = w.item(key).await;
+    let mut body = decision(kind);
+    body["item_revision"] = item["revision"].clone();
+    let mut row = body.clone();
+    row["item_no"] = item["no"].clone();
+    let (status, preview) = w
+        .post(
+            &format!("{PR}/comments/effects-preview"),
+            json!({"rows": [row]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    let digest = preview[0]["plan_digest"].clone();
+    assert!(digest.is_string(), "{preview}");
+    (body, digest)
+}
 
-    let merge = row(&w.item("pr:3:merge").await, "merge_with_follow_ups");
-    let handle = review_loop::find(&w.state, DEFAULT_TENANT, &pr)
-        .await
-        .expect("pr");
-    let loaded = review_loop::Loaded::of(&w.state, handle)
-        .await
-        .expect("loaded");
-    w.assess(
-        L2,
-        recommend(DecisionKind::FixHere, "real bug"),
-        vec![Gate::Funds],
-    )
-    .await;
-    let outcome = review_loop::decide_loaded(
-        &w.state,
-        DEFAULT_TENANT,
-        "u1",
-        loaded,
-        &[merge],
-        DecisionVia::Question,
-    )
-    .await;
-    assert!(
-        changed(&outcome, &w.item(L2).await),
-        "the gate item is swept into the merge decision: {outcome:?}"
-    );
-
-    let w = world().await;
+/// Thepastaclaw's items decided in one table batch, then read again: the question "Dismiss stale bot reviews?" waits.
+async fn bot_items_decided(w: &World) {
     w.get(&format!("{PR}/comments")).await;
     let rows: Vec<Value> = w
         .items()
@@ -463,13 +437,17 @@ async fn pr_level_decisions_refuse_a_scope_changed_meanwhile() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     w.reread(&[]).await;
-    let dismiss = row(&w.item("pr:3:dismiss").await, "dismiss_stale_reviews");
-    let handle = review_loop::find(&w.state, DEFAULT_TENANT, &pr)
-        .await
-        .expect("pr");
-    let loaded = review_loop::Loaded::of(&w.state, handle)
-        .await
-        .expect("loaded");
+}
+
+/// RQ4, RQ5: "Merge now" carries the digest of the plan the owner confirmed; an item that joined its scope since
+/// (here asked again) refuses the decision until the owner checks the new plan, which then includes it.
+#[tokio::test]
+async fn merge_now_is_refused_when_its_confirmed_plan_grew() {
+    let w = world().await;
+    w.get(&format!("{PR}/comments")).await;
+    w.decide_ok(L2, reject("The ceiling is the caller's."))
+        .await;
+    let (mut body, digest) = previewed(&w, "pr:3:merge", "merge_with_follow_ups").await;
     let l2 = w.item(L2).await;
     let (status, reopened) = w
         .post(
@@ -478,18 +456,100 @@ async fn pr_level_decisions_refuse_a_scope_changed_meanwhile() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{reopened}");
-    let outcome = review_loop::decide_loaded(
-        &w.state,
-        DEFAULT_TENANT,
-        "u1",
-        loaded,
-        &[dismiss],
-        DecisionVia::Question,
-    )
-    .await;
+    body["plan_digest"] = digest;
+    let merge = w.item("pr:3:merge").await;
+    let (status, refused) = w
+        .decide(merge["no"].as_u64().expect("no"), body.clone())
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "conflict", "{refused}");
     assert!(
-        changed(&outcome, &l2),
-        "the review of a finding asked again is dismissed: {outcome:?}"
+        refused["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("Check the plan again")),
+        "{refused}"
+    );
+    let (_, digest) = previewed(&w, "pr:3:merge", "merge_with_follow_ups").await;
+    body["plan_digest"] = digest;
+    let (status, stored) = w.decide(merge["no"].as_u64().expect("no"), body).await;
+    assert_eq!(status, StatusCode::CREATED, "{stored}");
+    assert!(
+        stored["effects"]
+            .as_array()
+            .expect("effects")
+            .iter()
+            .any(|effect| effect["params"]["item_nos"]
+                .as_array()
+                .is_some_and(|nos| nos.contains(&l2["no"]))),
+        "{stored}"
+    );
+}
+
+/// RQ11: the dismissal's digest covers the listed reviews and whether they are still stale, not the items' other
+/// changes: an item of the listed bot finishing its effects (executing to done) leaves it valid.
+#[tokio::test]
+async fn dismissal_keeps_its_plan_through_harmless_changes() {
+    let w = world().await;
+    bot_items_decided(&w).await;
+    let (mut body, digest) = previewed(&w, "pr:3:dismiss", "dismiss_stale_reviews").await;
+    let rl = w.state.db.review_loop();
+    let id = w.pr_id().await;
+    let executing = rl
+        .items(id)
+        .await
+        .expect("items")
+        .into_iter()
+        .find(|item| item.author == "thepastaclaw" && item.state == ItemState::Executing)
+        .expect("an executing bot item");
+    rl.set_item_state(
+        executing.id,
+        executing.revision,
+        ItemState::Done,
+        Timestamp::now(),
+    )
+    .await
+    .expect("done");
+    body["plan_digest"] = digest;
+    let dismiss = w.item("pr:3:dismiss").await;
+    let (status, stored) = w.decide(dismiss["no"].as_u64().expect("no"), body).await;
+    assert_eq!(status, StatusCode::CREATED, "{stored}");
+}
+
+/// RQ11: a newer change request of a listed bot (empty, so it raises no item) makes the listed review no longer the
+/// one that applies: the dismissal is refused instead of dismissing it.
+#[tokio::test]
+async fn dismissal_is_refused_after_a_newer_change_request() {
+    let w = world().await;
+    bot_items_decided(&w).await;
+    let (mut body, digest) = previewed(&w, "pr:3:dismiss", "dismiss_stale_reviews").await;
+    let newer: &dyn Fn(&mut Value) = &|answer| {
+        let nodes = answer["data"]["repository"]["pullRequest"]["reviews"]["nodes"]
+            .as_array_mut()
+            .expect("reviews");
+        let mut review = nodes
+            .iter()
+            .find(|review| review["id"] == "PRR_fixture482_r5")
+            .expect("r5")
+            .clone();
+        review["id"] = json!("PRR_fixture482_r6");
+        review["databaseId"] = json!(4_000_000_109_u64);
+        review["submittedAt"] = json!("2026-11-12T11:00:00Z");
+        review["body"] = json!("");
+        review["url"] =
+            json!("https://github.com/acme/node-client/pull/482#pullrequestreview-4000000109");
+        nodes.push(review);
+    };
+    w.reread(&[("reviews.json", newer)]).await;
+    body["plan_digest"] = digest;
+    let dismiss = w.item("pr:3:dismiss").await;
+    body["item_revision"] = dismiss["revision"].clone();
+    let (status, refused) = w.decide(dismiss["no"].as_u64().expect("no"), body).await;
+    assert_ne!(status, StatusCode::CREATED, "{refused}");
+    assert!(
+        w.item("pr:3:dismiss").await["decisions"]
+            .as_array()
+            .expect("decisions")
+            .is_empty()
     );
 }
 

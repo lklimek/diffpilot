@@ -324,6 +324,7 @@ pub(super) fn pr(
             .as_ref()
             .is_some_and(|r| r.is_private),
         head_sha: name(&detail.head_ref_oid),
+        base_sha: detail.base_ref_oid.as_deref().map(name),
         created_at: detail.created_at,
         ci_red: ci.red.iter().map(|c| name(c)).collect(),
         ci_pending: ci.pending.iter().map(|c| name(c)).collect(),
@@ -425,7 +426,8 @@ mod tests {
             "isCrossRepository": false, "additions": 10, "deletions": 2,
             "createdAt": "2026-11-08T10:00:00Z", "updatedAt": "2026-11-17T11:00:00Z",
             "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "reviewDecision": null,
-            "baseRefName": "main", "headRefName": "feat/pages", "headRefOid": "8c8acb6a35253739c2cb54e178ffa230638e9dfc",
+            "baseRefName": "main", "baseRefOid": "3d1f0c9a7b2e4d6f8a0c1e3b5d7f9a1c3e5b7d9f",
+            "headRefName": "feat/pages", "headRefOid": "8c8acb6a35253739c2cb54e178ffa230638e9dfc",
             "milestone": null, "baseRepository": null,
             "author": {"__typename": "User", "login": "alice"},
             "labels": {"nodes": []}, "participants": {"totalCount": 3},
@@ -486,6 +488,28 @@ mod tests {
                 ["review-helper".to_owned()].as_slice()
             )
         );
+    }
+
+    /// The head and base commits the scan read are kept (the PR badge takes Ready to merge only at both); an answer
+    /// without the base commit keeps none.
+    #[test]
+    fn the_scanned_head_and_base_commits_are_kept() {
+        let detail: PullDetail = serde_json::from_value(node()).expect("detail");
+        let pr = stored(&detail);
+        assert_eq!(
+            (pr.head_sha.as_str(), pr.base_sha.as_deref()),
+            (
+                "8c8acb6a35253739c2cb54e178ffa230638e9dfc",
+                Some("3d1f0c9a7b2e4d6f8a0c1e3b5d7f9a1c3e5b7d9f")
+            )
+        );
+        let mut without = node();
+        without
+            .as_object_mut()
+            .expect("object")
+            .remove("baseRefOid");
+        let detail: PullDetail = serde_json::from_value(without).expect("detail");
+        assert_eq!(stored(&detail).base_sha, None);
     }
 
     /// GitHub's merge state and the user's write access to the base repository are kept (Ready to merge); an

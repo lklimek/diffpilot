@@ -1912,7 +1912,12 @@ comment: string | null,
 /**
  * The item revision the decision is based on.
  */
-item_revision: number, };
+item_revision: number,
+/**
+ * The `plan_digest` of the RC16 preview the owner confirmed (PR-level decisions); when the plan computed at
+ * storing differs, the decision is refused (409 `conflict`). Absent: stored as planned then.
+ */
+plan_digest?: string, };
 
 /**
  * The "Decide the rest per recommendation" confirmation list; nothing is stored until RC9 confirms it.
@@ -2074,7 +2079,12 @@ comment: string | null,
 /**
  * The item revision the decision is based on.
  */
-item_revision: number, };
+item_revision: number,
+/**
+ * The `plan_digest` of the RC16 preview the owner confirmed (PR-level decisions); when the plan computed at
+ * storing differs, the decision is refused (409 `conflict`). Absent: stored as planned then.
+ */
+plan_digest?: string, };
 
 /**
  * Response of RF1: claimable decisions within the capabilities, oldest first.
@@ -2542,7 +2552,13 @@ item_no: number,
 /**
  * Effects in order.
  */
-effects: Array<PlannedEffect>, };
+effects: Array<PlannedEffect>,
+/**
+ * For a PR-level decision ("Merge now", dismissing stale reviews): a digest of what its plan rests on (the
+ * items it follows up and their revisions, or the reviews it dismisses); send it back as the decision's
+ * `plan_digest`.
+ */
+plan_digest?: string, };
 
 /**
  * Body of the effects preview: the decisions the reader is about to submit (the revisions are not checked).

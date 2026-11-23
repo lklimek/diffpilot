@@ -7,8 +7,8 @@ use contracts::time::Timestamp;
 
 use super::super::jobs::ts;
 use super::super::write_tx;
-use super::items::{item_in, set_state_in};
-use super::{ItemRecord, ReviewLoop, u32_col, wire_col};
+use super::items::{item_in, set_state_in, upsert_item_in};
+use super::{ItemRecord, ObservedItem, ReviewLoop, UpsertOutcome, u32_col, wire_col};
 use crate::error::DbError;
 
 /// Result of [`ReviewLoop::undo`] and [`ReviewLoop::reopen`].
@@ -125,6 +125,48 @@ impl ReviewLoop<'_> {
         let record = item_in(&mut tx, item).await?;
         tx.commit().await?;
         Ok(ActionOutcome::Done(Box::new(record)))
+    }
+
+    /// [`Self::upsert_item`] of a decided item raised again outside the carry-over rules, asked again in the same
+    /// transaction as [`Self::reopen`] asks it: the read's observation, the question to the owner and the
+    /// cancellation of the effects no agent holds commit together, so a failure leaves the earlier observation for
+    /// the next read to find raised again.
+    pub async fn upsert_asking_again(
+        &self,
+        tenant_id: &str,
+        pull_request_id: i64,
+        observed: &ObservedItem,
+        state_if_new: ItemState,
+        now: Timestamp,
+    ) -> Result<UpsertOutcome, DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        let outcome = upsert_item_in(
+            &mut tx,
+            tenant_id,
+            pull_request_id,
+            observed,
+            state_if_new,
+            now,
+        )
+        .await?;
+        let (UpsertOutcome::New(record)
+        | UpsertOutcome::Changed(record)
+        | UpsertOutcome::Unchanged(record)) = &outcome;
+        let (id, outside) = (record.id, record.state == ItemState::Outside);
+        let decision = if outside {
+            None
+        } else {
+            standing(&mut tx, id).await?
+        };
+        let Some(decision) = decision else {
+            tx.commit().await?;
+            return Ok(outcome);
+        };
+        cancel_unclaimed(&mut tx, &decision, now).await?;
+        set_state_in(&mut tx, id, ItemState::Reopened, now).await?;
+        let record = item_in(&mut tx, id).await?;
+        tx.commit().await?;
+        Ok(UpsertOutcome::Changed(record))
     }
 
     /// An answer to the owner's question about an undecided item landed: it becomes `asked_back` (queue rank 3)

@@ -18,10 +18,11 @@ const ISSUE_BATCH: usize = 50;
 /// Repositories and owners per reach batch (Q15).
 const REACH_BATCH: usize = 50;
 
-/// The selection of Q2 (the skill's `PR_DETAIL_QUERY` plus the head, the repository's privacy and name).
+/// The selection of Q2 (the skill's `PR_DETAIL_QUERY` plus the head and base commits, the repository's privacy and
+/// name).
 const PULL_FRAGMENT: &str = " fragment Pull on PullRequest { number title url state isDraft \
 isCrossRepository body additions deletions createdAt updatedAt mergeable mergeStateStatus reviewDecision \
-baseRefName headRefName headRefOid milestone { title number state } \
+baseRefName baseRefOid headRefName headRefOid milestone { title number state } \
 baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { name } } author { __typename login } \
 labels(first: 20) { nodes { name } } participants { totalCount } \
 closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nodes { name } } } } \
@@ -315,6 +316,9 @@ pub struct PullDetail {
     pub head_ref_name: String,
     /// Head commit.
     pub head_ref_oid: String,
+    /// Base commit.
+    #[serde(default)]
+    pub base_ref_oid: Option<String>,
     /// Milestone.
     pub milestone: Option<Milestone>,
     /// Base repository.

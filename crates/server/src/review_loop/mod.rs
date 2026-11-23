@@ -18,9 +18,10 @@ use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::review_loop::{
     ActionOutcome, DecideOutcome, ItemRecord, NewCarryEvent, NewDecision, NewEffect, ObservedItem,
-    ReadResult, ScopeGuard, StoredAssessment, StoredDecision, UpsertOutcome,
+    PrView, ReadResult, StoredAssessment, StoredDecision, UpsertOutcome,
 };
 use jiff::SignedDuration;
+use sha2::{Digest, Sha256};
 
 use crate::auth::{Session, UserTokenError, user_access_token, user_token_rejected};
 use crate::github::graphql::{GraphqlError, GraphqlErrorType};
@@ -75,6 +76,9 @@ pub enum LoopError {
     /// These items (`C<no>`) changed since the revisions named.
     #[error("items changed since the decision was prepared")]
     ItemChanged(Vec<u32>),
+    /// What the decisions of these items (`C<no>`) would do differs from the plan the owner confirmed.
+    #[error("the plan changed since it was confirmed")]
+    PlanChanged(Vec<u32>),
     /// A decision does not fit its item.
     #[error("the decision for C{no} is not valid")]
     Decision {
@@ -576,9 +580,17 @@ async fn apply(
             }
             _ => None,
         };
-        let outcome = rl
-            .upsert_item(tenant, handle.id, &item, state_if_new, Timestamp::now())
-            .await?;
+        let outcome = match verdict {
+            // The observation and the owner's new question commit together (plan §2.5): nothing in between.
+            Some(Repeat::AskAgain) => {
+                rl.upsert_asking_again(tenant, handle.id, &item, state_if_new, Timestamp::now())
+                    .await?
+            }
+            _ => {
+                rl.upsert_item(tenant, handle.id, &item, state_if_new, Timestamp::now())
+                    .await?
+            }
+        };
         let record = match outcome {
             UpsertOutcome::New(record) => {
                 new += 1;
@@ -590,7 +602,14 @@ async fn apply(
             Some(Repeat::Verdict(stored, verdict)) => {
                 carry_over(state, tenant, handle, snapshot, &record, stored, verdict).await?;
             }
-            Some(Repeat::AskAgain) => ask_again(state, handle, &record).await?,
+            Some(Repeat::AskAgain) => {
+                state.feed.wake_sync();
+                tracing::info!(
+                    pr = handle.id,
+                    item = record.no,
+                    "a decided item raised again outside the carry-over rules is asked again"
+                );
+            }
             None => {}
         }
     }
@@ -605,7 +624,8 @@ enum Repeat<'a> {
     AskAgain,
 }
 
-/// Asks a decided item again as Reopen does: the standing decision's effects no agent holds are cancelled.
+/// Asks a decided item whose carried decision no longer fits again, as Reopen does: the standing decision's effects
+/// no agent holds are cancelled.
 async fn ask_again(
     state: &AppState,
     handle: &PrHandle,
@@ -622,7 +642,7 @@ async fn ask_again(
             tracing::info!(
                 pr = handle.id,
                 item = record.no,
-                "a decided item raised again outside the carry-over rules is asked again"
+                "a decided item whose carried decision no longer fits is asked again"
             );
         }
         ActionOutcome::ItemChanged | ActionOutcome::NoDecision | ActionOutcome::EffectClaimed => {
@@ -695,6 +715,7 @@ async fn carry_over(
                 reply_text: stored.decision.reply_text.clone(),
                 comment: stored.decision.comment.clone(),
                 item_revision: record.revision,
+                plan_digest: None,
             };
             let item = effect_item(record, snapshot, &record_gates(state, record).await?);
             let scope = PrScope {
@@ -726,7 +747,6 @@ async fn carry_over(
                 carried_from: Some(source),
                 head: CommitSha(snapshot.head.clone()),
                 effects: new_effects(planned.effects),
-                scope: ScopeGuard::default(),
             };
             match rl.decide(tenant, &[new], Timestamp::now()).await? {
                 DecideOutcome::Stored(_) => state.feed.wake_sync(),
@@ -979,25 +999,29 @@ pub(crate) struct Loaded {
 
 impl Loaded {
     pub(crate) async fn of(state: &AppState, handle: PrHandle) -> Result<Self, LoopError> {
-        let rl = state.db.review_loop();
-        let row = rl.pr_state(handle.id).await?.ok_or(LoopError::NotFound)?;
+        let view = state.db.review_loop().pr_view(handle.id).await?;
+        Self::from_view(handle, view)
+    }
+
+    /// The pull request as `view` read it.
+    fn from_view(handle: PrHandle, view: PrView) -> Result<Self, LoopError> {
+        let row = view.row.ok_or(LoopError::NotFound)?;
         let snapshot = row
             .github_snapshot
             .clone()
             .and_then(|value| serde_json::from_value(value).ok());
-        let items = rl.items(handle.id).await?;
-        let mut assessments = BTreeMap::new();
-        for item in &items {
-            if let Some(stored) = rl.latest_assessment(item.id).await? {
-                assessments.insert(item.no, stored);
-            }
-        }
+        let numbers: HashMap<_, _> = view.items.iter().map(|item| (item.id, item.no)).collect();
+        let assessments = view
+            .assessments
+            .into_iter()
+            .filter_map(|(item, stored)| numbers.get(&item).map(|no| (*no, stored)))
+            .collect();
         Ok(Self {
-            decisions: rl.pr_decisions(handle.id).await?,
+            decisions: view.decisions,
             handle,
             row,
             snapshot,
-            items,
+            items: view.items,
             assessments,
         })
     }
@@ -1122,42 +1146,42 @@ impl Loaded {
             .collect()
     }
 
-    /// What the decision of `row` rests on besides its own item: P1 the items it follows up, P3 every item the
-    /// listed reviewers raised and no item raised since (RQ4, RQ5, RQ11).
-    fn scope_guard(
+    /// The digest of what a PR-level decision's plan rests on (RC16 `plan_digest`): "Merge now" the items it follows
+    /// up with their revisions, the dismissal the reviews it dismisses, each still stale. `None` for other rows.
+    pub(crate) fn plan_digest(
         &self,
         row: &DecisionBatchRow,
         deciding: &[u32],
-    ) -> Result<ScopeGuard, LoopError> {
+    ) -> Result<Option<String>, LoopError> {
         let record = self.item(row.item_no)?;
-        Ok(match (row.decision.kind, question_of(record)) {
-            (DecisionKind::MergeWithFollowUps, _) => ScopeGuard {
-                items: self
-                    .scope(deciding)?
-                    .remaining
-                    .iter()
-                    .map(|item| self.item(item.no).map(|item| (item.id, item.revision)))
-                    .collect::<Result<_, _>>()?,
-                last_no: None,
-            },
-            (DecisionKind::DismissStaleReviews, Some((PrQuestion::Dismiss, _))) => {
-                let listed = listed_reviews(&record.body);
-                ScopeGuard {
-                    items: self
-                        .items
-                        .iter()
-                        .filter(|item| {
-                            listed
-                                .iter()
-                                .any(|(login, _)| item.author.eq_ignore_ascii_case(login))
-                        })
-                        .map(|item| (item.id, item.revision))
-                        .collect(),
-                    last_no: self.items.iter().map(|item| item.no).max(),
-                }
-            }
-            _ => ScopeGuard::default(),
-        })
+        let rests_on: Vec<String> = match (row.decision.kind, question_of(record)) {
+            (DecisionKind::MergeWithFollowUps, _) => self
+                .scope(deciding)?
+                .remaining
+                .iter()
+                .map(|item| {
+                    self.item(item.no)
+                        .map(|item| format!("follow-up C{} r{}", item.no, item.revision))
+                })
+                .collect::<Result<_, _>>()?,
+            (DecisionKind::DismissStaleReviews, Some((PrQuestion::Dismiss, _))) => self
+                .dismissal(record)?
+                .into_iter()
+                .map(|review| format!("dismiss {review}"))
+                .collect(),
+            _ => return Ok(None),
+        };
+        let mut hash = Sha256::new();
+        for line in rests_on {
+            hash.update(line.as_bytes());
+            hash.update(b"\n");
+        }
+        Ok(Some(
+            hash.finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        ))
     }
 
     /// Plans the effects of `rows` (validated against their items).
@@ -1193,7 +1217,9 @@ impl Loaded {
     }
 }
 
-/// Stores the decisions of `rows` (all or nothing) made by the session's user.
+/// Stores the decisions of `rows` (all or nothing) made by the session's user. They are planned on the pull
+/// request's state inside the write transaction that stores them, so a concurrent change can never sweep an item
+/// into a PR-level decision; a row carrying the `plan_digest` the owner confirmed is refused when its plan changed.
 pub async fn decide(
     state: &AppState,
     session: &Session,
@@ -1201,139 +1227,131 @@ pub async fn decide(
     rows: &[DecisionBatchRow],
     via: DecisionVia,
 ) -> Result<Vec<Decision>, LoopError> {
-    let loaded = Loaded::of(state, handle).await?;
-    decide_loaded(
-        state,
-        &session.tenant_id,
-        &session.user_id,
-        loaded,
-        rows,
-        via,
-    )
-    .await
-}
-
-/// [`decide`] on the pull request as `loaded`; what a PR-level decision's scope rests on is checked again when
-/// the decisions are stored.
-pub(crate) async fn decide_loaded(
-    state: &AppState,
-    tenant: &str,
-    user: &str,
-    loaded: Loaded,
-    rows: &[DecisionBatchRow],
-    via: DecisionVia,
-) -> Result<Vec<Decision>, LoopError> {
-    let mut seen = Vec::new();
-    for row in rows {
-        if seen.contains(&row.item_no) {
-            return Err(LoopError::Decision {
-                no: row.item_no,
-                error: DecisionError::KindNotOffered,
-            });
-        }
-        seen.push(row.item_no);
-    }
-    let gated: Vec<u32> = rows
-        .iter()
-        .filter_map(|row| loaded.item(row.item_no).ok())
-        .filter(|record| !loaded.gates(record).is_empty())
-        .map(|record| record.no)
-        .collect();
-    // Items asked again or no longer read need their own decision; "Decide the rest" leaves them out too (RC17).
-    if via == DecisionVia::Bulk
-        && let Some((no, error)) = rows
-            .iter()
-            .filter_map(|row| loaded.item(row.item_no).ok())
-            .find_map(|record| {
-                if record.gone_at.is_some() {
-                    Some((record.no, DecisionError::NotRead))
-                } else if record.state == ItemState::Reopened {
-                    Some((record.no, DecisionError::AskedAgain))
-                } else {
-                    None
-                }
-            })
-    {
-        return Err(LoopError::Decision { no, error });
-    }
-    match via {
-        DecisionVia::Group | DecisionVia::Bulk if !gated.is_empty() => {
-            return Err(LoopError::GateRow(gated));
-        }
-        DecisionVia::Table => {
-            let queue_items = loaded.queue_items(&[]);
-            let missing: Vec<u32> = queue::waiting(&queue_items)
-                .into_iter()
-                .filter(|item| item.gated && !seen.contains(&item.no))
-                .map(|item| item.no)
-                .collect();
-            if !missing.is_empty() {
-                return Err(LoopError::GateRow(missing));
-            }
-        }
-        _ => {}
-    }
-    let planned = loaded.plan(rows)?;
-    let scopes = rows
-        .iter()
-        .map(|row| loaded.scope_guard(row, &seen))
-        .collect::<Result<Vec<_>, _>>()?;
-    let head = CommitSha(loaded.snapshot()?.head.clone());
-    let decisions: Vec<NewDecision> = rows
-        .iter()
-        .zip(planned)
-        .zip(scopes)
-        .map(|((row, (record, planned)), scope)| NewDecision {
-            item: record.id,
-            item_revision: row.decision.item_revision,
-            user_id: user.to_owned(),
-            kind: row.decision.kind,
-            reason: row
-                .decision
-                .reason
-                .as_deref()
-                .map(str::trim)
-                .filter(|reason| !reason.is_empty())
-                .map(str::to_owned),
-            target: row.decision.target.clone(),
-            r#override: row.decision.r#override.clone(),
-            resolve_ticked: row.decision.resolve_ticked,
-            reply_text: planned.reply_text,
-            comment: row
-                .decision
-                .comment
-                .as_deref()
-                .map(str::trim)
-                .filter(|comment| !comment.is_empty())
-                .map(str::to_owned),
-            recommendation: loaded
-                .assessments
-                .get(&record.no)
-                .map(|stored| stored.assessment.recommendation.clone()),
-            via,
-            carried_from: None,
-            head: head.clone(),
-            effects: new_effects(planned.effects),
-            scope,
-        })
-        .collect();
-    match state
+    let pr = handle.id;
+    let outcome = state
         .db
         .review_loop()
-        .decide(tenant, &decisions, Timestamp::now())
-        .await?
-    {
+        .decide_planned(&session.tenant_id, pr, Timestamp::now(), |view| {
+            Loaded::from_view(handle, view)?.new_decisions(&session.user_id, rows, via)
+        })
+        .await?;
+    match outcome {
         DecideOutcome::Stored(stored) => {
-            tracing::info!(
-                pr = loaded.handle.id,
-                count = stored.len(),
-                ?via,
-                "decisions stored"
-            );
+            tracing::info!(pr, count = stored.len(), ?via, "decisions stored");
             state.feed.wake_sync();
             Ok(stored)
         }
         DecideOutcome::ItemChanged(nos) => Err(LoopError::ItemChanged(nos)),
+    }
+}
+
+impl Loaded {
+    /// The decisions of `rows` by `user`, validated and planned on this state.
+    fn new_decisions(
+        &self,
+        user: &str,
+        rows: &[DecisionBatchRow],
+        via: DecisionVia,
+    ) -> Result<Vec<NewDecision>, LoopError> {
+        let mut seen = Vec::new();
+        for row in rows {
+            if seen.contains(&row.item_no) {
+                return Err(LoopError::Decision {
+                    no: row.item_no,
+                    error: DecisionError::KindNotOffered,
+                });
+            }
+            seen.push(row.item_no);
+        }
+        let gated: Vec<u32> = rows
+            .iter()
+            .filter_map(|row| self.item(row.item_no).ok())
+            .filter(|record| !self.gates(record).is_empty())
+            .map(|record| record.no)
+            .collect();
+        // Items asked again or no longer read need their own decision; "Decide the rest" leaves them out too (RC17).
+        if via == DecisionVia::Bulk
+            && let Some((no, error)) = rows
+                .iter()
+                .filter_map(|row| self.item(row.item_no).ok())
+                .find_map(|record| {
+                    if record.gone_at.is_some() {
+                        Some((record.no, DecisionError::NotRead))
+                    } else if record.state == ItemState::Reopened {
+                        Some((record.no, DecisionError::AskedAgain))
+                    } else {
+                        None
+                    }
+                })
+        {
+            return Err(LoopError::Decision { no, error });
+        }
+        match via {
+            DecisionVia::Group | DecisionVia::Bulk if !gated.is_empty() => {
+                return Err(LoopError::GateRow(gated));
+            }
+            DecisionVia::Table => {
+                let queue_items = self.queue_items(&[]);
+                let missing: Vec<u32> = queue::waiting(&queue_items)
+                    .into_iter()
+                    .filter(|item| item.gated && !seen.contains(&item.no))
+                    .map(|item| item.no)
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(LoopError::GateRow(missing));
+                }
+            }
+            _ => {}
+        }
+        let planned = self.plan(rows)?;
+        let mut changed = Vec::new();
+        for row in rows {
+            if let Some(confirmed) = &row.decision.plan_digest
+                && self.plan_digest(row, &seen)?.as_ref() != Some(confirmed)
+            {
+                changed.push(row.item_no);
+            }
+        }
+        if !changed.is_empty() {
+            return Err(LoopError::PlanChanged(changed));
+        }
+        let head = CommitSha(self.snapshot()?.head.clone());
+        Ok(rows
+            .iter()
+            .zip(planned)
+            .map(|(row, (record, planned))| NewDecision {
+                item: record.id,
+                item_revision: row.decision.item_revision,
+                user_id: user.to_owned(),
+                kind: row.decision.kind,
+                reason: row
+                    .decision
+                    .reason
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|reason| !reason.is_empty())
+                    .map(str::to_owned),
+                target: row.decision.target.clone(),
+                r#override: row.decision.r#override.clone(),
+                resolve_ticked: row.decision.resolve_ticked,
+                reply_text: planned.reply_text,
+                comment: row
+                    .decision
+                    .comment
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|comment| !comment.is_empty())
+                    .map(str::to_owned),
+                recommendation: self
+                    .assessments
+                    .get(&record.no)
+                    .map(|stored| stored.assessment.recommendation.clone()),
+                via,
+                carried_from: None,
+                head: head.clone(),
+                effects: new_effects(planned.effects),
+            })
+            .collect())
     }
 }
 

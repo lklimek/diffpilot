@@ -53,6 +53,11 @@ fn summary(head: &str) -> PrSummary {
 
 /// PR #482 (id 1) at `head` with its review-loop row; user `u1`.
 async fn fixture(head: &str) -> Fixture {
+    fixture_with(head, true).await
+}
+
+/// [`fixture`]; without `reachable` the mirror's source does not exist, so nothing can be fetched.
+async fn fixture_with(head: &str, reachable: bool) -> Fixture {
     let dir = tempfile::tempdir().expect("temp dir");
     let built = Command::new(fixture_dir().join("repo/build-repo.sh"))
         .arg(dir.path().join("remotes/acme/node-client.git"))
@@ -61,8 +66,9 @@ async fn fixture(head: &str) -> Fixture {
     assert!(built.status.success(), "{built:?}");
     let mut config = test_config();
     config.data_dir = dir.path().join("data");
+    let remotes = if reachable { "remotes" } else { "missing" };
     config.github.clone_url =
-        url::Url::parse(&format!("file://{}", dir.path().join("remotes").display())).expect("url");
+        url::Url::parse(&format!("file://{}", dir.path().join(remotes).display())).expect("url");
     let db = Db::in_memory().await.expect("db");
     seed_analysis(&db).await.expect("seed");
     let state = AppState::with_queue(config, db);
@@ -955,37 +961,32 @@ fn golden_verify_comments_prompt() {
     );
 }
 
-/// Plan §2.8, §4.2: the spacing and the daily cap hold back passes, not the watcher's questions. When an on-demand
-/// pass already assessed every item, an automatic request finds nothing to assess (so the watcher hears of the
-/// questions) instead of the limit.
+/// Plan §2.8: an automatic request the spacing or the daily cap holds back reads no code (the detection lock is
+/// held meanwhile); the watcher hears of ready questions when the passes that assess them end.
 #[tokio::test]
-async fn automatic_request_with_nothing_to_assess_is_not_held_back() {
+async fn automatic_request_held_back_reads_no_code() {
     for (passes, ended, held) in [
         (
             DAILY_PASSES_PER_USER,
             SignedDuration::from_hours(1),
-            "daily cap",
+            PassQueued::DailyLimit,
         ),
-        (1, SignedDuration::from_mins(1), "spacing"),
+        (1, SignedDuration::from_mins(1), PassQueued::Spaced),
     ] {
         let f = fixture(HEAD).await;
         watch(&f.state).await;
         item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
         seed_passes(&f.state, passes, ended).await;
         assert_eq!(
-            request_pass(&f.state, PR, PassReason::Opened)
-                .await
-                .expect("pass"),
-            PassQueued::Queued
-        );
-        let pass = live_pass(&f.state).await;
-        assert!(ingest_all(&f.state, &pass, None).await);
-        assert_eq!(
             request_pass(&f.state, PR, PassReason::Watch)
                 .await
                 .expect("pass"),
-            PassQueued::Skipped,
-            "held back by the {held}"
+            held
+        );
+        let mirror = mirror::mirror_path(&f.state.config, &summary(HEAD).repo).expect("path");
+        assert!(
+            !mirror.join("HEAD").exists(),
+            "{held:?}: the mirror was fetched for a pass that cannot start"
         );
     }
 }
@@ -1060,4 +1061,107 @@ async fn a_pass_whose_input_fails_is_not_left_running() {
             .is_empty(),
         "a pass without a job blocks every later request"
     );
+}
+
+/// Plan §4.2: when the current base cannot be read, a stored profile counts only if its analysis read the same
+/// base; another base's profile is not passed off as the current one.
+#[tokio::test]
+async fn stored_profile_counts_only_for_the_current_base() {
+    for (analysis_base, expected) in [(false, None), (true, Some("Stored profile."))] {
+        let f = fixture_with(HEAD, false).await;
+        let analysis = f
+            .state
+            .db
+            .analyses()
+            .latest_for_pr(PR, LlmLanguage::En)
+            .await
+            .expect("analysis")
+            .expect("seeded");
+        if analysis_base {
+            let mut moved = summary(HEAD);
+            moved.base_sha = analysis.base_sha.clone();
+            f.state
+                .db
+                .pull_requests()
+                .upsert(DEFAULT_TENANT, 1, &moved, Timestamp::now())
+                .await
+                .expect("pull request");
+        }
+        let profile = analysis::tech::PROFILE_PATH;
+        let prepass = analysis::prepass::prepass(
+            &summary(HEAD).repo,
+            &[],
+            &[profile.to_owned()],
+            &|_, path| (path == profile).then_some("Stored profile."),
+        )
+        .expect("prepass");
+        f.state
+            .db
+            .documents()
+            .put(
+                analysis.id,
+                DocumentKind::Prepass,
+                "",
+                &prepass,
+                Timestamp::now(),
+            )
+            .await
+            .expect("stored");
+        item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
+        assert_eq!(
+            request_pass(&f.state, PR, PassReason::Opened)
+                .await
+                .expect("pass"),
+            PassQueued::Queued
+        );
+        let job = f
+            .state
+            .db
+            .jobs()
+            .get(live_pass(&f.state).await.job_id.expect("job"))
+            .await
+            .expect("job");
+        let input = VerifyCommentsInput::from_prompt(&job.spec.prompt).expect("input");
+        assert_eq!(
+            input.project_profile.as_deref(),
+            expected,
+            "analysis at the current base: {analysis_base}"
+        );
+    }
+}
+
+/// A job whose link to its pass is lost right after submitting is not abandoned: the pass stays live and its
+/// follower adopts the job.
+#[tokio::test]
+async fn a_submitted_job_survives_a_lost_link() {
+    let f = fixture(HEAD).await;
+    item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
+    db::repo::testing::lose_next_pass_job_link(&f.state.db)
+        .await
+        .expect("fault");
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Opened)
+            .await
+            .expect("pass"),
+        PassQueued::Queued
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let live = f
+            .state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .expect("passes");
+        assert_eq!(live.len(), 1, "the pass with a job ended: {live:?}");
+        if live[0].job_id.is_some() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the job was not adopted"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }

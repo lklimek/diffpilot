@@ -18,7 +18,7 @@ use contracts::time::Timestamp;
 
 use super::super::jobs::ts;
 use super::super::{read_tx, write_tx};
-use super::items::{item_in, set_state_in};
+use super::items::{PrView, item_in, pr_view_in, set_state_in};
 use super::{
     ReviewLoop, json, json_col, opt_json_col, opt_ts_col, opt_wire_col, ts_col, u32_col, wire,
     wire_col,
@@ -73,17 +73,6 @@ pub struct NewDecision {
     pub head: CommitSha,
     /// Effects.
     pub effects: Vec<NewEffect>,
-    /// What a PR-level decision's scope rests on; empty for other decisions.
-    pub scope: ScopeGuard,
-}
-
-/// What a PR-level decision's scope was computed from; a change since refuses the batch.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ScopeGuard {
-    /// Items and their revisions then.
-    pub items: Vec<(CommentItemId, u32)>,
-    /// The pull request's highest item number then; with it, an item raised since changes the scope too.
-    pub last_no: Option<u32>,
 }
 
 /// Result of [`ReviewLoop::decide`].
@@ -301,7 +290,7 @@ async fn with_effects(
 }
 
 /// Decisions matching `filter` (a SQL condition on `d`/`i` with one `?`), oldest first, with effects.
-async fn decisions_where(
+pub(super) async fn decisions_where(
     tx: &mut Transaction<'static, Sqlite>,
     filter: &str,
     value: String,
@@ -438,8 +427,7 @@ async fn settle(
 
 impl ReviewLoop<'_> {
     /// Stores decisions all or nothing, each superseding its item's current decision (whose effects not yet
-    /// claimed are cancelled). Every item, and every item a decision's scope rests on, must still be at the
-    /// revision named.
+    /// claimed are cancelled). Every item must still be at the revision named.
     pub async fn decide(
         &self,
         tenant_id: &str,
@@ -447,114 +435,33 @@ impl ReviewLoop<'_> {
         now: Timestamp,
     ) -> Result<DecideOutcome, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let mut changed = Vec::new();
-        let mut items = Vec::new();
-        for new in decisions {
-            let item = item_in(&mut tx, new.item).await?;
-            if item.revision != new.item_revision {
-                changed.push(item.no);
-            }
-            for (scoped, revision) in &new.scope.items {
-                let scoped = item_in(&mut tx, *scoped).await?;
-                if scoped.revision != *revision {
-                    changed.push(scoped.no);
-                }
-            }
-            if let Some(last_no) = new.scope.last_no {
-                let raised: Vec<u32> = sqlx::query_scalar(
-                    "SELECT item_no FROM comment_items WHERE pull_request_id = ? AND item_no > ? ORDER BY item_no",
-                )
-                .bind(item.pull_request_id)
-                .bind(last_no)
-                .fetch_all(&mut *tx)
-                .await?;
-                changed.extend(raised);
-            }
-            items.push(item);
-        }
-        changed.sort_unstable();
-        changed.dedup();
-        if !changed.is_empty() {
-            return Ok(DecideOutcome::ItemChanged(changed));
-        }
-        let mut ids = Vec::new();
-        for (new, item) in decisions.iter().zip(items) {
-            let supersedes = current_id(&mut tx, new.item).await?;
-            if let Some(previous) = &supersedes {
-                sqlx::query(
-                    "UPDATE comment_effects SET state = 'cancelled', updated_at = ?
-                     WHERE decision_id = ? AND state IN ('waiting', 'open')",
-                )
-                .bind(ts(now))
-                .bind(previous)
-                .execute(&mut *tx)
-                .await?;
-            }
-            let id = DecisionId::new_random();
-            let lines = item.location.as_ref().and_then(|location| location.lines);
-            sqlx::query(
-                "INSERT INTO comment_decisions (id, tenant_id, item_id, user_id, kind, reason, target, override,
-                     resolve_ticked, reply_text, comment, recommendation, via, carried_from, supersedes, head,
-                     body_hash, start_line, end_line, decided_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(id.to_string())
-            .bind(tenant_id)
-            .bind(new.item.to_string())
-            .bind(&new.user_id)
-            .bind(wire(new.kind)?)
-            .bind(&new.reason)
-            .bind(new.target.as_ref().map(json).transpose()?)
-            .bind(new.r#override.as_ref().map(json).transpose()?)
-            .bind(i64::from(new.resolve_ticked))
-            .bind(&new.reply_text)
-            .bind(&new.comment)
-            .bind(new.recommendation.as_ref().map(json).transpose()?)
-            .bind(wire(new.via)?)
-            .bind(new.carried_from.map(|id| id.to_string()))
-            .bind(supersedes)
-            .bind(&new.head.0)
-            .bind(&item.body_hash)
-            .bind(lines.map(|lines| lines.start_line))
-            .bind(lines.map(|lines| lines.end_line))
-            .bind(ts(now))
-            .execute(&mut *tx)
-            .await?;
-            for effect in &new.effects {
-                sqlx::query(
-                    "INSERT INTO comment_effects (id, tenant_id, decision_id, seq, after_seq, kind, executor, params,
-                         state, updated_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                .bind(EffectId::new_random().to_string())
-                .bind(tenant_id)
-                .bind(id.to_string())
-                .bind(effect.seq)
-                .bind(effect.after)
-                .bind(wire(effect.kind)?)
-                .bind(wire(effect.executor)?)
-                .bind(json(&effect.params)?)
-                .bind(if effect.after.is_some() {
-                    "waiting"
-                } else {
-                    "open"
-                })
-                .bind(ts(now))
-                .execute(&mut *tx)
-                .await?;
-            }
-            // The decision itself always changes the item: one revision step even when the state stays.
-            set_state_in(&mut tx, new.item, item.state, now).await?;
-            settle(&mut tx, &id.to_string(), true, now).await?;
-            ids.push(id);
-        }
-        let mut stored = Vec::new();
-        for id in ids {
-            let mut found = decisions_where(&mut tx, "d.id = ?", id.to_string()).await?;
-            stored.push(found.pop().ok_or(DbError::NotFound)?.decision);
-        }
+        let outcome = store(&mut tx, tenant_id, decisions, now).await?;
         tx.commit().await?;
-        Ok(DecideOutcome::Stored(stored))
+        Ok(outcome)
+    }
+
+    /// [`Self::decide`] on the decisions `plan` makes of the pull request's state as this write transaction reads
+    /// it, so what is stored was planned on the state it is stored against; an error of `plan` stores nothing.
+    pub async fn decide_planned<E: From<DbError>>(
+        &self,
+        tenant_id: &str,
+        pull_request_id: i64,
+        now: Timestamp,
+        plan: impl FnOnce(PrView) -> Result<Vec<NewDecision>, E>,
+    ) -> Result<DecideOutcome, E> {
+        let mut tx = write_tx(self.pool).await?;
+        let decisions = plan(pr_view_in(&mut tx, pull_request_id).await?)?;
+        let outcome = store(&mut tx, tenant_id, &decisions, now).await?;
+        tx.commit().await.map_err(DbError::from)?;
+        Ok(outcome)
+    }
+
+    /// The review-loop state of a pull request, read in one transaction.
+    pub async fn pr_view(&self, pull_request_id: i64) -> Result<PrView, DbError> {
+        let mut tx = read_tx(self.pool).await?;
+        let view = pr_view_in(&mut tx, pull_request_id).await?;
+        tx.commit().await?;
+        Ok(view)
     }
 
     /// An item's decisions, oldest first.
@@ -1003,6 +910,104 @@ async fn claim_refusal(
         }
     }
     Ok(None)
+}
+
+/// Stores `decisions` inside `tx`; nothing when an item is no longer at the revision named.
+async fn store(
+    tx: &mut Transaction<'static, Sqlite>,
+    tenant_id: &str,
+    decisions: &[NewDecision],
+    now: Timestamp,
+) -> Result<DecideOutcome, DbError> {
+    let mut changed = Vec::new();
+    let mut items = Vec::new();
+    for new in decisions {
+        let item = item_in(tx, new.item).await?;
+        if item.revision != new.item_revision {
+            changed.push(item.no);
+        }
+        items.push(item);
+    }
+    if !changed.is_empty() {
+        return Ok(DecideOutcome::ItemChanged(changed));
+    }
+    let mut ids = Vec::new();
+    for (new, item) in decisions.iter().zip(items) {
+        let supersedes = current_id(tx, new.item).await?;
+        if let Some(previous) = &supersedes {
+            sqlx::query(
+                "UPDATE comment_effects SET state = 'cancelled', updated_at = ?
+                 WHERE decision_id = ? AND state IN ('waiting', 'open')",
+            )
+            .bind(ts(now))
+            .bind(previous)
+            .execute(&mut **tx)
+            .await?;
+        }
+        let id = DecisionId::new_random();
+        let lines = item.location.as_ref().and_then(|location| location.lines);
+        sqlx::query(
+            "INSERT INTO comment_decisions (id, tenant_id, item_id, user_id, kind, reason, target, override,
+                 resolve_ticked, reply_text, comment, recommendation, via, carried_from, supersedes, head,
+                 body_hash, start_line, end_line, decided_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(tenant_id)
+        .bind(new.item.to_string())
+        .bind(&new.user_id)
+        .bind(wire(new.kind)?)
+        .bind(&new.reason)
+        .bind(new.target.as_ref().map(json).transpose()?)
+        .bind(new.r#override.as_ref().map(json).transpose()?)
+        .bind(i64::from(new.resolve_ticked))
+        .bind(&new.reply_text)
+        .bind(&new.comment)
+        .bind(new.recommendation.as_ref().map(json).transpose()?)
+        .bind(wire(new.via)?)
+        .bind(new.carried_from.map(|id| id.to_string()))
+        .bind(supersedes)
+        .bind(&new.head.0)
+        .bind(&item.body_hash)
+        .bind(lines.map(|lines| lines.start_line))
+        .bind(lines.map(|lines| lines.end_line))
+        .bind(ts(now))
+        .execute(&mut **tx)
+        .await?;
+        for effect in &new.effects {
+            sqlx::query(
+                "INSERT INTO comment_effects (id, tenant_id, decision_id, seq, after_seq, kind, executor, params,
+                     state, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(EffectId::new_random().to_string())
+            .bind(tenant_id)
+            .bind(id.to_string())
+            .bind(effect.seq)
+            .bind(effect.after)
+            .bind(wire(effect.kind)?)
+            .bind(wire(effect.executor)?)
+            .bind(json(&effect.params)?)
+            .bind(if effect.after.is_some() {
+                "waiting"
+            } else {
+                "open"
+            })
+            .bind(ts(now))
+            .execute(&mut **tx)
+            .await?;
+        }
+        // The decision itself always changes the item: one revision step even when the state stays.
+        set_state_in(tx, new.item, item.state, now).await?;
+        settle(tx, &id.to_string(), true, now).await?;
+        ids.push(id);
+    }
+    let mut stored = Vec::new();
+    for id in ids {
+        let mut found = decisions_where(tx, "d.id = ?", id.to_string()).await?;
+        stored.push(found.pop().ok_or(DbError::NotFound)?.decision);
+    }
+    Ok(DecideOutcome::Stored(stored))
 }
 
 /// Feed entries (decision, item and PR) matching `filter`.

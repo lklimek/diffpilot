@@ -30,6 +30,7 @@ struct ScannedPr {
     number: u32,
     head: String,
     base: Option<String>,
+    base_sha: Option<String>,
     ready: bool,
 }
 
@@ -44,6 +45,7 @@ impl MyWork {
                 number: pr.facts.number,
                 head: pr.head_sha.clone(),
                 base: pr.facts.base_ref.clone(),
+                base_sha: pr.base_sha.clone(),
                 ready: score::ready_to_merge(&rules, &pr.facts),
             })
             .collect();
@@ -55,14 +57,15 @@ impl MyWork {
         self.rules.is_ignored_check(repo, name)
     }
 
-    /// Ready to merge (K17, before a plug-in's hold) of `repo#number` at `head` into `base`; `None` when the last
-    /// scan did not read it at that head and base.
+    /// Ready to merge (K17, before a plug-in's hold) of `repo#number` at `head` into `base` at commit `base_sha`;
+    /// `None` when the last scan did not read it at that head, base and base commit.
     pub fn ready_to_merge(
         &self,
         repo: &RepoRef,
         number: u32,
         head: &str,
         base: &str,
+        base_sha: &str,
     ) -> Option<bool> {
         self.prs
             .iter()
@@ -72,6 +75,10 @@ impl MyWork {
                     && pr.repo.name.eq_ignore_ascii_case(&repo.name)
                     && pr.head.eq_ignore_ascii_case(head)
                     && pr.base.as_deref() == Some(base)
+                    && pr
+                        .base_sha
+                        .as_deref()
+                        .is_some_and(|scanned| scanned.eq_ignore_ascii_case(base_sha))
             })
             .map(|pr| pr.ready)
     }
@@ -152,8 +159,8 @@ pub struct BadgeInputs {
     pub ci: Option<CiState>,
     /// Failing or pending checks left out as Ignored checks.
     pub ignored_not_passing: Vec<String>,
-    /// My work's Ready to merge at this head and base ([`MyWork::ready_to_merge`]); `None` when its last scan did
-    /// not read them.
+    /// My work's Ready to merge at this head, base and base commit ([`MyWork::ready_to_merge`]); `None` when its last
+    /// scan did not read them.
     pub ready_to_merge: Option<bool>,
     /// The last GitHub read shows a draft (K17 R1, whatever My work's scan saw).
     pub draft: bool,
@@ -361,6 +368,7 @@ mod tests {
             },
             private: false,
             head_sha: "abc123".into(),
+            base_sha: Some("b45e00".into()),
             created_at: at,
             ci_red: vec![],
             ci_pending: vec![],
@@ -383,6 +391,7 @@ mod tests {
                 5949,
                 "abc123",
                 &base,
+                "b45e00",
             )
         };
         assert_eq!(ready(&|_| {}), Some(true));
@@ -403,17 +412,17 @@ mod tests {
         }
         let work = MyWork::new("alice", &settings, &[mergeable_pr()]);
         assert_eq!(
-            work.ready_to_merge(&platform(), 5949, "def456", "v3.1-dev"),
+            work.ready_to_merge(&platform(), 5949, "def456", "v3.1-dev", "b45e00"),
             None,
             "another head"
         );
         assert_eq!(
-            work.ready_to_merge(&platform(), 5949, "abc123", "v3.2-dev"),
+            work.ready_to_merge(&platform(), 5949, "abc123", "v3.2-dev", "b45e00"),
             None,
             "retargeted at the same head"
         );
         assert_eq!(
-            work.ready_to_merge(&platform(), 1, "abc123", "v3.1-dev"),
+            work.ready_to_merge(&platform(), 1, "abc123", "v3.1-dev", "b45e00"),
             None,
             "not scanned"
         );
@@ -422,8 +431,38 @@ mod tests {
             name: "Platform".into(),
         };
         assert_eq!(
-            work.ready_to_merge(&upper, 5949, "ABC123", "v3.1-dev"),
+            work.ready_to_merge(&upper, 5949, "ABC123", "v3.1-dev", "B45E00"),
             Some(true)
+        );
+    }
+
+    /// Mergeability depends on the base commit as well as the head: My work's verdict counts only at the base commit
+    /// its last scan read, and not at all from a scan that kept none.
+    #[test]
+    fn ready_to_merge_counts_only_at_the_scanned_base_commit() {
+        let settings = DashboardSettings::default();
+        let work = MyWork::new("alice", &settings, &[mergeable_pr()]);
+        assert_eq!(
+            work.ready_to_merge(&platform(), 5949, "abc123", "v3.1-dev", "b45e00"),
+            Some(true)
+        );
+        assert_eq!(
+            work.ready_to_merge(&platform(), 5949, "abc123", "v3.1-dev", "9f8e7d"),
+            None,
+            "the base branch advanced after the scan"
+        );
+        let mut unkept = mergeable_pr();
+        unkept.base_sha = None;
+        assert_eq!(
+            MyWork::new("alice", &settings, &[unkept]).ready_to_merge(
+                &platform(),
+                5949,
+                "abc123",
+                "v3.1-dev",
+                "b45e00"
+            ),
+            None,
+            "a scan stored before the base commit was kept"
         );
     }
 
