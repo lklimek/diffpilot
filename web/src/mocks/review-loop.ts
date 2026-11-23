@@ -1190,7 +1190,7 @@ export function watches(): WatchList {
   return {
     limit: 20,
     passes_today: 7,
-    daily_limit: 30,
+    daily_limit: 80,
     watches: [
       ...(unwatched ? [] : [watched ?? WATCH_482()]),
       other("wire-codec", 77, "refactor(codec): one frame reader", {

@@ -57,9 +57,9 @@ pub const MAX_ITEMS_PER_PASS: usize = agent::verify_comments::MAX_ITEMS;
 /// Least time between the end of a pass and an automatic (Watch) pass of the same pull request (plan §2.8); about
 /// twice a full pass at high effort (spike S13-3).
 pub const PASS_SPACING: SignedDuration = SignedDuration::from_mins(10);
-/// Passes charged to one user per 24 hours before automatic (Watch) passes stop (plan §2.8); above the owner's
-/// busiest recorded day of 44 bot rounds (spike S13-3).
-pub const DAILY_PASSES_PER_USER: u32 = 50;
+/// Passes charged to one user per 24 hours before automatic (Watch) passes stop (plan §2.8); the owner's busiest
+/// recorded day needed at most 55 automatic passes, plus on-demand ones (spike S13-3).
+pub const DAILY_PASSES_PER_USER: u32 = 80;
 /// Version of `prompts/verify_comments.md` with the output schema, stored with every assessment.
 pub const VERIFY_PROMPT_VERSION: u32 = 3;
 /// The window of the daily cap.

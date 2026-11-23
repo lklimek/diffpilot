@@ -348,7 +348,7 @@ demand), served by range (brief §7).
   this PR, and for a question mode the item and the owner's question.
 - **Batching and cost:** ≤ 10 items per job **[S-3]**; an item is re-assessed only when its comment text, its thread's
   code lines or the PR purpose changed (fingerprint; otherwise the stored assessment is reused and shown with "code
-  at these lines unchanged since 3f9a1c2"); a daily cap per user as a code constant (50 passes **[S-3]**), the
+  at these lines unchanged since 3f9a1c2"); a daily cap per user as a code constant (80 passes **[S-3]**), the
   remainder shown "Not assessed yet: daily limit".
 - **Triggers:** opening Comments or the PR page with unassessed items; new comments or a moved head found by a read;
   "Assess again" on an item; an owner question.
@@ -597,5 +597,5 @@ Named tests (besides §7): `effects_follow_matrix`, `gate_items_never_grouped_or
 **[A]** review-body split ordinals stay stable across passes; ≤ 10 items per job fits the prompt **[S-3]**; **[A]** the
 merge question repeats after each round from round 3; **[A]** `lastEditedAt` changes on thepastaclaw's in-place edits;
 **[A]** Q-L reads cost about one point per page; **[A]** Watch constants (20 PRs, 5-minute probe, 90-minute bot-round
-wait, 10-minute spacing) to be checked against S13-2 and the owner's usage; **[A]** notification constants (3 attempts,
-10 s timeout, 30 messages per hour per channel, 30-day delivery log).
+wait) to be checked against S13-2 and the owner's usage; 10-minute spacing **[S-3]**; **[A]** notification constants
+(3 attempts, 10 s timeout, 30 messages per hour per channel, 30-day delivery log).

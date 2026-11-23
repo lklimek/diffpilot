@@ -443,7 +443,7 @@ async fn pass_sends_at_most_ten_items() {
     assert_eq!(MAX_ITEMS_PER_PASS, 10);
 }
 
-/// Ends `count` passes charged to `u1`, the last one `ended` ago.
+/// Ends `count` passes charged to `u1`, a minute apart (all inside the cap's 24 hours), the last one `ended` ago.
 async fn seed_passes(state: &AppState, count: u32, ended: SignedDuration) {
     let now = Timestamp::now();
     for n in 0..count {
@@ -455,7 +455,7 @@ async fn seed_passes(state: &AppState, count: u32, ended: SignedDuration) {
             sent: Vec::new(),
             question: None,
         };
-        let started = now - SignedDuration::from_mins(i64::from(count - n) * 20);
+        let started = now - ended - SignedDuration::from_mins(i64::from(count - n));
         let PassStart::Started(id) = state
             .db
             .review_loop()
