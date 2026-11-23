@@ -9,15 +9,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::GithubConfig;
-use crate::github::graphql::{self, GraphqlError};
+use crate::github::graphql::{self, GraphqlError, Page};
 
 /// Pages read per connection (1000 threads, reviews or comments); more: the read is incomplete.
 pub const MAX_PAGES: usize = 10;
 
 /// Q-L1: pull request facts and the repository's id and visibility.
 pub const PR_FACTS: &str = "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){databaseId isPrivate \
-pullRequest(number:$pr){title url state isDraft author{login} baseRefName baseRefOid headRefOid reviewDecision \
-updatedAt}}}";
+pullRequest(number:$pr){title body url state isDraft author{login} baseRefName baseRefOid headRefOid \
+reviewDecision updatedAt}}}";
 
 /// Q-L2: review threads with their comments (the first is the finding).
 pub const REVIEW_THREADS: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){\
@@ -51,6 +51,9 @@ pub struct Author {
 pub struct PrFacts {
     /// Title.
     pub title: String,
+    /// Description (untrusted).
+    #[serde(default)]
+    pub body: String,
     /// GitHub page.
     pub url: String,
     /// `OPEN`, `CLOSED`, `MERGED`.
@@ -240,20 +243,6 @@ struct PageRepository<T> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PageInfo {
-    has_next_page: bool,
-    end_cursor: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Page<T> {
-    page_info: PageInfo,
-    nodes: Vec<T>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct ThreadsPull {
     review_threads: Page<Thread>,
 }
@@ -276,39 +265,20 @@ async fn pages<P: DeserializeOwned, T>(
     document: &str,
     page_of: impl Fn(P) -> Page<T>,
 ) -> Result<(Vec<T>, bool), ReadError> {
-    let mut nodes = Vec::new();
-    let mut after: Option<String> = None;
-    for _ in 0..MAX_PAGES {
-        let data: Data<PageRepository<P>> = graphql::execute(
-            config,
-            token,
-            document,
-            json!({"o": pr.repo.owner, "n": pr.repo.name, "pr": pr.number, "after": after}),
-        )
-        .await?;
-        let page = data
-            .repository
-            .and_then(|repository| repository.pull_request)
-            .map(&page_of)
-            .ok_or(ReadError::NotFound)?;
-        nodes.extend(page.nodes);
-        match page.page_info {
-            PageInfo {
-                has_next_page: true,
-                end_cursor: Some(cursor),
-            } => after = Some(cursor),
-            PageInfo {
-                has_next_page: true,
-                end_cursor: None,
-            } => return Ok((nodes, false)),
-            _ => return Ok((nodes, true)),
-        }
-    }
-    tracing::warn!(
-        count = nodes.len(),
-        "a pull request has more review-loop entries than are read; the read is incomplete"
-    );
-    Ok((nodes, false))
+    graphql::pr_pages(
+        config,
+        token,
+        pr,
+        document,
+        MAX_PAGES,
+        |data: Data<PageRepository<P>>| {
+            data.repository
+                .and_then(|repository| repository.pull_request)
+                .map(&page_of)
+        },
+    )
+    .await?
+    .ok_or(ReadError::NotFound)
 }
 
 /// Reads Q-L1–Q-L4 of `pr` with the user's token.

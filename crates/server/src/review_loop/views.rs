@@ -11,7 +11,7 @@ use contracts::api::review_loop::{
     CommentItem, CommentLog, CommentsOverview, CommentsSummary, ContextQuery, DecideRest,
     DecideRestRow, DecisionBatchRow, EffectState, EffectsPreview, FeedSubscriber, FlowStepRef,
     GithubRead, ItemState, ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource,
-    PrBadgeView, PrPage, Round,
+    PrBadgeView, PrPage, Round, WatchState,
 };
 use contracts::api::tour::{CiState, Tour};
 use contracts::common::{AnnotationType, LineRange, LineSide, PrRef};
@@ -24,6 +24,7 @@ use super::observe::Snapshot;
 use super::queue;
 use super::{Loaded, LoopError, PrHandle, READ_INTERVAL};
 use crate::auth::Session;
+use crate::dashboard::plugin;
 use crate::github::mirror;
 use crate::pipeline::context::StoredResults;
 use crate::pipeline::tour::{self, TourLoadError};
@@ -41,12 +42,25 @@ fn pass_live(pass: Option<&PassRecord>) -> bool {
     pass.is_some_and(|pass| matches!(pass.state, PassState::Queued | PassState::Running))
 }
 
-/// The item as the API shows it; `ask_answers` counts the reader's answered Ask questions about it.
+/// The reader watches the pull request and today's limit stopped its automatic passes (plan §2.8, §4.2).
+async fn limit_reached(state: &AppState, session: &Session, pr_id: i64) -> Result<bool, LoopError> {
+    Ok(state
+        .db
+        .review_loop()
+        .watches(&session.user_id)
+        .await?
+        .iter()
+        .any(|watch| watch.pull_request_id == pr_id && watch.state == WatchState::LimitReached))
+}
+
+/// The item as the API shows it; `ask_answers` counts the reader's answered Ask questions about it; `limited`: the
+/// daily limit holds the reader's automatic passes back.
 pub(crate) fn item_view(
     loaded: &Loaded,
     record: &ItemRecord,
     pass: Option<&PassRecord>,
     ask_answers: u32,
+    limited: bool,
 ) -> CommentItem {
     let assessment = loaded.assessments.get(&record.no);
     let assessment_state = if assessment.is_some() {
@@ -57,6 +71,10 @@ pub(crate) fn item_view(
         }
     } else if pass_live(pass) {
         AssessmentState::Running
+    } else if limited {
+        AssessmentState::NotAssessed {
+            reason: NotAssessedReason::DailyLimit,
+        }
     } else {
         AssessmentState::NotAssessed {
             reason: match pass.map(|pass| pass.state) {
@@ -121,6 +139,7 @@ pub async fn items(
         .await?
         .into_iter()
         .collect();
+    let limited = limit_reached(state, session, loaded.handle.id).await?;
     Ok(loaded
         .items
         .iter()
@@ -128,7 +147,7 @@ pub async fn items(
         .filter(|record| query.kind.is_none_or(|wanted| record.kind == wanted))
         .map(|record| {
             let asked = answers.get(&record.id).copied().unwrap_or(0);
-            item_view(&loaded, record, pass.as_ref(), asked)
+            item_view(&loaded, record, pass.as_ref(), asked, limited)
         })
         .collect())
 }
@@ -202,7 +221,9 @@ fn counts(loaded: &Loaded, waiting: usize) -> CommentCounts {
     }
 }
 
-fn progress(loaded: &Loaded, pass: Option<&PassRecord>) -> AssessmentProgress {
+/// Assessment progress; `limited`: the daily limit holds the reader's automatic passes back, so the items not
+/// assessed at the head wait for it.
+fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> AssessmentProgress {
     let needing: Vec<&ItemRecord> = loaded
         .items
         .iter()
@@ -225,11 +246,16 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>) -> AssessmentProgress {
         .assessments
         .values()
         .max_by_key(|stored| stored.assessment.assessed_at);
+    let running = pass_live(pass);
     AssessmentProgress {
-        running: pass_live(pass),
+        running,
         assessed: count(assessed),
         total: count(needing.len()),
-        limited: 0,
+        limited: if limited && !running {
+            count(needing.len().saturating_sub(assessed))
+        } else {
+            0
+        },
         head: latest.map(|stored| stored.assessment.head.clone()),
         at: pass.and_then(|pass| pass.finished_at),
     }
@@ -410,7 +436,11 @@ pub async fn overview(
         read: read_view(&loaded),
         counts: counts(&loaded, waiting),
         rounds: rounds(&loaded, &events),
-        assessment: progress(&loaded, pass.as_ref()),
+        assessment: progress(
+            &loaded,
+            pass.as_ref(),
+            limit_reached(state, session, loaded.handle.id).await?,
+        ),
         queue: queue::queue(&queue_items),
         badge: badge_of(
             state,
@@ -447,6 +477,9 @@ pub async fn pr_page(
         .into_iter()
         .find(|watch| watch.pull_request_id == loaded.handle.id)
         .map(|watch| super::watch::view(watch, badge.clone()));
+    let limited = watch
+        .as_ref()
+        .is_some_and(|watch| watch.state == WatchState::LimitReached);
     let url = snapshot.map_or_else(|| stored.html_url.clone(), |snapshot| snapshot.url.clone());
     let url = if url.is_empty() { pr_url(pr) } else { url };
     Ok(PrPage {
@@ -473,7 +506,7 @@ pub async fn pr_page(
         comments: CommentsSummary {
             counts: counts(&loaded, waiting),
             rounds: snapshot.map_or(0, |s| count(s.rounds.len())),
-            assessment: progress(&loaded, pass.as_ref()),
+            assessment: progress(&loaded, pass.as_ref(), limited),
             read: read_view(&loaded),
         },
     })
@@ -737,8 +770,8 @@ pub async fn context(
             .into_iter()
             .filter_map(|note| {
                 let source = match note.plugin.as_str() {
-                    "pr-hygiene" => NoteSource::PrHygiene,
-                    "thepastaclaw" => NoteSource::Thepastaclaw,
+                    plugin::pr_hygiene::ID => NoteSource::PrHygiene,
+                    plugin::thepastaclaw::ID => NoteSource::Thepastaclaw,
                     _ => return None,
                 };
                 Some(NoteElsewhere {

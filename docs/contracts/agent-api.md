@@ -215,7 +215,12 @@ decides; the owner's `comment` on a decision is an instruction for it and is nev
    whole claim back. Each report renews the lease; resending the same key for the same effect is a no-op (use a new
    key per report; the same key on another effect is another report). 409 `claimed`: another agent holds the
    claim; 409 `lease_expired`: your lease ended and the decision went back to the feed (claim again); 409
-   `conflict`: the effect already ended (done, failed or cancelled).
+   `conflict`: the effect already ended (done, failed or cancelled); 400 `invalid_request` for `done` while the
+   `after` effect is not done. A `failed` effect cancels the effects that wait for it, your claim on them included.
+   `pr_comment` effects of one batch that name the same `review_id` answer one review: post them as one PR-level
+   comment listing their items, and report that comment's link for each. About 10 s after a `done` report
+   diffpilot reads the pull request from GitHub and marks each done effect it finds there (thread resolved, reply
+   or PR-level comment at the reported link, review dismissed) "seen on GitHub".
 7. **Lease.** A claim not renewed within 30 minutes returns to the feed for any agent.
 8. **Push target (optional).** To be woken without holding a stream:
    `PUT /api/v1/decision-feed/push-target` with `{"kind": "ntfy", "url": "https://ntfy.sh", "topic": "<topic>",

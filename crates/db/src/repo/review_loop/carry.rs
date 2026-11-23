@@ -65,8 +65,8 @@ fn event_from_row(row: &SqliteRow) -> Result<CarryEvent, DbError> {
 }
 
 impl ReviewLoop<'_> {
-    /// Records a carry or re-ask: the repeat becomes `repeat` (carried) or `reopened` (asked again) and names the
-    /// source decision's item when it is another item.
+    /// Records a carry or re-ask: the repeat becomes `repeat` (carried) or `reopened` (asked again; the source
+    /// decision's effects no agent holds are cancelled) and names the source decision's item when it is another item.
     pub async fn record_carry(
         &self,
         tenant_id: &str,
@@ -110,7 +110,11 @@ impl ReviewLoop<'_> {
         }
         let state = match event.kind {
             CarryKind::Carried => ItemState::Repeat,
-            CarryKind::AskedAgain => ItemState::Reopened,
+            CarryKind::AskedAgain => {
+                super::actions::cancel_unclaimed(&mut tx, &event.source_decision.to_string(), now)
+                    .await?;
+                ItemState::Reopened
+            }
         };
         set_state_in(&mut tx, event.item, state, now).await?;
         tx.commit().await?;

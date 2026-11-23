@@ -1,9 +1,13 @@
-//! The `verify_comments` prompt: `prompts/verify_comments.md` around the input's data block. Untrusted texts (comment
-//! bodies, the PR title, an earlier LLM's PR context, the owner's question) appear only inside that block.
+//! The `verify_comments` prompt: `prompts/verify_comments.md` with the shared read-only rules around the input's data
+//! block. Untrusted texts (comment bodies, the PR title and description, an earlier LLM's PR context, the project
+//! profile, the owner's question) appear only inside that block.
 
-use contracts::agent::verify_comments::{InputError, VerifyCommentsInput};
+use contracts::agent::verify_comments::VerifyCommentsInput;
 use contracts::api::pr::PrSummary;
 use contracts::common::LlmLanguage;
+
+use super::AssessError;
+use crate::prompts;
 
 /// The template; `{{data}}` is replaced last, so nothing inside the data block is substituted.
 pub(super) const TEMPLATE: &str = include_str!("../../../../../prompts/verify_comments.md");
@@ -20,7 +24,7 @@ pub(super) fn render(
     input: &VerifyCommentsInput,
     pr: &PrSummary,
     language: LlmLanguage,
-) -> Result<String, InputError> {
+) -> Result<String, AssessError> {
     let name = match language {
         LlmLanguage::En => "English",
         LlmLanguage::Pl => "Polish (polski)",
@@ -41,5 +45,6 @@ pub(super) fn render(
         .replace("{{head}}", &pr.head_sha.0)
         .replace("{{answer}}", answer)
         .replace("{{language}}", name)
+        .replace("{{rules}}", &prompts::read_only_rules()?)
         .replacen("{{data}}", &data, 1))
 }

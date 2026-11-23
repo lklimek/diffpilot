@@ -647,7 +647,8 @@ impl ReviewLoop<'_> {
         Ok(item)
     }
 
-    /// Stores an assessment of an item.
+    /// Stores an assessment of an item. A recommendation or gates other than the latest assessment's raise the item's
+    /// revision, so a decision prepared on what was shown before is refused as changed.
     pub async fn add_assessment(
         &self,
         tenant_id: &str,
@@ -655,6 +656,15 @@ impl ReviewLoop<'_> {
         assessment: &CommentAssessment,
         fingerprint: &str,
     ) -> Result<(), DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        let latest: Option<CommentAssessment> = sqlx::query(
+            "SELECT body FROM comment_assessments WHERE item_id = ? ORDER BY id DESC LIMIT 1",
+        )
+        .bind(item.to_string())
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(|row| json_col(&row, "body"))
+        .transpose()?;
         sqlx::query(
             "INSERT INTO comment_assessments (tenant_id, item_id, job_id, head, fingerprint, body, prompt_version,
                  assessed_at)
@@ -668,8 +678,21 @@ impl ReviewLoop<'_> {
         .bind(json(assessment)?)
         .bind(assessment.prompt_version)
         .bind(ts(assessment.assessed_at))
-        .execute(self.pool)
+        .execute(&mut *tx)
         .await?;
+        let shown_before = latest.is_some_and(|latest| {
+            latest.recommendation == assessment.recommendation && latest.gates == assessment.gates
+        });
+        if !shown_before {
+            sqlx::query(
+                "UPDATE comment_items SET revision = revision + 1, updated_at = ? WHERE id = ?",
+            )
+            .bind(ts(assessment.assessed_at))
+            .bind(item.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 

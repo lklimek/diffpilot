@@ -50,7 +50,7 @@ use crate::review_loop::assess;
 use crate::state::AppState;
 
 /// Failure sentence of an answer that did not pass the checks; it is never shown.
-pub(super) const UNFIT_ANSWER: &str =
+pub(crate) const UNFIT_ANSWER: &str =
     "The LLM's answer did not follow the answer rules, so it is not shown. Ask again.";
 /// Failure sentence of a question cancelled because its PR session was removed (a re-analysis replaced it).
 pub(super) const SUPERSEDED: &str = "The question was cancelled because the pull request was analysed again. Ask it on the new analysis.";
@@ -58,9 +58,9 @@ pub(super) const SUPERSEDED: &str = "The question was cancelled because the pull
 pub(super) const ANALYSIS_CANCELLED: &str =
     "The question was cancelled because its analysis was cancelled.";
 /// Failure sentence of a question whose job was cancelled for another reason.
-pub(super) const CANCELLED: &str = "The question was cancelled before it was answered. Ask again.";
+pub(crate) const CANCELLED: &str = "The question was cancelled before it was answered. Ask again.";
 /// Failure sentence of a server-side failure.
-pub(super) const SERVER_ERROR: &str =
+pub(crate) const SERVER_ERROR: &str =
     "The question could not be answered because of a server error. Ask again later.";
 
 /// Following a question stopped on a server-side error; the question fails with [`SERVER_ERROR`].
@@ -297,7 +297,10 @@ async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), F
             }
             JobUpdate::Finished { result, .. } => {
                 let end = finish(state, &summary, id, result).await?;
-                set(state, analysis, id, &end).await?;
+                let question = set(state, analysis, id, &end).await?;
+                if matches!(end, QuestionUpdate::Answered(_)) {
+                    assess::answer_landed(state, &question.anchor).await;
+                }
                 return Ok(());
             }
         };

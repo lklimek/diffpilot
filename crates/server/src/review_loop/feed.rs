@@ -453,6 +453,11 @@ pub async fn report(
         Ok(ReportOutcomeRecord::NotClaimer) => return Err(FeedError::Claimed),
         Ok(ReportOutcomeRecord::LeaseExpired) => return Err(FeedError::LeaseExpired),
         Ok(ReportOutcomeRecord::Ended) => return Err(FeedError::NothingOpen),
+        Ok(ReportOutcomeRecord::Waiting) => {
+            return Err(FeedError::Report(
+                "an effect is done only after the effect it waits for is done",
+            ));
+        }
         Err(DbError::NotFound) => return Err(FeedError::NotFound),
         Err(error) => return Err(error.into()),
     }
@@ -466,6 +471,12 @@ pub async fn report(
     );
     state.feed.wake_sync();
     if request.outcome == ReportOutcome::Done {
+        super::seen::read_after_report(
+            state,
+            &owner.tenant_id,
+            &principal.user_id,
+            owner.pull_request_id,
+        );
         round_executed(state, owner.pull_request_id).await?;
     }
     Ok(())

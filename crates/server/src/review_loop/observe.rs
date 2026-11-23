@@ -2,7 +2,7 @@
 //! bot rule (RQ17): GitHub `Bot` type, a `[bot]` login or the reader's `known_bots`; thepastaclaw's markers are read
 //! from bot-authored text only, so a human cannot claim another item's key.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemGithubFacts, ItemLocation};
 use contracts::api::tour::CiStatus;
@@ -13,13 +13,14 @@ use db::repo::review_loop::ObservedItem;
 use serde::{Deserialize, Serialize};
 
 use super::markers::{self, GateState};
+use crate::dashboard::score::is_bot;
 use crate::github::review_loop::{Author, PrRead, Review};
 use crate::github::threads::github_web_url;
 
-/// The bot rule of one reader.
+/// The bot rule of one reader: the dashboard's (`dashboard::score::is_bot`).
 #[derive(Clone, Debug, Default)]
 pub struct BotRule {
-    known: BTreeSet<String>,
+    known: Vec<String>,
 }
 
 impl BotRule {
@@ -32,14 +33,11 @@ impl BotRule {
 
     /// The kind of `author`; a deleted account counts as a person.
     pub fn kind(&self, author: Option<&Author>) -> AuthorKind {
-        let Some(author) = author else {
-            return AuthorKind::Human;
-        };
-        let login = author.login.to_lowercase();
-        if author.typename == "Bot" || login.ends_with("[bot]") || self.known.contains(&login) {
-            AuthorKind::Bot
-        } else {
-            AuthorKind::Human
+        match author {
+            Some(author) if is_bot(&author.login, author.typename == "Bot", &self.known) => {
+                AuthorKind::Bot
+            }
+            _ => AuthorKind::Human,
         }
     }
 }
@@ -89,6 +87,9 @@ pub enum GateFact {
 pub struct Snapshot {
     /// Title.
     pub title: String,
+    /// Description as its author wrote it (untrusted); none when empty.
+    #[serde(default)]
+    pub description: Option<String>,
     /// GitHub link.
     pub url: String,
     /// `OPEN`, `CLOSED`, `MERGED`.
@@ -109,6 +110,9 @@ pub struct Snapshot {
     pub changes_requested_by: Vec<String>,
     /// CI of the head; `None` when not read.
     pub ci: Option<CiStatus>,
+    /// Names of the check runs and statuses pending at the head when [`Snapshot::ci`] was read.
+    #[serde(default)]
+    pub pending_checks: Vec<String>,
     /// Threads, reviews and comments read.
     pub counts: (u32, u32, u32),
     /// Every page was read.
@@ -415,6 +419,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
 
     let snapshot = Snapshot {
         title: read.pr.title.clone(),
+        description: Some(read.pr.body.trim().to_owned()).filter(|body| !body.is_empty()),
         url: github_web_url(&read.pr.url).unwrap_or_default(),
         state: read.pr.state.clone(),
         draft: read.pr.is_draft,
@@ -425,6 +430,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         bot_change_requests,
         changes_requested_by,
         ci: None,
+        pending_checks: Vec::new(),
         counts: (
             u32::try_from(read.threads.len()).unwrap_or(u32::MAX),
             u32::try_from(read.reviews.len()).unwrap_or(u32::MAX),

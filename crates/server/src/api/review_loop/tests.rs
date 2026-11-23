@@ -1179,4 +1179,6 @@ async fn items_count_the_readers_ask_answers() {
 }
 
 mod feed;
+mod loop_rules;
 mod notify;
+mod qa_core;

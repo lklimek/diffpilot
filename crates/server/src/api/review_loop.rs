@@ -242,7 +242,8 @@ async fn overview(
     mark_present(&state, &session);
     let handle = handle_of(&state, &session, path).await?;
     if !session.is_access_token()
-        && let Err(error) = assess::request_pass(&state, handle.id, PassReason::Opened).await
+        && let Err(error) =
+            assess::request_pass_for(&state, handle.id, PassReason::Opened, &session.user_id).await
     {
         tracing::warn!(
             ?error,
@@ -301,7 +302,14 @@ async fn assess_again(
         .await
         .map_err(LoopError::from)?
         .ok_or(LoopError::NotFound)?;
-    match assess::request_pass(&state, handle.id, PassReason::AssessAgain(item.id)).await {
+    match assess::request_pass_for(
+        &state,
+        handle.id,
+        PassReason::AssessAgain(item.id),
+        &session.user_id,
+    )
+    .await
+    {
         Ok(assess::PassQueued::AlreadyRunning) => Err(LoopError::AssessmentRunning.into()),
         Ok(queued) => {
             tracing::debug!(pr = handle.id, item = no, ?queued, "assess again requested");

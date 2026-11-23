@@ -8,8 +8,9 @@
 #
 # With --env-file (production, without --local) FILE's values are checked too, by name only (never printed): no
 # value left from .env.example, secrets set (runner secret at least 32 characters), an https public URL, allowed
-# sign-in logins set, no development override, no `$` interpolation (the effective value would be unknown;
-# variables of the invoking shell also override FILE in compose, so run it from a clean shell). An unpinned
+# sign-in logins set, every skill jobs require in a set SR_RUNNER_SKILLS, no development override, no `$`
+# interpolation (the effective value would be unknown; variables of the invoking shell also override FILE in
+# compose, so run it from a clean shell). An unpinned
 # SR_RUNNER_CLAUDIUS_REF (not a commit id or refs/tags/...) and an empty SR_TRUSTED_PROXIES are warnings only.
 #
 # Usage: deploy/check-production-config.sh [--env-file FILE [--local | --secret-files]] [--no-render]
@@ -53,6 +54,8 @@ declare -A secret_file_names=(
 own_values=(SR_PUBLIC_URL SR_GITHUB_APP_ID SR_GITHUB_CLIENT_ID SR_MEMCAN_URL "${secrets[@]}")
 # Variables that only the local or development overrides use.
 dev_only='^(SR_SERVER_UID|SR_SERVER_GID)$'
+# Skills some job kind requires (contracts::agent::JobKind::required_skills); a set SR_RUNNER_SKILLS must list each.
+required_skills=(severity check-pr-comments)
 agent_uid=10002
 
 # load_env FILE NAME: fills the associative array NAME as docker compose reads an env file (last assignment wins,
@@ -159,6 +162,15 @@ check_env() {
     echo "check-production-config: warning: SR_TRUSTED_PROXIES is empty: behind the reverse proxy every client" \
       "then shares one address, so failed access-token attempts of all clients count against one limit;" \
       "set the proxy's address (the Docker gateway) and let the proxy append X-Forwarded-For" >&2
+  fi
+  # Empty means the default (compose `${SR_RUNNER_SKILLS:-...}`, the runner too).
+  if [[ -n "${values[SR_RUNNER_SKILLS]:-}" ]]; then
+    for key in "${required_skills[@]}"; do
+      if [[ ",${values[SR_RUNNER_SKILLS]// /}," != *",$key,"* ]]; then
+        say "SR_RUNNER_SKILLS leaves out $key, which jobs require (every comment assessment or analysis fails);" \
+          "add it, or remove the line to use the default severity,check-pr-comments"
+      fi
+    done
   fi
   value="${values[SR_RUNNER_CLAUDIUS_REF]:-}"
   if [[ ! "$value" =~ ^([0-9a-f]{40}|[0-9a-f]{64}|refs/tags/[A-Za-z0-9._/-]+)$ ]]; then
@@ -288,6 +300,14 @@ if ((self_test)); then
   want_text="SR_ALLOWED_LOGINS still holds a placeholder" env_case "allowed logins placeholder" fail 0 \
     -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=REPLACE_WITH_GITHUB_LOGINS|'
   env_case "short runner secret" fail 0 -e 's|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=CANARY-0123456789abcdef0123456|'
+  want_text="SR_RUNNER_SKILLS leaves out check-pr-comments" env_case "skills pinned without check-pr-comments" fail 0 \
+    -e 's|^SR_RUNNER_SKILLS=.*|SR_RUNNER_SKILLS=severity|'
+  want_text="SR_RUNNER_SKILLS leaves out severity" env_case "skills without severity" fail 0 \
+    -e 's|^SR_RUNNER_SKILLS=.*|SR_RUNNER_SKILLS=check-pr-comments|'
+  env_case "skills unset (default)" pass 0 -e '/^SR_RUNNER_SKILLS=/d'
+  env_case "skills empty (default)" pass 0 -e 's|^SR_RUNNER_SKILLS=.*|SR_RUNNER_SKILLS=|'
+  env_case "skills with an extra one" pass 0 \
+    -e 's|^SR_RUNNER_SKILLS=.*|SR_RUNNER_SKILLS=check-pr-comments, severity,delegate|'
   want_text="warning: SR_RUNNER_CLAUDIUS_REF" env_case "skills on a branch (warning only)" pass 0 \
     -e 's|^SR_RUNNER_CLAUDIUS_REF=.*|SR_RUNNER_CLAUDIUS_REF=main|'
   want_text="warning: SR_RUNNER_CLAUDIUS_REF" env_case "skills ref unset (warning only)" pass 0 \

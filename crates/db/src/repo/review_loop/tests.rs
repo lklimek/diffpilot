@@ -339,6 +339,9 @@ async fn assessments_keep_their_fingerprint_and_newest_wins() {
     rl.add_assessment(T, item.id, &assessment("second"), "fp2")
         .await
         .expect("second");
+    rl.add_assessment(T, item.id, &assessment("second"), "fp2")
+        .await
+        .expect("second again");
     let latest = rl
         .latest_assessment(item.id)
         .await
@@ -346,6 +349,16 @@ async fn assessments_keep_their_fingerprint_and_newest_wins() {
         .expect("some");
     assert_eq!(latest.fingerprint, "fp2");
     assert_eq!(latest.assessment.necessity.reason, "second");
+    let revised = rl
+        .item_by_no(PR, item.no)
+        .await
+        .expect("read")
+        .expect("item");
+    assert_eq!(
+        revised.revision,
+        item.revision + 2,
+        "each new recommendation changes the item, the same one again does not"
+    );
     assert_eq!(
         latest.assessment.skills_commit.as_deref(),
         Some("0123456789abcdef0123456789abcdef01234567")
@@ -653,6 +666,191 @@ async fn claims_hold_a_lease_and_reports_come_from_the_claimer() {
     assert_eq!(fetched.decision.id, decision.id);
 }
 
+/// Plan §2.3: `done` waits for the `after` effect; a failed effect cancels what waits for it once no agent holds it.
+#[tokio::test]
+async fn effects_after_a_failed_one_are_cancelled_and_done_waits_its_turn() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "dedupe-chain").await;
+    let decision = decide_one(&db, fix_decision(&item), at(10)).await;
+    let a = AccessTokenId("agentAAA".into());
+    let lease = SignedDuration::from_mins(30);
+    let all = [EffectKind::Fix, EffectKind::Reply, EffectKind::Resolve];
+    rl.claim(decision.id, &a, &all, lease, at(11))
+        .await
+        .expect("claim");
+    let report = |outcome, key: &str| ReportRequest {
+        outcome,
+        reference: Some("https://github.com/acme/node-client/pull/482#discussion_r1".into()),
+        message: Some("the fix does not build".into()),
+        idempotency_key: key.into(),
+    };
+    let [fix, reply, resolve] = [0, 1, 2].map(|i| decision.effects[i].id);
+    assert_eq!(
+        rl.report(
+            T,
+            reply,
+            &a,
+            &report(ReportOutcome::Done, "k1"),
+            lease,
+            at(12)
+        )
+        .await
+        .expect("report"),
+        ReportOutcomeRecord::Waiting
+    );
+    assert_eq!(
+        rl.report(
+            T,
+            fix,
+            &a,
+            &report(ReportOutcome::Failed, "k2"),
+            lease,
+            at(13)
+        )
+        .await
+        .expect("report"),
+        ReportOutcomeRecord::Recorded
+    );
+    assert_eq!(
+        rl.report(
+            T,
+            resolve,
+            &a,
+            &report(ReportOutcome::Done, "k3"),
+            lease,
+            at(14)
+        )
+        .await
+        .expect("report"),
+        ReportOutcomeRecord::Waiting,
+        "what waits on a failed fix is never done"
+    );
+    assert_eq!(
+        rl.report(
+            T,
+            reply,
+            &a,
+            &report(ReportOutcome::Released, "k4"),
+            lease,
+            at(14)
+        )
+        .await
+        .expect("report"),
+        ReportOutcomeRecord::Recorded
+    );
+    let effects = rl.item_decisions(item.id).await.expect("decisions")[0]
+        .decision
+        .effects
+        .clone();
+    assert_eq!(
+        effects
+            .iter()
+            .map(|effect| effect.state)
+            .collect::<Vec<_>>(),
+        [
+            EffectState::Failed,
+            EffectState::Cancelled,
+            EffectState::Cancelled
+        ]
+    );
+    assert!(effects[1].claim.is_none() && effects[2].claim.is_none());
+    assert!(
+        rl.claimable(T, &all, None, at(14))
+            .await
+            .expect("feed")
+            .is_empty()
+    );
+}
+
+/// RQ3: an item the owner reopened stays asked while an agent claims, reports on or lets lapse the earlier
+/// decision, and what the agent had not claimed is never offered again.
+#[tokio::test]
+async fn a_reopened_item_stays_asked_through_reports_and_lease_ends() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "dedupe-reask").await;
+    let decision = decide_one(&db, fix_decision(&item), at(10)).await;
+    let a = AccessTokenId("agentAAA".into());
+    let lease = SignedDuration::from_mins(30);
+    rl.claim(
+        decision.id,
+        &a,
+        &[EffectKind::Fix, EffectKind::Reply, EffectKind::Resolve],
+        lease,
+        at(11),
+    )
+    .await
+    .expect("claim");
+    let item = rl
+        .item_by_no(PR, item.no)
+        .await
+        .expect("read")
+        .expect("item");
+    assert_eq!(item.state, ItemState::Executing);
+    let ActionOutcome::Done(reopened) = rl
+        .reopen(item.id, item.revision, at(12))
+        .await
+        .expect("reopen")
+    else {
+        panic!("reopen refused");
+    };
+    assert_eq!(reopened.state, ItemState::Reopened);
+    let done = ReportRequest {
+        outcome: ReportOutcome::Done,
+        reference: Some("0123456789abcdef".into()),
+        message: None,
+        idempotency_key: "k1".into(),
+    };
+    assert_eq!(
+        rl.report(T, decision.effects[0].id, &a, &done, lease, at(13))
+            .await
+            .expect("report"),
+        ReportOutcomeRecord::Recorded
+    );
+    let later = at(13) + lease + SignedDuration::from_secs(1);
+    rl.expire_leases(later).await.expect("expire");
+    let item = rl
+        .item_by_no(PR, item.no)
+        .await
+        .expect("read")
+        .expect("item");
+    assert_eq!(item.state, ItemState::Reopened, "the owner is still asked");
+    let effects = rl.item_decisions(item.id).await.expect("decisions")[0]
+        .decision
+        .effects
+        .clone();
+    assert_eq!(
+        effects
+            .iter()
+            .map(|effect| effect.state)
+            .collect::<Vec<_>>(),
+        [
+            EffectState::Done,
+            EffectState::Cancelled,
+            EffectState::Cancelled
+        ],
+        "what the lapsed claim held is not offered again"
+    );
+}
+
+/// Plan §2.4: an answer landing on an undecided item asks it back; other states keep theirs.
+#[tokio::test]
+async fn an_answer_asks_an_undecided_item_back() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "dedupe-asked").await;
+    assert!(rl.asked_back(item.id, at(5)).await.expect("asked back"));
+    let asked = rl
+        .item_by_no(PR, item.no)
+        .await
+        .expect("read")
+        .expect("item");
+    assert_eq!(asked.state, ItemState::AskedBack);
+    assert_eq!(asked.revision, item.revision + 1);
+    assert!(!rl.asked_back(item.id, at(6)).await.expect("again"));
+}
+
 #[tokio::test]
 async fn carry_events_are_logged_and_counted() {
     let db = db().await;
@@ -675,6 +873,11 @@ async fn carry_events_are_logged_and_counted() {
         evidence: evidence.clone(),
     };
     rl.record_carry(T, &carried, at(20)).await.expect("carry");
+    let pending = rl
+        .carry_events(T, Some(PR), None, 10)
+        .await
+        .expect("events");
+    assert_eq!(pending[0].effects_pending, 3);
     let asked = NewCarryEvent {
         item: source.id,
         source_decision: decision.id,
@@ -702,7 +905,10 @@ async fn carry_events_are_logged_and_counted() {
     assert_eq!(events[0].kind, CarryKind::AskedAgain);
     assert_eq!((events[1].item_no, events[1].source_item_no), (2, 1));
     assert_eq!(events[1].source_kind, DecisionKind::FixHere);
-    assert_eq!(events[1].effects_pending, 3);
+    assert_eq!(
+        events[1].effects_pending, 0,
+        "asking the source again cancelled its decision's unclaimed effects"
+    );
     let page = rl
         .carry_events(T, None, Some((events[0].at, events[0].id)), 10)
         .await
@@ -716,7 +922,7 @@ async fn carry_events_are_logged_and_counted() {
             carried: 1,
             asked_again_bot_edited: 1,
             asked_again_code_changed: 0,
-            effects_pending: 1,
+            effects_pending: 0,
         }
     );
     let repeat = rl.item_by_no(PR, 2).await.expect("item").expect("some");

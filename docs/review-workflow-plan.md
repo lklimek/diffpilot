@@ -163,6 +163,10 @@ item open; decisions, comments and Ask answers given in Questions or the Ask cha
 - **Asked again** only on server-read evidence: (a) the bot edited the comment text after the decision (`lastEditedAt`
   later and the body differs from the one stored at decision time); (b) a commit after the decision's head touched the
   thread's lines (diff in the server's mirror, the decided range mapped forward) **[S-4]**.
+- **Owner asked again, no carry:** a human reviewer's decided thread unresolved or raised again in a new thread, or a
+  carried decision whose effects no longer fit the item, is reopened (state `reopened`, queue rank 2) without a carry
+  event. A re-ask or reopen holds against later reports and lease ends on the earlier decision; its unclaimed effects
+  are cancelled.
 - **Log and metrics:** every carry and re-ask is an event with reason and evidence; V5 shows counts and the dated list
   per PR and across all PRs. Counts only, no percentages.
 

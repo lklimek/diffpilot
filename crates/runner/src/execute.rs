@@ -556,7 +556,7 @@ fn to_result(
                 ProviderError::Timeout => failure(JobFailureKind::Timeout, &message),
                 ProviderError::Configuration(_) => failure(
                     JobFailureKind::Configuration,
-                    "The server is misconfigured: a required agent skill is missing. Ask the administrator.",
+                    &format!("The runner is misconfigured: {message}."),
                 ),
                 ProviderError::Io(_) => failure(JobFailureKind::Internal, &message),
                 ProviderError::SessionUnavailable

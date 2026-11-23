@@ -20,7 +20,8 @@ use super::super::jobs::ts;
 use super::super::{read_tx, write_tx};
 use super::items::{item_in, set_state_in};
 use super::{
-    ReviewLoop, json, json_col, opt_json_col, opt_ts_col, ts_col, u32_col, wire, wire_col,
+    ReviewLoop, json, json_col, opt_json_col, opt_ts_col, opt_wire_col, ts_col, u32_col, wire,
+    wire_col,
 };
 use crate::error::DbError;
 
@@ -135,6 +136,8 @@ pub enum ReportOutcomeRecord {
     LeaseExpired,
     /// The effect already ended (done, failed or cancelled).
     Ended,
+    /// `done` on an effect whose `after` effect is not done.
+    Waiting,
 }
 
 /// A claimable decision as the feed tracks it: no live claim, with these kinds of agent effects not yet ended.
@@ -328,11 +331,47 @@ const RETURN_STATE: &str = "CASE WHEN e.after_seq IS NOT NULL AND NOT EXISTS (
         SELECT 1 FROM comment_effects p WHERE p.decision_id = e.decision_id AND p.seq = e.after_seq
           AND p.state = 'done') THEN 'waiting' ELSE 'open' END";
 
-/// Opens waiting effects of `decision` whose predecessor is done, and sets the item's state from its current
-/// decision's effects (`executing` while any is open or claimed, else `done` when all done, else `decided`).
+/// Cancels the unclaimed effects of `decision` that wait on a failed or cancelled effect, along their chain: what
+/// comes after a failed effect never runs (plan §2.3 D7). A claimed one is cancelled once released or its lease
+/// ends; a `done` report on it is refused meanwhile.
+async fn cancel_dependents(
+    tx: &mut Transaction<'static, Sqlite>,
+    decision: &str,
+    now: Timestamp,
+) -> Result<(), DbError> {
+    loop {
+        let cancelled = sqlx::query(
+            "UPDATE comment_effects AS e SET state = 'cancelled', updated_at = ?
+             WHERE e.decision_id = ? AND e.state IN ('waiting', 'open') AND EXISTS (
+                 SELECT 1 FROM comment_effects p WHERE p.decision_id = e.decision_id AND p.seq = e.after_seq
+                   AND p.state IN ('failed', 'cancelled'))",
+        )
+        .bind(ts(now))
+        .bind(decision)
+        .execute(&mut **tx)
+        .await?;
+        if cancelled.rows_affected() == 0 {
+            return Ok(());
+        }
+    }
+}
+
+/// States the owner holds: a claim, report or lease end on the earlier decision leaves them as they are.
+fn asked(state: ItemState) -> bool {
+    matches!(
+        state,
+        ItemState::Undecided | ItemState::Assessing | ItemState::AskedBack | ItemState::Reopened
+    )
+}
+
+/// Opens waiting effects of `decision` whose predecessor is done (cancelling those after a failed one), and sets the
+/// item's state from its current decision's effects (`executing` while any is open or claimed, else `done` when all
+/// done, else `decided`). After a claim, report or lease end (`by_decision` false) an item the owner is asked about
+/// keeps its state, and the decision's unclaimed effects of an item asked again are cancelled.
 async fn settle(
     tx: &mut Transaction<'static, Sqlite>,
     decision: &str,
+    by_decision: bool,
     now: Timestamp,
 ) -> Result<(), DbError> {
     sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -343,9 +382,26 @@ async fn settle(
     .bind(decision)
     .execute(&mut **tx)
     .await?;
+    cancel_dependents(tx, decision, now).await?;
+    let item: CommentItemId = wire_col(
+        &sqlx::query("SELECT item_id FROM comment_decisions WHERE id = ?")
+            .bind(decision)
+            .fetch_one(&mut **tx)
+            .await?,
+        "item_id",
+    )?;
+    if current_id(tx, item).await?.as_deref() != Some(decision) {
+        return Ok(());
+    }
+    let current = item_in(tx, item).await?;
+    if !by_decision && asked(current.state) {
+        if current.state == ItemState::Reopened {
+            super::actions::cancel_unclaimed(tx, decision, now).await?;
+        }
+        return Ok(());
+    }
     let row = sqlx::query(
-        "SELECT d.item_id,
-             SUM(e.state IN ('waiting', 'open', 'claimed', 'failed')) AS open,
+        "SELECT SUM(e.state IN ('waiting', 'open', 'claimed', 'failed')) AS open,
              COUNT(e.id) AS total, SUM(e.state = 'done') AS done
          FROM comment_decisions d LEFT JOIN comment_effects e ON e.decision_id = d.id
          WHERE d.id = ? GROUP BY d.id",
@@ -353,10 +409,6 @@ async fn settle(
     .bind(decision)
     .fetch_one(&mut **tx)
     .await?;
-    let item: CommentItemId = wire_col(&row, "item_id")?;
-    if current_id(tx, item).await?.as_deref() != Some(decision) {
-        return Ok(());
-    }
     let open: Option<i64> = row.try_get("open")?;
     let total: i64 = row.try_get("total")?;
     let done: Option<i64> = row.try_get("done")?;
@@ -367,7 +419,6 @@ async fn settle(
     } else {
         ItemState::Decided
     };
-    let current = item_in(tx, item).await?;
     if current.state != state && current.state != ItemState::Outside {
         set_state_in(tx, item, state, now).await?;
     }
@@ -464,7 +515,7 @@ impl ReviewLoop<'_> {
             }
             // The decision itself always changes the item: one revision step even when the state stays.
             set_state_in(&mut tx, new.item, item.state, now).await?;
-            settle(&mut tx, &id.to_string(), now).await?;
+            settle(&mut tx, &id.to_string(), true, now).await?;
             ids.push(id);
         }
         let mut stored = Vec::new();
@@ -628,7 +679,7 @@ impl ReviewLoop<'_> {
         .bind(decision.to_string())
         .execute(&mut *tx)
         .await?;
-        settle(&mut tx, &decision.to_string(), now).await?;
+        settle(&mut tx, &decision.to_string(), false, now).await?;
         tx.commit().await?;
         Ok(ClaimOutcome::Claimed(until))
     }
@@ -658,8 +709,10 @@ impl ReviewLoop<'_> {
             return Ok(ReportOutcomeRecord::Duplicate);
         }
         let row = sqlx::query(
-            "SELECT decision_id, state, claim_token_id, lease_until, lapsed_token_id FROM comment_effects
-             WHERE id = ?",
+            "SELECT e.decision_id, e.state, e.claim_token_id, e.lease_until, e.lapsed_token_id,
+                 (SELECT p.state FROM comment_effects p WHERE p.decision_id = e.decision_id
+                    AND p.seq = e.after_seq) AS after_state
+             FROM comment_effects e WHERE e.id = ?",
         )
         .bind(effect.to_string())
         .fetch_optional(&mut *tx)
@@ -682,6 +735,12 @@ impl ReviewLoop<'_> {
         }
         if opt_ts_col(&row, "lease_until")?.is_some_and(|until| until < now) {
             return Ok(ReportOutcomeRecord::LeaseExpired);
+        }
+        let after: Option<EffectState> = opt_wire_col(&row, "after_state")?;
+        if report.outcome == ReportOutcome::Done
+            && after.is_some_and(|after| after != EffectState::Done)
+        {
+            return Ok(ReportOutcomeRecord::Waiting);
         }
         sqlx::query(
             "INSERT INTO comment_effect_reports (tenant_id, effect_id, token_id, outcome, reference, message,
@@ -731,7 +790,7 @@ impl ReviewLoop<'_> {
                 release(&mut tx, &decision, Some(&token.0), now).await?;
             }
         }
-        settle(&mut tx, &decision, now).await?;
+        settle(&mut tx, &decision, false, now).await?;
         tx.commit().await?;
         Ok(ReportOutcomeRecord::Recorded)
     }
@@ -748,7 +807,7 @@ impl ReviewLoop<'_> {
         let mut ids = Vec::new();
         for decision in decisions {
             release(&mut tx, &decision, None, now).await?;
-            settle(&mut tx, &decision, now).await?;
+            settle(&mut tx, &decision, false, now).await?;
             ids.push(super::super::jobs::parse_wire(&decision, "decision_id")?);
         }
         tx.commit().await?;

@@ -32,8 +32,12 @@ pub struct VerifyCommentsInput {
     pub pull_request: String,
     /// The PR title as its author wrote it.
     pub title: String,
+    /// The PR description as its author wrote it; none when empty.
+    pub description: Option<String>,
     /// The PR context of the latest analysis (LLM text), if one exists.
     pub pr_context: Option<String>,
+    /// The project profile (`.claudius/project-profile.md` at the base of the latest analysis), if present.
+    pub project_profile: Option<String>,
     /// 1..=[`MAX_ITEMS`] items with distinct ids.
     pub items: Vec<VerifyItem>,
     /// The current decisions on other items of this pull request.
@@ -270,7 +274,9 @@ mod tests {
         VerifyCommentsInput {
             pull_request: "acme/node-client#482".to_owned(),
             title: "fix".to_owned(),
+            description: None,
             pr_context: None,
+            project_profile: None,
             items,
             earlier_decisions: Vec::new(),
             question: None,
