@@ -370,7 +370,8 @@ targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe 
   severity words with the GitHub tag (red outline for "Blocking"); the LLM's recommendation "recommends Fix here" with
   the LLM tag, dashed, coloured by what it asks (amber: fix here; teal: resolve, already fixed; grey: reject; blue:
   handled elsewhere, follow-up, upstream, TODO), never the green of a fact badge. Marks are not focusable (inside the
-  row's button); the axe sweeps check their contrast in both themes.
+  row's button) and their tags have no tooltip of their own: the row's tooltip says what it opens and what each of its
+  tags means; the axe sweeps check their contrast in both themes.
 - **State badges** (one per PR, on the watched list, the PR page and the Comments header), each colour
   paired with an icon and a text label, contrast ≥ 4.5:1 in both themes; first match wins:
 

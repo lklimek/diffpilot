@@ -210,6 +210,8 @@ export async function expectTrustWording(page: Page): Promise<void> {
 export interface RequiredTip {
   /** The screen it belongs to: a selector present only there (`body`: every screen). */
   screen: string;
+  /** The text of a `<label>` inside the `screen` element: the screen is present only with that label. */
+  label?: string;
   /** What it is, for the failure message. */
   what: string;
   /** The tooltip trigger itself (the element with `aria-describedby`). */
@@ -222,8 +224,7 @@ export interface RequiredTip {
 
 const REVIEW = 'nav[aria-label="Flows and steps"]';
 const PROGRESS = 'section[aria-label="Analysis progress"]';
-// Home's PR URL field is required (PrUrlForm.tsx); the URL fields of Settings → Notifications are not.
-const HOME = 'form:has(input[type="url"][required])';
+const HOME = 'form:has(input[type="url"])';
 
 /** The controls of web/src/components that carry a tooltip, per screen. */
 export const REQUIRED_TIPS: RequiredTip[] = [
@@ -313,7 +314,14 @@ export const REQUIRED_TIPS: RequiredTip[] = [
     selector: `${PROGRESS} button, ${PROGRESS} a[href]`,
     min: 1,
   },
-  { screen: HOME, what: "Check", selector: `${HOME} button[type="submit"]`, name: "^Check$", min: 1 },
+  {
+    screen: HOME,
+    label: "GitHub pull request URL",
+    what: "Check",
+    selector: `${HOME} button[type="submit"]`,
+    name: "^Check$",
+    min: 1,
+  },
 ];
 
 /**
@@ -351,8 +359,14 @@ export async function sweepTooltips(
         .map(({ element }) => element)
         .find((element) => element?.getAttribute("role") === "tooltip");
 
+    const present = (want: (typeof required)[number]) =>
+      [...document.querySelectorAll(want.screen)].some(
+        (screen) =>
+          want.label === undefined ||
+          [...screen.querySelectorAll("label")].some((label) => label.textContent?.trim() === want.label),
+      );
     for (const want of required) {
-      if (!document.querySelector(want.screen)) continue;
+      if (!present(want)) continue;
       const name = want.name === undefined ? null : new RegExp(want.name, "u");
       const found = [...document.querySelectorAll(want.selector)].filter(
         (element) => rendered(element) && (!name || name.test(nameOf(element))),

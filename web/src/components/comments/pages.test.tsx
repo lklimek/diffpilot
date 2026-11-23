@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { expectTagsWithTips } from "../../__tests__/provenance";
 import { expectTrustWording } from "../../__tests__/wording";
 import type { CommentLog, Decision } from "../../api/generated/types";
 import {
@@ -154,6 +155,13 @@ describe("RoundsTable (V4)", () => {
       "target",
       "_blank",
     );
+  });
+});
+
+describe("RoundsTable column headers", () => {
+  it("the GitHub tag of Bot verdict takes keyboard focus and shows its tip (brief §4 rule 3)", () => {
+    render(<RoundsTable rounds={overview().rounds} prNumber={482} />);
+    expectTagsWithTips(screen.getByRole("columnheader", { name: /^Bot verdict/ }), 1);
   });
 });
 

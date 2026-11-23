@@ -201,16 +201,16 @@ export function CommentsTable(props: CommentsTableProps) {
                 Problem
               </th>
               <th scope="col" className={TH}>
-                Scope <ProvenanceTag source="llm" focusable={false} />
+                Scope <ProvenanceTag source="llm" />
               </th>
               <th scope="col" className={TH}>
                 Elsewhere
               </th>
               <th scope="col" className={TH}>
-                Opinion <ProvenanceTag source="llm" focusable={false} />
+                Opinion <ProvenanceTag source="llm" />
               </th>
               <th scope="col" className={TH}>
-                Recommendation <ProvenanceTag source="llm" focusable={false} />
+                Recommendation <ProvenanceTag source="llm" />
               </th>
               <th scope="col" className={TH}>
                 Decision

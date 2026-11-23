@@ -20,11 +20,12 @@ const page = (
     }
   </script></body></html>`;
 
-// Home's form (web/src/components/pr-form/PrUrlForm.tsx): a required URL field and its submit control.
+// Home's form (web/src/components/pr-form/PrUrlForm.tsx): a URL field and its submit control.
 const home = (submit: string) =>
-  `<form><label>GitHub pull request URL <input type="url" required></label>${submit.replace('type="button"', 'type="submit"')}</form>`;
-// A Settings → Notifications channel (web/src/components/settings/NotificationChannelCard.tsx): an optional URL.
-const channel = `<form novalidate><label>URL <input type="url"></label>${tooltip("Save", "Saves the channel.")}</form>`;
+  `<form><label>GitHub pull request URL <input type="url"></label>${submit.replace('type="button"', 'type="submit"')}</form>`;
+// A Settings → Notifications channel (web/src/components/settings/NotificationChannelCard.tsx): another URL form,
+// not Home even with its field required.
+const channel = `<form novalidate><label>URL <input type="url" required></label>${tooltip("Save", "Saves the channel.")}</form>`;
 
 const cases: [string, string, RegExp | null][] = [
   ["a clean screen", page(tooltip("Ticks", "Steps you marked reviewed."), "<p>3 of 7 steps</p>"), null],
