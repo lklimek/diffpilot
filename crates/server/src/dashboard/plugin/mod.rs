@@ -584,6 +584,8 @@ pub struct MoveStatement {
     pub source: String,
     /// Evidence link.
     pub url: String,
+    /// When the source data was generated, independent of subsequent successful polls.
+    pub as_of: Timestamp,
     /// Whose move.
     pub whose: Move,
 }
@@ -623,6 +625,7 @@ impl Overlay {
                     plugin: source.id.to_owned(),
                     source: source.name.to_owned(),
                     url: statement.url.clone(),
+                    as_of: source.data.as_of,
                     whose: statement.whose_move.clone()?,
                 })
             })

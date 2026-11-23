@@ -131,6 +131,7 @@ prop_compose! {
             review_requested_at: requested.map(ago),
             review_request_age_is_approx: approx,
             changes_requested_by: vec![],
+            changes_requested_by_bot: Some(false),
             changes_requested_by_human: human_cr,
             changes_requested_human_at: cr_age.map(ago),
             reviews_truncated: truncated,

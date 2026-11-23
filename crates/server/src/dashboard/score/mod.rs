@@ -528,7 +528,7 @@ pub fn ready_label<'a>(rules: &ScoreRules, pr: &'a PrFacts) -> Option<&'a str> {
 }
 
 /// The user's PR can wait for review (K15 W1, W2, W4): no author action outside review blockers, and merging is
-/// not the user's move. A current plug-in statement can assign the review blockers to reviewers.
+/// not the user's move. A current plug-in statement can assign human review blockers to reviewers.
 pub fn can_wait_for_review(rules: &ScoreRules, pr: &PrFacts) -> bool {
     users_pr(rules, pr)
         && pr.mergeable != Mergeable::Conflicting

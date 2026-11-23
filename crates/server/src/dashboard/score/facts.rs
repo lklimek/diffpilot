@@ -187,6 +187,9 @@ pub struct PrFacts {
     /// Logins whose latest review requests changes; a bot's only until it reviews a newer head, unless GitHub's
     /// review decision still requests changes (K15 W2).
     pub changes_requested_by: Vec<String>,
+    /// Any active change requester is a bot; absent in older snapshots whose requester types are unknown.
+    #[serde(default)]
+    pub changes_requested_by_bot: Option<bool>,
     /// One of them is a human outside the scanned logins.
     pub changes_requested_by_human: bool,
     /// Newest such human change request not re-requested since; null when none or re-requested.

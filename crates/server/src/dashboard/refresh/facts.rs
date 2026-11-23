@@ -269,6 +269,15 @@ pub(super) fn pr(
         None => Milestone::Unassigned,
     };
     let author = detail.author.as_ref();
+    let mut changes_requested_by = with_state("CHANGES_REQUESTED");
+    // While GitHub's decision still requests changes, GitHub enforces the request: it stays.
+    if detail.review_decision.as_deref() != Some("CHANGES_REQUESTED") {
+        let rereviewed = rereviewed_bots(rules, &detail.reviews.nodes, &detail.head_ref_oid);
+        changes_requested_by.retain(|login| !rereviewed.contains(login));
+    }
+    let changes_requested_by_bot = latest
+        .iter()
+        .any(|(login, _, _, bot)| *bot && changes_requested_by.contains(&name(login)));
     let facts = PrFacts {
         repo: item.repo.clone(),
         number: item.number,
@@ -322,16 +331,8 @@ pub(super) fn pr(
         review_pending_for_us: pending_for_us,
         review_requested_at,
         review_request_age_is_approx: approx,
-        changes_requested_by: {
-            let mut logins = with_state("CHANGES_REQUESTED");
-            // While GitHub's decision still requests changes, GitHub enforces the request: it stays.
-            if detail.review_decision.as_deref() != Some("CHANGES_REQUESTED") {
-                let rereviewed =
-                    rereviewed_bots(rules, &detail.reviews.nodes, &detail.head_ref_oid);
-                logins.retain(|login| !rereviewed.contains(login));
-            }
-            logins
-        },
+        changes_requested_by,
+        changes_requested_by_bot: Some(changes_requested_by_bot),
         changes_requested_by_human: !human_cr.is_empty(),
         changes_requested_human_at,
         reviews_truncated: detail
