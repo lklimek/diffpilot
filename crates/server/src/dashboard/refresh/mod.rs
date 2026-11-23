@@ -467,6 +467,7 @@ async fn scan_and_store(
     let trigger_text = match trigger {
         RefreshTrigger::Manual => "manual",
         RefreshTrigger::Scheduled => "scheduled",
+        RefreshTrigger::Automatic => "automatic",
     };
     progress.log(format!("refresh started ({trigger_text})"));
     let tokens = UserTokens {

@@ -474,7 +474,14 @@ async fn check_lists_match_contract_enums() {
     let dashboard_cases = [
         (
             "dashboard_refreshes",
-            in_list([RefreshTrigger::Manual, RefreshTrigger::Scheduled].map(wire_name)),
+            in_list(
+                [
+                    RefreshTrigger::Manual,
+                    RefreshTrigger::Scheduled,
+                    RefreshTrigger::Automatic,
+                ]
+                .map(wire_name),
+            ),
         ),
         (
             "dashboard_refreshes",
@@ -2230,4 +2237,160 @@ async fn slack_names_migration_gives_existing_settings_an_empty_table() {
         .execute(&db.pool)
         .await;
     assert!(refused.is_err(), "an object is not a Slack names table");
+}
+
+/// 0029 rebuilds `dashboard_refreshes` so a refresh can be `automatic` (plan §M): every refresh keeps its row and
+/// rowid, the jobs and judgements that reference one keep it (no drop cascades into them), the other CHECKs and both
+/// indexes stay, and an unknown trigger is still refused.
+#[tokio::test]
+async fn automatic_trigger_migration_keeps_refreshes_and_what_references_them() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before = MIGRATIONS
+        .iter()
+        .position(|(_, name, _)| *name == "dashboard_trigger_automatic")
+        .expect("migration 0029");
+    migrate(&pool, before).await.expect("schema before 0029");
+    let db = Db { pool };
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO dashboard_refreshes (rowid, id, tenant_id, user_id, trigger, state, started_at, snapshot,
+             ranking_state, judged, sent, ranking_attempt, finished_at)
+           VALUES (7, 'r1', 'default', 'u1', 'scheduled', 'finished', 't1', '{\"version\":1}', 'finished', 3, 4, 1, 't2'),
+                  (9, 'r2', 'default', 'u1', 'manual', 'scanning', 't3', NULL, NULL, 0, 0, 0, NULL);
+         INSERT INTO jobs (id, tenant_id, refresh_id, kind, priority, state, spec, credential_id, created_at, stage)
+           VALUES ('j1', 'default', 'r1', 'judge_work', 1, 'succeeded', '{}', 'c1', 't', 'judge:r1:1');
+         INSERT INTO job_events (job_id, tenant_id, attempt, seq, at, body)
+           VALUES ('j1', 'default', 0, 1, 't', '{}');
+         INSERT INTO dashboard_judgements (tenant_id, user_id, item_key, input_fingerprint, input_version,
+             prompt_version, body, refresh_id, model, judged_at, last_seen_at)
+           VALUES ('default', 'u1', 'acme~platform~pr~1', 'f', 1, 1, '{}', 'r1', 'm', 't', 't');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("rows of the old schema");
+    migrate(&db.pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+
+    type Row = (i64, String, String, String, i64, i64, i64);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT rowid, id, trigger, state, judged, sent, ranking_attempt FROM dashboard_refreshes ORDER BY rowid",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("rows");
+    assert_eq!(
+        rows,
+        [
+            (
+                7,
+                "r1".into(),
+                "scheduled".into(),
+                "finished".into(),
+                3,
+                4,
+                1
+            ),
+            (9, "r2".into(), "manual".into(), "scanning".into(), 0, 0, 0),
+        ]
+    );
+    let kept: (i64, i64, Option<String>) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM jobs WHERE refresh_id = 'r1'),
+                (SELECT count(*) FROM job_events WHERE job_id = 'j1'),
+                (SELECT refresh_id FROM dashboard_judgements)",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("references");
+    assert_eq!(kept, (1, 1, Some("r1".into())), "nothing cascaded");
+    let dangling: Vec<(String,)> = sqlx::query_as("SELECT \"table\" FROM pragma_foreign_key_check")
+        .fetch_all(&db.pool)
+        .await
+        .expect("foreign key check");
+    assert!(dangling.is_empty(), "{dangling:?}");
+
+    let insert = |id: &'static str, trigger: &'static str, state: &'static str| {
+        sqlx::query(
+            "INSERT INTO dashboard_refreshes (id, tenant_id, user_id, trigger, state, started_at)
+             VALUES (?, 'default', 'u1', ?, ?, 't4')",
+        )
+        .bind(id)
+        .bind(trigger)
+        .bind(state)
+        .execute(&db.pool)
+    };
+    assert!(
+        insert("r3", "automatic", "cancelled").await.is_ok(),
+        "automatic is a trigger"
+    );
+    assert!(
+        insert("r4", "hourly", "cancelled").await.is_err(),
+        "an unknown trigger"
+    );
+    assert!(
+        insert("r5", "automatic", "finished").await.is_err(),
+        "a finished refresh still needs its snapshot"
+    );
+    let second_live = insert("r6", "automatic", "scanning")
+        .await
+        .map_err(DbError::from);
+    assert!(
+        matches!(second_live, Err(DbError::Conflict)),
+        "one live refresh per user: {second_live:?}"
+    );
+    let indexes: Vec<(String,)> = sqlx::query_as(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'dashboard_refreshes'
+           AND name NOT LIKE 'sqlite_autoindex%' ORDER BY name",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("indexes");
+    assert_eq!(
+        indexes,
+        [
+            ("dashboard_refreshes_by_user".to_owned(),),
+            ("dashboard_refreshes_one_live_per_user".to_owned(),)
+        ]
+    );
+    let parents: Vec<(String, String)> = sqlx::query_as(
+        "SELECT 'jobs', \"table\" FROM pragma_foreign_key_list('jobs')
+         UNION ALL SELECT 'dashboard_judgements', \"table\" FROM pragma_foreign_key_list('dashboard_judgements')
+         UNION ALL SELECT 'job_events', \"table\" FROM pragma_foreign_key_list('job_events')
+         UNION ALL SELECT 'installation_tokens', \"table\" FROM pragma_foreign_key_list('installation_tokens')
+         ORDER BY 1, 2",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("foreign keys");
+    let parents: Vec<(&str, &str)> = parents
+        .iter()
+        .map(|(child, parent)| (child.as_str(), parent.as_str()))
+        .collect();
+    assert_eq!(
+        parents,
+        [
+            ("dashboard_judgements", "dashboard_refreshes"),
+            ("dashboard_judgements", "tenants"),
+            ("dashboard_judgements", "users"),
+            ("installation_tokens", "jobs"),
+            ("installation_tokens", "tenants"),
+            ("job_events", "jobs"),
+            ("job_events", "tenants"),
+            ("jobs", "analyses"),
+            ("jobs", "comment_passes"),
+            ("jobs", "dashboard_refreshes"),
+            ("jobs", "tenants"),
+        ],
+        "every reference names the final tables"
+    );
 }

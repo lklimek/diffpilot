@@ -1832,6 +1832,7 @@ async fn scan_over_the_time_limit_fails_as_timed_out() {
     assert_eq!(w.summary(ALICE).await.snapshot, None);
 }
 
+mod fresh;
 mod judged;
 mod plugin;
 mod snooze;

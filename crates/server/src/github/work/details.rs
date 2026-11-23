@@ -9,7 +9,7 @@ use contracts::time::Timestamp;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::batch::{PR_BATCH, literal};
+use super::batch::{MAX_PR_BATCH, PR_BATCH, literal};
 use super::client::{TokenSource, WorkClient, WorkError};
 use super::{Fetched, ItemRef, Milestone, note, repo_name, timestamp};
 
@@ -27,7 +27,7 @@ baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { nam
 labels(first: 20) { nodes { name } } participants { totalCount } \
 closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nodes { name } } } } \
 assignees(first: 10) { nodes { login } } \
-reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } \
+reviewRequests(first: 20) { totalCount nodes { requestedReviewer { __typename ... on User { login } \
 ... on Bot { login } ... on Team { name } } } } \
 reviews(last: 20) { totalCount nodes { author { __typename login } state submittedAt commit { oid } } } \
 comments(last: 30) { nodes { author { __typename login } body createdAt } } \
@@ -38,6 +38,16 @@ createdAt requestedReviewer { __typename ... on User { login } ... on Bot { logi
 commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { \
 pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt \
 checkSuite { workflowRun { workflow { name } } } } ... on StatusContext { context state createdAt } } } } } } } }";
+
+/// Pull requests per change probe (Q18): 25 answered in about 4 s for 2 points, 100 in one query failed with HTTP 502
+/// (`dashpay/platform`, 2026-11-23).
+pub const PROBE_BATCH: usize = MAX_PR_BATCH;
+
+/// The selection of Q18: what moves a pull request's change mark (plan §M), the same fields as in Q2.
+const PROBE_FRAGMENT: &str = " fragment Probe on PullRequest { state updatedAt headRefOid mergeable \
+mergeStateStatus reviewDecision isDraft labels(first: 20) { nodes { name } } \
+reviewRequests(first: 20) { totalCount } reviewThreads(first: 100) { nodes { isResolved } } \
+commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }";
 
 /// `mergeStateStatus` per pull request, as GitHub answered it (Q17).
 pub type MergeStates = BTreeMap<ItemRef, String>;
@@ -357,6 +367,64 @@ pub struct PullDetail {
     pub commits: Nodes<CommitNode>,
 }
 
+/// A pull request's change probe (Q18): the fields of its change mark (plan §M).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullProbe {
+    /// `OPEN`, `CLOSED`, `MERGED`.
+    pub state: String,
+    /// Last update.
+    pub updated_at: Timestamp,
+    /// Head commit.
+    pub head_ref_oid: String,
+    /// `MERGEABLE`, `CONFLICTING`, `UNKNOWN`.
+    pub mergeable: String,
+    /// `CLEAN`, `BLOCKED`, `BEHIND`, …
+    pub merge_state_status: String,
+    /// `APPROVED`, `CHANGES_REQUESTED`, `REVIEW_REQUIRED` or null.
+    pub review_decision: Option<String>,
+    /// Draft.
+    pub is_draft: bool,
+    /// Labels (first 20).
+    pub labels: Nodes<Name>,
+    /// Pending review requests.
+    pub review_requests: Count,
+    /// Review threads (first 100).
+    pub review_threads: Nodes<Resolved>,
+    /// The head commit's CI rollup state.
+    pub commits: Nodes<ProbeCommit>,
+}
+
+/// A review thread's `isResolved`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Resolved {
+    /// Resolved.
+    pub is_resolved: bool,
+}
+
+/// The last commit's `{ commit { statusCheckRollup { state } } }`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ProbeCommit {
+    /// The commit.
+    pub commit: ProbeRollup,
+}
+
+/// A commit's CI rollup state.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeRollup {
+    /// Null without any check or status.
+    pub status_check_rollup: Option<RollupState>,
+}
+
+/// `statusCheckRollup { state }`.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct RollupState {
+    /// `SUCCESS`, `FAILURE`, `PENDING`, `ERROR`, `EXPECTED`.
+    pub state: String,
+}
+
 /// History facts of one pull request (Q13).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryPr {
@@ -440,6 +508,35 @@ impl<T: TokenSource> WorkClient<T> {
             fetched.notes.push(left_out(&pr, "Details", false));
         }
         Ok(fetched)
+    }
+
+    /// Change probes of pull requests (Q18), [`PROBE_BATCH`] per query. A pull request GitHub does not resolve, or
+    /// whose batch fails, is absent.
+    pub async fn pr_probes(
+        &self,
+        pulls: &[ItemRef],
+    ) -> Result<BTreeMap<ItemRef, PullProbe>, WorkError> {
+        let answers = self
+            .batched(pulls, PROBE_BATCH, PROBE_FRAGMENT, |pr| {
+                repository(
+                    &pr.repo,
+                    &format!("pullRequest(number: {}) {{ ...Probe }}", pr.number),
+                )
+            })
+            .await?;
+        Ok(answers
+            .resolved
+            .into_iter()
+            .filter_map(|(pr, value)| {
+                match serde_json::from_value::<Option<PullProbe>>(value["pullRequest"].clone()) {
+                    Ok(probe) => Some((pr, probe?)),
+                    Err(error) => {
+                        tracing::debug!(%pr, %error, "GitHub pull request probe did not parse");
+                        None
+                    }
+                }
+            })
+            .collect())
     }
 
     /// `mergeStateStatus` of open pull requests, read again (Q17), ten per query. A pull request GitHub does not

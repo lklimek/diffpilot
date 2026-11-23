@@ -1,6 +1,7 @@
 //! GitHub work dashboard ("My work", ADR-016, ADR-017): refresh orchestration, scoring, judgement, per-user
 //! settings and the daily schedule. Reads the review module only through the database.
 
+pub mod fresh;
 pub mod hub;
 pub mod judge;
 pub mod plugin;

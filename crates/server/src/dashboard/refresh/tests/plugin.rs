@@ -46,7 +46,7 @@ fn ready_ids(summary: &DashboardSummary) -> Vec<&str> {
 }
 
 /// The stored snapshot of alice, as written (TODOs and hidden mentions included).
-async fn stored(w: &World) -> (RefreshId, Snapshot) {
+pub(super) async fn stored(w: &World) -> (RefreshId, Snapshot) {
     let (record, document) = w
         .state
         .db
@@ -58,7 +58,7 @@ async fn stored(w: &World) -> (RefreshId, Snapshot) {
     (record.id, snapshot::readable(document).expect("readable"))
 }
 
-async fn write(w: &World, id: RefreshId, snapshot: &Snapshot) {
+pub(super) async fn write(w: &World, id: RefreshId, snapshot: &Snapshot) {
     w.state
         .db
         .dashboard()
@@ -67,7 +67,11 @@ async fn write(w: &World, id: RefreshId, snapshot: &Snapshot) {
         .expect("write");
 }
 
-fn pr_mut<'a>(snapshot: &'a mut Snapshot, repo: &str, number: u32) -> &'a mut snapshot::StoredPr {
+pub(super) fn pr_mut<'a>(
+    snapshot: &'a mut Snapshot,
+    repo: &str,
+    number: u32,
+) -> &'a mut snapshot::StoredPr {
     snapshot
         .pull_requests
         .iter_mut()
@@ -78,7 +82,7 @@ fn pr_mut<'a>(snapshot: &'a mut Snapshot, repo: &str, number: u32) -> &'a mut sn
         .expect("pull request")
 }
 
-async fn github_log(w: &World) -> Vec<Value> {
+pub(super) async fn github_log(w: &World) -> Vec<Value> {
     http()
         .get(format!("{}/_fake/dashboard/requests", w.github))
         .send()
@@ -288,10 +292,12 @@ async fn a_change_signal_rereads_only_the_changed_pull_requests_with_the_details
     );
     let lookups: u64 = new.iter().filter_map(|r| r["pull_requests"].as_u64()).sum();
     assert_eq!(lookups, 2);
-    assert_ne!(
-        w.summary(ALICE).await.revision,
-        revision,
-        "a re-read changes the revision"
+    let summary = w.summary(ALICE).await;
+    assert_ne!(summary.revision, revision, "a re-read changes the revision");
+    assert_eq!(
+        summary.snapshot.expect("snapshot").facts_checked_at,
+        None,
+        "a signalled re-read is no check of every listed pull request (plan §M)"
     );
 
     let none = HashSet::from([PrKey::new(
@@ -535,5 +541,13 @@ async fn a_personal_access_token_read_does_not_mark_its_user_active() {
     assert!(
         w.state.plugins.active_users().is_empty(),
         "a token read is not a user in the session"
+    );
+    assert!(
+        w.state
+            .dashboard
+            .readers()
+            .open(w.state.dashboard.now())
+            .is_empty(),
+        "a token read does not open My work (plan §M)"
     );
 }

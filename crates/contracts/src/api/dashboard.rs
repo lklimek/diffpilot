@@ -89,6 +89,8 @@ pub enum RefreshTrigger {
     Manual,
     /// The daily schedule.
     Scheduled,
+    /// My work was open and the newest refresh was old (plan §M).
+    Automatic,
 }
 
 /// State of a refresh; transitions in `docs/contracts/http-api.md` "Refresh states". At most one refresh per user
@@ -331,6 +333,11 @@ pub struct SnapshotMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub exclusions: Option<Exclusions>,
+    /// When the listed pull requests' facts (CI, reviews, merge state) were last checked against GitHub after the scan,
+    /// while My work was open (plan §M); absent when none was since the scan or the server restarted since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub facts_checked_at: Option<Timestamp>,
 }
 
 /// Most excluded items listed by `GET /api/v1/dashboard?excluded=true`; the counts cover all.

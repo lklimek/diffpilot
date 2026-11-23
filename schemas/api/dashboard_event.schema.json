@@ -162,6 +162,11 @@
           "description": "The daily schedule.",
           "type": "string",
           "const": "scheduled"
+        },
+        {
+          "description": "My work was open and the newest refresh was old (plan §M).",
+          "type": "string",
+          "const": "automatic"
         }
       ]
     },

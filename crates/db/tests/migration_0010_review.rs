@@ -240,12 +240,16 @@ async fn migration_0010_on_a_seeded_v9_database() {
     // pages, the `pass_id` owner, comment-item questions; the schema tests check them): their schema entries are left
     // out here and their rows compared without the added columns (`jobs.pass_id`, `questions.pull_request_id` and
     // `questions.item_id`).
-    const REBUILT_0018: [&str; 5] = [
+    // 0029 rebuilds `dashboard_refreshes` and `dashboard_judgements` (and `jobs` with its children again) for the
+    // `automatic` trigger; the schema tests check them, their rows are compared unchanged.
+    const REBUILT_0018: [&str; 7] = [
         "jobs",
         "job_events",
         "installation_tokens",
         "questions",
         "comment_passes",
+        "dashboard_refreshes",
+        "dashboard_judgements",
     ];
     let rebuilt_0018 = |entry: &String| {
         entry

@@ -5458,7 +5458,7 @@ log: Array<string>, };
 /**
  * What started a refresh.
  */
-export type RefreshTrigger = "manual" | "scheduled";
+export type RefreshTrigger = "manual" | "scheduled" | "automatic";
 
 /**
  * One piece of related work.
@@ -6075,7 +6075,12 @@ checked: KindCounts,
  * Why the rules left items out, computed with the ranking; absent only from a response without it (a server
  * older than this field), which the web shows as not recorded.
  */
-exclusions?: Exclusions, };
+exclusions?: Exclusions,
+/**
+ * When the listed pull requests' facts (CI, reviews, merge state) were last checked against GitHub after the scan,
+ * while My work was open (plan §M); absent when none was since the scan or the server restarted since.
+ */
+facts_checked_at?: string, };
 
 /**
  * Body of `PUT /api/v1/dashboard/items/{key}/snooze` (R12).

@@ -16,6 +16,7 @@ use jiff::civil::Date;
 use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 
+use super::fresh::Readers;
 use super::judge::JudgeRanker;
 #[cfg(test)]
 use super::refresh::rank::NoopRanker;
@@ -77,6 +78,8 @@ struct Inner {
     stopped: broadcast::Sender<RefreshId>,
     /// Scheduled runs given up for a user's local date after a failure the run record could not hold.
     given_up: Mutex<HashSet<(String, Date)>>,
+    /// Who has My work open, and their fact checks (plan §M).
+    readers: Readers,
 }
 
 /// Announces the end of a refresh's task, also when it is aborted (dropped at an await).
@@ -147,6 +150,7 @@ impl DashboardHub {
                 events: broadcast::channel(EVENTS_CAPACITY).0,
                 stopped: broadcast::channel(EVENTS_CAPACITY).0,
                 given_up: Mutex::default(),
+                readers: Readers::default(),
             }),
         }
     }
@@ -164,6 +168,11 @@ impl DashboardHub {
     /// Gap between two GitHub searches of a scan.
     pub fn search_interval(&self) -> Duration {
         self.inner.search_interval
+    }
+
+    /// Who has My work open (plan §M).
+    pub fn readers(&self) -> &Readers {
+        &self.inner.readers
     }
 
     /// The ranking step.
