@@ -46,6 +46,14 @@
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --shadow-tip: 0 4px 18px rgb(0 0 0 / 0.18);
+  --animate-progress-pulse: progress-pulse 2s ease-in-out infinite;
+
+  /* Keep activity stripes above 3:1 against the track throughout the pulse in both themes. */
+  @keyframes progress-pulse {
+    50% {
+      opacity: 0.8;
+    }
+  }
 }
 
 /* Left column width of the review screen (mockup --wl). */
