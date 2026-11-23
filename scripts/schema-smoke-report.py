@@ -94,17 +94,20 @@ def measures(job_dir: Path) -> dict:
                 event = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(event, dict) and event.get("type") == "turn.completed":
-                found = {k: v for k, v in (event.get("usage") or {}).items() if isinstance(v, int)}
+            usage = event.get("usage") if isinstance(event, dict) else None
+            if isinstance(usage, dict) and event.get("type") == "turn.completed":
+                found = {k: v for k, v in usage.items() if isinstance(v, int)}
     except NotRegular:
         pass
     found.update(items=None, output_bytes=None)
     try:
         text = read_safe(job_dir, "output.json")
         found["output_bytes"] = len(text.encode())
-        found["items"] = len(json.loads(text).get("items", []))
-    except (NotRegular, ValueError, AttributeError):
-        pass
+        output = json.loads(text)
+    except (NotRegular, ValueError):
+        return found
+    if isinstance(output, dict) and isinstance(output.get("items"), list):
+        found["items"] = len(output["items"])
     return found
 
 
