@@ -31,8 +31,12 @@ pub struct EffectItem {
     pub no: u32,
     /// Source.
     pub kind: CommentItemKind,
+    /// Author's login.
+    pub author: String,
     /// Author kind.
     pub author_kind: AuthorKind,
+    /// GitHub page (a body item: its review's).
+    pub url: Option<String>,
     /// GitHub thread node id (threads).
     pub thread_id: Option<String>,
     /// The review a body item belongs to.
@@ -41,6 +45,24 @@ pub struct EffectItem {
     pub gates: Vec<Gate>,
     /// Which PR-level question, for `pr_question` items.
     pub question: Option<PrQuestion>,
+}
+
+impl EffectItem {
+    /// `text` as posted on this item: a PR-level comment answering a review starts with a line naming the review
+    /// (plan §2.3), a person by an @-mention, a bot without one (the mention would trigger it).
+    fn on_review(&self, text: String) -> String {
+        let url = match (&self.thread_id, &self.review_id, &self.url) {
+            (None, Some(_), Some(url)) if self.kind == CommentItemKind::ReviewBody => url,
+            _ => return text,
+        };
+        let line = match self.author_kind {
+            AuthorKind::Human => format!("@{}, re [your review]({url}):", self.author),
+            AuthorKind::Bot | AuthorKind::Diffpilot => {
+                format!("Re [{}'s review]({url}):", self.author)
+            }
+        };
+        format!("{line}\n{text}")
+    }
 }
 
 /// What a PR-level decision acts on.
@@ -272,7 +294,8 @@ pub fn plan(
     }
     let resolve = request.resolve_ticked;
     let edited = non_empty(request.reply_text.as_deref()).map(str::to_owned);
-    let reply = |default: String| Some(edited.clone().unwrap_or(default));
+    // An edited reply text is posted as written: it starts from the planned one, line naming the review included.
+    let reply = |default: String| Some(edited.clone().unwrap_or_else(|| item.on_review(default)));
     let mut out = Builder {
         effects: Vec::new(),
     };
@@ -280,8 +303,10 @@ pub fn plan(
         K::Resolve => {
             let text = (item.author_kind == AuthorKind::Human).then(|| {
                 edited.clone().unwrap_or_else(|| {
-                    "Per maintainer decision, this is already addressed in this pull request."
-                        .to_owned()
+                    item.on_review(
+                        "Per maintainer decision, this is already addressed in this pull request."
+                            .to_owned(),
+                    )
                 })
             });
             out.reply_and_resolve(item, text.clone(), None, true);
@@ -395,7 +420,7 @@ pub fn plan(
                 for remaining in &scope.remaining {
                     out.reply_and_resolve(
                         remaining,
-                        Some(FOLLOW_UP_REPLY.to_owned()),
+                        Some(remaining.on_review(FOLLOW_UP_REPLY.to_owned())),
                         Some(create),
                         true,
                     );

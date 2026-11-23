@@ -65,24 +65,34 @@ function askStaleDismissal(): CommentItem {
   return question;
 }
 
+/** effects.rs `EffectItem::on_review`: a PR-level comment answering a review starts with a line naming it. */
+function onReview(item: CommentItem, text: string): string {
+  if (item.kind !== "review_body" || !item.url) return text;
+  const line =
+    item.author_kind === "bot"
+      ? `Re [${item.author}'s review](${item.url}):`
+      : `@${item.author}, re [your review](${item.url}):`;
+  return `${line}\n${text}`;
+}
+
 /** The server's default reply texts (effects.rs `plan`); an edited `reply_text` replaces them. */
 function postedReply(item: CommentItem, request: DecideRequest): string | null {
   const edited = request.reply_text?.trim() || null;
+  const reply = (text: string) => edited ?? onReview(item, text);
   const reason = request.reason?.trim() ?? "";
   const gate: Gate | null = request.override?.type === "blocker_gate" ? request.override.gate : null;
   switch (request.kind) {
     case "resolve":
       return item.author_kind === "human"
-        ? (edited ?? "Per maintainer decision, this is already addressed in this pull request.")
+        ? reply("Per maintainer decision, this is already addressed in this pull request.")
         : null;
     case "fix_here":
-      return edited ?? "Per maintainer decision, this is fixed in this pull request.";
+      return reply("Per maintainer decision, this is fixed in this pull request.");
     case "reject":
-      return (
-        edited ??
-        (gate
+      return reply(
+        gate
           ? `Per maintainer decision, accepted despite ${gate}: ${reason}`
-          : `Per maintainer decision, not changed: ${reason}`)
+          : `Per maintainer decision, not changed: ${reason}`,
       );
     default:
       throw new Error(`not covered here: ${request.kind}`);
@@ -131,6 +141,7 @@ const preview = () =>
 describe("Reply preview is what the server posts (plan §3.2 item 8; effects.rs plan)", () => {
   it.each([
     ["Fix here", 22, null, null],
+    ["Fix here on a review body (the line naming the review)", 23, null, null],
     ["Reject", 11, null, null],
     ["Accept despite the gate", 14, /^Accept despite the gate/, "Pre-existing; tracked in #455."],
   ] as const)("%s: the previewed reply equals the posted one", async (_, no, option, reason) => {

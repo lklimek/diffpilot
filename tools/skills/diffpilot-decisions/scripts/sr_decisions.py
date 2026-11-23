@@ -52,6 +52,8 @@ FIELDS = ("params.text", "params.title", "params.url", "title", "body")
 # reference; never after a TODO (D7).
 REFERENCED_KINDS = ("fix", "follow_up_pr", "upstream_issue")
 REPLY_KINDS = ("reply", "pr_comment")
+# Plan §2.3: a PR-level comment answering a review starts with a line naming it (effects.rs `on_review`).
+REVIEW_LINE_RE = re.compile(r"[^\n]*\(https://github\.com/[^\s()]+#pullrequestreview-[0-9]+\):")
 ENDED_STATES = ("done", "failed", "cancelled")
 GH_TIMEOUT = 60
 # GitHub moves a PR head shortly after a push: a `behind` compare is read again this often, this far apart.
@@ -960,6 +962,19 @@ def _pr_comments(decision: dict, states: tuple[str, ...]) -> list[dict]:
     ]
 
 
+def _combined(parts: list[tuple[int, str, str]]) -> str:
+    """One comment listing `parts` (C<no>, text); the line naming the review that starts their texts comes once."""
+    heading = None
+    listed = []
+    for no, text, _ in parts:
+        first, sep, rest = text.partition("\n")
+        if sep and REVIEW_LINE_RE.fullmatch(first) and heading in (None, first):
+            heading, text = first, rest
+        listed.append(f"C{no}: {text}")
+    body = "\n\n".join(listed)
+    return body if heading is None else f"{heading}\n{body}"
+
+
 def cmd_combine(client: Client, args) -> int:
     decisions = list(dict.fromkeys(args.decisions))
     shown = {did: _feed_decision(client, did) for did in decisions}
@@ -993,7 +1008,7 @@ def cmd_combine(client: Client, args) -> int:
         raise SrError(f"--out names one file, but the effects answer {len(groups)} reviews; omit --out", EXIT_CONFIG)
     for review, parts in groups.items():
         parts.sort(key=lambda part: part[0])
-        path = write_new("\n\n".join(f"C{no}: {text}" for no, text, _ in parts), args.out)
+        path = write_new(_combined(parts), args.out)
         print(f"review {review}: wrote one comment ({len(parts)} items) to {path}")
         print(f"  post it once; report its URL as done for effects: {' '.join(eid for _, _, eid in parts)}")
     for no, did, eid in sorted(alone):

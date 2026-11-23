@@ -80,6 +80,19 @@ const threadId = (item: CommentItem) => (item.kind === "thread" ? `PRRT_${item.n
 const reviewId = (item: CommentItem) =>
   item.kind === "review_body" ? `PRR_${item.stable_key.split(":")[0]}` : null;
 
+/**
+ * effects.rs `EffectItem::on_review`: a PR-level comment answering a review starts with a line naming the review, a
+ * person by an @-mention, a bot without one.
+ */
+function onReview(item: CommentItem, text: string): string {
+  if (item.kind !== "review_body" || !item.url) return text;
+  const line =
+    item.author_kind === "human"
+      ? `@${item.author}, re [your review](${item.url}):`
+      : `Re [${item.author}'s review](${item.url}):`;
+  return `${line}\n${text}`;
+}
+
 const tooLong = (text: string | null | undefined) => !!text && [...text].length > MAX_TEXT_CHARS;
 const nonEmpty = (text: string | null | undefined) => text?.trim() || null;
 
@@ -164,7 +177,7 @@ export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope
   if (alwaysResolves && threadId(item) && !request.resolve_ticked) return ERROR.resolveLocked;
   const resolve = request.resolve_ticked;
   const edited = nonEmpty(request.reply_text);
-  const reply = (fallback: string) => edited ?? fallback;
+  const reply = (fallback: string) => edited ?? onReview(item, fallback);
   const out = new Builder();
   let replyText: string | null;
   switch (request.kind) {
@@ -224,7 +237,7 @@ export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope
       if (scope.remaining.length > 0) {
         const create = out.push("follow_up_pr", null, { item_nos: scope.remaining.map((i) => i.no) });
         for (const remaining of scope.remaining)
-          out.replyAndResolve(remaining, FOLLOW_UP_REPLY, create, true);
+          out.replyAndResolve(remaining, onReview(remaining, FOLLOW_UP_REPLY), create, true);
       }
       replyText = null;
       break;
