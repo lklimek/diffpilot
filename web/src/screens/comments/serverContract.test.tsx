@@ -2,7 +2,7 @@
 // effects.rs `plan`, queue.rs `decide_rest`); the msw mocks model that contract (mocks/effects-plan.ts).
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http } from "msw";
+import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
@@ -256,6 +256,30 @@ describe("Decide sends only what the server planned for the current input (RC16)
     expect(sent[0]!.target).toEqual({ type: "existing_pr", number: 491 });
     expect(shown).toBe("Per maintainer decision, this is addressed in #491.");
     await waitFor(() => expect(byNo(22).decisions.at(-1)?.reply_text).toBe(shown));
+  });
+});
+
+describe("A failed plan never leaves valid input blocked (RC16 unavailable)", () => {
+  it("while RC16 answers 503 Decide waits with Plan again; once the server answers, Plan again makes it available", async () => {
+    server.use(
+      http.post("/api/v1/prs/:owner/:name/:number/comments/effects-preview", () =>
+        HttpResponse.json({ code: "unavailable", message: "The service is unavailable." }, { status: 503 }),
+      ),
+    );
+    const sent = sentDecisions();
+    await open(22);
+    const planAgain = await screen.findByRole("button", { name: "Plan again" });
+    const decide = screen.getByRole("button", { name: "Decide" });
+    expect(decide).toHaveAttribute("aria-disabled", "true");
+    expect(decide).toHaveAccessibleDescription(expect.stringContaining("The service is unavailable"));
+    await userEvent.click(decide);
+    expect(sent).toHaveLength(0);
+    server.resetHandlers();
+    await userEvent.click(planAgain);
+    await waitFor(() => expect(decide).not.toHaveAttribute("aria-disabled"));
+    expect(screen.queryByRole("button", { name: "Plan again" })).toBeNull();
+    await userEvent.click(decide);
+    await waitFor(() => expect(sent).toHaveLength(1));
   });
 });
 

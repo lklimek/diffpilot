@@ -17,6 +17,7 @@ import {
   useDecideRest,
   useEffectsPreview,
   useItemAction,
+  transientFailure,
   useMarkGate,
   useUndoDecision,
 } from "../../api/review-loop";
@@ -122,14 +123,27 @@ export function QuestionsScreen() {
     [prLevel, items],
   );
   const planned = useEffectsPreview(pr, draft, inputs);
+  // The latest try failed without the input being at fault: tried again shortly, or at once on "Plan again".
+  const failure = planned.isError
+    ? planned.error
+    : planned.fetchStatus !== "idle"
+      ? planned.failureReason
+      : null;
   const preview: EffectsPreviewState =
     draft === null
       ? { state: "idle" }
-      : planned.isError && !planned.isPlaceholderData
-        ? { state: "error", message: errorText(planned.error) }
-        : planned.data
-          ? { state: "ready", items: planned.data.items, rows: planned.data.rows, updating: !planned.current }
-          : { state: "loading" };
+      : failure && transientFailure(failure)
+        ? { state: "failed", message: errorText(failure), planAgain: () => void planned.planAgain() }
+        : planned.isError && !planned.isPlaceholderData
+          ? { state: "error", message: errorText(planned.error) }
+          : planned.data
+            ? {
+                state: "ready",
+                items: planned.data.items,
+                rows: planned.data.rows,
+                updating: !planned.current,
+              }
+            : { state: "loading" };
 
   const open = (next: QueueEntry | undefined) => {
     setRest(false);

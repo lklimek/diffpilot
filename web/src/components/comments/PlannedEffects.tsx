@@ -1,4 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { buttonClass } from "../button/button";
+import { Tooltip } from "../tooltip/Tooltip";
 import type { DecisionBatchRow } from "../../api/generated/types";
 import { effectLines, executorName, previewFor, type EffectsPreviewState } from "./decisions";
 
@@ -77,11 +79,31 @@ export function PlannedEffects({
   );
 }
 
-/** Why Decide is unavailable (`reason`), announced as it changes; the Decide button names it by `id`. */
-export function DecideNote({ id, reason }: { id: string; reason: string | null }) {
+/**
+ * Why Decide is unavailable (`reason`), announced as it changes; the Decide button names it by `id`. A failed plan
+ * (no answer, a server failure) offers "Plan again".
+ */
+export function DecideNote({
+  id,
+  reason,
+  preview,
+}: {
+  id: string;
+  reason: string | null;
+  preview: EffectsPreviewState;
+}) {
   return (
-    <p id={id} role="status" className={reason ? "m-0 mt-1.5 text-sm text-med" : "sr-only"}>
-      {reason ?? ""}
-    </p>
+    <div className={reason ? "mt-1.5 flex flex-wrap items-center gap-2 text-sm text-med" : undefined}>
+      <p id={id} role="status" className={reason ? "m-0" : "sr-only"}>
+        {reason ?? ""}
+      </p>
+      {reason && preview.state === "failed" && (
+        <Tooltip tip="Asks the server to plan the effects of your current input now.">
+          <button type="button" onClick={preview.planAgain} className={buttonClass("plain", true)}>
+            Plan again
+          </button>
+        </Tooltip>
+      )}
+    </div>
   );
 }

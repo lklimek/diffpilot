@@ -240,7 +240,7 @@ export function GroupCard({
           {problem ?? error}
         </p>
       )}
-      <DecideNote id={`${id}-blocked`} reason={blocked} />
+      <DecideNote id={`${id}-blocked`} reason={blocked} preview={preview} />
       <div className="mt-2 flex flex-wrap gap-2">
         <Tooltip tip="Stores one decision per item of this group, each with its own record (Enter).">
           <button
@@ -443,7 +443,7 @@ export function DecideRestCard({
           {error}
         </p>
       )}
-      <DecideNote id={`${id}-blocked`} reason={blocked} />
+      <DecideNote id={`${id}-blocked`} reason={blocked} preview={preview} />
       <div className="flex flex-wrap gap-2">
         <Tooltip tip="Stores one decision per included row, marked via decide the rest.">
           <button
@@ -647,7 +647,7 @@ export function PrQuestionCard({
           {error}
         </p>
       )}
-      <DecideNote id={`${id}-blocked`} reason={blocked} />
+      <DecideNote id={`${id}-blocked`} reason={blocked} preview={preview} />
       <div className="flex flex-wrap gap-2">
         <Tooltip tip="Stores the decision on this PR-level question (Enter).">
           <button

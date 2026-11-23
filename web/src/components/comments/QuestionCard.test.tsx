@@ -287,6 +287,29 @@ describe("Decide sends only what the server planned for the current input (RC16)
     expect(onDecide).not.toHaveBeenCalled();
   });
 
+  it("a refusal offers no Plan again: the input has to change", () => {
+    show(byNo(11), { preview: { state: "error", message: "C11: no." }, onDraft: vi.fn() });
+    expect(screen.queryByRole("button", { name: "Plan again" })).toBeNull();
+  });
+
+  it("a plan that failed (no answer, 5xx) offers Plan again on the blocked note; Decide stays blocked", async () => {
+    const planAgain = vi.fn();
+    const { onDecide } = show(byNo(11), {
+      preview: { state: "failed", message: "The service is unavailable.", planAgain },
+      onDraft: vi.fn(),
+    });
+    const reason =
+      'The effects could not be planned (The service is unavailable); diffpilot tries again shortly, or choose "Plan again".';
+    const decide = screen.getByRole("button", { name: "Decide" });
+    expect(decide).toHaveAttribute("aria-disabled", "true");
+    expect(decide).toHaveAccessibleDescription(expect.stringContaining(reason));
+    await userEvent.click(screen.getByRole("button", { name: "Plan again" }));
+    expect(planAgain).toHaveBeenCalledTimes(1);
+    await userEvent.click(decide);
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    expect(onDecide).not.toHaveBeenCalled();
+  });
+
   it("planned for exactly the current input: Decide sends that input", async () => {
     const { onDecide } = show(byNo(11));
     const decide = screen.getByRole("button", { name: "Decide" });

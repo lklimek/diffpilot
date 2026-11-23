@@ -222,11 +222,15 @@ export function effectLines(effects: PlannedEffect[], several = false): EffectLi
   }));
 }
 
-/** The server's plan of a card's draft (RC16): nothing to plan yet (an input is missing), loading, refused, or ready. */
+/**
+ * The server's plan of a card's draft (RC16): nothing to plan yet (an input is missing), loading, refused (the
+ * input's fault), failed (no answer or a server failure; tried again shortly, or at once with `planAgain`), or ready.
+ */
 export type EffectsPreviewState =
   | { state: "idle" }
   | { state: "loading" }
   | { state: "error"; message: string }
+  | { state: "failed"; message: string; planAgain: () => void }
   | {
       state: "ready";
       items: EffectsPreview[];
@@ -248,6 +252,8 @@ export function decideBlocked(preview: EffectsPreviewState, rows: DecisionBatchR
   if (rows === null) return null;
   if (preview.state === "error")
     return "The server refused this input (its message is shown above); change it to decide.";
+  if (preview.state === "failed")
+    return `The effects could not be planned (${preview.message.replace(/\.$/, "")}); diffpilot tries again shortly, or choose "Plan again".`;
   if (preview.state === "ready" && !preview.updating && preview.rows === JSON.stringify(rows)) return null;
   return PLAN_PENDING;
 }

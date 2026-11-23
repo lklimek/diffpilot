@@ -18,7 +18,15 @@ const UNFIT: [string, EffectsPreviewState, string][] = [
   ["planning", { state: "loading" }, PENDING],
   ["planned for other rows", { state: "ready", items: [], rows: "[]", updating: false }, PENDING],
   ["refused", { state: "error", message: "C18: this decision needs a reason." }, REFUSED],
+  [
+    "failed",
+    { state: "failed", message: "The service is unavailable.", planAgain: () => {} },
+    'The effects could not be planned (The service is unavailable); diffpilot tries again shortly, or choose "Plan again".',
+  ],
 ];
+/** Plan again is offered exactly when the plan failed (not for a refusal: the input has to change). */
+const expectPlanAgain = (preview: EffectsPreviewState) =>
+  expect(screen.queryByRole("button", { name: "Plan again" }) !== null).toBe(preview.state === "failed");
 
 beforeEach(() => {
   resetReviewLoop();
@@ -76,6 +84,7 @@ describe("GroupCard (US5)", () => {
       const decide = screen.getByRole("button", { name: "Reject all 2" });
       expect(decide).toHaveAttribute("aria-disabled", "true");
       expect(decide).toHaveAccessibleDescription(expect.stringContaining(reason));
+      expectPlanAgain(preview);
       await userEvent.click(decide);
       fireEvent.keyDown(document.body, { key: "Enter" });
       expect(onDecide).not.toHaveBeenCalled();
@@ -118,6 +127,7 @@ describe("DecideRestCard (US7)", () => {
     const apply = screen.getByRole("button", { name: /^Apply \d+ decisions$/ });
     expect(apply).toHaveAttribute("aria-disabled", "true");
     expect(apply).toHaveAccessibleDescription(expect.stringContaining(reason));
+    expectPlanAgain(preview);
     await userEvent.click(apply);
     expect(onConfirm).not.toHaveBeenCalled();
   });
@@ -220,6 +230,7 @@ describe("PrQuestionCard (US11, US12)", () => {
       const decide = screen.getByRole("button", { name: "Decide" });
       expect(decide).toHaveAttribute("aria-disabled", "true");
       expect(decide).toHaveAccessibleDescription(expect.stringContaining(reason));
+      expectPlanAgain(preview);
       await userEvent.click(decide);
       fireEvent.keyDown(document.body, { key: "Enter" });
       expect(onDecide).not.toHaveBeenCalled();
