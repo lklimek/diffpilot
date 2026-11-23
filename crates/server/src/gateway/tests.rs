@@ -1,4 +1,5 @@
 use super::*;
+use axum::body::Bytes;
 use serde_json::json;
 
 #[test]
@@ -91,7 +92,7 @@ async fn refresh_is_near_expiry_only_and_respects_earliest_timing() {
     let (_d, up, g, u) = fixture().await;
     seed(&g, &u, bundle(now() + 864000)).await;
     assert_eq!(
-        g.access(&u, None).await.expect("access").bundle.access,
+        g.access(&u, None).await.expect("access").token.expose(),
         "fake-access"
     );
     let mut b = bundle(now() + 30);
@@ -101,8 +102,8 @@ async fn refresh_is_near_expiry_only_and_respects_earliest_timing() {
         g.access(&u, None)
             .await
             .expect("not before earliest")
-            .bundle
-            .access,
+            .token
+            .expose(),
         "fake-access"
     );
     assert!(up.received_requests().await.expect("requests").is_empty());
@@ -121,13 +122,13 @@ async fn replica_race_exchanges_once_and_commits_before_use() {
         .await;
     let other = Gateway::for_test(d.path(), &up.uri()).expect("replica");
     let (a, b) = tokio::join!(g.access(&u, None), other.access(&u, None));
-    assert_eq!(a.expect("first").bundle.refresh, "fake-refresh-1");
-    assert_eq!(b.expect("second").bundle.refresh, "fake-refresh-1");
+    assert_eq!(a.expect("first").token.expose(), "fake-access-1");
+    assert_eq!(b.expect("second").token.expose(), "fake-access-1");
     let tx = g.store.lock(&u).await.expect("read");
     assert_eq!(tx.record.generation, 1);
     assert!(!tx.record.inflight);
     assert_eq!(
-        tx.record.bundle.as_ref().expect("bundle").refresh,
+        tx.record.bundle.as_ref().expect("bundle").refresh.expose(),
         "fake-refresh-1"
     );
     drop(tx);
@@ -180,7 +181,7 @@ async fn unknown_exchange_never_replays_and_terminal_errors_stay_distinct() {
 }
 
 #[tokio::test]
-async fn cancelled_refresh_restart_and_stale_snapshot_fail_closed() {
+async fn disconnected_refresh_commits_and_shutdown_waits_for_it() {
     let (d, up, g, u) = fixture().await;
     seed(&g, &u, bundle(now() + 1)).await;
     let stale = std::fs::read(g.store.record_path(&u)).expect("backup");
@@ -189,7 +190,7 @@ async fn cancelled_refresh_restart_and_stale_snapshot_fail_closed() {
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_json(token_json("fake-refresh-1"))
-                .set_delay(Duration::from_secs(30)),
+                .set_delay(Duration::from_millis(200)),
         )
         .expect(1)
         .mount(&up)
@@ -208,15 +209,15 @@ async fn cancelled_refresh_restart_and_stale_snapshot_fail_closed() {
     .expect("request sent");
     task.abort();
     assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+    g.shutdown().await;
     let other = Gateway::for_test(d.path(), &up.uri()).expect("restart");
-    assert!(other.access(&u, None).await.is_err());
+    assert!(other.access(&u, None).await.is_ok());
     assert_eq!(
-        other.status(&u).await.expect("status").relink_reason,
-        Some(RelinkReason::Quarantined)
+        other.store.lock(&u).await.expect("read").record.generation,
+        1
     );
     std::fs::write(g.store.record_path(&u), stale).expect("simulate stale snapshot");
     assert!(other.access(&u, None).await.is_err());
-    g.shutdown().await;
     other.shutdown().await;
 }
 
@@ -352,7 +353,7 @@ async fn failed_link_preserves_existing_connection_and_does_not_revoke() {
         CredentialState::Linked
     );
     assert_eq!(
-        g.access(&u, None).await.expect("old access").bundle.access,
+        g.access(&u, None).await.expect("old access").token.expose(),
         "fake-access"
     );
     g.shutdown().await;
@@ -482,7 +483,7 @@ async fn listeners_scopes_and_plan_only_link_contract_do_not_cross() {
 }
 
 #[tokio::test]
-async fn upstream_401_far_from_expiry_becomes_403_without_refresh_or_revoke() {
+async fn persistent_upstream_401_is_confirmed_without_refresh_or_revoke() {
     let (_d, up, g, u) = fixture().await;
     seed(&g, &u, bundle(now() + 864000)).await;
     let key = g
@@ -492,7 +493,7 @@ async fn upstream_401_far_from_expiry_becomes_403_without_refresh_or_revoke() {
     Mock::given(method("POST"))
         .and(path("/responses"))
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error":"revoked"})))
-        .expect(1)
+        .expect(2)
         .mount(&up)
         .await;
     let response = call(
@@ -513,7 +514,7 @@ async fn upstream_401_far_from_expiry_becomes_403_without_refresh_or_revoke() {
         g.status(&u).await.expect("status").relink_reason,
         Some(RelinkReason::Terminal)
     );
-    assert_eq!(up.received_requests().await.expect("requests").len(), 1);
+    assert_eq!(up.received_requests().await.expect("requests").len(), 2);
     g.shutdown().await;
 }
 
@@ -527,7 +528,7 @@ async fn rejected_old_generation_uses_committed_successor_without_refresh() {
     tx.save().expect("commit");
     drop(tx);
     assert_eq!(
-        g.access(&u, Some(0)).await.expect("reload").bundle.access,
+        g.access(&u, Some(0)).await.expect("reload").token.expose(),
         "replacement"
     );
     assert!(up.received_requests().await.expect("requests").is_empty());
@@ -808,11 +809,16 @@ async fn staged_device_link_commits_without_refresh_and_keeps_secrets_gateway_on
     assert_eq!(code["user_code"], "ABC-FAKE");
     assert_eq!(code.as_object().expect("object").len(), 3);
     assert_eq!(
-        g.access(&u, None)
+        g.store
+            .lock(&u)
             .await
             .expect("old during link")
+            .record
             .bundle
-            .refresh,
+            .as_ref()
+            .expect("bundle")
+            .refresh
+            .expose(),
         "fake-refresh-0"
     );
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -823,7 +829,16 @@ async fn staged_device_link_commits_without_refresh_and_keeps_secrets_gateway_on
     .await
     .expect("linked");
     assert_eq!(
-        g.access(&u, None).await.expect("linked").bundle.refresh,
+        g.store
+            .lock(&u)
+            .await
+            .expect("linked")
+            .record
+            .bundle
+            .as_ref()
+            .expect("bundle")
+            .refresh
+            .expose(),
         "fake-refresh-1"
     );
     let sealed = std::fs::read(g.store.record_path(&u)).expect("sealed");
@@ -1055,7 +1070,7 @@ async fn first_sse_chunk_arrives_before_upstream_finishes() {
 }
 
 #[tokio::test]
-async fn crash_after_replacement_write_before_marker_resolution_requires_relink() {
+async fn crash_after_replacement_commit_resolves_the_old_marker() {
     let (d, up, g, u) = fixture().await;
     seed(&g, &u, bundle(now() + 1)).await;
     let mut tx = g.store.lock(&u).await.expect("lock");
@@ -1066,11 +1081,8 @@ async fn crash_after_replacement_write_before_marker_resolution_requires_relink(
     tx.save().expect("replacement committed, marker unresolved");
     drop(tx);
     let other = Gateway::for_test(d.path(), &up.uri()).expect("restart");
-    assert!(other.access(&u, None).await.is_err());
-    assert_eq!(
-        other.status(&u).await.expect("status").relink_reason,
-        Some(RelinkReason::Quarantined)
-    );
+    assert!(other.access(&u, None).await.is_ok());
+    assert_eq!(other.status(&u).await.expect("status").relink_reason, None);
     assert!(up.received_requests().await.expect("requests").is_empty());
     g.shutdown().await;
     other.shutdown().await;
@@ -1103,5 +1115,510 @@ async fn retryable_midstream_slowdown_does_not_pause_the_payer() {
     .await;
     assert_eq!(collect(response).await.as_ref(), failed.as_bytes());
     assert_eq!(g.usage(&u, None).await.expect("usage").resets_at, None);
+    g.shutdown().await;
+}
+
+#[test]
+fn body_policy_rejects_unknown_fields_and_hosted_tool_selection() {
+    for field in [
+        "prompt",
+        "conversation",
+        "background",
+        "unknown",
+        "previous_response_id",
+    ] {
+        let mut body = json!({"store":false,"stream":true});
+        body[field] = json!("untrusted");
+        assert!(validate_body(&body).is_err(), "{field}");
+    }
+    for choice in [
+        json!({"type":"web_search"}),
+        json!("web_search"),
+        json!(null),
+    ] {
+        assert!(validate_body(&json!({"store":false,"stream":true,"tool_choice":choice})).is_err());
+    }
+    for choice in ["auto", "none", "required"] {
+        assert!(validate_body(&json!({"store":false,"stream":true,"tool_choice":choice})).is_ok());
+    }
+}
+
+#[tokio::test]
+async fn refresh_accepts_r6_shape_and_keeps_optional_tokens() {
+    for omit_refresh in [false, true] {
+        for omit_id in [false, true] {
+            let (_d, up, g, u) = fixture().await;
+            seed(&g, &u, bundle(now() + 1)).await;
+            let mut reply = token_json("fake-refresh-1");
+            let object = reply.as_object_mut().expect("object");
+            object.remove("scope");
+            object.remove("token_type");
+            if omit_refresh {
+                object.remove("refresh_token");
+            }
+            if omit_id {
+                object.remove("id_token");
+            }
+            Mock::given(path("/oauth/token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(reply))
+                .expect(1)
+                .mount(&up)
+                .await;
+            assert!(
+                g.access(&u, None).await.is_ok(),
+                "refresh={omit_refresh}, id={omit_id}"
+            );
+            let tx = g.store.lock(&u).await.expect("record");
+            assert_eq!(tx.record.generation, 1);
+            assert_eq!(tx.record.reason, None);
+            assert!(!tx.record.inflight);
+            drop(tx);
+            g.shutdown().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn transient_model_401_retries_same_token_without_poisoning_credential() {
+    let (_d, up, g, u) = fixture().await;
+    seed(&g, &u, bundle(now() + 864000)).await;
+    let key = g
+        .mint(&ContainerId::Judge { payer: u.clone() })
+        .await
+        .expect("key");
+    Mock::given(path("/responses"))
+        .and(header("authorization", "Bearer fake-access"))
+        .respond_with(ResponseTemplate::new(401))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&up)
+        .await;
+    Mock::given(path("/responses"))
+        .and(header("authorization", "Bearer fake-access"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(completed("confirmed")))
+        .expect(1)
+        .mount(&up)
+        .await;
+    let response = call(
+        g.model_router(),
+        "POST",
+        "/v1/responses",
+        key.key.expose(),
+        json!({"store":false,"stream":true}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    collect(response).await;
+    assert_eq!(
+        g.status(&u).await.expect("status").state,
+        CredentialState::Linked
+    );
+    assert_eq!(up.received_requests().await.expect("requests").len(), 2);
+    g.shutdown().await;
+}
+
+#[tokio::test]
+async fn expired_key_retention_prunes_keys_and_their_index_files() {
+    let (_d, _up, g, u) = fixture().await;
+    seed(&g, &u, bundle(now() + 3600)).await;
+    let container = ContainerId::Judge { payer: u.clone() };
+    let key = g.mint(&container).await.expect("key");
+    let mut tx = g.store.lock(&u).await.expect("record");
+    tx.record.keys.get_mut(&key.id).expect("key").expires_at = now() - 8 * 86400;
+    tx.save().expect("expire");
+    drop(tx);
+    g.mint(&container).await.expect("prune and mint");
+    assert!(
+        !g.store
+            .lock(&u)
+            .await
+            .expect("read")
+            .record
+            .keys
+            .contains_key(&key.id)
+    );
+    assert!(g.store.key_user(&key.id).is_err());
+    g.shutdown().await;
+}
+
+#[tokio::test]
+async fn refresh_outcome_persists_only_redacted_upstream_evidence() {
+    let (_d, up, g, u) = fixture().await;
+    seed(&g, &u, bundle(now() + 1)).await;
+    Mock::given(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(400)
+            .insert_header("x-request-id", "fake-secret-in-request-id")
+            .set_body_json(json!({"error":{"code":"refresh_token_reused","message":"fake-secret-in-body"}})))
+        .expect(1).mount(&up).await;
+    assert!(g.access(&u, None).await.is_err());
+    let tx = g.store.lock(&u).await.expect("record");
+    let stored = serde_json::to_value(&tx.record).expect("json");
+    assert_eq!(stored["last_auth"]["status"], 400);
+    assert_eq!(stored["last_auth"]["code"], "refresh_token_reused");
+    assert_eq!(stored["last_auth"]["outcome"], "terminal");
+    let evidence = stored["last_auth"].to_string();
+    assert!(!evidence.contains("fake-secret"));
+    assert!(
+        stored["last_auth"]["request_id"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty())
+    );
+    drop(tx);
+    g.shutdown().await;
+}
+
+#[tokio::test]
+async fn one_key_cannot_exhaust_global_model_capacity() {
+    let (_d, up, g, u) = fixture().await;
+    seed(&g, &u, bundle(now() + 3600)).await;
+    let key = g
+        .mint(&ContainerId::Judge { payer: u.clone() })
+        .await
+        .expect("key");
+    Mock::given(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(800))
+                .set_body_string(completed("capacity")),
+        )
+        .mount(&up)
+        .await;
+    let mut pending = Vec::new();
+    for _ in 0..2 {
+        let router = g.model_router();
+        let token = key.key.clone();
+        pending.push(tokio::spawn(async move {
+            collect(
+                call(
+                    router,
+                    "POST",
+                    "/v1/responses",
+                    token.expose(),
+                    json!({"store":false,"stream":true}),
+                )
+                .await,
+            )
+            .await
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while up.received_requests().await.expect("requests").len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("active requests");
+    let response = call(
+        g.model_router(),
+        "POST",
+        "/v1/responses",
+        key.key.expose(),
+        json!({"store":false,"stream":true}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    for task in pending {
+        task.await.expect("request");
+    }
+    g.shutdown().await;
+}
+
+#[tokio::test]
+async fn pruning_response_ids_keeps_lifetime_totals_and_retained_key_totals() {
+    let (_d, _up, g, u) = fixture().await;
+    seed(&g, &u, bundle(now() + 3600)).await;
+    let key = g
+        .mint(&ContainerId::Judge { payer: u.clone() })
+        .await
+        .expect("key");
+    let usage = Usage {
+        input_tokens: 7,
+        requests: Some(1),
+        ..Usage::default()
+    };
+    g.store
+        .meter(&u, &key.id, "old-response", usage)
+        .await
+        .expect("meter");
+    let mut tx = g.store.lock(&u).await.expect("record");
+    tx.record
+        .responses
+        .get_mut("old-response")
+        .expect("meter")
+        .recorded_at = now() - 8 * 86400;
+    tx.save().expect("age");
+    drop(tx);
+    assert_eq!(
+        g.usage(&u, None)
+            .await
+            .expect("payer totals")
+            .usage
+            .input_tokens,
+        7
+    );
+    assert_eq!(
+        g.usage(&u, Some(&key.id))
+            .await
+            .expect("key totals")
+            .usage
+            .input_tokens,
+        7
+    );
+    assert!(
+        g.store
+            .lock(&u)
+            .await
+            .expect("record")
+            .record
+            .responses
+            .is_empty()
+    );
+    g.store
+        .meter(&u, &key.id, "new-response", usage)
+        .await
+        .expect("meter");
+    assert_eq!(
+        g.usage(&u, None)
+            .await
+            .expect("payer totals")
+            .usage
+            .input_tokens,
+        14
+    );
+    g.shutdown().await;
+}
+
+#[tokio::test]
+async fn commit_journal_recovers_every_record_witness_rename_window() {
+    for boundary in 0..3 {
+        let (d, up, g, u) = fixture().await;
+        seed(&g, &u, bundle(now() + 3600)).await;
+        let record = g.store.record_path(&u);
+        let witness = record.with_extension("witness");
+        let old_record = std::fs::read(&record).expect("old record");
+        let old_witness = std::fs::read(&witness).expect("old witness");
+        let mut tx = g.store.lock(&u).await.expect("record");
+        tx.record.generation = 1;
+        tx.save().expect("commit");
+        let revision = tx.record.revision;
+        drop(tx);
+        let committed = std::fs::read(&record).expect("committed");
+        let mut journal = revision.to_be_bytes().to_vec();
+        journal.extend_from_slice(&committed);
+        std::fs::write(record.with_extension("commit"), journal).expect("crash journal");
+        if boundary < 2 {
+            std::fs::write(&witness, &old_witness).expect("old witness");
+        }
+        if boundary == 0 {
+            std::fs::write(&record, &old_record).expect("old record");
+        }
+        let other = Gateway::for_test(d.path(), &up.uri()).expect("restart");
+        assert!(other.access(&u, None).await.is_ok(), "boundary {boundary}");
+        assert_eq!(
+            other.store.lock(&u).await.expect("read").record.generation,
+            1
+        );
+        assert!(!record.with_extension("commit").exists());
+        assert!(up.received_requests().await.expect("requests").is_empty());
+        g.shutdown().await;
+        other.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn proven_connect_failure_preserves_the_unsubmitted_generation() {
+    let (d, up, _g, u) = fixture().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let addr = listener.local_addr().expect("address");
+    drop(listener);
+    let g = Gateway::for_test(d.path(), &format!("http://{addr}")).expect("gateway");
+    seed(&g, &u, bundle(now() + 1)).await;
+    assert!(matches!(g.access(&u, None).await, Err(Error::Http(error)) if error.is_connect()));
+    let tx = g.store.lock(&u).await.expect("record");
+    assert_eq!(tx.record.generation, 0);
+    assert_eq!(tx.record.reason, None);
+    assert!(!tx.record.inflight);
+    drop(tx);
+    assert!(up.received_requests().await.expect("requests").is_empty());
+    g.shutdown().await;
+}
+
+#[test]
+fn secret_tokens_redact_debug_and_support_ids_preserve_only_canonical_shapes() {
+    let b = bundle(now() + 3600);
+    for token in [b.access, b.refresh, b.id_token] {
+        assert!(!format!("{token:?}").contains("fake"));
+    }
+    let mut headers = axum::http::HeaderMap::new();
+    for id in [
+        "req_0123456789abcdef0123456789abcdef",
+        "12345678-1234-1234-1234-123456789abc",
+    ] {
+        headers.insert("x-request-id", id.parse().expect("header"));
+        assert_eq!(auth::request_id(&headers).as_deref(), Some(id));
+    }
+    headers.insert("x-request-id", "fake-access-token".parse().expect("header"));
+    let id = auth::request_id(&headers).expect("digest");
+    assert!(id.starts_with("sha256:"));
+    assert!(!id.contains("fake-access"));
+}
+
+#[tokio::test]
+async fn r6_reply_rejects_account_switch_and_invalid_optional_fields() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    for bad in ["account", "scope", "token_type"] {
+        let (_d, up, g, u) = fixture().await;
+        seed(&g, &u, bundle(now() + 1)).await;
+        let mut reply = token_json("fake-refresh-0");
+        if bad == "account" {
+            let jwt = reply["id_token"].as_str().expect("jwt");
+            let mut claims: serde_json::Value = serde_json::from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(jwt.split('.').nth(1).expect("claims"))
+                    .expect("decode"),
+            )
+            .expect("json");
+            claims["https://api.openai.com/auth"]["chatgpt_account_id"] = json!("another-account");
+            reply["id_token"] = json!(format!(
+                "e30.{}.fake",
+                URL_SAFE_NO_PAD.encode(claims.to_string())
+            ));
+        } else {
+            reply[bad] = json!("invalid");
+        }
+        Mock::given(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(reply))
+            .expect(1)
+            .mount(&up)
+            .await;
+        assert!(g.access(&u, None).await.is_err(), "{bad}");
+        assert_eq!(
+            g.status(&u).await.expect("status").relink_reason,
+            Some(RelinkReason::Quarantined)
+        );
+        g.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn streaming_deltas_do_not_take_the_record_lock_and_disconnect_releases_permits() {
+    let dir = tempfile::tempdir().expect("temp");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("private");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("listener");
+    let addr = listener.local_addr().expect("address");
+    let fake = axum::Router::new().route(
+        "/responses",
+        axum::routing::post(|| async {
+            Body::from_stream(futures::stream::unfold(0, |step| async move {
+                let bytes = match step {
+                    0 => Bytes::from_static(b"data: {\"type\":\"response.in_progress\"}\n\n"),
+                    1 => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        Bytes::from_static(
+                            b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}\n\n",
+                        )
+                    }
+                    2 => {
+                        tokio::time::sleep(Duration::from_millis(400)).await;
+                        Bytes::from(completed("after-abandon"))
+                    }
+                    _ => return None,
+                };
+                Some((Ok::<_, std::io::Error>(bytes), step + 1))
+            }))
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, fake).await });
+    let g = Arc::new(Gateway::for_test(dir.path(), &format!("http://{addr}")).expect("gateway"));
+    let u = UserId("stream-payer".into());
+    seed(&g, &u, bundle(now() + 3600)).await;
+    let key = g
+        .mint(&ContainerId::Judge { payer: u.clone() })
+        .await
+        .expect("key");
+    let response = call(
+        g.model_router(),
+        "POST",
+        "/v1/responses",
+        key.key.expose(),
+        json!({"store":false,"stream":true}),
+    )
+    .await;
+    let mut body = response.into_body();
+    body.frame()
+        .await
+        .expect("first frame")
+        .expect("first chunk");
+    let tx = g.store.lock(&u).await.expect("hold credential lock");
+    tokio::time::timeout(Duration::from_millis(200), body.frame())
+        .await
+        .expect("delta forwarding cannot wait for credential lock")
+        .expect("frame")
+        .expect("chunk");
+    drop(tx);
+    drop(body);
+    tokio::time::timeout(Duration::from_millis(200), async {
+        while g.streams.available_permits() != 64 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("prompt permit release before upstream completion");
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while g
+            .usage(&u, Some(&key.id))
+            .await
+            .expect("usage")
+            .usage
+            .input_tokens
+            != 10
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("bounded drain captures final usage");
+    g.shutdown().await;
+    server.abort();
+    assert!(matches!(server.await, Err(error) if error.is_cancelled()));
+}
+
+#[tokio::test]
+async fn retired_key_usage_stays_addressable_for_worker_reconciliation() {
+    let (_d, _up, g, u) = fixture().await;
+    seed(&g, &u, bundle(now() + 3600)).await;
+    let container = ContainerId::Judge { payer: u.clone() };
+    let key = g.mint(&container).await.expect("key");
+    g.store
+        .meter(
+            &u,
+            &key.id,
+            "late-id",
+            Usage {
+                input_tokens: 12,
+                ..Usage::default()
+            },
+        )
+        .await
+        .expect("meter");
+    g.mint(&container).await.expect("rotate");
+    assert!(g.authenticate(key.key.expose()).await.is_err());
+    let response = call(
+        g.admin_router(),
+        "GET",
+        &format!("/admin/keys/{}/usage", key.id),
+        &"k".repeat(32),
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = serde_json::from_slice(&collect(response).await).expect("usage");
+    assert_eq!(body["usage"]["input_tokens"], 12);
     g.shutdown().await;
 }

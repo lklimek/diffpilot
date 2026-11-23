@@ -68,11 +68,29 @@ pub enum Error {
     /// Startup configuration is invalid.
     #[error("gateway configuration is invalid")]
     Configuration,
+    /// Model concurrency or retained accounting capacity is exhausted.
+    #[error("gateway capacity is temporarily exhausted")]
+    Busy,
+}
+
+impl Error {
+    fn log_storage(&self) {
+        match self {
+            Self::Io(error) => {
+                tracing::error!(kind = ?error.kind(), "gateway durable storage operation failed")
+            }
+            Self::Secret(_) => tracing::error!("gateway encrypted storage operation failed"),
+            Self::Json(_) => tracing::error!("gateway stored record could not be decoded"),
+            _ => (),
+        }
+    }
 }
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
+        self.log_storage();
         let (status, code) = match &self {
+            Self::Busy => (StatusCode::SERVICE_UNAVAILABLE, "gateway_busy"),
             Self::Key => (StatusCode::UNAUTHORIZED, "invalid_virtual_key"),
             Self::Unlinked => (StatusCode::FORBIDDEN, "credential_unlinked"),
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
@@ -137,6 +155,10 @@ pub struct Gateway {
     links: LinkAttempts,
     tasks: Mutex<JoinSet<()>>,
     models: Mutex<HashMap<UserId, proxy::Models>>,
+    refreshes: Mutex<JoinSet<()>>,
+    stopping: std::sync::atomic::AtomicBool,
+    key_streams: Mutex<HashMap<String, std::sync::Weak<tokio::sync::Semaphore>>>,
+    drains: Arc<tokio::sync::Semaphore>,
     streams: Arc<tokio::sync::Semaphore>,
 }
 
@@ -169,6 +191,10 @@ impl Gateway {
             links: Arc::default(),
             tasks: Mutex::new(JoinSet::new()),
             models: Mutex::default(),
+            refreshes: Mutex::new(JoinSet::new()),
+            stopping: std::sync::atomic::AtomicBool::new(false),
+            key_streams: Mutex::default(),
+            drains: Arc::new(tokio::sync::Semaphore::new(16)),
             streams: Arc::new(tokio::sync::Semaphore::new(64)),
         })
     }
@@ -183,8 +209,24 @@ impl Gateway {
         http::admin_router(self.clone())
     }
 
-    /// Aborts and joins every device poll and stream pump before process exit.
+    /// Settles in-flight refreshes for up to 50 seconds, then joins background tasks.
     pub async fn shutdown(&self) {
+        let mut refreshes = self.refreshes.lock().await;
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if tokio::time::timeout(Duration::from_secs(50), async {
+            while refreshes.join_next().await.is_some() {}
+        })
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                "gateway refresh shutdown deadline expired; unresolved generations require relink"
+            );
+            refreshes.abort_all();
+            while refreshes.join_next().await.is_some() {}
+        }
+        drop(refreshes);
         let mut tasks = self.tasks.lock().await;
         tasks.abort_all();
         while tasks.join_next().await.is_some() {}
@@ -196,13 +238,15 @@ impl Gateway {
         if tx.record.bundle.is_none() || tx.record.reason.is_some() {
             return Err(Error::Unlinked);
         }
-        for key in tx
+        tx.key_capacity()?;
+        for (id, key) in tx
             .record
             .keys
-            .values_mut()
-            .filter(|k| &k.container == container)
+            .iter_mut()
+            .filter(|(_, k)| !k.revoked && &k.container == container)
         {
             key.revoked = true;
+            self.store.retire_key(id)?;
         }
         let key = random_token()?;
         let id = digest(key.as_bytes());
@@ -213,10 +257,11 @@ impl Gateway {
                 container: container.clone(),
                 expires_at,
                 revoked: false,
+                archived_usage: Usage::default(),
             },
         );
-        self.store.index_key(&id, user)?;
         tx.save()?;
+        self.store.index_key(&id, user)?;
         Ok(MintedKey {
             id,
             key: Secret::new(key),
@@ -226,13 +271,14 @@ impl Gateway {
 
     async fn revoke(&self, container: &ContainerId) -> Result<(), Error> {
         let mut tx = self.store.lock(payer(container)).await?;
-        for key in tx
+        for (id, key) in tx
             .record
             .keys
-            .values_mut()
-            .filter(|k| &k.container == container)
+            .iter_mut()
+            .filter(|(_, k)| !k.revoked && &k.container == container)
         {
             key.revoked = true;
+            self.store.retire_key(id)?;
         }
         tx.save()
     }
@@ -241,11 +287,12 @@ impl Gateway {
         let id = digest(key.as_bytes());
         let user = self.store.key_user(&id)?;
         let tx = self.store.lock(&user).await?;
-        if !tx
-            .record
-            .keys
-            .get(&id)
-            .is_some_and(|k| !k.revoked && k.expires_at > now())
+        if !self.store.key_live(&id)
+            || !tx
+                .record
+                .keys
+                .get(&id)
+                .is_some_and(|k| !k.revoked && k.expires_at > now())
         {
             return Err(Error::Key);
         }
@@ -254,10 +301,16 @@ impl Gateway {
 
     async fn usage(&self, user: &UserId, key: Option<&str>) -> Result<PayerUsage, Error> {
         let tx = self.store.lock(user).await?;
-        let mut usage = Usage {
-            requests: Some(0),
-            ..Usage::default()
+        let mut usage = match key {
+            Some(id) => tx
+                .record
+                .keys
+                .get(id)
+                .map(|key| key.archived_usage)
+                .unwrap_or_default(),
+            None => tx.record.archived_usage,
         };
+        usage.requests = Some(usage.requests.unwrap_or(0));
         for meter in tx
             .record
             .responses

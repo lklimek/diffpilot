@@ -19,6 +19,43 @@ pub(super) struct Models {
 }
 
 pub(super) fn validate_body(value: &Value) -> Result<(), Error> {
+    const FIELDS: &[&str] = &[
+        "model",
+        "stream",
+        "service_tier",
+        "input",
+        "tools",
+        "tool_choice",
+        "parallel_tool_calls",
+        "reasoning",
+        "store",
+        "stream_options",
+        "include",
+        "prompt_cache_key",
+        "prompt_cache_options",
+        "text",
+        "client_metadata",
+        "access_programs",
+        "request_country",
+    ];
+    for field in value.as_object().ok_or(Error::Body)?.keys() {
+        if !FIELDS.contains(&field.as_str()) {
+            let member = field
+                .chars()
+                .take(64)
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect::<String>();
+            tracing::warn!(member, "gateway refused an unsupported model request field");
+            return Err(Error::Body);
+        }
+    }
+    if value
+        .get("tool_choice")
+        .is_some_and(|choice| !matches!(choice.as_str(), Some("auto" | "none" | "required")))
+    {
+        tracing::warn!("gateway refused an unsupported tool selection");
+        return Err(Error::Body);
+    }
     if value.get("store") != Some(&Value::Bool(false))
         || value.get("stream") != Some(&Value::Bool(true))
         || value.get("previous_response_id").is_some()
@@ -124,10 +161,10 @@ impl Gateway {
             request = request.header(name, value);
         }
         request = request
-            .bearer_auth(&access.bundle.access)
-            .header("chatgpt-account-id", &access.bundle.account)
+            .bearer_auth(access.token.expose())
+            .header("chatgpt-account-id", &access.account)
             .header("accept-encoding", "identity");
-        if access.bundle.fedramp {
+        if access.fedramp {
             request = request.header("X-OpenAI-Fedramp", "true");
         }
         if let Some(etag) = etag {
@@ -150,12 +187,41 @@ impl Gateway {
         if let Some(body) = &body {
             validate_body(body)?;
         }
-        let _permit = self
-            .streams
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| Error::Configuration)?;
+        let key_semaphore = {
+            let mut keys = self.key_streams.lock().await;
+            keys.retain(|_, semaphore| semaphore.strong_count() > 0);
+            if let Some(semaphore) = keys.get(&key).and_then(std::sync::Weak::upgrade) {
+                semaphore
+            } else {
+                let semaphore = Arc::new(tokio::sync::Semaphore::new(2));
+                keys.insert(key.clone(), Arc::downgrade(&semaphore));
+                semaphore
+            }
+        };
+        let permits = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            let key_permit = key_semaphore
+                .acquire_owned()
+                .await
+                .map_err(|_| Error::Busy)?;
+            let global = self
+                .streams
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| Error::Busy)?;
+            Ok::<_, Error>((key_permit, global))
+        })
+        .await
+        .map_err(|_| Error::Busy)??;
+        let expires_at = self
+            .store
+            .lock(&user)
+            .await?
+            .record
+            .keys
+            .get(&key)
+            .ok_or(Error::Key)?
+            .expires_at;
         let access = self.access(&user, None).await?;
         let models = body.is_none();
         let etag = if models {
@@ -180,6 +246,7 @@ impl Gateway {
             )
             .await?;
         let generation = if response.status() == StatusCode::UNAUTHORIZED {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let access = self.access(&user, Some(access.generation)).await?;
             response = self
                 .send_model(
@@ -196,6 +263,13 @@ impl Gateway {
                 // A rejection of an older generation must not poison a newer link/refresh.
                 if tx.record.generation == access.generation {
                     tx.record.reason = Some(contracts::gateway::RelinkReason::Terminal);
+                    tx.outcome(
+                        "model",
+                        "terminal",
+                        Some(401),
+                        Some("confirmed_unauthorized"),
+                        super::auth::request_id(response.headers()),
+                    );
                     tx.save()?;
                 }
                 return Err(Error::Unlinked);
@@ -261,15 +335,52 @@ impl Gateway {
             return Ok((status, output_headers, bytes).into_response());
         }
         let store = self.store.clone();
+        let drains = self.drains.clone();
         let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
         let mut tasks = self.tasks.lock().await;
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
-            let _permit = _permit;
+            let mut permits = Some(permits);
+            let mut drain_permit = None;
+            let mut drain_deadline = None;
+            let mut liveness = tokio::time::interval(std::time::Duration::from_secs(1));
+            liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut stream = response.bytes_stream();
             let mut tap = Tap::default();
+            let mut metered = std::collections::BTreeSet::new();
             let mut sender = Some(sender);
-            while let Some(chunk) = stream.next().await {
+            loop {
+                let chunk = tokio::select! {
+                    biased;
+                    _ = async { if let Some(sender) = &sender { sender.closed().await } else { std::future::pending::<()>().await } } => {
+                        sender = None;
+                        permits.take();
+                        match drains.clone().try_acquire_owned() {
+                            Ok(permit) => drain_permit = Some(permit),
+                            Err(_) => { tracing::warn!("gateway abandoned stream exceeded drain capacity; reconcile worker usage"); break; }
+                        }
+                        drain_deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+                        continue;
+                    }
+                    _ = async { if let Some(at) = drain_deadline { tokio::time::sleep_until(at).await } else { std::future::pending::<()>().await } } => {
+                        tracing::warn!("gateway abandoned stream exceeded drain deadline; reconcile worker usage");
+                        break;
+                    }
+                    _ = liveness.tick() => {
+                        if sender.is_some() && (expires_at <= super::now() || !store.key_live(&key)) {
+                            sender = None;
+                            permits.take();
+                            match drains.clone().try_acquire_owned() {
+                                Ok(permit) => drain_permit = Some(permit),
+                                Err(_) => break,
+                            }
+                            drain_deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+                        }
+                        continue;
+                    }
+                    chunk = stream.next() => chunk,
+                };
+                let Some(chunk) = chunk else { break; };
                 let bytes = match chunk {
                     Ok(bytes) => bytes,
                     Err(_) => {
@@ -338,33 +449,33 @@ impl Gateway {
                         }
                     }
                     if let Ok(Some((id, usage))) = completed
-                        && store.meter(&user, &key, &id, usage).await.is_err()
+                        && !metered.contains(&id)
                     {
-                        if let Some(sender) = sender.take() {
-                            let _ = sender
-                                .send(Err(std::io::Error::other("model usage persistence failed")))
-                                .await;
+                        if metered.len() >= 256 || store.meter(&user, &key, &id, usage).await.is_err() {
+                            if let Some(sender) = sender.take() {
+                                let _ = sender.send(Err(std::io::Error::other("model usage persistence failed"))).await;
+                            }
+                            return;
                         }
-                        return;
+                        metered.insert(id);
                     }
                 }
-                // If the worker disconnects, drain the upstream to capture its final response ID.
-                if let Some(channel) = sender.take() {
-                    let live = store.lock(&user).await.is_ok_and(|tx| {
-                        tx.record
-                            .keys
-                            .get(&key)
-                            .is_some_and(|k| !k.revoked && k.expires_at > super::now())
-                    });
-                    if !live {
-                        let _ = channel
-                            .send(Err(std::io::Error::other("virtual key retired")))
-                            .await;
-                    } else if channel.send(Ok(bytes)).await.is_ok() {
-                        sender = Some(channel);
+                if let Some(channel) = sender.as_ref() {
+                    tokio::select! {
+                        _ = channel.send(Ok(bytes)) => {}
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                            sender = None;
+                            permits.take();
+                            match drains.clone().try_acquire_owned() {
+                                Ok(permit) => drain_permit = Some(permit),
+                                Err(_) => break,
+                            }
+                            drain_deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
+                        }
                     }
                 }
             }
+            drop(drain_permit);
         });
         let stream = futures::stream::unfold(receiver, |mut receiver| async move {
             receiver.recv().await.map(|item| (item, receiver))
@@ -455,7 +566,7 @@ pub(super) fn completion(event: &Value) -> Result<Option<(String, Usage)>, Error
     let id = response
         .get("id")
         .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
+        .filter(|id| !id.is_empty() && id.len() <= 256)
         .ok_or(Error::Usage)?;
     let usage = response.get("usage").ok_or(Error::Usage)?;
     let usage = Usage {
