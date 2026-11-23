@@ -21,10 +21,11 @@ export function slackName(login: string, names: SlackName[]): string {
   return names.find((name) => name.login.toLowerCase() === lower)?.slack ?? atLogin(login);
 }
 
-/** A copied list: Markdown lines as plain text, the same lines with anchors as HTML. */
+/** What to copy: plain text, and for a copied list the same lines with anchors as HTML. */
 export interface Clip {
   text: string;
-  html: string;
+  /** Absent for text that must stay plain (a token, a prompt): only `text/plain` is written. */
+  html?: string;
 }
 
 const escapeHtml = (value: string) =>
@@ -50,9 +51,15 @@ export function copyText(lines: CopyLine[]): Clip {
   return { text: rows.map((r) => r.text).join("\n"), html: rows.map((r) => r.html).join("<br>") };
 }
 
-/** Copies from a `copy` event of `execCommand`: works without a secure context and still sets both formats. */
+/** Copies from a `copy` event of `execCommand`: works without a secure context and still sets the same formats. */
 function copyByEvent({ text, html }: Clip): boolean {
   const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  // A focused text field's selection, given back with the focus.
+  const field =
+    focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement ? focused : null;
+  const start = field?.selectionStart ?? null;
+  const end = field?.selectionEnd ?? null;
+  const direction = field?.selectionDirection ?? undefined;
   // A selection to copy, for browsers that fire no copy event without one.
   const area = document.createElement("textarea");
   area.value = text;
@@ -63,7 +70,7 @@ function copyByEvent({ text, html }: Clip): boolean {
   const onCopy = (event: ClipboardEvent) => {
     if (!event.clipboardData) return;
     event.clipboardData.setData("text/plain", text);
-    event.clipboardData.setData("text/html", html);
+    if (html !== undefined) event.clipboardData.setData("text/html", html);
     event.preventDefault();
   };
   document.addEventListener("copy", onCopy);
@@ -77,26 +84,32 @@ function copyByEvent({ text, html }: Clip): boolean {
     document.removeEventListener("copy", onCopy);
     area.remove();
     focused?.focus({ preventScroll: true });
+    if (field && start !== null && end !== null) field.setSelectionRange(start, end, direction);
   }
 }
 
 /**
- * Writes `clip` as HTML and plain text; false when the browser refused. The Clipboard API needs a secure context:
- * over plain HTTP (the LAN deployment) a `copy` event carries both formats instead.
+ * Writes `clip` as plain text, and as HTML when it has one; false when the browser refused. The Clipboard API needs
+ * a secure context: over plain HTTP (the LAN deployment) a `copy` event carries the same formats instead.
  */
 export async function writeClipboard(clip: Clip): Promise<boolean> {
-  if (window.isSecureContext && navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
-    try {
-      await navigator.clipboard.write([
+  const api = window.isSecureContext ? navigator.clipboard : undefined;
+  try {
+    if (clip.html === undefined && api?.writeText) {
+      await api.writeText(clip.text);
+      return true;
+    }
+    if (clip.html !== undefined && api?.write && typeof ClipboardItem !== "undefined") {
+      await api.write([
         new ClipboardItem({
           "text/html": new Blob([clip.html], { type: "text/html" }),
           "text/plain": new Blob([clip.text], { type: "text/plain" }),
         }),
       ]);
       return true;
-    } catch {
-      // Refused (permission, focus): the copy event below may still work within the same click.
     }
+  } catch {
+    // Refused (permission, focus): the copy event below may still work within the same click.
   }
   return copyByEvent(clip);
 }

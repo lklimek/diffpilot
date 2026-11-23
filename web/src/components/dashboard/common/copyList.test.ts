@@ -112,6 +112,48 @@ describe("writeClipboard", () => {
     button.remove();
   });
 
+  it("plain text only: writeText in a secure context, and a copy event over plain HTTP sets no HTML", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const write = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { value: { writeText, write }, configurable: true });
+    vi.stubGlobal("isSecureContext", true);
+    vi.stubGlobal("ClipboardItem", class {});
+    expect(await writeClipboard({ text: "srp_secret" })).toBe(true);
+    expect(writeText).toHaveBeenCalledWith("srp_secret");
+    expect(write).not.toHaveBeenCalled();
+
+    vi.stubGlobal("isSecureContext", false);
+    const data = new Map<string, string>();
+    Object.defineProperty(document, "execCommand", {
+      value: () => {
+        const event = new Event("copy", { cancelable: true }) as ClipboardEvent;
+        Object.defineProperty(event, "clipboardData", {
+          value: { setData: (type: string, value: string) => data.set(type, value) },
+        });
+        document.dispatchEvent(event);
+        return true;
+      },
+      configurable: true,
+    });
+    expect(await writeClipboard({ text: "srp_secret" })).toBe(true);
+    expect(Object.fromEntries(data)).toEqual({ "text/plain": "srp_secret" });
+    expect(writeText).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a focused text field back its focus and selection after the copy event", async () => {
+    vi.stubGlobal("isSecureContext", false);
+    Object.defineProperty(document, "execCommand", { value: () => true, configurable: true });
+    const field = document.createElement("input");
+    field.value = "srp_secret";
+    document.body.append(field);
+    field.focus();
+    field.setSelectionRange(2, 6);
+    expect(await writeClipboard({ text: "srp_secret" })).toBe(true);
+    expect(field).toHaveFocus();
+    expect([field.selectionStart, field.selectionEnd]).toEqual([2, 6]);
+    field.remove();
+  });
+
   it("falls back to the copy event when the Clipboard API refuses", async () => {
     vi.stubGlobal("isSecureContext", true);
     vi.stubGlobal("ClipboardItem", class {});
