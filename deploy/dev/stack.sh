@@ -21,7 +21,8 @@
 #   SR_DEV_DASHBOARD_WORLD_AT the instant that world was written for; fake GitHub moves its dates so that this
 #                             instant is the start-up time (default: 2026-11-18T19:30:00Z; empty: dates as written)
 #   SR_DEV_REVIEW_LOOP_RECORDINGS review-loop reads fake GitHub serves for PR 482: threads, reviews and comments of
-#                             Comments and the PR page (default: fixtures/review-loop/github; empty: none)
+#                             Comments and the PR page (absolute path, e.g. <repo>/fixtures/review-loop/github;
+#                             default: none). A read that finds new comments queues a verify_comments job.
 #   SR_DEV_CLONE_URL        clone base (default: the fixture remote built into <state>/remotes)
 #   SR_DEV_RUNNER_LISTEN_ADDR  runner listener (default: 127.0.0.1:<free port>); for a runner in a container
 #
@@ -163,7 +164,7 @@ runner_addr="${SR_DEV_RUNNER_LISTEN_ADDR:-127.0.0.1:$runner_port}"
 recordings="${SR_DEV_GITHUB_RECORDINGS:-$repo/fixtures/pr-482/github}"
 dashboard_world="${SR_DEV_DASHBOARD_WORLD:-$repo/fixtures/dashboard/github}"
 dashboard_world_at="${SR_DEV_DASHBOARD_WORLD_AT-2026-11-18T19:30:00Z}"
-review_loop="${SR_DEV_REVIEW_LOOP_RECORDINGS-$repo/fixtures/review-loop/github}"
+review_loop="${SR_DEV_REVIEW_LOOP_RECORDINGS:-}"
 url="http://127.0.0.1:$public_port"
 github="http://127.0.0.1:$github_port"
 # A reused state dir keeps its secrets: the database holds tokens encrypted with SR_SECRET_KEY.

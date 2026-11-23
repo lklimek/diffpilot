@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import type { GithubCredentials } from "./secrets";
 
 const LAUNCHER = fileURLToPath(new URL("../../deploy/dev/stack.sh", import.meta.url));
+const REVIEW_LOOP_RECORDINGS = fileURLToPath(new URL("../../fixtures/review-loop/github", import.meta.url));
 const START_TIMEOUT_MS = Number(process.env.SR_E2E_START_TIMEOUT_MS ?? 120_000);
 const STOP_TIMEOUT_MS = 20_000;
 
@@ -129,8 +130,9 @@ function externalStack(url: string): Stack {
 /** What a spec file needs of its stack. */
 export interface StackOptions {
   /**
-   * Fake GitHub serves the review-loop reads of PR 482 (`SR_DEV_REVIEW_LOOP_RECORDINGS`). Off by default: each
-   * read that finds new comments queues an assessment job, an LLM call the other journeys do not expect.
+   * Fake GitHub serves the review-loop reads of PR 482 (`SR_DEV_REVIEW_LOOP_RECORDINGS`, fixtures/review-loop/github).
+   * Off by default: each read that finds new comments queues an assessment job, an LLM call the other journeys do
+   * not expect.
    */
   reviewLoop?: boolean;
 }
@@ -143,7 +145,10 @@ export async function startStack(
   if (external) return { stack: externalStack(external), stop: async () => {} };
 
   const args = (process.env.SR_E2E_STACK_ARGS ?? "").split(/\s+/).filter(Boolean);
-  const env = options.reviewLoop ? process.env : { ...process.env, SR_DEV_REVIEW_LOOP_RECORDINGS: "" };
+  const env = {
+    ...process.env,
+    SR_DEV_REVIEW_LOOP_RECORDINGS: options.reviewLoop ? REVIEW_LOOP_RECORDINGS : "",
+  };
   // Own process group: the launcher stops its components (each in a group of its own) on SIGTERM.
   const launcher = spawn(LAUNCHER, args, { detached: true, env, stdio: ["ignore", "pipe", "inherit"] });
   const group = launcher.pid;

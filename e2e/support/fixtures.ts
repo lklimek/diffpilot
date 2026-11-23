@@ -5,29 +5,50 @@ import { test as base } from "@playwright/test";
 import { logLeaks, stackSecrets } from "./secrets";
 import { startStack, type Stack, type StackOptions } from "./stack";
 
+/**
+ * Whether the running stack (started for `running.file` with `running.options`) serves a test of `file` asking for
+ * `options`: yes for the same file, no for another file (or none running). A file's tests share its stack, so a
+ * test asking for other options than that stack's fails instead of running on it.
+ */
+export function reusesStack(
+  running: { file: string; options: StackOptions } | null,
+  file: string,
+  options: StackOptions,
+): boolean {
+  if (running?.file !== file) return false;
+  const had = running.options.reviewLoop ?? false;
+  const wants = options.reviewLoop ?? false;
+  if (had !== wants)
+    throw new Error(
+      `${file}: its tests share one stack, started with reviewLoop: ${had}; this test asks for reviewLoop: ${wants}. Set test.use({ reviewLoop }) for the whole file.`,
+    );
+  return true;
+}
+
 /** The stack of the spec file the worker is running. */
 class StackPool {
-  private file: string | null = null;
-  private running: { stack: Stack; stop: () => Promise<void> } | null = null;
+  private running: {
+    file: string;
+    options: StackOptions;
+    stack: Stack;
+    stop: () => Promise<void>;
+  } | null = null;
   /** Leak reports of stacks stopped on a change of file; raised when the worker ends. */
   readonly failures: string[] = [];
 
   async forFile(file: string, options: StackOptions): Promise<Stack> {
-    if (this.file !== file || !this.running) {
+    if (!this.running || !reusesStack(this.running, file, options)) {
       await this.stop().catch((error: Error) => this.failures.push(error.message));
-      this.running = await startStack(options);
-      this.file = file;
+      this.running = { file, options, ...(await startStack(options)) };
     }
     return this.running.stack;
   }
 
   async stop(): Promise<void> {
     const running = this.running;
-    const file = this.file;
     this.running = null;
-    this.file = null;
     if (!running) return;
-    const { stack } = running;
+    const { stack, file } = running;
     const issued = stack.stateDir ? await stack.githubCredentials?.() : undefined;
     await running.stop();
     if (!stack.stateDir || !issued) return;
