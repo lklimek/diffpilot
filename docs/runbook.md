@@ -705,18 +705,55 @@ deploy/dev/spike-codex/build.sh
 
 ### Codex CLI upgrade (maintainers)
 
-1. In `deploy/runner/Dockerfile`, set `CODEX_VERSION`, and `CODEX_PACKAGE_SHA256` from `codex-package_SHA256SUMS` of
-   the release `rust-v<version>`; recompute the three Codex notice digests from the files at that tag. Update the
-   version check in `deploy/runner/r1-test/run.sh` and the default spike image of the smoke scripts.
-2. Read the release notes since the pinned version for `codex exec`, `config.toml` keys (`[agents]`,
-   `[features]`, `web_search`), sandbox and output-schema changes.
-3. Sub-agents stay off: run `codex debug prompt-input hi` offline (`docker run --rm --network none`, no credential,
-   a throwaway `CODEX_HOME` holding only the generated config without its MCP servers). The output must not contain
-   `spawn_agent`; with the answer-only config it must not declare `exec_command`, `write_stdin` or `view_image`.
-4. `deploy/dev/spike-codex/build.sh`, then `scripts/schema-smoke.sh` (real Codex, one job per kind).
-5. `R1_SUPERVISOR=rust deploy/runner/r1-test/run.sh` with `R1_BASE_IMAGE`, `R1_SKELETON_IMAGE`, `R1_TEST_IMAGE`
-   and `R1_RUNNER_TAG` set to tags the stack does not use, without `R1_SKIP_CODEX`.
+Heavy steps (image builds, R1, the smoke) run one at a time.
 
+1. Pins: in `deploy/runner/Dockerfile` set `CODEX_VERSION`, `CODEX_PACKAGE_SHA256` from `codex-package_SHA256SUMS`
+   of the release `rust-v<version>`, and the three Codex notice digests recomputed from the files at that tag.
+   The version also appears in the version check of `deploy/runner/r1-test/run.sh`, the default spike image of
+   `scripts/schema-smoke.sh` and `deploy/dev/*.sh`, the supply-chain row and T17 ("left by Codex") of
+   `docs/contracts/threat-model.md`, and the `ANSWER_ONLY_FEATURES` comment in
+   `crates/runner/src/provider/codex/config.rs`; record the upgrade as an ADR-002 amendment.
+2. Read the release notes since the pinned version for `codex exec`, `config.toml` keys (`[agents]`, `[features]`,
+   `web_search`, `mcp_servers`), sandbox and output-schema changes.
+3. Build the runner image and run its real-Codex container checks (fake credential, no network), with tags the
+   stack does not use: `R1_SUPERVISOR=rust R1_BASE_IMAGE=diffpilot-runner:codex-next-base
+   R1_SKELETON_IMAGE=diffpilot-runner:codex-next-skeleton R1_TEST_IMAGE=diffpilot-runner-r1-test:codex-next
+   R1_RUNNER_TAG=diffpilot-runner:codex-next deploy/runner/r1-test/run.sh` (without `R1_SKIP_CODEX`).
+4. Offline checks of the generated per-job configs in that image (no credential, no network). The configs are
+   the golden files `crates/runner/src/provider/codex/golden/config-{analysis,analysis-mcp,answer-only}.toml`
+   (fake tokens; `generated_configs_match_the_golden_files` keeps them current, `UPDATE_GOLDEN=1` rewrites them):
+
+   ```sh
+   g="$PWD/crates/runner/src/provider/codex/golden"
+   run() { # run CONFIG ENTRYPOINT ARGS...: one container, the config as its CODEX_HOME's config.toml
+     local config="$1" entrypoint="$2"; shift 2
+     docker run --rm -i --network none --user 10002:10002 --read-only --tmpfs /tmp \
+       --tmpfs /job/home:exec,uid=10002,gid=10002,mode=0700 -e HOME=/job/home -e CODEX_HOME=/job/home -w /job/home \
+       --mount "type=bind,source=$g/config-$config.toml,target=/job/home/config.toml,readonly" \
+       --entrypoint "$entrypoint" diffpilot-runner:codex-next "$@"
+   }
+   # Sub-agents off: 0 for both configs.
+   for c in analysis answer-only; do run "$c" codex debug prompt-input hi </dev/null | grep -c spawn_agent; done
+   # Code-mode tools of an answer-only job: no exec_command, write_stdin or view_image (T17).
+   run answer-only codex debug prompt-input hi </dev/null | grep -o 'declare const tools: { [a-z_]*' | sort -u
+   # Strict load with MCP servers: `thread.started` and `turn.started`, and no "required MCP servers failed" on
+   # stderr; the model call then fails for lack of network and `timeout` ends it (exit 124).
+   echo hi | run analysis-mcp timeout 30 codex exec --strict-config --json --skip-git-repo-check --ignore-rules -
+   ```
+
+5. Real Codex: `deploy/dev/spike-codex/build.sh`, then `scripts/schema-smoke.sh` (one job per kind). The smoke needs
+   its own login volume (`SMOKE_VOLUME`, default `sr-spike-codex-home`, `auth.json` at its root) and writes a
+   rotated credential back to it. Create it with its own device sign-in; never copy a credential that another
+   installation still uses (refresh tokens are single-use). A volume that was copied into a runner-state volume
+   (section "Local stack") is retired; sign in again into a new one:
+
+   ```sh
+   docker volume create sr-spike-codex-home
+   docker run --rm -it --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --read-only \
+     --tmpfs /tmp --tmpfs /home/runner:uid=10001,gid=10001,mode=0700 \
+     --mount type=volume,source=sr-spike-codex-home,target=/codex-home \
+     diffpilot-spike-codex:<version> codex login --device-auth
+   ```
 
 ### Usage and analysis statistics logs
 

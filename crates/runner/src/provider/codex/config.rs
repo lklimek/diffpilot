@@ -487,6 +487,41 @@ required = false
         assert!(!job_config(&AgentAccess::default()).contains("mcp_servers"));
     }
 
+    /// The generated configs as golden files `golden/config-*.toml` (fake credentials), the inputs of the offline
+    /// checks of a Codex upgrade (runbook "Codex CLI upgrade"). `UPDATE_GOLDEN=1` rewrites them.
+    #[test]
+    fn generated_configs_match_the_golden_files() {
+        let github = Path::new("/usr/local/bin/github-mcp-server");
+        for (name, access, answer_only) in [
+            (
+                "analysis-mcp",
+                access("http://memcan.invalid:8190/mcp"),
+                false,
+            ),
+            ("analysis", AgentAccess::default(), false),
+            ("answer-only", AgentAccess::default(), true),
+        ] {
+            let config = config_toml(
+                &model(),
+                &access,
+                github,
+                NO_PROXY,
+                AUTO_COMPACT_TOKEN_LIMIT,
+                answer_only,
+            );
+            let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("src/provider/codex/golden/config-{name}.toml"));
+            if std::env::var_os("UPDATE_GOLDEN").is_some() {
+                std::fs::write(&golden, &config).unwrap();
+            }
+            assert_eq!(
+                config,
+                std::fs::read_to_string(&golden).expect("golden file; run with UPDATE_GOLDEN=1"),
+                "{name} differs from its golden file (UPDATE_GOLDEN=1)"
+            );
+        }
+    }
+
     #[test]
     fn memcan_not_in_no_proxy() {
         for url in [
