@@ -102,6 +102,10 @@ pub struct Usage {
     pub cached_input_tokens: u64,
     /// Output tokens.
     pub output_tokens: u64,
+    /// Model requests of the call, counted from the provider's events (one per batch of tool calls, and the
+    /// answer); null when not counted.
+    #[serde(default)]
+    pub requests: Option<u64>,
 }
 
 /// Outcome and time of an LLM call.

@@ -69,6 +69,10 @@ pub(crate) struct CodexStream {
     tool_used: Option<&'static str>,
     /// Hosted web search ran although every config disables it (the caller warns).
     web_search_used: bool,
+    /// Tool calls started and not yet completed.
+    running: usize,
+    /// Model requests seen: batches of tool calls and the answer.
+    requests: u64,
     /// `codex exec` reported a sub-agent call although every config disables sub-agents (warned; best effort,
     /// its JSONL drops the V2 message tools).
     sub_agent_used: bool,
@@ -188,17 +192,34 @@ impl CodexStream {
             Line::ThreadStarted { thread_id } => self.thread_id = Some(thread_id),
             Line::TurnCompleted { usage } => {
                 self.completed = true;
+                self.requests += 1;
                 self.cumulative_usage = Some(Usage {
                     input_tokens: usage.input_tokens,
                     cached_input_tokens: usage.cached_input_tokens,
                     output_tokens: usage.output_tokens,
+                    requests: None,
                 });
             }
             Line::TurnFailed { error } => self.failure = Some(error.message),
             Line::Error { message } => self.last_error = Some(message),
-            Line::ItemStarted { item } => self.note_tool(&item),
+            Line::ItemStarted { item } => {
+                self.note_tool(&item);
+                if item.tool().is_some() {
+                    // Codex starts a response's calls together and asks the model again only after all ended.
+                    if self.running == 0 {
+                        self.requests += 1;
+                    }
+                    self.running += 1;
+                }
+            }
             Line::ItemCompleted { item } => {
                 self.note_tool(&item);
+                if item.tool().is_some() {
+                    match self.running.checked_sub(1) {
+                        Some(running) => self.running = running,
+                        None => self.requests += 1,
+                    }
+                }
                 return self.item(item);
             }
             Line::Other => {}
@@ -322,7 +343,10 @@ impl CodexStream {
                     message: format!("Codex finished the turn but exited with {}", describe(exit)),
                 });
             }
-            return Ok(self.cumulative_usage.unwrap_or_default());
+            return Ok(Usage {
+                requests: Some(self.requests),
+                ..self.cumulative_usage.unwrap_or_default()
+            });
         }
         if exit.terminated() {
             return Err(ProviderError::Cancelled);
@@ -354,6 +378,7 @@ pub(crate) fn usage_delta(before: Usage, after: Usage) -> Usage {
             .cached_input_tokens
             .saturating_sub(before.cached_input_tokens),
         output_tokens: after.output_tokens.saturating_sub(before.output_tokens),
+        requests: after.requests,
     }
 }
 
@@ -611,21 +636,58 @@ mod tests {
             input_tokens: 100,
             cached_input_tokens: 40,
             output_tokens: 10,
+            requests: None,
         };
         let after = Usage {
             input_tokens: 250,
             cached_input_tokens: 90,
             output_tokens: 13,
+            requests: Some(4),
         };
         assert_eq!(
             usage_delta(before, after),
             Usage {
                 input_tokens: 150,
                 cached_input_tokens: 50,
-                output_tokens: 3
+                output_tokens: 3,
+                requests: Some(4),
             }
         );
-        assert_eq!(usage_delta(after, before), Usage::default());
+        assert_eq!(
+            usage_delta(after, before),
+            Usage::default(),
+            "requests are the call's own"
+        );
+    }
+
+    /// Comparison report R12: model requests are counted as batches of tool calls (a call started while others of
+    /// the same response run joins them) plus the answer.
+    #[test]
+    fn model_requests_are_tool_call_batches_and_the_answer() {
+        let mut stream = CodexStream::default();
+        let command = |kind: &str, id: &str| {
+            json!({"type": kind, "item": {"id": id, "type": "command_execution", "command": "rg x", "exit_code": 0}})
+                .to_string()
+        };
+        for line in [
+            command("item.started", "a"),
+            command("item.started", "b"),
+            command("item.completed", "a"),
+            command("item.started", "c"),
+            command("item.completed", "b"),
+            command("item.completed", "c"),
+            command("item.started", "d"),
+            command("item.completed", "d"),
+            command("item.completed", "e"),
+            json!({"type": "item.completed", "item": {"id": "f", "type": "agent_message", "text": "{}"}}).to_string(),
+            json!({"type": "turn.completed", "usage": {"input_tokens": 9, "cached_input_tokens": 1, "output_tokens": 2}})
+                .to_string(),
+        ] {
+            stream.line(&line);
+        }
+        let finished = stream.finish(Exit::Code(0)).expect("finished");
+        assert_eq!(finished.cumulative_usage.requests, Some(4));
+        assert_eq!(finished.cumulative_usage.input_tokens, 9);
     }
 
     #[test]

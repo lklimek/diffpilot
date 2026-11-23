@@ -218,6 +218,7 @@ fn scan(reader: impl BufRead, mut sink: impl FnMut(&str) -> io::Result<()>) -> i
                 input_tokens: total.input_tokens,
                 cached_input_tokens: total.cached_input_tokens,
                 output_tokens: total.output_tokens,
+                requests: None,
             });
         }
         if let Some(limits) = payload.rate_limits {

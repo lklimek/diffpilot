@@ -134,7 +134,7 @@ async fn run() -> Result<(), StartError> {
         tracing::error!(
             missing = %missing.join(","),
             "SR_RUNNER_SKILLS leaves out skills that jobs require, so those jobs fail; add them to SR_RUNNER_SKILLS \
-             (default severity,check-pr-comments) or remove the setting"
+             (default severity) or remove the setting"
         );
     }
     let (provider, credential_check): (Arc<dyn LlmProvider>, CredentialCheck) =

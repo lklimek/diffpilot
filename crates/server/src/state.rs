@@ -13,6 +13,7 @@ use crate::jobs::progress::ProgressHub;
 use crate::jobs::queue::QueueExecutor;
 use crate::review_loop::feed::FeedHub;
 use crate::review_loop::notify::NotifyHub;
+use crate::review_loop::seen::ReportReads;
 
 /// State shared by all handlers; cheap to clone.
 #[derive(Clone, Debug)]
@@ -37,6 +38,8 @@ pub struct AppState {
     pub plugins: PluginHost,
     /// Decision feed streams and their presence (ADR-023).
     pub feed: FeedHub,
+    /// Coalesces reads after agent reports within this application (ADR-023).
+    pub report_reads: ReportReads,
     /// Wakes the notification delivery task (ADR-023).
     pub notify: NotifyHub,
 }
@@ -65,6 +68,7 @@ impl AppState {
             stopping: tokio::sync::watch::Sender::new(false),
             dashboard: DashboardHub::default(),
             feed: FeedHub::default(),
+            report_reads: ReportReads::default(),
             notify: NotifyHub::default(),
         }
     }

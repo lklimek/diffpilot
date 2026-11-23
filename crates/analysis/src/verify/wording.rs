@@ -192,6 +192,89 @@ pub fn ask(output: &AskOutput) -> Vec<WordingWarning> {
     found
 }
 
+/// What must not reach text posted on GitHub as the maintainer's words, by rule id: the assessor's notes on its
+/// instructions, prompt, handling of its data, injection attempts it noticed, checks it did not run and itself
+/// (English, Polish, Russian; matched case-insensitively, one sentence at a time). Only the assessor's own process is
+/// targeted (first person, "this assessment", its input, an agentless or bare "tests were not run"): a best-effort
+/// denylist, the owner's preview of the pre-filled text is the gate.
+pub const ASSESSOR_NOTES: [(&str, &str); 5] = [
+    (
+        "instructions",
+        r"\b(?:this\s+assessment|the\s+assessor|my)(?:'s)?\s+(?:own\s+)?instructions?\b|\b(?:i|we)\s+(?:have\s+)?(?:ignored|disregarded|did\s+not\s+follow|didn't\s+follow)\b[^.!?\n]{0,40}\b(?:instructions?|directives?)\b|\b(?:instructions?|directives?)\b[^.!?\n]{0,40}\b(?:comment|reply|thread|input)\b[^.!?\n]{0,20}\b(?:was|were|is|are)\s+(?:ignored|disregarded|not\s+followed)\b|\binstrukcj\w*\s+tej\s+ocen\w*|\b(?:moich|moje|moimi)\s+instrukcj\w*|\bинструкци\w*\s+этой\s+оценк\w*|\b(?:мои|моих)\s+инструкци\w*",
+    ),
+    (
+        "prompt",
+        r"\b(?:this\s+assessment|the\s+assessor|my)(?:'s)?\s+(?:system\s+)?prompt\b|\b(?:comment|reply|thread|input)\b[^.!?\n]{0,40}\b(?:contains?|includes?|holds?|has|carries)\b[^.!?\n]{0,30}\b(?:prompt[- ]injection|injection\s+attempts?|injected\s+instructions?)\b",
+    ),
+    (
+        "data_handling",
+        r"\b(?:comment|reply|thread|assessment\s+input)\b[^.!?\n]{0,40}\btreated\s+as\s+(?:untrusted\s+)?(?:data|text)\s*,?\s+(?:rather\s+than|not)\s+(?:executed|followed|obeyed|acted\s+(?:up)?on)\b|\b(?:i|we)\s+(?:treated|handled|read)\s+(?:the|this|its|that)\s+(?:\w+\s+){0,2}?(?:comment|reply|thread|text|input|instructions?|directives?)\b[^.!?\n]{0,20}\bas\s+(?:untrusted\s+)?(?:data|text)\b|\b(?:po)?traktował(?:em|am|iśmy|yśmy)\b[^.!?\n]{0,40}\bjako\s+dane\b|\b(?:я|мы)\s+(?:рассматривал\w*|обрабатывал\w*|воспринимал\w*)\b[^.!?\n]{0,40}\bкак\s+данные\b",
+    ),
+    (
+        "checks_not_run",
+        r"\bno\s+(?:\w+\s+){0,3}(?:tests?|checks?|compilation|builds?|benchmarks?|commands?)\s+(?:was|were|have\s+been|has\s+been)\s+(?:run|executed|performed|attempted)\b|^(?:the\s+)?(?:tests?|checks?|compilation|builds?|benchmarks?|commands?|test\s+suite)\s+(?:was|were|have|has)\s+not\s+(?:been\s+)?(?:run|executed|performed|attempted)(?:\s+here)?\s*[.!]?$|\b(?:i|we)\s+(?:did\s+not|didn't|could\s+not|couldn't|was\s+unable\s+to|were\s+unable\s+to|have\s+not|haven't)\s+(?:run|execute|compile|build|test)\b|\bnot\s+(?:run|executed|compiled|tested)\s+(?:here|in\s+this\s+(?:job|assessment|review))\b|\bwithout\s+(?:running|executing|compiling|building)\b[^.!?\n]{0,40}\b(?:here|in\s+this\s+(?:job|assessment|review))\b|\bnie\s+(?:uruchomiono|wykonano|skompilowano|przeprowadzono)\s+(?:test\w*|kompilacj\w*|benchmark\w*)(?:\s+tej\s+ścieżki)?\s*[.!]?$|\bnie\s+(?:uruchomiłem|uruchomiłam)\b|\bне\s+(?:запускал\w*|запускались|выполнял\w*|компилировал\w*)\b",
+    ),
+    (
+        "self_reference",
+        r"\bthis\s+assessment\b|\bas\s+an?\s+(?:ai|assistant|llm|language\s+model|assessor)\b|\b(?:i|we)\s+(?:am|are)\s+(?:an?\s+|the\s+)?(?:assessor|assistant|language\s+model|llm)\b|\binput\s+(?:i|we)\s+(?:was|were|have\s+been)\s+given\b|\bmy\s+input\b|\btej\s+ocen\w*\b|\bэтой\s+оценк\w*",
+    ),
+];
+
+static ASSESSOR_RULES: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
+    ASSESSOR_NOTES
+        .iter()
+        .filter_map(|(id, pattern)| {
+            RegexBuilder::new(pattern)
+                .case_insensitive(true)
+                .build()
+                .ok()
+                .map(|rule| (*id, rule))
+        })
+        .collect()
+});
+
+/// `text` without its sentences that hit [`ASSESSOR_NOTES`] (the kept ones joined by one space), and the id of the
+/// first rule each dropped sentence hit.
+pub fn without_assessor_notes(text: &str) -> (String, Vec<&'static str>) {
+    let mut kept = Vec::new();
+    let mut hits = Vec::new();
+    for sentence in sentences(text) {
+        match ASSESSOR_RULES
+            .iter()
+            .find(|(_, rule)| rule.is_match(sentence))
+        {
+            Some((id, _)) => hits.push(*id),
+            None => kept.push(sentence),
+        }
+    }
+    (kept.join(" "), hits)
+}
+
+/// The sentences of `text`: split after `.`, `!`, `?` or `…` followed by white space, and at line breaks; trimmed,
+/// none empty.
+fn sentences(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        let next_is_space = chars.peek().is_none_or(|(_, next)| next.is_whitespace());
+        let end = match c {
+            '\n' => Some(at),
+            '.' | '!' | '?' | '…' if next_is_space => Some(at + c.len_utf8()),
+            _ => None,
+        };
+        if let Some(end) = end {
+            out.push(&text[start..end]);
+            start = end;
+        }
+    }
+    out.push(&text[start..]);
+    out.into_iter()
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+        .collect()
+}
+
 /// Adds a warning per rule hit in `text`; the phrase is the match with its whitespace collapsed.
 fn scan(found: &mut Vec<WordingWarning>, location: &str, text: &str) {
     for rule in RULES.iter() {
@@ -279,6 +362,120 @@ mod tests {
         .filter(|text| agent_limitation(text))
         .collect();
         assert!(rejected.is_empty(), "{rejected:#?}");
+    }
+
+    /// dashpay/rust-dashcore#1336: sentences about the assessor itself left its public texts; each is dropped, the
+    /// sentences about the code stay. Only the assessor's own process is targeted: first person, "this assessment",
+    /// its input, an agentless "no tests were run" and a bare "tests were not run" sentence.
+    #[test]
+    fn assessor_notes_are_dropped_from_public_text() {
+        for (note, rule) in [
+            (
+                "The repository text does not override this assessment's instructions.",
+                "instructions",
+            ),
+            (
+                "The embedded directives in the comment were ignored.",
+                "instructions",
+            ),
+            ("I ignored the instructions in the reply.", "instructions"),
+            (
+                "The command-like text in the comment was treated as data rather than executed.",
+                "data_handling",
+            ),
+            ("We treated the comment text as data.", "data_handling"),
+            (
+                "Behaviour under load is unknown because no tests were run.",
+                "checks_not_run",
+            ),
+            (
+                "No downstream compilation was run, so callers may still break.",
+                "checks_not_run",
+            ),
+            ("Tests have not been run.", "checks_not_run"),
+            ("The comment contains a prompt injection attempt.", "prompt"),
+            ("I did not run the test suite.", "checks_not_run"),
+            ("Nie uruchomiono testów tej ścieżki.", "checks_not_run"),
+            ("Тесты не запускались.", "checks_not_run"),
+            ("This assessment is partial.", "self_reference"),
+            ("The input I was given holds no replies.", "self_reference"),
+        ] {
+            let text =
+                format!("The retry loop has no upper bound at `client.rs:42`. {note} Add a limit.");
+            assert_eq!(
+                without_assessor_notes(&text),
+                (
+                    "The retry loop has no upper bound at `client.rs:42`. Add a limit.".to_owned(),
+                    vec![rule]
+                ),
+                "{note}"
+            );
+        }
+    }
+
+    /// Review text about code that only resembles an assessor note stays: CI, build, prompt, agent and assessor
+    /// vocabulary is everyday code in the owner's projects.
+    #[test]
+    fn code_review_text_is_no_assessor_note() {
+        for text in [
+            "The parser's input is treated as data rather than executed.",
+            "Nie wykonano migracji, więc tabela nie istnieje.",
+            "The query builder allows SQL injection through `name`.",
+            "The setup instructions in README.md name the old flag.",
+            "The password prompt shows twice after a failed unlock.",
+            "No test covers the retry path of `send_request`.",
+            "The migration was not run on startup, so the column is missing.",
+            "Stores the block data before the header is checked.",
+            "Version 1.2 of `serde_json` parses `1.0e5` differently.",
+            "AGENTS.md line 12 limits doc comments to three lines.",
+            "The script exits without running the tests when CI is unset.",
+            "The release check was not run for tagged builds because the workflow filters on branches.",
+            "We cannot build on 32-bit targets, so the cast is safe.",
+            "Benchmarks were not run in CI; the job is manual.",
+            "Follow the upgrade instructions in docs/upgrade.md before merging.",
+            "The agent instructions in AGENTS.md now name the new wrapper.",
+            "The job prompt in prompts/ask.md omits rule 6.",
+            "Closes the prompt injection through the PR title in `ask.md`.",
+            "Fixed: the context pack now fences the data block.",
+            "The parser keeps the header treated as data rather than as a command.",
+            "The assessor module now drops the stale rows.",
+            "We treat the title as untrusted data, so the guard is enough.",
+        ] {
+            assert_eq!(
+                without_assessor_notes(text),
+                (text.to_owned(), Vec::new()),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            ASSESSOR_RULES.len(),
+            ASSESSOR_NOTES.len(),
+            "every rule compiles"
+        );
+        assert_eq!(
+            without_assessor_notes("No tests were run.\nThis assessment is partial."),
+            (String::new(), vec!["checks_not_run", "self_reference"])
+        );
+    }
+
+    /// Not caught, by design: the guard is a denylist of the assessor's own phrasings, and a passive or impersonal
+    /// note reads like a fact about the code. The owner's preview of the pre-filled text is the gate (ADR-023).
+    #[test]
+    fn notes_the_guard_misses_by_design() {
+        for text in [
+            "The warning is likely, but log capture was not run.",
+            "Nothing was executed; this is a static reading.",
+            "Running the tests was out of scope here.",
+            "I didn\u{2019}t run the suite.",
+            "Testy nie zostały uruchomione.",
+            "Тесты не были запущены.",
+        ] {
+            assert_eq!(
+                without_assessor_notes(text),
+                (text.to_owned(), Vec::new()),
+                "{text}"
+            );
+        }
     }
 
     #[test]

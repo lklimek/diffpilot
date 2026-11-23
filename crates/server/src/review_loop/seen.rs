@@ -2,7 +2,7 @@
 //! after an agent's `done` report, and the fact "seen on GitHub" for each done effect a read finds there.
 
 use std::collections::HashSet;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use contracts::api::review_loop::{Effect, EffectKind, EffectState, ReportOutcome};
@@ -18,28 +18,51 @@ use crate::state::AppState;
 /// How long after a `done` report the pull request is read again; reports in between share the read.
 pub const REPORT_READ_DELAY: Duration = Duration::from_secs(10);
 
-/// Pull requests with a read scheduled after a report.
-static SCHEDULED: LazyLock<Mutex<HashSet<i64>>> = LazyLock::new(Mutex::default);
+/// Pull requests with a report read scheduled in one application state; clones share reservations.
+#[derive(Clone, Debug, Default)]
+pub struct ReportReads(Arc<Mutex<HashSet<i64>>>);
+
+impl ReportReads {
+    fn schedule(&self, pr: i64) -> Option<ScheduledRead> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(pr)
+            .then(|| ScheduledRead {
+                reads: self.clone(),
+                pr,
+            })
+    }
+}
+
+/// Releases the reservation even if the runtime cancels the sleeping task.
+struct ScheduledRead {
+    reads: ReportReads,
+    pr: i64,
+}
+
+impl Drop for ScheduledRead {
+    fn drop(&mut self) {
+        self.reads
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.pr);
+    }
+}
 
 /// After an agent's `done` report on pull request `pull_request_id` (also a repeated one): reads it from GitHub
 /// [`REPORT_READ_DELAY`] later with the GitHub sign-in of `user` (the token's owner), which marks the effects it
 /// finds as seen. A read refused as too soon after another one is scheduled again: that read may have ended before
 /// a report this one covers.
 pub fn read_after_report(state: &AppState, tenant: &str, user: &str, pull_request_id: i64) {
-    if !SCHEDULED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(pull_request_id)
-    {
+    let Some(scheduled) = state.report_reads.schedule(pull_request_id) else {
         return;
-    }
+    };
     let (state, tenant, user) = (state.clone(), tenant.to_owned(), user.to_owned());
     tokio::spawn(async move {
         tokio::time::sleep(REPORT_READ_DELAY).await;
-        SCHEDULED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&pull_request_id);
+        drop(scheduled);
         match read(&state, &tenant, &user, pull_request_id).await {
             Ok(()) => {}
             Err(LoopError::TooSoon) => read_after_report(&state, &tenant, &user, pull_request_id),
@@ -148,4 +171,31 @@ pub(super) async fn mark(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancelling_a_report_read_releases_its_schedule() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let state = runtime.block_on(crate::state::tests::test_state());
+        runtime.block_on(async {
+            read_after_report(&state, "tenant", "user", -17);
+        });
+        drop(runtime);
+        assert!(
+            !state
+                .report_reads
+                .0
+                .lock()
+                .expect("schedule")
+                .contains(&-17),
+            "a cancelled task must release the PR for another report"
+        );
+    }
 }

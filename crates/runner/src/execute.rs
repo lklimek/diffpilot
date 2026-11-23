@@ -330,9 +330,12 @@ impl Executor {
             SessionOutcome::StartedAfterLoss => "context pack after a lost session",
         };
         tracing::info!(job = %spec.job_id, kind = ?spec.kind, session = origin,
+            model = %spec.model.model, effort = ?spec.model.reasoning_effort,
             session_turns = %turns.map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
             input_tokens = usage.map(|u| u.input_tokens), cached_input_tokens = usage.map(|u| u.cached_input_tokens),
-            output_tokens = usage.map(|u| u.output_tokens), "job agent session summary");
+            output_tokens = usage.map(|u| u.output_tokens), requests = usage.and_then(|u| u.requests),
+            items = verify_comments::item_count(spec.kind, &spec.prompt),
+            "job agent session summary");
         to_result(spec, outcome, session_outcome, &scrubber)
     }
 
@@ -470,7 +473,7 @@ impl Executor {
 /// Why a job's kind, target and access do not fit together (ADR-018, ADR-023, threat model T17, T23): a judge job
 /// is a dashboard job and a `verify_comments` job a comments job, each the other way round too; a dashboard job
 /// carries no agent access, skills, flow file or session to resume, a `verify_comments` job no MemCan endpoint,
-/// flow file, session or skill other than its own ([`verify_comments::SKILLS`]; only the read-only GitHub token).
+/// flow file, session or skill (only the read-only GitHub token; ADR-002 amendment 2026-11-23).
 fn misfit(spec: &JobSpec) -> Option<&'static str> {
     let dashboard = matches!(spec.target, JobTarget::Dashboard { .. });
     let comments = matches!(spec.target, JobTarget::PullRequestComments(_));
@@ -486,13 +489,8 @@ fn misfit(spec: &JobSpec) -> Option<&'static str> {
     {
         return Some("a dashboard job must not carry agent access, skills or a session");
     }
-    let foreign_skill = spec
-        .skills
-        .iter()
-        .any(|skill| !verify_comments::SKILLS.contains(&skill.as_str()));
-    (comments && (holds_session || foreign_skill || spec.access.memcan.is_some())).then_some(
-        "a verify_comments job must not carry MemCan access, a session or skills other than its own",
-    )
+    (comments && (holds_session || !spec.skills.is_empty() || spec.access.memcan.is_some()))
+        .then_some("a verify_comments job must not carry MemCan access, a session or skills")
 }
 
 /// Numbers activities from 1, scrubs every known secret and then clips them, forwards at most one ready

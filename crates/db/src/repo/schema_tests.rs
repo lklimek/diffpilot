@@ -1193,6 +1193,7 @@ async fn jobs_targets_migration_applies_to_a_v1_database() {
                 input_tokens: 7,
                 cached_input_tokens: 0,
                 output_tokens: 1,
+                requests: None,
             }),
             ..crate::repo::jobs::server_result(
                 current.job_id,

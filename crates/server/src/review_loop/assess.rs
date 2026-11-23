@@ -11,18 +11,19 @@ mod prompt;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::agent::verify_comments::{
-    EarlierDecision, InputError, ItemQuestion, ThreadEntry, VerifyCommentsInput, VerifyItem,
+    EarlierDecision, InputError, ItemQuestion, ReplyAuthorKind, ThreadEntry, ThreadReply,
+    VerifyCommentsInput, VerifyItem,
 };
 use contracts::agent::{self as agent, JobKind, StrictSchemaError};
 use contracts::api::pr::PrSummary;
 use contracts::api::questions::AskAnchor;
-use contracts::api::review_loop::{CommentItemKind, ItemState};
+use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemState, Written};
 use contracts::common::LlmLanguage;
 use contracts::ids::{CommentItemId, CommitSha, JobId, PassId, QuestionId};
 use contracts::job::access::AgentAccess;
@@ -43,6 +44,10 @@ use jiff::SignedDuration;
 use sha2::{Digest, Sha256};
 
 pub use ask::{ItemAskError, answer_landed, ask_about_item, list_questions};
+pub(crate) use ingest::guard_posted;
+
+use super::clean;
+use super::context::{self, ItemContext};
 
 use crate::github::mirror::{self, MirrorError};
 use crate::github::oauth::endpoint;
@@ -61,7 +66,7 @@ pub const PASS_SPACING: SignedDuration = SignedDuration::from_mins(10);
 /// recorded day needed about 55 automatic passes, plus on-demand ones (spike S13-3).
 pub const DAILY_PASSES_PER_USER: u32 = 80;
 /// Version of `prompts/verify_comments.md` with the output schema, stored with every assessment.
-pub const VERIFY_PROMPT_VERSION: u32 = 3;
+pub const VERIFY_PROMPT_VERSION: u32 = 4;
 /// The window of the daily cap.
 const DAY: SignedDuration = SignedDuration::from_hours(24);
 
@@ -220,11 +225,22 @@ async fn request(
             }),
     };
     let head = &record.pr.head_sha;
-    let description = pr_state
+    let snapshot = pr_state
         .github_snapshot
         .clone()
-        .and_then(|value| serde_json::from_value::<super::observe::Snapshot>(value).ok())
-        .and_then(|snapshot| snapshot.description);
+        .and_then(|value| serde_json::from_value::<super::observe::Snapshot>(value).ok());
+    let description = snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.description.as_deref())
+        .and_then(clean::description);
+    let contexts = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.item_context.clone())
+        .unwrap_or_default();
+    let written = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.written.clone())
+        .unwrap_or_default();
     let purpose = purpose_hash(&record.pr.title, description.as_deref());
     let mut code = CodeReader::new(state, &record.pr);
     let mut sent = Vec::new();
@@ -237,7 +253,13 @@ async fn request(
         if !wanted {
             continue;
         }
-        let fingerprint = fingerprint(item, head, code.lines(item).await.as_deref(), &purpose);
+        let fingerprint = fingerprint(
+            item,
+            head,
+            code.lines(item).await.as_deref(),
+            &purpose,
+            contexts.get(&item.stable_key),
+        );
         if asked.is_none()
             && let Some(stored) = db.review_loop().latest_assessment(item.id).await?
             && stored.fingerprint == fingerprint
@@ -277,8 +299,14 @@ async fn request(
             .map(|text| text.chars().take(prompts::MAX_DESCRIPTION_CHARS).collect()),
         pr_context: analysis.pr_context,
         project_profile: analysis.profile,
-        items: sent_items.iter().map(|item| verify_item(item)).collect(),
-        earlier_decisions: earlier_decisions(state, pr, &sent_items).await?,
+        items: sent_items
+            .iter()
+            .map(|item| {
+                let key = &item.stable_key;
+                with_context(verify_item(item), contexts.get(key), written.get(key))
+            })
+            .collect(),
+        earlier_decisions: earlier_decisions(state, pr, &sent_items, &contexts).await?,
         question: match &question {
             Some(question) => Some(item_question(state, question, &sent_items).await?),
             None => None,
@@ -378,7 +406,7 @@ fn assessable(item: &ItemRecord) -> bool {
         )
 }
 
-/// SHA-256 hex of the PR title and description (the purpose the author states).
+/// SHA-256 hex of the PR title and description without bot blocks (the purpose the author states).
 fn purpose_hash(title: &str, description: Option<&str>) -> String {
     let mut hash = Sha256::new();
     hash.update(format!("{title}\n{}", description.unwrap_or_default()));
@@ -388,15 +416,44 @@ fn purpose_hash(title: &str, description: Option<&str>) -> String {
         .collect()
 }
 
-/// SHA-256 hex of the prompt version, the PR purpose (`purpose_hash`), the normalised comment text and the code at
-/// its lines; code that cannot be read counts as changed at every new head. The claudius skills commit is
-/// provenance only, never part of it (Q28).
-fn fingerprint(item: &ItemRecord, head: &CommitSha, code: Option<&str>, purpose: &str) -> String {
+/// SHA-256 hex of the PR purpose (`purpose_hash`), the normalised comment text, the bot's status class, the whole
+/// replies of people in its thread, which bots conceded in it ([`context::concedes`]) and the code at its lines; code
+/// that cannot be read counts as changed at every new head. Bot replies' text (re-reviews each round) and how many
+/// replies were left out are not part of it. The prompt version is not either: a new prompt alone re-assesses nothing
+/// (owner decision 2026-11-23), and the claudius skills commit is provenance only (Q28).
+fn fingerprint(
+    item: &ItemRecord,
+    head: &CommitSha,
+    code: Option<&str>,
+    purpose: &str,
+    context: Option<&ItemContext>,
+) -> String {
     let mut hash = Sha256::new();
-    hash.update(format!(
-        "{VERIFY_PROMPT_VERSION}\n{purpose}\n{}\n",
-        item.body_hash
-    ));
+    hash.update(format!("fingerprint 2\n{purpose}\n{}\n", item.body_hash));
+    let replies = context.iter().flat_map(|context| {
+        context
+            .fingerprint_replies
+            .as_ref()
+            .unwrap_or(&context.replies)
+    });
+    let people: Vec<&ThreadReply> = replies
+        .clone()
+        .filter(|reply| reply.author_kind != ReplyAuthorKind::Bot)
+        .collect();
+    let conceded: BTreeSet<String> = replies
+        .filter(|reply| context::concedes(reply))
+        .map(|reply| reply.author.to_ascii_lowercase())
+        .collect();
+    hash.update(
+        serde_json::to_vec(&(item.github.bot_status, people, conceded)).unwrap_or_default(),
+    );
+    hash.update("\n");
+    hash_lines(&mut hash, item, head, code);
+    hex(hash)
+}
+
+/// Hashes the item's path, lines and the code at them.
+fn hash_lines(hash: &mut Sha256, item: &ItemRecord, head: &CommitSha, code: Option<&str>) {
     if let Some(location) = &item.location {
         hash.update(format!("{}\n", location.path));
         if let Some(lines) = location.lines {
@@ -407,6 +464,10 @@ fn fingerprint(item: &ItemRecord, head: &CommitSha, code: Option<&str>, purpose:
             }
         }
     }
+}
+
+/// The lowercase hex of the hash.
+fn hex(hash: Sha256) -> String {
     hash.finalize()
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -492,7 +553,8 @@ impl<'a> CodeReader<'a> {
     }
 }
 
-/// An item as the agent reads it: `C<no>` and its comment, never its id or GitHub facts.
+/// An item as the agent reads it: `C<no>` and its comment (a bot's without markup), never its id or GitHub facts
+/// other than the bot's own status.
 pub(crate) fn verify_item(item: &ItemRecord) -> VerifyItem {
     VerifyItem {
         id: format!("C{}", item.no),
@@ -500,17 +562,50 @@ pub(crate) fn verify_item(item: &ItemRecord) -> VerifyItem {
         author: item.author.clone(),
         author_kind: item.author_kind,
         location: item.location.clone(),
+        commit: None,
         title: item.title.clone(),
-        body: item.body.clone(),
+        body: match item.author_kind {
+            AuthorKind::Bot => clean::bot_body(&item.body),
+            _ => item.body.clone(),
+        },
         bot_severity: item.bot_severity.clone(),
+        bot_status: item.github.bot_status,
+        replies: Vec::new(),
+        earlier_replies: 0,
     }
 }
 
-/// The standing decision (not superseded, not undone) of every other item of the pull request.
+/// `item` with the commit it was written on (the queue's `written` fact) and the replies of its thread from the last
+/// read.
+fn with_context(
+    mut item: VerifyItem,
+    context: Option<&ItemContext>,
+    written: Option<&Written>,
+) -> VerifyItem {
+    item.commit = written
+        .and_then(|written| written.commit.as_ref())
+        .map(|commit| commit.0.clone());
+    if let Some(context) = context {
+        item.replies = context
+            .replies
+            .iter()
+            .map(|reply| ThreadReply {
+                body: context::cut(&reply.body),
+                ..reply.clone()
+            })
+            .collect();
+        item.earlier_replies = context.earlier_replies;
+    }
+    item
+}
+
+/// The standing decision (not superseded, not undone) of every other item of the pull request, then for each sent
+/// item the latest reply in its thread that records a maintainer's decision.
 async fn earlier_decisions(
     state: &AppState,
     pr: i64,
     sent: &[&ItemRecord],
+    contexts: &BTreeMap<String, ItemContext>,
 ) -> Result<Vec<EarlierDecision>, AssessError> {
     let items = state.db.review_loop().items(pr).await?;
     let decisions = state.db.review_loop().pr_decisions(pr).await?;
@@ -523,8 +618,20 @@ async fn earlier_decisions(
         if let Some(stored) = standing.get(&item.id.to_string()) {
             current.push(EarlierDecision {
                 item: format!("C{}", item.no),
-                decision: stored.decision.kind,
+                decision: Some(stored.decision.kind),
                 reason: stored.decision.reason.clone(),
+            });
+        }
+    }
+    for item in sent {
+        if let Some(reply) = contexts
+            .get(&item.stable_key)
+            .and_then(context::decision_reply)
+        {
+            current.push(EarlierDecision {
+                item: format!("C{}", item.no),
+                decision: None,
+                reason: Some(context::cut(&reply.body)),
             });
         }
     }
@@ -674,10 +781,7 @@ async fn submit(
         session: None,
         working_session: None,
         context_pack: None,
-        skills: agent::verify_comments::SKILLS
-            .iter()
-            .map(|skill| (*skill).to_owned())
-            .collect(),
+        skills: Vec::new(),
         access: AgentAccess::default(),
     };
     Ok(state

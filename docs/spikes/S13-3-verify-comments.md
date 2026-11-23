@@ -145,3 +145,47 @@ Input is cumulative over the agent's model calls (cached share in brackets); wal
 | O8 | Small tail passes cost more per item in the spike (input per item at high: 78–96k for 10 items, 135k for 3; medium: 42k and 80k; comparison report R5, W10); the live passes vary as much between passes (10 items: 86–186k per item, L1–L3; 3 items: 162k, L4). The server sends a tail at once: `next` requests the rest of a full, complete pass as a continuation, which skips the spacing. Holding a tail of 1–3 items for the next window needs new logic (a minimum batch for continuations, not for an owner waiting on the page). Not changed. |
 | O9 | Necessity is the unstable field (D4, D5). The comparison report's R9 (quote the description sentence; pre-existing without a gate defaults to `out`) would move A2, A3 and A15 toward the owner but A6, A10 (pre-existing, fixed by the owner) only stay `in` through their G-DATA flag. A hypothesis; not changed without runs. |
 | O10 | The job input carries no commit or date for an item (`VerifyItem`), so `resolve` cannot be bounded to commits after the comment and a body item's lines cannot be mapped from its round's commit; T5c asks for the commit whose change removes the problem instead. A later package adds the item's round commit to the input (change request); the rule can then use `<commit>..HEAD`. Continuations, on-demand passes and the re-assessment after a prompt-version bump all count against `DAILY_PASSES_PER_USER`; whether a version-bump re-assessment should be charged to a user is a design question (not changed). |
+
+## 7. Input v1.3 and prompt v4 (2026-11-23)
+
+Owner decisions on the comparison report (R2, R3, R8, R12, R13) and O10, ADR-023 amendment of 2026-11-23: bot bodies
+without HTML, `<details>` and agent prompts; the description without CodeRabbit's summary and the PR Hygiene block;
+per item the commit it was written on, the bot's thread status and the latest replies of its thread; reply-recorded
+decisions as earlier decisions; prompt v4 with the gates, categories, necessity and checking rules in its own words and
+no skills mounted. Both runs: high effort, `scripts/verify-comments-smoke.sh` (no skills), inputs built by the server's
+own cleaning, context and render code (a throwaway test over the recorded reads,
+`/data/artifacts/diffpilot/2026-11-23/s13-3/inputs/build-v4/`; the GitHub read itself is the recorded one, rounds
+not derived, so an item's commit is its review's).
+
+| ID | Run | Agreement | Wall | Input (cached) | Output (reasoning) | Requests | Tool calls |
+|---|---|---|---|---|---|---|---|
+| V0 | R9 above (P1, v3, skills) | 8/10 | 301 s | 944k (839k) | 12.7k (4.5k) | 37 | 50 (3 skill reads) |
+| V1 | P1 replayed at `171e4796`, replies up to the decision time | 7/10 | 222 s | 756k (660k) | 9.4k (2.1k) | 32 | 48 |
+| V2 | P1 at its later head `dc28c3eb` (base `0a3d516f`), every reply | 5/10 (10/10 by outcome) | 254 s | 769k (687k) | 11.0k (3.3k) | 44 | 49 |
+
+Agreement is the owner's decision kind (A1-A10), as for V0 and V1; V2's "by outcome" also counts a kind that leads
+to the owner's outcome at the later head. Requests are estimated from the event stream as `Usage.requests` counts
+them (one per batch of tool calls and one for the answer).
+
+- V1 against the owner (A1-A10): A1, A5-A10 agree. A2 and A3 stay `fix_here` (D5, open: the necessity reason names
+  the PR's new dependence on the established-contact state), A4 flipped to `fix_here` (D4: the documentation item
+  flips between runs). Gates and pre-existing as in R9.
+- V2 is the case the commit and replies are for. The kind is the owner's for C1, C4, C5, C8 and C9 (5/10). The other
+  five reach the owner's outcome by another kind: C2 and C3 `handled_in_pr` #1195 against the owner's `follow_up_pr`
+  #1195; C6 and C10 `resolve` naming `aad9fcba`, C7 `resolve` naming `e1525efb` (the owner's fix) and the later
+  `534a2523`, against the owner's `fix_here` (the fixes are in at the later head, so `resolve` is right). C1-C4 follow
+  decisions the input already holds (their replies and `earlier_decisions`), so on those V2 measures following a
+  recorded decision, not judgement. C5, C8, C9 `upstream_issue` with the issues the replies name. The six resolved
+  threads were sent as if open; the server sends only open ones.
+- T5c holds: every `resolve` names a commit in `<commit>..HEAD` that changed the lines and cites the head line.
+  T5d mostly: no whole file was printed; 5 (V1) and 7 (V2) of about 35 ranged reads exceeded 200 lines (R9: 11 of 34,
+  longest 641; V1/V2: 456 and 451).
+- `elsewhere` without GitHub tools holds what the comment, its replies, the description or the code names (V1: 5
+  items, V2: 7).
+- Size: the P1 data block went from 37.4 KB to 30.2 KB (bot bodies 17.7 to 7.6 KB, description 14.9 to 13.3 KB,
+  2.9 KB of replies added); the template grew by 2.8 KB; the three skill reads (about 37 KB of tool output) are gone.
+  Against R9, V1 used a fifth less input, a quarter less output and wall time.
+
+O7 is measured (above). O10 is done: `VerifyItem.commit` (the bot round's head, else the review's commit). The
+charging question of O10 is moot: a new prompt version alone re-assesses nothing (ADR-023 amendment 2026-11-23).
+

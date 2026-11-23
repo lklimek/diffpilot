@@ -491,10 +491,13 @@ async fn apply_result(
         if job_state.is_terminal() {
             let job = state.db.jobs().get(auth.job).await?;
             tracing::info!(job = %auth.job, kind = job.kind.as_str(),
+                model = %job.spec.model.model, effort = ?job.spec.model.reasoning_effort,
                 input_tokens = result.usage.map(|u| u.input_tokens),
                 cached_input_tokens = result.usage.map(|u| u.cached_input_tokens),
                 output_tokens = result.usage.map(|u| u.output_tokens),
                 reasoning_output_tokens = tracing::field::Empty,
+                requests = result.usage.and_then(|u| u.requests),
+                items = contracts::agent::verify_comments::item_count(job.kind, &job.spec.prompt),
                 "job token usage");
         }
         // The provider's raw text (already scrubbed) is for operators: users see a plain sentence by its kind.
@@ -1062,6 +1065,7 @@ mod tests {
             input_tokens: 1200,
             cached_input_tokens: 900,
             output_tokens: 45,
+            requests: Some(17),
         });
         for _ in 0..2 {
             let (status, body) = harness.send(&target, Some(&claimed.token), &result).await;
@@ -1078,6 +1082,9 @@ mod tests {
                 && lines[0].contains("input_tokens=1200")
                 && lines[0].contains("cached_input_tokens=900")
                 && lines[0].contains("output_tokens=45")
+                && lines[0].contains("requests=17")
+                && lines[0].contains("model=gpt-")
+                && lines[0].contains("effort=High")
                 && lines[0].contains("analyse_flow"),
             "{}",
             lines[0]

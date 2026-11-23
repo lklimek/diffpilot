@@ -15,6 +15,7 @@ use contracts::time::Timestamp;
 use db::repo::review_loop::ObservedItem;
 use serde::{Deserialize, Serialize};
 
+use super::context::{self, ItemContext};
 use super::markers::{self, Fit, GateState};
 use crate::dashboard::score::is_bot;
 use crate::github::review_loop::{Author, PrRead, Review};
@@ -129,6 +130,9 @@ pub struct Snapshot {
     pub thread_ids: BTreeMap<String, String>,
     /// Review node id by key of a review-body item.
     pub review_ids: BTreeMap<String, String>,
+    /// What a `verify_comments` input carries of an item beyond its row, by key; none stored before it was kept.
+    #[serde(default)]
+    pub item_context: BTreeMap<String, ItemContext>,
     /// Where GitHub says each item was written, by item key; empty in a snapshot stored before it was kept.
     #[serde(default)]
     pub written: BTreeMap<String, Written>,
@@ -588,6 +592,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         });
     }
 
+    let item_context = context::of(read, bots, &thread_ids);
     let snapshot = Snapshot {
         title: read.pr.title.clone(),
         description: Some(read.pr.body.trim().to_owned()).filter(|body| !body.is_empty()),
@@ -610,6 +615,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         ),
         complete: read.complete,
         unresolved_threads: unresolved,
+        item_context,
         thread_ids,
         review_ids,
         written,

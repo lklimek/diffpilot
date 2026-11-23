@@ -404,13 +404,18 @@ demand), served by range (brief §7).
 - **Runner:** fetch and check out the head, run the agent with the job's read-only, PR-scoped installation token for
   `github-mcp-server` (to look up "elsewhere"); no session restore or save (no third session kind; ADR-004 unchanged);
   no MemCan endpoint; same uid, egress and scrubbing rules (plan §5.4 T1–T9). It never writes to GitHub.
-- **Input** (context pack, fenced as data): PR title and description, the PR context of the latest analysis if any,
-  the project profile from the base ref if present, items (comment text, location, author kind), earlier decisions on
-  this PR, and for a question mode the item and the owner's question.
-- **Batching and cost:** ≤ 10 items per job **[S-3]**; an item is re-assessed only when its comment text, its thread's
-  code lines or the PR purpose changed (fingerprint; otherwise the stored assessment is reused and shown with "code
-  at these lines unchanged since 3f9a1c2"); a daily cap per user as a code constant (80 passes **[S-3]**), the
-  remainder shown "Not assessed yet: daily limit".
+- **Input** (context pack, fenced as data): PR title and description (without CodeRabbit's summary and the PR Hygiene
+  block), the PR context of the latest analysis if any, the project profile from the base ref if present, items (comment
+  text, bots' without HTML, agent prompts and `<details>` other than findings and suggested fixes; location; author
+  kind; the commit the comment was written on; the bot's own thread status; the latest replies of its open thread, from
+  the Q-L2 read), earlier decisions on this PR (in diffpilot, or recorded by a reply such as "per maintainer decision"),
+  and for a question mode the item and the owner's question. The job mounts no claudius skill: the prompt states the
+  gates, categories, necessity rule and checking rules it needs (ADR-002 amendment 2026-11-23).
+- **Batching and cost:** ≤ 10 items per job **[S-3]**; an item is re-assessed only when its comment text, a person's
+  reply in its thread, a bot's concession in it, the bot's status class, its thread's code lines or the PR purpose
+  changed (fingerprint; a new prompt version alone re-assesses nothing; otherwise the stored assessment is reused and
+  shown with "code at these lines unchanged since 3f9a1c2"); a daily cap per user as a code constant (80 passes
+  **[S-3]**), the remainder shown "Not assessed yet: daily limit".
 - **Triggers:** opening Comments or the PR page with unassessed items; new comments or a moved head found by a read;
   "Assess again" on an item; an owner question.
 - **Priority and model:** claimed after `ask` and before dashboard ranking and batch jobs; `select_model` arm

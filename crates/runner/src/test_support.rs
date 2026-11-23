@@ -169,9 +169,13 @@ pub(crate) fn verify_input(
                 end_line: 4,
             }),
         }),
+        commit: None,
         title: "Bound the retries".to_owned(),
         body: "The loop retries forever.".to_owned(),
         bot_severity: Some("Blocking".to_owned()),
+        bot_status: None,
+        replies: Vec::new(),
+        earlier_replies: 0,
     };
     VerifyCommentsInput {
         pull_request: "acme/node-client#482".to_owned(),

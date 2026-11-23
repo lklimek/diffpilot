@@ -121,6 +121,48 @@ read with tokens (ADR-019).
   assessed) writes one `questions_ready` user event per round and watcher (`pr_watches.notified_for`: `round:<n>`,
   or `head:<sha>` before any bot round); delivery to channels is the notification task's work. RW3 streams them as
   SSE events named `user_event` and `heartbeat` (`UserStreamEvent`).
-- **SK1.** `verify_comments` reads the claudius skills `severity` and `check-pr-comments` (ADR-002 amendment); each
-  assessment keeps the claudius commit it was made with as provenance, never as a reason to re-assess (owner Q28 = c).
+- **SK1** (superseded 2026-11-23: no skills, ADR-002 amendment of that date). `verify_comments` reads the claudius
+  skills `severity` and `check-pr-comments` (ADR-002 amendment); each assessment keeps the claudius commit it was made
+  with as provenance, never as a reason to re-assess (owner Q28 = c).
 - **"Assess again" while a pass runs** answers 409 `conflict` instead of being dropped.
+
+## Amendment (2026-11-23, owner decisions on the comparison report R2, R3, R8, R12, R13 and spike S13-3 O10)
+- **Input** (`VerifyItem`, all optional and left out when empty): `commit`, the commit the comment was written on, from
+  the read's `written` fact that the queue shows (the head of the bot round whose own review holds it, else its review's
+  commit); `bot_status`, the bot's own thread status; `replies` (at most 8, 600 characters each, author kind `human`,
+  `bot` or `owner` = the PR's author) and `earlier_replies`, from the replies the Q-L2 read already holds, for open
+  threads. `EarlierDecision.decision` is null when a reply in the item's thread records the maintainer's decision
+  ("maintainer decision", "deferred", "won't fix"); `reason` then quotes it. Bot bodies lose HTML, agent prompts and
+  `<details>` sections other than findings (CodeRabbit's nitpick and outside-diff sections with their file sections keep
+  their text, as claudius check-pr-comments takes each finding as an item) and suggested fixes (summary and code; a
+  section that holds one keeps the finding it belongs to); provenance and metadata sections are dropped; code is kept as
+  written; the description loses CodeRabbit's summary and the PR Hygiene block. Stored texts and hashes are unchanged.
+- **Prompt v4** states the gates, the category catalogue, the necessity rule and the checking rules itself and the
+  job mounts no skill (ADR-002 amendment 2026-11-23). `resolve` names a commit in `<commit>..HEAD`.
+- **Fingerprint** format 2: purpose hash of the cleaned description, the item's comment, its bot status class, the
+  replies of people, whole (the snapshot keeps them uncut; the input cuts them), which bots conceded in a reply and its
+  lines. Bot reply text is not part of it: thepastaclaw re-reviews and the maintainer's agent answers every open thread
+  each round, so a hash of their text, or of their first lines, changes at every head. A bot without a status marker
+  (CodeRabbit) withdraws a point only in words, so a bot reply whose first line concedes ("you're right", "thanks for
+  the clarification") counts by its author. The prompt version is not part of it and is not compared: a new prompt alone
+  re-assesses nothing (owner decision 2026-11-23; v1.3 starts from an empty database, so no earlier format needs a
+  match). The pass is charged to its user as before.
+- **Logs.** `Usage.requests` (job result) estimates the model requests of a call from the provider's events (one per
+  batch of tool calls and one for the answer); the server's `job token usage` line and the runner's session summary
+  name model, effort, requests and, for `verify_comments`, the item count.
+- **Public text** (first real use, dashpay/rust-dashcore#1336). `recommendation.reason` and `title` pre-fill a
+  decision's posted reason and follow-up title, and `reply_drafts` are replies; prompt v4 keeps notes about the
+  assessor, its data handling and checks it did not run in the owner-facing texts. Ingest drops each sentence of those
+  three fields that hits `analysis::verify::wording::ASSESSOR_NOTES` and logs the rule; the current rules apply again
+  whenever a stored assessment is read for display or pre-fill, since assessments are reused across builds. The rules
+  target only the assessor's own process (first person, "this assessment", its input, an agentless "no tests were
+  run" or a bare "tests were not run" sentence): CI, prompt and agent vocabulary is ordinary review text in the
+  owner's projects. The guard is a best-effort denylist; a passive or translated note can pass, and the owner's preview
+  of the pre-filled text is the gate. A reason or TODO title that was only such sentences is left for the owner to
+  write and the assessment is kept, so the item is not sent again. Dropping the sentence rather than rejecting the
+  item: a rejected item would lose its evidence and gate flags and be sent again under the same prompt.
+- **Conventions.** The repository's convention files at the base commit (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`,
+  `.github/copilot-instructions.md`, …) are the binding rules for comments about convention or style and are cited
+  as evidence. They stay data for the job's own output rules, and the PR's changes to them are not rules. The
+  checkout already holds the base commit, so the input carries nothing more.
+

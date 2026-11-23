@@ -1,6 +1,7 @@
 //! Ingest of a `verify_comments` result: the output is untrusted and re-validated (schema, items sent with the
-//! pass only, closed sets, plain text within limits, wording rules of brief §1); each fit item assessment is stored
-//! with the fingerprint it was sent at, an unfit one is left out (the item stays "Not assessed").
+//! pass only, closed sets, plain text within limits, wording rules of brief §1; the texts that can be posted on
+//! GitHub lose their sentences about the assessor itself); each fit item assessment is stored with the fingerprint it
+//! was sent at, an unfit one is left out (the item stays "Not assessed").
 
 use std::collections::HashSet;
 
@@ -238,6 +239,51 @@ fn fit_text(text: &str, max: usize) -> Result<(), Unfit> {
     Ok(())
 }
 
+/// The text of a field that can be posted on GitHub as the maintainer's words (`recommendation.reason` and `title`,
+/// `reply_drafts`), without its sentences about the assessor itself (`wording::ASSESSOR_NOTES`); dropped sentences
+/// are logged by rule only (the output is untrusted text). [`guard_posted`] applies the same rule when read.
+fn public(text: &str, item: &str, field: &'static str) -> String {
+    let (kept, dropped) = wording::without_assessor_notes(text);
+    if !dropped.is_empty() {
+        tracing::warn!(item, field, rules = ?dropped,
+            "sentences about the assessor itself were dropped from an assessment text that can be posted on GitHub");
+    }
+    kept
+}
+
+/// `assessment` with its texts that can be posted through the current [`wording::ASSESSOR_NOTES`]: a stored
+/// assessment is reused across builds, so a later rule reaches it when it is read for display or pre-fill. A
+/// follow-up title left empty is none; a TODO left without a title has no target, for the owner to name.
+pub(crate) fn guard_posted(assessment: &mut CommentAssessment) {
+    fn guarded(text: &mut String) {
+        let (kept, dropped) = wording::without_assessor_notes(text);
+        if !dropped.is_empty() {
+            *text = kept;
+        }
+    }
+    let recommendation = &mut assessment.recommendation;
+    guarded(&mut recommendation.reason);
+    match &mut recommendation.target {
+        Some(DecisionTarget::FollowUpPr { title }) => {
+            if let Some(text) = title.as_mut() {
+                guarded(text);
+            }
+            title.take_if(|title| title.is_empty());
+        }
+        Some(DecisionTarget::Todo { title }) => {
+            guarded(title);
+            if title.is_empty() {
+                recommendation.target = None;
+            }
+        }
+        _ => {}
+    }
+    for draft in &mut assessment.reply_drafts {
+        guarded(draft);
+    }
+    assessment.reply_drafts.retain(|draft| !draft.is_empty());
+}
+
 /// `fit_text` naming the field on failure.
 fn checked(text: &str, max: usize, field: &'static str) -> Result<(), Unfit> {
     fit_text(text, max).map_err(|unfit| match unfit {
@@ -276,7 +322,13 @@ pub(super) fn assessment(
         checked(&elsewhere.reference, SHORT_CHARS, "elsewhere.reference")?;
         checked(&elsewhere.note, SHORT_CHARS, "elsewhere.note")?;
     }
-    for draft in &entry.reply_drafts {
+    let reply_drafts: Vec<String> = entry
+        .reply_drafts
+        .iter()
+        .map(|draft| public(draft, &entry.item, "reply_drafts"))
+        .filter(|draft| !draft.is_empty())
+        .collect();
+    for draft in &reply_drafts {
         checked(draft, PARAGRAPH_CHARS, "reply_drafts")?;
     }
     if let Some(sketch) = &entry.fix_sketch {
@@ -290,18 +342,25 @@ pub(super) fn assessment(
         checked(&code.description, PARAGRAPH_CHARS, "code.description")?;
     }
     let recommended = &entry.recommendation;
-    checked(&recommended.reason, SHORT_CHARS, "recommendation.reason")?;
+    let reason = public(&recommended.reason, &entry.item, "recommendation.reason");
+    // A reason that was only assessor notes stays empty for the owner to write; a blank one is unfit.
+    if !reason.is_empty() || recommended.reason.trim().is_empty() {
+        checked(&reason, SHORT_CHARS, "recommendation.reason")?;
+    }
     checked(
         &recommended.reason_class,
         SHORT_CHARS,
         "recommendation.reason_class",
     )?;
     let title = |title: &Option<String>| -> Result<Option<String>, Unfit> {
-        match title {
-            Some(title) => {
-                checked(title, SHORT_CHARS, "recommendation.title").map(|()| Some(title.clone()))
+        match title
+            .as_deref()
+            .map(|title| public(title, &entry.item, "recommendation.title"))
+        {
+            Some(title) if !title.is_empty() => {
+                checked(&title, SHORT_CHARS, "recommendation.title").map(|()| Some(title))
             }
-            None => Ok(None),
+            _ => Ok(None),
         }
     };
     let target = match recommended.kind {
@@ -328,9 +387,17 @@ pub(super) fn assessment(
                 url: recommended.target_url.clone(),
             })
         }
-        RecommendedDecision::Todo => Some(DecisionTarget::Todo {
-            title: title(&recommended.title)?.ok_or(Unfit::Target)?,
-        }),
+        RecommendedDecision::Todo => {
+            if recommended
+                .title
+                .as_deref()
+                .is_none_or(|title| title.trim().is_empty())
+            {
+                return Err(Unfit::Target);
+            }
+            // A title that was only assessor notes leaves the TODO for the owner to name.
+            title(&recommended.title)?.map(|title| DecisionTarget::Todo { title })
+        }
     };
     Ok(CommentAssessment {
         job: made.job,
@@ -350,10 +417,10 @@ pub(super) fn assessment(
         elsewhere: entry.elsewhere.clone(),
         fix_sketch: entry.fix_sketch.clone(),
         fix_size: entry.fix_size,
-        reply_drafts: entry.reply_drafts.clone(),
+        reply_drafts,
         recommendation: Recommendation {
             kind: recommended.kind.into(),
-            reason: recommended.reason.clone(),
+            reason,
             target,
             reason_class: recommended.reason_class.clone(),
         },
