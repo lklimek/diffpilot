@@ -241,9 +241,32 @@ export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope
 
 const OPEN = new Set(["undecided", "assessing", "asked_back", "reopened"]);
 
-/** queue.rs `waiting` over mod.rs `Loaded::queue_items`: open items the read still produces (no `gone_at`); the
- * fixture has one PR-level question of each kind at most. */
-export const waiting = (items: CommentItem[]) => items.filter((i) => OPEN.has(i.state) && !i.gone_at);
+/** The item's standing decision: its latest one, not undone (mod.rs `standing`). */
+const standing = (item: CommentItem) => {
+  const last = item.decisions.at(-1);
+  return last && !last.undone_at ? last : null;
+};
+
+/** mod.rs `Loaded::followed_up`: items listed in the (not cancelled) follow-up PR of a standing P1 decision. */
+export function followedUp(items: CommentItem[]): Set<number> {
+  return new Set(
+    items.flatMap((i) => {
+      const decision = standing(i);
+      return decision?.kind === "merge_with_follow_ups"
+        ? decision.effects
+            .filter((e) => e.kind === "follow_up_pr" && e.state !== "cancelled")
+            .flatMap((e) => e.params.item_nos)
+        : [];
+    }),
+  );
+}
+
+/** queue.rs `waiting` over mod.rs `Loaded::queue_items`: open items the read still produces (no `gone_at`) and no
+ * standing P1 decision covers; the fixture has one PR-level question of each kind at most. */
+export function waiting(items: CommentItem[]): CommentItem[] {
+  const covered = followedUp(items);
+  return items.filter((i) => OPEN.has(i.state) && !i.gone_at && !covered.has(i.no));
+}
 
 /** observe.rs `BotChangeRequest`: a bot whose latest review requests changes. */
 export interface BotChangeRequest {
@@ -251,12 +274,6 @@ export interface BotChangeRequest {
   review_id: string;
   url: string;
 }
-
-/** The item's standing decision: its latest one, not undone (mod.rs `standing`). */
-const standing = (item: CommentItem) => {
-  const last = item.decisions.at(-1);
-  return last && !last.undone_at ? last : null;
-};
 
 /** mod.rs `stale_reviews`: every item the bot raised (not resolved outside) has a standing decision and is not open. */
 export function staleReviews(requests: BotChangeRequest[], items: CommentItem[]): BotChangeRequest[] {

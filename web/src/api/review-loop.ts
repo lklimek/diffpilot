@@ -91,10 +91,12 @@ export const PREVIEW_DEBOUNCE_MS = 250;
 
 /**
  * The effects the server plans for `rows` (RC16), the reply texts it would post included; read again shortly after
- * the rows stop changing, the previous answer kept meanwhile (`current` is false until the answer is for `rows`).
- * Nothing without rows.
+ * the rows stop changing, the previous answer kept meanwhile. Each answer names the rows it was planned for
+ * (`data.rows`, their JSON); `current` is true once the answer is for `rows` and nothing is being planned. `inputs`
+ * is what else the plan depends on (a PR-level question: the PR's items); when it changes, the rows are planned
+ * again. Nothing without rows.
  */
-export function useEffectsPreview(pr: PrRef, rows: DecisionBatchRow[] | null) {
+export function useEffectsPreview(pr: PrRef, rows: DecisionBatchRow[] | null, inputs: string | null = null) {
   const draft = JSON.stringify(rows);
   const [settled, setSettled] = useState(draft);
   useEffect(() => {
@@ -103,13 +105,17 @@ export function useEffectsPreview(pr: PrRef, rows: DecisionBatchRow[] | null) {
   }, [draft]);
   const planned = JSON.parse(settled) as DecisionBatchRow[] | null;
   const query = useQuery({
-    queryKey: ["effects-preview", ...prKey(pr), settled],
-    queryFn: () => api.previewCommentEffects(pr, { rows: planned! }),
+    queryKey: ["effects-preview", ...prKey(pr), settled, inputs],
+    queryFn: async () => ({ rows: settled, items: await api.previewCommentEffects(pr, { rows: planned! }) }),
     enabled: planned !== null && planned.length > 0,
     placeholderData: keepPreviousData,
-    staleTime: Infinity,
+    // A row's plan depends only on its item (its revision is in the row); a PR-level plan also on other items.
+    staleTime: inputs === null ? Infinity : 0,
   });
-  return { ...query, current: settled === draft && !query.isPlaceholderData && !query.isFetching };
+  return {
+    ...query,
+    current: query.data?.rows === draft && !query.isPlaceholderData && !query.isFetching,
+  };
 }
 
 /** The server's "Decide the rest per recommendation" list (RC17); read again with the items. */

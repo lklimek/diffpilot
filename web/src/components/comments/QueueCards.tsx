@@ -22,6 +22,7 @@ import { useCardKeys } from "./cardKeys";
 import { COMMENT_HINT } from "./DecisionForm";
 import {
   CHOICE_LABEL,
+  decideBlocked,
   EFFECT_WORD,
   missingInput,
   previewFor,
@@ -32,7 +33,7 @@ import {
   type EffectsPreviewState,
 } from "./decisions";
 import { GateChip, itemId, sourceText } from "./parts";
-import { PlannedEffects, useDraft } from "./PlannedEffects";
+import { DecideNote, PlannedEffects, useDraft } from "./PlannedEffects";
 
 const INPUT = "w-full rounded-md border border-muted bg-surface px-2 py-1 text-text";
 
@@ -77,9 +78,9 @@ interface GroupCardProps {
   error: string | null;
   storageKey: string;
   /** The server's plan of the group's rows (RC16). */
-  preview?: EffectsPreviewState;
+  preview: EffectsPreviewState;
   /** The rows to plan whenever they change; null while an input is missing. */
-  onDraft?: (rows: DecisionBatchRow[] | null) => void;
+  onDraft: (rows: DecisionBatchRow[] | null) => void;
 }
 
 /**
@@ -119,11 +120,14 @@ export function GroupCard({
   }, []);
   const missing = missingInput({ choice: rec.kind, value });
   const rows = (text: string) => items.map((item) => recommendedRow(item, resolve, text, value));
-  useDraft(missing ? null : rows(""), onDraft);
+  const draft = missing ? null : rows("");
+  useDraft(draft, onDraft);
+  const blocked = decideBlocked(preview, draft);
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
     if (busy) return;
     if (missing) return setProblem(missing);
+    if (blocked) return;
     onDecide(rows(comment));
   };
   useCardKeys({ decide: submit, skip: onSkip });
@@ -236,9 +240,15 @@ export function GroupCard({
           {problem ?? error}
         </p>
       )}
+      <DecideNote id={`${id}-blocked`} reason={blocked} />
       <div className="mt-2 flex flex-wrap gap-2">
         <Tooltip tip="Stores one decision per item of this group, each with its own record (Enter).">
-          <button type="submit" aria-disabled={busy || undefined} className={buttonClass("primary")}>
+          <button
+            type="submit"
+            aria-disabled={busy || blocked !== null || undefined}
+            aria-describedby={blocked ? `${id}-blocked` : undefined}
+            className={buttonClass("primary")}
+          >
             {label} all {items.length} <Kbd decorative>Enter</Kbd>
           </button>
         </Tooltip>
@@ -262,9 +272,9 @@ interface DecideRestCardProps {
   busy: boolean;
   error: string | null;
   /** The server's plan of the included rows as ticked now (RC16). */
-  preview?: EffectsPreviewState;
+  preview: EffectsPreviewState;
   /** The included rows to plan whenever they change. */
-  onDraft?: (rows: DecisionBatchRow[] | null) => void;
+  onDraft: (rows: DecisionBatchRow[] | null) => void;
 }
 
 const LEFT_OUT: Record<LeftOutItem["reason"], string> = {
@@ -304,10 +314,9 @@ export function DecideRestCard({
     comment: text.trim() || null,
   });
   const chosen = rest.rows.filter((r) => !excluded.has(r.row.item_no));
-  useDraft(
-    chosen.map((r) => rowOf(r, "")),
-    onDraft,
-  );
+  const draft = chosen.map((r) => rowOf(r, ""));
+  useDraft(draft, onDraft);
+  const blocked = chosen.length === 0 ? null : decideBlocked(preview, draft);
   const toggle = (set: ReadonlySet<number>, no: number) => {
     const next = new Set(set);
     if (!next.delete(no)) next.add(no);
@@ -421,7 +430,7 @@ export function DecideRestCard({
           </Banner>
         </div>
       )}
-      {preview?.state === "error" && (
+      {preview.state === "error" && (
         <p role="alert" className="text-sm text-high">
           {preview.message}
         </p>
@@ -434,12 +443,16 @@ export function DecideRestCard({
           {error}
         </p>
       )}
+      <DecideNote id={`${id}-blocked`} reason={blocked} />
       <div className="flex flex-wrap gap-2">
         <Tooltip tip="Stores one decision per included row, marked via decide the rest.">
           <button
             type="button"
-            aria-disabled={busy || chosen.length === 0 || undefined}
-            onClick={() => !busy && chosen.length > 0 && onConfirm(chosen.map((r) => rowOf(r, comment)))}
+            aria-disabled={busy || chosen.length === 0 || blocked !== null || undefined}
+            aria-describedby={blocked ? `${id}-blocked` : undefined}
+            onClick={() =>
+              !busy && chosen.length > 0 && !blocked && onConfirm(chosen.map((r) => rowOf(r, comment)))
+            }
             className={buttonClass("primary")}
           >
             Apply {chosen.length} decisions
@@ -464,9 +477,9 @@ interface PrQuestionCardProps {
   busy: boolean;
   error: string | null;
   /** The server's plan of the chosen option (RC16): what happens next and the default dismissal message. */
-  preview?: EffectsPreviewState;
+  preview: EffectsPreviewState;
   /** The decision to plan whenever it changes. */
-  onDraft?: (rows: DecisionBatchRow[] | null) => void;
+  onDraft: (rows: DecisionBatchRow[] | null) => void;
 }
 
 /**
@@ -493,18 +506,29 @@ export function PrQuestionCard({
   const [message, setMessage] = useState<string | null>(null);
   const [comment, setComment] = useState("");
   const radios = useRef<(HTMLInputElement | null)[]>([]);
-  const requestFor = (text: string, reason: string | null): DecideRequest => ({
+  const requestFor = (text: string): DecideRequest => ({
     ...requestOf(item, { choice, value: "", resolve: false, comment: text }, null),
     // The server posts `reason` as the dismissal message (P3); `reply_text` is not read there.
-    reason: choice === "dismiss_stale_reviews" ? reason : null,
+    reason: choice === "dismiss_stale_reviews" ? message?.trim() || null : null,
   });
-  useDraft([{ item_no: item.no, ...requestFor("", null) }], onDraft);
+  const draft = [{ item_no: item.no, ...requestFor("") }];
+  useDraft(draft, onDraft);
   const effects = previewFor(preview, item.no);
   const defaultMessage = effects?.find((e) => e.kind === "dismiss_review")?.params.text ?? "";
+  // The plan the owner had in view for this draft: one that changes while the card is open (other items were read
+  // or decided since) needs the owner's confirmation before Decide sends it.
+  const draftKey = JSON.stringify(draft);
+  const plan = decideBlocked(preview, draft) === null ? JSON.stringify(effects) : null;
+  const [seenPlan, setSeenPlan] = useState<{ draft: string; plan: string } | null>(null);
+  if (plan !== null && seenPlan?.draft !== draftKey) setSeenPlan({ draft: draftKey, plan });
+  const rescoped = plan !== null && seenPlan?.draft === draftKey && seenPlan.plan !== plan;
+  const blocked =
+    decideBlocked(preview, draft) ??
+    (rescoped ? 'Decide is available once you confirm the new plan ("Use the new plan").' : null);
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
-    if (busy) return;
-    onDecide(requestFor(comment, message?.trim() || null));
+    if (busy || blocked) return;
+    onDecide(requestFor(comment));
   };
   useCardKeys({
     options: options.length,
@@ -599,6 +623,21 @@ export function PrQuestionCard({
         storageKey={`pr-question:${dismiss ? "dismiss" : "merge"}:effects`}
       >
         <PlannedEffects preview={preview} nos={[item.no]} several idle="Planning what happens…" />
+        {rescoped && (
+          <div role="status" className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-med">
+            What this decision acts on changed since you looked (a new read or another decision): check the
+            effects above, then
+            <Tooltip tip="Takes the effects shown above as the plan this decision sends.">
+              <button
+                type="button"
+                onClick={() => plan !== null && setSeenPlan({ draft: draftKey, plan })}
+                className={buttonClass("plain", true)}
+              >
+                Use the new plan
+              </button>
+            </Tooltip>
+          </div>
+        )}
       </CollapsibleSection>
       <p className="text-xs text-muted">
         No recommendation: this is a PR-level choice. Merging stays your own action on GitHub.
@@ -608,9 +647,15 @@ export function PrQuestionCard({
           {error}
         </p>
       )}
+      <DecideNote id={`${id}-blocked`} reason={blocked} />
       <div className="flex flex-wrap gap-2">
         <Tooltip tip="Stores the decision on this PR-level question (Enter).">
-          <button type="submit" aria-disabled={busy || undefined} className={buttonClass("primary")}>
+          <button
+            type="submit"
+            aria-disabled={busy || blocked !== null || undefined}
+            aria-describedby={blocked ? `${id}-blocked` : undefined}
+            className={buttonClass("primary")}
+          >
             Decide <Kbd decorative>Enter</Kbd>
           </button>
         </Tooltip>

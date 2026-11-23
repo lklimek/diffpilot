@@ -36,6 +36,7 @@ import {
   NOT_READ,
   decideRest,
   dismissal,
+  followedUp,
   plan,
   questionOf,
   staleReviews,
@@ -499,6 +500,11 @@ export function resetReviewLoop(): void {
 const OPEN_STATES = new Set(["undecided", "reopened", "asked_back"]);
 /** Waiting for a decision: open and still produced by the read (an item with `gone_at` leaves the queue). */
 const isOpen = (i: CommentItem) => OPEN_STATES.has(i.state) && !i.gone_at;
+/** The open items of `list` no standing "Merge with follow-ups" covers (queue.rs `waiting`). */
+function waitingIn(list: CommentItem[]): CommentItem[] {
+  const covered = followedUp(list);
+  return list.filter((i) => isOpen(i) && !covered.has(i.no));
+}
 
 /** Items as RC4 answers them in the selected state. */
 export function listItems(): CommentItem[] {
@@ -527,7 +533,7 @@ function queue(list: CommentItem[]): QueueEntry[] {
 
 /** Queue order (plan §2.4): PR-level, asked again, answered, gate, blocking, single, groups. */
 function ordered(list: CommentItem[]): QueueEntry[] {
-  const open = list.filter(isOpen);
+  const open = waitingIn(list);
   const by = (reason: QueueEntry["reason"], pick: (i: CommentItem) => boolean) =>
     open.filter(pick).map((i) => ({ item_nos: [i.no], reason }));
   const taken = new Set<number>();
@@ -561,7 +567,7 @@ function counts(list: CommentItem[]) {
   const effects = list.flatMap((i) => i.decisions.at(-1)?.effects ?? []);
   return {
     unresolved_threads: list.filter((i) => i.kind === "thread" && i.github.resolved === false).length,
-    undecided: list.filter(isOpen).length,
+    undecided: waitingIn(list).length,
     asked_again: list.filter((i) => i.state === "reopened").length,
     waiting_for_agents: list.filter((i) => i.state === "executing").length,
     failed_effects: effects.filter((e) => e.state === "failed").length,

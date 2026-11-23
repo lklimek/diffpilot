@@ -76,15 +76,6 @@ export function QuestionsScreen() {
   const decideRest = useDecideRest(pr);
   // The decision drafted on the shown card; the server plans it (RC16).
   const [draft, setDraft] = useState<DecisionBatchRow[] | null>(null);
-  const planned = useEffectsPreview(pr, draft);
-  const preview: EffectsPreviewState =
-    draft === null
-      ? { state: "idle" }
-      : planned.isError && !planned.isPlaceholderData
-        ? { state: "error", message: errorText(planned.error) }
-        : planned.data
-          ? { state: "ready", items: planned.data, updating: !planned.current }
-          : { state: "loading" };
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(new Set());
   const [individual, setIndividual] = useState<ReadonlySet<number>>(new Set());
   const [rest, setRest] = useState(false);
@@ -123,6 +114,22 @@ export function QuestionsScreen() {
     (askedNo !== null && byNo.has(askedNo) ? { item_nos: [askedNo], reason: "single" } : (queue[0] ?? null));
   const index = entry ? queue.findIndex((e) => entryKey(e) === entryKey(entry)) : -1;
   const single = entry && entry.item_nos.length === 1 ? byNo.get(entry.item_nos[0]!) : undefined;
+
+  // A PR-level question's plan also depends on the other items (P1 acts on what still waits, P3 on stale reviews).
+  const prLevel = !rest && single?.kind === "pr_question";
+  const inputs = useMemo(
+    () => (prLevel ? JSON.stringify(items.map((i) => [i.no, i.revision, i.state, i.gone_at ?? null])) : null),
+    [prLevel, items],
+  );
+  const planned = useEffectsPreview(pr, draft, inputs);
+  const preview: EffectsPreviewState =
+    draft === null
+      ? { state: "idle" }
+      : planned.isError && !planned.isPlaceholderData
+        ? { state: "error", message: errorText(planned.error) }
+        : planned.data
+          ? { state: "ready", items: planned.data.items, rows: planned.data.rows, updating: !planned.current }
+          : { state: "loading" };
 
   const open = (next: QueueEntry | undefined) => {
     setRest(false);

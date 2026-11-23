@@ -8,6 +8,7 @@ import { useCardKeys } from "./cardKeys";
 import {
   CHOICE_LABEL,
   choicesFor,
+  decideBlocked,
   gateOf,
   missingInput,
   needOf,
@@ -20,7 +21,7 @@ import {
   type EffectsPreviewState,
 } from "./decisions";
 import { itemId } from "./parts";
-import { PlannedEffects, useDraft } from "./PlannedEffects";
+import { DecideNote, PlannedEffects, useDraft } from "./PlannedEffects";
 
 /** Hint under "Your comment" (plan §3.2 item 7). */
 export const COMMENT_HINT =
@@ -51,9 +52,9 @@ interface DecisionFormProps {
   /** Extra actions after Skip (none by default). */
   extra?: ReactNode;
   /** The server's plan of the draft (RC16): "What happens next" and the reply text that gets posted. */
-  preview?: EffectsPreviewState;
+  preview: EffectsPreviewState;
   /** The draft to plan whenever it changes; null while an input is missing. */
-  onDraft?: (rows: DecisionBatchRow[] | null) => void;
+  onDraft: (rows: DecisionBatchRow[] | null) => void;
 }
 
 /**
@@ -99,15 +100,16 @@ export function DecisionForm(props: DecisionFormProps) {
     const request = requestOf({ ...item, revision }, { choice, value, resolve, comment: note }, text);
     return outOfScope ? { ...request, override: { type: "necessity_gate" } } : request;
   };
-  // The server plans its default reply (an edited one replaces it on Decide); the comment changes no effect.
+  // The server plans the reply that gets posted (its default, or the edited one); the comment changes no effect.
   const missing = missingInput({ choice, value });
-  const draft = missing ? null : [{ item_no: item.no, ...requestFor(item.revision, null, "") }];
+  const draft = missing ? null : [{ item_no: item.no, ...requestFor(item.revision, edited, "") }];
   useDraft(draft, props.onDraft);
+  const blocked = decideBlocked(props.preview, draft);
   const effects = previewFor(props.preview, item.no);
   const planned = effects ? plannedReply(effects) : null;
   const shownReply = edited ?? planned;
   // The reply shown is of the previous draft until the server planned this one.
-  const updating = props.preview?.state === "ready" && props.preview.updating && edited === null;
+  const updating = props.preview.state === "ready" && props.preview.updating && edited === null;
 
   const pick = (next: Choice) => {
     touch();
@@ -134,6 +136,7 @@ export function DecisionForm(props: DecisionFormProps) {
       setProblem(`${itemId(item)} changed since you started: check it, then choose "Keep my input".`);
       return;
     }
+    if (blocked) return;
     onDecide(requestFor(seen, edited, comment));
   };
 
@@ -339,9 +342,15 @@ export function DecisionForm(props: DecisionFormProps) {
           {problem ?? error}
         </p>
       )}
+      <DecideNote id={`${id}-blocked`} reason={blocked} />
       <div className="mt-2.5 flex flex-wrap gap-2">
         <Tooltip tip="Stores the decision and opens the next question (Enter).">
-          <button type="submit" aria-disabled={busy || undefined} className={buttonClass("primary")}>
+          <button
+            type="submit"
+            aria-disabled={busy || blocked !== null || undefined}
+            aria-describedby={blocked ? `${id}-blocked` : undefined}
+            className={buttonClass("primary")}
+          >
             Decide <Kbd decorative>Enter</Kbd>
           </button>
         </Tooltip>

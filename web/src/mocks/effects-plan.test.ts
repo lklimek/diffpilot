@@ -1,6 +1,6 @@
 // The mocks' server model follows the server's effect function (crates/server/src/review_loop/effects/tests.rs).
 import { beforeEach, describe, expect, it } from "vitest";
-import type { CommentItem, DecideRequest, DecisionKind } from "../api/generated/types";
+import type { CommentItem, DecideRequest, Decision, DecisionKind } from "../api/generated/types";
 import {
   DISMISS_MESSAGE,
   decideRest,
@@ -21,6 +21,7 @@ import {
   overview,
   previewEffects,
   resetReviewLoop,
+  undo,
 } from "./review-loop";
 
 const byNo = (no: number) => listItems().find((i) => i.no === no)!;
@@ -215,6 +216,38 @@ describe("mock effect function (effects.rs plan)", () => {
       "C22: it is not in the latest read from GitHub, so it is decided on its own, not in bulk.",
     ]);
     expect(isRefused(decide("C22", row))).toBe(false);
+  });
+
+  it("a standing Merge with follow-ups covers its items in every waiting list until it is undone (mod.rs `followed_up`)", () => {
+    const queued = () => new Set(overview().queue.flatMap((e) => e.item_nos));
+    const rest = () => {
+      const r = decideRestList();
+      return [...r.rows.map((x) => x.row.item_no), ...r.left_out.map((x) => x.item_no)];
+    };
+    const p1 = decide("C24", request("merge_with_follow_ups", { item_revision: byNo(24).revision }));
+    if (isRefused(p1)) throw new Error(p1[2]);
+    const covered = (p1 as Decision).effects.find((e) => e.kind === "follow_up_pr")!.params.item_nos;
+    expect(covered).toEqual(expect.arrayContaining([21, 22]));
+    // The covered items stay open on their own; the server's queue.rs `waiting` leaves them out.
+    expect(byNo(22).state).toBe("undecided");
+    expect(queued()).toEqual(new Set([14, 15]));
+    expect(overview().counts.undecided).toBe(2);
+    expect(rest()).not.toContain(22);
+    expect(rest()).not.toContain(21);
+    // A later round's merge question acts on what is still waiting: the gate items keep their own decision.
+    listItems().push({
+      ...byNo(24),
+      id: "00000000-0000-4000-8000-000000000031",
+      no: 31,
+      stable_key: "pr:4:merge",
+      state: "undecided",
+      decisions: [],
+    });
+    expect(previewOf(31, request("merge_with_follow_ups"))).toEqual([]);
+    // Undone, the follow-up covers nothing: its items wait again.
+    expect(isRefused(undo("C24", byNo(24).revision))).toBe(false);
+    expect(queued()).toContain(22);
+    expect(previewOf(31, request("merge_with_follow_ups")).flatMap((e) => e.params.item_nos)).toContain(22);
   });
 
   it("Decide the rest leaves out gate items, repeats asked again and items without an assessment", () => {

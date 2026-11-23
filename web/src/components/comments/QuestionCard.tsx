@@ -63,9 +63,9 @@ interface QuestionCardProps {
   onDecide: (request: DecideRequest) => void;
   onSkip: () => void;
   /** The server's plan of the decision drafted on the card (RC16). */
-  preview?: EffectsPreviewState;
+  preview: EffectsPreviewState;
   /** The drafted decision to plan; null while an input is missing. */
-  onDraft?: (rows: DecisionBatchRow[] | null) => void;
+  onDraft: (rows: DecisionBatchRow[] | null) => void;
   /** Loads more lines above or below. */
   onMoreLines: (direction: "above" | "below") => void;
   /** "Assess again" (RC6); no button without it. */
