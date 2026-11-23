@@ -695,9 +695,27 @@ Development without containers: `deploy/dev/stack.sh` (fake GitHub, fake provide
 `deploy/dev/real-codex-smoke.sh` with `SR_SMOKE_ISOLATION=supervisor` runs one analysis with the production runner
 image under its supervisor behind the egress proxy; `SR_SMOKE_STATE_VOLUME=diffpilot-local_runner-state` (local
 stack's runner stopped first) reuses the stack's Codex credential instead of a second copy.
-These smoke scripts and `scripts/schema-smoke.sh` default to the S1a spike image `diffpilot-spike-codex:0.171.0`
-(the runner's Codex pin); build it from the S1a harness Dockerfile (`docs/spikes/S1a-codex-basics.md`) with
-`--build-arg CODEX_VERSION=… --build-arg CODEX_PACKAGE_SHA256=…` from `deploy/runner/Dockerfile`.
+These smoke scripts and `scripts/schema-smoke.sh` default to the spike image `diffpilot-spike-codex:0.171.0`, the
+runner's Codex pin in a plain non-root container (S1a harness). Build it, tagged `diffpilot-spike-codex:<version>`
+with the `CODEX_VERSION` and `CODEX_PACKAGE_SHA256` of `deploy/runner/Dockerfile`:
+
+```sh
+deploy/dev/spike-codex/build.sh
+```
+
+### Codex CLI upgrade (maintainers)
+
+1. In `deploy/runner/Dockerfile`, set `CODEX_VERSION`, and `CODEX_PACKAGE_SHA256` from `codex-package_SHA256SUMS` of
+   the release `rust-v<version>`; recompute the three Codex notice digests from the files at that tag. Update the
+   version check in `deploy/runner/r1-test/run.sh` and the default spike image of the smoke scripts.
+2. Read the release notes since the pinned version for `codex exec`, `config.toml` keys (`[agents]`,
+   `[features]`, `web_search`), sandbox and output-schema changes.
+3. Sub-agents stay off: run `codex debug prompt-input hi` offline (`docker run --rm --network none`, no credential,
+   a throwaway `CODEX_HOME` holding only the generated config without its MCP servers). The output must not contain
+   `spawn_agent`; with the answer-only config it must not declare `exec_command`, `write_stdin` or `view_image`.
+4. `deploy/dev/spike-codex/build.sh`, then `scripts/schema-smoke.sh` (real Codex, one job per kind).
+5. `R1_SUPERVISOR=rust deploy/runner/r1-test/run.sh` with `R1_BASE_IMAGE`, `R1_SKELETON_IMAGE`, `R1_TEST_IMAGE`
+   and `R1_RUNNER_TAG` set to tags the stack does not use, without `R1_SKIP_CODEX`.
 
 
 ### Usage and analysis statistics logs

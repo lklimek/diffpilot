@@ -30,7 +30,7 @@ if [[ $# -gt 0 ]]; then kinds=("$@"); else kinds=(plan pr_context analyse_flow a
 die() { echo "schema-smoke: $*" >&2; exit 1; }
 for tool in docker git gh python3; do command -v "${tool}" >/dev/null || die "${tool} not found"; done
 python3 -I -c 'import jsonschema' 2>/dev/null || die "python3-jsonschema missing (apt install python3-jsonschema)"
-docker image inspect "${image}" >/dev/null 2>&1 || die "image ${image} not found (S1a harness build.sh)"
+docker image inspect "${image}" >/dev/null 2>&1 || die "image ${image} not found (deploy/dev/spike-codex/build.sh)"
 docker volume inspect "${volume}" >/dev/null 2>&1 || die "volume ${volume} not found (S1a codex-login.sh)"
 for kind in "${kinds[@]}"; do
   [[ -f "${repo_root}/schemas/agent/${kind}.schema.json" ]] || die "unknown job kind ${kind}"
