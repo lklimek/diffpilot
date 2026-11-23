@@ -453,7 +453,7 @@ Identities with `ECDSA_HASH160` keys cannot publish; `Option<Key>` stays empty."
     }
 
     /// Review finding: a suggested fix is the reviewer's code. Its `<details>` block keeps its summary and code without
-    /// the HTML; other blocks (analysis chains, agent prompts) are dropped. Layout of CodeRabbit's on dash-evo-tool#1158.
+    /// the HTML; other blocks (analysis chains, agent prompts) are dropped. CodeRabbit's layout on dash-evo-tool#1158.
     #[test]
     fn bot_body_keeps_the_code_of_suggested_fixes() {
         let text = "Pin the revision.\n\n<details>\n<summary>Suggested fix</summary>\n<dl>\n<dd>\n<br>\n\n\
