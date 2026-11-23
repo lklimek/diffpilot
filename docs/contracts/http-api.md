@@ -834,7 +834,7 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RF1b | GET | `/api/v1/decision-feed/decisions/{id}` | read | – | `FeedDecision` (the `fetch` link of `decision_available` and of push messages) |
 | RF2 | GET | `/api/v1/decision-feed/events` | read | `FeedQuery` | SSE `FeedEvent`; registers the subscription |
 | RF3 | POST | `/api/v1/decision-feed/decisions/{id}/claim` | token: review_loop_execute | `ClaimRequest` | 201 `Claim`; 409 `claimed`; 422 `capability_missing`; 409 `conflict` when nothing is left for an agent |
-| RF4 | POST | `/api/v1/decision-feed/effects/{id}/reports` | token: review_loop_execute | `EffectReportRequest` | 201 (no body); 409 `claimed` (not the claimer), 409 `lease_expired`; 400 for `done` without `reference` or `failed` without `message`; a repeated idempotency key is a no-op |
+| RF4 | POST | `/api/v1/decision-feed/effects/{id}/reports` | token: review_loop_execute | `EffectReportRequest` | 201 (no body); 409 `claimed` (not the claimer), 409 `lease_expired`; 400 for `done` without `reference`, `failed` without `message` or `done` while the `after` effect is not done; a repeated idempotency key is a no-op; a `failed` effect cancels the unclaimed effects waiting on it |
 | RF5 | PUT / DELETE | `/api/v1/decision-feed/push-target` | token: review_loop_execute | `PutPushTargetRequest` / – | `PushTarget` / 204; the calling token's own target only |
 
 ### Rules

@@ -42,7 +42,7 @@ use futures::StreamExt;
 use jiff::SignedDuration;
 use sha2::{Digest, Sha256};
 
-pub use ask::{ItemAskError, ask_about_item, list_questions};
+pub use ask::{ItemAskError, answer_landed, ask_about_item, list_questions};
 
 use crate::github::mirror::{self, MirrorError};
 use crate::github::oauth::endpoint;

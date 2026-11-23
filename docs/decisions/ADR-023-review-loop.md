@@ -23,9 +23,10 @@ read with tokens (ADR-019).
    Dependencies and works without an analysis; its one-at-a-time page is "Questions", beside Table, Rounds,
    Carry-overs and the decision log. The question card shows the flows containing the commented code and icons for
    notes about it from other modules (each opening in a new tab); every section heading is collapsible; PR state badges
-   use a five-state palette with text labels. Modules: `server::comments` (items, queue, effects, rounds, carry-overs,
-   watch, feed), `server::github::comments` (reads), `db::repo::comments`, contracts `api::comments` and
-   `agent::verify_comments`, web `components/comments/**`, `screens/pr/**`, `screens/comments/**`. No new crate.
+   use a five-state palette with text labels. Modules: `server::review_loop` (items, queue, effects, rounds,
+   carry-overs, watch, feed), `server::github::review_loop` (reads), `db::repo::review_loop`, contracts
+   `api::review_loop` and `agent::verify_comments`, web `components/comments/**`, `screens/pr/**`,
+   `screens/comments/**`. No new crate.
 2. **On demand, plus Watch.** Any pull request is processed on demand; diffpilot shows GitHub's state and records
    only what is decided and executed through it. A user may **watch** pull requests he is working on: for a watched PR
    the server detects new comments and reviews itself, runs the assessment at once and notifies the user; unwatched

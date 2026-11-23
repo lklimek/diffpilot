@@ -48,9 +48,9 @@ pub struct EffectItem {
 pub struct PrScope {
     /// The PR's number (D4 must name another one).
     pub number: u32,
-    /// P1: the items still undecided.
+    /// P1: the items still undecided, gate items left out.
     pub remaining: Vec<EffectItem>,
-    /// P3: the stale bot reviews (node ids).
+    /// P3: the stale bot reviews the question lists (node ids).
     pub stale_reviews: Vec<String>,
 }
 
@@ -78,6 +78,14 @@ pub enum DecisionError {
     /// A text is longer than allowed.
     #[error("a text is longer than {MAX_TEXT_CHARS} characters")]
     TooLong,
+    /// A review the dismissal question lists has new undecided items or no longer requests changes.
+    #[error(
+        "the reviews this question lists changed since it was asked; keep the reviews, the next round asks again"
+    )]
+    ReviewsChanged,
+    /// A bulk decision includes an item asked again; it is decided on its own (as "Decide the rest" leaves it out).
+    #[error("it was asked again, so it is decided on its own, not in bulk")]
+    AskedAgain,
 }
 
 /// The planned effects and the reply text that gets posted (stored with the decision).

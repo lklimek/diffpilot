@@ -297,7 +297,10 @@ async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), F
             }
             JobUpdate::Finished { result, .. } => {
                 let end = finish(state, &summary, id, result).await?;
-                set(state, analysis, id, &end).await?;
+                let question = set(state, analysis, id, &end).await?;
+                if matches!(end, QuestionUpdate::Answered(_)) {
+                    assess::answer_landed(state, &question.anchor).await;
+                }
                 return Ok(());
             }
         };

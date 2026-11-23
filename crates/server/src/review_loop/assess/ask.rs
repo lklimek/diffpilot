@@ -179,6 +179,26 @@ pub async fn list_questions(
         .await?)
 }
 
+/// An answer to a question about a comment item landed: an undecided item becomes `asked_back` (plan §2.4 rank 3,
+/// §2.7) until decided. A failure is logged; the answer stays.
+pub async fn answer_landed(state: &AppState, anchor: &AskAnchor) {
+    let AskAnchor::CommentItem { item } = anchor else {
+        return;
+    };
+    match state
+        .db
+        .review_loop()
+        .asked_back(*item, Timestamp::now())
+        .await
+    {
+        Ok(true) => tracing::debug!(%item, "an answered comment item is asked back"),
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(?error, %item, "an answered comment item could not be marked as asked back")
+        }
+    }
+}
+
 /// Fails a question with a plain sentence.
 pub(super) async fn fail(
     state: &AppState,

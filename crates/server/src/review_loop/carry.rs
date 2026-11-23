@@ -4,24 +4,43 @@
 //! the diff between the decision's head and the PR's head; a mapping that cannot be made counts as changed.
 
 use analysis::diff::{FileDiff, FileStatus};
-use contracts::api::review_loop::{BotThreadStatus, CarryEvidence, CommentItemKind, ReaskReason};
+use contracts::api::review_loop::{
+    AuthorKind, BotThreadStatus, CarryEvidence, CommentItemKind, ReaskReason,
+};
 use contracts::common::LineRange;
 use contracts::ids::CommitSha;
 use db::repo::review_loop::{ItemRecord, ObservedItem};
 
-/// Whether the stored item is raised again by what this read observed: a new thread carries its key (the URL
-/// changes), the bot removed its status block, or the thread was unresolved again.
-pub fn reraised(previous: &ItemRecord, observed: &ObservedItem) -> bool {
+/// How a stored thread item is raised again by what this read observed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Raised {
+    /// A bot's repeat: a new thread carries its key (the URL changes), the bot removed its status block or rewrote
+    /// its finding in place (normalised text), or the thread was unresolved again; the carry-over rules apply.
+    Repeat,
+    /// A person's thread unresolved again or raised in a new thread: not a repeat, the owner is asked again.
+    Reopened,
+}
+
+/// Whether, and how, the stored item is raised again by what this read observed.
+pub fn raised(previous: &ItemRecord, observed: &ObservedItem) -> Option<Raised> {
     if previous.kind != CommentItemKind::Thread {
-        return false;
+        return None;
     }
     let new_thread = previous.url.is_some() && previous.url != observed.url;
     let status_removed = previous.github.bot_status.is_some_and(|status| {
         status != BotThreadStatus::Disputed && observed.github.bot_status.is_none()
     });
+    let rewritten = previous.body_hash != observed.body_hash;
     let unresolved_again =
         previous.github.resolved == Some(true) && observed.github.resolved == Some(false);
-    new_thread || status_removed || unresolved_again
+    let bot = previous.author_kind == AuthorKind::Bot;
+    if bot && (new_thread || status_removed || rewritten || unresolved_again) {
+        Some(Raised::Repeat)
+    } else if !bot && (new_thread || unresolved_again) {
+        Some(Raised::Reopened)
+    } else {
+        None
+    }
 }
 
 /// Where the decided lines are at the head.
@@ -138,7 +157,7 @@ pub fn verdict(
 #[cfg(test)]
 mod tests {
     use analysis::diff::{Hunk, LineSpan};
-    use contracts::api::review_loop::{AuthorKind, ItemGithubFacts, ItemLocation, ItemState};
+    use contracts::api::review_loop::{ItemGithubFacts, ItemLocation, ItemState};
     use contracts::ids::{CommentItemId, HunkId};
     use contracts::time::Timestamp;
 
@@ -307,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn raised_again_by_a_new_thread_a_removed_status_or_an_unresolve() {
+    fn raised_again_by_a_bot_repeat_or_reopened_by_a_person() {
         let item = ItemRecord {
             id: CommentItemId::new_random(),
             pull_request_id: 1,
@@ -332,21 +351,44 @@ mod tests {
             repeat_of: None,
             updated_at: Timestamp::now(),
         };
-        assert!(!reraised(&item, &observed("h")));
+        assert_eq!(raised(&item, &observed("h")), None);
         let mut moved = observed("h");
         moved.url = Some("https://github.com/acme/node-client/pull/482#discussion_r9".into());
-        assert!(reraised(&item, &moved), "a new thread with the decided key");
+        assert_eq!(
+            raised(&item, &moved),
+            Some(Raised::Repeat),
+            "a new thread with the decided key"
+        );
         let mut withdrawn = item.clone();
         withdrawn.github.bot_status = Some(BotThreadStatus::Withdrawn);
-        assert!(
-            reraised(&withdrawn, &observed("h")),
+        assert_eq!(
+            raised(&withdrawn, &observed("h")),
+            Some(Raised::Repeat),
             "status block removed in place"
+        );
+        assert_eq!(
+            raised(&item, &observed("h2")),
+            Some(Raised::Repeat),
+            "the bot rewrote its finding in place"
         );
         let mut resolved = item.clone();
         resolved.github.resolved = Some(true);
-        assert!(reraised(&resolved, &observed("h")));
+        assert_eq!(raised(&resolved, &observed("h")), Some(Raised::Repeat));
+        let mut human = resolved.clone();
+        human.author_kind = AuthorKind::Human;
+        assert_eq!(
+            raised(&human, &observed("h")),
+            Some(Raised::Reopened),
+            "a person unresolving his thread is no repeat"
+        );
+        human.github.resolved = Some(false);
+        assert_eq!(
+            raised(&human, &observed("h2")),
+            None,
+            "a person's edit is not a repeat"
+        );
         let mut body = item;
         body.kind = CommentItemKind::ReviewBody;
-        assert!(!reraised(&body, &moved));
+        assert_eq!(raised(&body, &moved), None);
     }
 }

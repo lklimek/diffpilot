@@ -40,7 +40,8 @@ async fn standing(
     .await?)
 }
 
-async fn cancel_unclaimed(
+/// Cancels the effects of `decision` that no agent holds.
+pub(super) async fn cancel_unclaimed(
     tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
     decision: &str,
     now: Timestamp,
@@ -124,6 +125,20 @@ impl ReviewLoop<'_> {
         let record = item_in(&mut tx, item).await?;
         tx.commit().await?;
         Ok(ActionOutcome::Done(Box::new(record)))
+    }
+
+    /// An answer to the owner's question about an undecided item landed: it becomes `asked_back` (queue rank 3)
+    /// until decided. Other states stay; `true` when it changed.
+    pub async fn asked_back(&self, item: CommentItemId, now: Timestamp) -> Result<bool, DbError> {
+        let updated = sqlx::query(
+            "UPDATE comment_items SET state = 'asked_back', revision = revision + 1, updated_at = ?
+             WHERE id = ? AND state = 'undecided'",
+        )
+        .bind(ts(now))
+        .bind(item.to_string())
+        .execute(self.pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
     }
 
     /// Records the reader's "Skip for now" of an item at `revision` (replacing an earlier skip).

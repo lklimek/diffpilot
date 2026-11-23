@@ -65,7 +65,8 @@ pub enum ItemState {
     Done,
     /// A repeat that carried an earlier decision without a question.
     Repeat,
-    /// A repeat asked again (bot edit or code change) or reopened by the owner.
+    /// A repeat asked again (bot edit or code change), a person's decided thread raised again, or reopened by the
+    /// owner.
     Reopened,
     /// Resolved on GitHub outside diffpilot; out of the queue, nothing recorded.
     Outside,

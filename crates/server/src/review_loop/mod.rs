@@ -37,6 +37,7 @@ mod markers;
 pub mod notify;
 mod observe;
 mod queue;
+pub(crate) mod seen;
 pub mod views;
 pub mod watch;
 
@@ -373,7 +374,7 @@ async fn read_now(
                 ?error,
                 "CI of the pull request head not read for the review loop"
             );
-            None
+            (None, Vec::new())
         }
     };
     let known_bots = state
@@ -464,12 +465,18 @@ fn state_from(decision: &Decision) -> ItemState {
     }
 }
 
-/// The decision resolves the thread through diffpilot (a resolve effect not cancelled).
-fn resolves(decision: &Decision) -> bool {
-    decision
-        .effects
-        .iter()
-        .any(|effect| effect.kind == EffectKind::Resolve && effect.state != EffectState::Cancelled)
+/// Items whose threads an agent resolves for diffpilot: a resolve effect of a standing decision that an agent claimed
+/// or reported done (a planned resolve nobody holds is not diffpilot's resolution).
+fn resolving(standing: &HashMap<String, &StoredDecision>) -> Vec<u32> {
+    standing
+        .values()
+        .flat_map(|stored| &stored.decision.effects)
+        .filter(|effect| {
+            effect.kind == EffectKind::Resolve
+                && matches!(effect.state, EffectState::Claimed | EffectState::Done)
+        })
+        .flat_map(|effect| effect.params.item_nos.iter().copied())
+        .collect()
 }
 
 /// Stores the observed items; carries or asks again decided items raised again. Returns the new items' count.
@@ -489,6 +496,7 @@ async fn apply(
         .collect();
     let decisions = rl.pr_decisions(handle.id).await?;
     let standing = standing(&decisions);
+    let resolving = resolving(&standing);
     let head = CommitSha(snapshot.head.clone());
     let mut diffs: HashMap<String, Option<Vec<analysis::diff::FileDiff>>> = HashMap::new();
     let mut new = 0;
@@ -497,7 +505,7 @@ async fn apply(
         let before = previous.get(&item.stable_key);
         let decided = before.and_then(|record| standing.get(&record.id.to_string()).copied());
         if let Some((_, true, resolved_by)) = &entry.thread
-            && !decided.is_some_and(|stored| resolves(&stored.decision))
+            && !before.is_some_and(|record| resolving.contains(&record.no))
         {
             item.outside = Some(OutsideResolution {
                 by: resolved_by.clone().unwrap_or_else(|| "ghost".to_owned()),
@@ -510,13 +518,16 @@ async fn apply(
             decided.is_some_and(|stored| stored.body_hash != item.body_hash);
         let state_if_new =
             decided.map_or(ItemState::Undecided, |stored| state_from(&stored.decision));
-        let verdict = match (before, decided) {
-            (Some(record), Some(stored))
-                if item.outside.is_none()
+        let raised = before
+            .filter(|record| {
+                item.outside.is_none()
                     && !queue::is_open(record.state)
                     && record.state != ItemState::Outside
-                    && carry::reraised(record, &item) =>
-            {
+            })
+            .and_then(|record| carry::raised(record, &item));
+        let verdict = match (before, decided, raised) {
+            (Some(_), Some(_), Some(carry::Raised::Reopened)) => Some(Repeat::AskAgain),
+            (Some(record), Some(stored), Some(carry::Raised::Repeat)) => {
                 let mapping = match (&stored.lines, &record.location) {
                     (Some(lines), Some(location)) if stored.decision.head != head => {
                         let files =
@@ -538,7 +549,10 @@ async fn apply(
                         .zip(stored.lines)
                         .map(|(location, lines)| (location.path.as_str(), lines)),
                 };
-                Some((stored, carry::verdict(&decided_facts, &item, mapping)))
+                Some(Repeat::Verdict(
+                    stored,
+                    carry::verdict(&decided_facts, &item, mapping),
+                ))
             }
             _ => None,
         };
@@ -552,11 +566,53 @@ async fn apply(
             }
             UpsertOutcome::Changed(record) | UpsertOutcome::Unchanged(record) => record,
         };
-        if let Some((stored, verdict)) = verdict {
-            carry_over(state, tenant, handle, snapshot, &record, stored, verdict).await?;
+        match verdict {
+            Some(Repeat::Verdict(stored, verdict)) => {
+                carry_over(state, tenant, handle, snapshot, &record, stored, verdict).await?;
+            }
+            Some(Repeat::AskAgain) => ask_again(state, handle, &record).await?,
+            None => {}
         }
     }
     Ok(new)
+}
+
+/// What a decided item raised again gets.
+enum Repeat<'a> {
+    /// A bot's repeat: the carry-over rules decide (plan §2.5).
+    Verdict(&'a StoredDecision, carry::Verdict),
+    /// A person's thread unresolved or raised again: the owner is asked again, nothing is carried.
+    AskAgain,
+}
+
+/// Asks a decided item again as Reopen does: the standing decision's effects no agent holds are cancelled.
+async fn ask_again(
+    state: &AppState,
+    handle: &PrHandle,
+    record: &ItemRecord,
+) -> Result<(), LoopError> {
+    match state
+        .db
+        .review_loop()
+        .reopen(record.id, record.revision, Timestamp::now())
+        .await?
+    {
+        ActionOutcome::Done(_) => {
+            state.feed.wake_sync();
+            tracing::info!(
+                pr = handle.id,
+                item = record.no,
+                "a decided item raised again outside the carry-over rules is asked again"
+            );
+        }
+        ActionOutcome::ItemChanged | ActionOutcome::NoDecision | ActionOutcome::EffectClaimed => {
+            tracing::debug!(
+                item = record.no,
+                "item changed during the read; asking again is left for the next read"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The diff of the PR's repository from `from` to `to` (cached per read); `None` when it cannot be made.
@@ -616,7 +672,7 @@ async fn carry_over(
                 target: stored.decision.target.clone(),
                 r#override: stored.decision.r#override.clone(),
                 resolve_ticked: stored.decision.resolve_ticked,
-                reply_text: None,
+                reply_text: stored.decision.reply_text.clone(),
                 comment: stored.decision.comment.clone(),
                 item_revision: record.revision,
             };
@@ -628,20 +684,9 @@ async fn carry_over(
             let planned = match effects::plan(&item, &request, &scope) {
                 Ok(planned) => planned,
                 Err(error) => {
-                    tracing::debug!(
-                        ?error,
-                        item = record.no,
-                        "carried decision no longer fits; asked again"
-                    );
-                    let event = NewCarryEvent {
-                        item: record.id,
-                        source_decision: source,
-                        kind: CarryKind::AskedAgain,
-                        reason: Some(contracts::api::review_loop::ReaskReason::BotEdited),
-                        evidence,
-                    };
-                    rl.record_carry(tenant, &event, Timestamp::now()).await?;
-                    return Ok(());
+                    // Neither carry-over rule applies (text and code are unchanged), so no carry event names one.
+                    tracing::debug!(?error, item = record.no, "carried decision no longer fits");
+                    return ask_again(state, handle, record).await;
                 }
             };
             let user = rl.decision_user(source).await?;
@@ -688,6 +733,10 @@ async fn carry_over(
         Timestamp::now(),
     )
     .await?;
+    if kind == CarryKind::AskedAgain {
+        // The earlier decision's unclaimed effects were cancelled: they leave the feed.
+        state.feed.wake_sync();
+    }
     tracing::info!(
         pr = handle.id,
         item = record.no,
@@ -830,19 +879,13 @@ async fn add_pr_questions(
     }
     let dismiss = format!("pr:{round}:dismiss");
     if !has(&dismiss) {
-        let stale = stale_reviews(state, handle, snapshot, &items).await?;
+        let decisions = rl.pr_decisions(handle.id).await?;
+        let stale = stale_reviews(snapshot, &items, &standing(&decisions));
         if !stale.is_empty() {
-            let list: Vec<String> = stale
-                .iter()
-                .map(|request| format!("- {}: {}", request.login, request.url))
-                .collect();
             asks.push(question(
                 dismiss,
                 "Dismiss stale bot reviews?",
-                format!(
-                    "Every item these reviews raised has a decision:\n{}",
-                    list.join("\n")
-                ),
+                dismiss_body(&stale),
             ));
         }
     }
@@ -861,16 +904,13 @@ async fn add_pr_questions(
 }
 
 /// Bots whose latest review requests changes while every item they raised (not resolved outside) has a standing
-/// decision.
-async fn stale_reviews<'a>(
-    state: &AppState,
-    handle: &PrHandle,
+/// decision and is not asked again.
+fn stale_reviews<'a>(
     snapshot: &'a Snapshot,
     items: &[ItemRecord],
-) -> Result<Vec<&'a observe::BotChangeRequest>, LoopError> {
-    let decisions = state.db.review_loop().pr_decisions(handle.id).await?;
-    let standing = standing(&decisions);
-    Ok(snapshot
+    standing: &HashMap<String, &StoredDecision>,
+) -> Vec<&'a observe::BotChangeRequest> {
+    snapshot
         .bot_change_requests
         .iter()
         .filter(|request| {
@@ -880,11 +920,30 @@ async fn stale_reviews<'a>(
                 .filter(|item| item.state != ItemState::Outside)
                 .collect();
             !raised.is_empty()
-                && raised
-                    .iter()
-                    .all(|item| standing.contains_key(&item.id.to_string()))
+                && raised.iter().all(|item| {
+                    standing.contains_key(&item.id.to_string()) && !queue::is_open(item.state)
+                })
         })
-        .collect())
+        .collect()
+}
+
+/// First line of the "Dismiss stale bot reviews?" text; one line `- <login>: <review link>` per listed review follows.
+const DISMISS_LEAD: &str = "Every item these reviews raised has a decision:";
+
+/// The "Dismiss stale bot reviews?" text listing `stale`; the list is what deciding P3 dismisses.
+fn dismiss_body(stale: &[&observe::BotChangeRequest]) -> String {
+    let mut body = DISMISS_LEAD.to_owned();
+    for request in stale {
+        body.push_str(&format!("\n- {}: {}", request.login, request.url));
+    }
+    body
+}
+
+/// The reviews a "Dismiss stale bot reviews?" text lists: login and review link per line.
+fn listed_reviews(body: &str) -> Vec<(&str, &str)> {
+    body.lines()
+        .filter_map(|line| line.strip_prefix("- ")?.split_once(": "))
+        .collect()
 }
 
 /// Everything the decision and view code needs of one PR.
@@ -1001,13 +1060,13 @@ impl Loaded {
         Ok(effect_item(record, self.snapshot()?, &gates))
     }
 
-    /// What a PR-level decision acts on now.
+    /// What a PR-level decision acts on now: P1 the waiting items except gate items, which keep their own decision
+    /// (RQ4, RQ5).
     fn scope(&self, deciding: &[u32]) -> Result<PrScope, LoopError> {
-        let snapshot = self.snapshot()?;
         let queue_items = self.queue_items(&[]);
         let waiting: Vec<u32> = queue::waiting(&queue_items)
             .into_iter()
-            .filter(|item| item.question.is_none() && !deciding.contains(&item.no))
+            .filter(|item| item.question.is_none() && !item.gated && !deciding.contains(&item.no))
             .map(|item| item.no)
             .collect();
         let mut remaining = Vec::new();
@@ -1017,12 +1076,27 @@ impl Loaded {
         Ok(PrScope {
             number: self.handle.pr.number,
             remaining,
-            stale_reviews: snapshot
-                .bot_change_requests
-                .iter()
-                .map(|request| request.review_id.clone())
-                .collect(),
+            stale_reviews: Vec::new(),
         })
+    }
+
+    /// The reviews deciding P3 on `question` dismisses: those its text lists, each still stale now (RQ11).
+    fn dismissal(&self, question: &ItemRecord) -> Result<Vec<String>, LoopError> {
+        let standing = self.standing();
+        let stale = stale_reviews(self.snapshot()?, &self.items, &standing);
+        listed_reviews(&question.body)
+            .into_iter()
+            .map(|(login, url)| {
+                stale
+                    .iter()
+                    .find(|request| request.login.eq_ignore_ascii_case(login) && request.url == url)
+                    .map(|request| request.review_id.clone())
+                    .ok_or(LoopError::Decision {
+                        no: question.no,
+                        error: DecisionError::ReviewsChanged,
+                    })
+            })
+            .collect()
     }
 
     /// Plans the effects of `rows` (validated against their items).
@@ -1035,7 +1109,19 @@ impl Loaded {
         rows.iter()
             .map(|row| {
                 let record = self.item(row.item_no)?;
-                let planned = effects::plan(&self.effect_item(record)?, &row.decision, &scope)
+                let dismissing = row.decision.kind == DecisionKind::DismissStaleReviews
+                    && matches!(question_of(record), Some((PrQuestion::Dismiss, _)));
+                let listed;
+                let scope = if dismissing {
+                    listed = PrScope {
+                        stale_reviews: self.dismissal(record)?,
+                        ..scope.clone()
+                    };
+                    &listed
+                } else {
+                    &scope
+                };
+                let planned = effects::plan(&self.effect_item(record)?, &row.decision, scope)
                     .map_err(|error| LoopError::Decision {
                         no: row.item_no,
                         error,
@@ -1071,6 +1157,18 @@ pub async fn decide(
         .filter(|record| !loaded.gates(record).is_empty())
         .map(|record| record.no)
         .collect();
+    // Items asked again need their own decision; "Decide the rest" leaves them out too (RC17).
+    if via == DecisionVia::Bulk
+        && let Some(record) = rows
+            .iter()
+            .filter_map(|row| loaded.item(row.item_no).ok())
+            .find(|record| record.state == ItemState::Reopened)
+    {
+        return Err(LoopError::Decision {
+            no: record.no,
+            error: DecisionError::AskedAgain,
+        });
+    }
     match via {
         DecisionVia::Group | DecisionVia::Bulk if !gated.is_empty() => {
             return Err(LoopError::GateRow(gated));

@@ -364,7 +364,7 @@
           "const": "repeat"
         },
         {
-          "description": "A repeat asked again (bot edit or code change) or reopened by the owner.",
+          "description": "A repeat asked again (bot edit or code change), a person's decided thread raised again, or reopened by the\nowner.",
           "type": "string",
           "const": "reopened"
         },

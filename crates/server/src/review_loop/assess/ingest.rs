@@ -197,9 +197,16 @@ async fn store(
                 QuestionUpdate::Failed(ask::UNFIT_ANSWER.to_owned())
             }
         };
-        db.questions()
-            .update(question, &update, Timestamp::now())
-            .await?;
+        let answered = matches!(update, QuestionUpdate::Answered(_));
+        let now = Timestamp::now();
+        db.questions().update(question, &update, now).await?;
+        if answered {
+            ask::answer_landed(
+                state,
+                &db.questions().get(question, now).await?.question.anchor,
+            )
+            .await;
+        }
     }
     Ok(pass.sent.iter().all(|sent| stored.contains(&sent.item)))
 }

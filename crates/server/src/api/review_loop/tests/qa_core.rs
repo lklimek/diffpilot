@@ -200,6 +200,17 @@ async fn unresolved_human_thread_is_not_carried_automatically() {
         .decide_ok(L7, reject("Reads keep their own policy."))
         .await;
     assert_eq!(first["effects"][1]["kind"], "resolve");
+    // An agent executes the decision: the resolution it makes is diffpilot's (plan §5.2: effects run under a claim).
+    let (token, _) = agent(&w, &EXECUTE).await;
+    let (status, _, claim) = with_token(
+        &w,
+        &token,
+        "POST",
+        &claim_uri(&first),
+        Some(json!({"capabilities": ["reply", "resolve"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{claim}");
     let resolved: &dyn Fn(&mut Value) = &|answer| {
         let thread = thread_node(answer, L7);
         thread["isResolved"] = json!(true);
@@ -219,6 +230,7 @@ async fn unresolved_human_thread_is_not_carried_automatically() {
         1,
         "a carried decision with a new reply and resolve was made for a human thread: {decisions:?}"
     );
+    assert_eq!(item["state"], "reopened", "the owner is asked again");
 }
 
 /// RQ3, plan §2.5 (a): a bot that rewrites a decided finding in place makes the item asked again.
@@ -361,6 +373,17 @@ async fn thread_resolved_by_the_merge_decision_is_not_outside() {
             }),
         "{merge}"
     );
+    // An agent executes the merge decision's effects (plan §5.2: under a claim).
+    let (token, _) = agent(&w, &EXECUTE).await;
+    let (status, _, claim) = with_token(
+        &w,
+        &token,
+        "POST",
+        &claim_uri(&merge),
+        Some(json!({"capabilities": ["follow_up_pr", "reply", "pr_comment", "resolve"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{claim}");
     let resolved: &dyn Fn(&mut Value) = &|answer| {
         let thread = thread_node(answer, "PRRT_fixture482_l2");
         thread["isResolved"] = json!(true);
