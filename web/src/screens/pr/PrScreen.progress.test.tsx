@@ -104,10 +104,15 @@ describe("Analysis progress on the PR page (brief §4.2, review-workflow-plan §
     expect(screen.getByLabelText("GitHub pull request URL")).toHaveValue(analysis.pr.html_url);
   });
 
-  it("cancelled elsewhere (event): returns to Home as well", async () => {
+  it("cancelled elsewhere (event): the PR page stays, with Check and start (plan §3.1)", async () => {
     const router = await showAt({ state: "running", done: 1, total: 5 });
     emit({ state: "cancelled" });
-    await waitFor(() => expect(router.state.location.pathname).toBe("/review"));
+    expect(await screen.findByText("Analysis cancelled.")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Check and start" })).toHaveAttribute(
+      "href",
+      `/review?pr=${encodeURIComponent(analysis.pr.html_url)}`,
+    );
+    expect(router.state.location.pathname).toBe("/pr/acme/node-client/482");
   });
 
   it("a failed cancel request is reported and the analysis stays", async () => {
