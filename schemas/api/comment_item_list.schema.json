@@ -114,6 +114,14 @@
             }
           ]
         },
+        "gone_at": {
+          "description": "When a complete read of the pull request first no longer produced it (deleted on GitHub, or no longer an\nitem by the read rules, such as a person's earlier review); absent while reads produce it. Such an item\nleaves the queue, \"Decide the rest\" and bulk decisions; its decisions stay.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
         "repeat_of": {
           "description": "The item whose decision this repeat carried or re-asks (`C<no>`).",
           "type": [
@@ -329,7 +337,7 @@
       "description": "Item state (plan §2.7). Open enum.",
       "oneOf": [
         {
-          "description": "The LLM assessment is running.",
+          "description": "Reserved: the server does not set it; a pass running for an item shows as its `assessment_state` `running`.",
           "type": "string",
           "const": "assessing"
         },

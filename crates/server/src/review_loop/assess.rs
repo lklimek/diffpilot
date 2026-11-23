@@ -355,9 +355,11 @@ async fn charged_watcher(
     Ok(Charge::DailyLimit)
 }
 
-/// Items a pass assesses: comments of open, undecided items (not PR-level questions, which the server asks).
+/// Items a pass assesses: comments of open, undecided items the read still produces (not PR-level questions, which
+/// the server asks).
 fn assessable(item: &ItemRecord) -> bool {
     item.kind != CommentItemKind::PrQuestion
+        && item.gone_at.is_none()
         && matches!(
             item.state,
             ItemState::Assessing

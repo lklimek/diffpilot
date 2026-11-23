@@ -265,6 +265,12 @@ export function QuestionCard(props: QuestionCardProps) {
             tone="reask"
           />
         )}
+        {item.gone_at && (
+          <Chip
+            text="Not in the latest read from GitHub"
+            tip="The last complete read of the pull request did not show this comment: it was deleted on GitHub or is no longer a comment item (for example a person's earlier review). It is out of the queue; its decisions stay."
+          />
+        )}
         {item.assessment && (
           <Chip text={`Category: ${item.assessment.category}`} tip="Category from the LLM assessment." />
         )}

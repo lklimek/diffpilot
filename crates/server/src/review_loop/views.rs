@@ -110,6 +110,7 @@ pub(crate) fn item_view(
         first_round: record.first_round,
         github: record.github.clone(),
         outside: record.outside.clone(),
+        gone_at: record.gone_at,
         repeat_of,
         assessment_state,
         assessment: assessment.map(|stored| stored.assessment.clone()),
@@ -230,6 +231,7 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> Assess
         .filter(|item| {
             item.kind != contracts::api::review_loop::CommentItemKind::PrQuestion
                 && item.state != ItemState::Outside
+                && item.gone_at.is_none()
         })
         .collect();
     let head = loaded.snapshot.as_ref().map(|s| CommitSha(s.head.clone()));

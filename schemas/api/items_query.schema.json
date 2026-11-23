@@ -32,7 +32,7 @@
       "description": "Item state (plan §2.7). Open enum.",
       "oneOf": [
         {
-          "description": "The LLM assessment is running.",
+          "description": "Reserved: the server does not set it; a pass running for an item shows as its `assessment_state` `running`.",
           "type": "string",
           "const": "assessing"
         },

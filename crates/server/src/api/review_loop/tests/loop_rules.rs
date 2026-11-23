@@ -378,3 +378,77 @@ async fn bulk_batch_refuses_an_item_asked_again() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{stored}");
 }
+
+fn queued(overview: &Value, no: &Value) -> bool {
+    overview["queue"]
+        .as_array()
+        .expect("queue")
+        .iter()
+        .any(|entry| {
+            entry["item_nos"]
+                .as_array()
+                .is_some_and(|nos| nos.contains(no))
+        })
+}
+
+/// Plan §2.1: an item a complete read no longer produces stays listed with that fact (never as resolved on GitHub),
+/// leaves the queue, "Decide the rest" and bulk decisions, and returns when a read produces it again; an incomplete
+/// read marks nothing.
+#[tokio::test]
+async fn items_no_longer_read_leave_the_queue_and_stay_listed() {
+    let w = world().await;
+    w.get(&format!("{PR}/comments")).await;
+    let no = w.item(L2).await["no"].clone();
+    let removed: &dyn Fn(&mut Value) = &|answer| {
+        answer["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+            .as_array_mut()
+            .expect("threads")
+            .retain(|thread| thread["id"] != "PRRT_fixture482_l2");
+    };
+    let partial: &dyn Fn(&mut Value) = &|answer| {
+        removed(answer);
+        answer["data"]["repository"]["pullRequest"]["reviewThreads"]["pageInfo"] =
+            json!({"hasNextPage": true, "endCursor": null});
+    };
+    w.reread(&[("review-threads.json", partial)]).await;
+    let kept = w.item(L2).await;
+    assert!(kept.get("gone_at").is_none(), "an incomplete read: {kept}");
+
+    w.reread(&[("review-threads.json", removed)]).await;
+    let gone = w.item(L2).await;
+    assert!(gone["gone_at"].is_string(), "{gone}");
+    assert_eq!(gone["state"], "undecided");
+    assert!(gone["outside"].is_null(), "{gone}");
+    let overview = w.get(&format!("{PR}/comments")).await;
+    assert!(!queued(&overview, &no), "{overview}");
+    let rest = w.get(&format!("{PR}/comments/decide-rest")).await;
+    let listed = |key: &str| {
+        rest[key]
+            .as_array()
+            .expect("list")
+            .iter()
+            .any(|entry| entry["item_no"] == no || entry["row"]["item_no"] == no)
+    };
+    assert!(!listed("rows") && !listed("left_out"), "{rest}");
+    let mut row = reject("Out of scope.");
+    row["item_no"] = no.clone();
+    row["item_revision"] = gone["revision"].clone();
+    let (status, refused) = w
+        .post(
+            &format!("{PR}/comments/decision-batches"),
+            json!({"via": "bulk", "rows": [row]}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("not in the latest read from GitHub")),
+        "{refused}"
+    );
+
+    w.reread(&[]).await;
+    let back = w.item(L2).await;
+    assert!(back.get("gone_at").is_none(), "{back}");
+    assert!(queued(&w.get(&format!("{PR}/comments")).await, &no));
+}
