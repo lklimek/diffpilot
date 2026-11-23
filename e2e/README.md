@@ -37,6 +37,7 @@ job tokens are known only by that shape: the server keeps just their hash) and a
 | `dashboard-views.spec.ts`         | Excluded disclosure with its reason; a PR waiting only on others; size pills and Sizes shown; kind toggles kept over a reload; Recent reviews |
 | `dashboard-language.spec.ts`      | Polish chosen: every ranking job's prompt asks for Polish                                                             |
 | `dashboard-settings.spec.ts`      | Dashboard settings validation and save, ranking effort; access token: bearer reads, writes 403, revoked 401; second user |
+| `review-loop.spec.ts`             | PR page "Process PR comments" → Comments → the verify_comments assessment → a decision whose preview is what is stored → Decision log; an execute token claims it (RF3) and reports its fix done (RF4) |
 
 ## Run
 
@@ -94,6 +95,9 @@ What a test can reach of a local stack (`Stack` in `support/stack.ts`):
   ranked order the specs expect holds on any day, with no clock in the server.
 - `stack.moveHead()` pushes a commit onto the PR head in the clone base and moves fake GitHub's head
   (`POST /_fake/head`).
+- `test.use({ reviewLoop: true })` in a file: its stack's fake GitHub serves the review-loop reads of PR 482
+  (`fixtures/review-loop/github`, `SR_DEV_REVIEW_LOOP_RECORDINGS`). Off for the other files: opening the PR page
+  then reads its comments and queues a `verify_comments` job.
 
 ## Against already-running services
 
