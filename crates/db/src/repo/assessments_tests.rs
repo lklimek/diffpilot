@@ -363,6 +363,260 @@ fn item(run: AssessmentRunRef, key: &str) -> AssessmentComparisonItem {
     }
 }
 
+async fn claim_assessment(db: &Db, now: Timestamp) -> jobs::JobRecord {
+    db.jobs()
+        .claim(jobs::ClaimParams {
+            payer_ids: &[user().0],
+            job_token_hash: b"fake-attempt-token",
+            lease_until: now + jiff::SignedDuration::from_secs(60),
+            now,
+        })
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+async fn started_assessment() -> (Db, jobs::JobRecord, AssessmentRunRef, MethodResult) {
+    let db = Db::in_memory().await.unwrap();
+    seed(&db).await;
+    let req = request("lease-fence", false);
+    db.assessments()
+        .admit("default", &user(), &req, at("2026-11-23T12:00:00Z"))
+        .await
+        .unwrap();
+    let job = claim_assessment(&db, at("2026-11-23T12:00:00Z")).await;
+    let run = req.jobs[0].spec.assessment.clone().unwrap();
+    db.assessments()
+        .begin_attempt("default", &user(), &run, job.attempt)
+        .await
+        .unwrap();
+    let result = MethodResult {
+        status: AssessmentRunStatus::Succeeded,
+        usage: Usage {
+            input_tokens: 7,
+            ..Default::default()
+        },
+        duration_ms: 5,
+        failure: None,
+        items: vec![item(run.clone(), "current")],
+    };
+    (db, job, run, result)
+}
+
+async fn assert_late_assessment_rejected(db: &Db, run: &AssessmentRunRef, result: &MethodResult) {
+    assert!(matches!(
+        db.assessments()
+            .finish_attempt("default", &user(), run, 1, result)
+            .await,
+        Err(crate::error::DbError::Conflict)
+    ));
+    let runs = db
+        .assessments()
+        .runs("default", &user(), run.pass_id)
+        .await
+        .unwrap();
+    assert_eq!(runs[0].status, AssessmentRunStatus::Running);
+    assert_eq!(runs[0].accepted_attempt, None);
+    assert_eq!(
+        runs[0].usage,
+        Usage {
+            requests: Some(0),
+            ..Default::default()
+        }
+    );
+    assert_eq!(runs[0].duration_ms, 0);
+    assert!(
+        db.assessments()
+            .comparison("default", &user(), run.pass_id, at("2026-11-23T12:02:00Z"))
+            .await
+            .unwrap()
+            .items
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn assessment_rejects_expired_or_released_attempt_before_reclaim() {
+    for release in [false, true] {
+        for exhausted in [false, true] {
+            let (db, job, run, result) = started_assessment().await;
+            if exhausted {
+                let mut tx = write_tx(&db.pool).await.unwrap();
+                sqlx::query("UPDATE jobs SET max_attempts=1 WHERE id=?")
+                    .bind(job.id.to_string())
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            }
+            let now = at("2026-11-23T12:02:00Z");
+            if release {
+                assert!(
+                    db.jobs()
+                        .release_claim(job.id, 1, now)
+                        .await
+                        .unwrap()
+                        .is_some()
+                );
+            } else {
+                assert_eq!(db.jobs().expire_leases(now).await.unwrap().len(), 1);
+            }
+            assert_late_assessment_rejected(&db, &run, &result).await;
+            assert!(
+                db.assessments()
+                    .record_attempt_usage(
+                        "default",
+                        &user(),
+                        &run,
+                        1,
+                        result.usage,
+                        result.duration_ms
+                    )
+                    .await
+                    .unwrap()
+            );
+            if !exhausted {
+                let replacement = claim_assessment(&db, now).await;
+                assert_eq!((replacement.id, replacement.attempt), (job.id, 2));
+                db.assessments()
+                    .begin_attempt("default", &user(), &run, 2)
+                    .await
+                    .unwrap();
+                assert!(
+                    db.assessments()
+                        .finish_attempt("default", &user(), &run, 2, &result)
+                        .await
+                        .unwrap()
+                );
+                let runs = db
+                    .assessments()
+                    .runs("default", &user(), run.pass_id)
+                    .await
+                    .unwrap();
+                assert_eq!(runs[0].accepted_attempt, Some(2));
+                assert_eq!(runs[0].usage.input_tokens, 14);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn assessment_rejects_expired_attempt_after_reclaim() {
+    let (db, job, run, result) = started_assessment().await;
+    db.jobs()
+        .expire_leases(at("2026-11-23T12:02:00Z"))
+        .await
+        .unwrap();
+    let replacement = claim_assessment(&db, at("2026-11-23T12:02:00Z")).await;
+    assert_eq!((replacement.id, replacement.attempt), (job.id, 2));
+    assert_late_assessment_rejected(&db, &run, &result).await;
+    db.assessments()
+        .begin_attempt("default", &user(), &run, 2)
+        .await
+        .unwrap();
+    assert!(
+        db.assessments()
+            .finish_attempt("default", &user(), &run, 2, &result)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        db.assessments()
+            .runs("default", &user(), run.pass_id)
+            .await
+            .unwrap()[0]
+            .accepted_attempt,
+        Some(2)
+    );
+}
+
+#[tokio::test]
+async fn assessment_rejects_cancel_requested_and_cancelled_attempts() {
+    for state in ["requested", "expired", "completed"] {
+        let (db, job, run, result) = started_assessment().await;
+        let now = at("2026-11-23T12:02:00Z");
+        db.jobs().request_cancel(job.id, now).await.unwrap();
+        match state {
+            "expired" => {
+                db.jobs().expire_leases(now).await.unwrap();
+            }
+            "completed" => {
+                db.jobs()
+                    .complete(
+                        &jobs::server_result(
+                            job.id,
+                            1,
+                            contracts::job::result::JobOutcome::Succeeded {
+                                output: serde_json::json!({}),
+                            },
+                        ),
+                        now,
+                    )
+                    .await
+                    .unwrap();
+            }
+            _ => {}
+        }
+        assert_late_assessment_rejected(&db, &run, &result).await;
+        assert!(
+            db.assessments()
+                .record_attempt_usage(
+                    "default",
+                    &user(),
+                    &run,
+                    1,
+                    result.usage,
+                    result.duration_ms
+                )
+                .await
+                .unwrap()
+        );
+    }
+}
+
+#[tokio::test]
+async fn assessment_accepts_completed_attempt_without_replacing_failed_job_outcome() {
+    use contracts::job::result::{JobFailureKind, JobOutcome};
+    for failed in [false, true] {
+        let (db, job, run, mut result) = started_assessment().await;
+        let outcome = if failed {
+            JobOutcome::Failed {
+                kind: JobFailureKind::WorkerLost,
+                message: "fake failure".into(),
+            }
+        } else {
+            JobOutcome::Succeeded {
+                output: serde_json::json!({}),
+            }
+        };
+        db.jobs()
+            .complete(
+                &jobs::server_result(job.id, 1, outcome),
+                at("2026-11-23T12:00:30Z"),
+            )
+            .await
+            .unwrap();
+        if failed {
+            assert_late_assessment_rejected(&db, &run, &result).await;
+            result.status = AssessmentRunStatus::Failed;
+            result.failure = Some(JobFailureKind::WorkerLost);
+            result.items.clear();
+        }
+        assert!(
+            db.assessments()
+                .finish_attempt("default", &user(), &run, 1, &result)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !db.assessments()
+                .finish_attempt("default", &user(), &run, 1, &result)
+                .await
+                .unwrap()
+        );
+    }
+}
+
 #[tokio::test]
 async fn assessment_results_fence_attempts_and_keep_secondary_comparison_only() {
     let db = Db::in_memory().await.unwrap();
