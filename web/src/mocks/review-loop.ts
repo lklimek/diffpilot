@@ -33,6 +33,7 @@ import type {
 } from "../api/generated/types";
 import {
   ASKED_AGAIN,
+  NOT_READ,
   decideRest,
   dismissal,
   plan,
@@ -496,7 +497,8 @@ export function resetReviewLoop(): void {
 }
 
 const OPEN_STATES = new Set(["undecided", "reopened", "asked_back"]);
-const isOpen = (i: CommentItem) => OPEN_STATES.has(i.state);
+/** Waiting for a decision: open and still produced by the read (an item with `gone_at` leaves the queue). */
+const isOpen = (i: CommentItem) => OPEN_STATES.has(i.state) && !i.gone_at;
 
 /** Items as RC4 answers them in the selected state. */
 export function listItems(): CommentItem[] {
@@ -569,7 +571,7 @@ function counts(list: CommentItem[]) {
 }
 
 function assessmentProgress(list: CommentItem[]) {
-  const needs = list.filter((i) => i.kind !== "pr_question" && i.state !== "outside");
+  const needs = list.filter((i) => i.kind !== "pr_question" && i.state !== "outside" && !i.gone_at);
   const assessed = needs.filter((i) => i.assessment_state.state === "assessed").length;
   return {
     running: state() === "running",
@@ -973,16 +975,17 @@ export function previewEffects(rows: DecisionBatchRow[]): EffectsPreview[] | Ref
 export const decideRestList = (): DecideRest => decideRest(listItems(), scopeOf);
 
 /** RC8, RC9 (mod.rs `decide`): one record per row, all or nothing; gate rows never under group or bulk, items
- * asked again never in bulk. */
+ * asked again or no longer read never in bulk. */
 function storeRows(via: Decision["via"], rows: DecisionBatchRow[]): Decision[] | Refusal {
   items();
   const twice = rows.find((r, i) => rows.findIndex((o) => o.item_no === r.item_no) !== i);
   if (twice)
     return [400, "invalid_request", `C${twice.item_no}: this decision is not offered for this item.`];
-  const again = rows
+  const own = rows
     .map((r) => store!.items.find((i) => i.no === r.item_no))
-    .find((i) => i?.state === "reopened");
-  if (via === "bulk" && again) return [400, "invalid_request", `C${again.no}: ${ASKED_AGAIN}.`];
+    .find((i) => i?.gone_at || i?.state === "reopened");
+  if (via === "bulk" && own)
+    return [400, "invalid_request", `C${own.no}: ${own.gone_at ? NOT_READ : ASKED_AGAIN}.`];
   const gated = rows
     .map((r) => store!.items.find((i) => i.no === r.item_no))
     .filter((i) => i && i.gates.length > 0)

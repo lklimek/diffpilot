@@ -13,9 +13,12 @@ import {
 } from "./effects-plan";
 import {
   BOT_CHANGE_REQUESTS,
+  decide,
   decideBatch,
+  decideRestList,
   isRefused,
   listItems,
+  overview,
   previewEffects,
   resetReviewLoop,
 } from "./review-loop";
@@ -191,6 +194,27 @@ describe("mock effect function (effects.rs plan)", () => {
     ]);
     expect(byNo(21).state).toBe("reopened");
     expect(isRefused(decideBatch("group", [row]))).toBe(false);
+  });
+
+  it("an item the latest read no longer produces leaves the queue, Decide the rest and P1; bulk refuses it", () => {
+    const merged = () => previewOf(24, request("merge_with_follow_ups")).flatMap((e) => e.params.item_nos);
+    expect(overview().queue.flatMap((e) => e.item_nos)).toContain(22);
+    expect(decideRestList().rows.map((r) => r.row.item_no)).toContain(22);
+    expect(merged()).toContain(22);
+    Object.assign(byNo(22), { gone_at: "2026-11-18T09:00:00Z" });
+    expect(overview().queue.flatMap((e) => e.item_nos)).not.toContain(22);
+    const rest = decideRestList();
+    expect([...rest.rows.map((r) => r.row.item_no), ...rest.left_out.map((l) => l.item_no)]).not.toContain(
+      22,
+    );
+    expect(merged()).not.toContain(22);
+    const row = { item_no: 22, ...request("fix_here", { item_revision: byNo(22).revision }) };
+    expect(decideBatch("bulk", [row])).toEqual([
+      400,
+      "invalid_request",
+      "C22: it is not in the latest read from GitHub, so it is decided on its own, not in bulk.",
+    ]);
+    expect(isRefused(decide("C22", row))).toBe(false);
   });
 
   it("Decide the rest leaves out gate items, repeats asked again and items without an assessment", () => {

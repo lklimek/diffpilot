@@ -34,6 +34,7 @@ const ERROR = {
   reviewsChanged:
     "the reviews this question lists changed since it was asked; keep the reviews, the next round asks again",
   askedAgain: "it was asked again, so it is decided on its own, not in bulk",
+  notRead: "it is not in the latest read from GitHub, so it is decided on its own, not in bulk",
 } as const;
 
 /** Why a decision does not fit its item (the server's words). */
@@ -41,6 +42,8 @@ export type DecisionError = (typeof ERROR)[keyof typeof ERROR];
 
 /** mod.rs `decide`: a bulk batch with an item asked again (`reopened`) is refused. */
 export const ASKED_AGAIN: DecisionError = ERROR.askedAgain;
+/** mod.rs `decide`: a bulk batch with an item the latest complete read no longer produced (`gone_at`) is refused. */
+export const NOT_READ: DecisionError = ERROR.notRead;
 
 /** What a PR-level decision acts on (effects.rs `PrScope`). */
 export interface PlanScope {
@@ -238,8 +241,9 @@ export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope
 
 const OPEN = new Set(["undecided", "assessing", "asked_back", "reopened"]);
 
-/** queue.rs `waiting`: open items (the fixture has one PR-level question of each kind at most). */
-export const waiting = (items: CommentItem[]) => items.filter((i) => OPEN.has(i.state));
+/** queue.rs `waiting` over mod.rs `Loaded::queue_items`: open items the read still produces (no `gone_at`); the
+ * fixture has one PR-level question of each kind at most. */
+export const waiting = (items: CommentItem[]) => items.filter((i) => OPEN.has(i.state) && !i.gone_at);
 
 /** observe.rs `BotChangeRequest`: a bot whose latest review requests changes. */
 export interface BotChangeRequest {
@@ -258,7 +262,7 @@ const standing = (item: CommentItem) => {
 export function staleReviews(requests: BotChangeRequest[], items: CommentItem[]): BotChangeRequest[] {
   return requests.filter((request) => {
     const raised = items.filter(
-      (i) => i.author.toLowerCase() === request.login.toLowerCase() && i.state !== "outside",
+      (i) => i.author.toLowerCase() === request.login.toLowerCase() && i.state !== "outside" && !i.gone_at,
     );
     return raised.length > 0 && raised.every((i) => standing(i) !== null && !OPEN.has(i.state));
   });
