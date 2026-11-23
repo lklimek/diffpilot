@@ -2,6 +2,7 @@ import { type Page } from "@playwright/test";
 import { PINNED_NOW, expect, test } from "./fixtures";
 import { expectAccessible, expectTooltips } from "./screens-support";
 import { ANALYSIS_ID, expectTrustWording } from "./support";
+import { contrastRatio } from "../src/components/code-view/highlight";
 
 const open = (page: Page, scenario: string) =>
   page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=${scenario}`);
@@ -158,6 +159,55 @@ test.describe("stage and liveness", () => {
     await expect(dot).not.toHaveCSS("animation-name", "none");
     await expect(rest(page)).not.toHaveCSS("animation-name", "none");
   });
+
+  for (const colorScheme of ["light", "dark"] as const) {
+    test(`activity pattern contrasts at least 3:1 throughout the pulse and without motion: ${colorScheme}`, async ({
+      page,
+    }) => {
+      await page.emulateMedia({ colorScheme });
+      await open(page, "running");
+      await expect(indicator(page)).toContainText("Working");
+      for (const reducedMotion of ["no-preference", "reduce"] as const) {
+        await page.emulateMedia({ reducedMotion });
+        for (const phase of [0, 0.5, 1]) {
+          const { image, opacity, track, solid } = await rest(page).evaluate((element, phase) => {
+            for (const animation of element.getAnimations()) {
+              animation.pause();
+              animation.currentTime = Number(animation.effect!.getTiming().duration) * phase;
+            }
+            const style = getComputedStyle(element);
+            return {
+              image: style.backgroundImage,
+              solid: style.backgroundColor,
+              opacity: Number(style.opacity),
+              track: getComputedStyle(element.parentElement!).backgroundColor,
+            };
+          }, phase);
+          const rgb = (color: string) =>
+            color
+              .match(/[\d.]+/g)!
+              .slice(0, 3)
+              .map(Number);
+          const hex = (channels: number[]) =>
+            `#${channels.map((c) => Math.round(c).toString(16).padStart(2, "0")).join("")}`;
+          const background = rgb(track);
+          const swatches = [...new Set(image.match(/rgb\([^)]+\)/g) ?? [solid])];
+          const ratios = swatches.map((color) =>
+            contrastRatio(
+              hex(rgb(color).map((c, i) => c * opacity + background[i]! * (1 - opacity))),
+              hex(background),
+            ),
+          );
+          expect(
+            Math.max(...ratios),
+            `${colorScheme}, ${reducedMotion}, phase ${phase}`,
+          ).toBeGreaterThanOrEqual(3);
+          expect(image).toContain("repeating-linear-gradient");
+          expect(contrastRatio(hex(rgb(swatches[0]!)), hex(rgb(swatches[1]!)))).toBeGreaterThanOrEqual(3);
+        }
+      }
+    });
+  }
 
   // Light and dark at 1440 with SCREENSHOT_DIR set, e.g. /data/artifacts/diffpilot/<date>/wp3-tour-9.
   for (const colorScheme of ["light", "dark"] as const) {
