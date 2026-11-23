@@ -291,6 +291,7 @@ impl FakeProvider {
             .send(ProviderEvent::OutputReady(finished.output.clone()))
             .await;
         Ok(ProviderOutcome {
+            runtime_session: None,
             session_turns: None,
             output: finished.output,
             session_id: finished.thread_id,
@@ -533,6 +534,7 @@ mod tests {
     fn call(kind: JobKind, prompt: &str) -> ProviderCall {
         let spec = crate::test_support::spec(kind, Path::new("/nonexistent"));
         ProviderCall {
+            job_spec: None,
             job_id: spec.job_id,
             job_dir: PathBuf::new(),
             codex_home: PathBuf::new(),
@@ -735,6 +737,7 @@ mod file_tests {
         let text = "# flow f1\n";
         std::fs::write(&script,json!({"rules":[{"id":"file","job":"analyse_flow","action":{"answer":{"output":text}}}]}).to_string()).unwrap();
         let call = ProviderCall {
+            job_spec: None,
             job_id: JobId::new_random(),
             job_dir: root.path().join("job"),
             codex_home: root.path().join("home"),

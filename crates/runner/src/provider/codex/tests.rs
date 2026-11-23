@@ -134,6 +134,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
     )
     .unwrap();
     let call = ProviderCall {
+        job_spec: None,
         job_id: JobId::new_random(),
         job_dir,
         codex_home,

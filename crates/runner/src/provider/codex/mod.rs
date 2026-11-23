@@ -7,7 +7,7 @@
 //! The credential copy is written back with compare-and-swap after Codex exited ([`credential`], T13); the
 //! session's rollout is copied in before a resume and back after the job ([`session`], T8).
 
-mod config;
+pub(super) mod config;
 mod credential;
 mod isolated;
 mod session;
@@ -312,6 +312,7 @@ impl CodexProvider {
         }
         phases.since("session_save", step);
         Ok(ProviderOutcome {
+            runtime_session: None,
             output,
             session_id,
             session_turns,

@@ -262,6 +262,7 @@ impl Executor {
         ));
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let call = ProviderCall {
+            job_spec: Some(Box::new(spec.clone())),
             job_id: spec.job_id,
             job_dir: job_dir.to_path_buf(),
             codex_home: codex_home.to_path_buf(),
@@ -533,11 +534,13 @@ fn to_result(
             outcome: JobOutcome::Succeeded {
                 output: scrubber.value(outcome.output),
             },
-            session: outcome.session_id.map(|thread_id| SessionReport {
-                last_context: None,
-                preflight: None,
-                thread_id,
-                outcome: session_outcome,
+            session: outcome.runtime_session.or_else(|| {
+                outcome.session_id.map(|thread_id| SessionReport {
+                    last_context: None,
+                    preflight: None,
+                    thread_id,
+                    outcome: session_outcome,
+                })
             }),
             usage: Some(outcome.usage),
             skills_commit: outcome.skills_commit,
@@ -547,8 +550,13 @@ fn to_result(
             }),
         },
         Err(error) => {
+            let (error, usage, session) = error.into_details();
             let message = clip(&scrubber.text(&error.to_string()), MESSAGE_MAX_CHARS);
             let outcome = match error {
+                ProviderError::Metered { .. } | ProviderError::Checkpoint { .. } => {
+                    failure(JobFailureKind::Internal, &message)
+                }
+                ProviderError::Runtime { kind } => failure(kind, &message),
                 ProviderError::Cancelled => JobOutcome::Cancelled,
                 ProviderError::UsageLimit { resets_at } => JobOutcome::UsageLimited { resets_at },
                 ProviderError::CredentialUnusable => {
@@ -576,8 +584,8 @@ fn to_result(
                 job_id: spec.job_id,
                 attempt: spec.attempt,
                 outcome,
-                session: None,
-                usage: None,
+                session,
+                usage,
                 skills_commit: None,
                 llm_call,
             }

@@ -60,8 +60,40 @@ pub struct WorkerStatus {
 /// Correlated response; attach upgrades the connection to a raw relay after acknowledgement.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LauncherResponse {
+    /// Dependency-source outcome, including automatic fetch failures and no-lock resolution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fetch: Option<DependencySources>,
+    /// Typed failure; an attachment upgrades only when this is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<LauncherFailure>,
     /// Original request id.
     pub id: String,
     /// Managed workers (list), otherwise empty.
     pub workers: Vec<WorkerStatus>,
+}
+
+/// Safe launcher failure category; engine diagnostics remain in launcher logs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LauncherFailure {
+    /// No slot or attachment is available yet.
+    Busy,
+    /// Identity or fixed security template was rejected.
+    InvalidTemplate,
+    /// Container engine or runtime configuration failed.
+    WorkerUnavailable,
+    /// Dependency fetching failed; the job may continue without dependency sources.
+    FetchUnavailable,
+}
+
+/// Dependency-source result from the fixed CS3 fetch image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencySources {
+    /// Fetch succeeded; no assertion about a Cargo.lock is made.
+    Available,
+    /// Fetch succeeded after resolving sources without a lock file.
+    ResolvedWithoutLock,
+    /// Fetch failed; the job can continue without dependency sources.
+    Unavailable,
 }

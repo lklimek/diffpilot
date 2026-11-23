@@ -2,6 +2,7 @@
 //! agent call in a prepared job directory, streams normalised events, restores and saves the pull request's
 //! session files after every successful useful turn (ADR-004).
 
+pub mod appserver;
 pub mod codex;
 #[cfg(feature = "fake-provider")]
 pub mod fake;
@@ -53,6 +54,8 @@ pub enum ProviderEvent {
 /// One agent call, prepared by `execute`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderCall {
+    /// Self-contained container runtime input; absent for the legacy provider.
+    pub job_spec: Option<Box<contracts::job::spec::JobSpec>>,
     /// The job.
     pub job_id: JobId,
     /// Fresh job directory; the agent's working directory, with the checkout at `job_dir/repo`.
@@ -92,6 +95,8 @@ pub struct ProviderCall {
 /// `session_id: None` and the next job starts with a context pack.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderOutcome {
+    /// Container checkpoint metadata, including acknowledged first-Ask preflight.
+    pub runtime_session: Option<contracts::job::result::SessionReport>,
     /// Final JSON object or tagged flow file string (identical to [`ProviderEvent::OutputReady`]).
     pub output: Value,
     /// Provider session (Codex thread) id after the call; none when archival failed.
@@ -107,6 +112,30 @@ pub struct ProviderOutcome {
 /// An agent call failed; `Display` is a plain message safe to report as the LLM status.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
+    /// Failed call with its latest acknowledged persistent-thread checkpoint.
+    #[error("{error}")]
+    Checkpoint {
+        /// Safe underlying failure.
+        #[source]
+        error: Box<ProviderError>,
+        /// Persist under the job attempt and generation fence, even when the answer failed.
+        session: Box<contracts::job::result::SessionReport>,
+    },
+    /// Failed call with the gateway's response-ID usage, including any completed compaction.
+    #[error("{error}")]
+    Metered {
+        /// Safe provider failure, without upstream payloads.
+        #[source]
+        error: Box<ProviderError>,
+        /// Actual usage of this key, never a payer-wide or time-window sum.
+        usage: Usage,
+    },
+    /// Safe container/gateway failure with a shared retry policy.
+    #[error("container agent failed: {kind:?}")]
+    Runtime {
+        /// Provider-neutral failure category; no raw worker error leaves the boundary.
+        kind: contracts::job::result::JobFailureKind,
+    },
     /// A skill required by the prompt cannot be provided.
     #[error("{0}")]
     Configuration(#[from] crate::skills::SkillError),
@@ -146,6 +175,46 @@ pub enum ProviderError {
     /// Local I/O (job directory, session store) failed.
     #[error("the runner could not prepare or clean up the agent call")]
     Io(#[from] std::io::Error),
+}
+
+impl ProviderError {
+    /// Separate a call's failure from its optional authoritative usage for JobResult persistence.
+    pub fn into_parts(self) -> (Self, Option<Usage>) {
+        let (error, usage, _) = self.into_details();
+        (error, usage)
+    }
+
+    /// Separate failure, authoritative usage and acknowledged checkpoint for fenced persistence.
+    pub fn into_details(
+        self,
+    ) -> (
+        Self,
+        Option<Usage>,
+        Option<contracts::job::result::SessionReport>,
+    ) {
+        let mut error = self;
+        let mut metered = None;
+        let mut checkpoint = None;
+        loop {
+            match error {
+                Self::Metered {
+                    error: source,
+                    usage,
+                } => {
+                    metered.get_or_insert(usage);
+                    error = *source;
+                }
+                Self::Checkpoint {
+                    error: source,
+                    session,
+                } => {
+                    checkpoint.get_or_insert(*session);
+                    error = *source;
+                }
+                error => return (error, metered, checkpoint),
+            }
+        }
+    }
 }
 
 #[cfg(test)]

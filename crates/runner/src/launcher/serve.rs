@@ -61,9 +61,44 @@ pub(super) async fn connection(
     )
     .await
     .map_err(|_| Error::Protocol)??;
+    let id = request.id.clone();
+    let mut upgraded = false;
+    let result = handle(&mut socket, request, shared, &mut upgraded).await;
+    if let Err(error) = &result
+        && !upgraded
+    {
+        use contracts::launcher::LauncherFailure;
+        let failure = match error {
+            Error::Busy => LauncherFailure::Busy,
+            Error::InvalidTemplate => LauncherFailure::InvalidTemplate,
+            Error::Fetch => LauncherFailure::FetchUnavailable,
+            _ => LauncherFailure::WorkerUnavailable,
+        };
+        write_message(
+            &mut socket,
+            &LauncherResponse {
+                id,
+                workers: vec![],
+                fetch: None,
+                error: Some(failure),
+            },
+        )
+        .await?;
+    }
+    result
+}
+
+async fn handle(
+    socket: &mut UnixStream,
+    request: LauncherRequest,
+    shared: Arc<Mutex<Launcher>>,
+    upgraded: &mut bool,
+) -> Result<(), Error> {
     let mut launcher = shared.lock().await;
     let mut response = LauncherResponse {
         id: request.id,
+        error: None,
+        fetch: None,
         workers: vec![],
     };
     let fetch = match request.action {
@@ -100,7 +135,8 @@ pub(super) async fn connection(
                     cmd: Some(vec!["codex".into(), "app-server".into(), "proxy".into(), "--sock".into(), "/run/dp/app.sock".into()]), ..Default::default()
                 }).await?;
                 let StartExecResults::Attached { mut output, mut input } = docker.start_exec(&exec.id, None).await? else { return Err(Error::Protocol); };
-                write_message(&mut socket, &response).await?;
+                write_message(socket, &response).await?;
+                *upgraded = true;
                 let (mut reader, mut writer) = socket.split();
                 let incoming = tokio::io::copy(&mut reader, &mut input);
                 let outgoing = async {
@@ -134,7 +170,12 @@ pub(super) async fn connection(
         drop(launcher);
         let result = fetcher.fetch(&container).await;
         shared.lock().await.fetching.remove(&name);
-        // TODO(W4): report fetch/no-lock outcomes and typed errors after the response contract is amended.
+        response.fetch = Some(
+            result
+                .as_ref()
+                .copied()
+                .unwrap_or(contracts::launcher::DependencySources::Unavailable),
+        );
         if automatic {
             if result.is_err() {
                 tracing::warn!(worker = %name, "dependency sources unavailable after worker start");
@@ -145,8 +186,8 @@ pub(super) async fn connection(
     } else {
         drop(launcher);
     }
-    write_message(&mut socket, &response).await?;
-    super::client::close(&mut socket).await
+    write_message(socket, &response).await?;
+    super::client::close(socket).await
 }
 
 pub(super) async fn housekeeping(shared: Arc<Mutex<Launcher>>, period: Duration) {
