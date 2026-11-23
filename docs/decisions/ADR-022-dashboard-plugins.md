@@ -73,7 +73,7 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
    never as a diffpilot badge, tag, fact or verdict; no numeric confidence, no "verified"/"no risk". Each note links to
    its evidence: the source's record of the pull request, built by the server from the configured base URL and the
    validated repository and number. External text is plain text: control characters and invisible format characters
-   (bidi controls, zero-width) removed, summary and each detail cut to 300 characters, at most 8 details and 6 facts
+   (bidi controls, zero-width) removed, summary and each detail cut to 300 characters, at most 64 details and 6 facts
    (values 100 characters). The source is untrusted data.
 8. **Configuration.** One variable per plug-in, unset = off (today's behaviour exactly, no request, no new field on
    the wire). PR Hygiene: `SR_PR_HYGIENE_URL` = the service's base URL (`http`/`https`). thepastaclaw status:
@@ -82,7 +82,14 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
 9. **PR Hygiene mapping.** One `GET /api/v1/prs` (all open pull requests of its covered repositories) and one
    `GET /api/v1/stages` per poll, each with `If-None-Match`; both 304 → `Unchanged`. Pull requests of a repository
    in `stale_repos` (stale or `fetch_error`) and ungoverned ones (`engine_state` null) get no statement. Note: summary
-   = `next_action`, details = `blockers`, facts = stage, whose move (the stage's owner from `/stages`) and lateness;
+   = `next_action`; facts = readable stage, whose move (the stage's owner from `/stages`), lateness, readable engine
+   state, since with elapsed time at the aggregate data time, and since basis. Labelled details carry all blockers,
+   review requests with approvers, objectors, flags/counts (changes requested, CI failing, merge conflict, unresolved
+   comments, idle, draft, tracked), areas/base/milestone, author/kind, update time and each reviewer's latest dated
+   review. A per-PR GET adds up to five recent stage changes, stale status and its data time, cached by the aggregate
+   record's change mark (at most four requests at once; only governed PRs of fresh repositories). A failed history
+   read keeps the aggregate note and says history is unavailable. No browser requests to the source. The compact
+   note opens all context in the shared tooltip on hover or keyboard focus; long context scrolls by keyboard;
    evidence `<base>/api/v1/prs/{owner}/{repo}/{n}`. Opinion: `agrees` for `ready-to-merge`, else `holds` with
    `next_action` (or the stage) as the reason. Change mark: the record minus time-only values (`lateness`, `idle`).
 10. **thepastaclaw status mapping** (v1.3, `server::dashboard::plugin::thepastaclaw`). One `GET` of the status file

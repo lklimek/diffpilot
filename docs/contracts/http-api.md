@@ -712,6 +712,18 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   statement; with `comments` absent the row reads "Watching, comments not read yet". Like `review` both are part of
   the page's `ETag`. `tags` and
   `facts` come from scan facts only; `llm` text is shown with the "LLM" tag.
+- **Plug-in notes (ADR-022).** `WorkItem.plugin_notes` and the PR page's `plugin_notes` carry external
+  statements as `PluginNote { plugin, source, url, as_of, summary, details, facts }`. The shape is unchanged.
+  Render every statement attributed to `source`, as plain text; only the server-built `url` is an evidence link.
+  A summary or detail has at most 300 characters; a note has at most 64 details and 6 facts (100 characters per
+  label/value), with control and invisible formatting characters removed. PR Hygiene keeps its compact next
+  action in `summary`; `facts` and labelled `details` include readable stage/engine state, stage age at aggregate
+  data time and its basis, blockers, review requests and approvers, objectors, flags and counts, author/areas/base/
+  milestone/update time, latest dated review per reviewer, and up to five recent stage changes with observed and
+  entry times. The per-PR response supplies history, stale status and its generation time; `as_of` is the aggregate
+  response's generation time. History is cached until the aggregate PR record changes (time-only fields excluded);
+  its failure leaves aggregate context available and says "Stage history: unavailable". The UI shows the full
+  statement on hover or keyboard focus of its compact note, with keyboard scrolling for long statements.
 - **Scores.** Integers only: points in tenths. `total_tenths` is the sum of the parts' `points_tenths` (a pending
   part counts 0); `parts` lists the twelve `ScoreComponent`s in display order, each with `source` and a plain
   `basis` (an estimate's basis names its rule, "estimate until judged: …"). `tier` is computed by the server:

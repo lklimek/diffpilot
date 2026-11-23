@@ -30,7 +30,7 @@ use crate::state::AppState;
 /// Characters kept of a summary or a detail.
 const TEXT_CHARS: usize = 300;
 /// Details kept per statement.
-const DETAILS_KEPT: usize = 8;
+const DETAILS_KEPT: usize = 64;
 /// Facts kept per statement.
 const FACTS_KEPT: usize = 6;
 /// Logins kept of those owing a review.
