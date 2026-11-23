@@ -207,6 +207,31 @@ describe("V4–V6 and Settings → Notifications", () => {
     expect(within(ntfy).queryByText("Only http and https addresses are allowed.")).toBeNull();
   });
 
+  it("a new server address with the stored token kept is refused at the token field until it is replaced or removed", async () => {
+    renderRoute("/settings#notifications");
+    const ntfy = await screen.findByRole("region", { name: "ntfy" });
+    const url = within(ntfy).getByLabelText("Server URL");
+    await userEvent.clear(url);
+    await userEvent.type(url, "https://push.example.org");
+    await userEvent.click(within(ntfy).getByRole("button", { name: "Save channel" }));
+    const message =
+      "The kind or the URL's scheme, host or port changed: replace or remove the secret, it is not sent to a new destination.";
+    expect(await within(ntfy).findByRole("alert")).toHaveTextContent(message);
+    expect(within(ntfy).getByLabelText("Access token (optional)")).toHaveAccessibleDescription(
+      expect.stringContaining(message),
+    );
+    expect(within(ntfy).getAllByText(message)).toHaveLength(1);
+    await userEvent.click(within(ntfy).getByRole("button", { name: "Remove secret" }));
+    await userEvent.click(within(ntfy).getByRole("button", { name: "Save channel" }));
+    // A saved channel is shown afresh (the card is keyed by its stored URL and secret).
+    await waitFor(() => {
+      const saved = screen.getByRole("region", { name: "ntfy" });
+      expect(within(saved).getByLabelText("Server URL")).toHaveValue("https://push.example.org");
+      expect(within(saved).getByLabelText("Access token (optional)")).toHaveValue("not set");
+      expect(within(saved).queryByRole("alert")).toBeNull();
+    });
+  });
+
   it("channels with masked tokens; Send test shows its outcome", async () => {
     renderRoute("/settings#notifications");
     expect(await screen.findByRole("heading", { name: "ntfy" })).toBeVisible();

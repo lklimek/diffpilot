@@ -1,7 +1,8 @@
 // The server's effect function as the mocks' server runs it: a port of crates/server/src/review_loop/effects.rs
-// `plan` (validation, ordered effects, the reply text that gets posted) and of queue.rs `proposed` / `decide_rest`
-// with views.rs `decide_rest` (RC17). It models the server, never the web's own helpers, so that web/server drift
-// shows up in tests; keep it in step with those files.
+// `plan` (validation, ordered effects, the reply text that gets posted), of mod.rs `stale_reviews` / `dismissal`
+// (the reviews P3 dismisses) and of queue.rs `proposed` / `decide_rest` with views.rs `decide_rest` (RC17). It
+// models the server, never the web's own helpers, so that web/server drift shows up in tests; keep it in step with
+// those files.
 import type {
   CommentItem,
   DecideRequest,
@@ -30,17 +31,23 @@ const ERROR = {
   overrideInvalid: "the override does not fit this decision",
   resolveLocked: "this decision always resolves the thread",
   tooLong: `a text is longer than ${MAX_TEXT_CHARS} characters`,
+  reviewsChanged:
+    "the reviews this question lists changed since it was asked; keep the reviews, the next round asks again",
+  askedAgain: "it was asked again, so it is decided on its own, not in bulk",
 } as const;
 
 /** Why a decision does not fit its item (the server's words). */
 export type DecisionError = (typeof ERROR)[keyof typeof ERROR];
 
+/** mod.rs `decide`: a bulk batch with an item asked again (`reopened`) is refused. */
+export const ASKED_AGAIN: DecisionError = ERROR.askedAgain;
+
 /** What a PR-level decision acts on (effects.rs `PrScope`). */
 export interface PlanScope {
   number: number;
-  /** P1: the items still undecided. */
+  /** P1: the items still undecided, gate items left out. */
   remaining: CommentItem[];
-  /** P3: the stale bot reviews (node ids). */
+  /** P3: the stale bot reviews the question lists (node ids). */
   staleReviews: string[];
 }
 
@@ -58,7 +65,7 @@ const PR_KINDS: DecisionKind[] = [
 ];
 
 /** mod.rs `question_of`: `pr:<round>:merge` or `pr:<round>:dismiss`. */
-function questionOf(item: CommentItem): "merge" | "dismiss" | null {
+export function questionOf(item: CommentItem): "merge" | "dismiss" | null {
   if (item.kind !== "pr_question") return null;
   const [pr, round, kind] = item.stable_key.split(":");
   if (pr !== "pr" || !round || (kind !== "merge" && kind !== "dismiss")) return null;
@@ -233,6 +240,54 @@ const OPEN = new Set(["undecided", "assessing", "asked_back", "reopened"]);
 
 /** queue.rs `waiting`: open items (the fixture has one PR-level question of each kind at most). */
 export const waiting = (items: CommentItem[]) => items.filter((i) => OPEN.has(i.state));
+
+/** observe.rs `BotChangeRequest`: a bot whose latest review requests changes. */
+export interface BotChangeRequest {
+  login: string;
+  review_id: string;
+  url: string;
+}
+
+/** The item's standing decision: its latest one, not undone (mod.rs `standing`). */
+const standing = (item: CommentItem) => {
+  const last = item.decisions.at(-1);
+  return last && !last.undone_at ? last : null;
+};
+
+/** mod.rs `stale_reviews`: every item the bot raised (not resolved outside) has a standing decision and is not open. */
+export function staleReviews(requests: BotChangeRequest[], items: CommentItem[]): BotChangeRequest[] {
+  return requests.filter((request) => {
+    const raised = items.filter(
+      (i) => i.author.toLowerCase() === request.login.toLowerCase() && i.state !== "outside",
+    );
+    return raised.length > 0 && raised.every((i) => standing(i) !== null && !OPEN.has(i.state));
+  });
+}
+
+/** mod.rs `dismiss_body`: the "Dismiss stale bot reviews?" text; its list is what deciding P3 dismisses. */
+export const dismissBody = (stale: BotChangeRequest[]) =>
+  ["Every item these reviews raised has a decision:", ...stale.map((r) => `- ${r.login}: ${r.url}`)].join(
+    "\n",
+  );
+
+/** mod.rs `Loaded::dismissal`: the reviews `question` lists, each still stale now; else why P3 is refused. */
+export function dismissal(question: CommentItem, stale: BotChangeRequest[]): string[] | DecisionError {
+  const listed = question.body
+    .split("\n")
+    .filter((line) => line.startsWith("- ") && line.includes(": "))
+    .map((line) => {
+      const rest = line.slice(2);
+      const at = rest.indexOf(": ");
+      return [rest.slice(0, at), rest.slice(at + 2)] as const;
+    });
+  const ids: string[] = [];
+  for (const [login, url] of listed) {
+    const found = stale.find((r) => r.login.toLowerCase() === login.toLowerCase() && r.url === url);
+    if (!found) return ERROR.reviewsChanged;
+    ids.push(found.review_id);
+  }
+  return ids;
+}
 
 /** queue.rs `proposed`: a recommendation as the decision it proposes, or why it cannot be one. */
 function proposed(item: CommentItem): DecideRequest | LeftOutReason {

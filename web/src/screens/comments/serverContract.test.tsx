@@ -7,8 +7,9 @@ import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import type { AnalysisSummary, CommentItem, DecideRequest, Gate } from "../../api/generated/types";
 import { PrQuestionCard } from "../../components/comments/QueueCards";
+import { dismissBody } from "../../mocks/effects-plan";
 import { seedFor } from "../../mocks/fixtures";
-import { listItems, resetReviewLoop } from "../../mocks/review-loop";
+import { BOT_CHANGE_REQUESTS, listItems, resetReviewLoop } from "../../mocks/review-loop";
 
 startMockServer();
 const PR = "/pr/acme/node-client/482";
@@ -147,6 +148,45 @@ describe("Dismiss stale bot reviews (P3): the edited dismissal message reaches t
     expect(request.kind).toBe("dismiss_stale_reviews");
     // effects.rs: `let message = reason.unwrap_or(DISMISS_MESSAGE)`; `reply_text` is not read for P3.
     expect(request.reason).toBe("Superseded by round 4.");
+  });
+});
+
+describe("Merge with follow-ups (P1) leaves gate items to their own decision (mod.rs `Loaded::scope`)", () => {
+  it("What happens next and the stored effects name no gate item; C14 and C15 stay in the queue", async () => {
+    renderRoute(`${PR}/comments?item=P24`);
+    await screen.findByRole("heading", { name: /Merge now, or another round\?/ });
+    const created = await screen.findByText(/^creates one draft follow-up PR listing /);
+    expect(created.textContent).toContain("C22");
+    expect(created.textContent).not.toMatch(/C1[45]\b/);
+    const next = created.closest("ol")!;
+    expect(next.textContent).not.toMatch(/C1[45]\b/);
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    await waitFor(() => expect(byNo(24).decisions).toHaveLength(1));
+    const touched = byNo(24).decisions[0]!.effects.flatMap((e) => e.params.item_nos);
+    expect(touched).toContain(22);
+    expect(touched).not.toContain(14);
+    expect(touched).not.toContain(15);
+    expect([byNo(14).state, byNo(15).state]).toEqual(["undecided", "undecided"]);
+  });
+});
+
+describe("Dismiss stale bot reviews (P3) acts on the reviews its question lists (mod.rs `dismissal`)", () => {
+  it("a listed review that is no longer stale: What happens next says why, in the server's words", async () => {
+    listItems().push({
+      ...byNo(24),
+      id: "00000000-0000-4000-8000-000000000030",
+      no: 30,
+      stable_key: "pr:3:dismiss",
+      title: "Dismiss stale bot reviews?",
+      body: dismissBody(BOT_CHANGE_REQUESTS),
+    });
+    renderRoute(`${PR}/comments?item=P30`);
+    await screen.findByRole("heading", { name: /Dismiss stale bot reviews\?/ });
+    expect(
+      await screen.findByText(
+        "C30: the reviews this question lists changed since it was asked; keep the reviews, the next round asks again.",
+      ),
+    ).toHaveAttribute("role", "alert");
   });
 });
 

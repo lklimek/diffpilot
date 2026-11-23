@@ -34,6 +34,8 @@ interface NotificationChannelCardProps {
   testResult: ChannelTestResult | null;
   busy: boolean;
   error: string | null;
+  /** The save was refused because the stored secret would go to another destination: `error` shows at the secret. */
+  secretRequired?: boolean;
   now: Date;
 }
 
@@ -71,6 +73,8 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
   );
   const [enabled, setEnabled] = useState(channel?.enabled ?? true);
   const secretName = ntfy ? "Access token (optional)" : "Authorization header (optional)";
+  const secretError = props.secretRequired && props.error ? props.error : null;
+  const secretDescription = `${id}-secret-d${secretError ? ` ${id}-secret-e` : ""}`;
   const save = (event: FormEvent) => {
     event.preventDefault();
     if (props.busy) return;
@@ -127,7 +131,7 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
                 type="password"
                 autoComplete="off"
                 value={secret.value}
-                aria-describedby={`${id}-secret-d`}
+                aria-describedby={secretDescription}
                 onChange={(e) => setSecret({ action: "replace", value: e.target.value })}
                 className={`${INPUT} max-w-80`}
               />
@@ -154,7 +158,7 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
                       ? `•••• ${channel.secret_last4}`
                       : "not set"
                 }
-                aria-describedby={`${id}-secret-d`}
+                aria-describedby={secretDescription}
                 className={`${INPUT} max-w-56`}
               />
               {secret.action === "keep" && (
@@ -195,6 +199,11 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
           <p id={`${id}-secret-d`} className="mt-0.5 text-xs text-muted">
             Stored encrypted on the server; only the last 4 characters are shown.
           </p>
+          {secretError && (
+            <p id={`${id}-secret-e`} role="alert" className="m-0 mt-0.5 text-sm text-high">
+              {secretError}
+            </p>
+          )}
         </div>
         <fieldset className="m-0 rounded-md border border-border px-3 py-1.5">
           <legend className="px-1 font-semibold">Send</legend>
@@ -211,7 +220,7 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
             </label>
           ))}
         </fieldset>
-        {props.error && (
+        {props.error && !secretError && (
           <p role="alert" className="m-0 text-high">
             {props.error}
           </p>

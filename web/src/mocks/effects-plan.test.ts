@@ -1,8 +1,24 @@
 // The mocks' server model follows the server's effect function (crates/server/src/review_loop/effects/tests.rs).
 import { beforeEach, describe, expect, it } from "vitest";
 import type { CommentItem, DecideRequest, DecisionKind } from "../api/generated/types";
-import { DISMISS_MESSAGE, decideRest, plan, type PlanScope, type Planned } from "./effects-plan";
-import { listItems, resetReviewLoop } from "./review-loop";
+import {
+  DISMISS_MESSAGE,
+  decideRest,
+  dismissal,
+  dismissBody,
+  plan,
+  staleReviews,
+  type PlanScope,
+  type Planned,
+} from "./effects-plan";
+import {
+  BOT_CHANGE_REQUESTS,
+  decideBatch,
+  isRefused,
+  listItems,
+  previewEffects,
+  resetReviewLoop,
+} from "./review-loop";
 
 const byNo = (no: number) => listItems().find((i) => i.no === no)!;
 const request = (kind: DecisionKind, fields: Partial<DecideRequest> = {}): DecideRequest => ({
@@ -23,6 +39,35 @@ const planned = (item: CommentItem, req: DecideRequest, at = scope) => {
   return result;
 };
 const shape = (p: Planned) => p.effects.map((e) => [e.kind, e.after]);
+/** The effects RC16 plans for one row of the mock store; a refusal fails the test. */
+function previewOf(no: number, req: DecideRequest) {
+  const result = previewEffects([{ item_no: no, ...req }]);
+  if (isRefused(result)) throw new Error(result[2]);
+  return result[0]!.effects;
+}
+const REVIEWS_CHANGED =
+  "the reviews this question lists changed since it was asked; keep the reviews, the next round asks again";
+
+/** Every item thepastaclaw raised gets a standing decision, so its change request is stale. */
+function decideAllOfThepastaclaw() {
+  const standing = listItems().flatMap((i) => i.decisions)[0]!;
+  for (const i of listItems().filter((i) => i.author === "thepastaclaw" && i.state !== "outside"))
+    Object.assign(i, { state: "decided", decisions: [standing] });
+}
+
+/** The "Dismiss stale bot reviews?" question of round 3 listing `BOT_CHANGE_REQUESTS`, added to the store. */
+function askDismissal(): CommentItem {
+  const question: CommentItem = {
+    ...byNo(24),
+    id: "00000000-0000-4000-8000-000000000030",
+    no: 30,
+    stable_key: "pr:3:dismiss",
+    title: "Dismiss stale bot reviews?",
+    body: dismissBody(BOT_CHANGE_REQUESTS),
+  };
+  listItems().push(question);
+  return question;
+}
 
 beforeEach(resetReviewLoop);
 
@@ -83,6 +128,10 @@ describe("mock effect function (effects.rs plan)", () => {
       remaining: [byNo(22), byNo(23)],
     });
     expect(p1.effects[0]!.params.item_nos).toEqual([22, 23]);
+    expect(p1.effects.filter((e) => e.params.text !== null).map((e) => [e.kind, e.params.text])).toEqual([
+      ["reply", "Per maintainer decision, this moves to a follow-up pull request."],
+      ["pr_comment", "Per maintainer decision, this moves to a follow-up pull request."],
+    ]);
     const dismiss = { ...merge, stable_key: "pr:3:dismiss" };
     expect(planned(dismiss, request("dismiss_stale_reviews")).effects[0]!.params.text).toBe(DISMISS_MESSAGE);
     const typed = planned(
@@ -93,6 +142,55 @@ describe("mock effect function (effects.rs plan)", () => {
     expect(plan(merge, request("dismiss_stale_reviews"), scope)).toBe(
       "this decision is not offered for this item",
     );
+  });
+
+  it("P1 (mod.rs `Loaded::scope`) leaves the waiting gate items C14 and C15 in the queue", () => {
+    const p1 = previewOf(24, request("merge_with_follow_ups"));
+    const touched = p1.flatMap((e) => e.params.item_nos);
+    expect(p1[0]!.kind).toBe("follow_up_pr");
+    expect(p1[0]!.params.item_nos).toContain(22);
+    expect(touched).not.toContain(14);
+    expect(touched).not.toContain(15);
+  });
+
+  it("P3 dismisses the reviews its question lists while they are still stale (mod.rs `dismissal`)", () => {
+    expect(staleReviews(BOT_CHANGE_REQUESTS, listItems())).toEqual([]);
+    decideAllOfThepastaclaw();
+    expect(staleReviews(BOT_CHANGE_REQUESTS, listItems())).toEqual(BOT_CHANGE_REQUESTS);
+    const question = askDismissal();
+    expect(question.body).toBe(
+      "Every item these reviews raised has a decision:\n- thepastaclaw: https://github.com/acme/node-client/pull/482#pullrequestreview-3",
+    );
+    const p3 = previewOf(30, request("dismiss_stale_reviews"));
+    expect(p3.map((e) => [e.kind, e.params.review_id, e.params.text])).toEqual([
+      ["dismiss_review", "PRR_round3", DISMISS_MESSAGE],
+    ]);
+    // A listed bot's item asked again: its review is no longer stale, so deciding P3 is refused.
+    Object.assign(byNo(22), { state: "reopened" });
+    expect(dismissal(question, staleReviews(BOT_CHANGE_REQUESTS, listItems()))).toBe(REVIEWS_CHANGED);
+    expect(previewEffects([{ item_no: 30, ...request("dismiss_stale_reviews") }])).toEqual([
+      400,
+      "invalid_request",
+      `C30: ${REVIEWS_CHANGED}.`,
+    ]);
+    expect(isRefused(previewEffects([{ item_no: 30, ...request("keep_reviews") }]))).toBe(false);
+  });
+
+  it("RC9 refuses an item asked again in bulk; a group still takes it (mod.rs `decide`)", () => {
+    const row = {
+      item_no: 21,
+      ...request("reject", {
+        reason: "The cap is a soft limit by design.",
+        item_revision: byNo(21).revision,
+      }),
+    };
+    expect(decideBatch("bulk", [row])).toEqual([
+      400,
+      "invalid_request",
+      "C21: it was asked again, so it is decided on its own, not in bulk.",
+    ]);
+    expect(byNo(21).state).toBe("reopened");
+    expect(isRefused(decideBatch("group", [row]))).toBe(false);
   });
 
   it("Decide the rest leaves out gate items, repeats asked again and items without an assessment", () => {
