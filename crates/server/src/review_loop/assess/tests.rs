@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use contracts::agent::verify_comments::{
-    EarlierDecision, ItemAssessment, ItemQuestion, MAX_REPLIES, ReplyAuthorKind, ThreadReply,
-    VerifyCommentsInput,
+    EarlierDecision, ItemAssessment, ItemQuestion, MAX_REPLIES, MAX_REPLY_CHARS, ReplyAuthorKind,
+    ThreadReply, VerifyCommentsInput,
 };
 use contracts::api::questions::AskState;
 use contracts::api::review_loop::{
@@ -356,7 +356,7 @@ async fn pass_input(state: &AppState, pass: &PassRecord) -> VerifyCommentsInput 
 async fn pass_input_is_clean_and_carries_the_reply_chain() {
     let f = fixture(HEAD).await;
     let reply = json!({"author": "alice", "author_kind": "owner",
-        "body": "Per maintainer decision, deferred to #12."});
+        "body": format!("Per maintainer decision, deferred to #12. {}", "More. ".repeat(120))});
     store_read(
         &f.state,
         "Retries timed-out calls.\n\n<!-- pr-hygiene:start -->\n# PR Hygiene · `52d2da1`\n<!-- pr-hygiene:end -->",
@@ -387,21 +387,23 @@ async fn pass_input_is_clean_and_carries_the_reply_chain() {
     assert_eq!(sent.body, "** Minor**\n\n**Bound the retries.**");
     assert_eq!(sent.bot_status, Some(BotThreadStatus::Deferred));
     assert_eq!(sent.commit.as_deref(), Some("e1525efb"), "spike S13-3 O10");
-    assert_eq!(
-        sent.replies,
-        vec![ThreadReply {
-            author: "alice".to_owned(),
-            author_kind: ReplyAuthorKind::Owner,
-            body: "Per maintainer decision, deferred to #12.".to_owned(),
-        }]
+    assert_eq!(sent.replies.len(), 1);
+    assert_eq!(sent.replies[0].author_kind, ReplyAuthorKind::Owner);
+    assert!(
+        sent.replies[0]
+            .body
+            .starts_with("Per maintainer decision, deferred to #12.")
     );
     assert_eq!(
-        input.earlier_decisions,
-        vec![EarlierDecision {
-            item: format!("C{}", rabbit.no),
-            decision: None,
-            reason: Some("Per maintainer decision, deferred to #12.".to_owned()),
-        }]
+        sent.replies[0].body.chars().count(),
+        MAX_REPLY_CHARS,
+        "the input cuts the reply"
+    );
+    assert_eq!(input.earlier_decisions.len(), 1);
+    assert_eq!(input.earlier_decisions[0].item, format!("C{}", rabbit.no));
+    assert_eq!(
+        input.earlier_decisions[0].reason.as_ref(),
+        Some(&sent.replies[0].body)
     );
     assert!(ingest_all(&f.state, &pass, None).await);
 
@@ -549,10 +551,42 @@ async fn bot_rounds_alone_never_make_an_item_stale() {
         ReplyAuthorKind::Owner,
         "Deferred until platform#5546 lands.",
     ));
+    let answered_print = fingerprint(&c1, &head, Some("code"), "purpose", Some(&answered));
+    assert_ne!(answered_print, deferred, "a person's reply is a change");
+
+    // Review finding: an edit past the first 600 characters of a person's reply is a change, and so is a bot
+    // conceding in a reply (CodeRabbit has no status marker); a bot's other replies are not.
+    let mut long = answered.clone();
+    let last_reply = long.replies.len() - 1;
+    long.replies[last_reply].body = format!("{} Then a note.", "Deferred. ".repeat(80));
+    let mut edited = long.clone();
+    edited.replies[last_reply].body = format!("{} Then an edit.", "Deferred. ".repeat(80));
     assert_ne!(
-        fingerprint(&c1, &head, Some("code"), "purpose", Some(&answered)),
-        deferred,
-        "a person's reply is a change"
+        fingerprint(&c1, &head, Some("code"), "purpose", Some(&long)),
+        fingerprint(&c1, &head, Some("code"), "purpose", Some(&edited)),
+        "an edit past the cut is a change"
+    );
+    let mut conceded = answered.clone();
+    conceded.replies.push(reply(
+        "coderabbitai",
+        ReplyAuthorKind::Bot,
+        "`@lklimek`, you\u{2019}re right: the bound lives in the caller.\n\nLearnings added.",
+    ));
+    assert_ne!(
+        fingerprint(&c1, &head, Some("code"), "purpose", Some(&conceded)),
+        answered_print,
+        "a bot's concession is a change"
+    );
+    let mut acknowledged = answered.clone();
+    acknowledged.replies.push(reply(
+        "coderabbitai",
+        ReplyAuthorKind::Bot,
+        "`@lklimek`, the bound still applies at this head.",
+    ));
+    assert_eq!(
+        fingerprint(&c1, &head, Some("code"), "purpose", Some(&acknowledged)),
+        answered_print,
+        "a bot's other reply is not"
     );
 }
 

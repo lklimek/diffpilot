@@ -416,11 +416,11 @@ fn purpose_hash(title: &str, description: Option<&str>) -> String {
         .collect()
 }
 
-/// SHA-256 hex of the PR purpose (`purpose_hash`), the normalised comment text, the bot's status class, the
-/// replies of people in its thread and the code at its lines; code that cannot be read counts as changed at every new
-/// head. Bot replies (re-reviews each round) and how many replies were left out are not part of it. The prompt version
-/// is not either: a new prompt alone re-assesses nothing (owner decision 2026-11-23), and the claudius skills commit
-/// is provenance only (Q28).
+/// SHA-256 hex of the PR purpose (`purpose_hash`), the normalised comment text, the bot's status class, the whole
+/// replies of people in its thread, which bots conceded in it ([`context::concedes`]) and the code at its lines; code
+/// that cannot be read counts as changed at every new head. Bot replies' text (re-reviews each round) and how many
+/// replies were left out are not part of it. The prompt version is not either: a new prompt alone re-assesses nothing
+/// (owner decision 2026-11-23), and the claudius skills commit is provenance only (Q28).
 fn fingerprint(
     item: &ItemRecord,
     head: &CommitSha,
@@ -430,12 +430,18 @@ fn fingerprint(
 ) -> String {
     let mut hash = Sha256::new();
     hash.update(format!("fingerprint 2\n{purpose}\n{}\n", item.body_hash));
-    let people: Vec<&ThreadReply> = context
-        .iter()
-        .flat_map(|context| &context.replies)
+    let replies = context.iter().flat_map(|context| &context.replies);
+    let people: Vec<&ThreadReply> = replies
+        .clone()
         .filter(|reply| reply.author_kind != ReplyAuthorKind::Bot)
         .collect();
-    hash.update(serde_json::to_vec(&(item.github.bot_status, people)).unwrap_or_default());
+    let conceded: Vec<&str> = replies
+        .filter(|reply| context::concedes(reply))
+        .map(|reply| reply.author.as_str())
+        .collect();
+    hash.update(
+        serde_json::to_vec(&(item.github.bot_status, people, conceded)).unwrap_or_default(),
+    );
     hash.update("\n");
     hash_lines(&mut hash, item, head, code);
     hex(hash)
@@ -575,7 +581,14 @@ fn with_context(
         .and_then(|written| written.commit.as_ref())
         .map(|commit| commit.0.clone());
     if let Some(context) = context {
-        item.replies.clone_from(&context.replies);
+        item.replies = context
+            .replies
+            .iter()
+            .map(|reply| ThreadReply {
+                body: context::cut(&reply.body),
+                ..reply.clone()
+            })
+            .collect();
         item.earlier_replies = context.earlier_replies;
     }
     item
@@ -613,7 +626,7 @@ async fn earlier_decisions(
             current.push(EarlierDecision {
                 item: format!("C{}", item.no),
                 decision: None,
-                reason: Some(reply.body.clone()),
+                reason: Some(context::cut(&reply.body)),
             });
         }
     }

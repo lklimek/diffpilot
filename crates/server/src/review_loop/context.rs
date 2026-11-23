@@ -1,6 +1,6 @@
 //! What a `verify_comments` input carries of an item beyond its stored row (plan §4.2), kept with the read's
-//! snapshot: the replies of its open thread, without bot markup and cut, and which of them record a maintainer's
-//! decision. Pure.
+//! snapshot: the replies of its open thread (bot replies without markup and cut, people's whole: the fingerprint sees
+//! every edit, the input cuts them), which of them record a maintainer's decision and which concede. Pure.
 
 use std::collections::BTreeMap;
 
@@ -24,10 +24,24 @@ const DECISION_WORDS: [&str; 4] = [
     "will not fix",
 ];
 
+/// Words of a bot reply's first line that withdraw or accept the point (CodeRabbit's "you're right"), lowercase.
+const CONCESSION_WORDS: [&str; 10] = [
+    "you're right",
+    "you are right",
+    "you're absolutely right",
+    "you are absolutely right",
+    "you're correct",
+    "you are correct",
+    "thanks for the clarification",
+    "thank you for the clarification",
+    "i stand corrected",
+    "my apologies",
+];
+
 /// An item's context from the read.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemContext {
-    /// The latest replies of its open thread, oldest first.
+    /// The latest replies of its open thread, oldest first; people's are not cut (see [`cut`]).
     #[serde(default)]
     pub replies: Vec<ThreadReply>,
     /// Earlier replies left out of `replies`.
@@ -74,7 +88,7 @@ fn thread_context(thread: &Thread, bots: &BotRule, owner: Option<&str>) -> ItemC
                 _ => ReplyAuthorKind::Human,
             };
             let text = match author_kind {
-                ReplyAuthorKind::Bot => clean::bot_body(&markers::normalise(&comment.body)),
+                ReplyAuthorKind::Bot => cut(&clean::bot_body(&markers::normalise(&comment.body))),
                 _ => comment.body.trim().to_owned(),
             };
             (!text.is_empty()).then(|| ThreadReply {
@@ -83,7 +97,7 @@ fn thread_context(thread: &Thread, bots: &BotRule, owner: Option<&str>) -> ItemC
                     .as_ref()
                     .map_or_else(|| "ghost".to_owned(), |author| author.login.clone()),
                 author_kind,
-                body: cut(&text),
+                body: text,
             })
         })
         .collect();
@@ -95,8 +109,8 @@ fn thread_context(thread: &Thread, bots: &BotRule, owner: Option<&str>) -> ItemC
     }
 }
 
-/// `text` cut to [`MAX_REPLY_CHARS`] characters, ending with `…` when cut.
-fn cut(text: &str) -> String {
+/// `text` cut to [`MAX_REPLY_CHARS`] characters, ending with `…` when cut: a reply as an input carries it.
+pub fn cut(text: &str) -> String {
     match text.char_indices().nth(MAX_REPLY_CHARS - 1) {
         Some((at, _)) if text[at..].chars().nth(1).is_some() => format!("{}…", &text[..at]),
         _ => text.to_owned(),
@@ -109,6 +123,20 @@ pub fn decision_reply(context: &ItemContext) -> Option<&ThreadReply> {
         let text = reply.body.to_lowercase().replace('’', "'");
         DECISION_WORDS.iter().any(|words| text.contains(words))
     })
+}
+
+/// Whether `reply` is a bot's that concedes: its first line withdraws or accepts the point. Bots without a status
+/// marker (CodeRabbit) say so only in words.
+pub fn concedes(reply: &ThreadReply) -> bool {
+    reply.author_kind == ReplyAuthorKind::Bot
+        && reply
+            .body
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .is_some_and(|line| {
+                let line = line.to_lowercase().replace('’', "'");
+                CONCESSION_WORDS.iter().any(|words| line.contains(words))
+            })
 }
 
 #[cfg(test)]
@@ -176,7 +204,8 @@ mod tests {
     }
 
     /// Plan §4.2, comparison report R3: an open thread's item carries its replies with the author's kind (the pull
-    /// request's author is the owner), bot replies without markup, long ones cut, the latest ones kept.
+    /// request's author is the owner), bot replies without markup and cut, people's whole (the fingerprint sees
+    /// every edit; the input cuts them), the latest ones kept.
     #[test]
     fn open_threads_carry_their_replies() {
         let finding = comment("thepastaclaw", "User", "**🔴 Blocking: Bound the retries**");
@@ -224,8 +253,7 @@ mod tests {
         assert_eq!(replies[1].author_kind, ReplyAuthorKind::Bot);
         assert_eq!(replies[1].body, "**Deferred** x");
         assert_eq!(replies[2].author_kind, ReplyAuthorKind::Human);
-        assert_eq!(replies[2].body.chars().count(), MAX_REPLY_CHARS);
-        assert!(replies[2].body.ends_with('…'));
+        assert_eq!(replies[2].body, "long ".repeat(200).trim());
         assert_eq!(
             decision_reply(&contexts["open"]).map(|reply| reply.author.as_str()),
             Some("thepastaclaw"),
@@ -245,6 +273,33 @@ mod tests {
         assert_eq!(kept.earlier_replies, 2);
         assert_eq!(kept.replies[0].body, "Reply 2");
         assert_eq!(decision_reply(kept), None);
+    }
+
+    /// A bot reply concedes when its first line withdraws or accepts the point; status-like replies do not.
+    #[test]
+    fn concessions_are_read_from_a_bot_reply_s_first_line() {
+        let bot = |body: &str| ThreadReply {
+            author: "coderabbitai".to_owned(),
+            author_kind: ReplyAuthorKind::Bot,
+            body: body.to_owned(),
+        };
+        for body in [
+            "`@alice`, you\u{2019}re right: the bound lives in the caller.",
+            "@alice You are correct, this is fine.\nLearnings added.",
+            "Thanks for the clarification! The retry is bounded upstream.",
+        ] {
+            assert!(concedes(&bot(body)), "{body}");
+        }
+        for body in [
+            "**Still applies** (re-reviewed at `81f765f2`).",
+            "Confirmed. The writer selects only secp256k1 keys.",
+            "Still blocked upstream.\nYou're right that it is tracked.",
+        ] {
+            assert!(!concedes(&bot(body)), "{body}");
+        }
+        let mut person = bot("You're right.");
+        person.author_kind = ReplyAuthorKind::Owner;
+        assert!(!concedes(&person), "only bots concede");
     }
 
     #[test]
