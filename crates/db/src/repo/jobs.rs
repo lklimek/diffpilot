@@ -1023,6 +1023,27 @@ impl Jobs<'_> {
         row.as_ref().map(job_from_row).transpose()
     }
 
+    /// The latest job of an assessment pass (`JobStage::Verify`) in any state, ended ones too: what recovers a pass
+    /// whose link to its job was lost.
+    pub async fn latest_for_pass(
+        &self,
+        pass: PassId,
+        generation: u32,
+    ) -> Result<Option<JobRecord>, DbError> {
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            job_columns!(),
+            " FROM jobs WHERE pass_id = ? AND stage = ? AND generation = ?
+             ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        ))
+        .bind(pass.to_string())
+        .bind(JobStage::Verify(pass).key())
+        .bind(generation)
+        .fetch_optional(self.pool)
+        .await?;
+        row.as_ref().map(job_from_row).transpose()
+    }
+
     /// The live or succeeded job of a judge `stage` and `generation` in the refresh's current ranking attempt, if
     /// any: what an idempotent submit of a dashboard job answers with.
     pub async fn current_for_judge_stage(
