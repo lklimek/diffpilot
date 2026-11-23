@@ -654,14 +654,17 @@ pub async fn preview(
     rows: &[DecisionBatchRow],
 ) -> Result<Vec<EffectsPreview>, LoopError> {
     let loaded = Loaded::of(state, handle).await?;
-    Ok(loaded
-        .plan(rows)?
-        .into_iter()
-        .map(|(record, planned)| EffectsPreview {
-            item_no: record.no,
-            effects: planned.effects,
+    let deciding: Vec<u32> = rows.iter().map(|row| row.item_no).collect();
+    rows.iter()
+        .zip(loaded.plan(rows)?)
+        .map(|(row, (record, planned))| {
+            Ok(EffectsPreview {
+                item_no: record.no,
+                effects: planned.effects,
+                plan_digest: loaded.plan_digest(row, &deciding)?,
+            })
         })
-        .collect())
+        .collect()
 }
 
 /// RC17.

@@ -39,6 +39,7 @@ fn request(kind: DecisionKind) -> DecideRequest {
         reply_text: None,
         comment: None,
         item_revision: 1,
+        plan_digest: None,
     }
 }
 

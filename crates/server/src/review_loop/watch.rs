@@ -678,12 +678,11 @@ async fn questions_ready(
     Ok(())
 }
 
-/// After an automatic pass: every watcher of its pull request records it with the undecided questions now, and
-/// gets one `questions_ready` event per round while questions wait; a watch showing the job returns to active.
+/// After a pass: every watcher of its pull request gets one `questions_ready` event per round while questions wait
+/// (also after an on-demand pass, which the daily cap does not hold back); after an automatic pass each also records
+/// it with the undecided questions now, and a watch showing the job returns to active.
 pub(crate) async fn pass_ended(state: &AppState, pass: &PassRecord) -> Result<(), WatchError> {
-    if pass.cause != PassCause::Watch {
-        return Ok(());
-    }
+    let automatic = pass.cause == PassCause::Watch;
     let pr = pass.pull_request_id;
     let rl = state.db.review_loop();
     let watchers: Vec<WatchRecord> = rl
@@ -707,10 +706,12 @@ pub(crate) async fn pass_ended(state: &AppState, pass: &PassRecord) -> Result<()
     let round = round_key(loaded.snapshot.as_ref(), &pass.head.0);
     let now = Timestamp::now();
     for watch in &watchers {
-        rl.record_auto_pass(&watch.user_id, pr, questions, now)
-            .await?;
+        if automatic {
+            rl.record_auto_pass(&watch.user_id, pr, questions, now)
+                .await?;
+        }
         questions_ready(state, watch, questions, &round, now).await?;
-        if watch.state == WatchState::JobRunning {
+        if automatic && watch.state == WatchState::JobRunning {
             rl.set_watch_state(&watch.user_id, pr, WatchState::Active, now)
                 .await?;
         }

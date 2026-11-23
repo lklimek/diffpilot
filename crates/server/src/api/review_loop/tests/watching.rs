@@ -601,3 +601,33 @@ async fn a_due_change_assessed_on_demand_still_notifies_the_watcher() {
     assert_eq!(events[0].kind, UserEventKind::QuestionsReady);
     assert_eq!(watched.notified_for.as_deref(), Some("round:3"));
 }
+
+/// Plan §2.8: an on-demand pass that leaves questions ready tells the watcher too (the daily cap may hold the
+/// automatic pass back); it is not recorded as an automatic pass.
+#[tokio::test]
+async fn an_on_demand_pass_tells_the_watcher_its_questions_are_ready() {
+    let w = world().await;
+    let pr = watched_482(&w).await;
+    let rl = w.state.db.review_loop();
+    let pass = NewPass {
+        pull_request_id: pr,
+        user_id: Some("u1".into()),
+        cause: PassCause::Read,
+        head: CommitSha(crate::test_support::github::HEAD.to_owned()),
+        sent: Vec::new(),
+        question: None,
+    };
+    let PassStart::Started(id) = rl
+        .start_pass(DEFAULT_TENANT, &pass, Timestamp::now())
+        .await
+        .expect("start")
+    else {
+        panic!("a pass is live");
+    };
+    let record = rl.pass(id).await.expect("pass");
+    watch::pass_ended(&w.state, &record).await.expect("ended");
+    let events = rl.user_events("u1", None, 10).await.expect("events");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].kind, UserEventKind::QuestionsReady);
+    assert_eq!(the_watch(&w, pr).await.last_auto_pass, None);
+}

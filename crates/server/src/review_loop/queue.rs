@@ -167,6 +167,7 @@ pub fn proposed(
         reply_text: None,
         comment: None,
         item_revision: revision,
+        plan_digest: None,
     })
 }
 

@@ -116,6 +116,13 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0
+        },
+        "plan_digest": {
+          "description": "The `plan_digest` of the RC16 preview the owner confirmed (PR-level decisions); when the plan computed at\nstoring differs, the decision is refused (409 `conflict`). Absent: stored as planned then.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
