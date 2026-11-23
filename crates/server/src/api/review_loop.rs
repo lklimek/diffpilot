@@ -36,6 +36,8 @@ use crate::review_loop::assess::{self, PassReason};
 use crate::review_loop::{self, ItemAction, LoopError, MIN_REREAD, PrHandle, views};
 use crate::state::AppState;
 
+mod watch;
+
 /// A review-loop request failed.
 #[derive(Debug, thiserror::Error)]
 pub enum ReviewLoopApiError {
@@ -77,7 +79,8 @@ impl ApiErrorSource for ReviewLoopApiError {
                 | LoopError::GateRow(_)
                 | LoopError::InvalidCursor
                 | LoopError::BadRange => ApiErrorCode::InvalidRequest,
-                LoopError::NotApplicable => ApiErrorCode::Conflict,
+                LoopError::NotApplicable | LoopError::AssessmentRunning => ApiErrorCode::Conflict,
+                LoopError::WatchLimitReached => ApiErrorCode::WatchLimitReached,
                 LoopError::RangeTooLarge => ApiErrorCode::RangeTooLarge,
                 LoopError::Mirror(MirrorError::BlobTooLarge { .. }) => ApiErrorCode::NotRendered,
                 LoopError::Mirror(MirrorError::InvalidRepo) => ApiErrorCode::NotFound,
@@ -123,6 +126,13 @@ impl ApiErrorSource for ReviewLoopApiError {
                     "This does not apply to the comment now: it has no standing decision, or an agent claimed \
                      its effects.",
                 ),
+                LoopError::AssessmentRunning => Cow::Borrowed(
+                    "An assessment of this pull request is queued or running; assess again once it ends.",
+                ),
+                LoopError::WatchLimitReached => Cow::Owned(format!(
+                    "You watch {} pull requests already; stop watching one first.",
+                    review_loop::watch::WATCH_LIMIT
+                )),
                 LoopError::RangeTooLarge => Cow::Borrowed("The requested line range is too large."),
                 LoopError::BadRange => Cow::Borrowed("The line range is not valid."),
                 LoopError::InvalidCursor => {
@@ -175,6 +185,7 @@ pub fn routes() -> Router<AppState> {
         .route(GET_DECIDE_REST.path, get(decide_rest))
         .route(GET_COMMENT_LOG.path, get(log))
         .route(LIST_CARRY_OVERS.path, get(carry_overs))
+        .merge(watch::routes())
 }
 
 type PrPath = Result<Path<(String, String, u32)>, PathRejection>;
@@ -290,17 +301,22 @@ async fn assess_again(
         .await
         .map_err(LoopError::from)?
         .ok_or(LoopError::NotFound)?;
-    if let Err(error) =
-        assess::request_pass(&state, handle.id, PassReason::AssessAgain(item.id)).await
-    {
-        tracing::warn!(
-            ?error,
-            pr = handle.id,
-            item = no,
-            "assess again could not be requested"
-        );
+    match assess::request_pass(&state, handle.id, PassReason::AssessAgain(item.id)).await {
+        Ok(assess::PassQueued::AlreadyRunning) => Err(LoopError::AssessmentRunning.into()),
+        Ok(queued) => {
+            tracing::debug!(pr = handle.id, item = no, ?queued, "assess again requested");
+            Ok(StatusCode::ACCEPTED)
+        }
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                pr = handle.id,
+                item = no,
+                "assess again could not be requested"
+            );
+            Ok(StatusCode::ACCEPTED)
+        }
     }
-    Ok(StatusCode::ACCEPTED)
 }
 
 async fn decide(

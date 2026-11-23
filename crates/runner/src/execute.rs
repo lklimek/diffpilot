@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use contracts::agent::JobKind;
+use contracts::agent::{JobKind, verify_comments};
 use contracts::ids::JobId;
 use contracts::job::access::AgentAccess;
 use contracts::job::event::{ActivityKind, JobEvent};
@@ -470,7 +470,7 @@ impl Executor {
 /// Why a job's kind, target and access do not fit together (ADR-018, ADR-023, threat model T17, T23): a judge job
 /// is a dashboard job and a `verify_comments` job a comments job, each the other way round too; a dashboard job
 /// carries no agent access, skills, flow file or session to resume, a `verify_comments` job no MemCan endpoint,
-/// skills, flow file or session (only the read-only GitHub token).
+/// flow file, session or skill other than its own ([`verify_comments::SKILLS`]; only the read-only GitHub token).
 fn misfit(spec: &JobSpec) -> Option<&'static str> {
     let dashboard = matches!(spec.target, JobTarget::Dashboard { .. });
     let comments = matches!(spec.target, JobTarget::PullRequestComments(_));
@@ -479,15 +479,20 @@ fn misfit(spec: &JobSpec) -> Option<&'static str> {
     {
         return Some("the job kind does not match its target");
     }
-    let holds_something = !spec.skills.is_empty()
-        || spec.flow_file.is_some()
-        || spec.session.is_some()
-        || spec.working_session.is_some();
-    if dashboard && (holds_something || spec.access != AgentAccess::default()) {
+    let holds_session =
+        spec.flow_file.is_some() || spec.session.is_some() || spec.working_session.is_some();
+    if dashboard
+        && (holds_session || !spec.skills.is_empty() || spec.access != AgentAccess::default())
+    {
         return Some("a dashboard job must not carry agent access, skills or a session");
     }
-    (comments && (holds_something || spec.access.memcan.is_some()))
-        .then_some("a verify_comments job must not carry MemCan access, skills or a session")
+    let foreign_skill = spec
+        .skills
+        .iter()
+        .any(|skill| !verify_comments::SKILLS.contains(&skill.as_str()));
+    (comments && (holds_session || foreign_skill || spec.access.memcan.is_some())).then_some(
+        "a verify_comments job must not carry MemCan access, a session or skills other than its own",
+    )
 }
 
 /// Numbers activities from 1, scrubs every known secret and then clips them, forwards at most one ready

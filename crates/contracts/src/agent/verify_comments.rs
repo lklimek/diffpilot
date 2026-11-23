@@ -17,6 +17,9 @@ use crate::api::review_loop::{
 /// Items per job at most (plan §4.2).
 // TODO(S13-3): calibrate the batch size against real Codex runs (output size, runtime) once the spike is approved.
 pub const MAX_ITEMS: usize = 10;
+/// The claudius skills a `verify_comments` job reads, mounted read-only (ADR-002 amendment, SK1); `report-format`
+/// stays unmounted. The runner refuses a job of this kind that names any other skill.
+pub const SKILLS: [&str; 2] = ["severity", "check-pr-comments"];
 /// First line of the input's data block in the prompt; the block ends with a line of three backticks.
 pub const DATA_BLOCK_OPEN: &str = "```json verify-comments-input";
 const DATA_BLOCK_CLOSE: &str = "```";

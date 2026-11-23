@@ -1,7 +1,7 @@
 // Queries and mutations of the review loop (docs/review-workflow-plan.md §6: RC1–RC17, RW1–RW2, RN1–RN3) and the
 // Ask questions about its items (RC7).
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "./client";
+import { api, ApiError } from "./client";
 import { withoutRetried } from "./queries";
 import type {
   AnalysisId,
@@ -11,6 +11,7 @@ import type {
   ContextQuery,
   DecideRequest,
   DecisionBatchRequest,
+  DecisionId,
   Gate,
   PrRef,
   PutChannelRequest,
@@ -109,8 +110,32 @@ export function useItemAction(pr: PrRef) {
   });
 }
 
+/**
+ * Undo of the reader's decision `decision` on item `C<no>` (RC12) at the item's current revision: the items are
+ * read again first, so an Undo right after deciding never sends the revision from before that decision. When the
+ * item's latest decision is no longer that one (another tab or reader decided since), nothing is sent.
+ */
+export function useUndoDecision(pr: PrRef) {
+  const invalidate = useInvalidatePr(pr);
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ no, decision }: { no: number; decision: DecisionId }) => {
+      const item = (await api.listCommentItems(pr)).find((i) => i.no === no);
+      if (!item || item.decisions.at(-1)?.id !== decision)
+        throw new ApiError(409, "item_changed", `C${no} changed since your decision. Read it again.`);
+      return api.undoCommentDecision(pr, no, { item_revision: item.revision });
+    },
+    onSettled: () => Promise.all([invalidate(), client.invalidateQueries({ queryKey: ["carry-overs"] })]),
+  });
+}
+
+/** "Assess again" of item `C<no>` (RC6): 202 when asked; 409 `conflict` while a pass of the PR is queued or running. */
+export function useAssessAgain(pr: PrRef) {
+  const invalidate = useInvalidatePr(pr);
+  return useMutation({ mutationFn: (no: number) => api.assessComment(pr, no), onSettled: invalidate });
+}
+
 /** The owner marks or clears a gate on item `C<no>` (RC15). */
-// TODO(WP13-WEB-C): no screen offers gate marks yet; the control needs a mockup design first.
 export function useMarkGate(pr: PrRef) {
   const invalidate = useInvalidatePr(pr);
   return useMutation({

@@ -249,6 +249,61 @@ async fn unchanged_item_reuses_assessment() {
     assert_eq!(reused.fingerprint, stored.fingerprint);
 }
 
+/// SK1: the job reads its own claudius skills; each assessment keeps the claudius commit it was made with
+/// (provenance), also when reused, and a new claudius commit never makes an item stale (owner Q28 = c).
+#[tokio::test]
+async fn skills_commit_is_provenance_and_never_reassesses() {
+    let f = fixture(BASE).await;
+    let same = item(&f.state, "same", "src/rpc/transport.rs", (1, 3)).await;
+    request_pass(&f.state, PR, PassReason::Opened)
+        .await
+        .expect("pass");
+    let first = live_pass(&f.state).await;
+    let job = first.job_id.expect("job");
+    let spec = f.state.db.jobs().get(job).await.expect("job").spec;
+    assert_eq!(spec.skills, ["severity", "check-pr-comments"]);
+    let made_with = "0123456789abcdef0123456789abcdef01234567";
+    let output = json!({"purpose": "Retry RPC calls with backoff on timeout.",
+        "items": [entry(&format!("C{}", same.no))], "answer": null});
+    let result = JobResult {
+        skills_commit: Some(made_with.to_owned()),
+        ..succeeded(job, output)
+    };
+    assert!(
+        ingest::result(&f.state, &first, result)
+            .await
+            .expect("ingest")
+    );
+    let stored = |state: AppState| async move {
+        state
+            .db
+            .review_loop()
+            .latest_assessment(same.id)
+            .await
+            .expect("read")
+            .expect("assessment")
+    };
+    assert_eq!(
+        stored(f.state.clone())
+            .await
+            .assessment
+            .skills_commit
+            .as_deref(),
+        Some(made_with)
+    );
+    move_head(&f.state, HEAD).await;
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::NewComments)
+            .await
+            .expect("pass"),
+        PassQueued::Skipped,
+        "unchanged item: nothing to send whatever claudius commit the runner has now"
+    );
+    let reused = stored(f.state.clone()).await;
+    assert_eq!(reused.assessment.head.0, HEAD);
+    assert_eq!(reused.assessment.skills_commit.as_deref(), Some(made_with));
+}
+
 /// "Assess again" sends its one item although its stored assessment is current, as a pass of its own cause; a
 /// PR-level question is never sent.
 #[tokio::test]
@@ -286,7 +341,7 @@ async fn assess_again_sends_its_item_although_unchanged() {
         author_kind: AuthorKind::Diffpilot,
         url: None,
         location: None,
-        title: "Merge now, remaining items as follow-ups?".to_owned(),
+        title: "Merge now, or another round?".to_owned(),
         body: "Bot round 3 has ended.".to_owned(),
         body_hash: "hash:merge".to_owned(),
         head: CommitSha(HEAD.to_owned()),
@@ -439,7 +494,7 @@ async fn daily_cap_stops_automatic_passes() {
         request_pass(&f.state, PR, PassReason::Watch)
             .await
             .expect("pass"),
-        PassQueued::Skipped
+        PassQueued::DailyLimit
     );
     assert!(
         f.state
@@ -476,7 +531,7 @@ async fn automatic_pass_keeps_its_spacing() {
         request_pass(&f.state, PR, PassReason::Watch)
             .await
             .expect("pass"),
-        PassQueued::Skipped
+        PassQueued::Spaced
     );
     let f = fixture(HEAD).await;
     watch(&f.state).await;
@@ -691,7 +746,11 @@ async fn verify_output_outside_closed_sets_is_rejected() {
     let job = JobId::new_random();
     let head = CommitSha(HEAD.to_owned());
     let now = Timestamp::now();
-    let check = |value: Value| ingest::assessment(&parsed(value), job, &head, now).map(|_| ());
+    let made = ingest::Made {
+        job,
+        skills_commit: None,
+    };
+    let check = |value: Value| ingest::assessment(&parsed(value), &made, &head, now).map(|_| ());
     assert_eq!(check(entry("C1")), Ok(()));
     let mut bad = entry("C1");
     bad["category"] = json!("style");

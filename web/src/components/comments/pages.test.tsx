@@ -7,6 +7,7 @@ import {
   log,
   notificationSettings,
   overview,
+  prPage,
   resetChannels,
   resetReviewLoop,
   watches,
@@ -15,6 +16,7 @@ import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { NotificationChannelCard } from "../settings/NotificationChannelCard";
 import { CarryOvers } from "./CarryOvers";
 import { DecisionLog } from "./DecisionLog";
+import { ProcessCommentsCard } from "./ProcessCommentsCard";
 import { WatchToggle } from "./PrHeader";
 import { RoundsTable } from "./RoundsTable";
 import { StateBadge } from "./StateBadge";
@@ -93,6 +95,28 @@ describe("WatchToggle (US19)", () => {
   });
 });
 
+describe("ProcessCommentsCard (V0)", () => {
+  it("names a GitHub read that never succeeded in the card only", () => {
+    const page = prPage();
+    render(
+      <ProcessCommentsCard
+        summary={{
+          ...page.comments,
+          read: { ...page.comments.read, read_at: null, failure: "unavailable", next_read_at: null },
+        }}
+        now={NOW}
+        questionsHref="/q"
+        tableHref="/t"
+        onNavigate={vi.fn()}
+        storageKey="alice:pr-page:comments"
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "GitHub could not be read (GitHub did not answer as expected). Nothing was read from GitHub yet.",
+    );
+  });
+});
+
 describe("WatchedList (V6)", () => {
   it("lists watches with state badges and Unwatch; an ended watch says so", async () => {
     const onUnwatch = vi.fn();
@@ -107,6 +131,7 @@ describe("WatchedList (V6)", () => {
       />,
     );
     expect(screen.getByText(/4 of 20 watched/)).toBeVisible();
+    expect(screen.getByText(/Assessments charged to you in the last 24 hours: 7 of 30/)).toBeVisible();
     expect(screen.getByText("Waiting for bot round")).toBeVisible();
     expect(screen.getByText(/watching ended/)).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Unwatch acme/wire-codec #77" }));

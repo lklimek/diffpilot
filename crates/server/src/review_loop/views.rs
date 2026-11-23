@@ -4,25 +4,30 @@
 use std::collections::HashMap;
 
 use contracts::api::analyses::AnalysisSummary;
+use contracts::api::deps::{CrateChanges, DependencyView, RepositoryKind};
+use contracts::api::files::{PartOwner, PrFile};
 use contracts::api::review_loop::{
     AssessmentProgress, AssessmentState, CarryOverPage, CodeContext, CodeLine, CommentCounts,
     CommentItem, CommentLog, CommentsOverview, CommentsSummary, ContextQuery, DecideRest,
     DecideRestRow, DecisionBatchRow, EffectState, EffectsPreview, FeedSubscriber, FlowStepRef,
     GithubRead, ItemState, ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource,
-    PrBadgeView, PrPage, Round, WatchedPr,
+    PrBadgeView, PrPage, Round,
 };
-use contracts::api::tour::CiState;
-use contracts::common::{LineRange, LineSide, PrRef};
-use contracts::ids::{AnalysisId, CarryEventId, CommentItemId, CommitSha};
+use contracts::api::tour::{CiState, Tour};
+use contracts::common::{AnnotationType, LineRange, LineSide, PrRef};
+use contracts::ids::{AnalysisId, CarryEventId, CommentItemId, CommitSha, StepId};
 use contracts::time::Timestamp;
 use db::repo::review_loop::{ItemRecord, PassRecord, PassState, StoredDecision};
 
 use super::badge::{self, BadgeInputs};
-use super::observe::{GateFact, Snapshot};
+use super::observe::Snapshot;
 use super::queue;
 use super::{Loaded, LoopError, PrHandle, READ_INTERVAL};
 use crate::auth::Session;
 use crate::github::mirror;
+use crate::pipeline::context::StoredResults;
+use crate::pipeline::tour::{self, TourLoadError};
+use crate::pipeline::{deps, files};
 use crate::state::AppState;
 
 /// Lines served by default around the commented lines.
@@ -304,17 +309,6 @@ fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize) -> PrBadgeView {
     let now = Timestamp::now();
     let overlay = state.plugins.overlay(now);
     let pr = &loaded.handle.pr;
-    let plugin_round = overlay
-        .notes(&pr.repo, pr.number)
-        .iter()
-        .any(|note| note.plugin == "thepastaclaw");
-    let gate_round = snapshot.is_some_and(|snapshot| {
-        matches!(
-            snapshot.gate,
-            Some((GateFact::InProgress | GateFact::Queued, ref commit))
-                if commit.as_ref().is_none_or(|commit| snapshot.head.starts_with(commit.as_str()))
-        )
-    });
     badge::badge(&BadgeInputs {
         open: snapshot.is_none_or(|snapshot| snapshot.state == "OPEN"),
         read_failed: loaded.row.read_failure.is_some() || snapshot.is_none(),
@@ -324,7 +318,7 @@ fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize) -> PrBadgeView {
         failed_effects: standing.values().map(|s| failed(s)).sum(),
         undecided: count(waiting),
         executing: count(standing.values().filter(|s| effects_open(s)).count()),
-        bot_round: plugin_round || gate_round,
+        bot_round: super::bot_round_running(state, pr, snapshot),
         changes_requested: snapshot.map_or_else(Vec::new, |s| s.changes_requested_by.clone()),
         held_by: overlay.hold(&pr.repo, pr.number).map(|hold| hold.source),
         holders_not_current: state
@@ -338,6 +332,13 @@ fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize) -> PrBadgeView {
             .map(|status| status.source)
             .collect(),
     })
+}
+
+/// The PR's state badge from what is stored.
+pub(crate) async fn badge(state: &AppState, handle: PrHandle) -> Result<PrBadgeView, LoopError> {
+    let loaded = Loaded::of(state, handle).await?;
+    let waiting = queue::waiting(&loaded.queue_items(&[])).len();
+    Ok(badge_of(state, &loaded, waiting))
 }
 
 async fn latest_analysis(
@@ -409,60 +410,43 @@ pub async fn overview(
     })
 }
 
-/// RC1.
+/// RC1. A pull request never read from GitHub still shows its analysis: the header comes from the stored pull
+/// request and the comments card names the failed read.
 pub async fn pr_page(
     state: &AppState,
     session: &Session,
     handle: PrHandle,
 ) -> Result<PrPage, LoopError> {
     let loaded = Loaded::of(state, handle).await?;
-    let snapshot = loaded.snapshot()?;
+    let snapshot = loaded.snapshot.as_ref();
     let rl = state.db.review_loop();
     let queue_items = loaded.queue_items(&[]);
     let waiting = queue::waiting(&queue_items).len();
     let pass = rl.latest_pass(loaded.handle.id).await?;
     let badge = badge_of(state, &loaded, waiting);
     let pr = &loaded.handle.pr;
-    let author = state
-        .db
-        .pull_requests()
-        .get(loaded.handle.id)
-        .await?
-        .pr
-        .author;
+    let stored = state.db.pull_requests().get(loaded.handle.id).await?.pr;
     let watch = rl
         .watches(&session.user_id)
         .await?
         .into_iter()
         .find(|watch| watch.pull_request_id == loaded.handle.id)
-        .map(|watch| WatchedPr {
-            pr: watch.pr,
-            title: watch.title,
-            since: watch.since,
-            last_probe_at: watch.last_probe_at,
-            last_auto_pass: watch.last_auto_pass,
-            state: watch.state,
-            ended_at: watch.ended_at,
-            badge: badge.clone(),
-        });
+        .map(|watch| super::watch::view(watch, badge.clone()));
+    let url = snapshot.map_or_else(|| stored.html_url.clone(), |snapshot| snapshot.url.clone());
+    let url = if url.is_empty() { pr_url(pr) } else { url };
     Ok(PrPage {
         pr: pr.clone(),
-        title: snapshot.title.clone(),
-        author,
-        url: if snapshot.url.is_empty() {
-            pr_url(pr)
-        } else {
-            snapshot.url.clone()
-        },
-        state: snapshot.state.clone(),
-        draft: snapshot.draft,
-        base: snapshot.base.clone(),
+        title: snapshot.map_or_else(|| stored.title.clone(), |s| s.title.clone()),
+        author: stored.author,
+        url,
+        state: snapshot.map(|s| s.state.clone()).unwrap_or_default(),
+        draft: snapshot.is_some_and(|s| s.draft),
+        base: snapshot.map(|s| s.base.clone()).unwrap_or_default(),
         // TODO(WP13-WEB-S): name the PR whose head branch is the base (stacked PRs); needs a GitHub lookup.
         stack_parent: None,
-        head: CommitSha(snapshot.head.clone()),
+        head: snapshot.map_or(stored.head_sha, |s| CommitSha(s.head.clone())),
         ci: snapshot
-            .ci
-            .clone()
+            .and_then(|s| s.ci.clone())
             .filter(|ci| ci.state != CiState::NotChecked),
         plugin_notes: state
             .plugins
@@ -473,7 +457,7 @@ pub async fn pr_page(
         analysis: latest_analysis(state, session, loaded.handle.id).await?,
         comments: CommentsSummary {
             counts: counts(&loaded, waiting),
-            rounds: count(snapshot.rounds.len()),
+            rounds: snapshot.map_or(0, |s| count(s.rounds.len())),
             assessment: progress(&loaded, pass.as_ref()),
             read: read_view(&loaded),
         },
@@ -716,7 +700,7 @@ pub async fn context(
             })
         })
         .collect();
-    let (analysis, analysis_head, in_flows) = flows_containing(
+    let from_analysis = analysis_context(
         state,
         session,
         loaded.handle.id,
@@ -724,30 +708,36 @@ pub async fn context(
         location.lines,
     )
     .await;
-    let notes = state
-        .plugins
-        .overlay(Timestamp::now())
-        .notes(&loaded.handle.pr.repo, loaded.handle.pr.number)
-        .into_iter()
-        .filter_map(|note| {
-            let source = match note.plugin.as_str() {
-                "pr-hygiene" => NoteSource::PrHygiene,
-                "thepastaclaw" => NoteSource::Thepastaclaw,
-                _ => return None,
-            };
-            Some(NoteElsewhere {
-                source,
-                label: format!(
-                    "{}: {}",
-                    note.source,
-                    note.summary.unwrap_or_else(|| "statement".to_owned())
-                ),
-                count: None,
-                url: note.url,
-            })
-        })
-        .collect();
-    // TODO(WP13-WEB-C): Flows flags, Files incidental notes and Dependencies callers as notes elsewhere.
+    let mut notes = from_analysis.notes;
+    notes.extend(
+        state
+            .plugins
+            .overlay(Timestamp::now())
+            .notes(&loaded.handle.pr.repo, loaded.handle.pr.number)
+            .into_iter()
+            .filter_map(|note| {
+                let source = match note.plugin.as_str() {
+                    "pr-hygiene" => NoteSource::PrHygiene,
+                    "thepastaclaw" => NoteSource::Thepastaclaw,
+                    _ => return None,
+                };
+                Some(NoteElsewhere {
+                    source,
+                    label: format!(
+                        "{}: {}",
+                        note.source,
+                        note.summary.unwrap_or_else(|| "statement".to_owned())
+                    ),
+                    count: None,
+                    url: note.url,
+                })
+            }),
+    );
+    let (analysis, analysis_head, in_flows) = (
+        from_analysis.analysis,
+        from_analysis.head,
+        from_analysis.in_flows,
+    );
     Ok(CodeContext {
         path: location.path.clone(),
         head,
@@ -762,46 +752,346 @@ pub async fn context(
     })
 }
 
-/// The flow steps of the PR's latest analysis whose head lines contain `lines`; nothing without a review-ready
-/// analysis.
-async fn flows_containing(
+/// What the PR's latest review-ready analysis says about an item's lines.
+#[derive(Default)]
+struct AnalysisContext {
+    analysis: Option<AnalysisId>,
+    head: Option<CommitSha>,
+    /// Flow steps whose head lines contain the lines.
+    in_flows: Vec<FlowStepRef>,
+    /// Flows flags on those lines, Files incidental notes on them, Dependencies notes of the file's crate.
+    notes: Vec<NoteElsewhere>,
+}
+
+/// The flow steps containing `lines` of `path` and the notes about them elsewhere, from the stored documents of the
+/// PR's latest analysis (its Tour, Files and Dependencies views); nothing without a review-ready analysis, and only
+/// the steps when a view cannot be built.
+async fn analysis_context(
     state: &AppState,
     session: &Session,
     pr_id: i64,
     path: &str,
     lines: Option<LineRange>,
-) -> (Option<AnalysisId>, Option<CommitSha>, Vec<FlowStepRef>) {
+) -> AnalysisContext {
     let summary = match latest_analysis(state, session, pr_id).await {
         Ok(Some(summary)) => summary,
-        Ok(None) => return (None, None, Vec::new()),
+        Ok(None) => return AnalysisContext::default(),
         Err(error) => {
             tracing::debug!(?error, "no analysis read for the comment context");
-            return (None, None, Vec::new());
+            return AnalysisContext::default();
         }
     };
-    let steps = match (lines, crate::pipeline::tour::load(state, &summary).await) {
-        (Some(lines), Ok(tour)) => tour
-            .flows
-            .iter()
-            .flat_map(|flow| {
-                flow.steps
-                    .iter()
-                    .filter(move |step| {
-                        step.facts.side == LineSide::Head
-                            && step.facts.file == path
-                            && step.facts.range.start_line <= lines.end_line
-                            && lines.start_line <= step.facts.range.end_line
-                    })
-                    .map(move |step| FlowStepRef {
-                        flow: flow.id.clone(),
-                        flow_position: flow.position,
-                        flow_title: flow.llm.title.clone(),
-                        step: step.id.clone(),
-                        step_number: step.number,
-                    })
-            })
-            .collect(),
-        _ => Vec::new(),
+    let found = AnalysisContext {
+        analysis: Some(summary.id),
+        head: Some(summary.pr.head_sha.clone()),
+        ..AnalysisContext::default()
     };
-    (Some(summary.id), Some(summary.pr.head_sha.clone()), steps)
+    let Some(lines) = lines else {
+        return found;
+    };
+    let (tour, files, deps) = match analysis_views(state, session, &summary).await {
+        Ok(views) => views,
+        Err(error) => {
+            tracing::debug!(?error, "no Tour for the comment context");
+            return found;
+        }
+    };
+    let (in_flows, notes) = notes_on(summary.id, &tour, &files, deps.as_ref(), path, lines);
+    AnalysisContext {
+        in_flows,
+        notes,
+        ..found
+    }
+}
+
+/// The flow steps whose head lines contain `lines` of `path`, and the notes elsewhere about them: the LLM's Flows
+/// flags on those lines, Files incidental-change notes on them and the Dependencies notes of the file's crate.
+fn notes_on(
+    analysis: AnalysisId,
+    tour: &Tour,
+    files: &[PrFile],
+    deps: Option<&DependencyView>,
+    path: &str,
+    lines: LineRange,
+) -> (Vec<FlowStepRef>, Vec<NoteElsewhere>) {
+    let base = format!("/analyses/{analysis}");
+    let overlaps = |range: &LineRange| {
+        range.start_line <= lines.end_line && lines.start_line <= range.end_line
+    };
+    let mut in_flows = Vec::new();
+    let mut flags = 0_u32;
+    let mut flagged: Option<StepId> = None;
+    for flow in &tour.flows {
+        for step in &flow.steps {
+            if step.facts.side != LineSide::Head
+                || step.facts.file != path
+                || !overlaps(&step.facts.range)
+            {
+                continue;
+            }
+            in_flows.push(FlowStepRef {
+                flow: flow.id.clone(),
+                flow_position: flow.position,
+                flow_title: flow.llm.title.clone(),
+                step: step.id.clone(),
+                step_number: step.number,
+            });
+            let here = step
+                .llm
+                .annotations
+                .iter()
+                .filter(|annotation| {
+                    annotation.kind == AnnotationType::Flag && overlaps(&annotation.range)
+                })
+                .count();
+            if here > 0 && flagged.is_none() {
+                flagged = Some(step.id.clone());
+            }
+            flags += count(here);
+        }
+    }
+    let mut notes = Vec::new();
+    if let Some(step) = flagged {
+        notes.push(NoteElsewhere {
+            source: NoteSource::Flows,
+            label: format!(
+                "Flows: the LLM flagged these lines ({flags} {})",
+                if flags == 1 { "flag" } else { "flags" }
+            ),
+            count: Some(flags),
+            url: format!("{base}#{step}"),
+        });
+    }
+    let incidental = files
+        .iter()
+        .filter(|file| file.path == path)
+        .flat_map(|file| file.hunks.iter().flat_map(|hunk| hunk.parts.iter()))
+        .filter(|part| {
+            part.side == LineSide::Head
+                && matches!(part.owner, PartOwner::Incidental { .. })
+                && overlaps(&part.range)
+        })
+        .count();
+    if incidental > 0 {
+        let link: String = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("file", path)
+            .append_pair("side", "head")
+            .append_pair("line", &lines.start_line.to_string())
+            .append_pair("end", &lines.end_line.to_string())
+            .finish();
+        notes.push(NoteElsewhere {
+            source: NoteSource::Files,
+            label: "Files: incidental-change note on these lines".to_owned(),
+            count: Some(count(incidental)),
+            url: format!("{base}/files#lines?{link}"),
+        });
+    }
+    if let Some((name, changes)) = deps.and_then(|view| crate_of(view, path)) {
+        let crate_notes = count(changes.notes.len()) + changes.notes_hidden;
+        if crate_notes > 0 {
+            notes.push(NoteElsewhere {
+                source: NoteSource::Dependencies,
+                label: format!(
+                    "Dependencies: {crate_notes} {} on what changed in crate {name}",
+                    if crate_notes == 1 { "note" } else { "notes" }
+                ),
+                count: Some(crate_notes),
+                url: format!("{base}/deps"),
+            });
+        }
+    }
+    (in_flows, notes)
+}
+
+/// The Tour, Files and Dependencies views of a review-ready analysis from its stored documents (a dependency map
+/// is not computed here: without a stored one there is no Dependencies view).
+async fn analysis_views(
+    state: &AppState,
+    session: &Session,
+    summary: &AnalysisSummary,
+) -> Result<(Tour, Vec<PrFile>, Option<DependencyView>), TourLoadError> {
+    tour::ready(summary)?;
+    let results = StoredResults::load(&state.db, summary.id).await?;
+    let plan = results.plan.clone();
+    let map = deps::stored(state, summary.id).await?;
+    let controlled = state
+        .db
+        .settings()
+        .controlled_owners(&session.tenant_id)
+        .await?;
+    tour::with_projection(state, summary, results, |projection, tour| {
+        let dependencies = map.as_ref().map(|map| {
+            deps::project(&deps::ProjectionInput {
+                map,
+                pr_repo: &summary.pr.repo,
+                files: projection.files,
+                plan: plan.as_ref(),
+                controlled: &controlled.owners,
+            })
+        });
+        let files = files::from_tour(projection, &tour);
+        (tour, files, dependencies)
+    })
+    .await
+}
+
+/// The changed crate of this repository holding `path` (the deepest manifest directory above it).
+fn crate_of<'a>(view: &'a DependencyView, path: &str) -> Option<(&'a str, &'a CrateChanges)> {
+    view.repositories
+        .iter()
+        .filter(|repository| repository.kind == RepositoryKind::This)
+        .flat_map(|repository| repository.crates.iter())
+        .filter_map(|krate| {
+            let dir = krate.manifest.as_deref()?.strip_suffix("Cargo.toml")?;
+            let changes = krate.changes.as_ref()?;
+            path.starts_with(dir)
+                .then_some((dir.len(), krate.name.as_str(), changes))
+        })
+        .max_by_key(|(depth, ..)| *depth)
+        .map(|(_, name, changes)| (name, changes))
+}
+
+#[cfg(test)]
+mod notes_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn tour() -> Tour {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/pr-482/api/default/tour.json"
+        );
+        serde_json::from_str(&std::fs::read_to_string(path).expect("golden Tour")).expect("Tour")
+    }
+
+    fn files() -> Vec<PrFile> {
+        serde_json::from_value(json!([{
+            "path": "src/rpc/client.rs", "old_path": null, "status": "modified", "binary": false,
+            "added": 20, "removed": 2, "group": {"kind": "code"}, "not_rendered": null, "viewed": null,
+            "hunks": [{"id": "h1", "base": null, "head": {"start_line": 95, "end_line": 101}, "after_line": null,
+                "parts": [
+                    {"side": "head", "range": {"start_line": 95, "end_line": 99},
+                     "owner": {"kind": "step", "flow_id": "f1", "step_id": "f1.5"}, "also_in": []},
+                    {"side": "head", "range": {"start_line": 100, "end_line": 101},
+                     "owner": {"kind": "incidental", "flow_id": "f1", "text": "Renames a local."}, "also_in": []}
+                ]}]
+        }]))
+        .expect("files")
+    }
+
+    fn krate(name: &str, manifest: &str, notes: usize, hidden: u32) -> serde_json::Value {
+        json!({"name": name, "version": "0.1.0", "manifest": manifest, "source_at": null, "revision": null,
+            "used_by": [], "facts_about": 0,
+            "changes": {"changed_lines": 10, "files": 1, "flows": [], "facts": [], "facts_hidden": 0,
+                "other_facts": 0,
+                "notes": (0..notes).map(|n| json!({"text": format!("note {n}"), "lines": [], "changed_lines": 3}))
+                    .collect::<Vec<_>>(),
+                "notes_hidden": hidden, "other_dependencies": 0}})
+    }
+
+    fn deps() -> DependencyView {
+        serde_json::from_value(json!({
+            "status": "available", "controlled_owners": ["acme"], "limits": [], "files_outside_crates": 0,
+            "notes": "produced",
+            "repositories": [{"kind": "this", "repo": {"owner": "acme", "name": "node-client"}, "location": null,
+                "controlled": true, "crates": [
+                    krate("node-client", "Cargo.toml", 1, 1),
+                    krate("rpc-core", "src/rpc/Cargo.toml", 1, 0),
+                    krate("macros", "macros/Cargo.toml", 3, 0)
+                ]}]
+        }))
+        .expect("deps")
+    }
+
+    /// F1: the comment context names the LLM's Flows flags on the item's lines, the Files incidental-change note on
+    /// them and the Dependencies notes of the deepest crate holding the file, each with a link to its place.
+    #[test]
+    fn notes_elsewhere_come_from_the_stored_views() {
+        let analysis = AnalysisId(uuid::Uuid::from_u128(
+            0x6d3a_2f1e_0482_4c5e_9a7b_0000_0000_0482,
+        ));
+        let lines = LineRange {
+            start_line: 98,
+            end_line: 101,
+        };
+        let (steps, notes) = notes_on(
+            analysis,
+            &tour(),
+            &files(),
+            Some(&deps()),
+            "src/rpc/client.rs",
+            lines,
+        );
+        assert_eq!(
+            steps
+                .iter()
+                .map(|step| step.step.0.as_str())
+                .collect::<Vec<_>>(),
+            ["f1.4", "f1.5", "f1.6"]
+        );
+        let base = format!("/analyses/{analysis}");
+        assert_eq!(
+            notes,
+            vec![
+                NoteElsewhere {
+                    source: NoteSource::Flows,
+                    label: "Flows: the LLM flagged these lines (2 flags)".to_owned(),
+                    count: Some(2),
+                    url: format!("{base}#f1.5"),
+                },
+                NoteElsewhere {
+                    source: NoteSource::Files,
+                    label: "Files: incidental-change note on these lines".to_owned(),
+                    count: Some(1),
+                    url: format!(
+                        "{base}/files#lines?file=src%2Frpc%2Fclient.rs&side=head&line=98&end=101"
+                    ),
+                },
+                NoteElsewhere {
+                    source: NoteSource::Dependencies,
+                    label: "Dependencies: 1 note on what changed in crate rpc-core".to_owned(),
+                    count: Some(1),
+                    url: format!("{base}/deps"),
+                },
+            ]
+        );
+    }
+
+    /// Lines without flags or incidental notes get only their crate's notes; without a dependency map, none.
+    #[test]
+    fn lines_without_notes_get_none() {
+        let analysis = AnalysisId(uuid::Uuid::from_u128(
+            0x6d3a_2f1e_0482_4c5e_9a7b_0000_0000_0482,
+        ));
+        let lines = LineRange {
+            start_line: 21,
+            end_line: 22,
+        };
+        let (_, notes) = notes_on(
+            analysis,
+            &tour(),
+            &[],
+            Some(&deps()),
+            "src/rpc/retry.rs",
+            lines,
+        );
+        assert_eq!(
+            notes
+                .iter()
+                .map(|note| note.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Dependencies: 1 note on what changed in crate rpc-core"]
+        );
+        let (_, notes) = notes_on(analysis, &tour(), &[], Some(&deps()), "src/lib.rs", lines);
+        assert_eq!(
+            notes
+                .iter()
+                .map(|note| note.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Dependencies: 2 notes on what changed in crate node-client"]
+        );
+        let (_, notes) = notes_on(analysis, &tour(), &[], None, "src/lib.rs", lines);
+        assert!(notes.is_empty(), "{notes:?}");
+    }
 }

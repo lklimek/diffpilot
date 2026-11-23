@@ -584,7 +584,7 @@ pub const UNWATCH_PR: Route = route(
 );
 /// RW2: the reader's watched PRs.
 pub const LIST_WATCHES: Route = route("listWatches", Get, "/api/v1/watches", READ);
-/// RW3: SSE stream of the reader's events (`UserEvent`).
+/// RW3: SSE stream of the reader's events (`UserStreamEvent`).
 pub const USER_EVENTS: Route = route("userEvents", Get, "/api/v1/events", READ);
 /// RN1: the user's notification channels (secrets masked; session only).
 pub const GET_NOTIFICATION_SETTINGS: Route = route(

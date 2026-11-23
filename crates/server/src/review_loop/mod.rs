@@ -38,6 +38,7 @@ pub mod notify;
 mod observe;
 mod queue;
 pub mod views;
+pub mod watch;
 
 pub use effects::DecisionError;
 use effects::{EffectItem, PrQuestion, PrScope};
@@ -97,6 +98,12 @@ pub enum LoopError {
     /// The page cursor is not one this server gave.
     #[error("the page cursor is not valid")]
     InvalidCursor,
+    /// The user watches [`watch::WATCH_LIMIT`] pull requests already.
+    #[error("the user watches the most pull requests allowed")]
+    WatchLimitReached,
+    /// "Assess again" while an assessment pass of the pull request is queued or running.
+    #[error("an assessment pass of the pull request is queued or running")]
+    AssessmentRunning,
     /// The file could not be read from the mirror.
     #[error("the file could not be read")]
     Mirror(#[from] mirror::MirrorError),
@@ -154,8 +161,9 @@ async fn last_attempt(state: &AppState, id: i64) -> Result<Option<Timestamp>, Db
 }
 
 /// The pull request for a page: read from GitHub first when its last read is older than [`READ_INTERVAL`] (or
-/// always with `force`). Reads use the reader's GitHub token. An access-token request is served what is stored and
-/// never reads GitHub: a token read leaves the database unchanged (ADR-019).
+/// always with `force`). Reads use the reader's GitHub token; a read that finds new comments asks for an on-demand
+/// assessment pass. An access-token request is served what is stored and never reads GitHub: a token read leaves
+/// the database unchanged (ADR-019).
 pub async fn ensure_read(
     state: &AppState,
     session: &Session,
@@ -165,30 +173,79 @@ pub async fn ensure_read(
     if session.is_access_token() {
         return find(state, &session.tenant_id, pr).await;
     }
+    let read = read_if_due(state, &session.tenant_id, &session.user_id, pr, force).await?;
+    if let ReadOutcome::Read { new } = read.outcome
+        && new > 0
+        && let Err(error) =
+            assess::request_pass(state, read.handle.id, assess::PassReason::NewComments).await
+    {
+        tracing::warn!(
+            ?error,
+            pr = read.handle.id,
+            "assessment pass for new comments could not be requested"
+        );
+    }
+    Ok(read.handle)
+}
+
+/// What [`read_if_due`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReadOutcome {
+    /// Not read: the last read is recent.
+    Fresh,
+    /// Read and stored; `new` items appeared.
+    Read {
+        /// New items.
+        new: u32,
+    },
+    /// GitHub could not be read; the last read stays.
+    Failed(ReadFailure),
+}
+
+/// The pull request and what its read did.
+#[derive(Clone, Debug)]
+pub(crate) struct Read {
+    pub(crate) handle: PrHandle,
+    pub(crate) outcome: ReadOutcome,
+}
+
+/// Reads the pull request from GitHub with the user's token when its last read is older than [`READ_INTERVAL`] (or
+/// always with `force`); reads of one pull request run one at a time.
+pub(crate) async fn read_if_due(
+    state: &AppState,
+    tenant: &str,
+    user: &str,
+    pr: &PrRef,
+    force: bool,
+) -> Result<Read, LoopError> {
     if !rest::is_valid_repo(&pr.repo) || pr.number == 0 {
         return Err(LoopError::NotFound);
     }
     let fresh = |last: Option<Timestamp>, now: Timestamp| {
         last.is_some_and(|at| now.duration_since(at) < READ_INTERVAL)
     };
+    let skipped = |handle| Read {
+        handle,
+        outcome: ReadOutcome::Fresh,
+    };
     if !force
-        && let Ok(handle) = find(state, &session.tenant_id, pr).await
+        && let Ok(handle) = find(state, tenant, pr).await
         && fresh(last_attempt(state, handle.id).await?, Timestamp::now())
     {
-        return Ok(handle);
+        return Ok(skipped(handle));
     }
-    let _guard = read_lock(&session.tenant_id, pr).await;
-    if let Ok(handle) = find(state, &session.tenant_id, pr).await {
+    let _guard = read_lock(tenant, pr).await;
+    if let Ok(handle) = find(state, tenant, pr).await {
         let last = last_attempt(state, handle.id).await?;
         let now = Timestamp::now();
         if force && last.is_some_and(|at| now.duration_since(at) < MIN_REREAD) {
             return Err(LoopError::TooSoon);
         }
         if !force && fresh(last, now) {
-            return Ok(handle);
+            return Ok(skipped(handle));
         }
     }
-    read_now(state, session, pr).await
+    read_now(state, tenant, user, pr).await
 }
 
 fn failure_of(error: &ReadError) -> ReadFailure {
@@ -205,16 +262,15 @@ fn failure_of(error: &ReadError) -> ReadFailure {
 /// Records a failed read on a stored PR (the last good read stays) or fails without one.
 async fn read_failed(
     state: &AppState,
-    session: &Session,
+    tenant: &str,
     pr: &PrRef,
     failure: ReadFailure,
-) -> Result<PrHandle, LoopError> {
-    let Ok(handle) = find(state, &session.tenant_id, pr).await else {
+) -> Result<Read, LoopError> {
+    let Ok(handle) = find(state, tenant, pr).await else {
         return Err(LoopError::Unreadable(failure));
     };
     let rl = state.db.review_loop();
-    rl.ensure_pr(&session.tenant_id, handle.id, Timestamp::now())
-        .await?;
+    rl.ensure_pr(tenant, handle.id, Timestamp::now()).await?;
     rl.record_read(handle.id, &ReadResult::Failed(failure), Timestamp::now())
         .await?;
     tracing::warn!(
@@ -222,15 +278,23 @@ async fn read_failed(
         ?failure,
         "review-loop GitHub read failed; the last read stays shown"
     );
-    Ok(handle)
+    Ok(Read {
+        handle,
+        outcome: ReadOutcome::Failed(failure),
+    })
 }
 
-/// Reads the pull request from GitHub with the reader's token and stores what changed.
-async fn read_now(state: &AppState, session: &Session, pr: &PrRef) -> Result<PrHandle, LoopError> {
-    let token = match user_access_token(state, &session.user_id).await {
+/// Reads the pull request from GitHub with the user's token and stores what changed.
+async fn read_now(
+    state: &AppState,
+    tenant: &str,
+    user: &str,
+    pr: &PrRef,
+) -> Result<Read, LoopError> {
+    let token = match user_access_token(state, user).await {
         Ok(token) => token,
         Err(UserTokenError::SignInRequired) => {
-            return read_failed(state, session, pr, ReadFailure::SignInRequired).await;
+            return read_failed(state, tenant, pr, ReadFailure::SignInRequired).await;
         }
         Err(error) => return Err(error.into()),
     };
@@ -243,16 +307,15 @@ async fn read_now(state: &AppState, session: &Session, pr: &PrRef) -> Result<PrH
         }
         Err(error) => {
             if matches!(error, ReadError::Graphql(GraphqlError::Unauthorized)) {
-                user_token_rejected(state, &session.user_id, &token).await;
+                user_token_rejected(state, user, &token).await;
             }
             tracing::debug!(?error, "review-loop read of the pull request failed");
-            return read_failed(state, session, pr, failure_of(&error)).await;
+            return read_failed(state, tenant, pr, failure_of(&error)).await;
         }
     };
     if read.private {
         return Err(LoopError::PrivateRepository);
     }
-    let tenant = &session.tenant_id;
     let repo = state
         .db
         .repos()
@@ -303,7 +366,7 @@ async fn read_now(state: &AppState, session: &Session, pr: &PrRef) -> Result<PrH
     let known_bots = state
         .db
         .dashboard()
-        .settings(tenant, &session.user_id)
+        .settings(tenant, user)
         .await?
         .map_or_else(default_known_bots, |stored| stored.settings.known_bots);
     let (observed, mut snapshot) = observe::observe(&read, &BotRule::new(&known_bots));
@@ -325,16 +388,29 @@ async fn read_now(state: &AppState, session: &Session, pr: &PrRef) -> Result<PrH
         )
         .await?;
     tracing::info!(pr = id, new, "review-loop read stored");
-    if new > 0
-        && let Err(error) = assess::request_pass(state, id, assess::PassReason::NewComments).await
-    {
-        tracing::warn!(
-            ?error,
-            pr = id,
-            "assessment pass for new comments could not be requested"
-        );
-    }
-    Ok(handle)
+    Ok(Read {
+        handle,
+        outcome: ReadOutcome::Read { new },
+    })
+}
+
+/// thepastaclaw reviews or has queued the pull request (plan §2.8, badge B4): a statement of its status plug-in, or
+/// its gate comment in progress or queued on the head of the last read.
+pub(crate) fn bot_round_running(state: &AppState, pr: &PrRef, snapshot: Option<&Snapshot>) -> bool {
+    let plugin = state
+        .plugins
+        .overlay(Timestamp::now())
+        .notes(&pr.repo, pr.number)
+        .iter()
+        .any(|note| note.plugin == "thepastaclaw");
+    let gate = snapshot.is_some_and(|snapshot| {
+        matches!(
+            snapshot.gate,
+            Some((observe::GateFact::InProgress | observe::GateFact::Queued, ref commit))
+                if commit.as_ref().is_none_or(|commit| snapshot.head.starts_with(commit.as_str()))
+        )
+    });
+    plugin || gate
 }
 
 /// The standing decision of each item: its newest decision unless superseded or undone.
@@ -730,10 +806,10 @@ async fn add_pr_questions(
     if round >= 3 && !has(&merge) {
         asks.push(question(
             merge,
-            "Merge now, remaining items as follow-ups?",
+            "Merge now, or another round?",
             format!(
-                "Bot round {round} has ended. Merge now and turn the remaining items into one follow-up pull \
-                 request, or wait for another round."
+                "Bot round {round} has ended. Merge with the remaining items as follow-ups (one follow-up pull \
+                 request), or another round."
             ),
         ));
     }

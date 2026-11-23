@@ -73,6 +73,10 @@ export function WatchedList({ list, prHref, onNavigate, onUnwatch, busy, now }: 
         thepastaclaw reports a change. New comments are assessed by diffpilot&apos;s LLM, one assessment per
         PR at a time, after the bot&apos;s round has ended; this uses GitHub requests and LLM tokens.
       </p>
+      <p className="text-xs text-muted">
+        Assessments charged to you in the last 24 hours: {list.passes_today} of {list.daily_limit}; automatic
+        ones stop at the limit.
+      </p>
       {list.watches.length === 0 ? (
         <p className="text-muted">You watch no pull request. Use Watch on a PR page.</p>
       ) : (

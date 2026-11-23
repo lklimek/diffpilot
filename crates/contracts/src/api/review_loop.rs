@@ -394,6 +394,10 @@ pub struct CommentAssessment {
     pub code: Option<CodeSummary>,
     /// Prompt version of the job.
     pub prompt_version: u32,
+    /// Commit of the claudius checkout whose skills the job read ("Assessed with claudius <short sha>"); null when
+    /// the runner gave none or the assessment predates it. A reused assessment keeps the commit it was made with.
+    #[serde(default)]
+    pub skills_commit: Option<String>,
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1131,11 +1135,11 @@ pub struct PrPage {
     pub author: String,
     /// GitHub link.
     pub url: String,
-    /// GitHub state (`OPEN`, `CLOSED`, `MERGED`).
+    /// GitHub state (`OPEN`, `CLOSED`, `MERGED`); empty while GitHub was never read (`comments.read.failure`).
     pub state: String,
     /// Draft.
     pub draft: bool,
-    /// Base branch.
+    /// Base branch; empty while GitHub was never read.
     pub base: String,
     /// The PR whose branch is the base (stacked PR).
     pub stack_parent: Option<PrRef>,
@@ -1283,7 +1287,7 @@ pub enum WatchState {
 pub struct AutoPass {
     /// When it ended.
     pub at: Timestamp,
-    /// Questions it added.
+    /// Questions waiting for a decision when it ended.
     pub questions: u32,
 }
 
@@ -1315,6 +1319,10 @@ pub struct WatchList {
     pub watches: Vec<WatchedPr>,
     /// Most watched PRs per user.
     pub limit: u32,
+    /// Assessment passes charged to the reader in the last 24 hours (automatic and question passes).
+    pub passes_today: u32,
+    /// Passes per user and 24 hours; automatic passes stop at it.
+    pub daily_limit: u32,
 }
 
 /// Kind of a per-user event; also what a channel subscribes to.
@@ -1346,6 +1354,32 @@ pub struct UserEvent {
     pub url: Option<String>,
     /// When.
     pub at: Timestamp,
+}
+
+/// SSE data of RW3; the SSE `event` field is the `event` tag.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum UserStreamEvent {
+    /// A stored per-user event, oldest first; a reconnect resends nothing older than the connection.
+    UserEvent {
+        /// The event.
+        user_event: UserEvent,
+    },
+    /// Sent every 15 s while the stream is open; each one re-checks the session or token.
+    Heartbeat {
+        /// Server time of sending.
+        at: Timestamp,
+    },
+}
+
+impl UserStreamEvent {
+    /// The SSE event name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::UserEvent { .. } => "user_event",
+            Self::Heartbeat { .. } => "heartbeat",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------

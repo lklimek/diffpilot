@@ -30,6 +30,8 @@ use crate::github::review_loop::tests::recorded;
 use crate::state::AppState;
 use crate::test_support::session_cookie;
 
+mod watching;
+
 const PR: &str = "/api/v1/prs/acme/node-client/482";
 const L2: &str = "ef3c2e21454eefc7";
 const L6: &str = "fedcba9876543210";
@@ -244,6 +246,7 @@ impl World {
             recommendation,
             code: None,
             prompt_version: 1,
+            skills_commit: None,
         };
         self.state
             .db
@@ -382,7 +385,7 @@ async fn round_three_asks_merge_question_once() {
     );
     let merge = w.item("pr:3:merge").await;
     assert_eq!(merge["author_kind"], "diffpilot");
-    assert_eq!(merge["title"], "Merge now, remaining items as follow-ups?");
+    assert_eq!(merge["title"], "Merge now, or another round?");
     w.reread(&[]).await;
     let questions = w
         .items()
@@ -1025,6 +1028,77 @@ async fn pr_page_reads_mark_presence_for_browser_sessions_only() {
             "{rest}"
         );
     }
+}
+
+/// RC1 for a pull request never read from GitHub (known from its analysis) still serves the page: the header from
+/// the stored pull request, the failed read in the comments summary only, nothing invented about its GitHub state.
+#[tokio::test]
+async fn pr_page_without_any_github_read_degrades() {
+    let w = world().await;
+    let repo = w
+        .state
+        .db
+        .repos()
+        .upsert(
+            DEFAULT_TENANT,
+            &contracts::common::RepoRef {
+                owner: "acme".into(),
+                name: "node-client".into(),
+            },
+            None,
+        )
+        .await
+        .expect("repo");
+    let summary = contracts::api::pr::PrSummary {
+        repo: repo.repo.clone(),
+        number: 482,
+        title: "Stored title".into(),
+        author: "alice".into(),
+        html_url: "https://github.com/acme/node-client/pull/482".into(),
+        base_sha: contracts::ids::CommitSha("1".repeat(40)),
+        head_sha: contracts::ids::CommitSha("2".repeat(40)),
+    };
+    w.state
+        .db
+        .pull_requests()
+        .upsert(DEFAULT_TENANT, repo.id, &summary, Timestamp::now())
+        .await
+        .expect("pr");
+    w.server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .respond_with(ResponseTemplate::new(502))
+        .mount(&w.server)
+        .await;
+    let (status, page) = w.call("GET", PR, None).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(page["title"], "Stored title");
+    assert_eq!(page["author"], "alice");
+    assert_eq!(page["head"], "2".repeat(40));
+    assert_eq!(page["state"], "", "GitHub state unknown");
+    assert_eq!(page["base"], "");
+    assert_eq!(page["comments"]["read"]["failure"], "unavailable");
+    assert_eq!(page["comments"]["read"]["read_at"], Value::Null);
+    assert_eq!(page["analysis"], Value::Null);
+}
+
+/// RC6 while a pass of the pull request is queued or running answers 409 `conflict` instead of dropping the request
+/// silently; once no pass runs it is accepted.
+#[tokio::test]
+async fn assess_again_while_a_pass_runs_is_a_conflict() {
+    let w = world().await;
+    w.get(&format!("{PR}/comments")).await;
+    let item = w.item(L2).await;
+    let uri = format!("{PR}/comments/items/C{}/assess", item["no"]);
+    let (status, body) = w.post(&uri, json!({})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "conflict");
+    assert!(
+        body["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("queued or running")),
+        "{body}"
+    );
 }
 
 /// RC1 names the pull request's author.

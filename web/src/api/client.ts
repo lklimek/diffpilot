@@ -24,6 +24,7 @@ import type {
   PrRef,
   PutChannelRequest,
   UserEvent,
+  UserStreamEvent,
   WatchList,
   AnalysisId,
   AnalysisSummary,
@@ -182,15 +183,8 @@ export interface UserEventHandlers {
   onError: (closed: boolean) => void;
 }
 
-/** SSE names of `UserEvent`s: the event's `kind` (assumed; `sse-events.md` RW3 does not name them yet). */
-// TODO(WP13-A CCR): RW3 does not name the SSE event; assumed to be the event `kind` (plus unnamed "message").
-const USER_EVENT_NAMES = ["message", "questions_ready", "round_executed", "test"] as const;
-
-const isUserEvent = (value: unknown): value is UserEvent =>
-  typeof value === "object" &&
-  value !== null &&
-  typeof (value as { kind?: unknown }).kind === "string" &&
-  typeof (value as { text?: unknown }).text === "string";
+/** SSE names of RW3 (`sse-events.md` "Review-loop events"): the `event` tag of `UserStreamEvent`. */
+const USER_STREAM_NAMES = ["user_event", "heartbeat"] satisfies UserStreamEvent["event"][];
 
 /** Route parameters of a pull request (`{owner}/{name}/{number}`). */
 const prParams = (pr: PrRef) => ({ owner: pr.repo.owner, name: pr.repo.name, number: String(pr.number) });
@@ -417,18 +411,14 @@ export function createApiClient(baseUrl = "") {
       call<ChannelTestResult>("testNotificationChannel", { params: { kind } }),
     /** Opens the per-user event stream (RW3); returns a function that closes it. */
     subscribeUserEvents(handlers: UserEventHandlers): () => void {
-      const source = new EventSource(baseUrl + routePath("userEvents"));
-      const onMessage = (message: MessageEvent<string>) => {
-        try {
-          const event: unknown = JSON.parse(message.data);
-          if (isUserEvent(event)) handlers.onEvent(event);
-        } catch {
-          // Not JSON: dropped, the stream stays open.
-        }
-      };
-      for (const name of USER_EVENT_NAMES) source.addEventListener(name, onMessage);
-      source.onerror = () => handlers.onError(source.readyState === EventSource.CLOSED);
-      return () => source.close();
+      return openEventStream<UserStreamEvent>(
+        baseUrl + routePath("userEvents"),
+        USER_STREAM_NAMES,
+        (event) => {
+          if (event.event === "user_event") handlers.onEvent(event.user_event);
+        },
+        handlers.onError,
+      );
     },
     /** Opens a refresh's event stream; returns a function that closes it. */
     subscribeDashboardRefresh(id: RefreshId, handlers: DashboardStreamHandlers): () => void {

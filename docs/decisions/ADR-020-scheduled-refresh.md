@@ -69,3 +69,12 @@ sessions. A 06:00 run after a quiet weekend would find no pair.
   migration; JSON Schemas and TS types are unchanged (`date-time` strings).
 - **Remaining chrono.** `rmcp` (MemCan client) depends on chrono, so it stays in `Cargo.lock`; no workspace code
   uses it.
+
+## Amendment (2026-11-22, ADR-023 Watch, WP13-WATCH)
+- **Watching keeps the pair.** The token pair is also kept without a live session while the user watches a pull
+  request (`pr_watches` row not `ended`, in a tenant the user is allowed in), within the same 30-day inactivity bound
+  as the schedule (`users.updated_at`). Ending the last watch, or the bound passing, lets the next sweep delete the
+  pair; the user's watches then pause ("Watching paused: sign in again") until a probe reads GitHub again.
+- **Same scheduler task.** The watch probe runs in the scheduler loop at most once per 60 s tick and probes each
+  watch every 5 minutes. A watched pull request is read by that probe, so the plan's extra daily scheduled read of
+  watched PRs is not added (it would only repeat the probe).

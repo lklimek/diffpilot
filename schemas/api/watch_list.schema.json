@@ -16,11 +16,25 @@
       "type": "integer",
       "format": "uint32",
       "minimum": 0
+    },
+    "passes_today": {
+      "description": "Assessment passes charged to the reader in the last 24 hours (automatic and question passes).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "daily_limit": {
+      "description": "Passes per user and 24 hours; automatic passes stop at it.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
     }
   },
   "required": [
     "watches",
-    "limit"
+    "limit",
+    "passes_today",
+    "daily_limit"
   ],
   "$defs": {
     "WatchedPr": {
@@ -132,7 +146,7 @@
           "format": "date-time"
         },
         "questions": {
-          "description": "Questions it added.",
+          "description": "Questions waiting for a decision when it ended.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0

@@ -8,7 +8,7 @@ use sqlx::{Row, SqlitePool};
 
 use super::Db;
 use super::sessions::{
-    Liveness, NewSession, insert_session, live_session, pair_kept_by_schedule, parse_timestamp,
+    Liveness, NewSession, insert_session, live_session, pair_kept_without_session, parse_timestamp,
     schedule_keep_bound, timestamp,
 };
 use crate::error::DbError;
@@ -228,8 +228,9 @@ impl UserTokens<'_> {
         Ok(true)
     }
 
-    /// Ends the user's session `token_hash`; when the user has no other live session left (see [`Liveness`]) and no
-    /// dashboard schedule keeps the pair (ADR-020), deletes it in the same transaction. True if the pair was deleted.
+    /// Ends the user's session `token_hash`; when the user has no other live session left (see [`Liveness`]) and
+    /// neither the dashboard schedule nor a watch keeps the pair (ADR-020), deletes it in the same transaction. True
+    /// if the pair was deleted.
     pub async fn end_session(
         &self,
         user_id: &str,
@@ -247,7 +248,7 @@ impl UserTokens<'_> {
              AND NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.user_id = ?3 AND ",
             live_session!(),
             ") AND NOT ",
-            pair_kept_by_schedule!("?4")
+            pair_kept_without_session!("?4")
         ))
         .bind(timestamp(live.now))
         .bind(timestamp(live.seen_after))

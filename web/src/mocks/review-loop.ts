@@ -71,6 +71,7 @@ function assessment(fields: Partial<CommentAssessment> & Pick<CommentAssessment,
     reply_drafts: [],
     code: null,
     prompt_version: 1,
+    skills_commit: "9f3c2ab51e7d40c6a8b2f0e1d3c4b5a697887766",
     ...fields,
   } satisfies CommentAssessment;
 }
@@ -258,8 +259,8 @@ function seedItems(): CommentItem[] {
       bot_severity: null,
       first_round: 3,
       github: facts({ resolved: null, outdated: null }),
-      title: "Merge now, remaining items as follow-ups?",
-      body: "Round 3 of thepastaclaw has ended. Open items: 5 undecided, none with a gate. Remaining: C11, C22, C23, C18, C19.",
+      title: "Merge now, or another round?",
+      body: "Bot round 3 has ended. Merge with the remaining items as follow-ups (one follow-up pull request), or another round. Open items: 5 undecided, none with a gate. Remaining: C11, C22, C23, C18, C19.",
     }),
     item(21, {
       state: "reopened",
@@ -1066,6 +1067,8 @@ export function watches(): WatchList {
   });
   return {
     limit: 20,
+    passes_today: 7,
+    daily_limit: 30,
     watches: [
       ...(unwatched ? [] : [watched ?? WATCH_482()]),
       other("wire-codec", 77, "refactor(codec): one frame reader", {

@@ -182,7 +182,7 @@ Hiding changes the dashboard revision: in-progress item cursors expire (409); re
 
 Read routes RC1, RC2, RC4, RC5, RC10, RC11, RW2, RW3, RF1, RF1b and RF2 (`http-api.md` "Review loop (v1.3)") are
 `read`; their schemas: `pr_page`, `comments_overview`, `comment_item_list` (query `items_query`), `code_context`
-(query `context_query`), `comment_log`, `carry_over_page` (query `carry_over_query`), `watch_list`, `user_event`,
+(query `context_query`), `comment_log`, `carry_over_page` (query `carry_over_query`), `watch_list`, `user_stream_event`,
 `decision_feed` (query `feed_query`), `feed_decision`, `feed_event`. An implementing agent's token also needs the
 scope `review_loop_execute` to claim decisions (RF3), report effects (RF4) and register its push target (RF5); no
 token can decide.

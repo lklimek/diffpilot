@@ -663,6 +663,7 @@ pub fn spawn(state: AppState) -> bool {
                     let scope = super::refresh::Scope { tenant_id, user_id };
                     super::refresh::reread::changed_prs(&state, &scope, &changed).await;
                 }
+                crate::review_loop::watch::plugin_changed(&state, &changed).await;
             }
         },
     ));

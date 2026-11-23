@@ -170,6 +170,26 @@ describe("AskChat (proposal AC3–AC10)", () => {
     expect(onUsePlace).toHaveBeenCalled();
   });
 
+  it("where the whole PR cannot be asked about, × is off with the hint and such a question is not sent", async () => {
+    const hint =
+      "Questions here are about one comment. Ask about the whole PR in Flows or Files of its analysis.";
+    const onUnanchor = vi.fn();
+    const { unmount } = render(<Harness onUnanchor={onUnanchor} wholePrUnavailable={hint} />);
+    const user = userEvent.setup();
+    const remove = within(chat()).getByRole("button", { name: "Remove the subject: ask about the whole PR" });
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    await user.click(remove);
+    expect(onUnanchor).not.toHaveBeenCalled();
+    unmount();
+    const onSend = vi.fn();
+    render(<Harness subject={{ kind: "pr" }} following={false} onSend={onSend} wholePrUnavailable={hint} />);
+    await user.type(field(), "Is this safe?");
+    await user.click(within(chat()).getByRole("button", { name: "Ask" }));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(field()).toHaveAccessibleDescription(new RegExp(hint.slice(0, 40)));
+    expect(field()).toHaveValue("Is this safe?");
+  });
+
   it("a follow-up goes into its thread; Esc closes its field and keeps the text, then Esc hides the chat", async () => {
     const onReply = vi.fn(() => Promise.resolve());
     const onHide = vi.fn();

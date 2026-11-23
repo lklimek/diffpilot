@@ -23,7 +23,7 @@ export const CHOICE_LABEL: Record<Choice, string> = {
   upstream_issue: "Upstream issue",
   todo: "TODO",
   accept: "Accept despite the gate",
-  merge_with_follow_ups: "Merge now; remaining items become follow-ups",
+  merge_with_follow_ups: "Merge with the remaining items as follow-ups",
   another_round: "Another round",
   dismiss_stale_reviews: "Dismiss the listed reviews",
   keep_reviews: "Keep them",

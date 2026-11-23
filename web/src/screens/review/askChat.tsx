@@ -183,6 +183,8 @@ interface ChatSource {
   notice: string | null;
   /** Tab status and notifications of the source's work. */
   activity: ReactNode;
+  /** Why the whole PR cannot be the subject here (× is off and nothing is sent); absent when it can. */
+  wholePrUnavailable?: string;
 }
 
 /** Provides the chat to the review's screens and draws it (or its launcher) over them. */
@@ -249,6 +251,9 @@ export function PrAskChatProvider({
     about: `your private chat about the comments of PR #${pr.number}`,
     notice: null,
     activity: <PrQuestionActivity questions={questions.data} />,
+    // RC7 answers questions about one comment item only (400 for the whole PR).
+    wholePrUnavailable:
+      "Questions here are about one comment. Ask about the whole PR in Flows or Files of its analysis.",
   };
   return <ChatShell source={source}>{children}</ChatShell>;
 }
@@ -497,6 +502,7 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
             send({ text: q.text, anchor: q.anchor, ...(q.parent_id ? { parent_id: q.parent_id } : {}) })
           }
           onUnanchor={() => setWholePr(true)}
+          wholePrUnavailable={source.wholePrUnavailable}
           onUsePlace={() => {
             setWholePr(false);
             setChosen(null);

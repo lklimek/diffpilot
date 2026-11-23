@@ -6,9 +6,10 @@ import type {
   CommentItem,
   DecideRequest,
   FlowStepRef,
+  Gate,
   NotAssessedReason,
 } from "../../api/generated/types";
-import { buttonClass } from "../button/button";
+import { busyTip, buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText } from "../format/time";
@@ -16,6 +17,7 @@ import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel } from "./decisions";
 import { DecisionForm } from "./DecisionForm";
+import { GateMenu } from "./GateMenu";
 import { NotesElsewhere } from "./NotesElsewhere";
 import { Chip, FactChip, GateChip, GithubLinkedText, itemId, sourceText, VALIDITY } from "./parts";
 
@@ -61,6 +63,16 @@ interface QuestionCardProps {
   onSkip: () => void;
   /** Loads more lines above or below. */
   onMoreLines: (direction: "above" | "below") => void;
+  /** "Assess again" (RC6); no button without it. */
+  onAssessAgain?: () => void;
+  /** The last "Assess again" request is being sent. */
+  assessAgainBusy?: boolean;
+  /** What the last "Assess again" did, or why it was refused, in plain words. */
+  assessAgainNote?: string | null;
+  /** Marks or clears a gate (RC15); no "Mark gate" menu without it. */
+  onMarkGate?: (gate: Gate, marked: boolean) => void;
+  gateBusy?: boolean;
+  gateError?: string | null;
   busy: boolean;
   error: string | null;
   now: Date;
@@ -166,7 +178,7 @@ function Assessment({ item }: { item: CommentItem }) {
         {a.fix_sketch ?? "—"}
         {a.fix_size && ` · size ${a.fix_size}`}
       </Row>
-      <Row term="Earlier decisions">
+      <Row term="Previously decided">
         {earlier.length
           ? earlier.map((d) => decisionLabel(d)).join(", ")
           : item.repeat_of
@@ -404,6 +416,8 @@ export function QuestionCard(props: QuestionCardProps) {
                 diffpilot Codex at {item.assessment.head.slice(0, 7)}, {assessedAt}
                 {item.assessment.reused_since &&
                   ` · code at these lines unchanged since ${item.assessment.reused_since.slice(0, 7)}`}
+                {item.assessment.skills_commit &&
+                  ` · Assessed with claudius ${item.assessment.skills_commit.slice(0, 7)}`}
               </span>
             )}
           </>
@@ -417,6 +431,41 @@ export function QuestionCard(props: QuestionCardProps) {
             <b>Recommendation:</b> {CHOICE_LABEL[rec.kind] ?? rec.kind} — {rec.reason}{" "}
             <ProvenanceTag source="llm" />
           </p>
+        )}
+        {(props.onAssessAgain || props.onMarkGate) && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[13px]">
+            {props.onAssessAgain && (
+              <Tooltip
+                tip={busyTip(
+                  "Asks diffpilot's LLM to assess this comment again at the current head. Uses LLM tokens.",
+                  props.assessAgainBusy ?? false,
+                )}
+              >
+                <button
+                  type="button"
+                  aria-disabled={props.assessAgainBusy || undefined}
+                  onClick={() => !props.assessAgainBusy && props.onAssessAgain?.()}
+                  className={buttonClass("plain", true)}
+                >
+                  Assess again
+                </button>
+              </Tooltip>
+            )}
+            {props.onMarkGate && (
+              <GateMenu
+                gates={item.gates}
+                itemLabel={itemId(item)}
+                busy={props.gateBusy ?? false}
+                error={props.gateError ?? null}
+                onMark={props.onMarkGate}
+              />
+            )}
+            {props.assessAgainNote && (
+              <span role="status" className="text-muted">
+                {props.assessAgainNote}
+              </span>
+            )}
+          </div>
         )}
       </CollapsibleSection>
 
