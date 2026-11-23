@@ -2,7 +2,7 @@
 //! bot rule (RQ17): GitHub `Bot` type, a `[bot]` login or the reader's `known_bots`; thepastaclaw's markers are read
 //! from bot-authored text only, so a human cannot claim another item's key.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemGithubFacts, ItemLocation};
 use contracts::api::tour::CiStatus;
@@ -197,6 +197,71 @@ fn rounds(read: &PrRead, bots: &BotRule) -> Vec<RoundFact> {
         .collect()
 }
 
+/// Each bot's latest round by lowercase login (plan §2.1 I2): its latest submitted, non-dismissed review with a body;
+/// for thepastaclaw that is its latest round, since its reviews without a round hold thread answers and no body (spike
+/// S13-1 R2). Only this review's body findings are items, with those it carries from earlier rounds.
+fn latest_rounds<'a>(read: &'a PrRead, bots: &BotRule) -> HashMap<String, (Timestamp, &'a Review)> {
+    let mut latest: HashMap<String, (Timestamp, &Review)> = HashMap::new();
+    for review in &read.reviews {
+        if review.state == "DISMISSED"
+            || review.body.trim().is_empty()
+            || bots.kind(review.author.as_ref()) != AuthorKind::Bot
+        {
+            continue;
+        }
+        let Some(at) = review.submitted_at.as_deref().and_then(parse_time) else {
+            continue;
+        };
+        let bot = login(review.author.as_ref()).to_lowercase();
+        if latest.get(&bot).is_none_or(|(seen, _)| *seen <= at) {
+            latest.insert(bot, (at, review));
+        }
+    }
+    latest
+}
+
+/// The earlier body findings (review id, ordinal) each bot's latest round carries without a thread (spike S13-1 R5):
+/// per entry, the matching finding of the bot's most recent earlier non-dismissed review.
+fn carried<'a>(
+    read: &'a PrRead,
+    latest_rounds: &HashMap<String, (Timestamp, &Review)>,
+) -> HashSet<(&'a str, usize)> {
+    let mut carried = HashSet::new();
+    for (bot, (_, latest)) in latest_rounds {
+        let entries = markers::carried_findings(&latest.body);
+        if entries.is_empty() {
+            continue;
+        }
+        let earlier: Vec<(Timestamp, &Review, Vec<markers::BodyFinding>)> = read
+            .reviews
+            .iter()
+            .filter(|review| {
+                review.id != latest.id
+                    && review.state != "DISMISSED"
+                    && review.body.contains(markers::REVIEW_MARKER)
+                    && login(review.author.as_ref()).to_lowercase() == *bot
+            })
+            .filter_map(|review| {
+                let at = review.submitted_at.as_deref().and_then(parse_time)?;
+                Some((at, review, markers::body_findings(&review.body)))
+            })
+            .collect();
+        for entry in &entries {
+            let found = earlier
+                .iter()
+                .filter_map(|(at, review, findings)| {
+                    let index = findings.iter().position(|finding| entry.matches(finding))?;
+                    Some((*at, review.id.as_str(), index + 1))
+                })
+                .max_by_key(|(at, _, _)| *at);
+            if let Some((_, id, ordinal)) = found {
+                carried.insert((id, ordinal));
+            }
+        }
+    }
+    carried
+}
+
 /// Items, rounds and the snapshot of one read (CI added by the caller).
 pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
     let head = CommitSha(read.pr.head_ref_oid.clone());
@@ -314,6 +379,9 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         })
         .collect();
 
+    let latest_rounds = latest_rounds(read, bots);
+    let carried = carried(read, &latest_rounds);
+    let mut superseded = Vec::new();
     for review in &read.reviews {
         if review.submitted_at.is_none() || review.state == "DISMISSED" {
             continue;
@@ -322,6 +390,9 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         let at = review.submitted_at.as_deref().and_then(parse_time);
         let round = round_of(&rounds, Some(&review.id), at);
         let url = github_web_url(&review.url);
+        let latest_round = latest_rounds
+            .get(&login(review.author.as_ref()).to_lowercase())
+            .is_some_and(|(_, latest)| latest.id == review.id);
         let mut push = |ordinal: usize, title: String, text: String, severity, location| {
             let stable_key = format!("review:{}:{ordinal}", review.id);
             review_ids.insert(stable_key.clone(), review.id.clone());
@@ -346,15 +417,21 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
             });
         };
         if author_kind == AuthorKind::Bot {
-            if review.body.contains("<!-- thepastaclaw-review v1") {
+            if review.body.contains(markers::REVIEW_MARKER) {
                 for (index, finding) in markers::body_findings(&review.body).into_iter().enumerate()
                 {
+                    let ordinal = index + 1;
+                    if !latest_round && !carried.contains(&(review.id.as_str(), ordinal)) {
+                        superseded
+                            .push((format!("review:{}:{ordinal}", review.id), review.id.clone()));
+                        continue;
+                    }
                     let location = finding.location.map(|(path, lines)| ItemLocation {
                         path,
                         lines: Some(lines),
                     });
                     push(
-                        index + 1,
+                        ordinal,
                         finding.title,
                         finding.text,
                         Some(finding.severity),
@@ -362,6 +439,10 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
                     );
                 }
             } else if review.state == "CHANGES_REQUESTED" && !review.body.trim().is_empty() {
+                if !latest_round {
+                    superseded.push((format!("review:{}:1", review.id), review.id.clone()));
+                    continue;
+                }
                 let text = markers::normalise(&review.body);
                 push(1, markers::title_of(&text), text, None, None);
             }
@@ -377,6 +458,9 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
             push(1, markers::title_of(&text), text, None, None);
         }
     }
+
+    // A superseded body item keeps its review for the effects of its decisions.
+    review_ids.extend(superseded);
 
     let mut gate = None;
     for comment in &read.comments {

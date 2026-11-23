@@ -405,6 +405,7 @@ async fn read_now(
             tracing::info!(
                 pr = id,
                 ?gone,
+                latest_round = snapshot.rounds.len(),
                 "items the read no longer produced leave the queue"
             );
         }

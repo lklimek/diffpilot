@@ -307,8 +307,8 @@ async fn comments_work_without_analysis() {
     let items = w.items().await;
     assert_eq!(
         items.len(),
-        13,
-        "12 GitHub items and the round-3 merge question"
+        12,
+        "11 GitHub items (r5 supersedes r1's body finding) and the round-3 merge question"
     );
     // Opening Comments starts one `verify_comments` pass; its items show the assessment as running.
     for item in items.iter().filter(|item| item["kind"] != "pr_question") {
@@ -339,7 +339,7 @@ async fn comments_work_without_analysis() {
     let numbers: Vec<u64> = items.iter().filter_map(|i| i["no"].as_u64()).collect();
     assert_eq!(
         numbers,
-        (1..=13).collect::<Vec<_>>(),
+        (1..=12).collect::<Vec<_>>(),
         "C<no> numbered at first sight"
     );
     let page = w.get(PR).await;
@@ -381,7 +381,7 @@ async fn round_three_asks_merge_question_once() {
     let overview = w.get(&format!("{PR}/comments")).await;
     assert_eq!(
         overview["queue"][0],
-        json!({"item_nos": [13], "reason": "pr_question"})
+        json!({"item_nos": [12], "reason": "pr_question"})
     );
     let merge = w.item("pr:3:merge").await;
     assert_eq!(merge["author_kind"], "diffpilot");
@@ -417,7 +417,7 @@ async fn round_three_asks_merge_question_once() {
             .as_array()
             .expect("queue")
             .iter()
-            .all(|entry| entry["item_nos"] != json!([13])),
+            .all(|entry| entry["item_nos"] != json!([12])),
         "only the latest merge question waits"
     );
 }
@@ -438,7 +438,7 @@ async fn stale_review_dismissal_question_after_round() {
             row
         })
         .collect();
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 4);
     let (status, body) = w
         .post(
             &format!("{PR}/comments/decision-batches"),
@@ -930,7 +930,7 @@ async fn effects_preview_and_github_failure_keeps_the_last_read() {
         overview["read"]["read_at"].is_string(),
         "the last good read stays"
     );
-    assert_eq!(w.items().await.len(), 13);
+    assert_eq!(w.items().await.len(), 12);
 }
 
 /// T22: decisions, gate marks, re-reads and item actions refuse access tokens.

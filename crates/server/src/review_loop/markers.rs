@@ -1,14 +1,16 @@
 //! Deterministic parsing of thepastaclaw's markers (spike S13-1): the finding key (`finding=`, `dedupe=`), the
 //! thread-status block, thread answers, the round phase marker and the gate comment; the normalised finding text
-//! and its hash; body findings of a round review. Only `thepastaclaw-*` markers and their known keys are read;
-//! every other marker and key is ignored (threat model T24). Callers apply these to bot-authored text only.
+//! and its hash; body findings of a round review and those it carries from earlier rounds. Only `thepastaclaw-*`
+//! markers and their known keys are read; every other marker and key is ignored (threat model T24). Callers apply
+//! these to bot-authored text only.
 
 use contracts::api::review_loop::BotThreadStatus;
 use contracts::common::LineRange;
 
 use crate::secrets::sha256;
 
-const REVIEW_MARKER: &str = "<!-- thepastaclaw-review v1";
+/// Marks thepastaclaw's review texts (threads and round reviews).
+pub const REVIEW_MARKER: &str = "<!-- thepastaclaw-review v1";
 const THREAD_STATUS: &str = "<!-- thepastaclaw-thread-status v1 -->";
 const REVIEW_STATUS: &str = "<!-- thepastaclaw-review-status v1 -->";
 const THREAD_ANSWER: &str = "<!-- thepastaclaw-thread-answer v1";
@@ -193,7 +195,8 @@ pub struct BodyFinding {
 }
 
 /// The findings of the "N finding(s) not shown inline" section of a thepastaclaw round review, in order. "Still
-/// open from earlier rounds" refers to existing items and follow-up candidates open no thread; neither is read.
+/// open from earlier rounds" refers to existing items ([`carried_findings`]) and follow-up candidates open no thread;
+/// neither is read here.
 pub fn body_findings(body: &str) -> Vec<BodyFinding> {
     let mut findings: Vec<BodyFinding> = Vec::new();
     let mut in_section = false;
@@ -234,6 +237,79 @@ pub fn body_findings(body: &str) -> Vec<BodyFinding> {
         finding.text = finding.text.trim().to_owned();
     }
     findings
+}
+
+/// An earlier body finding that a round review's "Still open from earlier rounds" list carries without a thread
+/// (spike S13-1 R5), named by its title and path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CarriedFinding {
+    /// Title.
+    pub title: String,
+    /// Path, when given.
+    pub path: Option<String>,
+}
+
+impl CarriedFinding {
+    /// Whether `finding` is the one carried: the same title, and the same path when one is given.
+    pub fn matches(&self, finding: &BodyFinding) -> bool {
+        self.title == finding.title
+            && self.path.as_ref().is_none_or(|path| {
+                finding
+                    .location
+                    .as_ref()
+                    .is_some_and(|(found, _)| found == path)
+            })
+    }
+}
+
+/// The body findings a thepastaclaw round review carries from earlier rounds: the entries of "Still open from earlier
+/// rounds" marked `(carried)` without a thread link (`- <emoji> **<Severity>**: <title> — `path:range` (carried)`), in
+/// order.
+pub fn carried_findings(body: &str) -> Vec<CarriedFinding> {
+    let mut carried = Vec::new();
+    let mut in_section = false;
+    for line in normalise(body).lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("### ") {
+            in_section = trimmed.contains("Still open from earlier rounds");
+            continue;
+        }
+        if trimmed.starts_with("<details") {
+            in_section = false;
+        }
+        if !in_section {
+            continue;
+        }
+        let Some(entry) = trimmed
+            .strip_prefix("- ")
+            .and_then(|entry| entry.strip_suffix("(carried)"))
+        else {
+            continue;
+        };
+        let Some((severity, rest)) = entry.split_once("**: ") else {
+            continue;
+        };
+        let severity = severity.split_whitespace().last().unwrap_or_default();
+        if !matches!(
+            severity.trim_start_matches("**"),
+            "Blocking" | "Suggestion" | "Nitpick"
+        ) {
+            continue;
+        }
+        let rest = rest.trim();
+        let located = rest
+            .rsplit_once(" — ")
+            .and_then(|(title, location)| Some((title, location_line(location)?.0)));
+        let (title, path) = match located {
+            Some((title, path)) => (title, Some(path)),
+            None => (rest, None),
+        };
+        carried.push(CarriedFinding {
+            title: title.trim().to_owned(),
+            path,
+        });
+    }
+    carried
 }
 
 /// The state the gate comment reports.
@@ -433,5 +509,52 @@ Request changes.\n\n### Still open from earlier rounds (1)\n\n\
         );
         assert!(findings[0].text.contains("Each attempt waits."));
         assert!(body_findings("Two things before this can merge").is_empty());
+    }
+
+    /// S13-1 R5: "Still open from earlier rounds" names an earlier body finding with a bare `(carried)`; an entry
+    /// with a thread link is a thread, not a body finding.
+    #[test]
+    fn carried_body_findings_of_a_round_review() {
+        let body = "<!-- thepastaclaw-review v1 -->\n### Still open from earlier rounds (3)\n\n\
+- 🔴 **Blocking**: Bound the total retry time — `src/rpc/retry.rs:20-26` (carried)\n\
+- 🟡 **Suggestion**: Count only finished attempts — `src/rpc/client.rs:118-120` \
+([thread](https://github.com/acme/node-client/pull/482#discussion_r1))\n\
+- 💬 **Nitpick**: Name the histogram after its unit (carried)\n\
+- 🔴 **Critical**: Not a severity — `a.rs:1` (carried)\n\n\
+### 1 finding(s) not shown inline\n\n- 🔴 **Blocking**: Elsewhere — `b.rs:2` (carried)\n";
+        let carried = carried_findings(body);
+        assert_eq!(
+            carried,
+            [
+                CarriedFinding {
+                    title: "Bound the total retry time".into(),
+                    path: Some("src/rpc/retry.rs".into()),
+                },
+                CarriedFinding {
+                    title: "Name the histogram after its unit".into(),
+                    path: None,
+                },
+            ]
+        );
+        let finding = |title: &str, path: Option<&str>| BodyFinding {
+            severity: "Blocking".into(),
+            title: title.into(),
+            location: path.map(|path| {
+                (
+                    path.to_owned(),
+                    LineRange {
+                        start_line: 1,
+                        end_line: 2,
+                    },
+                )
+            }),
+            text: String::new(),
+        };
+        let bound = "Bound the total retry time";
+        assert!(carried[0].matches(&finding(bound, Some("src/rpc/retry.rs"))));
+        assert!(!carried[0].matches(&finding(bound, Some("src/rpc/other.rs"))));
+        assert!(!carried[0].matches(&finding(bound, None)));
+        assert!(!carried[0].matches(&finding("Bound the retry time", Some("src/rpc/retry.rs"))));
+        assert!(carried[1].matches(&finding("Name the histogram after its unit", Some("x.rs"))));
     }
 }

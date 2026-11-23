@@ -263,6 +263,11 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> Assess
     }
 }
 
+/// Open and still produced by the read: an item marked `gone_at` (such as a superseded body finding) waits for nobody.
+fn waits(item: &ItemRecord) -> bool {
+    queue::is_open(item.state) && item.gone_at.is_none()
+}
+
 fn rounds(loaded: &Loaded, events: &[contracts::api::review_loop::CarryEvent]) -> Vec<Round> {
     let Some(snapshot) = &loaded.snapshot else {
         return Vec::new();
@@ -313,17 +318,12 @@ fn rounds(loaded: &Loaded, events: &[contracts::api::review_loop::CarryEvent]) -
                         .items
                         .iter()
                         .filter(|item| item.first_round.is_some_and(|first| first <= round.number))
-                        .filter(|item| queue::is_open(item.state))
+                        .filter(|item| waits(item))
                         .count(),
                 ),
                 carried: carried(contracts::api::review_loop::CarryKind::Carried),
                 asked_again: carried(contracts::api::review_loop::CarryKind::AskedAgain),
-                undecided: count(
-                    of_round
-                        .iter()
-                        .filter(|item| queue::is_open(item.state))
-                        .count(),
-                ),
+                undecided: count(of_round.iter().filter(|item| waits(item)).count()),
                 decisions: kinds,
             }
         })

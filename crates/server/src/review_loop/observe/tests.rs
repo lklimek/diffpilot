@@ -51,13 +51,12 @@ fn the_fixture_reads_into_items_rounds_and_a_snapshot() {
             "fedcba9876543210",
             "PRRT_fixture482_l7",
             "PRRT_fixture482_l8",
-            "review:PRR_fixture482_r1:1",
             "review:PRR_fixture482_h1:1",
             "comment:5000000103:1",
             "comment:5000000105:1",
         ],
-        "dedupe= when present, else the thread id (legacy l5); one body finding of r1; the human CHANGES_REQUESTED \
-         body; human PR-level comments only (gate, CI state and bot replies are not items)"
+        "dedupe= when present, else the thread id (legacy l5); no body finding (the latest round r5 lists none); the \
+         human CHANGES_REQUESTED body; human PR-level comments only (gate, CI state and bot replies are not items)"
     );
     let first = by_key(&observed, "821d7cdc93fec6e1");
     assert_eq!(
@@ -108,12 +107,6 @@ fn the_fixture_reads_into_items_rounds_and_a_snapshot() {
     assert_eq!(
         by_key(&observed, "PRRT_fixture482_l8").item.author_kind,
         AuthorKind::Bot
-    );
-    let body = by_key(&observed, "review:PRR_fixture482_r1:1");
-    assert_eq!(body.item.title, "Bound the total retry time");
-    assert_eq!(
-        body.item.location.as_ref().map(|l| l.path.as_str()),
-        Some("src/rpc/retry.rs")
     );
 
     assert_eq!(
@@ -191,4 +184,118 @@ fn a_duplicate_dedupe_key_falls_back_to_the_thread_id() {
     read.threads.push(copy);
     let (observed, _) = observe(&read, &BotRule::new(&default_known_bots()));
     assert!(observed.iter().any(|o| o.item.stable_key == "PRRT_copy"));
+}
+
+fn body_keys(observed: &[Observed]) -> Vec<&str> {
+    observed
+        .iter()
+        .filter(|o| o.item.kind == CommentItemKind::ReviewBody)
+        .map(|o| o.item.stable_key.as_str())
+        .collect()
+}
+
+fn review<'a>(read: &'a mut PrRead, id: &str) -> &'a mut Review {
+    read.reviews
+        .iter_mut()
+        .find(|review| review.id == id)
+        .unwrap_or_else(|| panic!("no review {id}"))
+}
+
+/// A copy of review `id` submitted at `at` under the id `copy`.
+fn resubmitted(read: &mut PrRead, id: &str, copy: &str, at: &str) {
+    let mut review = review(read, id).clone();
+    review.id = copy.into();
+    review.submitted_at = Some(at.into());
+    read.reviews.push(review);
+}
+
+const R1_BODY: &str = "review:PRR_fixture482_r1:1";
+const H1_BODY: &str = "review:PRR_fixture482_h1:1";
+
+/// Plan §2.1 I2 (owner, 2026-11-23): a bot's body findings are items of its latest submitted, non-dismissed review
+/// with a body only; an earlier one stays an item while that review carries it (S13-1 R5). People's bodies are not
+/// affected.
+#[test]
+fn only_the_latest_round_of_a_bot_keeps_its_body_findings() {
+    let bots = BotRule::new(&default_known_bots());
+    let (observed, snapshot) = observe(&fixture_read(), &bots);
+    assert_eq!(
+        body_keys(&observed),
+        [H1_BODY],
+        "r5, the latest round, lists no body finding"
+    );
+    assert_eq!(
+        snapshot.review_ids.get(R1_BODY).map(String::as_str),
+        Some("PRR_fixture482_r1"),
+        "a superseded finding keeps its review for the effects of its decisions"
+    );
+
+    let mut read = fixture_read();
+    read.reviews
+        .retain(|review| review.id != "PRR_fixture482_r5");
+    let (observed, _) = observe(&read, &bots);
+    assert_eq!(
+        body_keys(&observed),
+        [R1_BODY, H1_BODY],
+        "the latest round r2 carries r1's finding: the same item"
+    );
+    let body = by_key(&observed, R1_BODY);
+    assert_eq!(body.item.title, "Bound the total retry time");
+    assert_eq!(
+        body.item.location.as_ref().map(|l| l.path.as_str()),
+        Some("src/rpc/retry.rs")
+    );
+    assert_eq!(body.item.round, Some(1));
+
+    review(&mut read, "PRR_fixture482_r4").submitted_at = Some("2026-11-13T09:00:00Z".into());
+    let (observed, _) = observe(&read, &bots);
+    assert_eq!(
+        body_keys(&observed),
+        [R1_BODY, H1_BODY],
+        "a later review without a body (thread answers) is not a round"
+    );
+
+    let mut read = fixture_read();
+    review(&mut read, "PRR_fixture482_r5").state = "DISMISSED".into();
+    let (observed, _) = observe(&read, &bots);
+    assert_eq!(
+        body_keys(&observed),
+        [R1_BODY, H1_BODY],
+        "a dismissed round does not count: r2 is the latest"
+    );
+
+    let mut read = fixture_read();
+    resubmitted(
+        &mut read,
+        "PRR_fixture482_r1",
+        "PRR_fixture482_r6",
+        "2026-11-12T12:00:00Z",
+    );
+    let (observed, _) = observe(&read, &bots);
+    assert_eq!(
+        body_keys(&observed),
+        [H1_BODY, "review:PRR_fixture482_r6:1"],
+        "a finding restated in full is the latest round's item; the earlier copy is superseded"
+    );
+}
+
+/// Plan §2.1 I2: the latest-round rule holds per bot, for bots without thepastaclaw's grammar too.
+#[test]
+fn another_bots_earlier_change_request_body_is_superseded() {
+    let bots = BotRule::new(&default_known_bots());
+    let mut read = fixture_read();
+    review(&mut read, "PRR_fixture482_c1").state = "CHANGES_REQUESTED".into();
+    let (observed, _) = observe(&read, &bots);
+    assert!(body_keys(&observed).contains(&"review:PRR_fixture482_c1:1"));
+    resubmitted(
+        &mut read,
+        "PRR_fixture482_c1",
+        "PRR_fixture482_c2",
+        "2026-11-12T11:00:00Z",
+    );
+    let (observed, _) = observe(&read, &bots);
+    assert_eq!(
+        body_keys(&observed),
+        [H1_BODY, "review:PRR_fixture482_c2:1"]
+    );
 }

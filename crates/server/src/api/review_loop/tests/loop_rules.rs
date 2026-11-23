@@ -395,6 +395,120 @@ async fn items_no_longer_read_leave_the_queue_and_stay_listed() {
     assert!(queued(&w.get(&format!("{PR}/comments")).await, &no));
 }
 
+/// r1's body finding; the fixture's r2 carries it, its latest round r5 does not list it (S13-1 R5).
+const R1_BODY: &str = "review:PRR_fixture482_r1:1";
+
+/// The recorded reviews without round r5: r2, which carries r1's body finding, is the latest round.
+fn without_r5(answer: &mut Value) {
+    answer["data"]["repository"]["pullRequest"]["reviews"]["nodes"]
+        .as_array_mut()
+        .expect("reviews")
+        .retain(|review| review["id"] != "PRR_fixture482_r5");
+}
+
+/// The recorded reviews plus round r6 after r5, a copy of r2: it carries r1's body finding again.
+fn carried_again(answer: &mut Value) {
+    let nodes = answer["data"]["repository"]["pullRequest"]["reviews"]["nodes"]
+        .as_array_mut()
+        .expect("reviews");
+    let mut round = nodes
+        .iter()
+        .find(|review| review["id"] == "PRR_fixture482_r2")
+        .cloned()
+        .expect("r2");
+    round["id"] = json!("PRR_fixture482_r6");
+    round["submittedAt"] = json!("2026-11-12T12:00:00Z");
+    nodes.push(round);
+}
+
+/// Plan §2.1 I2 (owner, 2026-11-23): a bot round that no longer lists an earlier body finding supersedes it: the
+/// item is marked `gone_at`, leaves the queue and stops counting as open in its round, and returns as the same item
+/// when a later round carries it again.
+#[tokio::test]
+async fn a_later_round_supersedes_an_earlier_body_finding() {
+    let w = world().await;
+    let latest_r2: &dyn Fn(&mut Value) = &without_r5;
+    serve(&w.server, &[("reviews.json", latest_r2)]).await;
+    let before = w.get(&format!("{PR}/comments")).await;
+    let open = w.item(R1_BODY).await;
+    assert!(open.get("gone_at").is_none(), "r2 carries it: {open}");
+    let no = open["no"].clone();
+    assert!(queued(&before, &no), "{before}");
+
+    w.reread(&[]).await;
+    let superseded = w.item(R1_BODY).await;
+    assert!(
+        superseded["gone_at"].is_string(),
+        "r5 does not list it: {superseded}"
+    );
+    assert_eq!(superseded["state"], "undecided");
+    let after = w.get(&format!("{PR}/comments")).await;
+    assert!(!queued(&after, &no), "{after}");
+    let round_one = |overview: &Value, key: &str| overview["rounds"][0][key].as_u64().expect(key);
+    for key in ["still_open", "undecided"] {
+        assert_eq!(
+            round_one(&after, key) + 1,
+            round_one(&before, key),
+            "{key}: {after}"
+        );
+    }
+
+    let latest_r6: &dyn Fn(&mut Value) = &carried_again;
+    w.reread(&[("reviews.json", latest_r6)]).await;
+    let back = w.item(R1_BODY).await;
+    assert!(back.get("gone_at").is_none(), "r6 carries it again: {back}");
+    assert_eq!(back["no"], no, "the same item");
+}
+
+/// Plan §2.1 I2: a superseded body finding keeps its decision, and the decision's open effects stay claimable.
+#[tokio::test]
+async fn a_superseded_body_finding_keeps_its_decision_and_open_effects() {
+    let w = world().await;
+    let latest_r2: &dyn Fn(&mut Value) = &without_r5;
+    serve(&w.server, &[("reviews.json", latest_r2)]).await;
+    w.get(&format!("{PR}/comments")).await;
+    let decided = w.decide_ok(R1_BODY, decision("fix_here")).await;
+    let kinds: Vec<&Value> = decided["effects"]
+        .as_array()
+        .expect("effects")
+        .iter()
+        .map(|effect| &effect["kind"])
+        .collect();
+    assert_eq!(kinds, [&json!("fix"), &json!("pr_comment")], "{decided}");
+    assert_eq!(
+        decided["effects"][1]["params"]["review_id"],
+        "PRR_fixture482_r1"
+    );
+
+    w.reread(&[]).await;
+    let item = w.item(R1_BODY).await;
+    assert!(item["gone_at"].is_string(), "{item}");
+    assert_eq!(item["state"], "executing", "{item}");
+    assert_eq!(item["decisions"][0]["id"], decided["id"]);
+    let (token, _) = agent(&w, &EXECUTE).await;
+    let (status, _, page) = with_token(
+        &w,
+        &token,
+        "GET",
+        &format!("{FEED}?capabilities=fix,pr_comment&repo=acme/node-client"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(
+        page["decisions"]
+            .as_array()
+            .expect("decisions")
+            .iter()
+            .any(|listed| listed["decision"]["id"] == decided["id"]),
+        "{page}"
+    );
+    let capabilities = json!({"capabilities": ["fix", "pr_comment"]});
+    let (status, _, claim) =
+        with_token(&w, &token, "POST", &claim_uri(&decided), Some(capabilities)).await;
+    assert_eq!(status, StatusCode::CREATED, "{claim}");
+}
+
 /// The RC16 preview of a decision of `kind` on the item `key`: (the decision body, its `plan_digest`).
 async fn previewed(w: &World, key: &str, kind: &str) -> (Value, Value) {
     let item = w.item(key).await;
