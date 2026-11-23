@@ -161,17 +161,21 @@ not derived, so an item's commit is its review's).
 |---|---|---|---|---|---|---|---|
 | V0 | R9 above (P1, v3, skills) | 8/10 | 301 s | 944k (839k) | 12.7k (4.5k) | 37 | 50 (3 skill reads) |
 | V1 | P1 replayed at `171e4796`, replies up to the decision time | 7/10 | 222 s | 756k (660k) | 9.4k (2.1k) | 32 | 48 |
-| V2 | P1 at its later head `dc28c3eb` (base `0a3d516f`), every reply | 10/10 | 254 s | 769k (687k) | 11.0k (3.3k) | 44 | 49 |
+| V2 | P1 at its later head `dc28c3eb` (base `0a3d516f`), every reply | 5/10 (10/10 by outcome) | 254 s | 769k (687k) | 11.0k (3.3k) | 44 | 49 |
 
-Requests are estimated from the event stream as `Usage.requests` counts them (one per batch of tool calls and one
-for the answer).
+Agreement is the owner's decision kind (A1-A10), as for V0 and V1; V2's "by outcome" also counts a kind that leads
+to the owner's outcome at the later head. Requests are estimated from the event stream as `Usage.requests` counts
+them (one per batch of tool calls and one for the answer).
 
 - V1 against the owner (A1-A10): A1, A5-A10 agree. A2 and A3 stay `fix_here` (D5, open: the necessity reason names
   the PR's new dependence on the established-contact state), A4 flipped to `fix_here` (D4: the documentation item
   flips between runs). Gates and pre-existing as in R9.
-- V2 is the case the commit and replies are for: C6 and C10 `resolve` naming `aad9fcba`, C7 `resolve` naming
-  `e1525efb` (the owner's fix) and the later `534a2523`; C1-C4 follow the decisions their replies record (C2, C3
-  `handled_in_pr` #1195, C4 `reject`), C5, C8, C9 `upstream_issue` with the issues the replies name. The six resolved
+- V2 is the case the commit and replies are for. The kind is the owner's for C1, C4, C5, C8 and C9 (5/10). The other
+  five reach the owner's outcome by another kind: C2 and C3 `handled_in_pr` #1195 against the owner's `follow_up_pr`
+  #1195; C6 and C10 `resolve` naming `aad9fcba`, C7 `resolve` naming `e1525efb` (the owner's fix) and the later
+  `534a2523`, against the owner's `fix_here` (the fixes are in at the later head, so `resolve` is right). C1-C4 follow
+  decisions the input already holds (their replies and `earlier_decisions`), so on those V2 measures following a
+  recorded decision, not judgement. C5, C8, C9 `upstream_issue` with the issues the replies name. The six resolved
   threads were sent as if open; the server sends only open ones.
 - T5c holds: every `resolve` names a commit in `<commit>..HEAD` that changed the lines and cites the head line.
   T5d mostly: no whole file was printed; 5 (V1) and 7 (V2) of about 35 ranged reads exceeded 200 lines (R9: 11 of 34,
