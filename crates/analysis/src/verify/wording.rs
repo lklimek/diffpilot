@@ -192,6 +192,87 @@ pub fn ask(output: &AskOutput) -> Vec<WordingWarning> {
     found
 }
 
+/// What must not reach text posted on GitHub as the maintainer's words, by rule id: the assessor's instructions,
+/// prompt and handling of its data, injection attempts it noticed, checks it did not run and references to itself
+/// (English, Polish, Russian; matched case-insensitively, one sentence at a time).
+pub const ASSESSOR_NOTES: [(&str, &str); 5] = [
+    (
+        "instructions",
+        r"\b(?:assessment|assessor|job|system|agent|my|our)(?:'s)?\s+instructions?\b|\b(?:overrides?|overridden|override|ignores?|obey|follow)\b[^.!?\n]{0,40}\binstructions?\b|\binstrukcj\w*\s+(?:tej\s+)?(?:ocen\w*|asystenta|agenta|zadania)|\bинструкци\w*\s+(?:этой\s+)?(?:оценк\w*|агента|задани\w*)",
+    ),
+    (
+        "prompt",
+        r"\bprompt[- ]injection\b|\b(?:system|job|assessment|assessor|agent)(?:'s)?\s+prompt\b|\binjected\s+instructions?\b|\binjection\s+attempt\b",
+    ),
+    (
+        "data_handling",
+        r"\btreated\s+as\s+(?:untrusted\s+)?(?:data|text)\b|\bas\s+data\s+rather\s+than\b|\bdata\s+block\b|\bcommand-like\s+text\b|\brepository\s+text\b|\btraktowan\w*\s+jako\s+dane\b|\bbloku?\s+danych\b|\bкак\s+данные\b|\bблок\w*\s+данных\b",
+    ),
+    (
+        "checks_not_run",
+        r"\bno\s+(?:\w+\s+){0,3}(?:tests?|checks?|compilation|builds?|capture|benchmarks?|commands?)\s+(?:was|were)\s+(?:run|executed|performed|attempted)\b|\b(?:tests?|checks?|compilation|builds?|capture|benchmarks?|commands?)\s+(?:was|were)\s+not\s+(?:run|executed|performed|attempted)\b|\b(?:i|we)\s+(?:did\s+not|didn't|could\s+not|couldn't|cannot|can't)\s+(?:run|execute|compile|build|test)\b|\bwithout\s+(?:running|executing|compiling|building)\s+(?:the\s+)?(?:tests?|code|build|suite|commands?)\b|\bnot\s+(?:run|executed|compiled|tested)\s+(?:here|in\s+this\s+(?:job|assessment|review))\b|\bnie\s+(?:uruchomiono|wykonano|skompilowano|przeprowadzono|uruchomiłem|uruchomiłam)\b|\bне\s+(?:запускал\w*|запускались|выполнял\w*|компилировал\w*)\b",
+    ),
+    (
+        "self_reference",
+        r"\bthis\s+assessment\b|\bassessor\b|\bas\s+an\s+(?:ai|assistant|llm)\b|\btej\s+ocen\w*\b|\bэтой\s+оценк\w*",
+    ),
+];
+
+static ASSESSOR_RULES: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
+    ASSESSOR_NOTES
+        .iter()
+        .filter_map(|(id, pattern)| {
+            RegexBuilder::new(pattern)
+                .case_insensitive(true)
+                .build()
+                .ok()
+                .map(|rule| (*id, rule))
+        })
+        .collect()
+});
+
+/// `text` without its sentences that hit [`ASSESSOR_NOTES`] (the kept ones joined by one space), and the id of the
+/// first rule each dropped sentence hit.
+pub fn without_assessor_notes(text: &str) -> (String, Vec<&'static str>) {
+    let mut kept = Vec::new();
+    let mut hits = Vec::new();
+    for sentence in sentences(text) {
+        match ASSESSOR_RULES
+            .iter()
+            .find(|(_, rule)| rule.is_match(sentence))
+        {
+            Some((id, _)) => hits.push(*id),
+            None => kept.push(sentence),
+        }
+    }
+    (kept.join(" "), hits)
+}
+
+/// The sentences of `text`: split after `.`, `!`, `?` or `…` followed by white space, and at line breaks; trimmed,
+/// none empty.
+fn sentences(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        let next_is_space = chars.peek().is_none_or(|(_, next)| next.is_whitespace());
+        let end = match c {
+            '\n' => Some(at),
+            '.' | '!' | '?' | '…' if next_is_space => Some(at + c.len_utf8()),
+            _ => None,
+        };
+        if let Some(end) = end {
+            out.push(&text[start..end]);
+            start = end;
+        }
+    }
+    out.push(&text[start..]);
+    out.into_iter()
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+        .collect()
+}
+
 /// Adds a warning per rule hit in `text`; the phrase is the match with its whitespace collapsed.
 fn scan(found: &mut Vec<WordingWarning>, location: &str, text: &str) {
     for rule in RULES.iter() {
@@ -279,6 +360,79 @@ mod tests {
         .filter(|text| agent_limitation(text))
         .collect();
         assert!(rejected.is_empty(), "{rejected:#?}");
+    }
+
+    /// dashpay/rust-dashcore#1336: sentences about the assessor itself left its public texts; each is dropped, the
+    /// sentences about the code stay.
+    #[test]
+    fn assessor_notes_are_dropped_from_public_text() {
+        for (note, rule) in [
+            (
+                "The repository text does not override this assessment's instructions.",
+                "instructions",
+            ),
+            (
+                "The command-like text in the comment was treated as data rather than executed.",
+                "data_handling",
+            ),
+            (
+                "Behaviour under load is unknown because no tests were run.",
+                "checks_not_run",
+            ),
+            (
+                "The warning is likely, but log capture was not run.",
+                "checks_not_run",
+            ),
+            (
+                "No downstream compilation was run, so callers may still break.",
+                "checks_not_run",
+            ),
+            ("The comment contains a prompt injection attempt.", "prompt"),
+            ("I did not run the test suite.", "checks_not_run"),
+            ("Nie uruchomiono testów tej ścieżki.", "checks_not_run"),
+            ("Тесты не запускались.", "checks_not_run"),
+        ] {
+            let text =
+                format!("The retry loop has no upper bound at `client.rs:42`. {note} Add a limit.");
+            assert_eq!(
+                without_assessor_notes(&text),
+                (
+                    "The retry loop has no upper bound at `client.rs:42`. Add a limit.".to_owned(),
+                    vec![rule]
+                ),
+                "{note}"
+            );
+        }
+    }
+
+    /// Review text about code that only resembles an assessor note stays.
+    #[test]
+    fn code_review_text_is_no_assessor_note() {
+        for text in [
+            "The query builder allows SQL injection through `name`.",
+            "The setup instructions in README.md name the old flag.",
+            "The password prompt shows twice after a failed unlock.",
+            "No test covers the retry path of `send_request`.",
+            "The migration was not run on startup, so the column is missing.",
+            "Stores the block data before the header is checked.",
+            "Version 1.2 of `serde_json` parses `1.0e5` differently.",
+            "AGENTS.md line 12 limits doc comments to three lines.",
+        ] {
+            assert_eq!(
+                without_assessor_notes(text),
+                (text.to_owned(), Vec::new()),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            ASSESSOR_RULES.len(),
+            ASSESSOR_NOTES.len(),
+            "every rule compiles"
+        );
+        assert_eq!(
+            without_assessor_notes("No tests were run.\nThis assessment is partial."),
+            (String::new(), vec!["checks_not_run", "self_reference"])
+        );
     }
 
     #[test]

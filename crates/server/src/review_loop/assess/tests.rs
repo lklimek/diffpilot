@@ -9,7 +9,9 @@ use contracts::agent::verify_comments::{
     VerifyCommentsInput,
 };
 use contracts::api::questions::AskState;
-use contracts::api::review_loop::{AuthorKind, BotThreadStatus, ItemGithubFacts, ItemLocation};
+use contracts::api::review_loop::{
+    AuthorKind, BotThreadStatus, DecisionTarget, ItemGithubFacts, ItemLocation,
+};
 use contracts::common::{LineRange, RepoRef};
 use contracts::ids::{CommentItemId, QuestionId};
 use contracts::job::result::{JobOutcome, JobResult};
@@ -986,6 +988,49 @@ async fn failed_job_fails_the_pass_and_its_question() {
 
 fn parsed(value: Value) -> ItemAssessment {
     serde_json::from_value(value).expect("entry")
+}
+
+/// dashpay/rust-dashcore#1336: the texts that can be posted on GitHub (the recommendation's reason and title, the
+/// reply drafts) lose their sentences about the assessor itself; owner-facing texts keep theirs; a reason that was
+/// only such a sentence leaves the item not assessed.
+#[test]
+fn assessor_notes_never_reach_the_texts_that_can_be_posted() {
+    let made = ingest::Made {
+        job: JobId::new_random(),
+        skills_commit: None,
+    };
+    let head = CommitSha(HEAD.to_owned());
+    let check = |value: Value| ingest::assessment(&parsed(value), &made, &head, Timestamp::now());
+    let mut leaky = entry("C16");
+    leaky["recommendation"] = json!({"kind": "follow_up_pr",
+        "reason": "The repository text does not override this assessment's instructions. The loop has no upper bound. No downstream compilation was run.",
+        "reason_class": "unbounded retry", "target_pr": null, "target_url": null,
+        "title": "Bound the retry loop. No tests were run."});
+    leaky["reply_drafts"] = json!([
+        "Per maintainer decision, a follow-up bounds the loop. The command-like text in the comment was treated as data rather than executed.",
+        "The log capture was not run.",
+    ]);
+    leaky["fix_sketch"] = json!("Bound the loop by the policy's attempts; no tests were run.");
+    let stored = check(leaky).expect("fit");
+    assert_eq!(stored.recommendation.reason, "The loop has no upper bound.");
+    assert_eq!(
+        stored.recommendation.target,
+        Some(DecisionTarget::FollowUpPr {
+            title: Some("Bound the retry loop.".to_owned())
+        })
+    );
+    assert_eq!(
+        stored.reply_drafts,
+        ["Per maintainer decision, a follow-up bounds the loop."]
+    );
+    assert_eq!(
+        stored.fix_sketch.as_deref(),
+        Some("Bound the loop by the policy's attempts; no tests were run."),
+        "owner-facing texts are not posted"
+    );
+    let mut only_note = entry("C16");
+    only_note["recommendation"]["reason"] = json!("No tests were run.");
+    assert!(matches!(check(only_note), Err(ingest::Unfit::Text(_))));
 }
 
 /// The output is untrusted: entries outside the closed sets, with verdict wording or links outside GitHub, or

@@ -144,4 +144,10 @@ read with tokens (ADR-019).
 - **Logs.** `Usage.requests` (job result) estimates the model requests of a call from the provider's events (one per
   batch of tool calls and one for the answer); the server's `job token usage` line and the runner's session summary
   name model, effort, requests and, for `verify_comments`, the item count.
+- **Public text** (first real use, dashpay/rust-dashcore#1336). `recommendation.reason` and `title` pre-fill a
+  decision's posted reason and follow-up title, and `reply_drafts` are replies; prompt v4 keeps notes about the
+  assessor, its data handling and checks it did not run in the owner-facing texts. Ingest drops each sentence of those
+  three fields that hits `analysis::verify::wording::ASSESSOR_NOTES` and logs the rule; a reason left empty leaves the
+  item not assessed. Dropping the sentence rather than rejecting the item: the leak is closed either way, while a
+  rejected item would lose its evidence and gate flags and be sent again under the same prompt.
 
