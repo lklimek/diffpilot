@@ -69,9 +69,9 @@ function askStaleDismissal(): CommentItem {
 function onReview(item: CommentItem, text: string): string {
   if (item.kind !== "review_body" || !item.url) return text;
   const line =
-    item.author_kind === "bot"
-      ? `Re [${item.author}'s review](${item.url}):`
-      : `@${item.author}, re [your review](${item.url}):`;
+    item.author_kind === "human"
+      ? `@${item.author}, re [your review](${item.url}):`
+      : `Re [${item.author}'s review](${item.url}):`;
   return `${line}\n${text}`;
 }
 

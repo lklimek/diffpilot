@@ -52,8 +52,9 @@ FIELDS = ("params.text", "params.title", "params.url", "title", "body")
 # reference; never after a TODO (D7).
 REFERENCED_KINDS = ("fix", "follow_up_pr", "upstream_issue")
 REPLY_KINDS = ("reply", "pr_comment")
-# Plan §2.3: a PR-level comment answering a review starts with a line naming it (effects.rs `on_review`).
-REVIEW_LINE_RE = re.compile(r"[^\n]*\(https://github\.com/[^\s()]+#pullrequestreview-[0-9]+\):")
+# Plan §2.3: a PR-level comment answering a review starts with a line naming it (effects.rs `on_review`), whatever
+# GitHub link the review has.
+REVIEW_LINE_RE = re.compile(r"(@[^\s,]+, re \[your review\]|Re \[\S+'s review\])\(https://github\.com/[^\s()]+\):")
 ENDED_STATES = ("done", "failed", "cancelled")
 GH_TIMEOUT = 60
 # GitHub moves a PR head shortly after a push: a `behind` compare is read again this often, this far apart.
