@@ -1,17 +1,18 @@
 // What the review-loop pages show and send, checked against the server's contract (crates/server/src/review_loop/
 // effects.rs `plan`, queue.rs `decide_rest`); the msw mocks model that contract (mocks/effects-plan.ts).
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import type { AnalysisSummary, CommentItem, DecideRequest, Gate } from "../../api/generated/types";
-import { PrQuestionCard } from "../../components/comments/QueueCards";
-import { dismissBody } from "../../mocks/effects-plan";
+import { COMMENTS_POLL_MS } from "../../api/review-loop";
+import { DISMISS_MESSAGE, dismissBody } from "../../mocks/effects-plan";
 import { seedFor } from "../../mocks/fixtures";
 import { BOT_CHANGE_REQUESTS, listItems, resetReviewLoop } from "../../mocks/review-loop";
 
-startMockServer();
+const server = startMockServer();
 const PR = "/pr/acme/node-client/482";
 const byNo = (no: number) => listItems().find((i) => i.no === no)!;
 
@@ -24,7 +25,45 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
+
+const PENDING = "Planning the effects of your current input; you can decide once they are shown.";
+
+/** RC16 answers wait while `hold` is set (then the mocks' server plans as usual). */
+function holdPreviews() {
+  let release: (() => void) | null = null;
+  let held: Promise<void> | null = null;
+  server.use(
+    http.post("/api/v1/prs/:owner/:name/:number/comments/effects-preview", async () => {
+      if (held) await held;
+    }),
+  );
+  return {
+    hold: () => (held = new Promise((done) => (release = done))),
+    release: () => {
+      held = null;
+      release?.();
+    },
+  };
+}
+
+/** Every item thepastaclaw raised gets a standing decision, and the dismissal question listing its review is asked. */
+function askStaleDismissal(): CommentItem {
+  const standing = listItems().flatMap((i) => i.decisions)[0]!;
+  for (const i of listItems().filter((i) => i.author === "thepastaclaw" && i.state !== "outside"))
+    Object.assign(i, { state: "decided", decisions: [standing] });
+  const question: CommentItem = {
+    ...byNo(24),
+    id: "00000000-0000-4000-8000-000000000030",
+    no: 30,
+    stable_key: "pr:3:dismiss",
+    title: "Dismiss stale bot reviews?",
+    body: dismissBody(BOT_CHANGE_REQUESTS),
+  };
+  listItems().push(question);
+  return question;
+}
 
 /** The server's default reply texts (effects.rs `plan`); an edited `reply_text` replaces them. */
 function postedReply(item: CommentItem, request: DecideRequest): string | null {
@@ -62,6 +101,12 @@ function sentDecisions(): DecideRequest[] {
   });
   return sent;
 }
+
+/** Enter outside a text field (the card's Decide key). */
+const fireEnter = () =>
+  act(() => {
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
 
 /** Opens `C<no>` in Questions. */
 async function open(no: number) {
@@ -123,31 +168,26 @@ describe("Reply preview is what the server posts (plan §3.2 item 8; effects.rs 
 });
 
 describe("Dismiss stale bot reviews (P3): the edited dismissal message reaches the server", () => {
-  it("the typed message is sent in the field the server posts (`reason`)", async () => {
-    const item: CommentItem = {
-      ...byNo(24),
-      stable_key: "pr:3:dismiss",
-      title: "Dismiss stale bot reviews?",
-    };
-    const onDecide = vi.fn<(request: DecideRequest) => void>();
-    render(
-      <PrQuestionCard
-        item={item}
-        prUrl="https://github.com/acme/node-client/pull/482"
-        onDecide={onDecide}
-        onSkip={vi.fn()}
-        busy={false}
-        error={null}
-      />,
-    );
+  it("the typed message is planned and sent in the field the server posts (`reason`)", async () => {
+    askStaleDismissal();
+    const sent = sentDecisions();
+    renderRoute(`${PR}/comments?item=P30`);
+    await screen.findByRole("heading", { name: /Dismiss stale bot reviews\?/ });
     const field = screen.getByLabelText("Dismissal message (posted)");
+    await waitFor(() => expect(field).toHaveValue(DISMISS_MESSAGE));
     await userEvent.clear(field);
     await userEvent.type(field, "Superseded by round 4.");
-    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
-    const request = onDecide.mock.calls[0]![0];
-    expect(request.kind).toBe("dismiss_stale_reviews");
+    const decide = screen.getByRole("button", { name: "Decide" });
+    await waitFor(() => expect(decide).not.toHaveAttribute("aria-disabled"));
+    await userEvent.click(decide);
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.kind).toBe("dismiss_stale_reviews");
     // effects.rs: `let message = reason.unwrap_or(DISMISS_MESSAGE)`; `reply_text` is not read for P3.
-    expect(request.reason).toBe("Superseded by round 4.");
+    expect(sent[0]!.reason).toBe("Superseded by round 4.");
+    await waitFor(() => expect(byNo(30).decisions).toHaveLength(1));
+    expect(byNo(30).decisions[0]!.effects.map((e) => [e.kind, e.params.text])).toEqual([
+      ["dismiss_review", "Superseded by round 4."],
+    ]);
   });
 });
 
@@ -187,6 +227,67 @@ describe("Dismiss stale bot reviews (P3) acts on the reviews its question lists 
         "C30: the reviews this question lists changed since it was asked; keep the reviews, the next round asks again.",
       ),
     ).toHaveAttribute("role", "alert");
+  });
+});
+
+describe("Decide sends only what the server planned for the current input (RC16)", () => {
+  it("a target changed while its plan is pending is decided only once the server planned it", async () => {
+    const previews = holdPreviews();
+    const sent = sentDecisions();
+    await open(22);
+    await userEvent.click(screen.getByRole("radio", { name: /^Handled in another PR/ }));
+    const target = screen.getByLabelText("Existing pull request");
+    await userEvent.type(target, "490");
+    await settledPreview("#490.");
+    previews.hold();
+    await userEvent.clear(target);
+    await userEvent.type(target, "491{Enter}");
+    const decide = screen.getByRole("button", { name: "Decide" });
+    await userEvent.click(decide);
+    fireEnter();
+    expect(sent).toHaveLength(0);
+    expect(decide).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText(PENDING)).toHaveAttribute("role", "status");
+    previews.release();
+    const shown = await settledPreview("#491.");
+    await waitFor(() => expect(decide).not.toHaveAttribute("aria-disabled"));
+    await userEvent.click(decide);
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]!.target).toEqual({ type: "existing_pr", number: 491 });
+    expect(shown).toBe("Per maintainer decision, this is addressed in #491.");
+    await waitFor(() => expect(byNo(22).decisions.at(-1)?.reply_text).toBe(shown));
+  });
+});
+
+describe("PR-level plans follow the PR: a P1 plan is made again when the items change (RC16)", () => {
+  it("a comment found by the minute poll re-plans Merge with follow-ups; Decide waits until the owner confirms", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const sent = sentDecisions();
+    renderRoute(`${PR}/comments?item=P24`);
+    await screen.findByRole("heading", { name: /Merge now, or another round\?/ });
+    const listing = () => screen.getByText(/^creates one draft follow-up PR listing /).textContent ?? "";
+    await waitFor(() => expect(listing()).toContain("C22"));
+    expect(listing()).not.toContain("C30");
+    listItems().push({
+      ...byNo(22),
+      id: "00000000-0000-4000-8000-000000000030",
+      no: 30,
+      stable_key: "thread-30",
+      decisions: [],
+    });
+    await act(() => vi.advanceTimersByTimeAsync(COMMENTS_POLL_MS));
+    await waitFor(() => expect(listing()).toContain("C30"));
+    expect(screen.getByText(/What this decision acts on changed since you looked/)).toHaveAttribute(
+      "role",
+      "status",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    expect(sent).toHaveLength(0);
+    await userEvent.click(screen.getByRole("button", { name: "Use the new plan" }));
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    await waitFor(() => expect(byNo(24).decisions).toHaveLength(1));
+    expect(byNo(24).decisions[0]!.effects.flatMap((e) => e.params.item_nos)).toContain(30);
   });
 });
 

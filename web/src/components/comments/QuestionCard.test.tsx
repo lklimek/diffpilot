@@ -1,10 +1,11 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState, type ComponentProps } from "react";
+import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Planned } from "../../__tests__/planned";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { CommentItem, DecisionBatchRow } from "../../api/generated/types";
-import { context, isRefused, listItems, previewEffects, resetReviewLoop } from "../../mocks/review-loop";
+import type { CommentItem } from "../../api/generated/types";
+import { context, listItems, resetReviewLoop } from "../../mocks/review-loop";
 import type { EffectsPreviewState } from "./decisions";
 import { COMMENT_HINT } from "./DecisionForm";
 import { QuestionCard, type ContextState } from "./QuestionCard";
@@ -12,18 +13,12 @@ import { QuestionCard, type ContextState } from "./QuestionCard";
 const NOW = new Date("2026-11-18T09:27:00Z");
 const byNo = (no: number) => listItems().find((i) => i.no === no)!;
 
-/** The draft planned at once by the mocks' server model (the screen asks RC16). */
-function planOf(rows: DecisionBatchRow[] | null): EffectsPreviewState {
-  if (rows === null) return { state: "idle" };
-  const answer = previewEffects(rows);
-  return isRefused(answer)
-    ? { state: "error", message: answer[2] }
-    : { state: "ready", items: answer, updating: false };
-}
+type CardProps = Omit<ComponentProps<typeof QuestionCard>, "preview" | "onDraft"> &
+  Partial<Pick<ComponentProps<typeof QuestionCard>, "preview" | "onDraft">>;
 
-function Planned(props: ComponentProps<typeof QuestionCard>) {
-  const [rows, setRows] = useState<DecisionBatchRow[] | null>(null);
-  return <QuestionCard {...props} preview={planOf(rows)} onDraft={setRows} />;
+/** The card with its drafts planned at once by the mocks' server model, unless `preview` is given. */
+function Card(props: CardProps) {
+  return <Planned>{(plan) => <QuestionCard {...plan} {...props} />}</Planned>;
 }
 
 function show(item: CommentItem, props: Partial<Parameters<typeof QuestionCard>[0]> = {}) {
@@ -31,7 +26,7 @@ function show(item: CommentItem, props: Partial<Parameters<typeof QuestionCard>[
   const state: ContextState = ctx ? { state: "ready", value: ctx } : { state: "none" };
   const handlers = { onDecide: vi.fn(), onSkip: vi.fn(), onAsk: vi.fn(), onMoreLines: vi.fn() };
   const rendered = render(
-    <Planned
+    <Card
       item={item}
       position={{ index: 2, total: 9 }}
       prNumber={482}
@@ -52,7 +47,7 @@ function show(item: CommentItem, props: Partial<Parameters<typeof QuestionCard>[
   );
   const rerender = (next: CommentItem) =>
     rendered.rerender(
-      <Planned
+      <Card
         item={next}
         position={{ index: 2, total: 9 }}
         prNumber={482}
@@ -267,5 +262,36 @@ describe("QuestionCard (plan §3.2)", () => {
     });
     expect(screen.getByText("The code at that place changed after your decision.")).toBeVisible();
     expect(screen.getByText(/Asked again — repeat of C3/)).toBeVisible();
+  });
+});
+
+describe("Decide sends only what the server planned for the current input (RC16)", () => {
+  const PENDING = "Planning the effects of your current input; you can decide once they are shown.";
+  it.each<[string, EffectsPreviewState, string]>([
+    ["planning", { state: "loading" }, PENDING],
+    ["planned for an earlier input", { state: "ready", items: [], rows: "[]", updating: false }, PENDING],
+    ["re-planning", { state: "ready", items: [], rows: "[]", updating: true }, PENDING],
+    [
+      "refused",
+      { state: "error", message: "C11: the target does not fit this decision." },
+      "The server refused this input (its message is shown above); change it to decide.",
+    ],
+  ])("%s: neither the button nor Enter decides, and the reason is announced", async (_, preview, reason) => {
+    const { onDecide } = show(byNo(11), { preview, onDraft: vi.fn() });
+    const decide = screen.getByRole("button", { name: "Decide" });
+    expect(decide).toHaveAttribute("aria-disabled", "true");
+    expect(decide).toHaveAccessibleDescription(expect.stringContaining(reason));
+    expect(screen.getByText(reason)).toHaveAttribute("role", "status");
+    await userEvent.click(decide);
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    expect(onDecide).not.toHaveBeenCalled();
+  });
+
+  it("planned for exactly the current input: Decide sends that input", async () => {
+    const { onDecide } = show(byNo(11));
+    const decide = screen.getByRole("button", { name: "Decide" });
+    expect(decide).not.toHaveAttribute("aria-disabled");
+    await userEvent.click(decide);
+    expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ kind: "reject" }));
   });
 });

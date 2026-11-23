@@ -4,6 +4,7 @@
 import type {
   CommentItem,
   DecideRequest,
+  DecisionBatchRow,
   DecisionKind,
   DecisionTarget,
   EffectKind,
@@ -156,12 +157,18 @@ export interface EffectLine {
 
 const names = (nos: number[]) => nos.map((no) => `C${no}`).join(", ");
 
+/** Effects that each create something (a PR, an issue, a TODO): never shown merged, so each creation is seen. */
+const CREATES: ReadonlySet<EffectKind> = new Set(["follow_up_pr", "upstream_issue", "todo"]);
+
 /**
  * What `count` effects of one kind do, in plain words. One item: the reply text is shown below the lines; several
- * items (`on` names them): the text is quoted in the line.
+ * items (`who` names them): the text is quoted in the line.
  */
-function effectText(kind: EffectKind, params: PlannedEffect["params"], count: number, on: string): string {
-  const text = on ? `: "${params.text ?? ""}"` : " with the reply text below.";
+function effectText(kind: EffectKind, params: PlannedEffect["params"], count: number, who: string): string {
+  const on = who && ` on ${who}`;
+  const of = who && ` for ${who}`;
+  const title = params.title ? ` "${params.title}"` : "";
+  const text = who ? `: "${params.text ?? ""}"` : " with the reply text below.";
   switch (kind) {
     case "fix":
       return `fixes it and pushes${on}.`;
@@ -174,13 +181,13 @@ function effectText(kind: EffectKind, params: PlannedEffect["params"], count: nu
     case "follow_up_pr":
       return params.item_nos.length > 1
         ? `creates one draft follow-up PR listing ${names(params.item_nos)} (no link needed; it does not exist yet).`
-        : `creates a new draft follow-up PR${params.title ? ` "${params.title}"` : ""} (no link needed; it does not exist yet).`;
+        : `creates a new draft follow-up PR${title}${of} (no link needed; it does not exist yet).`;
     case "upstream_issue":
       return params.url
-        ? `links the upstream issue ${params.url} and adds a "Known limitation" line.`
-        : 'creates the upstream issue and adds a "Known limitation" line.';
+        ? `links the upstream issue ${params.url}${of} and adds a "Known limitation" line.`
+        : `creates the upstream issue${of} and adds a "Known limitation" line.`;
     case "todo":
-      return "saves a TODO (never mentioned on GitHub).";
+      return `saves a TODO${title}${of} (never mentioned on GitHub).`;
     case "dismiss_review":
       return count > 1
         ? `dismisses each of the ${count} stale reviews with the message above.`
@@ -189,19 +196,21 @@ function effectText(kind: EffectKind, params: PlannedEffect["params"], count: nu
 }
 
 /**
- * The server's planned effects (RC16, RC17) as "What happens next" lines in order: one per kind and text; with
- * `several` items the lines name them and quote the reply texts.
+ * The server's planned effects (RC16, RC17) as "What happens next" lines in order: one per kind and text, except
+ * that every creation keeps its own line; with `several` items the lines name them and quote the reply texts.
  */
 export function effectLines(effects: PlannedEffect[], several = false): EffectLine[] {
   const lines: { first: PlannedEffect; nos: number[]; count: number }[] = [];
   for (const effect of effects) {
-    const same = lines.find(
-      (l) =>
-        l.first.kind === effect.kind &&
-        l.first.executor === effect.executor &&
-        l.first.params.text === effect.params.text,
-    );
-    const nos = effect.kind === "follow_up_pr" ? [] : effect.params.item_nos;
+    const same =
+      !CREATES.has(effect.kind) &&
+      lines.find(
+        (l) =>
+          l.first.kind === effect.kind &&
+          l.first.executor === effect.executor &&
+          l.first.params.text === effect.params.text,
+      );
+    const nos = effect.params.item_nos;
     if (same) {
       same.nos.push(...nos.filter((no) => !same.nos.includes(no)));
       same.count += 1;
@@ -209,7 +218,7 @@ export function effectLines(effects: PlannedEffect[], several = false): EffectLi
   }
   return lines.map(({ first, nos, count }) => ({
     executor: first.executor,
-    text: effectText(first.kind, first.params, count, several && nos.length > 0 ? ` on ${names(nos)}` : ""),
+    text: effectText(first.kind, first.params, count, several && nos.length > 0 ? names(nos) : ""),
   }));
 }
 
@@ -221,9 +230,27 @@ export type EffectsPreviewState =
   | {
       state: "ready";
       items: EffectsPreview[];
-      /** A newer draft is being planned; these effects are of the previous one. */
+      /** The draft these effects were planned for (its JSON, as the card reports it). */
+      rows: string;
+      /** A newer draft, or the same one against changed items, is being planned; these effects may be outdated. */
       updating: boolean;
     };
+
+/** Why Decide is unavailable while the plan is pending or outdated. */
+const PLAN_PENDING = "Planning the effects of your current input; you can decide once they are shown.";
+
+/**
+ * Why Decide cannot send the draft `rows` now, or null: a decision is sent only once the server planned exactly
+ * these rows (RC16) and that plan is current, so what the reader saw is what gets stored. Null rows (an input is
+ * missing) are the card's to explain.
+ */
+export function decideBlocked(preview: EffectsPreviewState, rows: DecisionBatchRow[] | null): string | null {
+  if (rows === null) return null;
+  if (preview.state === "error")
+    return "The server refused this input (its message is shown above); change it to decide.";
+  if (preview.state === "ready" && !preview.updating && preview.rows === JSON.stringify(rows)) return null;
+  return PLAN_PENDING;
+}
 
 /** The planned effects of item `C<no>` in `preview`, or null while it has none. */
 export const previewFor = (preview: EffectsPreviewState | undefined, no: number): PlannedEffect[] | null =>

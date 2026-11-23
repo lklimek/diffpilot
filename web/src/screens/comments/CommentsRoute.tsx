@@ -108,10 +108,14 @@ export function CommentsRoute() {
   const base = analysis ? `/analyses/${encodeURIComponent(analysis)}` : null;
   const display = `${pr.repo.owner}/${pr.repo.name} #${pr.number}`;
 
+  const failed = overview.isError || items.isError ? errorText(overview.error ?? items.error) : null;
   const body = (count: (id: string) => number) => {
-    if (overview.isError || items.isError)
-      return <StatusMessage kind="error">{errorText(overview.error ?? items.error)}</StatusMessage>;
-    if (!o || !items.data) return <StatusMessage kind="loading">Reading the comments…</StatusMessage>;
+    if (!o || !items.data)
+      return failed ? (
+        <StatusMessage kind="error">{failed}</StatusMessage>
+      ) : (
+        <StatusMessage kind="loading">Reading the comments…</StatusMessage>
+      );
     const context: CommentsContext = {
       pr,
       overview: o,
@@ -121,7 +125,20 @@ export function CommentsRoute() {
       login,
       now,
     };
-    return <Outlet context={context} />;
+    // A failed later read keeps the page (and what was typed on it) with the last data, and says so.
+    return (
+      <>
+        {failed && (
+          <div className="mb-3">
+            <StatusMessage kind="error">
+              The comments could not be read again: {failed} The page shows the last read; it is read again
+              shortly.
+            </StatusMessage>
+          </div>
+        )}
+        <Outlet context={context} />
+      </>
+    );
   };
 
   return (

@@ -110,6 +110,53 @@ describe("decisions (plan §2.3)", () => {
     expect(effectLines(group, true)).toEqual([{ executor: "agent", text: 'replies on C18, C19: "Same."' }]);
   });
 
+  it("never merges separate creations: each follow-up PR, upstream issue and TODO is its own line", () => {
+    const effect = (seq: number, kind: PlannedEffect["kind"], fields: Partial<PlannedEffect["params"]>) => ({
+      seq,
+      after: null,
+      kind,
+      executor: "agent" as const,
+      params: {
+        text: null,
+        thread_id: null,
+        review_id: null,
+        title: null,
+        url: null,
+        item_nos: [],
+        ...fields,
+      },
+    });
+    const group = [
+      effect(1, "follow_up_pr", { title: "Follow-up: retries", item_nos: [18] }),
+      effect(2, "follow_up_pr", { title: "Follow-up: retries", item_nos: [19] }),
+      effect(3, "upstream_issue", { item_nos: [18] }),
+      effect(4, "upstream_issue", { item_nos: [19] }),
+      effect(5, "todo", { title: "Check the cap", item_nos: [18] }),
+      effect(6, "todo", { title: "Check the cap", item_nos: [19] }),
+    ];
+    expect(effectLines(group, true).map((l) => l.text)).toEqual([
+      'creates a new draft follow-up PR "Follow-up: retries" for C18 (no link needed; it does not exist yet).',
+      'creates a new draft follow-up PR "Follow-up: retries" for C19 (no link needed; it does not exist yet).',
+      'creates the upstream issue for C18 and adds a "Known limitation" line.',
+      'creates the upstream issue for C19 and adds a "Known limitation" line.',
+      'saves a TODO "Check the cap" for C18 (never mentioned on GitHub).',
+      'saves a TODO "Check the cap" for C19 (never mentioned on GitHub).',
+    ]);
+    expect(effectLines([effect(1, "follow_up_pr", { title: "T", item_nos: [7] })])).toEqual([
+      {
+        executor: "agent",
+        text: 'creates a new draft follow-up PR "T" (no link needed; it does not exist yet).',
+      },
+    ]);
+    // "Merge with follow-ups": one PR listing the remaining items.
+    expect(effectLines([effect(1, "follow_up_pr", { item_nos: [11, 22] })], true)).toEqual([
+      {
+        executor: "agent",
+        text: "creates one draft follow-up PR listing C11, C22 (no link needed; it does not exist yet).",
+      },
+    ]);
+  });
+
   it("labels a stored D8 with its gate", () => {
     expect(
       decisionLabel({ kind: "reject", override: { type: "blocker_gate", gate: "G-FUNDS" }, target: null }),

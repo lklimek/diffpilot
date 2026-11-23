@@ -1,14 +1,24 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Planned, type Plan } from "../../__tests__/planned";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { CommentItem } from "../../api/generated/types";
+import type { CommentItem, DecisionBatchRow, PlannedEffect } from "../../api/generated/types";
 import { decideRestList, listItems, resetReviewLoop } from "../../mocks/review-loop";
+import type { EffectsPreviewState } from "./decisions";
 import { CommentsTable } from "./CommentsTable";
 import { DecideRestCard, EmptyQueueCard, GroupCard, PrQuestionCard } from "./QueueCards";
 
 const byNo = (no: number) => listItems().find((i) => i.no === no)!;
 const NOW = new Date("2026-11-18T09:27:00Z");
+const PENDING = "Planning the effects of your current input; you can decide once they are shown.";
+const REFUSED = "The server refused this input (its message is shown above); change it to decide.";
+/** Plans that do not fit the card's current draft, with the reason Decide gives. */
+const UNFIT: [string, EffectsPreviewState, string][] = [
+  ["planning", { state: "loading" }, PENDING],
+  ["planned for other rows", { state: "ready", items: [], rows: "[]", updating: false }, PENDING],
+  ["refused", { state: "error", message: "C18: this decision needs a reason." }, REFUSED],
+];
 
 beforeEach(() => {
   resetReviewLoop();
@@ -16,19 +26,25 @@ beforeEach(() => {
 });
 
 describe("GroupCard (US5)", () => {
-  const showGroup = () => {
+  const showGroup = (preview?: EffectsPreviewState) => {
     const handlers = { onDecide: vi.fn(), onDiscuss: vi.fn(), onSkip: vi.fn() };
     render(
-      <GroupCard
-        items={[byNo(18), byNo(19)]}
-        position={{ index: 7, total: 9 }}
-        onDecide={handlers.onDecide}
-        onDiscussIndividually={handlers.onDiscuss}
-        onSkip={handlers.onSkip}
-        busy={false}
-        error={null}
-        storageKey="t"
-      />,
+      <Planned>
+        {(plan) => (
+          <GroupCard
+            items={[byNo(18), byNo(19)]}
+            position={{ index: 7, total: 9 }}
+            onDecide={handlers.onDecide}
+            onDiscussIndividually={handlers.onDiscuss}
+            onSkip={handlers.onSkip}
+            busy={false}
+            error={null}
+            storageKey="t"
+            {...plan}
+            preview={preview ?? plan.preview}
+          />
+        )}
+      </Planned>,
     );
     return handlers;
   };
@@ -53,6 +69,19 @@ describe("GroupCard (US5)", () => {
     expect(onDecide).toHaveBeenCalledTimes(1);
   });
 
+  it.each(UNFIT)(
+    "%s: neither the button nor Enter decides the group; the reason is announced",
+    async (_, preview, reason) => {
+      const { onDecide } = showGroup(preview);
+      const decide = screen.getByRole("button", { name: "Reject all 2" });
+      expect(decide).toHaveAttribute("aria-disabled", "true");
+      expect(decide).toHaveAccessibleDescription(expect.stringContaining(reason));
+      await userEvent.click(decide);
+      fireEvent.keyDown(document.body, { key: "Enter" });
+      expect(onDecide).not.toHaveBeenCalled();
+    },
+  );
+
   it("each row opens its comment on GitHub in a new tab (plan §3.9)", () => {
     showGroup();
     expect(screen.getByRole("link", { name: "Open C18 on GitHub (new tab)" })).toHaveAttribute(
@@ -63,18 +92,38 @@ describe("GroupCard (US5)", () => {
 });
 
 describe("DecideRestCard (US7)", () => {
-  it("lists the server's rows, names every item left out with its reason, stores nothing before Apply", async () => {
+  const showRest = (preview?: EffectsPreviewState) => {
     const onConfirm = vi.fn();
     render(
-      <DecideRestCard
-        rest={decideRestList()}
-        items={new Map(listItems().map((i) => [i.no, i]))}
-        onConfirm={onConfirm}
-        onCancel={vi.fn()}
-        busy={false}
-        error={null}
-      />,
+      <Planned>
+        {(plan) => (
+          <DecideRestCard
+            rest={decideRestList()}
+            items={new Map(listItems().map((i) => [i.no, i]))}
+            onConfirm={onConfirm}
+            onCancel={vi.fn()}
+            busy={false}
+            error={null}
+            {...plan}
+            preview={preview ?? plan.preview}
+          />
+        )}
+      </Planned>,
     );
+    return onConfirm;
+  };
+
+  it.each(UNFIT)("%s: Apply stores nothing; the reason is announced", async (_, preview, reason) => {
+    const onConfirm = showRest(preview);
+    const apply = screen.getByRole("button", { name: /^Apply \d+ decisions$/ });
+    expect(apply).toHaveAttribute("aria-disabled", "true");
+    expect(apply).toHaveAccessibleDescription(expect.stringContaining(reason));
+    await userEvent.click(apply);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("lists the server's rows, names every item left out with its reason, stores nothing before Apply", async () => {
+    const onConfirm = showRest();
     const left = screen.getByRole("alert");
     expect(left).toHaveTextContent(/^Left out: 3 items\./);
     expect(left).toHaveTextContent(
@@ -98,18 +147,53 @@ describe("DecideRestCard (US7)", () => {
 });
 
 describe("PrQuestionCard (US11, US12)", () => {
-  it("round-3 merge question: two options, no recommendation, merge stays on GitHub", async () => {
-    const onDecide = vi.fn();
+  const card = (item: CommentItem, handlers: { onDecide: () => void; onSkip: () => void }, plan: Plan) => (
+    <PrQuestionCard
+      item={item}
+      prUrl="https://github.com/acme/node-client/pull/482"
+      busy={false}
+      error={null}
+      {...handlers}
+      {...plan}
+    />
+  );
+  /** The card planned by the mocks' server model, or with `preview` for whatever it drafts. */
+  const showQuestion = (item: CommentItem, preview?: EffectsPreviewState) => {
+    const handlers = { onDecide: vi.fn(), onSkip: vi.fn() };
     render(
-      <PrQuestionCard
-        item={byNo(24)}
-        prUrl="https://github.com/acme/node-client/pull/482"
-        onDecide={onDecide}
-        onSkip={vi.fn()}
-        busy={false}
-        error={null}
-      />,
+      preview ? (
+        card(item, handlers, { preview, onDraft: vi.fn() })
+      ) : (
+        <Planned>{(plan) => card(item, handlers, plan)}</Planned>
+      ),
     );
+    return handlers;
+  };
+  /** The card with a plan given per draft: `planFor` gets the rows the card drafted. */
+  const showDrafted = (item: CommentItem) => {
+    const handlers = { onDecide: vi.fn(), onSkip: vi.fn() };
+    const onDraft = vi.fn<(rows: DecisionBatchRow[] | null) => void>();
+    const view = render(card(item, handlers, { preview: { state: "loading" }, onDraft }));
+    const drafted = JSON.stringify(onDraft.mock.calls.at(-1)![0]);
+    const plan = (effects: PlannedEffect[]) =>
+      view.rerender(
+        card(item, handlers, {
+          preview: { state: "ready", items: [{ item_no: item.no, effects }], rows: drafted, updating: false },
+          onDraft,
+        }),
+      );
+    return { ...handlers, plan };
+  };
+  const effect = (kind: PlannedEffect["kind"], params: Partial<PlannedEffect["params"]>): PlannedEffect => ({
+    seq: 1,
+    after: null,
+    kind,
+    executor: "agent",
+    params: { text: null, thread_id: null, review_id: null, title: null, url: null, item_nos: [], ...params },
+  });
+
+  it("round-3 merge question: two options, no recommendation, merge stays on GitHub", async () => {
+    const { onDecide } = showQuestion(byNo(24));
     const options = within(screen.getByRole("radiogroup")).getAllByRole("radio");
     expect(options).toHaveLength(2);
     expect(options[1]).toHaveAccessibleName(/Another round/);
@@ -120,18 +204,7 @@ describe("PrQuestionCard (US11, US12)", () => {
   });
 
   it("keys: 2 chooses Another round, Enter decides, s skips", () => {
-    const onDecide = vi.fn();
-    const onSkip = vi.fn();
-    render(
-      <PrQuestionCard
-        item={byNo(24)}
-        prUrl="https://github.com/acme/node-client/pull/482"
-        onDecide={onDecide}
-        onSkip={onSkip}
-        busy={false}
-        error={null}
-      />,
-    );
+    const { onDecide, onSkip } = showQuestion(byNo(24));
     fireEvent.keyDown(document.body, { key: "2" });
     expect(screen.getByRole("radio", { name: /Another round/ })).toBeChecked();
     fireEvent.keyDown(document.body, { key: "Enter" });
@@ -140,36 +213,41 @@ describe("PrQuestionCard (US11, US12)", () => {
     expect(onSkip).toHaveBeenCalledTimes(1);
   });
 
+  it.each(UNFIT)(
+    "%s: neither the button nor Enter decides; the reason is announced",
+    async (_, preview, reason) => {
+      const { onDecide } = showQuestion(byNo(24), preview);
+      const decide = screen.getByRole("button", { name: "Decide" });
+      expect(decide).toHaveAttribute("aria-disabled", "true");
+      expect(decide).toHaveAccessibleDescription(expect.stringContaining(reason));
+      await userEvent.click(decide);
+      fireEvent.keyDown(document.body, { key: "Enter" });
+      expect(onDecide).not.toHaveBeenCalled();
+    },
+  );
+
+  it("a plan whose scope changed while it was open is decided only after the owner confirms it", async () => {
+    const { onDecide, plan } = showDrafted(byNo(24));
+    plan([effect("follow_up_pr", { item_nos: [11, 22] })]);
+    expect(screen.getByText(/listing C11, C22 /)).toBeVisible();
+    plan([effect("follow_up_pr", { item_nos: [11, 22, 30] })]);
+    const notice = screen.getByText(/What this decision acts on changed since you looked/);
+    expect(notice).toHaveAttribute("role", "status");
+    const decide = screen.getByRole("button", { name: "Decide" });
+    expect(decide).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(decide);
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    expect(onDecide).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Use the new plan" }));
+    expect(screen.queryByText(/What this decision acts on changed since you looked/)).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ kind: "merge_with_follow_ups" }));
+  });
+
   it("dismissal: the field shows the server's default message, which is posted when left as is", async () => {
-    const onDecide = vi.fn();
     const item = { ...byNo(24), stable_key: "pr:3:dismiss", title: "Dismiss stale bot reviews?" };
-    const effects = [
-      {
-        seq: 1,
-        after: null,
-        kind: "dismiss_review" as const,
-        executor: "agent" as const,
-        params: {
-          text: "Server default.",
-          thread_id: null,
-          review_id: "PRR_1",
-          title: null,
-          url: null,
-          item_nos: [],
-        },
-      },
-    ];
-    render(
-      <PrQuestionCard
-        item={item}
-        prUrl="https://github.com/acme/node-client/pull/482"
-        onDecide={onDecide}
-        onSkip={vi.fn()}
-        busy={false}
-        error={null}
-        preview={{ state: "ready", items: [{ item_no: 24, effects }], updating: false }}
-      />,
-    );
+    const { onDecide, plan } = showDrafted(item);
+    plan([effect("dismiss_review", { text: "Server default.", review_id: "PRR_1" })]);
     expect(screen.getByLabelText("Dismissal message (posted)")).toHaveValue("Server default.");
     expect(screen.getByText("dismisses the stale review with the message above.")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Decide" }));

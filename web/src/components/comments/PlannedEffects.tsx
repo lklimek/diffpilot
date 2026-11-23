@@ -76,3 +76,12 @@ export function PlannedEffects({
     </>
   );
 }
+
+/** Why Decide is unavailable (`reason`), announced as it changes; the Decide button names it by `id`. */
+export function DecideNote({ id, reason }: { id: string; reason: string | null }) {
+  return (
+    <p id={id} role="status" className={reason ? "m-0 mt-1.5 text-sm text-med" : "sr-only"}>
+      {reason ?? ""}
+    </p>
+  );
+}

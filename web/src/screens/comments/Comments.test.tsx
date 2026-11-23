@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
@@ -7,8 +8,15 @@ import { expectTrustWording } from "../../__tests__/wording";
 import { listItems, overview } from "../../mocks/review-loop";
 import { setScenario } from "../../mocks/scenarios";
 
-startMockServer();
+const server = startMockServer();
 const PR = "/pr/acme/node-client/482";
+
+/** Decide once the server planned the card's current input (until then Decide is unavailable). */
+async function decideWhenPlanned() {
+  const decide = screen.getByRole("button", { name: "Decide" });
+  await waitFor(() => expect(decide).not.toHaveAttribute("aria-disabled"));
+  await userEvent.click(decide);
+}
 const text = () => document.body.textContent ?? "";
 
 beforeEach(() => {
@@ -64,7 +72,7 @@ describe("V1 Questions (US3, US4, US11)", () => {
     renderRoute(`${PR}/comments?item=C14`);
     expect(await screen.findByRole("heading", { name: /C14 · Retry may resend/ })).toBeVisible();
     expect(await screen.findByText(/pub async fn send_with_retry/)).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    await decideWhenPlanned();
     expect(await screen.findByText(/C14: decision recorded\. \d+ questions left\./)).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Merge now, or another round?" })).toBeVisible();
     await userEvent.click(screen.getByRole("link", { name: "Decision log and agents" }));
@@ -74,7 +82,7 @@ describe("V1 Questions (US3, US4, US11)", () => {
   it("Undo takes a single decision back while no agent claimed it; the comment is asked again", async () => {
     const router = renderRoute(`${PR}/comments?item=C14`);
     expect(await screen.findByRole("heading", { name: /C14 · Retry may resend/ })).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    await decideWhenPlanned();
     await screen.findByText(/C14: decision recorded/);
     await userEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(await screen.findByText("C14: decision undone; it is asked again.")).toBeInTheDocument();
@@ -192,6 +200,27 @@ describe("V4–V6 and Settings → Notifications", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Unwatch acme/node-client #482" })).toBeNull(),
     );
+  });
+
+  it("a failed read of the items keeps the page and what was typed, with the error beside it", async () => {
+    renderRoute(`${PR}/comments/table`);
+    const comment = await screen.findByLabelText("Your comment on C22");
+    await userEvent.type(comment, "keep the test small");
+    server.use(
+      http.get("/api/v1/prs/:owner/:name/:number/comments/items", () =>
+        HttpResponse.json(
+          { code: "github_unavailable", message: "GitHub is not reachable." },
+          { status: 502 },
+        ),
+      ),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
+    expect(await screen.findByText(/GitHub is not reachable\./)).toBeVisible();
+    expect(screen.getByLabelText("Your comment on C22")).toHaveValue("keep the test small");
+    server.resetHandlers();
+    await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
+    await waitFor(() => expect(screen.queryByText(/GitHub is not reachable\./)).toBeNull());
+    expect(screen.getByLabelText("Your comment on C22")).toHaveValue("keep the test small");
   });
 
   it("a refused save's error goes once a later Send test of the channel succeeds", async () => {
