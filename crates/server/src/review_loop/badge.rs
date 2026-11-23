@@ -1,7 +1,8 @@
 //! The PR state badge (plan §3.9 B1–B5): first match wins; facts diffpilot read select it; with an input unknown
-//! (CI not read, GitHub read failed, a plug-in that can hold the PR not current, My work has not scanned the head)
-//! there is no "Ready to merge". CI and Ready to merge follow My work's rules (DR1, K17): the reader's Ignored checks
-//! never fail CI or keep it running, and "Ready to merge" needs My work's Ready to merge at the same head.
+//! (CI not read, GitHub read failed, a plug-in that can hold the PR not current, My work has not scanned the head and
+//! base) there is no "Ready to merge". CI and Ready to merge follow My work's rules (DR1, K17): the reader's Ignored
+//! checks never fail CI or keep it running, and "Ready to merge" needs My work's Ready to merge at the same head and
+//! base, while a draft or an unresolved thread in the last read vetoes it.
 
 use contracts::api::dashboard::DashboardSettings;
 use contracts::api::review_loop::{PrBadge, PrBadgeView};
@@ -28,6 +29,7 @@ struct ScannedPr {
     repo: RepoRef,
     number: u32,
     head: String,
+    base: Option<String>,
     ready: bool,
 }
 
@@ -41,6 +43,7 @@ impl MyWork {
                 repo: pr.facts.repo.clone(),
                 number: pr.facts.number,
                 head: pr.head_sha.clone(),
+                base: pr.facts.base_ref.clone(),
                 ready: score::ready_to_merge(&rules, &pr.facts),
             })
             .collect();
@@ -52,9 +55,15 @@ impl MyWork {
         self.rules.is_ignored_check(repo, name)
     }
 
-    /// Ready to merge (K17, before a plug-in's hold) of `repo#number` at `head`; `None` when the last scan did not
-    /// read it at that head.
-    pub fn ready_to_merge(&self, repo: &RepoRef, number: u32, head: &str) -> Option<bool> {
+    /// Ready to merge (K17, before a plug-in's hold) of `repo#number` at `head` into `base`; `None` when the last
+    /// scan did not read it at that head and base.
+    pub fn ready_to_merge(
+        &self,
+        repo: &RepoRef,
+        number: u32,
+        head: &str,
+        base: &str,
+    ) -> Option<bool> {
         self.prs
             .iter()
             .find(|pr| {
@@ -62,6 +71,7 @@ impl MyWork {
                     && pr.repo.owner.eq_ignore_ascii_case(&repo.owner)
                     && pr.repo.name.eq_ignore_ascii_case(&repo.name)
                     && pr.head.eq_ignore_ascii_case(head)
+                    && pr.base.as_deref() == Some(base)
             })
             .map(|pr| pr.ready)
     }
@@ -142,8 +152,13 @@ pub struct BadgeInputs {
     pub ci: Option<CiState>,
     /// Failing or pending checks left out as Ignored checks.
     pub ignored_not_passing: Vec<String>,
-    /// My work's Ready to merge at this head ([`MyWork::ready_to_merge`]); `None` when its last scan did not read it.
+    /// My work's Ready to merge at this head and base ([`MyWork::ready_to_merge`]); `None` when its last scan did
+    /// not read them.
     pub ready_to_merge: Option<bool>,
+    /// The last GitHub read shows a draft (K17 R1, whatever My work's scan saw).
+    pub draft: bool,
+    /// Unresolved review threads in the last GitHub read (K17, whatever My work's scan saw).
+    pub unresolved_threads: u32,
     /// Failed effects.
     pub failed_effects: u32,
     /// Undecided questions.
@@ -188,7 +203,7 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
     }
     if inputs.ready_to_merge.is_none() {
         view.missing
-            .push("My work's last scan did not read this head".to_owned());
+            .push("My work's last scan did not read this head and base".to_owned());
     }
     let ci_failed = inputs.ci == Some(CiState::Failing);
     if inputs.failed_effects > 0 || ci_failed {
@@ -254,6 +269,18 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
     }
     if let Some(source) = &inputs.held_by {
         view.facts.push(format!("{source} holds it back"));
+        ready = false;
+    }
+    if inputs.draft {
+        view.facts.push("Draft".to_owned());
+        ready = false;
+    }
+    if inputs.unresolved_threads > 0 {
+        view.facts.push(plural(
+            inputs.unresolved_threads,
+            "unresolved review thread",
+            "unresolved review threads",
+        ));
         ready = false;
     }
     if inputs.ready_to_merge == Some(false) {
@@ -350,7 +377,13 @@ mod tests {
         let ready = |change: &dyn Fn(&mut PrFacts)| {
             let mut pr = mergeable_pr();
             change(&mut pr.facts);
-            MyWork::new("alice", &settings, &[pr]).ready_to_merge(&platform(), 5949, "abc123")
+            let base = pr.facts.base_ref.clone().expect("base");
+            MyWork::new("alice", &settings, &[pr]).ready_to_merge(
+                &platform(),
+                5949,
+                "abc123",
+                &base,
+            )
         };
         assert_eq!(ready(&|_| {}), Some(true));
         for (case, change) in [
@@ -370,12 +403,17 @@ mod tests {
         }
         let work = MyWork::new("alice", &settings, &[mergeable_pr()]);
         assert_eq!(
-            work.ready_to_merge(&platform(), 5949, "def456"),
+            work.ready_to_merge(&platform(), 5949, "def456", "v3.1-dev"),
             None,
             "another head"
         );
         assert_eq!(
-            work.ready_to_merge(&platform(), 1, "abc123"),
+            work.ready_to_merge(&platform(), 5949, "abc123", "v3.2-dev"),
+            None,
+            "retargeted at the same head"
+        );
+        assert_eq!(
+            work.ready_to_merge(&platform(), 1, "abc123", "v3.1-dev"),
             None,
             "not scanned"
         );
@@ -383,7 +421,10 @@ mod tests {
             owner: "DashPay".into(),
             name: "Platform".into(),
         };
-        assert_eq!(work.ready_to_merge(&upper, 5949, "ABC123"), Some(true));
+        assert_eq!(
+            work.ready_to_merge(&upper, 5949, "ABC123", "v3.1-dev"),
+            Some(true)
+        );
     }
 
     /// CI of the head with `failed` failing and `pending` pending checks, the failing ones named.
@@ -495,6 +536,34 @@ mod tests {
         );
     }
 
+    /// Facts the last GitHub read shows veto "Ready to merge" whatever My work's scan at the same head saw (a PR
+    /// turned into a draft, a thread opened since): K17 needs neither.
+    #[test]
+    fn the_last_read_vetoes_my_works_ready_to_merge() {
+        let draft = badge(&BadgeInputs {
+            draft: true,
+            ..ready()
+        });
+        assert_eq!(draft.badge, None);
+        assert_eq!(draft.facts, ["CI passed", "Draft"]);
+        let threads = badge(&BadgeInputs {
+            unresolved_threads: 2,
+            ..ready()
+        });
+        assert_eq!(threads.badge, None);
+        assert_eq!(threads.facts, ["CI passed", "2 unresolved review threads"]);
+        assert_eq!(
+            badge(&BadgeInputs {
+                draft: true,
+                undecided: 1,
+                ..ready()
+            })
+            .badge,
+            Some(PrBadge::QuestionsWaiting),
+            "B1-B4 still apply"
+        );
+    }
+
     /// An Ignored check that fails or runs never selects "Blocked / failing" nor keeps "CI is running"; it is named
     /// among the facts.
     #[test]
@@ -590,7 +659,7 @@ mod tests {
                     ready_to_merge: None,
                     ..ready()
                 },
-                "My work's last scan did not read this head",
+                "My work's last scan did not read this head and base",
             ),
         ] {
             let view = badge(&inputs);
