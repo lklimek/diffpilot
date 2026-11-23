@@ -1,5 +1,5 @@
 import { type Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { PINNED_NOW, expect, test } from "./fixtures";
 import { expectAccessible, expectTooltips } from "./screens-support";
 import { ANALYSIS_ID, expectTrustWording } from "./support";
 
@@ -93,6 +93,8 @@ test("unknown analysis: plain error and a way back", async ({ page }) => {
 // from the server (sse-events.md); the mocks send a heartbeat every 15 s.
 test.describe("stage and liveness", () => {
   const indicator = (page: Page) => page.locator("[data-activity]");
+  // The part of the bar still to do: it moves only while a job works.
+  const rest = (page: Page) => bar(page).locator(":scope > span");
 
   test("the stage line follows the server: planning, PR context, flow 1 with its title; time is real", async ({
     page,
@@ -107,6 +109,8 @@ test.describe("stage and liveness", () => {
     await expect(indicator(page)).toHaveText("Working · this stage started less than a minute ago");
     await page.clock.runFor(15_000);
     await expect(page.getByText("Analysing flow 1 of 1: Send an RPC request with retry")).toBeVisible();
+    await expect(bar(page)).toHaveAttribute("aria-valuenow", "0");
+    await expect(rest(page)).not.toHaveCSS("animation-name", "none");
     await expectTrustWording(page);
     await expectAccessible(page);
   });
@@ -135,19 +139,24 @@ test.describe("stage and liveness", () => {
     await page.clock.runFor(60_000);
     await expect(page.getByText(/^No signal from the server for \d+ s; reconnecting…$/)).toBeVisible();
     await expect(indicator(page)).toHaveCount(0);
+    await expect(rest(page)).toHaveCSS("animation-name", "none");
     await expect(page.getByText(/^Analysing flow 3 of 5: /)).toBeVisible();
     await expectTrustWording(page);
     await expectAccessible(page);
   });
 
-  test("reduced motion: the indicator does not move and says Working in text", async ({ page }) => {
+  test("reduced motion: the indicator and the bar do not move and Working is said in text", async ({
+    page,
+  }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await open(page, "running");
     await expect(indicator(page)).toContainText("Working");
     const dot = indicator(page).locator("span[aria-hidden]");
     await expect(dot).toHaveCSS("animation-name", "none");
+    await expect(rest(page)).toHaveCSS("animation-name", "none");
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await expect(dot).not.toHaveCSS("animation-name", "none");
+    await expect(rest(page)).not.toHaveCSS("animation-name", "none");
   });
 
   // Light and dark at 1440 with SCREENSHOT_DIR set, e.g. /data/artifacts/diffpilot/<date>/wp3-tour-9.
@@ -156,6 +165,7 @@ test.describe("stage and liveness", () => {
       const dir = process.env.SCREENSHOT_DIR;
       test.skip(!dir, "SCREENSHOT_DIR not set");
       const page = await browser.newPage({ colorScheme, viewport: { width: 1440, height: 900 } });
+      await page.clock.install({ time: PINNED_NOW });
       const shoot = async (scenario: string, name: string, wait: number, expected: RegExp) => {
         await page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=${scenario}`);
         await expect(

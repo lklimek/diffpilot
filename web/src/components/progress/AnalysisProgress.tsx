@@ -183,6 +183,8 @@ function Bar({
       : state.state === "failed"
         ? "var(--color-high-bg)"
         : "var(--color-accent)";
+  // While a job works, the part not counted as done pulses (the whole bar without a count); done work stays still.
+  const pulse = "motion-safe:animate-pulse";
   return (
     <div
       role="progressbar"
@@ -200,10 +202,13 @@ function Bar({
       className={`flex h-3 overflow-hidden rounded-md border bg-surface-2 ${BAR_LOOK[state.state]}`}
     >
       <i
-        className={`block h-full ${state.state === "planning" && working ? "motion-safe:animate-pulse" : ""}`}
+        className={`block h-full ${working && !counted ? pulse : ""}`}
         style={{ flexGrow: filled, background }}
       />
-      <span style={{ flexGrow: empty }} />
+      <span
+        className={working && counted ? `bg-accent-bg ${pulse}` : undefined}
+        style={{ flexGrow: empty }}
+      />
     </div>
   );
 }
@@ -260,7 +265,7 @@ export function AnalysisProgress({
         <p className="flex flex-wrap items-baseline gap-x-4 text-[15px] font-semibold">
           <span aria-live="polite">
             {reviewReady && state.state === "running"
-              ? `${state.done} of ${state.total} flows analysed. The review is open.`
+              ? `${state.done} of ${plural(state.total, "flow")} analysed. The review is open.`
               : label(state, planned)}
           </span>
           {(state.state === "finished" || reviewReady) && (
