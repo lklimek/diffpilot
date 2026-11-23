@@ -31,9 +31,9 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
 2. **What a plug-in may do.** Read its own external source over HTTP(S), unauthenticated. It never receives a
    GitHub token, a user token, a session, user data or the list of users; it never writes anywhere; it has no
    database access; nothing it returns is stored (in-memory only, lost on restart, rebuilt by the next poll).
-   It may not change scores, tiers, tags, facts, judgements or the LLM's inputs; its only effects are its attributed
-   notes, a Ready to merge hold (point 6), whose move it is for Waiting on others (point 11) and change signals
-   (point 5).
+   It may not change scores, tiers, tags, facts, judgements or what the LLM reads about an item; its only effects
+   are its attributed notes, a Ready to merge hold (point 6), whose move it is for Waiting on others (point 11) and
+   change signals (point 5).
 3. **Lifecycle.** The host (`PluginHost`, in `AppState`) is built from configuration at start-up; one in-process
    task polls every plug-in at most once per 60 s server-wide (never per browser tab or user), and **only while a
    user is actively using the dashboard**: a summary (R1) or items (R1b) read in a browser session marks the reader
@@ -104,7 +104,8 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
    with `asks[].approvers`, valid GitHub logins, at most 10, once each; `bots` and `nobody` say nothing) and the same
    reason as its hold. A fresh statement of the reviewers' or maintainers' move lists the user's pull request under
    Waiting on others (reason "PR Hygiene: …" with the evidence link) when nothing is the user's move; one of the
-   author's move keeps it ranked, even with the ready label. Read time only; the judge's input stays GitHub's.
+   author's move keeps it ranked, even with the ready label. The ranking applies the same rule with the statements
+   current when it runs, so such a pull request is judged; the judge's input about it stays GitHub's.
 
 ## Alternatives considered
 | Alternative | Why not |

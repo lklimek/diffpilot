@@ -2051,3 +2051,100 @@ async fn verify_comments_jobs_migration_keeps_rows_and_adds_the_pass_owner() {
         .expect("check");
     assert_eq!(check, None);
 }
+
+/// 0026 rebuilds `dashboard_snoozes` so ended snoozes can be kept: every existing snooze is kept as not ended, and
+/// an ended one stays beside a new snooze of the same item.
+#[tokio::test]
+async fn snooze_ends_migration_keeps_every_snooze_as_not_ended() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before = MIGRATIONS
+        .iter()
+        .position(|(_, name, _)| *name == "dashboard_snooze_ends")
+        .expect("migration 0026");
+    migrate(&pool, before).await.expect("schema before 0026");
+    let db = Db { pool };
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO dashboard_snoozes (tenant_id, user_id, item_key, snoozed_at, until) VALUES
+           ('default', 'u1', 'acme~platform~pr~1203', '2026-11-18T06:00:00.000000Z', '2026-11-21T06:00:00.000000Z'),
+           ('default', 'u1', 'acme~platform~issue~7', '2026-11-18T06:00:00.000000Z', '2026-11-19T06:00:00.000000Z');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("snoozes of the old schema");
+    migrate(&db.pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+    type Row = (String, String, String, Option<String>, Option<String>);
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT item_key, snoozed_at, until, ended_at, end_reason FROM dashboard_snoozes ORDER BY id",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("rows");
+    let kept = |key: &str, until: &str| {
+        (
+            key.to_owned(),
+            "2026-11-18T06:00:00.000000Z".to_owned(),
+            until.to_owned(),
+            None,
+            None,
+        )
+    };
+    assert_eq!(
+        rows,
+        [
+            kept("acme~platform~pr~1203", "2026-11-21T06:00:00.000000Z"),
+            kept("acme~platform~issue~7", "2026-11-19T06:00:00.000000Z"),
+        ]
+    );
+    let dash = db.dashboard();
+    let key = contracts::api::dashboard::ItemKey::parse("acme~platform~issue~7").expect("key");
+    let woken_at = "2026-11-18T08:00:00Z".parse::<Timestamp>().expect("time");
+    dash.wake(
+        "default",
+        "u1",
+        std::slice::from_ref(&key),
+        dashboard::SnoozeEnd::Woken,
+        woken_at,
+    )
+    .await
+    .expect("wake");
+    dash.snooze(
+        "default",
+        "u1",
+        &key,
+        woken_at,
+        woken_at + SignedDuration::from_hours(24),
+    )
+    .await
+    .expect("snooze again");
+    let issue_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM dashboard_snoozes WHERE item_key = 'acme~platform~issue~7'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("count");
+    assert_eq!(issue_rows, 2, "the ended snooze stays beside the new one");
+    let duplicate = sqlx::query(
+        "INSERT INTO dashboard_snoozes (tenant_id, user_id, item_key, snoozed_at, until)
+         VALUES ('default', 'u1', 'acme~platform~pr~1203', 't0', 't1')",
+    )
+    .execute(&db.pool)
+    .await
+    .map_err(DbError::from);
+    assert!(
+        matches!(duplicate, Err(DbError::Conflict)),
+        "one snooze per item has not ended: {duplicate:?}"
+    );
+}

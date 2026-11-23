@@ -550,27 +550,13 @@ pub fn waits_on_requested_review(rules: &ScoreRules, pr: &PrFacts) -> bool {
         && !github_lets_user_merge(rules, pr)
 }
 
-/// The user's PR waits on other people by GitHub's signals alone (K15): [`nothing_is_users_move`], and it carries
-/// the ready label (W3a) or [`waits_on_requested_review`] (W3c). The read path adds a plug-in's statement (W3b).
-/// Such a PR is listed under Waiting on others only: not ranked, not excluded, not judged.
-pub fn waits_on_others(rules: &ScoreRules, pr: &PrFacts) -> bool {
-    nothing_is_users_move(rules, pr)
-        && (ready_label(rules, pr).is_some() || waits_on_requested_review(rules, pr))
-}
-
-/// Sorts `rows` longest wait first (K15 W5) by the oldest open request; an unknown request time sorts last and
-/// the caller chooses the `waiting_since` it shows.
-pub fn by_longest_wait(rules: &ScoreRules, rows: &mut [&PrFacts]) {
+/// Sorts `rows` longest wait first (K15 W5): by the time each PR waits since (its shown `waiting_since`), then by
+/// display id.
+pub fn by_longest_wait(rules: &ScoreRules, rows: &mut [(&PrFacts, Timestamp)]) {
     let id = |pr: &PrFacts| rules.display_id(&pr.repo, pr.number);
-    rows.sort_by(|a, b| {
-        let wait = |pr: &PrFacts| {
-            (
-                pr.others_review_requested_at.is_none(),
-                pr.others_review_requested_at,
-            )
-        };
-        wait(a)
-            .cmp(&wait(b))
+    rows.sort_by(|(a, a_since), (b, b_since)| {
+        a_since
+            .cmp(b_since)
             .then_with(|| text::compare_ids(&id(a), &id(b)))
     });
 }

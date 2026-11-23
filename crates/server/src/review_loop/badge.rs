@@ -1,8 +1,122 @@
 //! The PR state badge (plan §3.9 B1–B5): first match wins; facts diffpilot read select it; with an input unknown
-//! (CI not read, GitHub read failed, a plug-in that can hold the PR not current) there is no "Ready to merge".
+//! (CI not read, GitHub read failed, a plug-in that can hold the PR not current, My work has not scanned the head)
+//! there is no "Ready to merge". CI and Ready to merge follow My work's rules (DR1, K17): the reader's Ignored checks
+//! never fail CI, and "Ready to merge" needs My work's Ready to merge at the same head.
 
+use contracts::api::dashboard::DashboardSettings;
 use contracts::api::review_loop::{PrBadge, PrBadgeView};
-use contracts::api::tour::CiState;
+use contracts::api::tour::{CiState, CiStatus};
+use contracts::common::RepoRef;
+use db::error::DbError;
+use serde_json::Value;
+
+use crate::dashboard::score::{self, ScoreRules};
+use crate::dashboard::settings;
+use crate::dashboard::snapshot::{self, StoredPr};
+use crate::state::AppState;
+
+/// What the reader's My work decides for the badge (DR1): its rules (Ignored checks per repository) and Ready to
+/// merge (K17) of the pull requests its last scan read.
+#[derive(Clone, Debug)]
+pub struct MyWork {
+    rules: ScoreRules,
+    prs: Vec<ScannedPr>,
+}
+
+#[derive(Clone, Debug)]
+struct ScannedPr {
+    repo: RepoRef,
+    number: u32,
+    head: String,
+    ready: bool,
+}
+
+impl MyWork {
+    /// The rules of `own_login` with `settings`, and Ready to merge of the scanned `prs`.
+    pub fn new(own_login: &str, settings: &DashboardSettings, prs: &[StoredPr]) -> Self {
+        let rules = ScoreRules::new(own_login, settings);
+        let prs = prs
+            .iter()
+            .map(|pr| ScannedPr {
+                repo: pr.facts.repo.clone(),
+                number: pr.facts.number,
+                head: pr.head_sha.clone(),
+                ready: score::ready_to_merge(&rules, &pr.facts),
+            })
+            .collect();
+        Self { rules, prs }
+    }
+
+    /// The check never fails CI in `repo` (K17 R4).
+    pub fn is_ignored_check(&self, repo: &RepoRef, name: &str) -> bool {
+        self.rules.is_ignored_check(repo, name)
+    }
+
+    /// Ready to merge (K17, before a plug-in's hold) of `repo#number` at `head`; `None` when the last scan did not
+    /// read it at that head.
+    pub fn ready_to_merge(&self, repo: &RepoRef, number: u32, head: &str) -> Option<bool> {
+        self.prs
+            .iter()
+            .find(|pr| {
+                pr.number == number
+                    && pr.repo.owner.eq_ignore_ascii_case(&repo.owner)
+                    && pr.repo.name.eq_ignore_ascii_case(&repo.name)
+                    && pr.head.eq_ignore_ascii_case(head)
+            })
+            .map(|pr| pr.ready)
+    }
+}
+
+/// The reader's [`MyWork`]: its last scan with the rules it used, else the current settings and nothing scanned.
+pub(crate) async fn my_work(
+    state: &AppState,
+    tenant_id: &str,
+    user_id: &str,
+) -> Result<MyWork, DbError> {
+    let scanned = state
+        .db
+        .dashboard()
+        .latest_snapshot::<Value>(tenant_id, user_id)
+        .await?
+        .and_then(|(_, document)| snapshot::readable(document));
+    Ok(match scanned {
+        Some(scan) => MyWork::new(&scan.own_login, &scan.settings, &scan.pull_requests),
+        None => MyWork::new(
+            "",
+            &settings::effective(&state.db, tenant_id, user_id).await?,
+            &[],
+        ),
+    })
+}
+
+/// The head's CI state with the failing checks `ignored` names left out (K17 R4), and the names left out. Failing
+/// checks are kept when their names are not all known.
+pub fn without_ignored(ci: &CiStatus, ignored: impl Fn(&str) -> bool) -> (CiState, Vec<String>) {
+    let failed: u32 = [ci.check_runs, ci.statuses]
+        .iter()
+        .flatten()
+        .map(|counts| counts.failed)
+        .sum();
+    let named = usize::try_from(failed).is_ok_and(|failed| failed == ci.failing.len());
+    if ci.state != CiState::Failing || !named {
+        return (ci.state, Vec::new());
+    }
+    let (left_out, failing): (Vec<_>, Vec<_>) =
+        ci.failing.iter().partition(|check| ignored(&check.name));
+    let names = left_out.iter().map(|check| check.name.clone()).collect();
+    let pending = [ci.check_runs, ci.statuses]
+        .iter()
+        .flatten()
+        .any(|counts| counts.pending > 0);
+    let state = if !failing.is_empty() {
+        CiState::Failing
+    } else if pending {
+        CiState::Pending
+    } else {
+        CiState::NoFailures
+    };
+    (state, names)
+}
 
 /// What the badge is chosen from.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -11,8 +125,12 @@ pub struct BadgeInputs {
     pub open: bool,
     /// The last GitHub read failed, or there was none.
     pub read_failed: bool,
-    /// CI of the head; `None` when not read.
+    /// CI of the head with the reader's Ignored checks left out ([`without_ignored`]); `None` when not read.
     pub ci: Option<CiState>,
+    /// Failing checks left out as Ignored checks.
+    pub ignored_failing: Vec<String>,
+    /// My work's Ready to merge at this head ([`MyWork::ready_to_merge`]); `None` when its last scan did not read it.
+    pub ready_to_merge: Option<bool>,
     /// Failed effects.
     pub failed_effects: u32,
     /// Undecided questions.
@@ -54,6 +172,10 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
     for name in &inputs.holders_not_current {
         view.missing
             .push(format!("{name} statements are not current"));
+    }
+    if inputs.ready_to_merge.is_none() {
+        view.missing
+            .push("My work's last scan did not read this head".to_owned());
     }
     let ci_failed = inputs.ci == Some(CiState::Failing);
     if inputs.failed_effects > 0 || ci_failed {
@@ -104,6 +226,12 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
         }
         Some(CiState::Failing | CiState::NotChecked) | None => ready = false,
     }
+    if !inputs.ignored_failing.is_empty() {
+        view.facts.push(format!(
+            "Ignored checks failed: {}",
+            inputs.ignored_failing.join(", ")
+        ));
+    }
     if !inputs.changes_requested.is_empty() {
         view.facts.push(format!(
             "Changes requested by {}",
@@ -115,6 +243,11 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
         view.facts.push(format!("{source} holds it back"));
         ready = false;
     }
+    if inputs.ready_to_merge == Some(false) {
+        view.facts
+            .push("My work does not list it as Ready to merge".to_owned());
+        ready = false;
+    }
     if ready {
         view.badge = Some(PrBadge::ReadyToMerge);
     }
@@ -123,12 +256,227 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
 
 #[cfg(test)]
 mod tests {
+    use contracts::api::dashboard::RepositoryRule;
+    use contracts::api::tour::{CiCheck, CiCounts};
+    use contracts::time::Timestamp;
+
     use super::*;
+    use crate::dashboard::score::{
+        CiEffective, MergeState, Mergeable, Milestone, MilestoneContext, OwnedChange, PrFacts,
+        Relation,
+    };
+
+    fn platform() -> RepoRef {
+        RepoRef {
+            owner: "dashpay".into(),
+            name: "platform".into(),
+        }
+    }
+
+    /// The user's PR into a release branch, unstable only through an ignored check: My work lists it as Ready to
+    /// merge (K17).
+    fn mergeable_pr() -> StoredPr {
+        let at: Timestamp = "2026-11-22T09:00:00Z".parse().expect("time");
+        StoredPr {
+            facts: PrFacts {
+                repo: platform(),
+                number: 5949,
+                title: "feat(sdk): thing".into(),
+                body: String::new(),
+                author: Some("alice".into()),
+                author_is_bot: false,
+                relations: vec![Relation::Authored],
+                is_draft: false,
+                labels: vec![],
+                updated_at: at,
+                additions: Some(1),
+                deletions: Some(1),
+                base_ref: Some("v3.1-dev".into()),
+                default_branch: Some("master".into()),
+                dependents: Some(vec![]),
+                stacked_on: Some(vec![]),
+                milestone: Milestone::Unassigned,
+                milestone_context: MilestoneContext::default(),
+                ci: CiEffective::Green,
+                mergeable: Mergeable::Mergeable,
+                merge_state: MergeState::Unstable,
+                viewer_can_write: true,
+                review_decision: None,
+                unresolved_threads: 0,
+                review_pending_for_us: false,
+                review_requested_at: None,
+                review_request_age_is_approx: false,
+                changes_requested_by: vec![],
+                changes_requested_by_human: false,
+                changes_requested_human_at: None,
+                reviews_truncated: false,
+                awaiting_our_reply: false,
+                last_comment_author: None,
+                last_comment_at: None,
+                owned_change: OwnedChange::NoPolicy,
+                approved_by: vec![],
+                approved_by_bots: vec![],
+                review_requested_from_others: vec![],
+                others_review_requested_at: None,
+            },
+            private: false,
+            head_sha: "abc123".into(),
+            created_at: at,
+            ci_red: vec![],
+            ci_pending: vec![],
+            ci_ignored: vec!["PR Hygiene (FAILURE)".into()],
+            linked_issues: vec![],
+        }
+    }
+
+    /// Ready to merge is My work's (K17) at the head its last scan read: a draft, a conflict, a base outside the
+    /// release line, no write access or the ready label make it not ready; another head or PR is not known.
+    #[test]
+    fn ready_to_merge_is_my_works_at_the_scanned_head() {
+        let settings = DashboardSettings::default();
+        let ready = |change: &dyn Fn(&mut PrFacts)| {
+            let mut pr = mergeable_pr();
+            change(&mut pr.facts);
+            MyWork::new("alice", &settings, &[pr]).ready_to_merge(&platform(), 5949, "abc123")
+        };
+        assert_eq!(ready(&|_| {}), Some(true));
+        for (case, change) in [
+            (
+                "draft",
+                &(|f: &mut PrFacts| f.is_draft = true) as &dyn Fn(&mut PrFacts),
+            ),
+            ("conflicts", &|f| f.mergeable = Mergeable::Conflicting),
+            ("stacked base", &|f| f.base_ref = Some("feat/base".into())),
+            ("no write access", &|f| f.viewer_can_write = false),
+            ("ready label", &|f| {
+                f.labels = vec!["ready-for-human".into()]
+            }),
+            ("CI red", &|f| f.ci = CiEffective::Red),
+        ] {
+            assert_eq!(ready(change), Some(false), "{case}");
+        }
+        let work = MyWork::new("alice", &settings, &[mergeable_pr()]);
+        assert_eq!(
+            work.ready_to_merge(&platform(), 5949, "def456"),
+            None,
+            "another head"
+        );
+        assert_eq!(
+            work.ready_to_merge(&platform(), 1, "abc123"),
+            None,
+            "not scanned"
+        );
+        let upper = RepoRef {
+            owner: "DashPay".into(),
+            name: "Platform".into(),
+        };
+        assert_eq!(work.ready_to_merge(&upper, 5949, "ABC123"), Some(true));
+    }
+
+    fn failing(names: &[&str], pending: u32) -> CiStatus {
+        CiStatus {
+            state: CiState::Failing,
+            total: 5,
+            failing: names
+                .iter()
+                .map(|name| CiCheck {
+                    name: (*name).to_owned(),
+                    url: None,
+                    failing_tests: Vec::new(),
+                })
+                .collect(),
+            check_runs: Some(CiCounts {
+                passed: 3,
+                pending,
+                ..CiCounts::default()
+            }),
+            statuses: Some(CiCounts {
+                failed: u32::try_from(names.len()).expect("count"),
+                ..CiCounts::default()
+            }),
+        }
+    }
+
+    /// CI leaves out the reader's Ignored checks of the repository (K17 R4): the built-ins without a row, the row's
+    /// patterns with one. A failing check that is not ignored, or failures not all named, keep CI failed.
+    #[test]
+    fn ci_leaves_out_the_readers_ignored_checks() {
+        let builtins = MyWork::new("alice", &DashboardSettings::default(), &[]);
+        let ignored = |name: &str| builtins.is_ignored_check(&platform(), name);
+        assert_eq!(
+            without_ignored(&failing(&["PR Hygiene"], 0), ignored),
+            (CiState::NoFailures, vec!["PR Hygiene".to_owned()])
+        );
+        assert_eq!(
+            without_ignored(&failing(&["PR Hygiene"], 1), ignored),
+            (CiState::Pending, vec!["PR Hygiene".to_owned()])
+        );
+        assert_eq!(
+            without_ignored(&failing(&["PR Hygiene", "tests"], 0), ignored),
+            (CiState::Failing, vec!["PR Hygiene".to_owned()])
+        );
+        let mut unnamed = failing(&["PR Hygiene"], 0);
+        unnamed.statuses = Some(CiCounts {
+            failed: 2,
+            ..CiCounts::default()
+        });
+        assert_eq!(
+            without_ignored(&unnamed, ignored),
+            (CiState::Failing, vec![])
+        );
+        let passing = CiStatus {
+            state: CiState::Passing,
+            ..failing(&[], 0)
+        };
+        assert_eq!(
+            without_ignored(&passing, ignored),
+            (CiState::Passing, vec![])
+        );
+
+        let settings = DashboardSettings {
+            repositories: vec![RepositoryRule {
+                repo: platform(),
+                alias: None,
+                watch_issues: false,
+                ownership_policy: None,
+                branch_patterns: vec![],
+                ignored_checks: vec!["docs*".into()],
+            }],
+            ..DashboardSettings::default()
+        };
+        let row = MyWork::new("alice", &settings, &[]);
+        let ignored = |name: &str| row.is_ignored_check(&platform(), name);
+        assert_eq!(
+            without_ignored(&failing(&["PR Hygiene"], 0), ignored).0,
+            CiState::Failing,
+            "a row's list replaces the built-ins"
+        );
+        assert_eq!(
+            without_ignored(&failing(&["docs-build"], 0), ignored).0,
+            CiState::NoFailures
+        );
+    }
+
+    /// A failure of an Ignored check alone never selects "Blocked / failing"; it is named among the facts.
+    #[test]
+    fn an_ignored_failing_check_does_not_block() {
+        let view = badge(&BadgeInputs {
+            ci: Some(CiState::NoFailures),
+            ignored_failing: vec!["PR Hygiene".into()],
+            ..ready()
+        });
+        assert_eq!(view.badge, Some(PrBadge::ReadyToMerge));
+        assert_eq!(
+            view.facts,
+            ["CI passed", "Ignored checks failed: PR Hygiene"]
+        );
+    }
 
     fn ready() -> BadgeInputs {
         BadgeInputs {
             open: true,
             ci: Some(CiState::Passing),
+            ready_to_merge: Some(true),
             ..BadgeInputs::default()
         }
     }
@@ -197,6 +545,14 @@ mod tests {
                 },
                 "PR Hygiene statements are not current",
             ),
+            (
+                "head not scanned by My work",
+                BadgeInputs {
+                    ready_to_merge: None,
+                    ..ready()
+                },
+                "My work's last scan did not read this head",
+            ),
         ] {
             let view = badge(&inputs);
             assert_eq!(
@@ -228,9 +584,21 @@ mod tests {
                 ci: Some(CiState::Pending),
                 ..ready()
             },
+            BadgeInputs {
+                ready_to_merge: Some(false),
+                ..ready()
+            },
         ] {
             assert_eq!(badge(&not_ready).badge, None, "{not_ready:?}");
         }
+        assert_eq!(
+            badge(&BadgeInputs {
+                ready_to_merge: Some(false),
+                ..ready()
+            })
+            .facts,
+            ["CI passed", "My work does not list it as Ready to merge"]
+        );
         let closed = BadgeInputs {
             open: false,
             ..ready()

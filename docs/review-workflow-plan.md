@@ -308,12 +308,13 @@ targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe 
 
 | ID | Label | Colour (token) | Rule (facts diffpilot read; tooltip lists them) |
 |---|---|---|---|
-| B1 | Blocked / failing | red (`high`) | a failed effect, CI failed, or a push channel failing for this PR's events |
+| B1 | Blocked / failing | red (`high`) | a failed effect, CI failed (the reader's Ignored checks left out, as in My work), or a push channel failing for this PR's events |
 | B2 | Questions waiting | amber (`med`) | undecided questions exist |
 | B3 | Executing | teal (`bot`) | decided effects are open or claimed |
 | B4 | Waiting for bot round | blue (`low`) | thepastaclaw reports this head reviewing or queued, or a watched pass waits for the round |
-| B5 | Ready to merge | green (`ok`) | none of B1–B4; CI passed; no review requests changes (or all such are dismissed); PR Hygiene, when present, agrees |
-  Unknown inputs (CI not read, GitHub read failed) show no B5; the tooltip says what is missing.
+| B5 | Ready to merge | green (`ok`) | none of B1–B4; CI passed; no review requests changes (or all such are dismissed); PR Hygiene, when present, agrees; My work lists it as Ready to merge (K17) at this head |
+  Unknown inputs (CI not read, GitHub read failed, My work's last scan did not read this head) show no B5; the
+  tooltip says what is missing.
 
 ## 4. Data and sources
 

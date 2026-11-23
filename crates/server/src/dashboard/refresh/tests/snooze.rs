@@ -3,6 +3,7 @@
 //! with a known time, a newer mention that is not hidden), which last once a new snapshot is stored.
 
 use contracts::api::dashboard::Mention;
+use db::repo::dashboard::SnoozeEnd;
 
 use crate::dashboard::snapshot::{self, Snapshot};
 
@@ -217,7 +218,7 @@ async fn snooze_requests_are_validated() {
 
 /// A snooze ends at its date, or earlier when the snapshot shows a review request to the user with a known time or
 /// a mention of the user newer than the snooze (a hidden mention or an approximate request time does not count);
-/// the next stored snapshot deletes the ended ones, so the wake lasts.
+/// the next stored snapshot marks the ended ones ended (kept, with the reason), so the wake lasts.
 #[tokio::test]
 async fn snoozes_wake_at_their_date_or_on_a_newer_request_or_mention_and_stay_woken() {
     let w = world().await;
@@ -286,6 +287,36 @@ async fn snoozes_wake_at_their_date_or_on_a_newer_request_or_mention_and_stay_wo
     w.snoozed_at(quiet.as_str(), now(), far).await;
     let summary = w.summary_with(ALICE, "?excluded=true").await;
     assert_eq!(snoozed_now(&summary), [quiet.as_str()]);
+    let mut reasons: Vec<(String, Option<SnoozeEnd>)> = w
+        .state
+        .db
+        .dashboard()
+        .snoozes(DEFAULT_TENANT, "u1")
+        .await
+        .expect("snoozes")
+        .iter()
+        .map(|s| {
+            (
+                s.key.as_str().to_owned(),
+                crate::dashboard::snooze::ended(s, &stored, &[], w.state.dashboard.now()),
+            )
+        })
+        .collect();
+    reasons.sort();
+    // The quiet issue's snooze write already marked the past TODO snooze ended at its date.
+    let mut expected = vec![
+        (
+            request_key.as_str().to_owned(),
+            Some(SnoozeEnd::ReviewRequest),
+        ),
+        (
+            mentioned.item_key.as_str().to_owned(),
+            Some(SnoozeEnd::Mention),
+        ),
+        (quiet.as_str().to_owned(), None),
+    ];
+    expected.sort();
+    assert_eq!(reasons, expected, "each end has its reason");
     let ranked = w.items("?limit=500").await;
     for woken in [&request_key, &mentioned.item_key, &todo] {
         assert!(ranked_keys(&ranked).contains(&woken.as_str()), "{woken:?}");
@@ -342,7 +373,7 @@ async fn snoozes_wake_at_their_date_or_on_a_newer_request_or_mention_and_stay_wo
         "an approximate request time does not wake it"
     );
 
-    // A stored snapshot deletes the ended snoozes (the request's again known time wakes it for good).
+    // A stored snapshot marks the ended snoozes ended (the request's again known time wakes it for good).
     w.refreshed().await;
     let mut left = w.snoozed_keys().await;
     left.sort_unstable();

@@ -177,13 +177,14 @@ pub(crate) fn view(record: WatchRecord, badge: PrBadgeView) -> WatchedPr {
 /// RW2: the session's watches with their badges and the reader's passes of the last 24 hours.
 pub async fn list(state: &AppState, session: &Session) -> Result<WatchList, LoopError> {
     let rl = state.db.review_loop();
+    let my_work = super::badge::my_work(state, &session.tenant_id, &session.user_id).await?;
     let mut watches = Vec::new();
     for record in rl.watches(&session.user_id).await? {
         let handle = PrHandle {
             pr: record.pr.clone(),
             id: record.pull_request_id,
         };
-        let badge = match super::views::badge(state, handle).await {
+        let badge = match super::views::badge(state, handle, &my_work).await {
             Ok(badge) => badge,
             Err(error) => {
                 tracing::debug!(
