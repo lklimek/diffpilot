@@ -19,7 +19,7 @@ use contracts::ids::{AnalysisId, CarryEventId, CommentItemId, CommitSha, StepId}
 use contracts::time::Timestamp;
 use db::repo::review_loop::{ItemRecord, PassRecord, PassState, StoredDecision};
 
-use super::badge::{self, BadgeInputs};
+use super::badge::{self, BadgeInputs, MyWork};
 use super::observe::Snapshot;
 use super::queue;
 use super::{Loaded, LoopError, PrHandle, READ_INTERVAL};
@@ -302,19 +302,24 @@ fn rounds(loaded: &Loaded, events: &[contracts::api::review_loop::CarryEvent]) -
         .collect()
 }
 
-/// The badge of a loaded PR.
-fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize) -> PrBadgeView {
+/// The badge of a loaded PR, with the reader's [`MyWork`] rules.
+fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize, my_work: &MyWork) -> PrBadgeView {
     let standing = loaded.standing();
     let snapshot = loaded.snapshot.as_ref();
     let now = Timestamp::now();
     let overlay = state.plugins.overlay(now);
     let pr = &loaded.handle.pr;
+    let (ci, ignored_failing) = snapshot
+        .and_then(|snapshot| snapshot.ci.as_ref())
+        .map(|ci| badge::without_ignored(ci, |name| my_work.is_ignored_check(&pr.repo, name)))
+        .unzip();
     badge::badge(&BadgeInputs {
         open: snapshot.is_none_or(|snapshot| snapshot.state == "OPEN"),
         read_failed: loaded.row.read_failure.is_some() || snapshot.is_none(),
-        ci: snapshot
-            .and_then(|snapshot| snapshot.ci.as_ref())
-            .map(|ci| ci.state),
+        ci,
+        ignored_failing: ignored_failing.unwrap_or_default(),
+        ready_to_merge: snapshot
+            .and_then(|snapshot| my_work.ready_to_merge(&pr.repo, pr.number, &snapshot.head)),
         failed_effects: standing.values().map(|s| failed(s)).sum(),
         undecided: count(waiting),
         executing: count(standing.values().filter(|s| effects_open(s)).count()),
@@ -334,11 +339,15 @@ fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize) -> PrBadgeView {
     })
 }
 
-/// The PR's state badge from what is stored.
-pub(crate) async fn badge(state: &AppState, handle: PrHandle) -> Result<PrBadgeView, LoopError> {
+/// The PR's state badge from what is stored, with the reader's [`MyWork`] rules.
+pub(crate) async fn badge(
+    state: &AppState,
+    handle: PrHandle,
+    my_work: &MyWork,
+) -> Result<PrBadgeView, LoopError> {
     let loaded = Loaded::of(state, handle).await?;
     let waiting = queue::waiting(&loaded.queue_items(&[])).len();
-    Ok(badge_of(state, &loaded, waiting))
+    Ok(badge_of(state, &loaded, waiting, my_work))
 }
 
 async fn latest_analysis(
@@ -403,7 +412,12 @@ pub async fn overview(
         rounds: rounds(&loaded, &events),
         assessment: progress(&loaded, pass.as_ref()),
         queue: queue::queue(&queue_items),
-        badge: badge_of(state, &loaded, waiting),
+        badge: badge_of(
+            state,
+            &loaded,
+            waiting,
+            &badge::my_work(state, &session.tenant_id, &session.user_id).await?,
+        ),
         analysis: latest_analysis(state, session, loaded.handle.id)
             .await?
             .map(|summary| summary.id),
@@ -423,7 +437,8 @@ pub async fn pr_page(
     let queue_items = loaded.queue_items(&[]);
     let waiting = queue::waiting(&queue_items).len();
     let pass = rl.latest_pass(loaded.handle.id).await?;
-    let badge = badge_of(state, &loaded, waiting);
+    let my_work = badge::my_work(state, &session.tenant_id, &session.user_id).await?;
+    let badge = badge_of(state, &loaded, waiting, &my_work);
     let pr = &loaded.handle.pr;
     let stored = state.db.pull_requests().get(loaded.handle.id).await?.pr;
     let watch = rl
