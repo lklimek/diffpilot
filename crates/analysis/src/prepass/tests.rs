@@ -1233,3 +1233,83 @@ fn a_change_of_only_context_lines_has_no_plan_batch() {
     // Verification still knows the hunk: a plan stored before today's rules may name it.
     assert_eq!(result.agent_files(&files).len(), 1);
 }
+
+/// dashpay/rust-dashcore#1336: a context-only hunk (a removed blank line beside rewritten comments) is in no plan
+/// prompt, so a plan accepted for its batch also passes the whole-plan check over the listed hunks.
+#[test]
+fn a_plan_of_the_plan_files_passes_over_the_listed_hunks() {
+    use contracts::agent::plan::{HunkSelection, PlanOutput, PlannedFlow};
+    use contracts::common::Classification;
+    use contracts::ids::FlowId;
+
+    let path = "dash-spv/src/sync/instantsend/manager.rs";
+    let base = [
+        "fn process(lock: &Lock) -> Result<(), Error> {",
+        "    if seen(lock) {",
+        "        return Ok(());",
+        "    }",
+        "",
+        "    // A malformed lock is dropped before it is queued or cached, so it can",
+        "    // neither stay pending nor shadow the genuine lock for its txid.",
+        "    validate(lock)?;",
+        "    queue(lock)",
+        "}",
+    ];
+    let head = [
+        "fn process(lock: &Lock) -> Result<(), Error> {",
+        "    if seen(lock) {",
+        "        return Ok(());",
+        "    }",
+        "    // Checked before hashing, so an oversized lock is dropped without serializing it.",
+        "    validate(lock)?;",
+        "    queue_verified(lock)",
+        "}",
+    ];
+    let files = vec![file(
+        path,
+        None,
+        FileStatus::Modified,
+        vec![hunk(1, (5, 3), (5, 1)), hunk(2, (9, 1), (7, 1))],
+    )];
+    let texts = Texts::from([
+        text(LineSide::Base, path, &base),
+        text(LineSide::Head, path, &head),
+    ]);
+    let result = run(&files, &[], &texts);
+    assert_eq!(
+        result.context_only_hunks(&files),
+        BTreeSet::from([HunkId("h1".into())]),
+        "comments and a blank line: context only"
+    );
+    let plan = PlanOutput {
+        flows: vec![PlannedFlow {
+            id: FlowId("f1".into()),
+            title: "Queue verified locks".into(),
+            classification: Classification::Behavioural,
+            importance_rank: 1,
+            intent: "Queue only verified locks.".into(),
+            hunks: vec![HunkSelection {
+                hunk_id: HunkId("h2".into()),
+                head_start: None,
+                head_end: None,
+            }],
+            depends_on: Vec::new(),
+        }],
+        unassigned: Vec::new(),
+        crate_notes: None,
+    };
+    let check = |listed: &[FileDiff]| {
+        let index = crate::diff::DiffIndex::new(listed).expect("index");
+        match crate::verify::plan(&plan, &index) {
+            Ok(_) => Ok(()),
+            Err(crate::verify::VerifyError::Rejected(issues)) => Err(issues),
+            Err(other) => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(check(&result.plan_files(&files)), Ok(()), "the batch check");
+    assert_eq!(
+        check(&result.agent_files(&files)),
+        Ok(()),
+        "the whole-plan check"
+    );
+}
