@@ -144,21 +144,36 @@ pub fn heading_of(text: &str) -> Option<(String, String)> {
         .and_then(finding_heading)
 }
 
-/// A title from free text: the first non-empty line without leading Markdown marks, at most 120 characters.
+/// A title from free text: the first non-empty line without leading Markdown marks, at most 120 characters. Text
+/// that starts with a marker comment (CodeRabbit's `<!-- coderabbit-ai-generated:v1 -->`) is titled by its first
+/// wholly bold line.
 pub fn title_of(text: &str) -> String {
-    let line = text
+    let marked = text
         .lines()
-        .map(|line| {
-            line.trim()
-                .trim_start_matches(['#', '>', '*', '_', '-', ' '])
-        })
-        .map(|line| line.trim_end_matches(['*', '_']).trim())
+        .map(str::trim)
         .find(|line| !line.is_empty())
-        .unwrap_or("");
+        .is_some_and(|line| line.starts_with("<!--"));
+    let bold = marked.then(|| text.lines().find_map(bold_line)).flatten();
+    let line = bold.unwrap_or_else(|| {
+        text.lines()
+            .map(|line| {
+                line.trim()
+                    .trim_start_matches(['#', '>', '*', '_', '-', ' '])
+            })
+            .map(|line| line.trim_end_matches(['*', '_']).trim())
+            .find(|line| !line.is_empty() && !(marked && line.starts_with("<!--")))
+            .unwrap_or("")
+    });
     match line.char_indices().nth(TITLE_CHARS) {
         Some((cut, _)) => format!("{}…", &line[..cut]),
         None => line.to_owned(),
     }
+}
+
+/// The text of a line that is bold as a whole (`**text**`, no other bold inside).
+fn bold_line(line: &str) -> Option<&str> {
+    let inner = line.trim().strip_prefix("**")?.strip_suffix("**")?.trim();
+    (!inner.is_empty() && !inner.contains("**")).then_some(inner)
 }
 
 /// `` `path:start-end` `` or `` `path:line` ``.
@@ -362,6 +377,22 @@ href=javascript:alert(1) -->\nx";
             "Markdown marks are dropped"
         );
         assert_eq!(title_of(&"x".repeat(200)).chars().count(), 121);
+        let coderabbit = "<!-- coderabbit-ai-generated:v1 -->\n\n**<picture><img src=\"x.svg\"></picture> Minor** · \
+**Functional Correctness**\n\n**Document the signing-key limitation.**\n\nThe PR reports a blocker.";
+        assert_eq!(
+            title_of(coderabbit),
+            "Document the signing-key limitation.",
+            "a marker is never the title (spike S13-3 O4)"
+        );
+        assert_eq!(
+            title_of("<!-- generated -->\nPlain first line"),
+            "Plain first line"
+        );
+        assert_eq!(
+            title_of("Plain first line\n**Bold later**"),
+            "Plain first line",
+            "without a marker the first line is the title"
+        );
         assert_eq!(
             location_line("`src/rpc/retry.rs:20-26`"),
             Some((

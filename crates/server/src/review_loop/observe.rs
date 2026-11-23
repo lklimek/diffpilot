@@ -12,6 +12,7 @@ use contracts::time::Timestamp;
 use db::repo::review_loop::ObservedItem;
 use serde::{Deserialize, Serialize};
 
+use super::context::{self, ItemContext};
 use super::markers::{self, GateState};
 use crate::dashboard::score::is_bot;
 use crate::github::review_loop::{Author, PrRead, Review};
@@ -126,6 +127,9 @@ pub struct Snapshot {
     pub thread_ids: BTreeMap<String, String>,
     /// Review node id by key of a review-body item.
     pub review_ids: BTreeMap<String, String>,
+    /// What a `verify_comments` input carries of an item beyond its row, by key; none stored before it was kept.
+    #[serde(default)]
+    pub item_context: BTreeMap<String, ItemContext>,
 }
 
 /// An observed item with what the server needs beside the stored fields.
@@ -442,6 +446,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         ),
         complete: read.complete,
         unresolved_threads: unresolved,
+        item_context: context::of(read, bots, &thread_ids),
         thread_ids,
         review_ids,
     };
