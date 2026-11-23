@@ -370,6 +370,7 @@ export function QuestionsScreen() {
             : null
         }
         prPageHref={prPath(pr)}
+        prHead={overview.head}
         onNavigate={(href) => void navigate(href)}
         askAnswers={askAnswers(single)}
         onAsk={() => ask(single)}

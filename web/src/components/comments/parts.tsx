@@ -88,9 +88,13 @@ export const VALIDITY: Record<Validity, string> = {
   invalid: "invalid",
 };
 
-/** "invalid at the PR head": the LLM judges validity on the code at the head, so a comment fixed since reads invalid. */
-export const validityAtHead = (validity: Validity): string =>
-  `${VALIDITY[validity] ?? validity} at the PR head`;
+/** The commit an assessment judged: "the PR head", or "a1b2c3d, an earlier head" after a push since. */
+export const judgedAt = (assessed: string, prHead: string): string =>
+  assessed === prHead ? "the PR head" : `${assessed.slice(0, 7)}, an earlier head`;
+
+/** "invalid at the PR head": validity is judged on the code of a commit, so a comment fixed since reads invalid. */
+export const validityAt = (validity: Validity, assessed: string, prHead: string): string =>
+  `${VALIDITY[validity] ?? validity} at ${judgedAt(assessed, prHead)}`;
 
 /** Plain text with only `https://github.com/…` links (threat model T24); any other URL stays text. */
 export function GithubLinkedText({ text }: { text: string }) {

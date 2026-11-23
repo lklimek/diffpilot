@@ -1,6 +1,6 @@
 // The other question kinds of V1 (plan §2.4, §2.6): group, "Decide the rest", PR-level questions, assessment
 // running and the empty queue.
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type {
   AssessmentProgress,
   CommentItem,
@@ -15,6 +15,7 @@ import { Banner } from "../banner/Banner";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { clockText } from "../format/time";
 import { Kbd } from "../help/Kbd";
+import { CodeText } from "../section/CodeText";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
@@ -57,7 +58,7 @@ const OpenItem = ({ item }: { item: CommentItem }) => (
   <OpenExternal href={item.url} label={`Open ${itemId(item)} on GitHub`} />
 );
 
-const Heading = ({ id, text }: { id: string; text: string }) => {
+const Heading = ({ id, text }: { id: string; text: ReactNode }) => {
   const ref = useRef<HTMLHeadingElement>(null);
   useEffect(() => ref.current?.focus(), [id]);
   return (
@@ -144,7 +145,11 @@ export function GroupCard({
       </p>
       <Heading
         id={`${id}-h`}
-        text={`Same recommendation: ${label} — ${rec.reason} (${items.length} items)`}
+        text={
+          <>
+            Same recommendation: {label} — <CodeText text={rec.reason} /> ({items.length} items)
+          </>
+        }
       />
       <table className="w-full border-collapse text-[13px]">
         <thead>
@@ -174,7 +179,9 @@ export function GroupCard({
               </td>
               <td className="border-b border-border px-2 py-1.5">{sourceText(item)}</td>
               <td className="border-b border-border px-2 py-1.5">{item.title}</td>
-              <td className="border-b border-border px-2 py-1.5">{item.assessment?.necessity.reason}</td>
+              <td className="border-b border-border px-2 py-1.5">
+                {item.assessment && <CodeText text={item.assessment.necessity.reason} />}
+              </td>
               <td className="border-b border-border px-2 py-1.5">
                 <Tooltip tip={`Takes ${itemId(item)} out of this group; it is asked on its own (i).`}>
                   <button
@@ -383,7 +390,7 @@ export function DecideRestCard({
                 </td>
                 <td className="border-b border-border px-2 py-1">{item?.title}</td>
                 <td className="border-b border-border px-2 py-1">
-                  {CHOICE_LABEL[rec.kind]}: {rec.reason}
+                  {CHOICE_LABEL[rec.kind]}: <CodeText text={rec.reason} />
                 </td>
                 <td className="border-b border-border px-2 py-1">
                   {effects.map((e) => EFFECT_WORD[e.kind] ?? e.kind).join(", ") || "—"}

@@ -98,6 +98,39 @@ describe("GroupCard (US5)", () => {
       byNo(18).url,
     );
   });
+
+  it("shows the backtick spans of the LLM's recommendation and assessment as code", () => {
+    const coded = (item: CommentItem, token: string): CommentItem => ({
+      ...item,
+      assessment: {
+        ...item.assessment!,
+        necessity: { ...item.assessment!.necessity, reason: `\`need_${token}\` is in scope.` },
+        recommendation: { ...item.assessment!.recommendation, reason: "Keep `rec_tok`." },
+      },
+    });
+    render(
+      <Planned>
+        {(plan) => (
+          <GroupCard
+            items={[coded(byNo(18), "a"), coded(byNo(19), "b")]}
+            position={{ index: 7, total: 9 }}
+            onDecide={vi.fn()}
+            onDiscussIndividually={vi.fn()}
+            onSkip={vi.fn()}
+            busy={false}
+            error={null}
+            storageKey="t"
+            {...plan}
+          />
+        )}
+      </Planned>,
+    );
+    // The heading and the table show the LLM's texts; the planned GitHub reply keeps its Markdown.
+    const shown = [screen.getByRole("heading", { level: 2 }), screen.getByRole("table")];
+    const codes = shown.flatMap((el) => [...el.querySelectorAll("code")].map((c) => c.textContent));
+    for (const token of ["rec_tok", "need_a", "need_b"]) expect(codes).toContain(token);
+    for (const el of shown) expect(el.textContent).not.toMatch(/`(rec_tok|need_a|need_b)`/);
+  });
 });
 
 describe("DecideRestCard (US7)", () => {
@@ -338,6 +371,7 @@ describe("CommentsTable (US8, US27)", () => {
       busy={false}
       error={null}
       now={NOW}
+      prHead={byNo(22).assessment!.head}
     />
   );
   const show = (onSubmit = vi.fn()) => {
@@ -361,6 +395,31 @@ describe("CommentsTable (US8, US27)", () => {
     ).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Keep my input for C22" }));
     expect(screen.queryByText(/C22 \(changed since you started/)).toBeNull();
+  });
+
+  it("the opinion names an earlier head's commit; the LLM's texts show their backtick spans as code", () => {
+    const c22 = byNo(22);
+    const earlier = "3f9a1c2e4b5d6f708192a3b4c5d6e7f809a1b2c3";
+    const items = listItems().map((i) =>
+      i.no === 22
+        ? {
+            ...i,
+            assessment: {
+              ...i.assessment!,
+              head: earlier,
+              necessity: { ...i.assessment!.necessity, reason: "`need_tok` is in scope." },
+            },
+          }
+        : i,
+    );
+    render(table(items, vi.fn()));
+    const row = screen.getByRole("link", { name: "Open C22 on GitHub (new tab)" }).closest("tr")!;
+    expect(row).toHaveTextContent(`at ${earlier.slice(0, 7)}, an earlier head`);
+    expect(row.querySelector("code")).toHaveTextContent("need_tok");
+    expect(row.textContent).not.toContain("`need_tok`");
+    const c14 = screen.getByRole("link", { name: "Open C14 on GitHub (new tab)" }).closest("tr")!;
+    expect(c14).toHaveTextContent(/at the PR head/);
+    expect(c22.assessment!.head).not.toBe(earlier);
   });
 
   it("each row opens its comment on GitHub in a new tab (plan §3.9)", () => {

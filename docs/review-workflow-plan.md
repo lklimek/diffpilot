@@ -304,11 +304,12 @@ changed, carried effects pending); dated list (item, repeat of, decision carried
 effects, Reopen). All PRs: one row per PR with the same counts.
 
 ### 3.7 Wording (brief §1; the wording checks cover `components/comments/**`, `screens/pr/**`, `screens/comments/**`)
-LLM text: "LLM" tag; tooltip "written by diffpilot's LLM, not checked". Validity reads "The LLM says: valid / partly
-valid / invalid at the PR head", with "Judged on the code at the PR head, not on the code the comment was written on."
-(a comment fixed since reads invalid; owner 2026-11-23). Section title "LLM assessment", never "verification" or
-"verified". A bot's severity is its own words with the "GitHub" tag. No numeric confidence; counts, never
-percentages. External agents' reports read "Agent
+LLM text: "LLM" tag; tooltip "written by diffpilot's LLM, not checked"; its backtick spans and fences render as code.
+Validity reads "The LLM says: valid / partly valid / invalid at the PR head", with "Judged on the code at the PR head,
+not on the code the comment was written on." (a comment fixed since reads invalid; owner 2026-11-23); an assessment
+of an earlier head names that commit instead, "invalid at a1b2c3d, an earlier head", in the card and the table.
+Section title "LLM assessment", never "verification" or "verified". A bot's severity is its own words with the
+"GitHub" tag. No numeric confidence; counts, never percentages. External agents' reports read "Agent
 <token name> reports: replied (link)"; a GitHub read adds a fact badge. Plug-in statements are attributed
 ("thepastaclaw status: reviewing (verify, 3/5) · data of 10:21").
 

@@ -30,6 +30,7 @@ export function TableScreen() {
         key={recorded}
         prNumber={pr.number}
         purpose={overview.purpose}
+        prHead={overview.head}
         items={items}
         askAnswers={askAnswers}
         itemHref={(item) => itemPath(pr, item.no)}
