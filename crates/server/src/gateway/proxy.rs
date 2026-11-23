@@ -335,7 +335,9 @@ impl Gateway {
         let mut tasks = self.tasks.lock().await;
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
-            let mut permits = Some(permits);
+            // Drains retain the key permit so disconnects cannot bypass its concurrency cap.
+            let (_key_permit, global_permit) = permits;
+            let mut global_permit = Some(global_permit);
             // The model client's 45-minute total timeout also bounds abandoned streams.
             let mut liveness = tokio::time::interval(std::time::Duration::from_secs(1));
             liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -348,13 +350,13 @@ impl Gateway {
                     biased;
                     _ = async { if let Some(sender) = &sender { sender.closed().await } else { std::future::pending::<()>().await } } => {
                         sender = None;
-                        permits.take();
+                        global_permit.take();
                         continue;
                     }
                     _ = liveness.tick() => {
                         if sender.is_some() && (expires_at <= super::now() || !store.key_live(&key)) {
                             sender = None;
-                            permits.take();
+                            global_permit.take();
                         }
                         continue;
                     }
@@ -445,7 +447,7 @@ impl Gateway {
                         _ = channel.send(Ok(bytes)) => {}
                         _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
                             sender = None;
-                            permits.take();
+                            global_permit.take();
                         }
                     }
                 }

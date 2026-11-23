@@ -1874,7 +1874,7 @@ async fn key_capacity_evicts_oldest_expired_key_and_preserves_live_key_and_usage
 }
 
 #[tokio::test]
-async fn abandoned_streams_drain_past_five_seconds_without_a_separate_permit_pool() {
+async fn abandoned_streams_hold_key_permits_until_delayed_usage_is_drained() {
     let dir = tempfile::tempdir().expect("temp");
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("private");
@@ -1911,7 +1911,7 @@ async fn abandoned_streams_drain_past_five_seconds_without_a_separate_permit_poo
         .mint(&ContainerId::Judge { payer: u.clone() })
         .await
         .expect("key");
-    for _ in 0..17 {
+    for _ in 0..2 {
         let response = call(
             g.model_router(),
             "POST",
@@ -1932,21 +1932,40 @@ async fn abandoned_streams_drain_past_five_seconds_without_a_separate_permit_poo
         .await
         .expect("live permits released");
     }
+    let response = call(
+        g.model_router(),
+        "POST",
+        "/v1/responses",
+        key.key.expose(),
+        json!({"store":false,"stream":true}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let drained = tokio::time::timeout(Duration::from_secs(9), async {
         loop {
             let usage = g.usage(&u, Some(&key.id)).await.expect("usage").usage;
-            if usage.input_tokens == 170 {
-                assert_eq!(usage.requests, Some(17));
+            if usage.input_tokens == 20 {
+                assert_eq!(usage.requests, Some(2));
                 break;
             }
             tokio::time::sleep(Duration::from_millis(30)).await;
         }
     })
     .await;
+    drained.expect("all delayed response IDs metered once");
+    let response = call(
+        g.model_router(),
+        "POST",
+        "/v1/responses",
+        key.key.expose(),
+        json!({"store":false,"stream":true}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
     g.shutdown().await;
     server.abort();
     let _ = server.await;
-    drained.expect("all delayed response IDs metered once");
 }
 
 #[tokio::test]
