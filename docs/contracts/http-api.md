@@ -788,14 +788,15 @@ New posts on the same item have independent identities. Hides are not an update 
 
 `PUT /api/v1/dashboard/items/{key}/snooze` (R12, owner SN1) takes `SnoozeRequest {days}` (1 to
 `MAX_SNOOZE_DAYS` = 365) and snoozes an item of the user's current snapshot (`{key}` is an `ItemKey`) from now
-for that many whole days; a new snooze of the same item replaces the old one. `DELETE` on the same path (R13, "Wake
-now") ends it. Session + CSRF only, no personal access tokens; per user, across devices; never an update to
+for that many whole days; a new snooze of the same item replaces the one that has not ended. `DELETE` on the same
+path (R13, "Wake now") ends it. Session + CSRF only, no personal access tokens; per user, across devices; never an update to
 GitHub, the snapshot, the ranking or a judgement. A snoozed item that the rules would rank leaves Needs you and is
 listed under Excluded with reason `snoozed` and `snoozed_until`; another rule's exclusion wins, and a P0 alarm is
 never snoozed. The snooze ends at `snoozed_until`, or earlier when the snapshot shows a review request to the user
 on the pull request with a known request time after the snooze, or a mention of the user on the item (not hidden)
-newer than the snooze; it is then deleted when the next snapshot is stored (refresh or pull-request re-read), so a
-wake lasts after the request or mention is gone. Snoozes change the summary revision and items ETag. Waiting on
+newer than the snooze; it is then marked ended when the next snapshot is stored (refresh or pull-request re-read),
+so a wake lasts after the request or mention is gone. Ended snoozes are kept with their end and its reason (date,
+review request, mention, woken by the user). Snoozes change the summary revision and items ETag. Waiting on
 others and Ready to merge are not affected.
 
 ## Review loop (v1.3)

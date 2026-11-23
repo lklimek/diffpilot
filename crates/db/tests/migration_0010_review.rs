@@ -293,7 +293,7 @@ async fn migration_0010_on_a_seeded_v9_database() {
         Some(0)
     );
     // 0017 and 0019 add the review-loop tables (with their indexes and trigger) and 0021 `dashboard_snoozes` (with its
-    // primary-key index), all empty: left out of this check.
+    // index; 0026 rebuilds it), all empty: left out of this check.
     const ADDED_0017: [&str; 16] = [
         "comment_prs",
         "comment_items",

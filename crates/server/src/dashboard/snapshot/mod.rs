@@ -175,7 +175,7 @@ pub async fn load(
     let snoozes = state.db.dashboard().snoozes(tenant_id, user_id).await?;
     snapshot.snoozes = snoozes
         .into_iter()
-        .filter(|s| !super::snooze::ended(s, &snapshot, &[], now))
+        .filter(|s| super::snooze::ended(s, &snapshot, &[], now).is_none())
         .collect();
     Ok(Some((record, snapshot)))
 }

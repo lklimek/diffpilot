@@ -13,10 +13,12 @@ use contracts::api::dashboard::{ItemKey, MAX_SNOOZE_DAYS, SnoozeRequest};
 use contracts::api::error::ApiErrorCode;
 use contracts::routes::{SNOOZE_DASHBOARD_ITEM, WAKE_DASHBOARD_ITEM};
 use db::error::DbError;
+use db::repo::dashboard::SnoozeEnd;
 use jiff::SignedDuration;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::SessionCsrf;
+use crate::dashboard::refresh::Scope;
 use crate::dashboard::{snapshot, snooze};
 use crate::state::AppState;
 
@@ -96,6 +98,12 @@ async fn snooze(
     let until = now
         .checked_add(SignedDuration::from_hours(24 * i64::from(request.days)))
         .ok_or_else(|| failure(SnoozeError::Days))?;
+    // An ended snooze is marked (and kept) before the new one would replace it.
+    let scope = Scope {
+        tenant_id: session.tenant_id.clone(),
+        user_id: session.user_id.clone(),
+    };
+    snooze::end_ended(&state, &scope, &current).await;
     state
         .db
         .dashboard()
@@ -120,6 +128,8 @@ async fn wake(
             &session.tenant_id,
             &session.user_id,
             std::slice::from_ref(&key),
+            SnoozeEnd::Woken,
+            state.dashboard.now(),
         )
         .await
         .map_err(failure)?;

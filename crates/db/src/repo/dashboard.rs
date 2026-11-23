@@ -72,6 +72,31 @@ macro_rules! current_snapshot_id {
     };
 }
 
+/// Why a snooze ended (owner SN1); an ended snooze is kept, marked with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SnoozeEnd {
+    /// Its date passed.
+    Date,
+    /// A review request to the user newer than the snooze.
+    ReviewRequest,
+    /// A mention of the user newer than the snooze.
+    Mention,
+    /// The user woke it (Wake now).
+    Woken,
+}
+
+impl SnoozeEnd {
+    /// The stored `end_reason`.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Date => "date",
+            Self::ReviewRequest => "review_request",
+            Self::Mention => "mention",
+            Self::Woken => "woken",
+        }
+    }
+}
+
 /// A snoozed dashboard item of a user (owner SN1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snooze {
@@ -361,11 +386,12 @@ impl Dashboard<'_> {
         Ok(())
     }
 
-    /// The user's snoozes (owner SN1), by item key; ended ones included until a write removes them.
+    /// The user's snoozes not marked ended (owner SN1), by item key; one whose date passed is included until a write
+    /// marks it.
     pub async fn snoozes(&self, tenant_id: &str, user_id: &str) -> Result<Vec<Snooze>, DbError> {
         let rows = sqlx::query(
             "SELECT item_key, snoozed_at, until FROM dashboard_snoozes
-             WHERE tenant_id = ? AND user_id = ? ORDER BY item_key",
+             WHERE tenant_id = ? AND user_id = ? AND ended_at IS NULL ORDER BY item_key",
         )
         .bind(tenant_id)
         .bind(user_id)
@@ -383,8 +409,8 @@ impl Dashboard<'_> {
             .collect()
     }
 
-    /// Snoozes `key` from `now` until `until` (a later snooze of the same item replaces it) and deletes the user's
-    /// snoozes that ended by `now`; never changes the snapshot or a judgement.
+    /// Snoozes `key` from `now` until `until` (it replaces the item's snooze that has not ended) after marking the
+    /// user's snoozes whose date passed by `now` ended (kept); never changes the snapshot or a judgement.
     pub async fn snooze(
         &self,
         tenant_id: &str,
@@ -395,7 +421,8 @@ impl Dashboard<'_> {
     ) -> Result<(), DbError> {
         let mut tx = write_tx(self.pool).await?;
         sqlx::query(
-            "DELETE FROM dashboard_snoozes WHERE tenant_id = ? AND user_id = ? AND until <= ?",
+            "UPDATE dashboard_snoozes SET ended_at = until, end_reason = 'date'
+             WHERE tenant_id = ? AND user_id = ? AND ended_at IS NULL AND until <= ?",
         )
         .bind(tenant_id)
         .bind(user_id)
@@ -404,8 +431,8 @@ impl Dashboard<'_> {
         .await?;
         sqlx::query(
             "INSERT INTO dashboard_snoozes (tenant_id, user_id, item_key, snoozed_at, until) VALUES (?, ?, ?, ?, ?)
-             ON CONFLICT (tenant_id, user_id, item_key) DO UPDATE SET snoozed_at = excluded.snoozed_at,
-                 until = excluded.until",
+             ON CONFLICT (tenant_id, user_id, item_key) WHERE ended_at IS NULL DO UPDATE
+                 SET snoozed_at = excluded.snoozed_at, until = excluded.until",
         )
         .bind(tenant_id)
         .bind(user_id)
@@ -418,28 +445,34 @@ impl Dashboard<'_> {
         Ok(())
     }
 
-    /// Ends the user's snoozes of `keys` (Wake now, or woken by a new review request or mention); returns how many
-    /// ended. Idempotent.
+    /// Marks the user's snoozes of `keys` that have not ended as ended at `now` for `reason` (Wake now, a newer review
+    /// request or mention), or at their date when it passed; the rows are kept. Returns how many ended. Idempotent.
     pub async fn wake(
         &self,
         tenant_id: &str,
         user_id: &str,
         keys: &[ItemKey],
+        reason: SnoozeEnd,
+        now: Timestamp,
     ) -> Result<u64, DbError> {
         if keys.is_empty() {
             return Ok(0);
         }
         let list = serde_json::to_string(&keys.iter().map(ItemKey::as_str).collect::<Vec<_>>())?;
-        let deleted = sqlx::query(
-            "DELETE FROM dashboard_snoozes WHERE tenant_id = ? AND user_id = ?
-                 AND item_key IN (SELECT value FROM json_each(?))",
+        let ended = sqlx::query(
+            "UPDATE dashboard_snoozes SET ended_at = min(until, ?1),
+                 end_reason = CASE WHEN until <= ?1 THEN 'date' ELSE ?2 END
+             WHERE tenant_id = ?3 AND user_id = ?4 AND ended_at IS NULL
+                 AND item_key IN (SELECT value FROM json_each(?5))",
         )
+        .bind(ts(now))
+        .bind(reason.as_str())
         .bind(tenant_id)
         .bind(user_id)
         .bind(list)
         .execute(self.pool)
         .await?;
-        Ok(deleted.rows_affected())
+        Ok(ended.rows_affected())
     }
 
     /// The user's settings row; none means the defaults (`DashboardSettings::default`).
@@ -1616,10 +1649,25 @@ mod tests {
         ItemKey::parse(text).unwrap()
     }
 
-    /// SN1: a snooze is per user, a new snooze of the item replaces the old one, a snooze write drops the user's
-    /// ended snoozes, and Wake ends exactly the named ones (idempotent).
+    /// A snooze row: item key, `until`, `ended_at`, `end_reason`.
+    type SnoozeRow = (String, String, Option<String>, Option<String>);
+
+    /// Every snooze row of the user with its end, oldest first (ended snoozes are kept).
+    async fn snooze_rows(db: &Db, user: &str) -> Vec<SnoozeRow> {
+        sqlx::query_as(
+            "SELECT item_key, until, ended_at, end_reason FROM dashboard_snoozes WHERE user_id = ? ORDER BY id",
+        )
+        .bind(user)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    /// SN1: a snooze is per user, a new snooze replaces the item's snooze that has not ended, a snooze write marks
+    /// the user's snoozes whose date passed ended, and Wake ends exactly the named ones (idempotent); ended snoozes
+    /// are kept with their reason and end, and a later snooze of the same item is a new row beside them.
     #[tokio::test]
-    async fn snoozes_are_per_user_replaced_pruned_and_woken() {
+    async fn snoozes_are_per_user_replaced_ended_and_kept() {
         let db = db().await;
         let dash = db.dashboard();
         let pr = item("acme~platform~pr~1203");
@@ -1655,26 +1703,93 @@ mod tests {
         assert_eq!(
             keys,
             [pr.clone(), todo.clone()],
-            "the ended issue snooze is gone"
+            "the issue snooze ended at its date"
         );
         assert_eq!(
-            dash.wake(T, "u1", &[pr.clone(), issue.clone()])
-                .await
-                .unwrap(),
+            dash.wake(
+                T,
+                "u1",
+                &[pr.clone(), issue.clone()],
+                SnoozeEnd::Woken,
+                at(15)
+            )
+            .await
+            .unwrap(),
             1
         );
         assert_eq!(
-            dash.wake(T, "u1", std::slice::from_ref(&pr)).await.unwrap(),
+            dash.wake(T, "u1", std::slice::from_ref(&pr), SnoozeEnd::Woken, at(16))
+                .await
+                .unwrap(),
             0
         );
-        assert_eq!(dash.wake(T, "u1", &[]).await.unwrap(), 0);
+        assert_eq!(
+            dash.wake(T, "u1", &[], SnoozeEnd::Woken, at(16))
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            dash.wake(
+                T,
+                "u1",
+                std::slice::from_ref(&todo),
+                SnoozeEnd::Mention,
+                at(25)
+            )
+            .await
+            .unwrap(),
+            1,
+            "its date passed before the mention was seen"
+        );
+        dash.snooze(T, "u1", &pr, at(30), at(40)).await.unwrap();
+        dash.wake(
+            T,
+            "u1",
+            std::slice::from_ref(&pr),
+            SnoozeEnd::ReviewRequest,
+            at(35),
+        )
+        .await
+        .unwrap();
+        let ts = |minute| super::ts(at(minute));
+        assert_eq!(
+            snooze_rows(&db, "u1").await,
+            [
+                (
+                    pr.as_str().to_owned(),
+                    ts(90),
+                    Some(ts(15)),
+                    Some("woken".to_owned())
+                ),
+                (
+                    issue.as_str().to_owned(),
+                    ts(10),
+                    Some(ts(10)),
+                    Some("date".to_owned())
+                ),
+                (
+                    todo.as_str().to_owned(),
+                    ts(20),
+                    Some(ts(20)),
+                    Some("date".to_owned())
+                ),
+                (
+                    pr.as_str().to_owned(),
+                    ts(40),
+                    Some(ts(35)),
+                    Some("review_request".to_owned())
+                ),
+            ],
+            "ended snoozes are kept with their end; the next snooze of the item is a new row"
+        );
         assert_eq!(
             dash.snoozes(T, "u2").await.unwrap().len(),
             1,
             "another user's stays"
         );
         assert!(dash.snoozes("other", "u1").await.unwrap().is_empty());
-        let backwards = dash.snooze(T, "u1", &pr, at(10), at(10)).await;
+        let backwards = dash.snooze(T, "u1", &pr, at(50), at(50)).await;
         assert!(backwards.is_err(), "a snooze ends after it starts");
     }
 
@@ -3641,6 +3756,7 @@ mod tests {
                 "dashboard_judgements_by_last_seen",
                 "dashboard_refreshes_by_user",
                 "dashboard_refreshes_one_live_per_user",
+                "dashboard_snoozes_not_ended",
             ]
         );
         let attempt: (String, i64) = sqlx::query_as(
