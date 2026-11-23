@@ -111,8 +111,9 @@ submitted review with a body (for thepastaclaw its latest round, spike S13-1 R1�
 body yields an item only when it requests changes). An earlier body finding stays the same item while that round
 lists it as still open without a thread link: an entry of "Still open from earlier rounds" (`(carried)`, S13-1 R5) or
 of "Disputed — left to maintainers", a trailing `— **settled:** …` clause allowed. An entry takes the bot's most recent
-earlier finding at the same title, path and lines, else one of the same title and path, each finding once; an entry
-that matches none is logged once per read. A finding the round restates in full is that round's item: body findings
+earlier finding at the same title, path and lines, else one of the same title and path, and an entry without a path
+last, one of the same title; each finding once. A copy in a dismissed review takes its entry but stays no item, so an
+older copy that round superseded does not come back. An entry that matches none is logged once per read. A finding the round restates in full is that round's item: body findings
 carry no key (S13-1 R4), so the earlier copy and its decision are not linked to it. Every other earlier body finding of
 that bot is superseded: no longer an item by these rules, so a complete read marks it `gone_at` (the superseding round
 is the bot's latest round at that time) and a first read never creates it. A superseded item leaves the queue, groups,

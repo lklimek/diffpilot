@@ -249,13 +249,15 @@ pub struct CarriedFinding {
     pub location: Option<(String, LineRange)>,
 }
 
-/// How well an earlier body finding fits a carried entry; `Exact` orders before `Loose`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// How well an earlier body finding fits a carried entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
     /// The same title, path and lines.
     Exact,
-    /// The same title, and the same path when the entry names one.
-    Loose,
+    /// The same title and path, other lines.
+    Path,
+    /// The same title; the entry names no path.
+    Title,
 }
 
 impl CarriedFinding {
@@ -265,9 +267,9 @@ impl CarriedFinding {
             return None;
         }
         match (&self.location, &finding.location) {
-            (None, _) => Some(Fit::Loose),
+            (None, _) => Some(Fit::Title),
             (Some((path, lines)), Some((found, at))) if path == found => {
-                Some(if lines == at { Fit::Exact } else { Fit::Loose })
+                Some(if lines == at { Fit::Exact } else { Fit::Path })
             }
             _ => None,
         }
@@ -586,7 +588,7 @@ Request changes.\n\n### Still open from earlier rounds (1)\n\n\
         );
         assert_eq!(
             carried[0].fit(&finding(bound, Some((retry, range(40, 44))))),
-            Some(Fit::Loose),
+            Some(Fit::Path),
             "other lines of the same path"
         );
         assert_eq!(
@@ -606,7 +608,7 @@ Request changes.\n\n### Still open from earlier rounds (1)\n\n\
                 "Name the histogram after its unit",
                 Some(("x.rs", range(1, 2)))
             )),
-            Some(Fit::Loose),
+            Some(Fit::Title),
             "an entry without a path fits by title"
         );
     }

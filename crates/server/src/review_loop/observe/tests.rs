@@ -394,7 +394,6 @@ fn carried_entries_without_an_earlier_finding_are_reported() {
 /// Plan §2.1 I2 (owner, 2026-11-23, RQ11): an entry whose most recent earlier copy is in a dismissed round takes that
 /// copy, which yields no item; an older copy the dismissed round had superseded stays superseded.
 #[test]
-#[ignore = "repro: a carried entry skips dismissed rounds and falls back to an older copy; remove with the fix"]
 fn a_carried_entry_whose_latest_copy_was_dismissed_does_not_revive_an_older_copy() {
     let bots = BotRule::new(&default_known_bots());
     let mut read = fixture_read();
@@ -424,7 +423,6 @@ fn a_carried_entry_whose_latest_copy_was_dismissed_does_not_revive_an_older_copy
 /// Plan §2.1 I2: each finding is taken once, and an entry without a path does not take the only finding an entry
 /// with a path could take.
 #[test]
-#[ignore = "repro: the loose pass assigns greedily in entry order; remove with the fix"]
 fn an_entry_without_a_path_leaves_the_finding_at_a_named_path_to_its_entry() {
     let bots = BotRule::new(&default_known_bots());
     let mut read = fixture_read();

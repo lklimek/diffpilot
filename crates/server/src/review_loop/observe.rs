@@ -228,9 +228,10 @@ struct Carried<'a> {
     unmatched: Vec<(&'a str, String)>,
 }
 
-/// What each bot's latest round lists as still open. An entry takes a finding of the bot's earlier non-dismissed
-/// reviews, the most recent first: one at the same lines if any, else one of the same title and path; each finding is
-/// taken once.
+/// What each bot's latest round lists as still open. An entry takes a finding of the bot's earlier reviews, the most
+/// recent first, in tiers: the same title, path and lines; else the same title and path; an entry without a path
+/// last, by title. Each finding is taken once. A copy in a dismissed review takes its entry but stays no item: the
+/// dismissed round superseded older copies (RQ11).
 fn carried<'a>(
     read: &'a PrRead,
     latest_rounds: &HashMap<String, (Timestamp, &'a Review)>,
@@ -242,37 +243,40 @@ fn carried<'a>(
         if entries.is_empty() {
             continue;
         }
-        let mut earlier: Vec<(Timestamp, &str, Vec<markers::BodyFinding>)> = read
+        let mut earlier: Vec<(Timestamp, &Review, Vec<markers::BodyFinding>)> = read
             .reviews
             .iter()
             .filter(|review| {
                 review.id != latest.id
-                    && review.state != "DISMISSED"
                     && review.body.contains(markers::REVIEW_MARKER)
                     && login(review.author.as_ref()).to_lowercase() == *bot
             })
             .filter_map(|review| {
                 let at = review.submitted_at.as_deref().and_then(parse_time)?;
-                Some((at, review.id.as_str(), markers::body_findings(&review.body)))
+                Some((at, review, markers::body_findings(&review.body)))
             })
             .collect();
         earlier.sort_by_key(|(at, _, _)| std::cmp::Reverse(*at));
+        let mut consumed = HashSet::new();
         let mut taken = vec![false; entries.len()];
-        // The exact pass first, so an entry naming its lines is not taken by a namesake's loose match.
-        for pass in [Fit::Exact, Fit::Loose] {
+        // Tier by tier, so a looser entry does not take the finding a closer one names.
+        for tier in [Fit::Exact, Fit::Path, Fit::Title] {
             for (entry, taken) in entries.iter().zip(taken.iter_mut()) {
                 if *taken {
                     continue;
                 }
-                let found = earlier.iter().find_map(|(_, id, findings)| {
+                let found = earlier.iter().find_map(|(_, review, findings)| {
                     let (index, _) = findings.iter().enumerate().find(|(index, finding)| {
-                        !carried.contains(&(*id, index + 1))
-                            && entry.fit(finding).is_some_and(|fit| fit <= pass)
+                        !consumed.contains(&(review.id.as_str(), index + 1))
+                            && entry.fit(finding) == Some(tier)
                     })?;
-                    Some((*id, index + 1))
+                    Some((*review, index + 1))
                 });
-                if let Some(key) = found {
-                    carried.insert(key);
+                if let Some((review, ordinal)) = found {
+                    consumed.insert((review.id.as_str(), ordinal));
+                    if review.state != "DISMISSED" {
+                        carried.insert((review.id.as_str(), ordinal));
+                    }
                     *taken = true;
                 }
             }
