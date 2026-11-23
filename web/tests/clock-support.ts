@@ -1,9 +1,11 @@
 import { expect, type Page } from "@playwright/test";
 
-/** Pauses shortly ahead of the installed clock, including before navigation. */
+/** Pauses the installed clock without racing elapsed time between browser commands. */
 export async function pauseClock(page: Page): Promise<void> {
   const now = await page.evaluate(() => Date.now());
-  await page.clock.pauseAt(now + 100);
+  await page.clock.setFixedTime(now);
+  await page.clock.pauseAt(now);
+  await page.clock.setSystemTime(now);
 }
 
 /** Flushes asynchronous UI updates without leaving the mock's current scripted phase. */
