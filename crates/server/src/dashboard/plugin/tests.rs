@@ -2,6 +2,7 @@
 //! against the in-process fake service (`test_support::pr_hygiene`); no real network. The thepastaclaw status
 //! plug-in: `tests/thepastaclaw.rs`.
 
+mod pr_hygiene;
 mod thepastaclaw;
 
 use std::collections::VecDeque;
@@ -289,7 +290,7 @@ fn external_text_is_bounded_plain_and_links_are_web_links() {
     let mut spoofed = statement("b", None);
     spoofed.summary =
         Some("Merge\u{202E}evil\u{202C} it\u{200B}\u{2066}now\u{2069}\u{FEFF}".to_owned());
-    long.details = (0..20).map(|n| format!("detail {n}")).collect();
+    long.details = (0..100).map(|n| format!("detail {n}")).collect();
     long.facts = (0..10)
         .map(|n| Fact {
             label: format!("label {n}"),
@@ -467,12 +468,15 @@ async fn pr_hygiene_states_governed_pull_requests_of_fresh_repositories() {
         first.summary.as_deref(),
         Some("Author must post /self-reviewed 1a2b3c")
     );
-    assert_eq!(
-        first.details,
-        [
-            "Author must post /self-reviewed 1a2b3c",
-            "Human approval or objection resolution is required"
-        ]
+    assert!(
+        first
+            .details
+            .contains(&"Blocker: Author must post /self-reviewed 1a2b3c".to_owned())
+    );
+    assert!(
+        first
+            .details
+            .contains(&"Blocker: Human approval or objection resolution is required".to_owned())
     );
     let facts: Vec<_> = first
         .facts
@@ -482,9 +486,12 @@ async fn pr_hygiene_states_governed_pull_requests_of_fresh_repositories() {
     assert_eq!(
         facts,
         [
-            ("Stage", "self-review"),
+            ("Stage", "Self review"),
             ("Whose move", "author"),
-            ("Lateness", "late")
+            ("Lateness", "late"),
+            ("Engine state", "Waiting for self review"),
+            ("Since", "2026-11-18T08:00:00Z (0h 59m at data time)"),
+            ("Since basis", "Engine")
         ]
     );
     assert_eq!(
@@ -588,14 +595,14 @@ async fn pr_hygiene_revalidates_with_etags_and_marks_ignore_time_only_values() {
     };
     assert_eq!(plugin.poll().await.expect("poll"), Polled::Unchanged);
     let served = fake.served();
-    assert_eq!(served.len(), 4);
+    assert_eq!(served.len(), 5);
     assert!(
         served[..2]
             .iter()
             .all(|s| s.if_none_match.is_none() && s.status == 200)
     );
     assert!(
-        served[2..]
+        served[3..]
             .iter()
             .all(|s| s.if_none_match.is_some() && s.status == 304),
         "{served:?}"

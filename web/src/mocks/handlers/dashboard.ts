@@ -103,6 +103,58 @@ const noTimeZone = (): Base => ({
 const SCENARIOS = {
   /** A finished manual refresh of 08:12, ranked at 08:15. */
   normal: (): Base => ({ summary: SUMMARY, items: ITEMS }),
+  /** Full external context on one compact PR note (owner 2026-11-23). */
+  "mywork-details": (): Base => ({
+    summary: SUMMARY,
+    items: {
+      ...ITEMS,
+      items: ITEMS.items.map((item) =>
+        item.id === "NC-482"
+          ? {
+              ...item,
+              plugin_notes: [
+                {
+                  plugin: "pr-hygiene",
+                  source: "PR Hygiene",
+                  url: "https://pr-hygiene.example.test/api/v1/prs/acme/node-client/482",
+                  as_of: "2026-11-18T10:12:00Z",
+                  summary: "coderabbitai has not reported for the current head",
+                  facts: [
+                    { label: "Stage", value: "Bot reviews" },
+                    { label: "Engine state", value: "Waiting for bot reviews" },
+                  ],
+                  details: [
+                    "Since: 2026-11-18T08:12:00Z (2h 0m at data time)",
+                    "Since basis: Engine",
+                    "Blocker: coderabbitai has not reported for the current head",
+                    "Blocker: thepastaclaw requested changes on this head; dismiss the review or push a fix",
+                    "Changes requested: Yes",
+                    "CI failing: Yes",
+                    "Merge conflict: No",
+                    "Unresolved comments: 0",
+                    "Lateness: on time",
+                    "Idle: No",
+                    "Draft: No",
+                    "Tracked: Yes",
+                    "Areas: fallback",
+                    "Base: v1.0-dev",
+                    "Milestone: None",
+                    "Author: Claudius-Maginificent (bot)",
+                    "Review requested for wallet: alice, bob",
+                    "Objectors: None",
+                    "Latest review by alice: Approved at 2026-11-18T09:50:00Z",
+                    "Stage change: Self review; Waiting for author; since not recorded; observed 2026-11-18T07:00:00Z",
+                    "Stale: No",
+                    "Data generated: 2026-11-18T10:12:00Z",
+                    "External text: <img src=x onerror=alert(1)>",
+                  ],
+                },
+              ],
+            }
+          : item,
+      ),
+    },
+  }),
   /** A scan running for 47 s (PR details 23 of 41); the list is the 08:12 snapshot. */
   refreshing: (): Base => {
     const started_at = new Date(LOADED - 47_000).toISOString();

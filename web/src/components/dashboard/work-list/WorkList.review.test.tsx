@@ -31,6 +31,10 @@ describe("WorkList: comments of a P0 alarm pull request (owner 2026-11-23)", () 
   it("a P0 alarm pull request with counts links to its Comments like a ranked row", () => {
     render(list(alarm({ total: 12, needs_you: 5 })));
     expect(screen.getByRole("group", { name: "P0 alarm NC-482" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Comments of NC-482" })).toHaveAttribute(
+      "href",
+      "/pr/acme/node-client/482/comments",
+    );
     expect(
       screen.getByRole("link", { name: /^12 comments · 5 need you: comments of #482 / }),
     ).toHaveAttribute("href", "/pr/acme/node-client/482/comments");
@@ -61,4 +65,22 @@ describe("WorkList: Watch on a private pull request (RW1 reads public repositori
     );
     expect(screen.queryByRole("button", { name: /^Watch #482 / })).toBeNull();
   });
+});
+
+it("a ranked PR without comment counts always has a Comments action", () => {
+  const pr = { ...ITEMS.find((item) => item.id === "NC-482")!, comments: undefined };
+  render(
+    <WorkList
+      items={[pr]}
+      kinds={ALL_KINDS}
+      onKindsChange={vi.fn()}
+      reviewHref={reviewHref}
+      commentsHref={commentsHref}
+      now={NOW}
+    />,
+  );
+  expect(screen.getByRole("link", { name: "Comments of NC-482" })).toHaveAttribute(
+    "href",
+    "/pr/acme/node-client/482/comments",
+  );
 });

@@ -4,11 +4,14 @@
 //! unless the engine state is `ready-to-merge`, and whose move it is for Waiting on others (the stage's owner; the
 //! `asks` approvers owe a review). All of it is untrusted data.
 
+mod context;
+
 use std::collections::HashMap;
 
 use contracts::api::dashboard::Fact;
 use contracts::time::Timestamp;
 use futures::future::BoxFuture;
+use futures::{StreamExt, stream};
 use reqwest::Client;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -45,6 +48,8 @@ struct Cache {
     stages: Option<(String, StagesBody)>,
     /// Records of the last data left out as unreadable (logged when the count changes).
     unreadable: usize,
+    /// Per-PR history, reused until its aggregate record changes.
+    details: HashMap<PrKey, (String, DetailBody)>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -63,9 +68,21 @@ struct PrRecord {
     engine_state: Option<String>,
     stage: Option<String>,
     next_action: Option<String>,
-    #[serde(default)]
-    blockers: Vec<String>,
     lateness: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DetailBody {
+    generated_at: Timestamp,
+    pr: DetailPr,
+    stage_changes: Vec<Value>,
+    stale: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct DetailPr {
+    repo: String,
+    number: u32,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -131,7 +148,8 @@ impl PrHygiene {
             }
             (Answer::NotModified, Answer::NotModified) => return Ok(Polled::Unchanged),
         };
-        let (data, unreadable) = self.data(&prs_body, &stages_body);
+        let (mut data, unreadable) = self.data(&prs_body, &stages_body);
+        self.history(&mut data, &mut cache).await;
         if unreadable != cache.unreadable {
             if unreadable > 0 {
                 tracing::warn!(
@@ -145,6 +163,64 @@ impl PrHygiene {
             cache.unreadable = unreadable;
         }
         Ok(Polled::Data(data))
+    }
+
+    /// History is absent from `/prs`; read it only for changed governed records, at most four at once.
+    async fn history(&self, data: &mut PluginData, cache: &mut Cache) {
+        cache.details.retain(|key, _| data.prs.contains_key(key));
+        let pending: Vec<_> = data
+            .prs
+            .iter()
+            .filter_map(|(key, statement)| {
+                if cache
+                    .details
+                    .get(key)
+                    .is_some_and(|(mark, _)| mark == &statement.mark)
+                {
+                    return None;
+                }
+                Some((key.clone(), statement.mark.clone()))
+            })
+            .collect();
+        let results = stream::iter(pending)
+            .map(|(key, mark)| async move {
+                let path = format!("api/v1/prs/{}/{}/{}", key.owner, key.name, key.number);
+                (key, mark, self.get::<DetailBody>(&path, None).await)
+            })
+            .buffer_unordered(4)
+            .collect::<Vec<_>>()
+            .await;
+        for (key, mark, result) in results {
+            if let Ok(Answer::Body { body, .. }) = result
+                && body
+                    .pr
+                    .repo
+                    .eq_ignore_ascii_case(&format!("{}/{}", key.owner, key.name))
+                && body.pr.number == key.number
+            {
+                cache.details.insert(key, (mark, body));
+            }
+        }
+        for (key, statement) in &mut data.prs {
+            if let Some((mark, detail)) = cache.details.get(key)
+                && *mark == statement.mark
+            {
+                statement
+                    .details
+                    .extend(context::history(&detail.stage_changes));
+                statement.details.push(format!(
+                    "Stale: {}",
+                    if detail.stale { "Yes" } else { "No" }
+                ));
+                statement
+                    .details
+                    .push(format!("Data generated: {}", detail.generated_at));
+            } else {
+                statement
+                    .details
+                    .push("Stage history: unavailable".to_owned());
+            }
+        }
     }
 
     /// The statements of `prs`, and how many records were left out as unreadable (shape or repository name).
@@ -177,7 +253,9 @@ impl PrHygiene {
                 unreadable += 1;
                 continue;
             };
-            if let Some(statement) = self.statement(&item, &record, value, &owners) {
+            if let Some(statement) =
+                self.statement(&item, &record, value, &owners, prs.generated_at)
+            {
                 statements.insert(PrKey::new(&item.repo, item.number), statement);
             }
         }
@@ -197,12 +275,13 @@ impl PrHygiene {
         record: &PrRecord,
         value: &Value,
         owners: &HashMap<&str, &str>,
+        as_of: Timestamp,
     ) -> Option<PrStatement> {
         let engine_state = record.engine_state.as_deref()?;
         let mut facts = Vec::new();
         let mut owner = None;
         if let Some(stage) = &record.stage {
-            facts.push(fact("Stage", stage));
+            facts.push(fact("Stage", &context::readable(stage)));
             owner = owners.get(stage.as_str()).copied();
             if let Some(owner) = owner {
                 facts.push(fact("Whose move", owner));
@@ -217,11 +296,18 @@ impl PrHygiene {
             };
             facts.push(fact("Lateness", text));
         }
+        facts.push(fact("Engine state", &context::readable(engine_state)));
+        facts.extend(context::timing(value, as_of));
         let reason = record
             .next_action
             .clone()
-            .or_else(|| record.stage.as_ref().map(|s| format!("Stage: {s}")))
-            .unwrap_or_else(|| format!("Engine state: {engine_state}"));
+            .or_else(|| {
+                record
+                    .stage
+                    .as_ref()
+                    .map(|s| format!("Stage: {}", context::readable(s)))
+            })
+            .unwrap_or_else(|| format!("Engine state: {}", context::readable(engine_state)));
         let whose_move = match owner {
             Some("author") => Some(Move::Author),
             Some(owner) if PEOPLE_OWNERS.contains(&owner) => Some(Move::People {
@@ -243,7 +329,7 @@ impl PrHygiene {
                 ))
                 .to_string(),
             summary: record.next_action.clone(),
-            details: record.blockers.clone(),
+            details: context::details(value),
             facts,
             ready_to_merge: Some(ready_to_merge),
             whose_move,

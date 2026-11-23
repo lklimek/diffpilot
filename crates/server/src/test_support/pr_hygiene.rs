@@ -2,6 +2,7 @@
 //! body bytes with `If-None-Match` → 304, a status override (e.g. 503 before the first snapshot), a raw body
 //! override (malformed JSON) and a log of every request.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -29,6 +30,7 @@ pub(crate) struct Served {
 struct World {
     prs: Value,
     stages: Value,
+    details: HashMap<String, Value>,
     status: Option<StatusCode>,
     raw: Option<String>,
     served: Vec<Served>,
@@ -105,6 +107,13 @@ impl FakePrHygiene {
         self.world().prs = body;
     }
 
+    /// Sets the response for a single pull request.
+    pub(crate) fn set_detail(&self, repo: &str, number: u32, body: Value) {
+        self.world()
+            .details
+            .insert(format!("/api/v1/prs/{repo}/{number}"), body);
+    }
+
     /// The `/prs` body.
     pub(crate) fn prs(&self) -> Value {
         self.world().prs.clone()
@@ -142,7 +151,7 @@ async fn serve(State(world): State<Arc<Mutex<World>>>, request: Request) -> Resp
         let body = match path.as_str() {
             "/api/v1/prs" => Some(world.prs.to_string()),
             "/api/v1/stages" => Some(world.stages.to_string()),
-            _ => None,
+            _ => world.details.get(&path).map(Value::to_string),
         };
         match body {
             None => (StatusCode::NOT_FOUND, StatusCode::NOT_FOUND.into_response()),

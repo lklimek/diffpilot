@@ -1,0 +1,72 @@
+{
+  "generated_at": "2026-11-23T15:05:25.864696284Z",
+  "pr": {
+    "areas": [
+      "fallback"
+    ],
+    "asks": [],
+    "author": "Claudius-Maginificent",
+    "author_kind": "bot",
+    "base": "v1.0-dev",
+    "blockers": [
+      "coderabbitai has not reported for the current head",
+      "thepastaclaw requested changes on this head; dismiss the review or push a fix"
+    ],
+    "changes_requested": true,
+    "ci_failing": true,
+    "draft": false,
+    "engine_state": "waiting-bots",
+    "idle": false,
+    "lateness": "ok",
+    "merge_conflict": false,
+    "milestone": null,
+    "next_action": "coderabbitai has not reported for the current head",
+    "number": 1117,
+    "objectors": [],
+    "repo": "dashpay/dash-evo-tool",
+    "reviews": [
+      {
+        "at": "2026-10-26T15:27:08Z",
+        "reviewer": "lklimek",
+        "state": "changes-requested"
+      },
+      {
+        "at": "2026-11-23T13:50:47Z",
+        "reviewer": "lklimek",
+        "state": "approved"
+      },
+      {
+        "at": "2026-11-23T14:08:16Z",
+        "reviewer": "thepastaclaw",
+        "state": "changes-requested"
+      }
+    ],
+    "since": "2026-11-23T13:25:54Z",
+    "since_basis": "engine",
+    "stage": "bots",
+    "tracked": true,
+    "unresolved_comments": 0,
+    "updated_at": "2026-11-23T14:09:06Z"
+  },
+  "stage_changes": [
+    {
+      "engine_state": "waiting-author",
+      "observed_at": "2026-11-23T06:39:51.795763289Z",
+      "since": "2026-11-23T06:40:24Z",
+      "stage": "self-review"
+    },
+    {
+      "engine_state": "waiting-bots",
+      "observed_at": "2026-11-23T10:52:17.017708166Z",
+      "since": "2026-11-23T10:40:37Z",
+      "stage": "bots"
+    },
+    {
+      "engine_state": "waiting-bots",
+      "observed_at": "2026-11-23T14:04:21.447788543Z",
+      "since": "2026-11-23T13:25:54Z",
+      "stage": "bots"
+    }
+  ],
+  "stale": false
+}

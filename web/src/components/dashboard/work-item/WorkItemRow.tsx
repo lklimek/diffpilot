@@ -179,7 +179,12 @@ export function WorkItemRow({
         )}
         <div className="col-start-4 row-start-1 flex items-center justify-end gap-2 pt-px @min-[1600px]:col-start-6">
           <ScoreButton item={item} expanded={expanded} onToggle={onToggle} controls={detailId} />
-          <ItemAction item={item} reviewHref={reviewHref} onNavigate={onNavigate} />
+          <ItemAction
+            item={item}
+            reviewHref={reviewHref}
+            commentsHref={commentsHref}
+            onNavigate={onNavigate}
+          />
           {onSnooze && <SnoozeMenu itemId={item.id} onSnooze={onSnooze} pending={snoozing} />}
         </div>
       </div>

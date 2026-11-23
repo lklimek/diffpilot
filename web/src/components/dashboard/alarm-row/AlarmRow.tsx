@@ -98,7 +98,7 @@ export function AlarmRow({
       </div>
       <div className="flex items-center justify-end gap-2">
         <ScoreButton item={item} expanded={expanded} onToggle={onToggle} controls={detailId} />
-        <ItemAction item={item} reviewHref={reviewHref} onNavigate={onNavigate} />
+        <ItemAction item={item} reviewHref={reviewHref} commentsHref={commentsHref} onNavigate={onNavigate} />
       </div>
       <div id={detailId} hidden={!expanded} className="col-span-3 border-t border-dashed border-high-bd pt-1">
         {expanded && <ScoreBreakdown item={item} now={now} />}

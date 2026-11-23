@@ -92,10 +92,14 @@ describe("WorkList", () => {
     render(<List items={items} />);
     const row = document.querySelector("li[data-item][data-item*='482']") as HTMLElement;
     expect(row).toHaveTextContent("PR Hygiene: Author must post /self-reviewed 1a2b3c");
-    expect(within(row).queryByText("Human approval or objection resolution is required")).toBeNull();
+    expect(within(row).getByText("Human approval or objection resolution is required")).not.toBeVisible();
     expect(document.querySelectorAll("[data-plugin-note]")).toHaveLength(1);
     await userEvent.click(within(row).getByRole("button", { name: "Details of NC-482" }));
-    expect(within(row).getByText("Human approval or objection resolution is required")).toBeInTheDocument();
+    expect(
+      within(within(row).getByRole("list", { name: "PR Hygiene: further points" })).getByText(
+        "Human approval or objection resolution is required",
+      ),
+    ).toBeVisible();
   });
 
   it("PRs, Issues and TODOs are independent toggles, all on at first; kinds combine; P0 alarms always show", async () => {
