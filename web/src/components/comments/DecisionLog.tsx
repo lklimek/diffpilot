@@ -1,3 +1,4 @@
+import { GithubCommentText } from "./GithubCommentText";
 import type {
   CommentLog,
   Decision,
@@ -217,7 +218,13 @@ export function DecisionLog({ log, pr, origin, now, storageKey }: DecisionLogPro
                     <ProvenanceTag source="llm" />
                   </>
                 )}
-                {d.reply_text && <div>Public reply: &quot;{d.reply_text}&quot;</div>}
+                {d.reply_text && (
+                  <div>
+                    Public reply: &quot;
+                    <GithubCommentText text={d.reply_text} />
+                    &quot;
+                  </div>
+                )}
                 {d.reason && !d.reply_text?.includes(d.reason) && (
                   <div>Reason (not posted): &quot;{d.reason}&quot;</div>
                 )}

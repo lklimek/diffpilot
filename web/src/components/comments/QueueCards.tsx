@@ -20,6 +20,7 @@ import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { useCardKeys } from "./cardKeys";
+import { GithubCommentText } from "./GithubCommentText";
 import { COMMENT_HINT } from "./DecisionForm";
 import {
   CHOICE_LABEL,
@@ -580,7 +581,9 @@ export function PrQuestionCard({
         PR-level question{item.first_round !== null && ` · asked after bot round ${item.first_round} ended`}
       </p>
       <Heading id={`${id}-h`} text={item.title} />
-      <p className="whitespace-pre-wrap">{item.body}</p>
+      <div className="whitespace-pre-wrap">
+        <GithubCommentText text={item.body} />
+      </div>
       {dismiss && (
         <>
           <label htmlFor={`${id}-msg`} className="mb-0.5 block text-xs font-semibold">

@@ -710,7 +710,7 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     expect(
       within(panel)
         .getAllByRole("listitem")
-        .map((li) => li.querySelector("p")?.textContent),
+        .map((li) => li.querySelector(".whitespace-pre-wrap")?.textContent),
     ).toEqual(["Is the retry bounded?", "And the backoff?"]);
     await user.click(within(panel).getAllByRole("button", { name: /^Delete comment on/ })[1]!);
     expect(onDeleteComment).toHaveBeenCalledWith("c2");
@@ -937,6 +937,47 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     expect(within(popover).getByRole("link", { name: /Open on GitHub/ })).toHaveAttribute("href", thread.url);
     await user.click(within(popover).getByRole("button", { name: /^Show in Inspector/ }));
     expect(onShowInInspector).toHaveBeenCalledWith({ kind: "thread", id: thread.id });
+  });
+
+  it("normalises thread text in both hover and pinned previews", async () => {
+    const user = userEvent.setup();
+    render(
+      <CodeView
+        lines={plain(1, ["a", "b"])}
+        threads={[
+          {
+            ...thread,
+            excerpt:
+              "<!-- hidden --><b>Finding</b> [docs](https://example.com) <details><summary>Prompt for AI agents</summary>Drop.</details>",
+          },
+        ]}
+      />,
+    );
+    const marker = screen.getByRole("button", { name: "GitHub thread by bob at line 2" });
+    await user.hover(marker);
+    const preview = screen.getByRole("dialog", { name: "GitHub thread at line 2" });
+    expect(preview).toHaveTextContent("Finding docs (https://example.com)");
+    expect(preview).not.toHaveTextContent(/hidden|<b>|Prompt|Drop/);
+    expect(preview.querySelector("a,img")).toBeNull();
+    await user.click(marker);
+    expect(preview).toHaveTextContent("Finding docs (https://example.com)");
+    expect(preview.querySelectorAll("a")).toHaveLength(1);
+  });
+
+  it("keeps literal code in a flattened excerpt cut inside a fence", async () => {
+    const user = userEvent.setup();
+    const body = ["Finding.", "```html", "<details>", "Vec<u8>", "literal **code** ".repeat(30), "```"].join(
+      "\n",
+    );
+    const excerpt = body.trim().split(/\s+/).join(" ").slice(0, 200) + "…";
+    render(<CodeView lines={plain(1, ["a", "b"])} threads={[{ ...thread, excerpt }]} />);
+    const marker = screen.getByRole("button", { name: "GitHub thread by bob at line 2" });
+    await user.hover(marker);
+    const preview = screen.getByRole("dialog", { name: "GitHub thread at line 2" });
+    expect(preview).toHaveTextContent(excerpt);
+    expect(preview.querySelector("details")).toBeNull();
+    await user.click(marker);
+    expect(preview).toHaveTextContent(excerpt);
   });
 
   it("omits Open on GitHub without a thread URL and Show in Inspector for a thread outside the steps", async () => {

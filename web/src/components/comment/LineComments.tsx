@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import type { LineSide, PendingComment } from "../../api/generated/types";
 import { HideButton } from "../button/HideButton";
+import { GithubCommentText } from "../comments/GithubCommentText";
 import { Popover } from "../popover/Popover";
 import { PendingCommentItem, type PendingCommentItemProps } from "./PendingCommentItem";
 
@@ -83,9 +84,9 @@ export function CommentMarker({
       content={(pinned, close) => (
         <>
           {comments.map((c) => (
-            <span key={c.id} className="line-clamp-6 whitespace-pre-wrap">
-              {c.body}
-            </span>
+            <div key={c.id} className="line-clamp-6 whitespace-pre-wrap">
+              <GithubCommentText text={c.body} />
+            </div>
           ))}{" "}
           <span className="block text-muted">{about}</span>
           {pinned && (

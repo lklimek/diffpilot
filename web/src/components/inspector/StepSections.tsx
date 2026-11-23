@@ -1,3 +1,4 @@
+import { GithubCommentText } from "../comments/GithubCommentText";
 import { CodeText } from "../section/CodeText";
 import type { ReactNode } from "react";
 import type {
@@ -311,7 +312,9 @@ function Thread({ thread }: { thread: GithubThread }) {
         </code>{" "}
         <span className="text-muted">{facts.join(", ")}</span>
       </p>
-      <p className="whitespace-pre-wrap">{thread.excerpt}</p>
+      <p className="whitespace-pre-wrap">
+        <GithubCommentText text={thread.excerpt} />
+      </p>
       {thread.llm_status && (
         <div>
           <ProvenanceTag source="llm" />{" "}

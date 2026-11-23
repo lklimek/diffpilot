@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import type { PendingComment } from "../../api/generated/types";
 import { BUSY_NOTE, busyTip } from "../button/button";
+import { GithubCommentText } from "../comments/GithubCommentText";
 import { codeOf } from "../inspector/action";
 import { Tooltip } from "../tooltip/Tooltip";
 
@@ -69,7 +70,9 @@ export function PendingCommentItem({ comment, onEdit, onDelete, children }: Pend
     <li className="grid gap-1 rounded-md border border-border bg-surface-2 px-2.5 py-2">
       <code className="text-xs font-semibold">{where}</code>
       {draft === null ? (
-        <p className="max-w-[100ch] whitespace-pre-wrap">{comment.body}</p>
+        <div className="max-w-[100ch] whitespace-pre-wrap">
+          <GithubCommentText text={comment.body} />
+        </div>
       ) : (
         <textarea
           aria-label={`Edit comment on ${where}`}

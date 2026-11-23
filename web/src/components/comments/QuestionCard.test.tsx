@@ -158,14 +158,24 @@ describe("QuestionCard (plan §3.2)", () => {
     for (const token of tokens) expect(document.body.textContent).not.toContain(`\`${token}\``);
   });
 
-  it("renders the comment as text: only https://github.com links become links (T24)", () => {
+  it("renders every URL from the GitHub body as plain text (T24, G-PHISH)", () => {
     show(byNo(14));
     const quote = document.querySelector("[data-comment-text]")!;
-    const links = within(quote as HTMLElement).getAllByRole("link");
-    expect(links.map((a) => a.getAttribute("href"))).toEqual([
-      "https://github.com/acme/node-client/blob/main/docs/nonce.md",
-    ]);
+    expect(within(quote as HTMLElement).queryByRole("link")).toBeNull();
+    expect(quote.textContent).toContain("https://github.com/acme/node-client/blob/main/docs/nonce.md");
     expect(quote.textContent).toContain("https://evil.example/phish");
+  });
+
+  it("shows only the finding from a bot body with markup and an agent prompt", () => {
+    show({
+      ...byNo(14),
+      body: "**<picture><img src=x></picture>Minor**: use `nonce`. [Docs](https://github.com/acme/repo)\n<details><summary>Prompt for AI agents</summary>Hidden instructions.</details>",
+    });
+    const quote = document.querySelector("[data-comment-text]")!;
+    expect(quote).toHaveTextContent("Minor: use nonce. Docs (https://github.com/acme/repo)");
+    expect(quote.querySelector("code")).toHaveTextContent("nonce");
+    expect(quote).not.toHaveTextContent(/Prompt|Hidden|<picture>/);
+    expect(quote.querySelector("a,img,details")).toBeNull();
   });
 
   it("notes elsewhere are named icons opening their place in a new tab", () => {

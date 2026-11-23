@@ -224,7 +224,8 @@ describe("PendingReviewBlock", () => {
     expect(items[0]).toHaveTextContent("src/rpc/client.rs:96");
     expect(items[0]).toHaveTextContent(missed.comments[0]!.body);
     expect(items[1]).toHaveTextContent("src/x.rs (file comment, links to lines 20–22)");
-    expect(items[1]).toHaveTextContent('<img src=x onerror="alert(1)"> nit');
+    expect(items[1]).toHaveTextContent("nit");
+    expect(items[1]).not.toHaveTextContent("<img");
     expect(container.querySelector("img")).toBeNull();
     expect(screen.getByRole("link", { name: /Finish on GitHub/ })).toHaveAttribute("href", `${PR_URL}/files`);
   });
