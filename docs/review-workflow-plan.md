@@ -320,14 +320,15 @@ targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe 
 | B2 | Questions waiting | amber (`med`) | undecided questions exist |
 | B3 | Executing | teal (`bot`) | decided effects are open or claimed |
 | B4 | Waiting for bot round | blue (`low`) | thepastaclaw reports this head reviewing or queued, or a watched pass waits for the round |
-| B5 | Ready to merge | green (`ok`) | none of B1–B4; CI passed; no review requests changes (or all such are dismissed); PR Hygiene, when present, agrees; My work lists it as Ready to merge (K17) at this head and base, and the last read shows no draft and no unresolved thread |
+| B5 | Ready to merge | green (`ok`) | none of B1–B4; CI passed; no review requests changes (or all such are dismissed); PR Hygiene, when present, agrees; My work lists it as Ready to merge (K17) at this head, base branch and base commit, and the last read shows no draft and no unresolved thread |
   Unknown inputs (CI not read, GitHub read failed, My work's last scan did not read this head and base) show no B5; the
-  tooltip says what is missing.
+  tooltip says what is missing. Remainder: mergeability and write permission come from My work's last scan, so a
+  conflict or a revoked permission at the same head and base commit shows only after the next scan.
 
 ## 4. Data and sources
 
 ### 4.1 GitHub reads (server, the reader's user token; queries only)
-Q-L1 PR facts (`title state isDraft baseRefName headRefOid reviewDecision`); Q-L2 `reviewThreads` with all comments
+Q-L1 PR facts (`title state isDraft baseRefName baseRefOid headRefOid reviewDecision`); Q-L2 `reviewThreads` with all comments
 (`databaseId author{login __typename} body createdAt lastEditedAt url pullRequestReview{id}`), cap 1000 threads;
 Q-L3 `reviews` (`id author state submittedAt commit{oid} body`); Q-L4 PR comments. Read when Comments or the PR page
 opens and the last read is older than 60 s, every 60 s while a Comments page is visible, on "Read GitHub again", and

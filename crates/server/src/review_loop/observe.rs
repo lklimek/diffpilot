@@ -100,6 +100,9 @@ pub struct Snapshot {
     pub base: String,
     /// Head.
     pub head: String,
+    /// Base commit; none in a snapshot stored before it was kept.
+    #[serde(default)]
+    pub base_sha: Option<String>,
     /// Rounds, oldest first.
     pub rounds: Vec<RoundFact>,
     /// The gate comment's state and the head (8 hex) it names.
@@ -425,6 +428,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         draft: read.pr.is_draft,
         base: read.pr.base_ref_name.clone(),
         head: read.pr.head_ref_oid.clone(),
+        base_sha: Some(read.pr.base_ref_oid.clone()),
         rounds,
         gate,
         bot_change_requests,
