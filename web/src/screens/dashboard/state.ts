@@ -1,5 +1,6 @@
 // What the dashboard shows for a summary (docs/contracts/http-api.md "Refresh states", plan §A.5, §B.3, §B.4):
 // pure functions of the screen, tested without rendering.
+import { ApiError } from "../../api/client";
 import type {
   DashboardSummary,
   RankingStatus,
@@ -147,4 +148,17 @@ export const commentsHref = (item: WorkItem): string =>
 export function railText(snapshot: SnapshotMeta): string {
   const ready = snapshot.merge_state_pending === null ? "" : ` · ready ${snapshot.ready_to_merge.length}`;
   return `More · waiting ${snapshot.awaiting.length}${ready}`;
+}
+
+/**
+ * Why a Watch from a My work row failed: a private repository (RW1 reads public ones only, so trying again cannot
+ * help), the 20-PR limit, or the server's reason with a retry hint.
+ */
+export function watchErrorText(error: unknown): string {
+  if (error instanceof ApiError && error.code === "private_repository")
+    return "Could not watch this pull request: its repository is private, and diffpilot reads public repositories only.";
+  if (error instanceof ApiError && error.code === "watch_limit_reached")
+    return "Could not watch this pull request: you watch 20 already. Unwatch one in Watched PRs first.";
+  const reason = error instanceof ApiError ? error.message : "Something went wrong.";
+  return `Could not watch this pull request. Try again. ${reason}`;
 }

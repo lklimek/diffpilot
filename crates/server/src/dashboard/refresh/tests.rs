@@ -1601,8 +1601,9 @@ async fn review_link_reports_head_moved() {
 }
 
 /// R1b `comments`: the comments diffpilot read for a pull request, counted at request time; none before a read.
+/// `watched`: the user watches it, also while its comments were never read.
 #[tokio::test]
-async fn pull_request_items_count_the_comments_diffpilot_read() {
+async fn pull_request_items_count_the_comments_diffpilot_read_and_say_watched() {
     use contracts::api::dashboard::CommentTally;
     use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemGithubFacts, ItemState};
     use db::repo::review_loop::{ObservedItem, ReadResult};
@@ -1658,6 +1659,23 @@ async fn pull_request_items_count_the_comments_diffpilot_read() {
         [],
         "items without a successful read"
     );
+    let watched = |page: &ItemPage| -> Vec<String> {
+        page.items
+            .iter()
+            .filter(|i| i.watched)
+            .map(|i| i.id.clone())
+            .collect()
+    };
+    assert_eq!(watched(&w.items("").await), Vec::<String>::new());
+    rl.watch(DEFAULT_TENANT, "u1", 1, 20, now)
+        .await
+        .expect("watch");
+    assert_eq!(
+        watched(&w.items("").await),
+        ["NC-482"],
+        "watched, its comments not read yet"
+    );
+    assert_eq!(comments(&w.items("").await), []);
     rl.record_read(
         1,
         &ReadResult::Read {

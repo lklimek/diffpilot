@@ -573,7 +573,8 @@ describe("WorkList: comments of a pull request (owner 2026-11-23)", () => {
     await userEvent.click(link);
     expect(onNavigate).toHaveBeenCalledWith("/pr/acme/node-client/482/comments");
     const watch = screen.getByRole("button", { name: `Watch #${unread.number} ${unread.title}` });
-    expect(watch).toHaveAttribute("aria-pressed", "false");
+    // One way: a saved Watch reads as a note; Unwatch lives in Watched PRs.
+    expect(watch).not.toHaveAttribute("aria-pressed");
     await userEvent.click(watch);
     expect(onWatch).toHaveBeenCalledWith(unread);
     expect(screen.queryByRole("button", { name: `Watch #${counted.number} ${counted.title}` })).toBeNull();
@@ -592,9 +593,20 @@ describe("WorkList: comments of a pull request (owner 2026-11-23)", () => {
     await userEvent.click(saving);
     expect(onWatch).not.toHaveBeenCalled();
     rerender(list({ items: [one, unread], onWatch, watchedKeys: [unread.key] }));
-    expect(
-      screen.getByRole("button", { name: `Watching #${unread.number} ${unread.title}` }),
-    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("button", { name: /^Watch/ })).toBeNull();
+    expect(screen.getByText("Watching, comments not read yet")).toBeVisible();
+  });
+
+  it("a pull request the user watches whose comments were never read reads Watching, not Watch", () => {
+    render(list({ items: [{ ...unread, watched: true }], onWatch: vi.fn() }));
+    expect(screen.queryByRole("button", { name: /^Watch/ })).toBeNull();
+    expect(screen.getByText("Watching, comments not read yet")).toBeVisible();
+  });
+
+  it("a private pull request without counts says why, and offers no Watch", () => {
+    render(list({ items: [{ ...unread, private: true }], onWatch: vi.fn() }));
+    expect(screen.queryByRole("button", { name: /^Watch/ })).toBeNull();
+    expect(screen.getByText("comments not read: private repository")).toBeVisible();
   });
 
   it("without onWatch no Watch is offered", () => {

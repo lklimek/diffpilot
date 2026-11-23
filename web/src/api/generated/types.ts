@@ -6636,6 +6636,11 @@ review: ReviewLink | null,
  */
 comments?: CommentTally,
 /**
+ * The user watches this pull request (RW1), read at request time; with `comments` absent its comments were
+ * not read yet.
+ */
+watched?: boolean,
+/**
  * Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
  */
 plugin_notes?: Array<PluginNote>, };

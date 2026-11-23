@@ -309,6 +309,10 @@
             }
           ]
         },
+        "watched": {
+          "description": "The user watches this pull request (RW1), read at request time; with `comments` absent its comments were\nnot read yet.",
+          "type": "boolean"
+        },
         "plugin_notes": {
           "description": "Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.",
           "type": "array",

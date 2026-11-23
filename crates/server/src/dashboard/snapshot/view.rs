@@ -478,6 +478,7 @@ fn work_item(
             llm,
             review: None,
             comments: None,
+            watched: false,
             plugin_notes: Vec::new(),
         },
         head_sha,

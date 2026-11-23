@@ -725,6 +725,11 @@ pub struct WorkItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub comments: Option<CommentTally>,
+    /// The user watches this pull request (RW1), read at request time; with `comments` absent its comments were
+    /// not read yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub watched: bool,
     /// Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<PluginNote>>", optional)]

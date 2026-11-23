@@ -187,6 +187,16 @@ export function WorkList({
     if (element) targets.current.set(key, element);
     else targets.current.delete(key);
   };
+  // The comments line of a pull request row, ranked or a P0 alarm.
+  const comments = (item: WorkItem) => ({
+    commentsHref: item.kind === "pr" ? commentsHref?.(item) : undefined,
+    onWatch: onWatch && (() => onWatch(item)),
+    watch: watchingKeys.includes(item.key)
+      ? ("saving" as const)
+      : watchedKeys.includes(item.key)
+        ? ("watching" as const)
+        : undefined,
+  });
   const row = (item: WorkItem) => (
     <WorkItemRow
       key={item.key}
@@ -195,11 +205,7 @@ export function WorkList({
       onToggle={() => toggle(item.key)}
       current={item.key === cursor}
       reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
-      commentsHref={item.kind === "pr" ? commentsHref?.(item) : undefined}
-      onWatch={onWatch && (() => onWatch(item))}
-      watch={
-        watchingKeys.includes(item.key) ? "saving" : watchedKeys.includes(item.key) ? "watching" : undefined
-      }
+      {...comments(item)}
       onNavigate={onNavigate}
       expanderRef={register(item.key)}
       todos={todos}
@@ -289,6 +295,7 @@ export function WorkList({
                 current={item.key === cursor}
                 focusRef={register(item.key)}
                 reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
+                {...comments(item)}
                 onNavigate={onNavigate}
                 expanded={expanded.has(item.key)}
                 onToggle={() => toggle(item.key)}

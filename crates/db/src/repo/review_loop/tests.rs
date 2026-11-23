@@ -1,4 +1,5 @@
 use contracts::api::access_tokens::AccessTokenId;
+use contracts::api::dashboard::CommentTally;
 use contracts::api::review_loop::{
     AuthorKind, CarryEvidence, CarryKind, ChannelKind, CommentAssessment, CommentItemKind,
     DecisionKind, DecisionVia, DeliveryOutcome, EffectKind, EffectParams, EffectState, Executor,
@@ -894,7 +895,8 @@ async fn items_no_longer_read_are_marked_gone_and_kept() {
 /// My work's comment counts (R1b `WorkItem.comments`): read PRs only, no PR-level questions or gone items; waiting
 /// as the queue counts it, without items a standing "merge now" decision hands to its follow-up PR.
 #[tokio::test]
-async fn comment_tallies_count_comments_and_the_waiting_ones_per_read_pull_request() {
+async fn comment_tallies_count_comments_and_the_waiting_ones_per_read_pull_request_and_name_watches()
+ {
     let db = db().await;
     let rl = db.review_loop();
     let waiting = new_item(&db, "dedupe-waiting").await;
@@ -955,16 +957,17 @@ async fn comment_tallies_count_comments_and_the_waiting_ones_per_read_pull_reque
         acme("acme", "node-client", 490),
     ];
     assert!(
-        rl.comment_tallies(T, &wanted)
+        rl.comment_tallies(T, "u1", &wanted)
             .await
             .expect("tallies")
             .is_empty(),
-        "no PR read successfully yet"
+        "no PR read successfully or watched yet"
     );
     db.review_loop()
         .ensure_pr(T, 2, at(6))
         .await
         .expect("pr 490");
+    rl.watch(T, "u1", 2, 20, at(6)).await.expect("watch 490");
     rl.record_read(
         PR,
         &ReadResult::Read {
@@ -975,14 +978,25 @@ async fn comment_tallies_count_comments_and_the_waiting_ones_per_read_pull_reque
     )
     .await
     .expect("read");
-    let tallies = rl.comment_tallies(T, &wanted).await.expect("tallies");
+    let tallies = rl.comment_tallies(T, "u1", &wanted).await.expect("tallies");
     assert_eq!(
         tallies,
-        [PrCommentTally {
-            index: 1,
-            total: 3,
-            needs_you: 1,
-        }],
+        [
+            PrCommentTally {
+                index: 1,
+                counts: Some(CommentTally {
+                    total: 3,
+                    needs_you: 1,
+                }),
+                watched: false,
+            },
+            // Watched, its comments never read (the watch's first read failed).
+            PrCommentTally {
+                index: 3,
+                counts: None,
+                watched: true,
+            },
+        ],
         "C{} waits; C{} is decided, C{} gone, C{} followed up",
         waiting.no,
         decided.no,
@@ -998,13 +1012,34 @@ async fn comment_tallies_count_comments_and_the_waiting_ones_per_read_pull_reque
         .await
         .expect("undo");
     assert_eq!(
-        rl.comment_tallies(T, &wanted).await.expect("tallies")[0].needs_you,
-        2,
+        rl.comment_tallies(T, "u1", &wanted).await.expect("tallies")[0]
+            .counts
+            .map(|counts| counts.needs_you),
+        Some(2),
         "an undone merge decision {} hands nothing over",
         merge.id
     );
+    assert_eq!(
+        rl.comment_tallies(T, "u2", &wanted)
+            .await
+            .expect("tallies")
+            .iter()
+            .map(|tally| (tally.index, tally.watched))
+            .collect::<Vec<_>>(),
+        [(1, false)],
+        "another user's watch is not this user's"
+    );
+    rl.unwatch("u1", 2).await.expect("unwatch");
+    assert_eq!(
+        rl.comment_tallies(T, "u1", &wanted)
+            .await
+            .expect("tallies")
+            .len(),
+        1,
+        "an unwatched PR without a read is not listed"
+    );
     assert!(
-        rl.comment_tallies("other", &wanted)
+        rl.comment_tallies("other", "u1", &wanted)
             .await
             .expect("tallies")
             .is_empty(),

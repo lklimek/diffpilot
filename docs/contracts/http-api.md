@@ -702,7 +702,10 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   `CommentTally { total, needs_you }` counts the comment items of the tenant's last successful read of the PR
   (PR-level questions and items the read no longer produces left out) and those waiting for a decision (Comments'
   Needs you: an open state, not handed to a standing "merge now" decision's follow-up PR); absent before the first
-  successful read, when the web offers Watch (RW1) instead. Like `review` it is part of the page's `ETag`. `tags` and
+  successful read, when the web offers Watch (RW1) instead, except on a private PR (RW1 reads public repositories
+  only). `watched` (pull requests only, omitted when false) says the user watches the PR (RW1), read in the same
+  statement; with `comments` absent the row reads "Watching, comments not read yet". Like `review` both are part of
+  the page's `ETag`. `tags` and
   `facts` come from scan facts only; `llm` text is shown with the "LLM" tag.
 - **Scores.** Integers only: points in tenths. `total_tenths` is the sum of the parts' `points_tenths` (a pending
   part counts 0); `parts` lists the twelve `ScoreComponent`s in display order, each with `source` and a plain

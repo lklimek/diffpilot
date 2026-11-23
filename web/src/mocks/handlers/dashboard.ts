@@ -497,7 +497,9 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
     items: matching
       .slice(offset, offset + limit)
       .map((item) =>
-        watchedPrs.has(item.key) && !item.comments ? { ...item, comments: { total: 0, needs_you: 0 } } : item,
+        watchedPrs.has(item.key) && !item.comments
+          ? { ...item, comments: { total: 0, needs_you: 0 }, watched: true }
+          : item,
       ),
     next_cursor: next,
   };

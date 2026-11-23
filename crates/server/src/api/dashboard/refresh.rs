@@ -17,9 +17,8 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use contracts::api::dashboard::{
-    CommentTally, DashboardEvent, DashboardSummary, ItemKey, ItemKind, ItemPage, ItemQuery,
-    RefreshStatus, RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, SummaryQuery,
-    WorkItem,
+    DashboardEvent, DashboardSummary, ItemKey, ItemKind, ItemPage, ItemQuery, RefreshStatus,
+    RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, SummaryQuery, WorkItem,
 };
 use contracts::api::error::ApiErrorCode;
 use contracts::ids::RefreshId;
@@ -412,9 +411,9 @@ async fn review_links(
     Ok(())
 }
 
-/// Fills `comments` of the pull requests on the page from the tenant's review-loop tables, read now in one
-/// statement; a pull request whose comments diffpilot never read keeps none (the row offers Watch). Part of the
-/// page's `ETag` like `review`.
+/// Fills `comments` and `watched` of the pull requests on the page from the tenant's review-loop tables and the
+/// user's watches, read now in one statement; a pull request whose comments diffpilot never read keeps no counts.
+/// Part of the page's `ETag` like `review`.
 async fn comment_tallies(
     state: &AppState,
     session: &Session,
@@ -432,14 +431,12 @@ async fn comment_tallies(
     let tallies = state
         .db
         .review_loop()
-        .comment_tallies(&session.tenant_id, &wanted)
+        .comment_tallies(&session.tenant_id, &session.user_id, &wanted)
         .await?;
     for tally in tallies {
         if let Some(&row) = rows.get(tally.index) {
-            items[row].comments = Some(CommentTally {
-                total: tally.total,
-                needs_you: tally.needs_you,
-            });
+            items[row].comments = tally.counts;
+            items[row].watched = tally.watched;
         }
     }
     Ok(())
