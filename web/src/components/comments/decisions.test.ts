@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { CommentItem } from "../../api/generated/types";
+import type { CommentItem, PlannedEffect } from "../../api/generated/types";
 import {
   choicesFor,
   decisionLabel,
+  effectLines,
   missingInput,
-  plannedEffects,
-  replyText,
+  plannedReply,
   requestOf,
   resolveLocked,
 } from "./decisions";
@@ -75,18 +75,39 @@ describe("decisions (plan §2.3)", () => {
     expect(request.target).toEqual({ type: "follow_up_pr", title: null });
   });
 
-  it("effects: threads reply and resolve only when ticked; body items get a PR-level comment", () => {
-    expect(plannedEffects("fix_here", true, true).map((e) => e.kind)).toEqual(["fix", "reply", "resolve"]);
-    expect(plannedEffects("reject", false, true).map((e) => e.kind)).toEqual(["reply"]);
-    expect(plannedEffects("accept", false, true).map((e) => e.kind)).toEqual(["reply", "resolve"]);
-    expect(plannedEffects("reject", true, false).map((e) => e.kind)).toEqual(["pr_comment"]);
-    expect(plannedEffects("todo", true, true)[0]!.text).toMatch(/never mentioned on GitHub/);
-  });
-
-  it("replies say 'per maintainer decision'; the TODO reply never names the TODO", () => {
-    expect(replyText("handled_in_pr", "#490")).toBe("Per maintainer decision, this is addressed in #490.");
-    expect(replyText("todo", "secret title")).toBe("Per maintainer decision, out of scope for this PR.");
-    expect(replyText("resolve", "")).toBeNull();
+  it("words the server's planned effects in order, with the reply text the server would post", () => {
+    const effect = (
+      seq: number,
+      kind: PlannedEffect["kind"],
+      fields: Partial<PlannedEffect["params"]> = {},
+    ) => ({
+      seq,
+      after: seq > 1 ? seq - 1 : null,
+      kind,
+      executor: "agent" as const,
+      params: {
+        text: null,
+        thread_id: null,
+        review_id: null,
+        title: null,
+        url: null,
+        item_nos: [7],
+        ...fields,
+      },
+    });
+    const planned = [effect(1, "fix"), effect(2, "reply", { text: "Posted text." }), effect(3, "resolve")];
+    expect(effectLines(planned)).toEqual([
+      { executor: "agent", text: "fixes it and pushes." },
+      { executor: "agent", text: "replies with the reply text below." },
+      { executor: "agent", text: "resolves the thread." },
+    ]);
+    expect(plannedReply(planned)).toBe("Posted text.");
+    expect(plannedReply([effect(1, "resolve")])).toBeNull();
+    const group = [
+      effect(1, "reply", { text: "Same.", item_nos: [18] }),
+      effect(2, "reply", { text: "Same.", item_nos: [19] }),
+    ];
+    expect(effectLines(group, true)).toEqual([{ executor: "agent", text: 'replies on C18, C19: "Same."' }]);
   });
 
   it("labels a stored D8 with its gate", () => {

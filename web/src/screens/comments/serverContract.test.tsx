@@ -1,12 +1,11 @@
 // What the review-loop pages show and send, checked against the server's contract (crates/server/src/review_loop/
-// effects.rs `plan`, queue.rs `decide_rest`) rather than against the msw mocks, which mirror the web's own helpers.
+// effects.rs `plan`, queue.rs `decide_rest`); the msw mocks model that contract (mocks/effects-plan.ts).
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import type { AnalysisSummary, CommentItem, DecideRequest, Gate } from "../../api/generated/types";
-import { DecisionForm } from "../../components/comments/DecisionForm";
 import { PrQuestionCard } from "../../components/comments/QueueCards";
 import { seedFor } from "../../mocks/fixtures";
 import { listItems, resetReviewLoop } from "../../mocks/review-loop";
@@ -21,7 +20,10 @@ beforeEach(() => {
   resetReviewLoop();
   window.localStorage.clear();
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 /** The server's default reply texts (effects.rs `plan`); an edited `reply_text` replaces them. */
 function postedReply(item: CommentItem, request: DecideRequest): string | null {
@@ -47,19 +49,33 @@ function postedReply(item: CommentItem, request: DecideRequest): string | null {
   }
 }
 
-function showForm(item: CommentItem) {
-  const onDecide = vi.fn<(request: DecideRequest) => void>();
-  render(
-    <DecisionForm
-      item={item}
-      onDecide={onDecide}
-      onSkip={vi.fn()}
-      busy={false}
-      error={null}
-      storageKey="t"
-    />,
-  );
-  return onDecide;
+/** The decision requests the page sends (RC8), read from the client's fetch calls. */
+function sentDecisions(): DecideRequest[] {
+  const sent: DecideRequest[] = [];
+  const fetch = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.endsWith("/decisions") && typeof init?.body === "string")
+      sent.push(JSON.parse(init.body) as DecideRequest);
+    return fetch(input, init);
+  });
+  return sent;
+}
+
+/** Opens `C<no>` in Questions. */
+async function open(no: number) {
+  renderRoute(`${PR}/comments?item=C${no}`);
+  await screen.findByRole("heading", { level: 2, name: new RegExp(`^C${no} · `) });
+}
+
+/** The reply preview once the server planned the current draft (`text` when given). */
+async function settledPreview(text?: string) {
+  await waitFor(() => {
+    const group = screen.getByRole("group", { name: "Preview of the reply on GitHub" });
+    expect(group).not.toHaveAttribute("aria-busy");
+    if (text) expect(group).toHaveTextContent(text);
+  });
+  return preview();
 }
 
 const preview = () =>
@@ -73,27 +89,33 @@ describe("Reply preview is what the server posts (plan §3.2 item 8; effects.rs 
     ["Accept despite the gate", 14, /^Accept despite the gate/, "Pre-existing; tracked in #455."],
   ] as const)("%s: the previewed reply equals the posted one", async (_, no, option, reason) => {
     const item = byNo(no);
-    const onDecide = showForm(item);
+    const sent = sentDecisions();
+    await open(no);
     if (option) await userEvent.click(screen.getByRole("radio", { name: option }));
     if (reason) await userEvent.type(screen.getByLabelText("Reason (posted as the public reply)"), reason);
-    const shown = preview();
-    await userEvent.click(screen.getByRole("button", { name: /^Decide/ }));
-    const request = onDecide.mock.calls[0]![0];
-    expect(shown).toBe(postedReply(item, request));
+    const shown = await settledPreview(reason ?? undefined);
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(shown).toBe(postedReply(item, sent[0]!));
+    await waitFor(() => expect(byNo(no).decisions.at(-1)?.reply_text).toBe(shown));
   });
 
   it("Resolve on a human thread previews the reply the server posts", async () => {
-    const item: CommentItem = { ...byNo(22), author: "octo-reviewer", author_kind: "human" };
-    const onDecide = showForm(item);
+    Object.assign(byNo(22), { author: "octo-reviewer", author_kind: "human" });
+    const item = byNo(22);
+    const sent = sentDecisions();
+    await open(22);
     await userEvent.click(screen.getByRole("radio", { name: /^Resolve \(already fixed\)/ }));
-    const shown = preview();
-    await userEvent.click(screen.getByRole("button", { name: /^Decide/ }));
-    expect(shown).toBe(postedReply(item, onDecide.mock.calls[0]![0]));
+    const shown = await settledPreview("already addressed");
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    await waitFor(() => expect(sent).toHaveLength(1));
+    expect(shown).toBe(postedReply(item, sent[0]!));
   });
 
   it("Resolve on a bot thread: What happens next lists no reply (the server plans only the resolve)", async () => {
-    showForm(byNo(22));
+    await open(22);
     await userEvent.click(screen.getByRole("radio", { name: /^Resolve \(already fixed\)/ }));
+    expect(await screen.findByText("resolves the thread.")).toBeVisible();
     const next = screen.getByRole("button", { name: "What happens next" }).closest("section, div")!;
     expect(within(next.parentElement!).queryByText(/replies/)).toBeNull();
   });
@@ -120,7 +142,7 @@ describe("Dismiss stale bot reviews (P3): the edited dismissal message reaches t
     const field = screen.getByLabelText("Dismissal message (posted)");
     await userEvent.clear(field);
     await userEvent.type(field, "Superseded by round 4.");
-    await userEvent.click(screen.getByRole("button", { name: /^Decide/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
     const request = onDecide.mock.calls[0]![0];
     expect(request.kind).toBe("dismiss_stale_reviews");
     // effects.rs: `let message = reason.unwrap_or(DISMISS_MESSAGE)`; `reply_text` is not read for P3.

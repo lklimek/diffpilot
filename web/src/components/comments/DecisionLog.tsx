@@ -1,6 +1,15 @@
-import type { CommentLog, Decision, Effect, EffectState, FeedSubscriber } from "../../api/generated/types";
+import type {
+  CommentLog,
+  Decision,
+  DecisionKind,
+  Effect,
+  EffectState,
+  FeedSubscriber,
+  PrRef,
+} from "../../api/generated/types";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { clockText, dateTimeText } from "../format/time";
+import { commitGithubUrl, isGithubUrl } from "../github/links";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, EFFECT_WORD } from "./decisions";
@@ -26,8 +35,38 @@ const VIA: Record<Decision["via"], string> = {
 const TH = "border-b border-border px-2 py-1 text-left text-[11px] font-semibold text-muted uppercase";
 const TD = "border-b border-border px-2 py-1 align-top";
 
+/** Decisions on PR-level questions (`P<n>`, as Questions names them). */
+const PR_LEVEL: ReadonlySet<DecisionKind> = new Set([
+  "merge_with_follow_ups",
+  "another_round",
+  "dismiss_stale_reviews",
+  "keep_reviews",
+]);
+
+/** `C14`, or `P24` for a decision on a PR-level question. */
+const decisionItemId = (d: Pick<Decision, "item_no" | "kind">) =>
+  `${PR_LEVEL.has(d.kind) ? "P" : "C"}${d.item_no}`;
+
+/**
+ * An agent's reference (agents read untrusted PR comments, threat model T24): a GitHub URL becomes a link, a commit
+ * id a link to that commit of the PR's repository; anything else stays text.
+ */
+function Reference({ reference, effect, pr }: { reference: string; effect: Effect; pr: PrRef }) {
+  if (isGithubUrl(reference))
+    return <OpenExternal href={reference} label={`Open the reported ${EFFECT_WORD[effect.kind]}`} />;
+  const commit = commitGithubUrl(pr, reference);
+  if (commit)
+    return (
+      <>
+        <code>{reference.slice(0, 7)}</code>{" "}
+        <OpenExternal href={commit} label={`Open commit ${reference.slice(0, 7)} on GitHub`} />
+      </>
+    );
+  return <code className="break-all">{reference}</code>;
+}
+
 /** "Agent build-host-2 reports: done (link)" and GitHub facts of one effect. */
-function EffectLine({ effect, now }: { effect: Effect; now: Date }) {
+function EffectLine({ effect, now, pr }: { effect: Effect; now: Date; pr: PrRef }) {
   const report = effect.reports.at(-1);
   return (
     <li>
@@ -41,14 +80,7 @@ function EffectLine({ effect, now }: { effect: Effect; now: Date }) {
           {report.reference && (
             <>
               {" "}
-              {report.reference.startsWith("https://") ? (
-                <OpenExternal
-                  href={report.reference}
-                  label={`Open the reported ${EFFECT_WORD[effect.kind]}`}
-                />
-              ) : (
-                <code>{report.reference.slice(0, 12)}</code>
-              )}
+              <Reference reference={report.reference} effect={effect} pr={pr} />
             </>
           )}
         </>
@@ -121,8 +153,19 @@ function Agents({ subscribers, now }: { subscribers: FeedSubscriber[]; now: Date
   );
 }
 
-/** V3: agents and push targets, open and failed effects, and every decision with its effects and reports. */
-export function DecisionLog({ log, now, storageKey }: { log: CommentLog; now: Date; storageKey: string }) {
+interface DecisionLogProps {
+  log: CommentLog;
+  /** The pull request (commit links of agent reports). */
+  pr: PrRef;
+  now: Date;
+  storageKey: string;
+}
+
+/**
+ * V3: agents and push targets, open and failed effects, and every decision with its effects and reports; an undone
+ * decision says so.
+ */
+export function DecisionLog({ log, pr, now, storageKey }: DecisionLogProps) {
   return (
     <div>
       <CollapsibleSection title="Decision feed" level={2} storageKey={`${storageKey}:feed`}>
@@ -144,10 +187,18 @@ export function DecisionLog({ log, now, storageKey }: { log: CommentLog; now: Da
         ) : (
           <ol className="m-0 grid list-none gap-2 p-0 text-[13px]">
             {[...log.decisions].reverse().map((d) => (
-              <li key={d.id} className="rounded-lg border border-border bg-surface px-3 py-2">
-                <b>
-                  {dateTimeText(d.decided_at)} · C{d.item_no} · {decisionLabel(d)}
+              <li
+                key={d.id}
+                className={`rounded-lg border border-border bg-surface px-3 py-2 ${d.undone_at ? "text-muted" : ""}`}
+              >
+                <b className={d.undone_at ? "line-through" : undefined}>
+                  {dateTimeText(d.decided_at)} · {decisionItemId(d)} · {decisionLabel(d)}
                 </b>{" "}
+                {d.undone_at && (
+                  <>
+                    <b>Undone {dateTimeText(d.undone_at)}</b>{" "}
+                  </>
+                )}
                 by {d.decided_by} · {VIA[d.via] ?? d.via} · resolve: {d.resolve_ticked ? "yes" : "no"}
                 {d.recommendation && (
                   <>
@@ -163,7 +214,7 @@ export function DecisionLog({ log, now, storageKey }: { log: CommentLog; now: Da
                 {d.effects.length > 0 && (
                   <ul className="m-0 mt-1 pl-5">
                     {d.effects.map((e) => (
-                      <EffectLine key={e.id} effect={e} now={now} />
+                      <EffectLine key={e.id} effect={e} now={now} pr={pr} />
                     ))}
                   </ul>
                 )}

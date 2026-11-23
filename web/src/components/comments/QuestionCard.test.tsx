@@ -1,21 +1,37 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState, type ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { CommentItem } from "../../api/generated/types";
-import { context, listItems, resetReviewLoop } from "../../mocks/review-loop";
+import type { CommentItem, DecisionBatchRow } from "../../api/generated/types";
+import { context, isRefused, listItems, previewEffects, resetReviewLoop } from "../../mocks/review-loop";
+import type { EffectsPreviewState } from "./decisions";
 import { COMMENT_HINT } from "./DecisionForm";
 import { QuestionCard, type ContextState } from "./QuestionCard";
 
 const NOW = new Date("2026-11-18T09:27:00Z");
 const byNo = (no: number) => listItems().find((i) => i.no === no)!;
 
+/** The draft planned at once by the mocks' server model (the screen asks RC16). */
+function planOf(rows: DecisionBatchRow[] | null): EffectsPreviewState {
+  if (rows === null) return { state: "idle" };
+  const answer = previewEffects(rows);
+  return isRefused(answer)
+    ? { state: "error", message: answer[2] }
+    : { state: "ready", items: answer, updating: false };
+}
+
+function Planned(props: ComponentProps<typeof QuestionCard>) {
+  const [rows, setRows] = useState<DecisionBatchRow[] | null>(null);
+  return <QuestionCard {...props} preview={planOf(rows)} onDraft={setRows} />;
+}
+
 function show(item: CommentItem, props: Partial<Parameters<typeof QuestionCard>[0]> = {}) {
   const ctx = context(item.no, null, null);
   const state: ContextState = ctx ? { state: "ready", value: ctx } : { state: "none" };
   const handlers = { onDecide: vi.fn(), onSkip: vi.fn(), onAsk: vi.fn(), onMoreLines: vi.fn() };
-  render(
-    <QuestionCard
+  const rendered = render(
+    <Planned
       item={item}
       position={{ index: 2, total: 9 }}
       prNumber={482}
@@ -34,7 +50,28 @@ function show(item: CommentItem, props: Partial<Parameters<typeof QuestionCard>[
       {...props}
     />,
   );
-  return handlers;
+  const rerender = (next: CommentItem) =>
+    rendered.rerender(
+      <Planned
+        item={next}
+        position={{ index: 2, total: 9 }}
+        prNumber={482}
+        purpose="Retries a timed-out RPC call."
+        context={state}
+        flowHref={(f) => `/analyses/a#${f.step}`}
+        filesHref="/analyses/a/files"
+        prPageHref="/pr/acme/node-client/482"
+        onNavigate={vi.fn()}
+        askAnswers={next.ask_answers}
+        busy={false}
+        error={null}
+        now={NOW}
+        storageKey="alice:test"
+        {...handlers}
+        {...props}
+      />,
+    );
+  return { ...handlers, rerender };
 }
 
 beforeEach(() => {
@@ -107,7 +144,7 @@ describe("QuestionCard (plan §3.2)", () => {
     expect(onDecide).not.toHaveBeenCalled();
     await userEvent.type(screen.getByLabelText("Reason (posted as the public reply)"), "Tracked in #455.");
     expect(screen.getByRole("group", { name: "Preview of the reply on GitHub" })).toHaveTextContent(
-      "Per maintainer decision, accepted for this pull request: Tracked in #455.",
+      "Per maintainer decision, accepted despite G-FUNDS: Tracked in #455.",
     );
     await userEvent.click(screen.getByRole("button", { name: "Decide" }));
     expect(onDecide).toHaveBeenCalledWith(
@@ -156,6 +193,38 @@ describe("QuestionCard (plan §3.2)", () => {
     expect(handlers.onSkip).toHaveBeenCalledTimes(1);
     fireEvent.keyDown(document.body, { key: "Enter" });
     expect(handlers.onDecide).toHaveBeenCalledWith(expect.objectContaining({ kind: "fix_here" }));
+  });
+
+  it("an item that changes while the reader typed keeps the input; Decide waits until it is kept", async () => {
+    const item = byNo(11);
+    const { onDecide, rerender } = show(item);
+    await userEvent.type(screen.getByLabelText("Your comment (optional)"), "keep it small");
+    act(() => rerender({ ...item, revision: item.revision + 1 }));
+    expect(screen.getByLabelText("Your comment (optional)")).toHaveValue("keep it small");
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    expect(onDecide).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(/C11 changed since you started/);
+    await userEvent.click(screen.getByRole("button", { name: "Keep my input" }));
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    expect(onDecide).toHaveBeenCalledWith(
+      expect.objectContaining({ item_revision: item.revision + 1, comment: "keep it small" }),
+    );
+  });
+
+  it("an untouched card follows the changed item and its new recommendation", () => {
+    const item = byNo(11);
+    const { rerender } = show(item);
+    const changed: CommentItem = {
+      ...item,
+      revision: item.revision + 1,
+      assessment: {
+        ...item.assessment!,
+        recommendation: { kind: "fix_here", reason: "Small.", reason_class: "small", target: null },
+      },
+    };
+    act(() => rerender(changed));
+    expect(screen.getByRole("radio", { name: "Fix here (Recommended)" })).toBeChecked();
+    expect(screen.queryByRole("button", { name: "Keep my input" })).toBeNull();
   });
 
   it("a fix against an 'out' necessity verdict carries the scope override", async () => {

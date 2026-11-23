@@ -1,7 +1,9 @@
 import { Tooltip } from "../tooltip/Tooltip";
 import type { PrRef, WatchedPr, WatchList } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
+import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
+import { prGithubUrl } from "../github/links";
 import { clockText, dateTimeText } from "../format/time";
 import { autoPassText, WATCH_STATE } from "./PrHeader";
 import { StateBadge } from "./StateBadge";
@@ -31,7 +33,8 @@ export function WatchedList({ list, prHref, onNavigate, onUnwatch, busy, now }: 
           <a href={prHref(w.pr)} onClick={navigateOnClick(prHref(w.pr), onNavigate)}>
             {name(w.pr)}
           </a>{" "}
-          <span className="text-muted">{w.title}</span>
+          <span className="text-muted">{w.title}</span>{" "}
+          <OpenExternal href={prGithubUrl(w.pr)} label={`Open ${name(w.pr)} on GitHub`} />
         </td>
         <td className={TD}>{dateTimeText(w.since)}</td>
         <td className={TD}>{w.last_probe_at ? clockText(w.last_probe_at, now) : "—"}</td>

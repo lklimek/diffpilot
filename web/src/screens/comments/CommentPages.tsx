@@ -22,10 +22,12 @@ export function TableScreen() {
   const chat = useAskChat();
   const batch = useDecideBatch(pr);
   const [done, setDone] = useState("");
+  // A recorded batch starts the rows afresh; a read of GitHub keeps what the reader typed.
+  const [recorded, setRecorded] = useState(0);
   return (
     <>
       <CommentsTable
-        key={items.map((i) => `${i.id}:${i.revision}`).join(",")}
+        key={recorded}
         prNumber={pr.number}
         purpose={overview.purpose}
         items={items}
@@ -36,7 +38,12 @@ export function TableScreen() {
         onSubmit={(rows) =>
           batch.mutate(
             { via: "table", rows },
-            { onSuccess: (stored) => setDone(`${stored.length} decisions recorded, one per row.`) },
+            {
+              onSuccess: (stored) => {
+                setDone(`${stored.length} decisions recorded, one per row.`);
+                setRecorded((n) => n + 1);
+              },
+            },
           )
         }
         busy={batch.isPending}
@@ -56,7 +63,7 @@ export function LogScreen() {
   const log = useCommentLog(pr);
   if (log.isError) return <StatusMessage kind="error">{errorText(log.error)}</StatusMessage>;
   if (!log.data) return <StatusMessage kind="loading">Loading the decision log…</StatusMessage>;
-  return <DecisionLog log={log.data} now={now} storageKey={`${login}:comments-log`} />;
+  return <DecisionLog log={log.data} pr={pr} now={now} storageKey={`${login}:comments-log`} />;
 }
 
 /** V4 Rounds. */
@@ -90,6 +97,8 @@ export function CarryOversScreen() {
             { onSuccess: () => void navigate(itemPath(pr, item.no)) },
           );
         }}
+        onShowOlder={() => void page.fetchNextPage()}
+        loadingOlder={page.isFetchingNextPage}
         now={now}
       />
       {action.isError && <StatusMessage kind="error">{errorText(action.error)}</StatusMessage>}

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { expectTrustWording } from "../../__tests__/wording";
+import type { CommentLog, Decision } from "../../api/generated/types";
 import {
   carryOvers,
   log,
@@ -23,6 +24,7 @@ import { StateBadge } from "./StateBadge";
 import { WatchedList } from "./WatchedList";
 
 const NOW = new Date("2026-11-18T09:27:00Z");
+const PR = { repo: { owner: "acme", name: "node-client" }, number: 482 };
 const text = () => document.body.textContent ?? "";
 
 beforeEach(() => {
@@ -136,6 +138,9 @@ describe("WatchedList (V6)", () => {
     expect(screen.getByText(/watching ended/)).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Unwatch acme/wire-codec #77" }));
     expect(onUnwatch).toHaveBeenCalledWith({ repo: { owner: "acme", name: "wire-codec" }, number: 77 });
+    expect(
+      screen.getByRole("link", { name: "Open acme/wire-codec #77 on GitHub (new tab)" }),
+    ).toHaveAttribute("href", "https://github.com/acme/wire-codec/pull/77");
     expectTrustWording(text());
   });
 });
@@ -186,12 +191,55 @@ describe("CarryOvers (V5)", () => {
     expect(
       within(screen.getByRole("table", { name: "Carry-overs per pull request" })).getAllByRole("row"),
     ).toHaveLength(5);
+    expect(screen.getByRole("link", { name: "Open acme/wire-codec #77 on GitHub (new tab)" })).toBeVisible();
+  });
+
+  it("a page with older events says how many are shown and loads older ones (RC11 next_cursor)", async () => {
+    const onShowOlder = vi.fn();
+    render(
+      <CarryOvers
+        page={{ ...carryOvers("acme/node-client/482"), next_cursor: "2026-11-16T15:30:00Z~c0" }}
+        scope="pr"
+        prHref="/a"
+        allHref="/b"
+        onNavigate={vi.fn()}
+        onShowOlder={onShowOlder}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText("The 6 newest events are shown.")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Show older events" }));
+    expect(onShowOlder).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("DecisionLog (V3)", () => {
+  /** The log with the newest decision changed by `fields`. */
+  const withDecision = (fields: Partial<Decision>): CommentLog => {
+    const l = log();
+    const last = l.decisions.at(-1)!;
+    return { ...l, decisions: [...l.decisions.slice(0, -1), { ...last, ...fields }] };
+  };
+  const reported = (reference: string): CommentLog => {
+    const l = log();
+    const last = l.decisions.at(-1)!;
+    const effect = {
+      ...last.effects[0]!,
+      reports: [
+        {
+          outcome: "done" as const,
+          reference,
+          message: null,
+          token_name: "agent-7",
+          at: "2026-11-18T09:00:00Z",
+        },
+      ],
+    };
+    return { ...l, decisions: [{ ...last, effects: [effect] }] };
+  };
+
   it("agents with push targets, decisions with via, comment and agent reports", () => {
-    render(<DecisionLog log={log()} now={NOW} storageKey="t" />);
+    render(<DecisionLog log={log()} pr={PR} now={NOW} storageKey="t" />);
     expect(screen.getByText("build-host-2")).toBeVisible();
     expect(screen.getByText(/failing since 09:20: HTTP 502/)).toBeVisible();
     expect(screen.getByText(/Accept despite the gate \(G-FUNDS\)/)).toBeVisible();
@@ -199,6 +247,35 @@ describe("DecisionLog (V3)", () => {
     expect(screen.getAllByText(/Agent laptop-cli reports: done/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Found on GitHub/).length).toBeGreaterThan(0);
     expectTrustWording(text());
+  });
+
+  it("an undone decision says so; a PR-level decision is named P<n> as in Questions", () => {
+    render(
+      <DecisionLog
+        log={withDecision({ undone_at: "2026-11-18T09:05:00Z", kind: "another_round", item_no: 24 })}
+        pr={PR}
+        now={NOW}
+        storageKey="t"
+      />,
+    );
+    expect(screen.getByText(/· P24 · Another round/)).toBeVisible();
+    expect(screen.getByText(/^Undone /)).toBeVisible();
+  });
+
+  it("report_reference_outside_github_is_text: only https://github.com/ links open (threat model T24)", () => {
+    render(
+      <DecisionLog log={reported("https://github-login.example/acme")} pr={PR} now={NOW} storageKey="t" />,
+    );
+    expect(screen.queryByRole("link", { name: /Open the reported/ })).toBeNull();
+    expect(screen.getByText("https://github-login.example/acme")).toBeVisible();
+  });
+
+  it("a commit reference opens that commit of the PR's repository on GitHub", () => {
+    render(<DecisionLog log={reported("4c1d9e0a7b")} pr={PR} now={NOW} storageKey="t" />);
+    expect(screen.getByRole("link", { name: "Open commit 4c1d9e0 on GitHub (new tab)" })).toHaveAttribute(
+      "href",
+      "https://github.com/acme/node-client/commit/4c1d9e0a7b",
+    );
   });
 });
 

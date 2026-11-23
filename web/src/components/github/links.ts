@@ -1,4 +1,4 @@
-import type { LineSide, PatternSite, PrSummary, StepFacts } from "../../api/generated/types";
+import type { LineSide, PatternSite, PrRef, PrSummary, RepoRef, StepFacts } from "../../api/generated/types";
 
 /** What a pull request's GitHub line links are built from. */
 export type PrLinkBase = Pick<PrSummary, "repo" | "number" | "base_sha" | "head_sha">;
@@ -70,7 +70,14 @@ export function sha256Hex(text: string): string {
   return Array.from(h, (x) => x.toString(16).padStart(8, "0")).join("");
 }
 
-const repoUrl = (pr: PrLinkBase) => `https://github.com/${pr.repo.owner}/${pr.repo.name}`;
+const repoUrl = (pr: { repo: RepoRef }) => `https://github.com/${pr.repo.owner}/${pr.repo.name}`;
+
+/** The pull request on GitHub. */
+export const prGithubUrl = (pr: PrRef) => `${repoUrl(pr)}/pull/${pr.number}`;
+
+/** A commit of the repository of `pr` on GitHub; null unless `sha` is a hex commit id (7–40 digits). */
+export const commitGithubUrl = (pr: PrRef, sha: string): string | null =>
+  /^[0-9a-f]{7,40}$/i.test(sha) ? `${repoUrl(pr)}/commit/${sha}` : null;
 
 /** The file in the PR's changes view on GitHub (`#diff-<sha256 of path>`). */
 export const fileDiffUrl = (pr: PrLinkBase, path: string) =>

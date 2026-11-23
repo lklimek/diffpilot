@@ -5,6 +5,7 @@ import type {
   CodeContext,
   CommentItem,
   DecideRequest,
+  DecisionBatchRow,
   FlowStepRef,
   Gate,
   NotAssessedReason,
@@ -15,7 +16,7 @@ import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
-import { CHOICE_LABEL, decisionLabel } from "./decisions";
+import { CHOICE_LABEL, decisionLabel, type EffectsPreviewState } from "./decisions";
 import { DecisionForm } from "./DecisionForm";
 import { GateMenu } from "./GateMenu";
 import { NotesElsewhere } from "./NotesElsewhere";
@@ -61,6 +62,10 @@ interface QuestionCardProps {
   onOpenAnswers?: () => void;
   onDecide: (request: DecideRequest) => void;
   onSkip: () => void;
+  /** The server's plan of the decision drafted on the card (RC16). */
+  preview?: EffectsPreviewState;
+  /** The drafted decision to plan; null while an input is missing. */
+  onDraft?: (rows: DecisionBatchRow[] | null) => void;
   /** Loads more lines above or below. */
   onMoreLines: (direction: "above" | "below") => void;
   /** "Assess again" (RC6); no button without it. */
@@ -470,8 +475,10 @@ export function QuestionCard(props: QuestionCardProps) {
       </CollapsibleSection>
 
       <DecisionForm
-        key={`${item.id}:${item.revision}`}
+        key={item.id}
         item={item}
+        preview={props.preview}
+        onDraft={props.onDraft}
         onDecide={props.onDecide}
         onAsk={props.onAsk}
         askUnavailable={props.askUnavailable}

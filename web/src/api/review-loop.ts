@@ -1,6 +1,13 @@
 // Queries and mutations of the review loop (docs/review-workflow-plan.md §6: RC1–RC17, RW1–RW2, RN1–RN3) and the
 // Ask questions about its items (RC7).
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { api, ApiError } from "./client";
 import { withoutRetried } from "./queries";
 import type {
@@ -9,8 +16,10 @@ import type {
   AskQuestion,
   ChannelKind,
   ContextQuery,
+  CarryOverPage,
   DecideRequest,
   DecisionBatchRequest,
+  DecisionBatchRow,
   DecisionId,
   Gate,
   PrRef,
@@ -59,9 +68,57 @@ export const useCommentContext = (pr: PrRef, no: number | null, query: ContextQu
 export const useCommentLog = (pr: PrRef) =>
   useQuery({ queryKey: ["comment-log", ...prKey(pr)], queryFn: () => api.getCommentLog(pr) });
 
-/** Carry-overs of one PR (`owner/name/number`) or of all (RC11). */
-export const useCarryOvers = (pr: string | null) =>
-  useQuery({ queryKey: ["carry-overs", pr], queryFn: () => api.listCarryOvers({ pr, cursor: null }) });
+/** Carry-overs of one PR (`owner/name/number`) or of all (RC11): the newest page, then older ones on request. */
+export function useCarryOvers(pr: string | null) {
+  const query = useInfiniteQuery({
+    queryKey: ["carry-overs", pr],
+    queryFn: ({ pageParam }) => api.listCarryOvers({ pr, cursor: pageParam }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last: CarryOverPage) => last.next_cursor,
+  });
+  const pages = query.data?.pages;
+  // Counts come with every page; the events of the pages read so far are listed in order.
+  const data: CarryOverPage | undefined = pages && {
+    ...pages[0]!,
+    events: pages.flatMap((page) => page.events),
+    next_cursor: pages.at(-1)!.next_cursor,
+  };
+  return { ...query, data };
+}
+
+/** How long a draft waits for more typing before its effects are planned (RC16). */
+export const PREVIEW_DEBOUNCE_MS = 250;
+
+/**
+ * The effects the server plans for `rows` (RC16), the reply texts it would post included; read again shortly after
+ * the rows stop changing, the previous answer kept meanwhile (`current` is false until the answer is for `rows`).
+ * Nothing without rows.
+ */
+export function useEffectsPreview(pr: PrRef, rows: DecisionBatchRow[] | null) {
+  const draft = JSON.stringify(rows);
+  const [settled, setSettled] = useState(draft);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(draft), PREVIEW_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [draft]);
+  const planned = JSON.parse(settled) as DecisionBatchRow[] | null;
+  const query = useQuery({
+    queryKey: ["effects-preview", ...prKey(pr), settled],
+    queryFn: () => api.previewCommentEffects(pr, { rows: planned! }),
+    enabled: planned !== null && planned.length > 0,
+    placeholderData: keepPreviousData,
+    staleTime: Infinity,
+  });
+  return { ...query, current: settled === draft && !query.isPlaceholderData && !query.isFetching };
+}
+
+/** The server's "Decide the rest per recommendation" list (RC17); read again with the items. */
+export const useDecideRest = (pr: PrRef) =>
+  useQuery({
+    queryKey: ["decide-rest", ...prKey(pr)],
+    queryFn: () => api.getDecideRest(pr),
+    refetchInterval: COMMENTS_POLL_MS,
+  });
 
 /** The reader's watched PRs (RW2). */
 export const useWatches = () => useQuery({ queryKey: ["watches"], queryFn: api.listWatches });
@@ -71,7 +128,7 @@ function useInvalidatePr(pr: PrRef) {
   const client = useQueryClient();
   return () =>
     Promise.all(
-      ["pr-page", "comments", "comment-items", "comment-log"].map((key) =>
+      ["pr-page", "comments", "comment-items", "comment-log", "decide-rest", "effects-preview"].map((key) =>
         client.invalidateQueries({ queryKey: [key, ...prKey(pr)] }),
       ),
     );
