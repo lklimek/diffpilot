@@ -1153,7 +1153,14 @@ async fn channel_secrets_stay_ciphertext_and_health_changes_once() {
         .await
         .expect("create");
     let kept = rl
-        .put_channel(T, "u1", ChannelKind::Ntfy, &input(SecretUpdate::Keep))
+        .put_channel(
+            T,
+            "u1",
+            ChannelKind::Ntfy,
+            &input(SecretUpdate::Keep {
+                seen: Some((ChannelKind::Ntfy, "https://ntfy.example".into())),
+            }),
+        )
         .await
         .expect("keep");
     assert_eq!(kept.id, created.id);
@@ -1203,6 +1210,189 @@ async fn channel_secrets_stay_ciphertext_and_health_changes_once() {
             .expect("delete")
     );
     assert!(rl.channels("u1").await.expect("none").is_empty());
+}
+
+/// A kept secret stays only on the target the caller checked the request against: a secret stored or moved
+/// meanwhile makes the save a conflict, and nothing changes.
+#[tokio::test]
+async fn a_kept_secret_stays_only_on_the_target_it_was_checked_against() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let input = |url: &str, secret| ChannelInput {
+        url: url.into(),
+        topic: Some("diffpilot-alice".into()),
+        secret,
+        events: vec![UserEventKind::QuestionsReady],
+        enabled: true,
+    };
+    let good = "https://ntfy.example";
+    rl.put_channel(
+        T,
+        "u1",
+        ChannelKind::Ntfy,
+        &input(good, SecretUpdate::Set(vec![7, 7, 7])),
+    )
+    .await
+    .expect("create");
+    for seen in [
+        None,
+        Some((ChannelKind::Ntfy, "https://stale.example".to_owned())),
+    ] {
+        let saved = rl
+            .put_channel(
+                T,
+                "u1",
+                ChannelKind::Ntfy,
+                &input("https://elsewhere.example", SecretUpdate::Keep { seen }),
+            )
+            .await;
+        assert!(matches!(saved, Err(DbError::Conflict)), "{saved:?}");
+    }
+    let channel = rl.channels("u1").await.expect("channels").remove(0);
+    assert_eq!(
+        (channel.url.as_str(), channel.secret),
+        (good, Some(vec![7, 7, 7]))
+    );
+    let kept = rl
+        .put_channel(
+            T,
+            "u1",
+            ChannelKind::Ntfy,
+            &input(
+                "https://ntfy.example/other",
+                SecretUpdate::Keep {
+                    seen: Some((ChannelKind::Ntfy, good.into())),
+                },
+            ),
+        )
+        .await
+        .expect("checked target");
+    assert_eq!(kept.secret, Some(vec![7, 7, 7]));
+
+    let token = AccessTokenId("agentAAA".into());
+    let push = |kind, url: &str, secret| PushInput {
+        kind,
+        url: url.into(),
+        topic: (kind == ChannelKind::Ntfy).then(|| "agent-topic".to_owned()),
+        secret,
+    };
+    rl.put_push_target(
+        T,
+        &token,
+        &push(
+            ChannelKind::Webhook,
+            "https://hooks.example/a",
+            SecretUpdate::Set(vec![1, 2, 3]),
+        ),
+        at(1),
+    )
+    .await
+    .expect("push target");
+    for seen in [
+        None,
+        Some((ChannelKind::Ntfy, "https://hooks.example/a".to_owned())),
+    ] {
+        let saved = rl
+            .put_push_target(
+                T,
+                &token,
+                &push(
+                    ChannelKind::Webhook,
+                    "https://attacker.example/",
+                    SecretUpdate::Keep { seen },
+                ),
+                at(2),
+            )
+            .await;
+        assert!(matches!(saved, Err(DbError::Conflict)), "{saved:?}");
+    }
+    let kept = rl
+        .put_push_target(
+            T,
+            &token,
+            &push(
+                ChannelKind::Webhook,
+                "https://hooks.example/b",
+                SecretUpdate::Keep {
+                    seen: Some((ChannelKind::Webhook, "https://hooks.example/a".into())),
+                },
+            ),
+            at(3),
+        )
+        .await
+        .expect("checked push target");
+    assert_eq!(kept.push_secret, Some(vec![1, 2, 3]));
+    assert_eq!(
+        kept.push.map(|(_, url, _)| url).as_deref(),
+        Some("https://hooks.example/b")
+    );
+}
+
+/// Questions ready for a round are written once per watcher: the marker, the event and its deliveries together.
+#[tokio::test]
+async fn questions_ready_is_written_once_per_user_pull_request_and_round() {
+    let db = db().await;
+    let rl = db.review_loop();
+    rl.watch(T, "u1", PR, 20, at(0)).await.expect("watch");
+    rl.put_channel(
+        T,
+        "u1",
+        ChannelKind::Ntfy,
+        &ChannelInput {
+            url: "https://ntfy.example".into(),
+            topic: Some("t".into()),
+            secret: SecretUpdate::Keep { seen: None },
+            events: vec![UserEventKind::QuestionsReady],
+            enabled: true,
+        },
+    )
+    .await
+    .expect("channel");
+    let event = NewUserEvent {
+        user_id: "u1".into(),
+        kind: UserEventKind::QuestionsReady,
+        pull_request_id: Some(PR),
+        count: 2,
+        text: "acme/node-client #482: 2 questions ready".into(),
+        url: Some("/pr/acme/node-client/482/comments".into()),
+    };
+    let written = [
+        rl.questions_ready(T, &event, "round:3", at(1))
+            .await
+            .expect("first"),
+        rl.questions_ready(T, &event, "round:3", at(2))
+            .await
+            .expect("again"),
+        rl.questions_ready(T, &event, "round:4", at(3))
+            .await
+            .expect("next round"),
+    ];
+    assert_eq!(written, [true, false, true]);
+    assert_eq!(
+        rl.user_events("u1", None, 10).await.expect("events").len(),
+        2
+    );
+    assert_eq!(rl.due_deliveries(at(3), 10).await.expect("due").len(), 2);
+    assert_eq!(
+        rl.watches("u1").await.expect("watches")[0]
+            .notified_for
+            .as_deref(),
+        Some("round:4")
+    );
+    assert!(
+        !rl.questions_ready(
+            T,
+            &NewUserEvent {
+                user_id: "u2".into(),
+                ..event
+            },
+            "round:3",
+            at(4)
+        )
+        .await
+        .expect("not watching"),
+        "only a watcher is told"
+    );
 }
 
 #[tokio::test]
@@ -1787,7 +1977,7 @@ async fn event_deliveries_are_queued_with_the_event_per_subscribed_channel() {
     let channel = |events: Vec<UserEventKind>, enabled| ChannelInput {
         url: "https://ntfy.example".into(),
         topic: Some("t".into()),
-        secret: SecretUpdate::Keep,
+        secret: SecretUpdate::Keep { seen: None },
         events,
         enabled,
     };

@@ -533,6 +533,38 @@ async fn a_rate_limited_user_is_not_probed_until_the_reset() {
 
 /// A due change that an on-demand pass already assessed (the automatic pass has nothing to send) still tells the
 /// watcher, once per round, that questions wait.
+/// Two settles that both loaded the due watch before either wrote its event (the scheduler and a plug-in signal)
+/// tell the watcher once.
+#[tokio::test]
+async fn concurrent_settles_write_questions_ready_once() {
+    let w = world().await;
+    let pr = watched_482(&w).await;
+    mount_probe(&w.server, json!({"data": {}})).await;
+    let rl = w.state.db.review_loop();
+    for item in rl.items(pr).await.expect("items") {
+        if item.kind != contracts::api::review_loop::CommentItemKind::PrQuestion
+            && item.state != contracts::api::review_loop::ItemState::Outside
+        {
+            rl.set_item_state(
+                item.id,
+                item.revision,
+                contracts::api::review_loop::ItemState::Decided,
+                Timestamp::now(),
+            )
+            .await
+            .expect("decided");
+        }
+    }
+    let now = Timestamp::now();
+    rl.set_pass_due("u1", pr, Some(now)).await.expect("due");
+    let (first, second) =
+        tokio::join!(watch::tick_at(&w.state, now), watch::tick_at(&w.state, now));
+    first.expect("tick");
+    second.expect("tick");
+    let events = rl.user_events("u1", None, 10).await.expect("events");
+    assert_eq!(events.len(), 1, "{events:?}");
+}
+
 #[tokio::test]
 async fn a_due_change_assessed_on_demand_still_notifies_the_watcher() {
     let w = world().await;

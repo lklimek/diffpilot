@@ -282,6 +282,36 @@ impl ReviewLoop<'_> {
         Ok(())
     }
 
+    /// Writes a watcher's `questions_ready` event for `round` with its deliveries and the watch's marker, together:
+    /// false (nothing written) when the watcher was told about this round already or does not watch the PR.
+    pub async fn questions_ready(
+        &self,
+        tenant_id: &str,
+        event: &NewUserEvent,
+        round: &str,
+        now: Timestamp,
+    ) -> Result<bool, DbError> {
+        let pull_request_id = event.pull_request_id.ok_or(DbError::NotFound)?;
+        let mut tx = write_tx(self.pool).await?;
+        let marked = sqlx::query(
+            "UPDATE pr_watches SET notified_for = ?1
+             WHERE user_id = ?2 AND pull_request_id = ?3 AND notified_for IS NOT ?1",
+        )
+        .bind(round)
+        .bind(&event.user_id)
+        .bind(pull_request_id)
+        .execute(&mut *tx)
+        .await?;
+        if marked.rows_affected() == 0 {
+            return Ok(false);
+        }
+        super::notify::insert_event(&mut tx, tenant_id, event, None, now)
+            .await?
+            .ok_or(DbError::Conflict)?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     /// Passes charged to the user since `since` (the daily cap).
     pub async fn charged_passes(&self, user_id: &str, since: Timestamp) -> Result<u32, DbError> {
         let count: i64 = sqlx::query_scalar(

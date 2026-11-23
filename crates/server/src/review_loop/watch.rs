@@ -665,11 +665,16 @@ async fn questions_ready(
         ),
         url: Some(super::notify::comments_path(pr_ref)),
     };
-    let rl = state.db.review_loop();
-    rl.add_user_event(&watch.tenant_id, &event, now).await?;
-    rl.set_notified(&watch.user_id, pr, round).await?;
-    state.notify.wake_deliveries();
-    tracing::info!(pr, user = %watch.user_id, questions, %round, "questions ready event written");
+    // The database writes it once per watcher and round, however many settles race to it.
+    let written = state
+        .db
+        .review_loop()
+        .questions_ready(&watch.tenant_id, &event, round, now)
+        .await?;
+    if written {
+        state.notify.wake_deliveries();
+        tracing::info!(pr, user = %watch.user_id, questions, %round, "questions ready event written");
+    }
     Ok(())
 }
 

@@ -27,8 +27,12 @@ use crate::error::DbError;
 /// What to do with a stored secret.
 #[derive(Clone, PartialEq, Eq)]
 pub enum SecretUpdate {
-    /// Keep it (the request had no secret).
-    Keep,
+    /// Keep it (the request had no secret) while the target holding it is still `seen`: the kind and URL the caller
+    /// checked the request against (`None`: no secret was stored). A secret stored or moved since is a `Conflict`.
+    Keep {
+        /// The secret-holding target the caller saw.
+        seen: Option<(ChannelKind, String)>,
+    },
     /// Replace it with this ciphertext.
     Set(Vec<u8>),
     /// Remove it.
@@ -38,11 +42,27 @@ pub enum SecretUpdate {
 impl fmt::Debug for SecretUpdate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Keep => "Keep",
+            Self::Keep { .. } => "Keep",
             Self::Set(_) => "Set([redacted])",
             Self::Clear => "Clear",
         })
     }
+}
+
+/// The upsert's secret columns: whether to keep the stored one, else the new value. A kept secret stays only on the
+/// target the caller checked (`held`: the target holding a secret now); otherwise `Conflict`.
+fn secret_columns(
+    update: &SecretUpdate,
+    held: Option<(ChannelKind, String)>,
+) -> Result<(bool, Option<Vec<u8>>), DbError> {
+    Ok(match update {
+        SecretUpdate::Keep { seen } if held.is_some() && *seen != held => {
+            return Err(DbError::Conflict);
+        }
+        SecretUpdate::Keep { .. } => (true, None),
+        SecretUpdate::Set(ciphertext) => (false, Some(ciphertext.clone())),
+        SecretUpdate::Clear => (false, None),
+    })
 }
 
 /// A channel to save.
@@ -285,11 +305,14 @@ impl ReviewLoop<'_> {
         input: &ChannelInput,
     ) -> Result<ChannelRecord, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let (keep, secret) = match &input.secret {
-            SecretUpdate::Keep => (true, None),
-            SecretUpdate::Set(ciphertext) => (false, Some(ciphertext.clone())),
-            SecretUpdate::Clear => (false, None),
-        };
+        let held: Option<String> = sqlx::query_scalar(
+            "SELECT url FROM notification_channels WHERE user_id = ? AND kind = ? AND secret IS NOT NULL",
+        )
+        .bind(user_id)
+        .bind(wire(kind)?)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (keep, secret) = secret_columns(&input.secret, held.map(|url| (kind, url)))?;
         sqlx::query(
             "INSERT INTO notification_channels (id, tenant_id, user_id, kind, url, topic, secret, events, enabled)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -406,11 +429,17 @@ impl ReviewLoop<'_> {
         now: Timestamp,
     ) -> Result<SubscriptionRecord, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let (keep, secret) = match &input.secret {
-            SecretUpdate::Keep => (true, None),
-            SecretUpdate::Set(ciphertext) => (false, Some(ciphertext.clone())),
-            SecretUpdate::Clear => (false, None),
-        };
+        let held = sqlx::query(
+            "SELECT push_kind, push_url FROM agent_subscriptions WHERE token_id = ? AND push_secret IS NOT NULL",
+        )
+        .bind(&token.0)
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(|row| -> Result<(ChannelKind, String), DbError> {
+            Ok((wire_col(&row, "push_kind")?, row.try_get("push_url")?))
+        })
+        .transpose()?;
+        let (keep, secret) = secret_columns(&input.secret, held)?;
         sqlx::query(
             "INSERT INTO agent_subscriptions (token_id, tenant_id, capabilities, last_seen_at, push_kind, push_url,
                  push_topic, push_secret)

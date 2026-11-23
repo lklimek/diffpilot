@@ -125,6 +125,8 @@ fn class_v6(v6: Ipv6Addr) -> Class {
         || v6.is_unicast_link_local()
         // Local-use NAT64 (RFC 8215): the embedded IPv4 address depends on the translator's prefix length.
         || segments[..3] == [0x64, 0xff9b, 1]
+        // Teredo (RFC 4380, 2001::/32): a relay tunnels to the client's inverted IPv4 address; never a target.
+        || segments[..2] == [0x2001, 0]
     {
         Class::Refused
     } else if v6.is_unique_local() || segments[..2] == [0x2001, 0xdb8] {
@@ -403,6 +405,10 @@ mod tests {
             "http://[2002:7f00:1::1]/",
             "http://[2002:a9fe:a9fe::1]/",
             "http://[::127.0.0.1]/",
+            // Teredo (RFC 4380): the client's IPv4 address is carried inverted.
+            "http://[2001:0:4136:e378:8000:63bf:80ff:fffe]/",
+            "http://[2001:0:5ef5:79fd:0:0:3f57:fefe]/",
+            "http://[2001::1]/",
         ] {
             assert_eq!(check_url(raw, LAN), Err(UrlError::Address), "{raw}");
             assert!(check_url(raw, PUBLIC).is_err(), "{raw}");
