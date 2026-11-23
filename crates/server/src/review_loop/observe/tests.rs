@@ -390,3 +390,68 @@ fn carried_entries_without_an_earlier_finding_are_reported() {
         [("PRR_fixture482_r2", "Never raised before".to_owned())]
     );
 }
+
+/// Plan §2.1 I2 (owner, 2026-11-23, RQ11): an entry whose most recent earlier copy is in a dismissed round takes that
+/// copy, which yields no item; an older copy the dismissed round had superseded stays superseded.
+#[test]
+#[ignore = "repro: a carried entry skips dismissed rounds and falls back to an older copy; remove with the fix"]
+fn a_carried_entry_whose_latest_copy_was_dismissed_does_not_revive_an_older_copy() {
+    let bots = BotRule::new(&default_known_bots());
+    let mut read = fixture_read();
+    read.reviews
+        .retain(|review| review.id != "PRR_fixture482_r5");
+    resubmitted(
+        &mut read,
+        "PRR_fixture482_r1",
+        "PRR_fixture482_rx",
+        "2026-11-11T18:00:00Z",
+    );
+    review(&mut read, "PRR_fixture482_rx").state = "DISMISSED".into();
+    resubmitted(
+        &mut read,
+        "PRR_fixture482_r2",
+        "PRR_fixture482_ry",
+        "2026-11-12T12:00:00Z",
+    );
+    let (observed, _) = observe(&read, &bots);
+    assert_eq!(
+        body_keys(&observed),
+        [H1_BODY],
+        "ry carries the copy of dismissed rx; r1's older copy, superseded by rx, does not come back"
+    );
+}
+
+/// Plan §2.1 I2: each finding is taken once, and an entry without a path does not take the only finding an entry
+/// with a path could take.
+#[test]
+#[ignore = "repro: the loose pass assigns greedily in entry order; remove with the fix"]
+fn an_entry_without_a_path_leaves_the_finding_at_a_named_path_to_its_entry() {
+    let bots = BotRule::new(&default_known_bots());
+    let mut read = fixture_read();
+    read.reviews
+        .retain(|review| review.id != "PRR_fixture482_r5");
+    let second = "**🔴 Blocking: Bound the total retry time**\n`src/rpc/other.rs:5-6`\n\n\
+        The other loop waits too.\n\n";
+    let r1 = review(&mut read, "PRR_fixture482_r1");
+    r1.body = r1
+        .body
+        .replacen("<details>", &format!("{second}<details>"), 1);
+    let r2 = review(&mut read, "PRR_fixture482_r2");
+    r2.body = r2.body.replace(
+        "- 🔴 **Blocking**: Bound the total retry time — `src/rpc/retry.rs:20-26` (carried)",
+        "- 🔴 **Blocking**: Bound the total retry time (carried)\n\
+         - 🔴 **Blocking**: Bound the total retry time — `src/rpc/retry.rs:30-36` (carried)",
+    );
+    let latest = latest_rounds(&read, &bots);
+    let Carried { kept, unmatched } = carried(&read, &latest);
+    let mut kept: Vec<_> = kept.into_iter().collect();
+    kept.sort_unstable();
+    assert_eq!(
+        (kept, unmatched),
+        (
+            vec![("PRR_fixture482_r1", 1), ("PRR_fixture482_r1", 2)],
+            Vec::new()
+        ),
+        "the path-less entry takes other.rs, the retry.rs entry takes retry.rs"
+    );
+}
