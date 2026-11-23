@@ -19,6 +19,7 @@ path = "src/supervisor_main.rs"
 fake-provider = []
 
 [dependencies]
+bollard = "=0.21.1"
 base64.workspace = true
 contracts.workspace = true
 jiff.workspace = true

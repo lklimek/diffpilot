@@ -27,6 +27,8 @@ const EX_CONFIG: u8 = 78;
 
 #[derive(Debug, thiserror::Error)]
 enum StartError {
+    #[error("container launcher failed")]
+    Launcher(#[from] runner::launcher::Error),
     #[error("could not start the async runtime")]
     Runtime(#[source] io::Error),
     #[error("the configuration is invalid")]
@@ -77,6 +79,13 @@ fn main() -> ExitCode {
 }
 
 async fn run() -> Result<(), StartError> {
+    if std::env::args().nth(1).as_deref() == Some("--launcher") {
+        let socket = std::env::var_os("SR_LAUNCHER_SOCKET")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/run/launcher/launcher.sock"));
+        runner::launcher::serve(&socket, runner::launcher::Settings::from_env()?).await?;
+        return Ok(());
+    }
     let config = Config::from_env()?;
     let mut dirs = config.dirs();
     let isolation = Supervisor::from_env()?

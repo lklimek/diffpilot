@@ -1,0 +1,26 @@
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+web_search = "disabled"
+project_doc_max_bytes = 0
+check_for_update_on_startup = false
+model_provider = "diffpilot"
+analytics = { enabled = false }
+agents = { enabled = false }
+skills = { include_instructions = false, bundled = { enabled = false } }
+features = { plugins = false, apps = false, remote_plugin = false, plugin_discovery_prefetch = false, image_generation = false, browser_use = false, computer_use = false, hooks = false, tool_suggest = false, goals = false, daemon_auto_start = false, multi_agent_v2 = false }
+
+[model_providers.diffpilot]
+name = "diffpilot"
+base_url = "http://codex-gateway:8090/v1"
+wire_api = "responses"
+supports_websockets = false
+
+[model_providers.diffpilot.auth]
+command = "cat"
+args = ["/run/dp/model-key"]
+refresh_interval_ms = 0
+
+[projects."/work"]
+trust_level = "untrusted"
+[projects."/work/repo"]
+trust_level = "untrusted"
