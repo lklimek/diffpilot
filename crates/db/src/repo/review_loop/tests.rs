@@ -140,7 +140,6 @@ fn fix_decision(item: &ItemRecord) -> NewDecision {
                 params: EffectParams::default(),
             },
         ],
-        scope: ScopeGuard::default(),
     }
 }
 
@@ -2213,52 +2212,79 @@ async fn send_slots_are_limited_per_target_within_the_window() {
     );
 }
 
-/// RQ4, RQ5, RQ11: a PR-level decision is stored only while what its scope rests on is unchanged: the items it acts
-/// on (a gate marked meanwhile changes the item) and, when named, no item raised since.
+/// RQ4, RQ5, RQ11: decisions are planned on the state of the transaction that stores them; a plan that refuses
+/// stores nothing.
 #[tokio::test]
-async fn a_pr_level_decision_is_refused_when_its_scope_changed() {
+async fn decisions_are_planned_on_the_state_they_are_stored_with() {
     let db = db().await;
     let rl = db.review_loop();
-    let question = new_item(&db, "pr-question").await;
-    let scoped = new_item(&db, "scoped").await;
-    let mut decision = fix_decision(&question);
-    decision.effects = Vec::new();
-    decision.scope = ScopeGuard {
-        items: vec![(scoped.id, scoped.revision)],
-        last_no: None,
-    };
-    let gated = rl
-        .set_gates(
-            scoped.id,
-            scoped.revision,
-            &[GateMark {
-                gate: Gate::Funds,
-                source: GateSource::Owner,
-            }],
-            at(5),
+    let item = new_item(&db, "planned").await;
+    let stored = rl
+        .decide_planned(T, PR, at(5), |view| {
+            assert_eq!(view.row.map(|row| row.pull_request_id), Some(PR));
+            assert_eq!(
+                view.items.iter().map(|item| item.no).collect::<Vec<_>>(),
+                [item.no]
+            );
+            assert!(view.decisions.is_empty());
+            Ok::<_, DbError>(vec![fix_decision(&view.items[0])])
+        })
+        .await
+        .expect("decide");
+    assert!(
+        matches!(&stored, DecideOutcome::Stored(decisions) if decisions.len() == 1),
+        "{stored:?}"
+    );
+    let refused = rl
+        .decide_planned(T, PR, at(6), |view| {
+            assert_eq!(view.decisions.len(), 1, "the decision just stored");
+            Err::<Vec<NewDecision>, _>(DbError::Conflict)
+        })
+        .await;
+    assert!(matches!(refused, Err(DbError::Conflict)), "{refused:?}");
+    assert_eq!(
+        rl.item_decisions(item.id).await.expect("decisions").len(),
+        1
+    );
+}
+
+/// RQ3: a decided item raised again is stored as read and asked again in one transaction: the owner's question
+/// and the cancellation of the unclaimed earlier effects never wait for a second write.
+#[tokio::test]
+async fn an_item_raised_again_is_stored_and_asked_again_together() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "objection").await;
+    let decision = decide_one(&db, fix_decision(&item), at(10)).await;
+    let mut resolved = observed("objection", "body");
+    resolved.github.resolved = Some(true);
+    resolved.outside = Some(OutsideResolution {
+        by: "alice".into(),
+        seen_at: at(11),
+    });
+    rl.upsert_item(T, PR, &resolved, ItemState::Undecided, at(11))
+        .await
+        .expect("outside");
+    let UpsertOutcome::Changed(asked) = rl
+        .upsert_asking_again(
+            T,
+            PR,
+            &observed("objection", "body"),
+            ItemState::Executing,
+            at(12),
         )
         .await
-        .expect("gates");
-    assert_eq!(
-        rl.decide(T, std::slice::from_ref(&decision), at(6))
-            .await
-            .expect("decide"),
-        DecideOutcome::ItemChanged(vec![scoped.no]),
-        "a gate item is never swept into a PR-level decision"
-    );
-    decision.scope = ScopeGuard {
-        items: vec![(gated.id, gated.revision)],
-        last_no: Some(gated.no),
+        .expect("asked again")
+    else {
+        panic!("expected a change");
     };
-    let late = new_item(&db, "raised-meanwhile").await;
+    assert_eq!(asked.state, ItemState::Reopened);
+    assert_eq!(asked.outside, None);
+    assert_eq!(asked.github.resolved, Some(false));
     assert_eq!(
-        rl.decide(T, std::slice::from_ref(&decision), at(7))
-            .await
-            .expect("decide"),
-        DecideOutcome::ItemChanged(vec![late.no])
+        effect_states(&db, &decision).await,
+        [EffectState::Cancelled; 3]
     );
-    decision.scope.last_no = Some(late.no);
-    decide_one(&db, decision, at(8)).await;
 }
 
 /// Plan §2.3, RQ3: a claim whose lease ended is settled before the decision is claimed again: what waits on a

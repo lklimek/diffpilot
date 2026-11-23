@@ -24,11 +24,11 @@ pub use actions::ActionOutcome;
 pub use carry::NewCarryEvent;
 pub use decisions::{
     ClaimOutcome, DecideOutcome, DecisionOwner, NewDecision, NewEffect, OpenFeedEntry,
-    ReportOutcomeRecord, ReportRequest, ScopeGuard, StoredDecision,
+    ReportOutcomeRecord, ReportRequest, StoredDecision,
 };
 pub use items::{
     CommentPrRecord, ItemRecord, NewPass, ObservedItem, PassCause, PassRecord, PassStart,
-    PassState, ReadResult, SentItem, StoredAssessment, UpsertOutcome,
+    PassState, PrView, ReadResult, SentItem, StoredAssessment, UpsertOutcome,
 };
 pub use notify::{
     ChannelInput, ChannelRecord, DeliveryRecord, DeliveryTarget, FailureTransition, PushInput,

@@ -426,26 +426,7 @@ impl ReviewLoop<'_> {
 
     /// The PR's review-loop row.
     pub async fn pr_state(&self, pull_request_id: i64) -> Result<Option<CommentPrRecord>, DbError> {
-        let Some(row) = sqlx::query(
-            "SELECT pull_request_id, read_at, read_failure, read_failed_at, github_snapshot, round_count, purpose
-             FROM comment_prs WHERE pull_request_id = ?",
-        )
-        .bind(pull_request_id)
-        .fetch_optional(self.pool)
-        .await?
-        else {
-            return Ok(None);
-        };
-        let failure: Option<ReadFailure> = opt_wire_col(&row, "read_failure")?;
-        let failed_at = opt_ts_col(&row, "read_failed_at")?;
-        Ok(Some(CommentPrRecord {
-            pull_request_id: row.try_get("pull_request_id")?,
-            read_at: opt_ts_col(&row, "read_at")?,
-            read_failure: failure.zip(failed_at),
-            github_snapshot: opt_json_col(&row, "github_snapshot")?,
-            round_count: u32_col(&row, "round_count")?,
-            purpose: row.try_get("purpose")?,
-        }))
+        pr_state_with(self.pool, pull_request_id).await
     }
 
     /// Stores what a read observed. A new stable key gets the next `C<no>` and `state_if_new`; a known one is
@@ -461,116 +442,15 @@ impl ReviewLoop<'_> {
         now: Timestamp,
     ) -> Result<UpsertOutcome, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let existing = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id = ? AND stable_key = ?"
-        )))
-        .bind(pull_request_id)
-        .bind(&observed.stable_key)
-        .fetch_optional(&mut *tx)
-        .await?
-        .map(|row| item_from_row(&row))
-        .transpose()?;
-        let (path, start, end) = lines_of(observed.location.as_ref());
-        let outcome = match existing {
-            None => {
-                let no: i64 = sqlx::query_scalar(
-                    "UPDATE comment_prs SET next_item_no = next_item_no + 1 WHERE pull_request_id = ?
-                     RETURNING next_item_no - 1",
-                )
-                .bind(pull_request_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or(DbError::NotFound)?;
-                let id = CommentItemId::new_random();
-                let state = if observed.outside.is_some() {
-                    ItemState::Outside
-                } else {
-                    state_if_new
-                };
-                sqlx::query(
-                    "INSERT INTO comment_items (id, tenant_id, pull_request_id, item_no, kind, stable_key, author,
-                         author_kind, url, path, start_line, end_line, title, body, body_hash, first_seen_head,
-                         first_round, bot_severity, github, state, outside, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                )
-                .bind(id.to_string())
-                .bind(tenant_id)
-                .bind(pull_request_id)
-                .bind(no)
-                .bind(wire(observed.kind)?)
-                .bind(&observed.stable_key)
-                .bind(&observed.author)
-                .bind(wire(observed.author_kind)?)
-                .bind(&observed.url)
-                .bind(path)
-                .bind(start)
-                .bind(end)
-                .bind(&observed.title)
-                .bind(&observed.body)
-                .bind(&observed.body_hash)
-                .bind(&observed.head.0)
-                .bind(observed.round)
-                .bind(&observed.bot_severity)
-                .bind(json(&observed.github)?)
-                .bind(wire(state)?)
-                .bind(observed.outside.as_ref().map(json).transpose()?)
-                .bind(ts(now))
-                .bind(ts(now))
-                .execute(&mut *tx)
-                .await?;
-                UpsertOutcome::New(item_in(&mut tx, id).await?)
-            }
-            Some(item) => {
-                let state = match (&observed.outside, item.state) {
-                    (Some(_), _) => ItemState::Outside,
-                    (None, ItemState::Outside) => state_if_new,
-                    (None, state) => state,
-                };
-                let changed = item.kind != observed.kind
-                    || item.author != observed.author
-                    || item.author_kind != observed.author_kind
-                    || item.url != observed.url
-                    || item.location != observed.location
-                    || item.title != observed.title
-                    || item.body != observed.body
-                    || item.body_hash != observed.body_hash
-                    || item.bot_severity != observed.bot_severity
-                    || item.github != observed.github
-                    || item.outside != observed.outside
-                    || item.state != state
-                    || item.gone_at.is_some();
-                if changed {
-                    sqlx::query(
-                        "UPDATE comment_items SET kind = ?, author = ?, author_kind = ?, url = ?, path = ?,
-                             start_line = ?, end_line = ?, title = ?, body = ?, body_hash = ?, bot_severity = ?,
-                             github = ?, state = ?, outside = ?, gone_at = NULL, revision = revision + 1,
-                             updated_at = ?
-                         WHERE id = ?",
-                    )
-                    .bind(wire(observed.kind)?)
-                    .bind(&observed.author)
-                    .bind(wire(observed.author_kind)?)
-                    .bind(&observed.url)
-                    .bind(path)
-                    .bind(start)
-                    .bind(end)
-                    .bind(&observed.title)
-                    .bind(&observed.body)
-                    .bind(&observed.body_hash)
-                    .bind(&observed.bot_severity)
-                    .bind(json(&observed.github)?)
-                    .bind(wire(state)?)
-                    .bind(observed.outside.as_ref().map(json).transpose()?)
-                    .bind(ts(now))
-                    .bind(item.id.to_string())
-                    .execute(&mut *tx)
-                    .await?;
-                    UpsertOutcome::Changed(item_in(&mut tx, item.id).await?)
-                } else {
-                    UpsertOutcome::Unchanged(item)
-                }
-            }
-        };
+        let outcome = upsert_item_in(
+            &mut tx,
+            tenant_id,
+            pull_request_id,
+            observed,
+            state_if_new,
+            now,
+        )
+        .await?;
         tx.commit().await?;
         Ok(outcome)
     }
@@ -908,4 +788,211 @@ impl ReviewLoop<'_> {
                 .transpose()?,
         ))
     }
+}
+
+/// [`ReviewLoop::upsert_item`] inside `tx`.
+pub(super) async fn upsert_item_in(
+    tx: &mut Transaction<'static, Sqlite>,
+    tenant_id: &str,
+    pull_request_id: i64,
+    observed: &ObservedItem,
+    state_if_new: ItemState,
+    now: Timestamp,
+) -> Result<UpsertOutcome, DbError> {
+    let existing = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id = ? AND stable_key = ?"
+    )))
+    .bind(pull_request_id)
+    .bind(&observed.stable_key)
+    .fetch_optional(&mut **tx)
+    .await?
+    .map(|row| item_from_row(&row))
+    .transpose()?;
+    let (path, start, end) = lines_of(observed.location.as_ref());
+    let outcome = match existing {
+        None => {
+            let no: i64 = sqlx::query_scalar(
+                "UPDATE comment_prs SET next_item_no = next_item_no + 1 WHERE pull_request_id = ?
+                 RETURNING next_item_no - 1",
+            )
+            .bind(pull_request_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or(DbError::NotFound)?;
+            let id = CommentItemId::new_random();
+            let state = if observed.outside.is_some() {
+                ItemState::Outside
+            } else {
+                state_if_new
+            };
+            sqlx::query(
+                "INSERT INTO comment_items (id, tenant_id, pull_request_id, item_no, kind, stable_key, author,
+                     author_kind, url, path, start_line, end_line, title, body, body_hash, first_seen_head,
+                     first_round, bot_severity, github, state, outside, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(id.to_string())
+            .bind(tenant_id)
+            .bind(pull_request_id)
+            .bind(no)
+            .bind(wire(observed.kind)?)
+            .bind(&observed.stable_key)
+            .bind(&observed.author)
+            .bind(wire(observed.author_kind)?)
+            .bind(&observed.url)
+            .bind(path)
+            .bind(start)
+            .bind(end)
+            .bind(&observed.title)
+            .bind(&observed.body)
+            .bind(&observed.body_hash)
+            .bind(&observed.head.0)
+            .bind(observed.round)
+            .bind(&observed.bot_severity)
+            .bind(json(&observed.github)?)
+            .bind(wire(state)?)
+            .bind(observed.outside.as_ref().map(json).transpose()?)
+            .bind(ts(now))
+            .bind(ts(now))
+            .execute(&mut **tx)
+            .await?;
+            UpsertOutcome::New(item_in(tx, id).await?)
+        }
+        Some(item) => {
+            let state = match (&observed.outside, item.state) {
+                (Some(_), _) => ItemState::Outside,
+                (None, ItemState::Outside) => state_if_new,
+                (None, state) => state,
+            };
+            let changed = item.kind != observed.kind
+                || item.author != observed.author
+                || item.author_kind != observed.author_kind
+                || item.url != observed.url
+                || item.location != observed.location
+                || item.title != observed.title
+                || item.body != observed.body
+                || item.body_hash != observed.body_hash
+                || item.bot_severity != observed.bot_severity
+                || item.github != observed.github
+                || item.outside != observed.outside
+                || item.state != state
+                || item.gone_at.is_some();
+            if changed {
+                sqlx::query(
+                    "UPDATE comment_items SET kind = ?, author = ?, author_kind = ?, url = ?, path = ?,
+                         start_line = ?, end_line = ?, title = ?, body = ?, body_hash = ?, bot_severity = ?,
+                         github = ?, state = ?, outside = ?, gone_at = NULL, revision = revision + 1,
+                         updated_at = ?
+                     WHERE id = ?",
+                )
+                .bind(wire(observed.kind)?)
+                .bind(&observed.author)
+                .bind(wire(observed.author_kind)?)
+                .bind(&observed.url)
+                .bind(path)
+                .bind(start)
+                .bind(end)
+                .bind(&observed.title)
+                .bind(&observed.body)
+                .bind(&observed.body_hash)
+                .bind(&observed.bot_severity)
+                .bind(json(&observed.github)?)
+                .bind(wire(state)?)
+                .bind(observed.outside.as_ref().map(json).transpose()?)
+                .bind(ts(now))
+                .bind(item.id.to_string())
+                .execute(&mut **tx)
+                .await?;
+                UpsertOutcome::Changed(item_in(tx, item.id).await?)
+            } else {
+                UpsertOutcome::Unchanged(item)
+            }
+        }
+    };
+    Ok(outcome)
+}
+
+/// The review-loop state of one pull request as one transaction reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrView {
+    /// Its review-loop row; `None` before its first read.
+    pub row: Option<CommentPrRecord>,
+    /// Its items, by number.
+    pub items: Vec<ItemRecord>,
+    /// The latest assessment of each assessed item.
+    pub assessments: Vec<(CommentItemId, StoredAssessment)>,
+    /// Its decisions, oldest first.
+    pub decisions: Vec<super::StoredDecision>,
+}
+
+/// The [`PrView`] of a pull request inside `tx`.
+pub(super) async fn pr_view_in(
+    tx: &mut Transaction<'static, Sqlite>,
+    pull_request_id: i64,
+) -> Result<PrView, DbError> {
+    let row = pr_state_with(&mut **tx, pull_request_id).await?;
+    let items = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id = ? ORDER BY item_no"
+    )))
+    .bind(pull_request_id)
+    .fetch_all(&mut **tx)
+    .await?
+    .iter()
+    .map(item_from_row)
+    .collect::<Result<Vec<_>, _>>()?;
+    let assessments = sqlx::query(
+        "SELECT a.item_id, a.body, a.fingerprint FROM comment_assessments a
+         WHERE a.id IN (SELECT MAX(l.id) FROM comment_assessments l JOIN comment_items i ON i.id = l.item_id
+                        WHERE i.pull_request_id = ? GROUP BY l.item_id)",
+    )
+    .bind(pull_request_id)
+    .fetch_all(&mut **tx)
+    .await?
+    .iter()
+    .map(|row| {
+        Ok((
+            wire_col(row, "item_id")?,
+            StoredAssessment {
+                assessment: json_col(row, "body")?,
+                fingerprint: row.try_get("fingerprint")?,
+            },
+        ))
+    })
+    .collect::<Result<Vec<_>, DbError>>()?;
+    let decisions =
+        super::decisions::decisions_where(tx, "i.pull_request_id = ?", pull_request_id.to_string())
+            .await?;
+    Ok(PrView {
+        row,
+        items,
+        assessments,
+        decisions,
+    })
+}
+
+/// The review-loop row of a pull request.
+async fn pr_state_with<'e>(
+    executor: impl sqlx::Executor<'e, Database = Sqlite>,
+    pull_request_id: i64,
+) -> Result<Option<CommentPrRecord>, DbError> {
+    let Some(row) = sqlx::query(
+        "SELECT pull_request_id, read_at, read_failure, read_failed_at, github_snapshot, round_count, purpose
+         FROM comment_prs WHERE pull_request_id = ?",
+    )
+    .bind(pull_request_id)
+    .fetch_optional(executor)
+    .await?
+    else {
+        return Ok(None);
+    };
+    let failure: Option<ReadFailure> = opt_wire_col(&row, "read_failure")?;
+    let failed_at = opt_ts_col(&row, "read_failed_at")?;
+    Ok(Some(CommentPrRecord {
+        pull_request_id: row.try_get("pull_request_id")?,
+        read_at: opt_ts_col(&row, "read_at")?,
+        read_failure: failure.zip(failed_at),
+        github_snapshot: opt_json_col(&row, "github_snapshot")?,
+        round_count: u32_col(&row, "round_count")?,
+        purpose: row.try_get("purpose")?,
+    }))
 }

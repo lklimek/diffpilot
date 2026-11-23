@@ -75,6 +75,7 @@ impl ApiErrorSource for ReviewLoopApiError {
                 LoopError::Unreadable(ReadFailure::Unavailable) => ApiErrorCode::GithubUnavailable,
                 LoopError::TooSoon => ApiErrorCode::RateLimited,
                 LoopError::ItemChanged(_) => ApiErrorCode::ItemChanged,
+                LoopError::PlanChanged(_) => ApiErrorCode::Conflict,
                 LoopError::Decision { .. }
                 | LoopError::GateRow(_)
                 | LoopError::InvalidCursor
@@ -115,6 +116,10 @@ impl ApiErrorSource for ReviewLoopApiError {
                 ),
                 LoopError::ItemChanged(nos) => Cow::Owned(format!(
                     "These comments changed since you looked: {}. Read them again.",
+                    item_list(nos)
+                )),
+                LoopError::PlanChanged(nos) => Cow::Owned(format!(
+                    "What the decision would do changed since you confirmed it: {}. Check the plan again.",
                     item_list(nos)
                 )),
                 LoopError::Decision { no, error } => Cow::Owned(format!("C{no}: {error}.")),

@@ -686,6 +686,11 @@ pub struct DecideRequest {
     pub comment: Option<String>,
     /// The item revision the decision is based on.
     pub item_revision: u32,
+    /// The `plan_digest` of the RC16 preview the owner confirmed (PR-level decisions); when the plan computed at
+    /// storing differs, the decision is refused (409 `conflict`). Absent: stored as planned then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub plan_digest: Option<String>,
 }
 
 /// How a batch was decided.
@@ -769,6 +774,12 @@ pub struct EffectsPreview {
     pub item_no: u32,
     /// Effects in order.
     pub effects: Vec<PlannedEffect>,
+    /// For a PR-level decision ("Merge now", dismissing stale reviews): a digest of what its plan rests on (the
+    /// items it follows up and their revisions, or the reviews it dismisses); send it back as the decision's
+    /// `plan_digest`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub plan_digest: Option<String>,
 }
 
 /// Why an undecided item is not part of "Decide the rest per recommendation". Open enum.
