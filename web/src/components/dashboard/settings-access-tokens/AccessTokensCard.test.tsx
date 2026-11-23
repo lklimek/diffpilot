@@ -90,6 +90,18 @@ describe("AccessTokensCard (ADR-019, plan §F.6)", () => {
     });
   });
 
+  it("says what review_loop_execute allows: any current decision in this diffpilot, not only yours", async () => {
+    renderCard();
+    await userEvent.click(screen.getByRole("button", { name: "New token" }));
+    const dialog = screen.getByRole("dialog", { name: "New access token" });
+    expect(dialog).toHaveTextContent("cannot change anything");
+    const execute = within(dialog).getByRole("checkbox", { name: /review_loop_execute/ });
+    expect(execute).toHaveAccessibleName(/any current decision .*yours and other users'/);
+    await userEvent.click(execute);
+    expect(dialog).not.toHaveTextContent("cannot change anything");
+    expect(dialog).toHaveTextContent("Scope: read and review_loop_execute.");
+  });
+
   it("Escape closes the form, but on the secret view only Done closes", async () => {
     renderCard();
     await userEvent.click(screen.getByRole("button", { name: "New token" }));
