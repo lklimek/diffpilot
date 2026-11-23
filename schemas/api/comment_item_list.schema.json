@@ -230,7 +230,7 @@
       ]
     },
     "ItemLocation": {
-      "description": "The lines an item discusses at the head (threads, and body items naming `path:range`).",
+      "description": "The lines an item discusses: at the head for a thread; for a body item naming `path:range`, at the review's\ncommit, which may predate the head.",
       "type": "object",
       "properties": {
         "path": {

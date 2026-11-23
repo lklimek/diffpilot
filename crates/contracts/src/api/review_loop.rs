@@ -108,7 +108,8 @@ pub struct GateMark {
     pub source: GateSource,
 }
 
-/// The lines an item discusses at the head (threads, and body items naming `path:range`).
+/// The lines an item discusses: at the head for a thread; for a body item naming `path:range`, at the review's
+/// commit, which may predate the head.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ItemLocation {
     /// Repository-relative path.

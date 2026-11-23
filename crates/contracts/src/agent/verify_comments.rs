@@ -56,7 +56,7 @@ pub struct VerifyItem {
     pub author: String,
     /// Author kind.
     pub author_kind: AuthorKind,
-    /// Discussed lines at the head.
+    /// Discussed lines: at the head for a thread, at the review's commit for a review-body item.
     pub location: Option<ItemLocation>,
     /// Title.
     pub title: String,
