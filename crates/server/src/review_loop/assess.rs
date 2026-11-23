@@ -24,7 +24,7 @@ use contracts::api::pr::PrSummary;
 use contracts::api::questions::AskAnchor;
 use contracts::api::review_loop::{CommentItemKind, ItemState};
 use contracts::common::LlmLanguage;
-use contracts::ids::{CommentItemId, CommitSha, JobId, PassId};
+use contracts::ids::{CommentItemId, CommitSha, JobId, PassId, QuestionId};
 use contracts::job::access::AgentAccess;
 use contracts::job::spec::{
     CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
@@ -64,6 +64,12 @@ pub const DAILY_PASSES_PER_USER: u32 = 30;
 pub const VERIFY_PROMPT_VERSION: u32 = 2;
 /// The window of the daily cap.
 const DAY: SignedDuration = SignedDuration::from_hours(24);
+
+/// First wait before a failed link of a pass to its submitted job is tried again; it doubles each time.
+const LINK_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// How often a pass's follower tries to link the pass to its job.
+const LINK_ATTEMPTS: u32 = 6;
 
 /// Why a pass is requested.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -310,23 +316,14 @@ async fn request(
             return Err(error);
         }
     };
-    // The question's link first: while the pass has no job, its follower adopts the submitted job and links both.
-    let linked = async {
-        if let Some(question) = &question {
-            db.questions()
-                .set_job(question.question.id, handle.job_id)
-                .await?;
-        }
-        db.review_loop().pass_running(id, handle.job_id).await
-    }
-    .await;
-    if let Err(error) = linked {
-        tracing::warn!(pr, pass = %id, job = %handle.job_id, ?error,
-            "the submitted assessment job could not be linked to its pass; the pass's follower adopts it");
+    // A failed link is retried by the pass's follower, which knows the job.
+    if let Err(error) = link(state, id, pass.question, handle.job_id).await {
+        tracing::debug!(pr, pass = %id, job = %handle.job_id, ?error,
+            "the submitted assessment job is not linked to its pass yet; the pass's follower links it");
     }
     tracing::info!(pr, pass = %id, job = %handle.job_id, ?reason, items = input.items.len(),
         "comment assessment pass queued");
-    follow(state, id);
+    follow(state, id, Some(handle.job_id));
     Ok(PassQueued::Queued)
 }
 
@@ -696,7 +693,7 @@ async fn submit(
 }
 
 /// Starts the follower of `pass` unless one runs already.
-fn follow(state: &AppState, pass: PassId) {
+fn follow(state: &AppState, pass: PassId, known: Option<JobId>) {
     if !FOLLOWING
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -706,7 +703,7 @@ fn follow(state: &AppState, pass: PassId) {
     }
     let state = state.clone();
     tokio::spawn(async move {
-        if let Err(error) = run(&state, pass).await {
+        if let Err(error) = run(&state, pass, known).await {
             tracing::error!(%pass, error = ?error, "the comment assessment pass could not be followed");
             if let Err(error) = end_failed(&state, pass).await {
                 tracing::error!(%pass, error = ?error, "could not end the failed comment assessment pass");
@@ -719,32 +716,34 @@ fn follow(state: &AppState, pass: PassId) {
     });
 }
 
-/// Follows a pass's job to its result and ingests it; then requests the next pass for what is left.
-async fn run(state: &AppState, pass: PassId) -> Result<(), AssessError> {
+/// Follows a pass's job to its result and ingests it; then requests the next pass for what is left. A pass not yet
+/// linked to its job (`known` from the submit, else the latest job of the pass in any state, after a restart) is
+/// linked first; the job is followed even while the link keeps failing, so its result is never abandoned.
+async fn run(state: &AppState, pass: PassId, known: Option<JobId>) -> Result<(), AssessError> {
     let record = state.db.review_loop().pass(pass).await?;
-    let job = match record.job_id {
-        Some(job) => job,
-        // The server stopped between queueing the pass and recording its job: adopt a submitted job.
-        None => match state.db.jobs().current_for_pass(pass, 0).await? {
-            Some(job) => {
-                state.db.review_loop().pass_running(pass, job.id).await?;
-                if let Some(question) = record.question {
-                    state.db.questions().set_job(question, job.id).await?;
-                }
-                job.id
-            }
-            None => {
-                tracing::warn!(%pass, "comment assessment pass without a job ends failed; the next request starts again");
-                state
-                    .db
-                    .review_loop()
-                    .finish_pass(pass, false, Timestamp::now())
-                    .await?;
-                next(state, &record, false).await;
-                return Ok(());
-            }
-        },
+    let job = match record.job_id.or(known) {
+        Some(job) => Some(job),
+        None => state
+            .db
+            .jobs()
+            .latest_for_pass(pass, 0)
+            .await?
+            .map(|job| job.id),
     };
+    let Some(job) = job else {
+        tracing::warn!(%pass, "comment assessment pass without a job ends failed; the next request starts again");
+        state
+            .db
+            .review_loop()
+            .finish_pass(pass, false, Timestamp::now())
+            .await?;
+        unanswerable(state, &record).await?;
+        next(state, &record, false).await;
+        return Ok(());
+    };
+    if record.job_id.is_none() {
+        link_with_retries(state, &record, job).await;
+    }
     let mut updates = state.executor.events(&JobHandle { job_id: job });
     while let Some(update) = updates.next().await {
         match update? {
@@ -764,6 +763,57 @@ async fn run(state: &AppState, pass: PassId) -> Result<(), AssessError> {
         }
     }
     Err(AssessError::NoResult)
+}
+
+/// Links the pass's question and then the pass to `job` (the question first: while the pass has no job, the link
+/// is made again).
+async fn link(
+    state: &AppState,
+    pass: PassId,
+    question: Option<QuestionId>,
+    job: JobId,
+) -> Result<(), DbError> {
+    if let Some(question) = question {
+        state.db.questions().set_job(question, job).await?;
+    }
+    state.db.review_loop().pass_running(pass, job).await
+}
+
+/// [`link`] retried with a doubling delay from [`LINK_RETRY_DELAY`], [`LINK_ATTEMPTS`] times in all.
+async fn link_with_retries(state: &AppState, record: &PassRecord, job: JobId) {
+    let mut delay = LINK_RETRY_DELAY;
+    for attempt in 1..=LINK_ATTEMPTS {
+        match link(state, record.id, record.question, job).await {
+            Ok(()) => return,
+            Err(error) if attempt == LINK_ATTEMPTS => {
+                tracing::warn!(pass = %record.id, %job, ?error,
+                    "the assessment job could not be linked to its pass; it is followed unlinked and linked again after a restart");
+            }
+            Err(_) => {
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+        }
+    }
+}
+
+/// A pass's question whose pass has no job: one linked to a job that no longer exists can never be taken again, so
+/// it fails; an unlinked one is taken by the next question pass.
+async fn unanswerable(state: &AppState, record: &PassRecord) -> Result<(), AssessError> {
+    let Some(question) = record.question else {
+        return Ok(());
+    };
+    let linked = state
+        .db
+        .questions()
+        .get(question, Timestamp::now())
+        .await?
+        .job_id
+        .is_some();
+    if linked {
+        ask::fail_pass_question(state, record, ask::SERVER_ERROR).await?;
+    }
+    Ok(())
 }
 
 /// Ends a pass that could not be followed and fails its question.
@@ -816,7 +866,7 @@ async fn next(state: &AppState, record: &PassRecord, complete: bool) {
 pub async fn resume(state: &AppState) -> Result<usize, DbError> {
     let live = state.db.review_loop().live_passes().await?;
     for pass in &live {
-        follow(state, pass.id);
+        follow(state, pass.id, None);
     }
     for pr in state.db.questions().pull_requests_with_unsent().await? {
         if let Err(error) = request_pass(state, pr, PassReason::Ask).await {

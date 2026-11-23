@@ -1130,38 +1130,119 @@ async fn stored_profile_counts_only_for_the_current_base() {
     }
 }
 
-/// A job whose link to its pass is lost right after submitting is not abandoned: the pass stays live and its
-/// follower adopts the job.
+/// A job whose link to its pass is lost right after submitting is not abandoned, also while the link fails again
+/// for a while: the pass stays live and its follower links the job it knows.
 #[tokio::test]
-async fn a_submitted_job_survives_a_lost_link() {
-    let f = fixture(HEAD).await;
-    item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
-    db::repo::testing::lose_next_pass_job_link(&f.state.db)
-        .await
-        .expect("fault");
-    assert_eq!(
-        request_pass(&f.state, PR, PassReason::Opened)
+async fn a_submitted_job_survives_lost_links() {
+    for lost in [1, 3] {
+        let f = fixture(HEAD).await;
+        item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
+        db::repo::testing::lose_pass_job_links(&f.state.db, lost)
             .await
-            .expect("pass"),
-        PassQueued::Queued
-    );
+            .expect("fault");
+        assert_eq!(
+            request_pass(&f.state, PR, PassReason::Opened)
+                .await
+                .expect("pass"),
+            PassQueued::Queued
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let live = f
+                .state
+                .db
+                .review_loop()
+                .live_passes()
+                .await
+                .expect("passes");
+            assert_eq!(live.len(), 1, "{lost} lost: the pass with a job ended");
+            if live[0].job_id.is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{lost} lost: the job was not linked"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+}
+
+/// A pass whose job ended before anything linked the pass to it (here cancelled, after a restart) is recovered
+/// from that job: its result is ingested and the question it answers fails instead of waiting forever.
+#[tokio::test]
+async fn a_pass_whose_unlinked_job_ended_ends_with_its_result() {
+    let f = fixture(HEAD).await;
+    let asked = item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
+    let question_id = question(&f.state, asked.id, "Why?").await;
+    let pass = NewPass {
+        pull_request_id: PR,
+        user_id: Some("u1".to_owned()),
+        cause: PassCause::Question,
+        head: CommitSha(HEAD.to_owned()),
+        sent: vec![SentItem {
+            item: asked.id,
+            no: asked.no,
+            fingerprint: "f".to_owned(),
+        }],
+        question: Some(question_id),
+    };
+    let PassStart::Started(id) = f
+        .state
+        .db
+        .review_loop()
+        .start_pass(DEFAULT_TENANT, &pass, Timestamp::now())
+        .await
+        .expect("start")
+    else {
+        panic!("a pass is live");
+    };
+    let input = VerifyCommentsInput {
+        pull_request: "acme/node-client#482".to_owned(),
+        title: "Retry RPC calls".to_owned(),
+        description: None,
+        pr_context: None,
+        project_profile: None,
+        items: vec![verify_item(&asked)],
+        earlier_decisions: Vec::new(),
+        question: Some(ItemQuestion {
+            item: format!("C{}", asked.no),
+            text: "Why?".to_owned(),
+            thread: Vec::new(),
+        }),
+    };
+    let handle = submit(&f.state, &summary(HEAD), PR, id, &input, LlmLanguage::En)
+        .await
+        .expect("submitted");
+    f.state
+        .db
+        .questions()
+        .set_job(question_id, handle.job_id)
+        .await
+        .expect("question linked");
+    f.state.executor.cancel(&handle).await.expect("cancelled");
+    resume(&f.state).await.expect("resumed");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        let live = f
+        let record = f
             .state
             .db
-            .review_loop()
-            .live_passes()
+            .questions()
+            .get(question_id, Timestamp::now())
             .await
-            .expect("passes");
-        assert_eq!(live.len(), 1, "the pass with a job ended: {live:?}");
-        if live[0].job_id.is_some() {
+            .expect("question");
+        if record.question.state == AskState::Failed {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the job was not adopted"
+            "the question waits forever: {:?}",
+            record.question.state
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+    assert_eq!(
+        f.state.db.review_loop().pass(id).await.expect("pass").state,
+        PassState::Failed
+    );
 }

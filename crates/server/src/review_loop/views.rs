@@ -660,8 +660,8 @@ pub async fn preview(
         .map(|(row, (record, planned))| {
             Ok(EffectsPreview {
                 item_no: record.no,
+                plan_digest: loaded.plan_digest(row, &deciding, &planned.effects)?,
                 effects: planned.effects,
-                plan_digest: loaded.plan_digest(row, &deciding)?,
             })
         })
         .collect()
