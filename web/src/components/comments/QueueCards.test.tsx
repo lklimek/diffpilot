@@ -396,6 +396,18 @@ describe("PrQuestionCard (US11, US12)", () => {
     expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ kind: "merge_with_follow_ups" }));
   });
 
+  it("formats a question body without interpreting its markup or links", () => {
+    showQuestion({
+      ...byNo(24),
+      body: "**Finding**: `nonce` [docs](https://example.com). <img src=x><!-- hidden -->",
+    });
+    const finding = screen.getByText(/Finding:/);
+    expect(finding).toHaveTextContent("Finding: nonce docs (https://example.com).");
+    expect(finding.querySelector("code")).toHaveTextContent("nonce");
+    expect(finding.querySelector("a,img")).toBeNull();
+    expect(finding).not.toHaveTextContent("hidden");
+  });
+
   it("keys: 2 chooses Another round, Enter decides, s skips", () => {
     const { onDecide, onSkip } = showQuestion(byNo(24));
     fireEvent.keyDown(document.body, { key: "2" });

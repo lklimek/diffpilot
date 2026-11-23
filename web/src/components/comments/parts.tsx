@@ -96,24 +96,6 @@ export const judgedAt = (assessed: string, prHead: string): string =>
 export const validityAt = (validity: Validity, assessed: string, prHead: string): string =>
   `${VALIDITY[validity] ?? validity} at ${judgedAt(assessed, prHead)}`;
 
-/** Plain text with only `https://github.com/…` links (threat model T24); any other URL stays text. */
-export function GithubLinkedText({ text }: { text: string }) {
-  const parts = text.split(/(https:\/\/github\.com\/[^\s)<>"']+)/g);
-  return (
-    <>
-      {parts.map((part, i) =>
-        i % 2 === 1 ? (
-          <a key={i} href={part} target="_blank" rel="noopener noreferrer">
-            {part}
-          </a>
-        ) : (
-          part
-        ),
-      )}
-    </>
-  );
-}
-
 /** Why the latest GitHub read failed, in plain words. */
 export const READ_FAILURE = {
   rate_limited: "rate limit",

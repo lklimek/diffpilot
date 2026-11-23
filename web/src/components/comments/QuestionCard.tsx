@@ -19,18 +19,10 @@ import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, type EffectsPreviewState } from "./decisions";
 import { DecisionForm } from "./DecisionForm";
 import { GateMenu } from "./GateMenu";
+import { GithubCommentText } from "./GithubCommentText";
 import { NotesElsewhere } from "./NotesElsewhere";
 import { CodeText } from "../section/CodeText";
-import {
-  Chip,
-  FactChip,
-  GateChip,
-  GithubLinkedText,
-  itemId,
-  judgedAt,
-  sourceText,
-  validityAt,
-} from "./parts";
+import { Chip, FactChip, GateChip, itemId, judgedAt, sourceText, validityAt } from "./parts";
 
 /** The code context of the card: loading, failed, or the lines. */
 export type ContextState =
@@ -397,7 +389,7 @@ export function QuestionCard(props: QuestionCardProps) {
           data-comment-text
           className="m-0 rounded border-l-4 border-border bg-surface-2 px-2.5 py-1.5 whitespace-pre-wrap"
         >
-          <GithubLinkedText text={item.body} />
+          <GithubCommentText text={item.body} />
         </blockquote>
       </CollapsibleSection>
 

@@ -81,7 +81,7 @@ export function WatchedList({ list, prHref, onNavigate, onUnwatch, busy, now }: 
         ones stop at the limit.
       </p>
       {list.watches.length === 0 ? (
-        <p className="text-muted">You watch no pull request. Use Watch on a PR page.</p>
+        <p className="text-muted">You watch no pull request. Paste a pull request link above to watch it.</p>
       ) : (
         <table className="w-full border-collapse text-[13px]">
           <caption className="sr-only">Watched pull requests</caption>

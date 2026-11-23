@@ -639,7 +639,8 @@ describe("CommentComposer", () => {
     const { container } = setup({ comments: [{ ...missedComments[0]!, body: evil }] });
     expect(container.querySelector("img")).toBeNull();
     expect(container.querySelector("a")).toBeNull();
-    expect(container).toHaveTextContent('<img src=x onerror="alert(1)">');
+    expect(container).not.toHaveTextContent("<img");
+    expect(container).toHaveTextContent("javascript:alert(1)");
   });
 
   it.each(FIXTURE_STATES)("keeps the wording rules in state %s", (state) => {

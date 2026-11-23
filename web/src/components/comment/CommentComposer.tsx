@@ -6,6 +6,7 @@ import type {
   PendingComment,
 } from "../../api/generated/types";
 import { busyTip } from "../button/button";
+import { GithubCommentText } from "../comments/GithubCommentText";
 import { assignRef, codeOf, growField, messageOf, useAction } from "../inspector/action";
 import { GithubLink } from "../inspector/text";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -168,7 +169,9 @@ function OwnComment({
   return (
     <li className="grid gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5">
       {draft === null ? (
-        <p className="whitespace-pre-wrap">{comment.body}</p>
+        <div className="whitespace-pre-wrap">
+          <GithubCommentText text={comment.body} />
+        </div>
       ) : (
         <textarea
           aria-label="Edit comment"

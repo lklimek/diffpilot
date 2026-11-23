@@ -296,6 +296,15 @@ export function useUnwatch() {
   });
 }
 
+/** Watch a pasted PR (RW1), then refresh the watched list (RW2). */
+export function useAddWatch() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (pr: PrRef) => api.watchPr(pr),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["watches"] }),
+  });
+}
+
 /** Notification channels (RN1). */
 export const useNotificationSettings = () =>
   useQuery({ queryKey: ["notification-settings"], queryFn: api.getNotificationSettings });
