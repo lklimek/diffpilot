@@ -216,6 +216,7 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     );
     expect(screen.getByLabelText("GitHub login 1")).toHaveValue("jun-park");
     expect(screen.getByLabelText("Slack name of jun-park")).toHaveValue("@jun.park");
+    expect(screen.getByLabelText("Slack name of jun-park")).toHaveAttribute("placeholder", "@display.name");
     await userEvent.click(screen.getByRole("button", { name: "Add a Slack name" }));
     await userEvent.type(screen.getByLabelText("GitHub login 2"), "tobias-w");
     await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));

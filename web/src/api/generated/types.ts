@@ -6020,8 +6020,7 @@ export type SlackName = {
  */
 login: string,
 /**
- * Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g.
- * `@jan.kowalski` or `<@U01ABC>`.
+ * Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g. `@jan.kowalski`.
  */
 slack: string, };
 

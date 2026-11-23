@@ -352,7 +352,7 @@ const HELP = {
     empty: "No rows: Copy for Slack writes @login for every login, like Copy list.",
     limits:
       "Up to 100 rows. Each GitHub login once (any case); the Slack name is copied as you type it, 1 to 80 characters without control characters.",
-    example: "jun-park → @jun.park, or <@U01ABC> with a Slack member ID.",
+    example: "jun-park → @jun.park.",
   },
   ranking_limits: {
     section: "Dashboard",

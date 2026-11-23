@@ -1045,8 +1045,7 @@ pub struct DashboardSettings {
 pub struct SlackName {
     /// GitHub login (case-insensitive, unique in the table).
     pub login: String,
-    /// Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g.
-    /// `@jan.kowalski` or `<@U01ABC>`.
+    /// Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g. `@jan.kowalski`.
     pub slack: String,
 }
 

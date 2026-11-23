@@ -84,7 +84,7 @@ export function SlackNamesTable({ rows, onChange, errors }: SlackNamesTableProps
                       <input
                         aria-label={`Slack name of ${name}`}
                         value={row.slack}
-                        placeholder="@name or <@U01ABC>"
+                        placeholder="@display.name"
                         autoComplete="off"
                         aria-invalid={error("slack") ? true : undefined}
                         aria-describedby={error("slack") ? errorId("slack") : undefined}

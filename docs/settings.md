@@ -276,7 +276,7 @@ While it is on, the server keeps your GitHub sign-in for up to 30 days after you
 - **When used:** Only when you copy for Slack on My work. Nothing is sent to Slack: the text goes to your clipboard.
 - **Empty or default:** No rows: Copy for Slack writes @login for every login, like Copy list.
 - **Limits:** Up to 100 rows. Each GitHub login once (any case); the Slack name is copied as you type it, 1 to 80 characters without control characters.
-- **Example:** jun-park → @jun.park, or <@U01ABC> with a Slack member ID.
+- **Example:** jun-park → @jun.park.
 
 ### Ranking limits
 

@@ -243,7 +243,7 @@
           "type": "string"
         },
         "slack": {
-          "description": "Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g.\n`@jan.kowalski` or `<@U01ABC>`.",
+          "description": "Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g. `@jan.kowalski`.",
           "type": "string"
         }
       },
