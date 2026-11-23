@@ -14,6 +14,9 @@ use crate::state::AppState;
 /// A requested analysis state change could not be applied.
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
+    /// The retrying user has no usable plan credential.
+    #[error(transparent)]
+    Payer(#[from] crate::jobs::payer::PayerError),
     /// The analysis is not in a state that allows it (e.g. retry of a running analysis).
     #[error("the analysis cannot be {action} in its current state")]
     Conflict {
@@ -232,11 +235,26 @@ pub async fn retry(
     state: &AppState,
     analysis: AnalysisId,
 ) -> Result<AnalysisSummary, ControlError> {
+    let payer = state.db.analyses().get(analysis).await?.payer_id;
+    retry_as(state, analysis, &payer).await
+}
+
+/// Retries atomically as the acting user, retaining creator identity.
+pub async fn retry_as(
+    state: &AppState,
+    analysis: AnalysisId,
+    payer: &str,
+) -> Result<AnalysisSummary, ControlError> {
+    crate::jobs::payer::require_linked(&state.db, payer).await?;
     let db = &state.db;
     let written = state
         .progress
         .update(analysis, || async {
-            if !db.analyses().retry(analysis, Timestamp::now()).await? {
+            if !db
+                .analyses()
+                .retry_as(analysis, payer, Timestamp::now())
+                .await?
+            {
                 return Err(Guarded::Refused);
             }
             let summary = db.analyses().summary(analysis).await?;

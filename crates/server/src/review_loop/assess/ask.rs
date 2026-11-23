@@ -92,6 +92,7 @@ pub async fn ask_about_item(
         question.mine = Some(true);
         return Ok(question);
     }
+    // TODO: use a private Verify-kind Ask job when the PR-only Ask target contract is available.
     let parent_id = match parent {
         Some(parent) => Some(ask::thread_root(
             &parent,

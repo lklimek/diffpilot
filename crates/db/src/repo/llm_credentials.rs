@@ -60,6 +60,18 @@ fn updated(result: SqliteQueryResult) -> Result<(), DbError> {
 }
 
 impl LlmCredentials<'_> {
+    /// Payers linked by the gateway; runner claims cannot create or revive credentials.
+    pub async fn linked_payers(&self) -> Result<Vec<String>, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
+        let users = sqlx::query_scalar(
+            "SELECT user_id FROM llm_credentials WHERE state='linked' ORDER BY user_id",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(users)
+    }
+
     /// Removes local status after an explicit gateway unlink; this never revokes an upstream credential.
     pub async fn remove_status(&self, user: &str) -> Result<bool, DbError> {
         let mut tx = super::write_tx(self.pool).await?;

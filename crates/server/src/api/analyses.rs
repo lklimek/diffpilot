@@ -41,6 +41,9 @@ use crate::state::AppState;
 /// A pull-request, analysis, tour or lines request failed.
 #[derive(Debug, thiserror::Error)]
 pub enum AnalysisApiError {
+    /// The launching user has no usable plan credential.
+    #[error(transparent)]
+    Payer(#[from] crate::jobs::payer::PayerError),
     /// Malformed JSON body.
     #[error("the request body is not valid")]
     Json(#[from] JsonRejection),
@@ -147,6 +150,7 @@ impl From<crate::pipeline::deps::DepsRunError> for AnalysisApiError {
 impl From<IngestError> for AnalysisApiError {
     fn from(error: IngestError) -> Self {
         match error {
+            IngestError::Payer(error) => Self::Payer(error),
             IngestError::InvalidRepository => Self::InvalidRepository,
             IngestError::PrivateRepository => Self::PrivateRepository,
             IngestError::HeadMoved => Self::HeadMoved,
@@ -161,6 +165,7 @@ impl From<IngestError> for AnalysisApiError {
 impl From<ControlError> for AnalysisApiError {
     fn from(error: ControlError) -> Self {
         match error {
+            ControlError::Payer(error) => Self::Payer(error),
             ControlError::Conflict { action } => Self::StateConflict { action },
             ControlError::Db(error) => Self::Db(error),
             ControlError::Executor(error) => Self::Executor(error),
@@ -207,6 +212,8 @@ impl AnalysisApiError {
 impl ApiErrorSource for AnalysisApiError {
     fn code(&self) -> ApiErrorCode {
         match self {
+            Self::Payer(crate::jobs::payer::PayerError::Missing) => ApiErrorCode::Conflict,
+            Self::Payer(crate::jobs::payer::PayerError::Db(error)) => error.code(),
             Self::Json(rejection) => rejection.code(),
             Self::Query(rejection) => rejection.code(),
             Self::Path(rejection) => rejection.code(),
@@ -240,6 +247,12 @@ impl ApiErrorSource for AnalysisApiError {
 
     fn public_message(&self) -> Cow<'static, str> {
         Cow::Borrowed(match self {
+            Self::Payer(crate::jobs::payer::PayerError::Missing) => {
+                "Link your Codex account in Settings"
+            }
+            Self::Payer(crate::jobs::payer::PayerError::Db(error)) => {
+                return error.public_message();
+            }
             Self::Json(rejection) => return rejection.public_message(),
             Self::Query(rejection) => return rejection.public_message(),
             Self::Path(rejection) => return rejection.public_message(),
@@ -387,7 +400,9 @@ async fn retry(
 ) -> ApiResult<Json<AnalysisSummary>> {
     let Path(id) = id.map_err(failure)?;
     visible_analysis(&state, &session, id).await?;
-    let summary = control::retry(&state, id).await.map_err(failure)?;
+    let summary = control::retry_as(&state, id, &session.user_id)
+        .await
+        .map_err(failure)?;
     Ok(Json(visible_analysis(&state, &session, summary.id).await?))
 }
 

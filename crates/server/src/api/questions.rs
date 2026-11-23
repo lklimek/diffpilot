@@ -92,6 +92,10 @@ impl ApiErrorSource for QuestionsApiError {
             Self::Ask(AskError::Superseded | AskError::AnalysisLimit | AskError::UserLimit) => {
                 ApiErrorCode::Conflict
             }
+            Self::Ask(AskError::Payer(crate::jobs::payer::PayerError::Missing)) => {
+                ApiErrorCode::Conflict
+            }
+            Self::Ask(AskError::Payer(crate::jobs::payer::PayerError::Db(error))) => error.code(),
             Self::Ask(AskError::Db(error)) => error.code(),
         }
     }
@@ -150,6 +154,12 @@ impl ApiErrorSource for QuestionsApiError {
                 "You asked {MAX_QUESTIONS_PER_USER_PER_HOUR} questions in the last hour, the most allowed. \
                  Ask again later."
             )),
+            Self::Ask(AskError::Payer(crate::jobs::payer::PayerError::Missing)) => {
+                Cow::Borrowed("Link your Codex account in Settings")
+            }
+            Self::Ask(AskError::Payer(crate::jobs::payer::PayerError::Db(error))) => {
+                error.public_message()
+            }
             Self::Ask(AskError::Db(error)) => error.public_message(),
         }
     }

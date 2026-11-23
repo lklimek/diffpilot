@@ -6,7 +6,7 @@
 //!
 //! One follower task per open question drives it to `answered` or `failed` (also after a server restart:
 //! [`resume_unanswered`]). Ask jobs are claimed before batch jobs and never pre-empt a running job; the queue
-//! runs one job per PR, so a second question of the same analysis waits queued until the first ends.
+//! runs one job per (PR, payer) container; questions from the same payer wait until its current turn ends.
 
 mod job;
 #[cfg(test)]
@@ -51,6 +51,9 @@ static FOLLOWING: LazyLock<Mutex<HashSet<QuestionId>>> = LazyLock::new(Mutex::de
 /// A question was not accepted.
 #[derive(Debug, thiserror::Error)]
 pub enum AskError {
+    /// The asker has no usable plan credential.
+    #[error(transparent)]
+    Payer(#[from] crate::jobs::payer::PayerError),
     /// The question is blank.
     #[error("the question is empty")]
     Empty,
@@ -132,6 +135,7 @@ pub async fn ask(
     if superseded(&state.db.analyses().get(analysis.id).await?) {
         return Err(AskError::Superseded);
     }
+    crate::jobs::payer::require_linked(&state.db, user_id).await?;
     let now = Timestamp::now();
     let limits = QuestionLimits {
         per_analysis: MAX_QUESTIONS_PER_ANALYSIS,

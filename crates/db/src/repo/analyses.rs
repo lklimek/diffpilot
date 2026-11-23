@@ -284,6 +284,21 @@ fn record_from_row(row: &SqliteRow) -> Result<AnalysisRecord, DbError> {
     })
 }
 
+// Invalidate private seeds at admission, before a provider turn can publish the next checkpoint.
+async fn advance_generation(
+    tx: &mut sqlx::SqliteConnection,
+    analysis: AnalysisId,
+) -> Result<(), DbError> {
+    sqlx::query("INSERT INTO analytic_threads(tenant_id,pull_request_id,user_id,generation,state)
+        SELECT a.tenant_id,a.pull_request_id,COALESCE(a.payer_id,a.created_by),
+            (SELECT COALESCE(MAX(generation),0)+1 FROM analytic_threads WHERE pull_request_id=a.pull_request_id),'none'
+        FROM analyses a WHERE a.id=?
+        ON CONFLICT(pull_request_id,user_id) DO UPDATE SET generation=excluded.generation,last_context_tokens=NULL,last_context_generation=NULL
+        WHERE analytic_threads.state IN ('none','active')")
+        .bind(analysis.to_string()).execute(tx).await?;
+    Ok(())
+}
+
 impl Analyses<'_> {
     /// Creates an analysis in state `planning` with background analysis off (flows are analysed on request);
     /// `Conflict` if a live one exists for the head and language.
@@ -292,6 +307,7 @@ impl Analyses<'_> {
         analysis: NewAnalysis,
         now: Timestamp,
     ) -> Result<AnalysisRecord, DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
         sqlx::query(
             "INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by,
                  created_at, background_analysis,payer_id)
@@ -306,8 +322,10 @@ impl Analyses<'_> {
         .bind(&analysis.created_by)
         .bind(ts(now))
         .bind(&analysis.created_by)
-        .execute(self.pool)
+        .execute(&mut *tx)
         .await?;
+        advance_generation(&mut tx, analysis.id).await?;
+        tx.commit().await?;
         self.get(analysis.id).await
     }
 
@@ -567,18 +585,44 @@ impl Analyses<'_> {
     /// lookup is deleted too, so the new round looks the profile up again. `false` when the analysis is not failed
     /// (nothing changed).
     pub async fn retry(&self, id: AnalysisId, now: Timestamp) -> Result<bool, DbError> {
+        self.retry_inner(id, None, now).await
+    }
+
+    /// Atomically assigns the latest Retry's payer and starts its new round.
+    pub async fn retry_as(
+        &self,
+        id: AnalysisId,
+        payer: &str,
+        now: Timestamp,
+    ) -> Result<bool, DbError> {
+        self.retry_inner(id, Some(payer), now).await
+    }
+
+    async fn retry_inner(
+        &self,
+        id: AnalysisId,
+        payer: Option<&str>,
+        now: Timestamp,
+    ) -> Result<bool, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let updated = sqlx::query(
             "UPDATE analyses SET state = 'planning', flows_total = NULL, flows_done = 0, paused_until = NULL,
                  failure_flow_id = NULL, failure_flow_title = NULL, failure_message = NULL, failure_reason = NULL, finished_at = NULL,
-                 round = round + 1
-             WHERE id = ? AND state = 'failed'",
+                 round = round + 1, payer_id = COALESCE(?,payer_id)
+             WHERE id = ? AND state = 'failed'
+                 AND (? IS NULL OR EXISTS(SELECT 1 FROM llm_credentials WHERE user_id=? AND state='linked'))",
         )
+        .bind(payer)
         .bind(id.to_string())
+        .bind(payer)
+        .bind(payer)
         .execute(&mut *tx)
         .await?;
         if updated.rows_affected() == 0 {
             return Ok(false);
+        }
+        if payer.is_some() {
+            advance_generation(&mut tx, id).await?;
         }
         let waiting: Vec<(String, u32)> = sqlx::query_as(
             "SELECT id, attempt FROM jobs WHERE analysis_id = ? AND kind <> 'ask' AND state IN ('queued', 'paused')",

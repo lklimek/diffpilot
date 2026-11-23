@@ -19,6 +19,9 @@ use crate::state::AppState;
 /// A pull request could not be resolved or analysed.
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
+    /// The launching user has no usable plan credential.
+    #[error(transparent)]
+    Payer(#[from] crate::jobs::payer::PayerError),
     /// The repository owner, name or number is not a valid GitHub name.
     #[error("the repository name or pull request number is not valid")]
     InvalidRepository,
@@ -159,6 +162,7 @@ pub async fn create(
     session: &Session,
     request: &CreateAnalysisRequest,
 ) -> Result<AnalysisSummary, IngestError> {
+    crate::jobs::payer::require_linked(&state.db, &session.user_id).await?;
     let (pull, pr_id) = fetch_pull(state, session, &request.pr).await?;
     if pull.summary.head_sha != request.head_sha {
         return Err(IngestError::HeadMoved);

@@ -36,8 +36,7 @@ use crate::state::AppState;
 
 /// Plain sentences of a failed LLM call, by typed cause.
 const USAGE_LIMIT: &str = "The LLM provider's usage limit was reached.";
-const SIGN_IN_NEEDED: &str = "Sign-in to the LLM provider is needed: sign in to Codex again in the runner \
-     container (see the runbook).";
+const SIGN_IN_NEEDED: &str = "Link your Codex account in Settings";
 const PROVIDER_REJECTED: &str = "The LLM provider rejected the request or could not answer it.";
 const ANSWER_FORMAT: &str = "The LLM answer was not in the expected format.";
 const TIMED_OUT: &str = "The LLM call took too long and was stopped.";
@@ -684,7 +683,10 @@ mod tests {
         assert_eq!(status["at"], json!("2026-11-17T09:00:00Z"));
         assert_eq!(status["status"]["state"], json!("not_working"));
         let message = status["status"]["message"].as_str().expect("message");
-        assert!(message.contains("sign in to Codex again"), "{message}");
+        assert!(
+            message.contains("Link your Codex account in Settings"),
+            "{message}"
+        );
         credentials
             .register(
                 DEFAULT_TENANT,
@@ -732,6 +734,7 @@ mod tests {
             .await
             .unwrap();
         let analysis = seed_analysis(&h.state.db).await.expect("analysis");
+        crate::test_support::link_payer(&h.state.db, DEFAULT_TENANT, id).await;
         let mut spec = job_spec(analysis, JobKind::Plan);
         spec.payer.0 = id.to_owned();
         h.state

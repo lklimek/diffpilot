@@ -11,7 +11,7 @@ use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::analyses::SessionState;
-use db::repo::jobs::{ExpiredLease, JobSnapshot, NewJob};
+use db::repo::jobs::{ExpiredLease, JobSnapshot, JobStage, NewJob};
 use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 
@@ -68,7 +68,7 @@ impl QueueExecutor {
             &crate::model::ModelContext::default(),
             saved.as_ref(),
         );
-        match self.db.jobs().enqueue(job, Timestamp::now()).await {
+        match self.db.jobs().enqueue_linked(job, Timestamp::now()).await {
             Ok(job) => Ok(JobHandle { job_id: job.id }),
             Err(DbError::Conflict) => current().await?.ok_or(ExecutorError::Db(DbError::Conflict)),
             Err(error) => Err(error.into()),
@@ -191,13 +191,16 @@ impl JobExecutor for QueueExecutor {
                             return Err(ExecutorError::Superseded);
                         }
                         let mut job = job.clone();
+                        if !matches!(stage, JobStage::Ask(_)) {
+                            job.spec.payer = contracts::ids::UserId(current.payer_id);
+                        }
                         let saved = self.db.settings().llm_selection().await?;
                         job.spec.model = crate::model::select_model(
                             job.spec.kind,
                             &crate::model::ModelContext::default(),
                             saved.as_ref(),
                         );
-                        match self.db.jobs().enqueue(job, Timestamp::now()).await {
+                        match self.db.jobs().enqueue_linked(job, Timestamp::now()).await {
                             Ok(job) => Ok(Some(JobHandle { job_id: job.id })),
                             Err(DbError::Conflict) => self
                                 .db
@@ -504,6 +507,7 @@ mod tests {
     async fn setup() -> (Db, QueueExecutor, contracts::ids::AnalysisId) {
         let db = Db::in_memory().await.expect("db");
         let analysis = seed_analysis(&db).await.expect("seed");
+        crate::test_support::link_payer(&db, db::repo::DEFAULT_TENANT, CREDENTIAL).await;
         (
             db.clone(),
             QueueExecutor::new(db, ProgressHub::default()),
@@ -617,6 +621,25 @@ mod tests {
             .set_state(analysis, &failed, Timestamp::now())
             .await
             .expect("failed");
+    }
+
+    #[tokio::test]
+    async fn latest_retry_payer_overrides_an_analytic_request_prepared_before_retry() {
+        let (db, executor, analysis) = setup().await;
+        let prepared = request(analysis, "f1");
+        db::repo::analyses::testing::seed_payer(&db, "u2")
+            .await
+            .unwrap();
+        crate::test_support::link_payer(&db, db::repo::DEFAULT_TENANT, "u2").await;
+        fail_analysis(&db, analysis).await;
+        assert!(
+            db.analyses()
+                .retry_as(analysis, "u2", Timestamp::now())
+                .await
+                .unwrap()
+        );
+        let job = executor.submit(prepared).await.unwrap();
+        assert_eq!(db.jobs().get(job.job_id).await.unwrap().spec.payer.0, "u2");
     }
 
     #[tokio::test]

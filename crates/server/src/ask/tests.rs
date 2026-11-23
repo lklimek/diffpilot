@@ -495,7 +495,20 @@ impl Fixture {
         self.post_job_result(claim, result).await;
     }
 
-    async fn post_job_result(&self, claim: &Claim, result: JobResult) {
+    async fn post_job_result(&self, claim: &Claim, mut result: JobResult) {
+        if let Some(session) = &mut result.session {
+            session.preflight = claim
+                .spec
+                .working_session
+                .as_ref()
+                .and_then(|w| w.preflight.clone())
+                .map(|mut p| {
+                    if p.state == contracts::runtime::PreflightState::Pending {
+                        p.state = contracts::runtime::PreflightState::Done;
+                    }
+                    Box::new(p)
+                });
+        }
         let uri = RUNNER_RESULT
             .path
             .replace("{id}", &claim.spec.job_id.to_string());

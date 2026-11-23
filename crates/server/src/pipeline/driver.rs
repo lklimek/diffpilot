@@ -620,7 +620,11 @@ impl Driver<'_> {
                 if let JobStage::Flow(id) = &stage
                     && !matches!(
                         kind,
-                        JobFailureKind::Configuration | JobFailureKind::CredentialUnusable
+                        JobFailureKind::Configuration
+                            | JobFailureKind::CredentialUnusable
+                            | JobFailureKind::CredentialMissing
+                            | JobFailureKind::CredentialRelink
+                            | JobFailureKind::InvalidJsonSchema
                     )
                 {
                     tracing::warn!(analysis = %self.analysis, flow = %id, ?kind,

@@ -1824,8 +1824,13 @@ async fn ranking_waits_for_running_analysis_job() {
         })
         .await;
     assert_eq!(waiting.state, RefreshState::Ranking);
-    h.complete(&analysis_job, JobOutcome::Cancelled).await;
     h.serve(|i| succeeded(neutral(i))).await;
+    assert_eq!(
+        h.db().jobs().get(analysis_job.id).await.unwrap().state,
+        JobState::Claimed,
+        "the separate judge container can claim while the PR container is busy"
+    );
+    h.complete(&analysis_job, JobOutcome::Cancelled).await;
     let done = h.ranked("u1", id).await;
     assert_eq!(done.ranking.map(|r| r.state), Some(RankingState::Finished));
 }
