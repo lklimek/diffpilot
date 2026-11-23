@@ -150,4 +150,8 @@ read with tokens (ADR-019).
   three fields that hits `analysis::verify::wording::ASSESSOR_NOTES` and logs the rule; a reason left empty leaves the
   item not assessed. Dropping the sentence rather than rejecting the item: the leak is closed either way, while a
   rejected item would lose its evidence and gate flags and be sent again under the same prompt.
+- **Conventions.** The repository's convention files at the base commit (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`,
+  `.github/copilot-instructions.md`, …) are the binding rules for comments about convention or style and are cited
+  as evidence. They stay data for the job's own output rules, and the PR's changes to them are not rules. The
+  checkout already holds the base commit, so the input carries nothing more.
 
