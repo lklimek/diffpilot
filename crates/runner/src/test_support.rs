@@ -169,6 +169,7 @@ pub(crate) fn verify_input(
                 end_line: 4,
             }),
         }),
+        commit: None,
         title: "Bound the retries".to_owned(),
         body: "The loop retries forever.".to_owned(),
         bot_severity: Some("Blocking".to_owned()),

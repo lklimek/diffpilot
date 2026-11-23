@@ -577,6 +577,7 @@ pub(crate) fn verify_item(item: &ItemRecord) -> VerifyItem {
         author: item.author.clone(),
         author_kind: item.author_kind,
         location: item.location.clone(),
+        commit: None,
         title: item.title.clone(),
         body: match item.author_kind {
             AuthorKind::Bot => clean::bot_body(&item.body),
@@ -589,9 +590,10 @@ pub(crate) fn verify_item(item: &ItemRecord) -> VerifyItem {
     }
 }
 
-/// `item` with the replies of its thread from the last read.
+/// `item` with its commit and the replies of its thread from the last read.
 fn with_context(mut item: VerifyItem, context: Option<&ItemContext>) -> VerifyItem {
     if let Some(context) = context {
+        item.commit.clone_from(&context.commit);
         item.replies.clone_from(&context.replies);
         item.earlier_replies = context.earlier_replies;
     }
