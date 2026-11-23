@@ -1,0 +1,193 @@
+{
+  "detail": {
+    "number": 1230,
+    "title": "fix(tokens): never ask to pay again for a registration Platform already confirmed",
+    "state": "OPEN",
+    "isDraft": false,
+    "createdAt": "2026-11-23T00:55:20Z",
+    "updatedAt": "2026-11-23T16:02:25Z",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BLOCKED",
+    "reviewDecision": "",
+    "baseRefName": "v1.0-dev",
+    "headRefOid": "2f6bf3f7678d01998693b7aae372729175cb3b5c",
+    "url": "https://github.com/dashpay/dash-evo-tool/pull/1230",
+    "isCrossRepository": false,
+    "additions": 0,
+    "deletions": 0,
+    "headRefName": "fixture",
+    "milestone": null,
+    "baseRepository": {
+      "nameWithOwner": "dashpay/dash-evo-tool",
+      "isPrivate": false,
+      "viewerPermission": "WRITE",
+      "defaultBranchRef": {
+        "name": "v1.0-dev"
+      }
+    },
+    "author": {
+      "__typename": "User",
+      "login": "lklimek"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "participants": {
+      "totalCount": 0
+    },
+    "closingIssuesReferences": {
+      "nodes": []
+    },
+    "assignees": {
+      "nodes": []
+    },
+    "reviewRequests": {
+      "nodes": []
+    },
+    "reviews": {
+      "totalCount": 0,
+      "nodes": []
+    },
+    "comments": {
+      "nodes": [
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "coderabbitai[bot]"
+          },
+          "createdAt": "2026-11-23T00:55:29Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "thepastaclaw"
+          },
+          "createdAt": "2026-11-23T01:03:42Z"
+        }
+      ]
+    },
+    "reviewThreads": {
+      "nodes": []
+    },
+    "timelineItems": {
+      "nodes": []
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "FAILURE",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T00:55:27Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T00:56:03Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T15:28:57Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "StatusContext",
+                    "context": "PR Hygiene",
+                    "state": "ERROR",
+                    "createdAt": "2026-11-23T15:29:18Z"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "PastaClaw review",
+                    "status": "IN_PROGRESS",
+                    "conclusion": "",
+                    "startedAt": "2026-11-23T16:02:23Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": ""
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "StatusContext",
+                    "context": "CodeRabbit",
+                    "state": "SUCCESS",
+                    "createdAt": "2026-11-23T15:29:00Z"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "hygiene": {
+    "areas": [],
+    "asks": [],
+    "author": "lklimek",
+    "author_kind": "human",
+    "base": "v1.0-dev",
+    "blockers": [
+      "No changed-file evidence"
+    ],
+    "changes_requested": false,
+    "ci_failing": true,
+    "created_at": "2026-11-23T00:55:20Z",
+    "draft": false,
+    "engine_state": "configuration-error",
+    "idle": false,
+    "key": "dashpay/dash-evo-tool#1230",
+    "lateness": null,
+    "merge_conflict": false,
+    "milestone": null,
+    "next_action": "No changed-file evidence",
+    "number": 1230,
+    "objectors": [],
+    "repo": "dashpay/dash-evo-tool",
+    "since": "2026-11-23T00:55:20Z",
+    "since_basis": "opened",
+    "stage": "blocked",
+    "title": "fix(tokens): never ask to pay again for a registration Platform already confirmed",
+    "tracked": true,
+    "unresolved_comments": 0,
+    "updated_at": "2026-11-23T16:02:25Z"
+  }
+}

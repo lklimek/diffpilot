@@ -10,6 +10,9 @@
   (K15 W3b, §11).
 - Amendment DR2 (owner, 2026-11-23; plan K15): a current statement of the reviewers' or maintainers' move comes before
   the ready label, which is the fallback (§11).
+- Amendment DR3 (owner cases, 2026-11-23; plan K15, K17): a current statement naming the reviewers' next move
+  takes precedence over GitHub review blockers for Waiting on others only; a configuration error names no waiting
+  reviewer (§11).
 - Overrides `CLAUDE.md` "no abstraction beyond the seams the brief names" for exactly this seam.
 
 ## Context
@@ -111,10 +114,18 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
 11. **Whose move** (DR1, K15 W3b): a statement may say the move is the author's or the reviewers'/maintainers', with
    the logins owing a review. PR Hygiene: the stage's owner from `/stages` (`author`; `reviewers` or `maintainers`
    with `asks[].approvers`, valid GitHub logins, at most 10, once each; `bots` and `nobody` say nothing) and the same
-   reason as its hold. A fresh statement of the reviewers' or maintainers' move lists the user's pull request under
-   Waiting on others (reason "PR Hygiene: …" with the evidence link) when nothing is the user's move; one of the
-   author's move adds nothing and vetoes nothing (neither the ready label nor a requested review). The judge's input
-   applies the same rule without statements, so every ranked pull request is judged and the input stays GitHub's.
+   reason as its hold. `configuration-error` gives no whose-move statement: the blocked stage's maintainer owner
+   does not establish that anyone owes a review; its note and Ready to merge hold still apply.
+   A fresh statement of the reviewers' or maintainers' move lists the user's pull request under Waiting on others
+   (reason "PR Hygiene: …" with the evidence link) before GitHub change requests, the review decision or unresolved
+   threads are considered. These review signals can remain while the author has handed the PR back for review
+   (rust-dashcore#1336). The PR must still be the user's, open and non-draft, without conflicts, with effective CI
+   green, without a comment awaiting the user's reply or a review requested from a scanned login, and outside
+   Ready to merge before any plug-in hold (K17). The statement never clears review blockers for Ready to merge.
+   One of the author's move adds nothing and vetoes nothing (neither the ready label nor a requested review).
+   The judge's input applies the same rule without statements: a PR listed here only by a statement is still
+   judged, every ranked pull request is judged, and the input stays GitHub's. Ignored policy and bot checks remain
+   governed by K12; an ignored PR Hygiene error does not make effective CI red (dash-evo-tool#1230 and #1231).
 
 ## Alternatives considered
 | Alternative | Why not |

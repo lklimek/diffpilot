@@ -312,6 +312,8 @@ impl PrHygiene {
             })
             .unwrap_or_else(|| format!("Engine state: {}", context::readable(engine_state)));
         let whose_move = match owner {
+            // A configuration error's blocked stage names maintainers, but establishes no review to wait for.
+            _ if engine_state == "configuration-error" => None,
             Some("author") => Some(Move::Author),
             Some(owner) if PEOPLE_OWNERS.contains(&owner) => Some(Move::People {
                 owed: approvers(value),
