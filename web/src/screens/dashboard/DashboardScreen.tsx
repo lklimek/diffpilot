@@ -308,7 +308,7 @@ export function DashboardScreen() {
       {main &&
         (snapshot && charts ? (
           <SidePanel main={main} railText={railText(snapshot)}>
-            <WaitingOnOthers items={snapshot.awaiting} now={now} />
+            <WaitingOnOthers items={snapshot.awaiting} now={now} slackNames={page.slackNames} />
             <ReadyToMerge
               items={snapshot.ready_to_merge}
               pending={snapshot.merge_state_pending}

@@ -103,7 +103,13 @@
     ],
     "schedule_enabled": true,
     "schedule_time": "06:00",
-    "time_zone": "Europe/Warsaw"
+    "time_zone": "Europe/Warsaw",
+    "slack_names": [
+      {
+        "login": "jun-park",
+        "slack": "@jun.park"
+      }
+    ]
   },
   "defaults": {
     "linked_logins": [],
@@ -124,7 +130,8 @@
     "memcan_extra_projects": [],
     "schedule_enabled": true,
     "schedule_time": "06:00",
-    "time_zone": null
+    "time_zone": null,
+    "slack_names": []
   },
   "own_login": "alice",
   "memcan_configured": true,

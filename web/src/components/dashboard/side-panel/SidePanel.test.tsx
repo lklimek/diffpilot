@@ -231,6 +231,55 @@ describe("side panel sections", () => {
       expect(screen.getByText("Copied the line of PLAT-1176.")).toBeInTheDocument();
     });
 
+    it("Copy for Slack writes the Slack names of Settings for GitHub logins; logins without one stay @login", async () => {
+      clipboard(() => Promise.resolve());
+      const slackNames = [
+        { login: "Jun-Park", slack: "<@U01ABC>" },
+        { login: "tobias-w", slack: "@tobias.weber" },
+      ];
+      render(<WaitingOnOthers items={SUMMARY.snapshot!.awaiting} now={NOW} slackNames={slackNames} />);
+      const list = screen.getByRole("button", { name: "Copy for Slack: list of PRs waiting on others" });
+      expect(list).toHaveTextContent(/^Copy for Slack$/);
+      expect(list).toHaveAccessibleDescription(/Slack names/);
+      await userEvent.click(list);
+      const lines = (await written[0]!["text/plain"]!.text()).split("\n");
+      expect(lines).toHaveLength(3);
+      // Logins match in any case; a team stays as it is.
+      expect(lines[0]).toBe(
+        "[acme/platform#1176](https://github.com/acme/platform/pull/1176) feat(sync): parallel header download - large (+3200 / -400) — waits on <@U01ABC>, team:core for 11 d",
+      );
+      expect(lines.find((line) => line.includes("acme/node-client#476"))).toMatch(
+        / — waits on @tobias\.weber for \d+ d$/,
+      );
+      expect(await written[0]!["text/html"]!.text()).toContain(
+        "waits on &lt;@U01ABC&gt;, team:core for 11 d",
+      );
+      expect(screen.getByText("Copied 3 lines.")).toHaveAttribute("role", "status");
+
+      // Each row: a Slack icon next to the plain copy icon, with its own name.
+      const github = screen.getByRole("link", { name: "Open NC-476 on GitHub (new tab)" });
+      const plain = screen.getByRole("button", { name: "Copy line of NC-476" });
+      const slack = screen.getByRole("button", { name: "Copy line of NC-476 for Slack" });
+      expect(github.closest("div")).toContainElement(slack);
+      expect(plain.compareDocumentPosition(slack) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(screen.getAllByRole("button", { name: /^Copy line of .+ for Slack$/ })).toHaveLength(3);
+      await userEvent.click(slack);
+      expect(await written[1]!["text/plain"]!.text()).toMatch(/ — waits on @tobias\.weber for \d+ d$/);
+      expect(screen.getByText("Copied the line of NC-476.")).toBeInTheDocument();
+      await userEvent.click(plain);
+      expect(await written[2]!["text/plain"]!.text()).toMatch(/ — waits on @tobias-w for \d+ d$/);
+      // The panel itself keeps the GitHub logins.
+      expect(screen.getByText(/^waits on @tobias-w for/)).toBeInTheDocument();
+    });
+
+    it("without the Slack names (settings not read) there is no Slack copy; Ready to merge has none", () => {
+      render(<WaitingOnOthers items={SUMMARY.snapshot!.awaiting} now={NOW} />);
+      expect(screen.queryByRole("button", { name: /Slack/ })).toBeNull();
+      cleanup();
+      render(<ReadyToMerge items={SUMMARY.snapshot!.ready_to_merge} pending={0} />);
+      expect(screen.queryByRole("button", { name: /Slack/ })).toBeNull();
+    });
+
     it("copies Ready to merge without a wait part and says when copying did not work", async () => {
       clipboard(() => Promise.resolve());
       render(<ReadyToMerge items={SUMMARY.snapshot!.ready_to_merge} pending={0} />);

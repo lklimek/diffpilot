@@ -344,6 +344,16 @@ const HELP = {
     limits: "A time zone name such as Europe/Warsaw.",
     example: "Europe/Warsaw.",
   },
+  slack_names: {
+    section: "Dashboard",
+    title: "Slack names",
+    what: "Your table of GitHub logins and the name to write for each in Slack. Copy for Slack in Waiting on others (the Slack icon of a row, and Copy for Slack next to Copy list) writes the Slack name instead of @login; Copy list and the plain copy icon keep @login.",
+    when: "Only when you copy for Slack on My work. Nothing is sent to Slack: the text goes to your clipboard.",
+    empty: "No rows: Copy for Slack writes @login for every login, like Copy list.",
+    limits:
+      "Up to 100 rows. Each GitHub login once (any case); the Slack name is copied as you type it, 1 to 80 characters without control characters.",
+    example: "jun-park → @jun.park, or <@U01ABC> with a Slack member ID.",
+  },
   ranking_limits: {
     section: "Dashboard",
     title: "Ranking limits",
@@ -417,6 +427,7 @@ export const CONTRACT_HELP: {
     schedule_enabled: "schedule_enabled",
     schedule_time: "schedule_time",
     time_zone: "time_zone",
+    slack_names: "slack_names",
   },
   repository: {
     repo: "repo",

@@ -1,12 +1,11 @@
-import type { AwaitingItem } from "../../../api/generated/types";
+import type { AwaitingItem, SlackName } from "../../../api/generated/types";
 import { CopyLineButton } from "../common/CopyLineButton";
 import { CopyListButton } from "../common/CopyListButton";
+import { atLogin, slackName } from "../common/copyList";
 import { daysSince } from "../common/format";
 import { OpenExternal, openLabel } from "../common/OpenExternal";
 import { FactTags, SizePill } from "../common/Tags";
 import { AsideSection } from "../side-panel/AsideSection";
-
-const who = (login: string) => (login.startsWith("team:") ? login : `@${login}`);
 
 /** Why the PR waits, in a few words; a plug-in's reason is attributed and links to its evidence. */
 function Reason({ item }: { item: AwaitingItem }) {
@@ -30,17 +29,28 @@ function Reason({ item }: { item: AwaitingItem }) {
 
 /**
  * The user's PRs waiting on other people, longest wait first (side panel): whom to ping (requested reviewers, or
- * those a plug-in says owe a review), why, and for how long.
+ * those a plug-in says owe a review), why, and for how long. `slackNames`: the user's Slack names (Settings); with
+ * them each row and the list also copy for Slack (K19), without them (not read) only the plain copy.
  */
-export function WaitingOnOthers({ items, now }: { items: AwaitingItem[]; now: Date }) {
+export function WaitingOnOthers({
+  items,
+  now,
+  slackNames,
+}: {
+  items: AwaitingItem[];
+  now: Date;
+  slackNames?: SlackName[];
+}) {
   const sorted = [...items].sort((a, b) => a.waiting_since.localeCompare(b.waiting_since));
   const oldest = sorted[0] ? daysSince(sorted[0].waiting_since, now) : null;
-  const waits = (item: AwaitingItem) =>
-    item.waiting_on.length === 0 ? "waits for" : `waits on ${item.waiting_on.map(who).join(", ")} for`;
-  const line = (item: AwaitingItem) => ({
+  const waits = (item: AwaitingItem, name: (login: string) => string = atLogin) =>
+    item.waiting_on.length === 0 ? "waits for" : `waits on ${item.waiting_on.map(name).join(", ")} for`;
+  const line = (item: AwaitingItem, name?: (login: string) => string) => ({
     ...item,
-    suffix: `${waits(item)} ${daysSince(item.waiting_since, now)} d`,
+    suffix: `${waits(item, name)} ${daysSince(item.waiting_since, now)} d`,
   });
+  const slackLine =
+    slackNames && ((item: AwaitingItem) => line(item, (login) => slackName(login, slackNames)));
   return (
     <AsideSection
       title="Waiting on others"
@@ -67,6 +77,7 @@ export function WaitingOnOthers({ items, now }: { items: AwaitingItem[]; now: Da
                 <span className="font-mono text-[12.5px] font-semibold">{item.id}</span>
                 <OpenExternal href={item.url} label={openLabel(item)} />
                 <CopyLineButton line={line(item)} id={item.id} />
+                {slackLine && <CopyLineButton line={slackLine(item)} id={item.id} slack />}
               </div>
               <div className="[overflow-wrap:anywhere]">{item.title}</div>
               <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
@@ -83,7 +94,11 @@ export function WaitingOnOthers({ items, now }: { items: AwaitingItem[]; now: Da
           ))}
         </ul>
       )}
-      <CopyListButton lines={sorted.map(line)} what="PRs waiting on others" />
+      <CopyListButton
+        lines={sorted.map((item) => line(item))}
+        slackLines={slackLine && sorted.map(slackLine)}
+        what="PRs waiting on others"
+      />
       <p className="mt-1.5 text-xs text-muted">
         Your PRs where nothing is your move and other people have to act: the ready label (it needs a human,
         even when you could merge), a plug-in saying reviewers or maintainers have the move, or a review

@@ -208,6 +208,27 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     expect(saved(onSave).repositories).toEqual([]);
   });
 
+  it("Slack names: a table of GitHub logins and the Slack names Copy for Slack writes", async () => {
+    const { onSave, card } = renderCard();
+    const table = within(card).getByRole("table", { name: "Slack names" });
+    expect(within(table).getByRole("link", { name: "Help: Slack names" })).toHaveAccessibleDescription(
+      /Copy for Slack/,
+    );
+    expect(screen.getByLabelText("GitHub login 1")).toHaveValue("jun-park");
+    expect(screen.getByLabelText("Slack name of jun-park")).toHaveValue("@jun.park");
+    await userEvent.click(screen.getByRole("button", { name: "Add a Slack name" }));
+    await userEvent.type(screen.getByLabelText("GitHub login 2"), "tobias-w");
+    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Slack name of tobias-w")).toHaveAccessibleDescription(
+      'Slack names: the Slack name of "tobias-w" uses 1 to 80 characters, without control characters or white space at either end.',
+    );
+    await userEvent.type(screen.getByLabelText("Slack name of tobias-w"), "<@U01ABC>");
+    await userEvent.click(screen.getByRole("button", { name: "Remove the Slack name of jun-park" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
+    expect(saved(onSave).slack_names).toEqual([{ login: "tobias-w", slack: "<@U01ABC>" }]);
+  });
+
   it("Reset to defaults fills the form but keeps the time zone, and sends nothing", async () => {
     const { onSave } = renderCard();
     await userEvent.click(screen.getByRole("button", { name: "Reset to defaults" }));

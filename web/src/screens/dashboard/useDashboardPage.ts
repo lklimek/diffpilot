@@ -19,6 +19,7 @@ import {
   useRankAgain,
   useRefreshEvents,
   useSaveBrowserTimeZone,
+  useSlackNames,
   useSnapshotRefresh,
   useStartRefresh,
 } from "./queries";
@@ -164,6 +165,7 @@ export function useDashboardPage() {
   const me = useMe();
   const user = me.data?.user ?? null;
   const summary = useDashboardSummary(user !== null);
+  const slackNames = useSlackNames(user !== null);
   const data = summary.data;
   const snapshotRefresh = useSnapshotRefresh(data);
   const items = useDashboardItems(data?.revision, data?.snapshot != null);
@@ -215,6 +217,8 @@ export function useDashboardPage() {
     me,
     user,
     summary,
+    /** The Slack names of Settings; undefined until read (no Slack copy then). */
+    slackNames: slackNames.data,
     items,
     view,
     /** All items of the snapshot in rank order. */

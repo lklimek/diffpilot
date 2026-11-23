@@ -1030,6 +1030,19 @@ pub struct DashboardSettings {
     pub schedule_time: String,
     /// IANA time zone; null until the browser sends one.
     pub time_zone: Option<String>,
+    /// GitHub logins with the Slack name "Copy for Slack" writes instead of `@login` (at most 100 rows).
+    #[serde(default)]
+    pub slack_names: Vec<SlackName>,
+}
+
+/// One row of the Slack names table: a GitHub login and the text copied for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SlackName {
+    /// GitHub login (case-insensitive, unique in the table).
+    pub login: String,
+    /// Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g.
+    /// `@jan.kowalski` or `<@U01ABC>`.
+    pub slack: String,
 }
 
 impl Default for DashboardSettings {
@@ -1048,6 +1061,7 @@ impl Default for DashboardSettings {
             schedule_enabled: true,
             schedule_time: "06:00".to_owned(),
             time_zone: None,
+            slack_names: Vec::new(),
         }
     }
 }

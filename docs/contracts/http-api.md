@@ -725,7 +725,10 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   naming the first failing field. `skip_authors` are excluded authors (every pull request and issue they author is left
   out of the dashboard, whatever its relation to the user; they are not bots); `known_bots` are the
   logins treated as bots besides GitHub `Bot` accounts and `[bot]` logins (absent in a request: the defaults,
-  `thepastaclaw`, `Claudius-Maginificent`, `DCG-Claude`). R6b stores the browser's IANA zone (sent once on the first dashboard visit
+  `thepastaclaw`, `Claudius-Maginificent`, `DCG-Claude`). `slack_names` is the user's Slack names table (G18, at
+  most 100 rows): a GitHub login (unique, any case) and the text "Copy for Slack" writes instead of `@login` (1–80
+  characters as typed, no control character, no white space at either end; absent in a request: an empty table).
+  My work reads it with R6 only for Copy for Slack (plan K19). R6b stores the browser's IANA zone (sent once on the first dashboard visit
   while none is stored). R7 sets the installation-wide ranking effort (`low` default, `medium`, `high`);
   `LlmSelection.judge_effort` reports it, and `changed_by`/`changed_at` are shared with the model choice.
 - **Access tokens (R8–R10, ADR-019).** Token `srp_<id>_<secret>`: `id` 8 base62 characters, secret 32 random bytes

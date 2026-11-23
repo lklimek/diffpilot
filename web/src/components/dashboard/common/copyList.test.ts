@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { copyText, writeClipboard, type CopyLine } from "./copyList";
+import { atLogin, copyText, slackName, writeClipboard, type CopyLine } from "./copyList";
 
 const line = (over: Partial<CopyLine> = {}): CopyLine => ({
   repo: { owner: "dashpay", name: "platform" },
@@ -8,6 +8,24 @@ const line = (over: Partial<CopyLine> = {}): CopyLine => ({
   title: "Title",
   change_size: { size: "small", additions: 25, deletions: 3 },
   ...over,
+});
+
+describe("slackName (Settings › Slack names)", () => {
+  const names = [
+    { login: "Jun-Park", slack: "<@U01ABC>" },
+    { login: "bob", slack: "@bob.k" },
+  ];
+
+  it("writes the Slack name of a login, matched in any case, as typed", () => {
+    expect(slackName("jun-park", names)).toBe("<@U01ABC>");
+    expect(slackName("BOB", names)).toBe("@bob.k");
+  });
+
+  it("keeps @login for a login without one and a team as it is", () => {
+    expect(slackName("carol", names)).toBe("@carol");
+    expect(slackName("team:core", names)).toBe("team:core");
+    expect(slackName("carol", [])).toBe(atLogin("carol"));
+  });
 });
 
 describe("copyText", () => {

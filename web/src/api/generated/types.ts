@@ -1828,7 +1828,11 @@ schedule_time: string,
 /**
  * IANA time zone; null until the browser sends one.
  */
-time_zone: string | null, };
+time_zone: string | null,
+/**
+ * GitHub logins with the Slack name "Copy for Slack" writes instead of `@login` (at most 100 rows).
+ */
+slack_names: Array<SlackName>, };
 
 /**
  * Response of `GET`/`PUT /api/v1/settings/dashboard`.
@@ -6006,6 +6010,20 @@ changed_files: number,
  * `ResolvePrResponse.planning_estimate`); null without enough history.
  */
 estimate: AnalysisEstimate | null, };
+
+/**
+ * One row of the Slack names table: a GitHub login and the text copied for it.
+ */
+export type SlackName = {
+/**
+ * GitHub login (case-insensitive, unique in the table).
+ */
+login: string,
+/**
+ * Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g.
+ * `@jan.kowalski` or `<@U01ABC>`.
+ */
+slack: string, };
 
 /**
  * Facts of the stored snapshot besides its items.

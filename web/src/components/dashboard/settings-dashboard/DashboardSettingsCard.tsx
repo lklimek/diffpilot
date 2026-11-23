@@ -9,6 +9,7 @@ import { MemcanGroup } from "./MemcanGroup";
 import { RepositoryTable } from "./RepositoryTable";
 import { RulesGroup } from "./RulesGroup";
 import { ScheduleGroup } from "./ScheduleGroup";
+import { SlackNamesTable } from "./SlackNamesTable";
 import { UnreachableMark, isUnreachable } from "./UnreachableMark";
 import {
   checkEntry,
@@ -155,6 +156,13 @@ export function DashboardSettingsCard({ view, onSave, onDirtyChange }: Dashboard
             timeZone={draft.time_zone}
             errors={errors}
             onChange={edit}
+          />
+        </Group>
+        <Group legend="Slack names">
+          <SlackNamesTable
+            rows={draft.slack_names}
+            errors={errors}
+            onChange={(slack_names) => edit({ slack_names })}
           />
         </Group>
       </div>

@@ -328,6 +328,18 @@ export function useSaveBrowserTimeZone(summary: DashboardSummary | undefined): {
   return { failed };
 }
 
+/**
+ * The user's Slack names (Settings › Dashboard) for Copy for Slack (K19). A cache entry of its own: the Settings form
+ * starts from its own read, never from this one.
+ */
+export const useSlackNames = (enabled: boolean) =>
+  useQuery({
+    queryKey: ["dashboard-slack-names"],
+    queryFn: api.getDashboardSettings,
+    select: (view) => view.settings.slack_names,
+    enabled,
+  });
+
 /** Hide persists server-side; invalidation also refreshes the navigation count. */
 export function useHideMention() {
   const client = useQueryClient();

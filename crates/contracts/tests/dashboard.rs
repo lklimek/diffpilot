@@ -238,7 +238,7 @@ fn dashboard_settings_default_to_plan_f6() {
             "ready_label": "ready-for-human", "skip_authors": ["dependabot", "dependabot[bot]"],
             "known_bots": ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"],
             "include_todos": true, "memcan_extra_projects": [], "schedule_enabled": true,
-            "schedule_time": "06:00", "time_zone": null
+            "schedule_time": "06:00", "time_zone": null, "slack_names": []
         })
     );
 }
