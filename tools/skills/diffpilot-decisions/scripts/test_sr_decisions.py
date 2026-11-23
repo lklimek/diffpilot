@@ -1419,3 +1419,15 @@ def test_report_verify_head_accepts_a_fix_below_the_head_of_a_long_pr(env, fake,
     code, _, errout = run(capsys, *VERIFY)
     assert code == 0, errout
     assert all("commits" not in call for call in gh_calls(fake_gh))
+
+
+@pytest.mark.xfail(strict=True, reason="repro: combine re-claims with fix,reply,resolve, which the server refuses")
+def test_combine_as_the_skill_writes_it_claims_with_capabilities_covering_pr_comment(env, fake, capsys):
+    # The server refuses a claim whose capabilities miss a remaining agent effect's kind (422 capability_missing,
+    # crates/db/src/repo/review_loop/decisions.rs claim_refusal), so a re-claim of a decision holding pr_comment
+    # effects must name pr_comment. SKILL step 4 writes `combine D1 D2 …` without --capabilities.
+    serve_claimed(fake, DEC, review_comment_decision(DEC, 5, E1, "Not changed."))
+    code, _, errout = run(capsys, "combine", DEC)
+    claims = [r for r in fake.requests if r["method"] == "POST"]
+    assert claims or code == 2, errout
+    assert all("pr_comment" in r["body"]["capabilities"] for r in claims)
