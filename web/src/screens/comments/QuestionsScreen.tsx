@@ -14,12 +14,15 @@ import {
   useCommentLog,
   useDecide,
   useDecideBatch,
+  useDecideRest,
+  useEffectsPreview,
   useItemAction,
   useMarkGate,
   useUndoDecision,
 } from "../../api/review-loop";
 import { CollapsibleSection } from "../../components/collapsible/CollapsibleSection";
-import { isTypingField } from "../../components/comments/DecisionForm";
+import { isTypingField } from "../../components/comments/cardKeys";
+import type { EffectsPreviewState } from "../../components/comments/decisions";
 import { itemId } from "../../components/comments/parts";
 import { assessmentText } from "../../components/comments/ProcessCommentsCard";
 import { QuestionCard, type ContextState } from "../../components/comments/QuestionCard";
@@ -70,6 +73,18 @@ export function QuestionsScreen() {
   // What the last "Assess again" did, per item.
   const [assessNote, setAssessNote] = useState<{ no: number; text: string } | null>(null);
   const log = useCommentLog(pr);
+  const decideRest = useDecideRest(pr);
+  // The decision drafted on the shown card; the server plans it (RC16).
+  const [draft, setDraft] = useState<DecisionBatchRow[] | null>(null);
+  const planned = useEffectsPreview(pr, draft);
+  const preview: EffectsPreviewState =
+    draft === null
+      ? { state: "idle" }
+      : planned.isError && !planned.isPlaceholderData
+        ? { state: "error", message: errorText(planned.error) }
+        : planned.data
+          ? { state: "ready", items: planned.data, updating: !planned.current }
+          : { state: "loading" };
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(new Set());
   const [individual, setIndividual] = useState<ReadonlySet<number>>(new Set());
   const [rest, setRest] = useState(false);
@@ -224,29 +239,31 @@ export function QuestionsScreen() {
     single?.state === "reopened"
       ? log.data?.carry_events.find((e) => e.item_no === single.no && e.kind === "asked_again")
       : undefined;
-  const restItems = queue
+  const gateCount = queue
     .flatMap((e) => e.item_nos)
-    .map((n) => byNo.get(n)!)
-    .filter((i) => i && i.kind !== "pr_question" && i.gates.length === 0 && i.assessment);
-  const leftOut = queue
-    .flatMap((e) => e.item_nos)
-    .map((n) => byNo.get(n)!)
-    .filter((i) => i && i.gates.length > 0);
+    .map((n) => byNo.get(n))
+    .filter((i) => i && i.gates.length > 0).length;
   const running = overview.assessment.running;
   const error = decide.isError ? errorText(decide.error) : batch.isError ? errorText(batch.error) : null;
   const undoError = undoable && undoDecision.isError ? errorText(undoDecision.error) : null;
 
   let card;
   if (rest)
-    card = (
+    card = decideRest.data ? (
       <DecideRestCard
-        items={restItems}
-        leftOut={leftOut}
+        rest={decideRest.data}
+        items={byNo}
         onConfirm={(rows) => onBatch("bulk", rows)}
         onCancel={() => setRest(false)}
         busy={batch.isPending}
         error={error}
+        preview={preview}
+        onDraft={setDraft}
       />
+    ) : (
+      <p role="status" className="m-0 text-sm">
+        {decideRest.isError ? errorText(decideRest.error) : "Loading the list…"}
+      </p>
     );
   else if (!entry)
     card = running ? (
@@ -274,6 +291,8 @@ export function QuestionsScreen() {
         busy={batch.isPending}
         error={error}
         storageKey={storageKey}
+        preview={preview}
+        onDraft={setDraft}
       />
     );
   else if (single?.kind === "pr_question")
@@ -286,6 +305,8 @@ export function QuestionsScreen() {
         onSkip={skip}
         busy={decide.isPending}
         error={error}
+        preview={preview}
+        onDraft={setDraft}
       />
     );
   else if (single?.state === "assessing") card = <AssessmentRunningCard progress={overview.assessment} />;
@@ -314,6 +335,8 @@ export function QuestionsScreen() {
         onOpenAnswers={() => ask(single)}
         onDecide={(request) => onDecide(single, request)}
         onSkip={skip}
+        preview={preview}
+        onDraft={setDraft}
         onMoreLines={(direction) => {
           const shown = context.data?.lines;
           const first = shown?.[0]?.line ?? 1;
@@ -346,7 +369,7 @@ export function QuestionsScreen() {
         items={byNo}
         current={rest ? null : entry && entryKey(entry)}
         onOpen={open}
-        restCount={restItems.length}
+        restCount={decideRest.data?.rows.length ?? 0}
         onDecideRest={() => setRest(true)}
         onOpenLog={() => void navigate(commentsPath(pr, "log"))}
         onOpenCarryOvers={() => void navigate(commentsPath(pr, "carry-overs"))}
@@ -401,7 +424,7 @@ export function QuestionsScreen() {
               {(
                 [
                   ["Undecided questions", overview.counts.undecided],
-                  ["… gate items", leftOut.length],
+                  ["… gate items", gateCount],
                   ["Asked again", overview.counts.asked_again],
                   ["Decisions waiting for agents", overview.counts.waiting_for_agents],
                   ["Failed effects", overview.counts.failed_effects],

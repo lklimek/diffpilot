@@ -13,8 +13,11 @@ import type {
   CommentsOverview,
   ContextQuery,
   DecideRequest,
+  DecideRest,
   Decision,
   DecisionBatchRequest,
+  EffectsPreview,
+  EffectsPreviewRequest,
   GateMarkRequest,
   ItemActionRequest,
   ItemsQuery,
@@ -254,8 +257,9 @@ export function createApiClient(baseUrl = "") {
       response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
     }
     if (!response.ok) throw await errorOf(response);
-    if (response.status === 204) return undefined as T;
-    return (await response.json()) as T;
+    // 204, and the 202 of RC3 and RC6, carry no body.
+    const body = await response.text();
+    return (body ? JSON.parse(body) : undefined) as T;
   }
 
   /** A read with `If-None-Match: etag` (none when null): 304 is `unchanged`. */
@@ -396,6 +400,11 @@ export function createApiClient(baseUrl = "") {
     listPrQuestions: (pr: PrRef) => call<AskQuestion[]>("listPrQuestions", { params: prParams(pr) }),
     decideCommentBatch: (pr: PrRef, body: DecisionBatchRequest) =>
       call<Decision[]>("decideCommentBatch", { params: prParams(pr), body }),
+    /** The effects the server plans for the rows, with the reply texts it would post; nothing is stored (RC16). */
+    previewCommentEffects: (pr: PrRef, body: EffectsPreviewRequest) =>
+      call<EffectsPreview[]>("previewCommentEffects", { params: prParams(pr), body }),
+    /** The server's "Decide the rest per recommendation" list and the items it leaves out (RC17). */
+    getDecideRest: (pr: PrRef) => call<DecideRest>("getDecideRest", { params: prParams(pr) }),
     getCommentLog: (pr: PrRef) => call<CommentLog>("getCommentLog", { params: prParams(pr) }),
     listCarryOvers: (query: CarryOverQuery) =>
       call<CarryOverPage>("listCarryOvers", { query: definedParams(query) }),

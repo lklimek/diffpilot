@@ -14,7 +14,10 @@ export function NotificationChannels() {
   const settings = useNotificationSettings();
   const { save, remove, test } = useChannelActions();
   const [tested, setTested] = useState<{ kind: ChannelKind; result: ChannelTestResult } | null>(null);
-  const [acting, setActing] = useState<ChannelKind | null>(null);
+  // The latest action: only its outcome is shown.
+  const [acting, setActing] = useState<{ kind: ChannelKind; action: "save" | "remove" | "test" } | null>(
+    null,
+  );
   const now = new Date(useNow());
   const loaded = settings.data !== undefined;
   useEffect(() => {
@@ -25,7 +28,7 @@ export function NotificationChannels() {
   if (!settings.data) return <StatusMessage kind="loading">Loading the notification channels…</StatusMessage>;
   const busy = save.isPending || remove.isPending || test.isPending;
   const failure = (kind: ChannelKind) =>
-    acting === kind ? (save.error ?? remove.error ?? test.error ?? null) : null;
+    acting?.kind === kind ? { save, remove, test }[acting.action].error : null;
   return (
     <>
       {(["ntfy", "webhook"] as const).map((kind) => {
@@ -41,15 +44,15 @@ export function NotificationChannels() {
             testResult={tested?.kind === kind ? tested.result : null}
             now={now}
             onSave={(body) => {
-              setActing(kind);
+              setActing({ kind, action: "save" });
               save.mutate({ kind, body });
             }}
             onRemove={() => {
-              setActing(kind);
+              setActing({ kind, action: "remove" });
               remove.mutate(kind);
             }}
             onTest={() => {
-              setActing(kind);
+              setActing({ kind, action: "test" });
               test.mutate(kind, { onSuccess: (result) => setTested({ kind, result }) });
             }}
           />

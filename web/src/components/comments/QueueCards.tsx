@@ -4,29 +4,35 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import type {
   AssessmentProgress,
   CommentItem,
+  DecideRest,
   DecisionBatchRow,
   DecideRequest,
   GithubRead,
+  LeftOutItem,
 } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { Banner } from "../banner/Banner";
+import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { clockText } from "../format/time";
 import { Kbd } from "../help/Kbd";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
+import { useCardKeys } from "./cardKeys";
 import { COMMENT_HINT } from "./DecisionForm";
 import {
   CHOICE_LABEL,
   EFFECT_WORD,
-  executorName,
   missingInput,
-  plannedEffects,
+  previewFor,
   recommendedValue,
   requestOf,
+  resolveLocked,
   type Choice,
+  type EffectsPreviewState,
 } from "./decisions";
 import { GateChip, itemId, sourceText } from "./parts";
+import { PlannedEffects, useDraft } from "./PlannedEffects";
 
 const INPUT = "w-full rounded-md border border-muted bg-surface px-2 py-1 text-text";
 
@@ -43,6 +49,11 @@ function recommendedRow(
     ...requestOf(item, { choice: kind, value: value ?? recommendedValue(item), resolve, comment }, null),
   };
 }
+
+/** The comment on GitHub, in a new tab. */
+const OpenItem = ({ item }: { item: CommentItem }) => (
+  <OpenExternal href={item.url} label={`Open ${itemId(item)} on GitHub`} />
+);
 
 const Heading = ({ id, text }: { id: string; text: string }) => {
   const ref = useRef<HTMLHeadingElement>(null);
@@ -65,9 +76,16 @@ interface GroupCardProps {
   busy: boolean;
   error: string | null;
   storageKey: string;
+  /** The server's plan of the group's rows (RC16). */
+  preview?: EffectsPreviewState;
+  /** The rows to plan whenever they change; null while an input is missing. */
+  onDraft?: (rows: DecisionBatchRow[] | null) => void;
 }
 
-/** A group question (US5): one decision for every row, "Discuss individually" per row; never gate items. */
+/**
+ * A group question (US5): one decision for every row, "Discuss individually" per row; never gate items. Keys: Enter
+ * decide, s Skip, i the first "Discuss individually".
+ */
 export function GroupCard({
   items,
   position,
@@ -77,6 +95,8 @@ export function GroupCard({
   busy,
   error,
   storageKey,
+  preview,
+  onDraft,
 }: GroupCardProps) {
   const id = useId();
   const first = items[0]!;
@@ -97,13 +117,16 @@ export function GroupCard({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
+  const missing = missingInput({ choice: rec.kind, value });
+  const rows = (text: string) => items.map((item) => recommendedRow(item, resolve, text, value));
+  useDraft(missing ? null : rows(""), onDraft);
+  const submit = (event?: FormEvent) => {
+    event?.preventDefault();
     if (busy) return;
-    const missing = missingInput({ choice: rec.kind, value });
     if (missing) return setProblem(missing);
-    onDecide(items.map((item) => recommendedRow(item, resolve, comment, value)));
+    onDecide(rows(comment));
   };
+  useCardKeys({ decide: submit, skip: onSkip });
   return (
     <form
       noValidate
@@ -141,7 +164,9 @@ export function GroupCard({
         <tbody>
           {items.map((item, i) => (
             <tr key={item.id}>
-              <td className="border-b border-border px-2 py-1.5">{itemId(item)}</td>
+              <td className="border-b border-border px-2 py-1.5 whitespace-nowrap">
+                {itemId(item)} <OpenItem item={item} />
+              </td>
               <td className="border-b border-border px-2 py-1.5">{sourceText(item)}</td>
               <td className="border-b border-border px-2 py-1.5">{item.title}</td>
               <td className="border-b border-border px-2 py-1.5">{item.assessment?.necessity.reason}</td>
@@ -173,7 +198,12 @@ export function GroupCard({
           className={INPUT}
         />
         <label className="mt-2 flex min-h-6 items-center gap-2 rounded-md border border-border bg-surface-2 px-2.5">
-          <input type="checkbox" checked={resolve} onChange={(e) => setResolve(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={resolveLocked(rec.kind) || resolve}
+            disabled={resolveLocked(rec.kind)}
+            onChange={(e) => setResolve(e.target.checked)}
+          />
           Resolve these threads
         </label>
         <label htmlFor={`${id}-comment`} className="mt-2 mb-0.5 block text-xs font-semibold">
@@ -192,16 +222,11 @@ export function GroupCard({
         </p>
       </CollapsibleSection>
       <CollapsibleSection title="What happens next, per item" storageKey={`${storageKey}:group-effects`}>
-        <ol className="m-0 grid gap-1 pl-5 text-[13px]">
-          {plannedEffects(rec.kind, resolve, true).map((e, i) => (
-            <li key={i}>
-              <span className="mr-1.5 rounded bg-accent-bg px-1 text-[11px] font-bold text-accent">
-                {executorName(e.executor)}
-              </span>
-              {e.text}
-            </li>
-          ))}
-        </ol>
+        <PlannedEffects
+          preview={preview}
+          nos={items.map((item) => item.no)}
+          idle="Fill in the reason or target; then the effects show here."
+        />
       </CollapsibleSection>
       <p className="mt-2 text-xs text-muted">
         Gate items are never grouped. Each item gets its own decision record.
@@ -219,7 +244,7 @@ export function GroupCard({
         </Tooltip>
         <Tooltip tip="Keeps this group undecided and opens the next question (s).">
           <button type="button" onClick={onSkip} className={buttonClass("plain")}>
-            Skip for now
+            Skip for now <Kbd decorative>s</Kbd>
           </button>
         </Tooltip>
       </div>
@@ -228,33 +253,73 @@ export function GroupCard({
 }
 
 interface DecideRestCardProps {
-  /** Undecided non-gate items with a recommendation. */
-  items: CommentItem[];
-  /** Gate items left out (named). */
-  leftOut: CommentItem[];
+  /** The server's list (RC17): rows with their recommendation and planned effects, and the items left out. */
+  rest: DecideRest;
+  /** The PR's items by number (titles, links). */
+  items: ReadonlyMap<number, CommentItem>;
   onConfirm: (rows: DecisionBatchRow[]) => void;
   onCancel: () => void;
   busy: boolean;
   error: string | null;
+  /** The server's plan of the included rows as ticked now (RC16). */
+  preview?: EffectsPreviewState;
+  /** The included rows to plan whenever they change. */
+  onDraft?: (rows: DecisionBatchRow[] | null) => void;
 }
 
-/** "Decide the rest per recommendation" (US7): a confirmation list; nothing is stored before Apply. */
-export function DecideRestCard({ items, leftOut, onConfirm, onCancel, busy, error }: DecideRestCardProps) {
+const LEFT_OUT: Record<LeftOutItem["reason"], string> = {
+  gate: "gate item",
+  asked_again: "asked again: its reason needs a look",
+  not_assessed: "not assessed yet",
+  incomplete: "the recommendation lacks its reason or target",
+};
+
+/** `C14 (gate item G-FUNDS)`, `C21 (asked again: …)`. */
+function leftOutText(left: LeftOutItem, item: CommentItem | undefined): string {
+  const gates = left.reason === "gate" && item ? ` ${item.gates.map((g) => g.gate).join(", ")}` : "";
+  return `${item ? itemId(item) : `C${left.item_no}`} (${LEFT_OUT[left.reason] ?? left.reason}${gates})`;
+}
+
+/**
+ * "Decide the rest per recommendation" (US7): the server's confirmation list (RC17); nothing is stored before
+ * Apply. Every item the server leaves out is named with its reason.
+ */
+export function DecideRestCard({
+  rest,
+  items,
+  onConfirm,
+  onCancel,
+  busy,
+  error,
+  preview,
+  onDraft,
+}: DecideRestCardProps) {
   const id = useId();
   const [excluded, setExcluded] = useState<ReadonlySet<number>>(new Set());
   const [unresolved, setUnresolved] = useState<ReadonlySet<number>>(new Set());
   const [comment, setComment] = useState("");
-  const chosen = items.filter((i) => !excluded.has(i.no));
+  const rowOf = ({ row }: DecideRest["rows"][number], text: string): DecisionBatchRow => ({
+    ...row,
+    resolve_ticked: resolveLocked(row.kind) || !unresolved.has(row.item_no),
+    comment: text.trim() || null,
+  });
+  const chosen = rest.rows.filter((r) => !excluded.has(r.row.item_no));
+  useDraft(
+    chosen.map((r) => rowOf(r, "")),
+    onDraft,
+  );
   const toggle = (set: ReadonlySet<number>, no: number) => {
     const next = new Set(set);
     if (!next.delete(no)) next.add(no);
     return next;
   };
   const byKind = new Map<string, number>();
-  for (const i of chosen) {
-    const label = CHOICE_LABEL[i.assessment!.recommendation.kind as Choice];
+  for (const r of chosen) {
+    const label = CHOICE_LABEL[r.recommendation.kind as Choice];
     byKind.set(label, (byKind.get(label) ?? 0) + 1);
   }
+  const leftOut = rest.left_out;
+  const gateLeftOut = leftOut.some((l) => l.reason === "gate");
   return (
     <section aria-labelledby={`${id}-h`} className="rounded-lg border border-border bg-surface px-4 py-3.5">
       <Heading
@@ -286,35 +351,41 @@ export function DecideRestCard({ items, leftOut, onConfirm, onCancel, busy, erro
           </tr>
         </thead>
         <tbody>
-          {items.map((item) => {
-            const rec = item.assessment!.recommendation;
+          {rest.rows.map((r) => {
+            const no = r.row.item_no;
+            const item = items.get(no);
+            const name = item ? itemId(item) : `C${no}`;
+            const rec = r.recommendation;
+            const effects = (!excluded.has(no) && previewFor(preview, no)) || r.effects;
+            const locked = resolveLocked(r.row.kind);
             return (
-              <tr key={item.id}>
+              <tr key={no}>
                 <td className="border-b border-border px-2 py-1">
                   <input
                     type="checkbox"
-                    checked={!excluded.has(item.no)}
-                    aria-label={`Include ${itemId(item)}`}
-                    onChange={() => setExcluded(toggle(excluded, item.no))}
+                    checked={!excluded.has(no)}
+                    aria-label={`Include ${name}`}
+                    onChange={() => setExcluded(toggle(excluded, no))}
                   />
                 </td>
-                <td className="border-b border-border px-2 py-1">{itemId(item)}</td>
-                <td className="border-b border-border px-2 py-1">{item.title}</td>
+                <td className="border-b border-border px-2 py-1 whitespace-nowrap">
+                  {name} {item && <OpenItem item={item} />}
+                </td>
+                <td className="border-b border-border px-2 py-1">{item?.title}</td>
                 <td className="border-b border-border px-2 py-1">
                   {CHOICE_LABEL[rec.kind]}: {rec.reason}
                 </td>
                 <td className="border-b border-border px-2 py-1">
-                  {plannedEffects(rec.kind, false, item.kind === "thread")
-                    .map((e) => EFFECT_WORD[e.kind])
-                    .join(", ")}
+                  {effects.map((e) => EFFECT_WORD[e.kind] ?? e.kind).join(", ") || "—"}
                 </td>
                 <td className="border-b border-border px-2 py-1">
-                  {item.kind === "thread" ? (
+                  {item?.kind === "thread" ? (
                     <input
                       type="checkbox"
-                      checked={!unresolved.has(item.no)}
-                      aria-label={`Resolve ${itemId(item)}`}
-                      onChange={() => setUnresolved(toggle(unresolved, item.no))}
+                      checked={locked || !unresolved.has(no)}
+                      disabled={locked}
+                      aria-label={`Resolve ${name}`}
+                      onChange={() => setUnresolved(toggle(unresolved, no))}
                     />
                   ) : (
                     <span className="text-muted">no thread</span>
@@ -343,12 +414,17 @@ export function DecideRestCard({ items, leftOut, onConfirm, onCancel, busy, erro
         <div className="mt-2.5">
           <Banner
             tone="warn"
-            title={`Left out: ${leftOut.length} gate ${leftOut.length === 1 ? "item" : "items"}.`}
+            title={`Left out: ${leftOut.length} ${leftOut.length === 1 ? "item" : "items"}.`}
           >
-            {leftOut.map((i) => `${itemId(i)} (${i.gates.map((g) => g.gate).join(", ")})`).join(" and ")} stay
-            single questions; gate items are never decided in bulk.
+            {leftOut.map((l) => leftOutText(l, items.get(l.item_no))).join(", ")} stay single questions
+            {gateLeftOut ? "; gate items are never decided in bulk" : ""}.
           </Banner>
         </div>
+      )}
+      {preview?.state === "error" && (
+        <p role="alert" className="text-sm text-high">
+          {preview.message}
+        </p>
       )}
       <p className="mt-2 text-sm" aria-live="polite">
         {chosen.length} decisions: {[...byKind].map(([k, n]) => `${k} ${n}`).join(" · ") || "none"}.
@@ -363,11 +439,7 @@ export function DecideRestCard({ items, leftOut, onConfirm, onCancel, busy, erro
           <button
             type="button"
             aria-disabled={busy || chosen.length === 0 || undefined}
-            onClick={() =>
-              !busy &&
-              chosen.length > 0 &&
-              onConfirm(chosen.map((i) => recommendedRow(i, !unresolved.has(i.no), comment)))
-            }
+            onClick={() => !busy && chosen.length > 0 && onConfirm(chosen.map((r) => rowOf(r, comment)))}
             className={buttonClass("primary")}
           >
             Apply {chosen.length} decisions
@@ -391,28 +463,58 @@ interface PrQuestionCardProps {
   onSkip: () => void;
   busy: boolean;
   error: string | null;
+  /** The server's plan of the chosen option (RC16): what happens next and the default dismissal message. */
+  preview?: EffectsPreviewState;
+  /** The decision to plan whenever it changes. */
+  onDraft?: (rows: DecisionBatchRow[] | null) => void;
 }
 
-/** PR-level questions (US11, US12): merge now with follow-ups / another round; dismiss stale reviews / keep them. */
-export function PrQuestionCard({ item, prUrl, onDecide, onSkip, busy, error }: PrQuestionCardProps) {
+/**
+ * PR-level questions (US11, US12): merge now with follow-ups / another round; dismiss stale reviews / keep them.
+ * Keys: 1–2 choose, Enter decide, s Skip.
+ */
+export function PrQuestionCard({
+  item,
+  prUrl,
+  onDecide,
+  onSkip,
+  busy,
+  error,
+  preview,
+  onDraft,
+}: PrQuestionCardProps) {
   const id = useId();
   const dismiss = item.stable_key.endsWith(":dismiss");
   const options: Choice[] = dismiss
     ? ["dismiss_stale_reviews", "keep_reviews"]
     : ["merge_with_follow_ups", "another_round"];
   const [choice, setChoice] = useState<Choice>(options[0]!);
-  const [message, setMessage] = useState(
-    "Per maintainer decision: every item of this review has a decision.",
-  );
+  // The dismissal message as edited; null shows the server's default (posted when left as is).
+  const [message, setMessage] = useState<string | null>(null);
   const [comment, setComment] = useState("");
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
+  const radios = useRef<(HTMLInputElement | null)[]>([]);
+  const requestFor = (text: string, reason: string | null): DecideRequest => ({
+    ...requestOf(item, { choice, value: "", resolve: false, comment: text }, null),
+    // The server posts `reason` as the dismissal message (P3); `reply_text` is not read there.
+    reason: choice === "dismiss_stale_reviews" ? reason : null,
+  });
+  useDraft([{ item_no: item.no, ...requestFor("", null) }], onDraft);
+  const effects = previewFor(preview, item.no);
+  const defaultMessage = effects?.find((e) => e.kind === "dismiss_review")?.params.text ?? "";
+  const submit = (event?: FormEvent) => {
+    event?.preventDefault();
     if (busy) return;
-    const request = requestOf(item, { choice, value: "", resolve: false, comment }, null);
-    onDecide(
-      choice === "dismiss_stale_reviews" ? { ...request, reply_text: message.trim() || null } : request,
-    );
+    onDecide(requestFor(comment, message?.trim() || null));
   };
+  useCardKeys({
+    options: options.length,
+    choose: (index) => {
+      setChoice(options[index]!);
+      radios.current[index]?.focus();
+    },
+    decide: submit,
+    skip: onSkip,
+  });
   return (
     <form
       noValidate
@@ -433,7 +535,9 @@ export function PrQuestionCard({ item, prUrl, onDecide, onSkip, busy, error }: P
           <input
             id={`${id}-msg`}
             type="text"
-            value={message}
+            value={message ?? defaultMessage}
+            // Left empty, the default message is posted.
+            placeholder={defaultMessage}
             onChange={(e) => setMessage(e.target.value)}
             className={INPUT}
           />
@@ -444,6 +548,9 @@ export function PrQuestionCard({ item, prUrl, onDecide, onSkip, busy, error }: P
           {options.map((c, i) => (
             <label key={c} className="flex min-h-6 cursor-pointer items-start gap-2">
               <input
+                ref={(el) => {
+                  radios.current[i] = el;
+                }}
                 type="radio"
                 name={`${id}-c`}
                 checked={choice === c}
@@ -487,6 +594,12 @@ export function PrQuestionCard({ item, prUrl, onDecide, onSkip, busy, error }: P
           {COMMENT_HINT}
         </p>
       </CollapsibleSection>
+      <CollapsibleSection
+        title="What happens next"
+        storageKey={`pr-question:${dismiss ? "dismiss" : "merge"}:effects`}
+      >
+        <PlannedEffects preview={preview} nos={[item.no]} several idle="Planning what happens…" />
+      </CollapsibleSection>
       <p className="text-xs text-muted">
         No recommendation: this is a PR-level choice. Merging stays your own action on GitHub.
       </p>
@@ -510,7 +623,7 @@ export function PrQuestionCard({ item, prUrl, onDecide, onSkip, busy, error }: P
         )}
         <Tooltip tip="Keeps this question undecided and opens the next one (s).">
           <button type="button" onClick={onSkip} className={buttonClass("plain")}>
-            Skip for now
+            Skip for now <Kbd decorative>s</Kbd>
           </button>
         </Tooltip>
       </div>

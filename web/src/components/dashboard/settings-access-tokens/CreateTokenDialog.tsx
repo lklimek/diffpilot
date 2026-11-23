@@ -153,9 +153,16 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
                 ))}
               </select>
             </div>
-            <p>
-              Scope: <b>read</b>. The token reads what you can read here and cannot change anything.
-            </p>
+            {execute ? (
+              <p>
+                Scope: <b>read</b> and <b>review_loop_execute</b>. The token reads what you can read here and
+                can claim and report on decisions as described below.
+              </p>
+            ) : (
+              <p>
+                Scope: <b>read</b>. The token reads what you can read here and cannot change anything.
+              </p>
+            )}
             <label className="flex min-h-6 items-start gap-2">
               <input
                 type="checkbox"
@@ -164,8 +171,10 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
                 onChange={(e) => setExecute(e.target.checked)}
               />
               <span>
-                Also <b>review_loop_execute</b>: an implementing agent may claim your decisions on PR
-                comments, report what it did and set its own push target. It still cannot decide.
+                Also <b>review_loop_execute</b>: an implementing agent with this token may claim any current
+                decision on PR comments in this diffpilot, yours and other users&apos;, report its effects
+                done, failed or released, and set a push target that diffpilot sends requests to. It still
+                cannot decide.
               </span>
             </label>
             {message && (

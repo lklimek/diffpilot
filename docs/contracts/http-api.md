@@ -850,6 +850,8 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 - **D8** is `reject` with `override: {type: "blocker_gate", gate}`; gate ids are `G-FUNDS`, `G-SECRET`,
   `G-CRYPTO`, `G-DATA`. The owner's `comment` is stored and sent to the executor, never posted; `reply_text` is
   what gets posted.
+- **P3** (`dismiss_stale_reviews`): the dismissal message is `reason` (the default message when absent);
+  `reply_text` is not read. Clients show the server's texts from RC16, never their own copies.
 - **Claims.** A claim covers every open agent effect of a current decision, for 30 minutes, renewed by each report;
   only decisions whose open effects all fall within the claimer's capabilities can be claimed. A report on another
   token's claim answers 409 `claimed`; after the lease ended 409 `lease_expired`. `released` returns the decision

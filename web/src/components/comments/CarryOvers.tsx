@@ -3,6 +3,7 @@ import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText, dateTimeText } from "../format/time";
+import { prGithubUrl } from "../github/links";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CHOICE_LABEL } from "./decisions";
 
@@ -30,10 +31,16 @@ interface CarryOversProps {
   itemHref?: (no: number) => string;
   /** Asks a carried item again (this PR's scope only); absent: no Reopen. */
   onReopen?: (event: CarryEvent) => void;
+  /** Loads the next older events (`page.next_cursor` is set); `loadingOlder` while it runs. */
+  onShowOlder?: () => void;
+  loadingOlder?: boolean;
   now: Date;
 }
 
-/** V5: tiles of counts and the dated list (one PR), or one row per PR (all); counts only, no percentages. */
+/**
+ * V5: tiles of counts and the dated list (one PR, newest first, older events on request), or one row per PR (all);
+ * counts only, no percentages.
+ */
 export function CarryOvers({
   page,
   scope,
@@ -42,6 +49,8 @@ export function CarryOvers({
   onNavigate,
   itemHref,
   onReopen,
+  onShowOlder,
+  loadingOlder = false,
   now,
 }: CarryOversProps) {
   const t = page.totals;
@@ -116,7 +125,10 @@ export function CarryOvers({
           <tbody>
             {page.per_pr.map((row) => (
               <tr key={prName(row.pr)}>
-                <td className={TD}>{prName(row.pr)}</td>
+                <td className={TD}>
+                  {prName(row.pr)}{" "}
+                  <OpenExternal href={prGithubUrl(row.pr)} label={`Open ${prName(row.pr)} on GitHub`} />
+                </td>
                 <td className={TD}>{row.counts.carried}</td>
                 <td className={TD}>{row.counts.asked_again_bot_edited}</td>
                 <td className={TD}>{row.counts.asked_again_code_changed}</td>
@@ -184,6 +196,23 @@ export function CarryOvers({
             ))}
           </tbody>
         </table>
+      )}
+      {scope === "pr" && page.next_cursor && (
+        <p className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-muted">The {page.events.length} newest events are shown.</span>
+          {onShowOlder && (
+            <Tooltip tip="Loads the next older carry-over events of this pull request.">
+              <button
+                type="button"
+                aria-disabled={loadingOlder || undefined}
+                onClick={() => !loadingOlder && onShowOlder()}
+                className={buttonClass("plain", true)}
+              >
+                {loadingOlder ? "Loading older events…" : "Show older events"}
+              </button>
+            </Tooltip>
+          )}
+        </p>
       )}
     </div>
   );

@@ -14,9 +14,12 @@ import type {
   CommentLog,
   CommentsOverview,
   DecideRequest,
+  DecideRest,
   Decision,
+  DecisionBatchRow,
   DecisionKind,
   Effect,
+  EffectsPreview,
   Gate,
   GateMarkRequest,
   NotificationSettings,
@@ -28,7 +31,7 @@ import type {
   WatchedPr,
   WatchList,
 } from "../api/generated/types";
-import { plannedEffects, type Choice } from "../components/comments/decisions";
+import { decideRest, plan, waiting, type PlanScope, type Planned } from "./effects-plan";
 import { liveAnalysis } from "./live-analysis";
 import { scenario } from "./scenarios";
 
@@ -164,8 +167,7 @@ const D8 = decision(8, {
   kind: "reject",
   override: { type: "blocker_gate", gate: "G-FUNDS" },
   reason: "Pre-existing fee display; tracked in #455.",
-  reply_text:
-    "Per maintainer decision, accepted for this pull request: Pre-existing fee display; tracked in #455.",
+  reply_text: "Per maintainer decision, accepted despite G-FUNDS: Pre-existing fee display; tracked in #455.",
   comment: "Reply only; no code change in this PR.",
   recommendation: rec("reject", "Pre-existing on base.", "pre_existing"),
   decided_at: at("08:45"),
@@ -786,22 +788,35 @@ export function context(no: number, from: number | null, to: number | null): Cod
   };
 }
 
-/** A stored decision for `it` from a request (RC8, RC9). */
-function store_decision(it: CommentItem, body: DecideRequest, via: Decision["via"]): Decision {
+/** Stale bot reviews of the fixture PR (P3 dismisses them). */
+const STALE_REVIEWS = ["PRR_round2", "PRR_round3"];
+
+/** What a PR-level decision acts on while `deciding` are decided with it (mod.rs `Loaded::scope`). */
+const scopeOf = (deciding: number[]): PlanScope => ({
+  number: PR.number,
+  remaining: waiting(items()).filter((i) => i.kind !== "pr_question" && !deciding.includes(i.no)),
+  staleReviews: STALE_REVIEWS,
+});
+
+/** A stored decision for `it` as the server plans it (RC8, RC9): effects and the reply text that gets posted. */
+function store_decision(
+  it: CommentItem,
+  body: DecideRequest,
+  planned: Planned,
+  via: Decision["via"],
+): Decision {
   store!.decided += 1;
   const id = `e0000000-0000-4000-8000-${String(store!.decided).padStart(12, "0")}`;
-  const choice: Choice = body.override?.type === "blocker_gate" ? "accept" : body.kind;
-  const planned = plannedEffects(choice, body.resolve_ticked, it.kind === "thread");
   const decided: Decision = {
     id,
     item_no: it.no,
     kind: body.kind,
-    reason: body.reason,
+    reason: body.reason?.trim() || null,
     target: body.target,
     override: body.override,
     resolve_ticked: body.resolve_ticked,
-    reply_text: body.reply_text,
-    comment: body.comment,
+    reply_text: planned.reply_text,
+    comment: body.comment?.trim() || null,
     recommendation: it.assessment?.recommendation ?? null,
     via,
     carried_from: null,
@@ -809,10 +824,13 @@ function store_decision(it: CommentItem, body: DecideRequest, via: Decision["via
     head: HEAD,
     decided_by: "alice",
     decided_at: new Date().toISOString(),
-    effects: planned.map((p, i) =>
-      effect(id, i + 1, {
+    effects: planned.effects.map((p) =>
+      effect(id, p.seq, {
         kind: p.kind,
-        state: i === 0 ? "open" : "waiting",
+        after: p.after,
+        executor: p.executor,
+        params: p.params,
+        state: p.after === null ? "open" : "waiting",
         updated_at: new Date().toISOString(),
       }),
     ),
@@ -900,29 +918,79 @@ export function markGate(raw: string, body: GateMarkRequest): CommentItem | Refu
   return it;
 }
 
+/** The server's plans of `rows` (all or nothing), or its refusal (mod.rs `Loaded::plan`). */
+function planRows(rows: DecisionBatchRow[]): [CommentItem, Planned][] | Refusal {
+  const found = rows.map((r) => [r, store!.items.find((i) => i.no === r.item_no)] as const);
+  if (found.some(([, it]) => !it)) return NOT_FOUND;
+  const scope = scopeOf(rows.map((r) => r.item_no));
+  const out: [CommentItem, Planned][] = [];
+  for (const [row, it] of found) {
+    const planned = plan(it!, row, scope);
+    if (typeof planned === "string") return [400, "invalid_request", `C${it!.no}: ${planned}.`];
+    out.push([it!, planned]);
+  }
+  return out;
+}
+
+/** The answer is a refusal. */
+export const isRefused = (value: unknown): value is Refusal =>
+  Array.isArray(value) && typeof value[0] === "number";
+
+/** RC16: the effects each row would get; nothing is stored. */
+export function previewEffects(rows: DecisionBatchRow[]): EffectsPreview[] | Refusal {
+  items();
+  const planned = planRows(rows);
+  if (isRefused(planned)) return planned;
+  return planned.map(([it, p]) => ({ item_no: it.no, effects: p.effects }));
+}
+
+/** RC17. */
+export const decideRestList = (): DecideRest => decideRest(listItems(), scopeOf);
+
+/** RC8, RC9 (mod.rs `decide`): one record per row, all or nothing; gate rows never under group or bulk. */
+function storeRows(via: Decision["via"], rows: DecisionBatchRow[]): Decision[] | Refusal {
+  items();
+  const twice = rows.find((r, i) => rows.findIndex((o) => o.item_no === r.item_no) !== i);
+  if (twice)
+    return [400, "invalid_request", `C${twice.item_no}: this decision is not offered for this item.`];
+  const gated = rows
+    .map((r) => store!.items.find((i) => i.no === r.item_no))
+    .filter((i) => i && i.gates.length > 0)
+    .map((i) => `C${i!.no}`);
+  if ((via === "group" || via === "bulk") && gated.length)
+    return [400, "invalid_request", `Gate items need their own decision: ${gated.join(", ")}.`];
+  if (via === "table") {
+    const missing = waiting(store!.items)
+      .filter((i) => i.gates.length > 0 && !rows.some((r) => r.item_no === i.no))
+      .map((i) => `C${i.no}`);
+    if (missing.length)
+      return [400, "invalid_request", `Gate items need their own decision: ${missing.join(", ")}.`];
+  }
+  const planned = planRows(rows);
+  if (isRefused(planned)) return planned;
+  const changed = planned
+    .filter(([it], i) => it.revision !== rows[i]!.item_revision)
+    .map(([it]) => `C${it.no}`);
+  if (changed.length)
+    return [
+      409,
+      "item_changed",
+      `These comments changed since you looked: ${changed.join(", ")}. Read them again.`,
+    ];
+  return planned.map(([it, p], i) => store_decision(it, rows[i]!, p, via));
+}
+
 /** RC8. */
 export function decide(raw: string, body: DecideRequest): Decision | Refusal {
   const it = itemOfPath(raw);
   if (!it) return NOT_FOUND;
-  if (it.revision !== body.item_revision)
-    return [409, "item_changed", `C${it.no} changed since you opened it. Read it again before you decide.`];
-  if (body.kind === "reject" && !body.reason)
-    return [400, "invalid_request", "A reason is required: it is posted as the reply."];
-  return store_decision(it, body, "question");
+  const stored = storeRows("question", [{ item_no: it.no, ...body }]);
+  return isRefused(stored) ? stored : stored[0]!;
 }
 
-/** RC9: one record per row; gate rows never under group or bulk. */
-export function decideBatch(via: "group" | "bulk" | "table", rows: (DecideRequest & { item_no: number })[]) {
-  items();
-  const found = rows.map((r) => [r, store!.items.find((i) => i.no === r.item_no)] as const);
-  if (found.some(([, it]) => !it)) return [404, "not_found", "A listed comment is not known."] as Refusal;
-  if (via !== "table" && found.some(([, it]) => it!.gates.length > 0))
-    return [422, "invalid_request", "Gate items are decided one at a time."] as Refusal;
-  const changed = found.filter(([r, it]) => it!.revision !== r.item_revision).map(([, it]) => `C${it!.no}`);
-  if (changed.length)
-    return [409, "item_changed", `Changed since you opened them: ${changed.join(", ")}.`] as Refusal;
-  return found.map(([r, it]) => store_decision(it!, r, via));
-}
+/** RC9. */
+export const decideBatch = (via: "group" | "bulk" | "table", rows: DecisionBatchRow[]) =>
+  storeRows(via, rows);
 
 /** RC10. */
 export function log(): CommentLog {

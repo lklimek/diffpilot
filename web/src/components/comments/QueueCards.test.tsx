@@ -1,8 +1,9 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { expectTrustWording } from "../../__tests__/wording";
-import { listItems, resetReviewLoop } from "../../mocks/review-loop";
+import type { CommentItem } from "../../api/generated/types";
+import { decideRestList, listItems, resetReviewLoop } from "../../mocks/review-loop";
 import { CommentsTable } from "./CommentsTable";
 import { DecideRestCard, EmptyQueueCard, GroupCard, PrQuestionCard } from "./QueueCards";
 
@@ -15,21 +16,25 @@ beforeEach(() => {
 });
 
 describe("GroupCard (US5)", () => {
-  it("one decision for every row, each its own record; Discuss individually per row", async () => {
-    const onDecide = vi.fn();
-    const onDiscuss = vi.fn();
+  const showGroup = () => {
+    const handlers = { onDecide: vi.fn(), onDiscuss: vi.fn(), onSkip: vi.fn() };
     render(
       <GroupCard
         items={[byNo(18), byNo(19)]}
         position={{ index: 7, total: 9 }}
-        onDecide={onDecide}
-        onDiscussIndividually={onDiscuss}
-        onSkip={vi.fn()}
+        onDecide={handlers.onDecide}
+        onDiscussIndividually={handlers.onDiscuss}
+        onSkip={handlers.onSkip}
         busy={false}
         error={null}
         storageKey="t"
       />,
     );
+    return handlers;
+  };
+
+  it("one decision for every row, each its own record; Discuss individually per row", async () => {
+    const { onDecide, onDiscuss } = showGroup();
     expect(screen.getByRole("heading", { name: /Same recommendation: Reject/ })).toHaveFocus();
     expect(screen.getByText(/Gate items are never grouped/)).toBeVisible();
     await userEvent.click(screen.getAllByRole("button", { name: "Discuss individually" })[1]!);
@@ -39,28 +44,55 @@ describe("GroupCard (US5)", () => {
     expect(rows.map((r: { item_no: number }) => r.item_no)).toEqual([18, 19]);
     expect(rows[0]).toMatchObject({ kind: "reject", resolve_ticked: true });
   });
+
+  it("keys: s skips and Enter decides the group, as its tooltips say (plan §3.8)", () => {
+    const { onDecide, onSkip } = showGroup();
+    fireEvent.keyDown(document.body, { key: "s" });
+    expect(onSkip).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    expect(onDecide).toHaveBeenCalledTimes(1);
+  });
+
+  it("each row opens its comment on GitHub in a new tab (plan §3.9)", () => {
+    showGroup();
+    expect(screen.getByRole("link", { name: "Open C18 on GitHub (new tab)" })).toHaveAttribute(
+      "href",
+      byNo(18).url,
+    );
+  });
 });
 
 describe("DecideRestCard (US7)", () => {
-  it("lists the rows with recommendations, names the gate items left out, stores nothing before Apply", async () => {
+  it("lists the server's rows, names every item left out with its reason, stores nothing before Apply", async () => {
     const onConfirm = vi.fn();
     render(
       <DecideRestCard
-        items={[byNo(11), byNo(22), byNo(20)]}
-        leftOut={[byNo(14), byNo(15)]}
+        rest={decideRestList()}
+        items={new Map(listItems().map((i) => [i.no, i]))}
         onConfirm={onConfirm}
         onCancel={vi.fn()}
         busy={false}
         error={null}
       />,
     );
-    expect(screen.getByRole("alert")).toHaveTextContent("Left out: 2 gate items.");
-    expect(screen.getByRole("alert")).toHaveTextContent("C14 (G-FUNDS) and C15 (G-SECRET)");
+    const left = screen.getByRole("alert");
+    expect(left).toHaveTextContent(/^Left out: 3 items\./);
+    expect(left).toHaveTextContent(
+      "C14 (gate item G-FUNDS), C15 (gate item G-SECRET), C21 (asked again: its reason needs a look) stay single questions; gate items are never decided in bulk.",
+    );
+    expect(screen.queryByRole("checkbox", { name: "Include C21" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Open C22 on GitHub (new tab)" })).toBeVisible();
     await userEvent.click(screen.getByRole("checkbox", { name: "Include C22" }));
     expect(onConfirm).not.toHaveBeenCalled();
-    expect(screen.getByText(/2 decisions: Reject 1 · Create follow-up PR 1/)).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Apply 2 decisions" }));
-    expect(onConfirm.mock.calls[0]![0].map((r: { item_no: number }) => r.item_no)).toEqual([11, 20]);
+    const apply = screen.getByRole("button", { name: /^Apply \d+ decisions$/ });
+    await userEvent.click(apply);
+    const nos = onConfirm.mock.calls[0]![0].map((r: { item_no: number }) => r.item_no);
+    expect(nos).not.toContain(22);
+    expect(nos).toEqual(
+      decideRestList()
+        .rows.map((r) => r.row.item_no)
+        .filter((n) => n !== 22),
+    );
     expectTrustWording(document.body.textContent ?? "");
   });
 });
@@ -85,6 +117,65 @@ describe("PrQuestionCard (US11, US12)", () => {
     expect(screen.getByRole("link", { name: /Merge on GitHub/ })).toHaveAttribute("target", "_blank");
     await userEvent.click(screen.getByRole("button", { name: "Decide" }));
     expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ kind: "merge_with_follow_ups" }));
+  });
+
+  it("keys: 2 chooses Another round, Enter decides, s skips", () => {
+    const onDecide = vi.fn();
+    const onSkip = vi.fn();
+    render(
+      <PrQuestionCard
+        item={byNo(24)}
+        prUrl="https://github.com/acme/node-client/pull/482"
+        onDecide={onDecide}
+        onSkip={onSkip}
+        busy={false}
+        error={null}
+      />,
+    );
+    fireEvent.keyDown(document.body, { key: "2" });
+    expect(screen.getByRole("radio", { name: /Another round/ })).toBeChecked();
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ kind: "another_round" }));
+    fireEvent.keyDown(document.body, { key: "s" });
+    expect(onSkip).toHaveBeenCalledTimes(1);
+  });
+
+  it("dismissal: the field shows the server's default message, which is posted when left as is", async () => {
+    const onDecide = vi.fn();
+    const item = { ...byNo(24), stable_key: "pr:3:dismiss", title: "Dismiss stale bot reviews?" };
+    const effects = [
+      {
+        seq: 1,
+        after: null,
+        kind: "dismiss_review" as const,
+        executor: "agent" as const,
+        params: {
+          text: "Server default.",
+          thread_id: null,
+          review_id: "PRR_1",
+          title: null,
+          url: null,
+          item_nos: [],
+        },
+      },
+    ];
+    render(
+      <PrQuestionCard
+        item={item}
+        prUrl="https://github.com/acme/node-client/pull/482"
+        onDecide={onDecide}
+        onSkip={vi.fn()}
+        busy={false}
+        error={null}
+        preview={{ state: "ready", items: [{ item_no: 24, effects }], updating: false }}
+      />,
+    );
+    expect(screen.getByLabelText("Dismissal message (posted)")).toHaveValue("Server default.");
+    expect(screen.getByText("dismisses the stale review with the message above.")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    expect(onDecide).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "dismiss_stale_reviews", reason: null, reply_text: null }),
+    );
   });
 });
 
@@ -112,24 +203,51 @@ describe("EmptyQueueCard", () => {
 });
 
 describe("CommentsTable (US8, US27)", () => {
+  const table = (items: CommentItem[], onSubmit: () => void) => (
+    <CommentsTable
+      prNumber={482}
+      purpose="Retries."
+      items={items}
+      askAnswers={(i) => i.ask_answers}
+      itemHref={(i) => `/pr/acme/node-client/482/comments?item=C${i.no}`}
+      onNavigate={vi.fn()}
+      onOpenAsk={vi.fn()}
+      onSubmit={onSubmit}
+      busy={false}
+      error={null}
+      now={NOW}
+    />
+  );
   const show = (onSubmit = vi.fn()) => {
-    render(
-      <CommentsTable
-        prNumber={482}
-        purpose="Retries."
-        items={listItems()}
-        askAnswers={(i) => i.ask_answers}
-        itemHref={(i) => `/pr/acme/node-client/482/comments?item=C${i.no}`}
-        onNavigate={vi.fn()}
-        onOpenAsk={vi.fn()}
-        onSubmit={onSubmit}
-        busy={false}
-        error={null}
-        now={NOW}
-      />,
-    );
+    render(table(listItems(), onSubmit));
     return onSubmit;
   };
+
+  it("a read that changes an item keeps typed rows; the changed row needs a look", async () => {
+    const onSubmit = vi.fn();
+    const { rerender } = render(table(listItems(), onSubmit));
+    await userEvent.type(screen.getByRole("textbox", { name: "Your comment on C22" }), "small please");
+    rerender(
+      table(
+        listItems().map((i) => (i.no === 22 ? { ...i, revision: i.revision + 1 } : i)),
+        onSubmit,
+      ),
+    );
+    expect(screen.getByRole("textbox", { name: "Your comment on C22" })).toHaveValue("small please");
+    expect(
+      screen.getByText(/Still needed: .*C22 \(changed since you started: check the row\)/),
+    ).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Keep my input for C22" }));
+    expect(screen.queryByText(/C22 \(changed since you started/)).toBeNull();
+  });
+
+  it("each row opens its comment on GitHub in a new tab (plan §3.9)", () => {
+    show();
+    expect(screen.getByRole("link", { name: "Open C22 on GitHub (new tab)" })).toHaveAttribute(
+      "href",
+      listItems().find((i) => i.no === 22)!.url,
+    );
+  });
 
   it("gate rows start empty and block submit with the reason; choosing makes it available", async () => {
     const onSubmit = show();

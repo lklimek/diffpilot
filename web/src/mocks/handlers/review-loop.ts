@@ -4,6 +4,7 @@ import type {
   ChannelKind,
   DecideRequest,
   DecisionBatchRequest,
+  EffectsPreviewRequest,
   GateMarkRequest,
   ItemActionRequest,
   NotificationChannel,
@@ -15,6 +16,7 @@ import {
   context,
   decide,
   decideBatch,
+  decideRestList,
   itemOfPath,
   listItems,
   log,
@@ -22,6 +24,7 @@ import {
   notificationSettings,
   overview,
   prPage,
+  previewEffects,
   reopen,
   setChannels,
   setWatched,
@@ -63,7 +66,7 @@ const forPr =
 const refused = (r: Refusal) => apiError(r[0], r[1], r[2]);
 const isRefusal = (value: unknown): value is Refusal => Array.isArray(value) && typeof value[0] === "number";
 
-/** RC1–RC15, RW1–RW2, RN1–RN3 of the review loop (plan §6) over the store of review-loop.ts. */
+/** RC1–RC17, RW1–RW2, RN1–RN3 of the review loop (plan §6) over the store of review-loop.ts. */
 export const reviewLoopHandlers = [
   route(
     "getPrPage",
@@ -99,7 +102,7 @@ export const reviewLoopHandlers = [
     "decideComment",
     forPr(async ({ params, request }) => {
       const result = decide(String(params.item), (await request.json()) as DecideRequest);
-      return Array.isArray(result) ? refused(result) : HttpResponse.json(result, { status: 201 });
+      return isRefusal(result) ? refused(result) : HttpResponse.json(result, { status: 201 });
     }),
   ),
   route(
@@ -107,10 +110,19 @@ export const reviewLoopHandlers = [
     forPr(async ({ request }) => {
       const body = (await request.json()) as DecisionBatchRequest;
       const result = decideBatch(body.via, body.rows);
-      return typeof result[0] === "number"
-        ? refused(result as Refusal)
-        : HttpResponse.json(result, { status: 201 });
+      return isRefusal(result) ? refused(result) : HttpResponse.json(result, { status: 201 });
     }),
+  ),
+  route(
+    "previewCommentEffects",
+    forPr(async ({ request }) => {
+      const result = previewEffects(((await request.json()) as EffectsPreviewRequest).rows);
+      return isRefusal(result) ? refused(result) : HttpResponse.json(result);
+    }),
+  ),
+  route(
+    "getDecideRest",
+    forPr(() => HttpResponse.json(decideRestList())),
   ),
   route(
     "undoCommentDecision",

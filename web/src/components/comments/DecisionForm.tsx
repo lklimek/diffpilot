@@ -1,24 +1,26 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import type { CommentItem, DecideRequest } from "../../api/generated/types";
+import { useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import type { CommentItem, DecideRequest, DecisionBatchRow } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { Kbd } from "../help/Kbd";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
+import { useCardKeys } from "./cardKeys";
 import {
   CHOICE_LABEL,
   choicesFor,
-  executorName,
   gateOf,
   missingInput,
   needOf,
-  plannedEffects,
+  plannedReply,
+  previewFor,
   recommendedValue,
-  replyText,
   requestOf,
   resolveLocked,
   type Choice,
+  type EffectsPreviewState,
 } from "./decisions";
 import { itemId } from "./parts";
+import { PlannedEffects, useDraft } from "./PlannedEffects";
 
 /** Hint under "Your comment" (plan §3.2 item 7). */
 export const COMMENT_HINT =
@@ -34,13 +36,6 @@ const NEED_LABEL: Record<NonNullable<ReturnType<typeof needOf>>, string> = {
   todo: "TODO title",
 };
 
-/** A field that takes typed keys (radios and checkboxes leave 1–8, Enter, a and s to the card). */
-export const isTypingField = (target: EventTarget | null) =>
-  target instanceof HTMLElement &&
-  (/^(TEXTAREA|SELECT)$/.test(target.tagName) ||
-    target.isContentEditable ||
-    (target instanceof HTMLInputElement && !["radio", "checkbox"].includes(target.type)));
-
 interface DecisionFormProps {
   item: CommentItem;
   /** Submits the decision. */
@@ -55,24 +50,21 @@ interface DecisionFormProps {
   storageKey: string;
   /** Extra actions after Skip (none by default). */
   extra?: ReactNode;
+  /** The server's plan of the draft (RC16): "What happens next" and the reply text that gets posted. */
+  preview?: EffectsPreviewState;
+  /** The draft to plan whenever it changes; null while an input is missing. */
+  onDraft?: (rows: DecisionBatchRow[] | null) => void;
 }
 
 /**
  * "Your decision": options with the recommended one first "(Recommended)" (RQ7), the input the choice needs,
  * "Resolve this thread" (ticked, neutral; locked for D1 and D8), "Your comment", what happens next with the reply
- * preview, Decide / Ask / Skip. Keys: 1–8 choose, Enter decide, a Ask, s Skip.
+ * preview (both as the server plans them), Decide / Ask / Skip. Keys: 1–8 choose, Enter decide, a Ask, s Skip.
+ * When the item changes while it is open, untouched input follows it; typed input is kept until the reader
+ * confirms it against the changed item.
  */
-export function DecisionForm({
-  item,
-  onDecide,
-  onAsk,
-  askUnavailable,
-  onSkip,
-  busy,
-  error,
-  storageKey,
-  extra,
-}: DecisionFormProps) {
+export function DecisionForm(props: DecisionFormProps) {
+  const { item, onDecide, onAsk, askUnavailable, onSkip, busy, error, storageKey, extra } = props;
   const id = useId();
   const choices = choicesFor(item);
   const recommended = item.assessment?.recommendation.kind ?? null;
@@ -82,19 +74,44 @@ export function DecisionForm({
   const [comment, setComment] = useState("");
   const [reply, setReply] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // The revision the input was made against, and whether the reader typed or chose anything.
+  const [seen, setSeen] = useState(item.revision);
+  const [touched, setTouched] = useState(false);
+  if (item.revision !== seen && !touched) {
+    setSeen(item.revision);
+    setChoice(choices[0]!);
+    setValue(recommendedValue(item));
+  }
+  const changed = item.revision !== seen;
+  const touch = () => {
+    setTouched(true);
+    setProblem(null);
+  };
   const valueRef = useRef<HTMLInputElement>(null);
   const radios = useRef<(HTMLInputElement | null)[]>([]);
   const thread = item.kind === "thread";
   const gate = gateOf(item);
   const locked = resolveLocked(choice);
   const need = needOf(choice);
-  const template = replyText(choice, value);
-  const effects = plannedEffects(choice, resolve, thread);
   const outOfScope = choice === "fix_here" && item.assessment?.necessity.verdict === "out";
+  const edited = reply?.trim() ? reply : null;
+  const requestFor = (revision: number, text: string | null, note: string): DecideRequest => {
+    const request = requestOf({ ...item, revision }, { choice, value, resolve, comment: note }, text);
+    return outOfScope ? { ...request, override: { type: "necessity_gate" } } : request;
+  };
+  // The server plans its default reply (an edited one replaces it on Decide); the comment changes no effect.
+  const missing = missingInput({ choice, value });
+  const draft = missing ? null : [{ item_no: item.no, ...requestFor(item.revision, null, "") }];
+  useDraft(draft, props.onDraft);
+  const effects = previewFor(props.preview, item.no);
+  const planned = effects ? plannedReply(effects) : null;
+  const shownReply = edited ?? planned;
+  // The reply shown is of the previous draft until the server planned this one.
+  const updating = props.preview?.state === "ready" && props.preview.updating && edited === null;
 
   const pick = (next: Choice) => {
+    touch();
     setChoice(next);
-    setProblem(null);
     setReply(null);
     setValue(
       next === recommended
@@ -108,52 +125,28 @@ export function DecisionForm({
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
     if (busy) return;
-    const missing = missingInput({ choice, value });
     if (missing) {
       setProblem(missing);
       valueRef.current?.focus();
       return;
     }
-    const request = requestOf(item, { choice, value, resolve, comment }, reply);
-    onDecide(outOfScope ? { ...request, override: { type: "necessity_gate" } } : request);
+    if (changed) {
+      setProblem(`${itemId(item)} changed since you started: check it, then choose "Keep my input".`);
+      return;
+    }
+    onDecide(requestFor(seen, edited, comment));
   };
 
-  // Keys of the card while focus is not in a field (plan §3.8).
-  const latest = useRef({ choices, pick, submit, onAsk, onSkip });
-  useEffect(() => {
-    latest.current = { choices, pick, submit, onAsk, onSkip };
+  useCardKeys({
+    options: choices.length,
+    choose: (index) => {
+      pick(choices[index]!);
+      radios.current[index]?.focus();
+    },
+    decide: submit,
+    ask: onAsk,
+    skip: onSkip,
   });
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (
-        event.defaultPrevented ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.altKey ||
-        isTypingField(event.target)
-      )
-        return;
-      if ((event.target as HTMLElement | null)?.closest?.("[data-ask-chat], [role=dialog]")) return;
-      const { choices: list, pick: choose, submit: decide, onAsk: ask, onSkip: skip } = latest.current;
-      const n = Number(event.key);
-      if (Number.isInteger(n) && n >= 1 && n <= Math.min(8, list.length)) {
-        event.preventDefault();
-        choose(list[n - 1]!);
-        radios.current[n - 1]?.focus();
-      } else if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) {
-        event.preventDefault();
-        decide();
-      } else if (event.key === "a" && ask) {
-        event.preventDefault();
-        ask();
-      } else if (event.key === "s") {
-        event.preventDefault();
-        skip();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, []);
 
   const resolveNote = locked
     ? choice === "accept"
@@ -221,8 +214,8 @@ export function DecisionForm({
                 aria-describedby={need === "title" ? `${id}-value-d` : undefined}
                 inputMode={need === "pr" ? "numeric" : undefined}
                 onChange={(e) => {
+                  touch();
                   setValue(e.target.value);
-                  setProblem(null);
                 }}
                 className={`${INPUT} ${need === "pr" ? "max-w-40" : ""}`}
               />
@@ -246,7 +239,10 @@ export function DecisionForm({
                   checked={locked || resolve}
                   disabled={locked}
                   aria-describedby={`${id}-resolve-d`}
-                  onChange={(e) => setResolve(e.target.checked)}
+                  onChange={(e) => {
+                    touch();
+                    setResolve(e.target.checked);
+                  }}
                 />
                 Resolve this thread
               </label>
@@ -268,7 +264,10 @@ export function DecisionForm({
             value={comment}
             aria-describedby={`${id}-comment-d`}
             placeholder="e.g. keep the test small; touch only retry.rs"
-            onChange={(e) => setComment(e.target.value)}
+            onChange={(e) => {
+              touch();
+              setComment(e.target.value);
+            }}
             className={INPUT}
           />
           <p id={`${id}-comment-d`} className="mt-0.5 text-xs text-muted">
@@ -277,22 +276,20 @@ export function DecisionForm({
         </fieldset>
       </CollapsibleSection>
       <CollapsibleSection title="What happens next" storageKey={`${storageKey}:effects`}>
-        <ol className="m-0 grid gap-1 pl-5 text-[13px]">
-          {effects.map((effect, i) => (
-            <li key={i}>
-              <span className="mr-1.5 rounded bg-accent-bg px-1 text-[11px] font-bold text-accent">
-                {executorName(effect.executor)}
-              </span>
-              {effect.text}
-            </li>
-          ))}
+        <PlannedEffects
+          preview={props.preview}
+          nos={[item.no]}
+          idle={
+            missing ? "Fill in what this choice needs; then its effects show here." : "Planning what happens…"
+          }
+        >
           {!locked && thread && !resolve && <li>Thread stays open (not ticked).</li>}
           {choice === "accept" && gate && <li>Recorded as Reject with a gate override ({gate}).</li>}
           {comment.trim() && (
             <li>The executing agent receives your comment with the decision; it is not posted.</li>
           )}
-        </ol>
-        {template !== null && (
+        </PlannedEffects>
+        {shownReply !== null && (
           <>
             <label htmlFor={`${id}-reply`} className="mt-2 mb-0.5 block text-xs font-semibold">
               Reply text (public; posted by the external agent that claims this decision)
@@ -300,24 +297,43 @@ export function DecisionForm({
             <textarea
               id={`${id}-reply`}
               rows={2}
-              value={reply ?? template}
-              onChange={(e) => setReply(e.target.value)}
+              value={reply ?? shownReply}
+              onChange={(e) => {
+                touch();
+                setReply(e.target.value);
+              }}
               className={INPUT}
             />
             <div
               role="group"
               aria-label="Preview of the reply on GitHub"
-              className="mt-2 rounded-md border border-border bg-surface-2 px-2.5 py-2 text-[13px]"
+              aria-busy={updating || undefined}
+              className={`mt-2 rounded-md border border-border bg-surface-2 px-2.5 py-2 text-[13px] ${updating ? "opacity-60" : ""}`}
             >
               <div className="mb-1 flex items-center gap-1.5 text-xs">
                 <span className="rounded-full border border-border px-2">agent&apos;s GitHub account</span>
                 <span className="text-muted">preview on GitHub</span>
               </div>
-              <p className="m-0 whitespace-pre-wrap">{reply ?? template}</p>
+              <p className="m-0 whitespace-pre-wrap">{shownReply.trim()}</p>
             </div>
           </>
         )}
       </CollapsibleSection>
+      {changed && (
+        <div role="status" className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-med">
+          {itemId(item)} changed since you started (a new read or assessment). Your input is kept: check the
+          comment above, then
+          <Tooltip tip="Keeps what you chose and typed for the changed comment; Decide sends it.">
+            <button
+              type="button"
+              onClick={() => setSeen(item.revision)}
+              className={buttonClass("plain", true)}
+            >
+              Keep my input
+            </button>
+          </Tooltip>
+        </div>
+      )}
       {(problem ?? error) && (
         <p role="alert" className="mt-1.5 text-sm text-high">
           {problem ?? error}

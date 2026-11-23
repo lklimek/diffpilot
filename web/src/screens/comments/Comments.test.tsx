@@ -85,6 +85,15 @@ describe("V1 Questions (US3, US4, US11)", () => {
     expect(c14.decisions.at(-1)?.effects.every((e) => e.state === "cancelled")).toBe(true);
   });
 
+  it("queue rows open their comment on GitHub in a new tab (plan §3.9)", async () => {
+    renderRoute(`${PR}/comments?item=C14`);
+    const queue = await screen.findByRole("navigation", { name: "Queue" });
+    expect(within(queue).getByRole("link", { name: "Open C14 on GitHub (new tab)" })).toHaveAttribute(
+      "target",
+      "_blank",
+    );
+  });
+
   it("Skip for now puts the question last for this reader on the server too", async () => {
     renderRoute(`${PR}/comments?item=C14`);
     expect(await screen.findByRole("heading", { name: /C14 · Retry may resend/ })).toBeVisible();
@@ -95,11 +104,13 @@ describe("V1 Questions (US3, US4, US11)", () => {
   it("a group can be split; Decide the rest leaves gate items out", async () => {
     renderRoute(`${PR}/comments?item=C18`);
     expect(await screen.findByRole("heading", { name: /Same recommendation: Reject/ })).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: /Decide the rest per recommendation/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Decide the rest per recommendation/ }));
     expect(
       await screen.findByRole("heading", { name: /Decide the rest per recommendation — confirm/ }),
     ).toBeVisible();
-    expect(screen.getByRole("alert")).toHaveTextContent(/C14 \(G-FUNDS\) and C15 \(G-SECRET\)/);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /C14 \(gate item G-FUNDS\), C15 \(gate item G-SECRET\)/,
+    );
   });
 
   it("without an analysis Ask still answers about the comment; the menu views need one", async () => {
@@ -181,6 +192,19 @@ describe("V4–V6 and Settings → Notifications", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Unwatch acme/node-client #482" })).toBeNull(),
     );
+  });
+
+  it("a refused save's error goes once a later Send test of the channel succeeds", async () => {
+    renderRoute("/settings#notifications");
+    const ntfy = await screen.findByRole("region", { name: "ntfy" });
+    const url = within(ntfy).getByLabelText("Server URL");
+    await userEvent.clear(url);
+    await userEvent.type(url, "ftp://ntfy.example.lan");
+    await userEvent.click(within(ntfy).getByRole("button", { name: "Save channel" }));
+    expect(await within(ntfy).findByText("Only http and https addresses are allowed.")).toBeVisible();
+    await userEvent.click(within(ntfy).getByRole("button", { name: "Send test" }));
+    expect(await within(ntfy).findByText(/Test delivered/)).toBeVisible();
+    expect(within(ntfy).queryByText("Only http and https addresses are allowed.")).toBeNull();
   });
 
   it("channels with masked tokens; Send test shows its outcome", async () => {

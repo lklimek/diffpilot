@@ -2,6 +2,7 @@ import { Tooltip } from "../tooltip/Tooltip";
 import { useId, useState } from "react";
 import type { CommentItem, DecisionBatchRow, DecisionVia } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
+import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
@@ -32,6 +33,8 @@ interface Row {
   value: string;
   resolve: boolean;
   comment: string;
+  /** The item's revision the row was filled in against. */
+  revision: number;
 }
 
 const initial = (item: CommentItem): Row => {
@@ -41,6 +44,7 @@ const initial = (item: CommentItem): Row => {
     value: gateOf(item) ? "" : recommendedValue(item),
     resolve: true,
     comment: "",
+    revision: item.revision,
   };
 };
 
@@ -69,7 +73,8 @@ const OPEN = new Set(["undecided", "reopened", "asked_back"]);
 
 /**
  * The table page (V2, RQ21): `check-pr-comments` §4 columns, a decision select per row (default = recommendation,
- * empty for gate rows), the reason or target, Resolve, the owner's comment and Ask answers; one submit.
+ * empty for gate rows), the reason or target, Resolve, the owner's comment and Ask answers; one submit. Rows keep
+ * what the reader typed when items are read again; a row whose item changed since is marked and needs a look.
  */
 export function CommentsTable(props: CommentsTableProps) {
   const { items, now } = props;
@@ -83,11 +88,13 @@ export function CommentsTable(props: CommentsTableProps) {
   const rowOf = (item: CommentItem) => rows[item.id] ?? initial(item);
   const set = (item: CommentItem, change: Partial<Row>) =>
     setRows({ ...rows, [item.id]: { ...rowOf(item), ...change } });
+  const changed = (item: CommentItem) => rowOf(item).revision !== item.revision;
 
   const missing: string[] = [];
   const counts = new Map<string, number>();
   for (const item of open) {
     const row = rowOf(item);
+    if (changed(item)) missing.push(`${itemId(item)} (changed since you started: check the row)`);
     if (!row.choice) {
       missing.push(
         `${itemId(item)} (${gateOf(item) ? "gate item: choose explicitly" : "choose a decision"})`,
@@ -104,7 +111,10 @@ export function CommentsTable(props: CommentsTableProps) {
     props.onSubmit(
       open.map((item) => {
         const row = rowOf(item);
-        return { item_no: item.no, ...requestOf(item, { ...row, choice: row.choice as Choice }, null) };
+        return {
+          item_no: item.no,
+          ...requestOf({ ...item, revision: row.revision }, { ...row, choice: row.choice as Choice }, null),
+        };
       }),
     );
   };
@@ -133,7 +143,7 @@ export function CommentsTable(props: CommentsTableProps) {
     return (
       <>
         <td className={TD}>
-          {itemId(item)}{" "}
+          {itemId(item)} <OpenExternal href={item.url} label={`Open ${itemId(item)} on GitHub`} />{" "}
           {item.gates.map((g) => (
             <GateChip key={g.gate} gate={g.gate} />
           ))}
@@ -244,6 +254,20 @@ export function CommentsTable(props: CommentsTableProps) {
                         </option>
                       ))}
                     </select>
+                    {changed(item) && (
+                      <div role="status" className="mt-1 text-xs text-med">
+                        Changed since you started; check this row.{" "}
+                        <Tooltip tip="Keeps your input for the changed comment.">
+                          <button
+                            type="button"
+                            onClick={() => set(item, { revision: item.revision })}
+                            className={buttonClass("plain", true)}
+                          >
+                            Keep my input for {itemId(item)}
+                          </button>
+                        </Tooltip>
+                      </div>
+                    )}
                   </td>
                   <td className={TD}>
                     <input

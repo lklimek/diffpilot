@@ -1,5 +1,6 @@
 import type { CommentItem, QueueEntry } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
+import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CHOICE_LABEL, decisionLabel } from "./decisions";
 import { GateChips } from "./QueueCards";
@@ -51,7 +52,7 @@ export function QueueList({
     const group = entry.item_nos.length > 1;
     const rec = first.assessment?.recommendation;
     return (
-      <li key={entryKey(entry)}>
+      <li key={entryKey(entry)} className="flex items-center gap-0.5">
         <button
           type="button"
           aria-current={current === entryKey(entry)}
@@ -76,6 +77,7 @@ export function QueueList({
           )}
           {!group && <GateChips item={first} />}
         </button>
+        {!group && <OpenExternal href={first.url} label={`Open ${itemId(first)} on GitHub`} />}
       </li>
     );
   };

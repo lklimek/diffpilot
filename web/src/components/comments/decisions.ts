@@ -1,13 +1,16 @@
-// Decisions on review comments (plan docs/review-workflow-plan.md §2.3): labels, options, inputs, effects and
-// reply texts. Pure functions shared by the question card, the batch pages and the mocks.
+// Decisions on review comments (plan docs/review-workflow-plan.md §2.3): labels, options, inputs and the words for
+// the effects the server plans. Pure functions shared by the question card and the batch pages; effects and reply
+// texts come from the server (RC16, RC17).
 import type {
   CommentItem,
   DecideRequest,
   DecisionKind,
   DecisionTarget,
   EffectKind,
+  EffectsPreview,
   Executor,
   Gate,
+  PlannedEffect,
 } from "../../api/generated/types";
 
 /** A choice on a card: a decision kind, or D8 "Accept despite the gate" (stored as Reject with a gate override). */
@@ -139,113 +142,96 @@ export function requestOf(
   };
 }
 
-/** The reply posted for a choice (English, "per maintainer decision", WM §6.5); null when nothing is posted. */
-export function replyText(choice: Choice, value: string): string | null {
-  const text = value.trim();
-  switch (choice) {
-    case "fix_here":
-      return "Per maintainer decision, fixed in this pull request. (The commit link follows.)";
-    case "reject":
-      return `Per maintainer decision, not changed here: ${text}`;
-    case "accept":
-      return `Per maintainer decision, accepted for this pull request: ${text}`;
-    case "handled_in_pr":
-      return `Per maintainer decision, this is addressed in #${text.replace("#", "") || "N"}.`;
-    case "follow_up_pr":
-      return "Per maintainer decision, moved to a new follow-up pull request. (Its link is added when it exists.)";
-    case "upstream_issue":
-      return "Per maintainer decision, tracked upstream. (The link follows.)";
-    case "todo":
-      return "Per maintainer decision, out of scope for this PR.";
-    default:
-      return null;
-  }
-}
-
-/** One planned effect: kind and executor (plan §2.3; A = external agent, E = agent until phase 3). */
-export interface PlannedEffect {
-  kind: EffectKind;
-  executor: Executor;
-  /** What the executor does, after its name. */
-  text: string;
-}
-
-// TODO(WP13-A CCR): no contract field says whether diffpilot[bot] executes (phase 3); plannedEffects always uses `agent`.
 const EXECUTOR_NAME: Record<Executor, string> = { agent: "External agent", diffpilot_bot: "diffpilot[bot]" };
 
 /** Name of an executor. */
 export const executorName = (executor: Executor) => EXECUTOR_NAME[executor] ?? executor;
 
+/** One line of "What happens next": who does what. */
+export interface EffectLine {
+  executor: Executor;
+  /** What the executor does, after its name. */
+  text: string;
+}
+
+const names = (nos: number[]) => nos.map((no) => `C${no}`).join(", ");
+
 /**
- * The effects of a choice in order. Threads get replies and resolves; body and PR-comment items get one PR-level
- * comment and nothing to resolve.
+ * What `count` effects of one kind do, in plain words. One item: the reply text is shown below the lines; several
+ * items (`on` names them): the text is quoted in the line.
  */
-export function plannedEffects(choice: Choice, resolve: boolean, thread: boolean): PlannedEffect[] {
-  const reply = (text: string): PlannedEffect =>
-    thread
-      ? { kind: "reply", executor: "agent", text }
-      : { kind: "pr_comment", executor: "agent", text: `${text} (in one PR-level comment)` };
-  const resolves =
-    thread && (resolve || resolveLocked(choice))
-      ? [{ kind: "resolve" as const, executor: "agent" as const, text: "resolves the thread." }]
-      : [];
-  switch (choice) {
-    case "fix_here":
-      return [
-        { kind: "fix", executor: "agent", text: "fixes it and pushes." },
-        reply("replies after the push with the commit."),
-        ...resolves,
-      ];
-    case "reject":
-      return [reply("replies with your reason."), ...resolves];
-    case "accept":
-      return [reply("replies with your reason (required)."), ...resolves];
-    case "handled_in_pr":
-      return [reply('replies: "Per maintainer decision, this is addressed in #N."'), ...resolves];
-    case "follow_up_pr":
-      return [
-        {
-          kind: "follow_up_pr",
-          executor: "agent",
-          text: "creates a new draft follow-up PR (no link needed; it does not exist yet).",
-        },
-        reply("replies with the new PR's link."),
-        ...resolves,
-      ];
-    case "upstream_issue":
-      return [
-        {
-          kind: "upstream_issue",
-          executor: "agent",
-          text: 'links or creates the upstream issue and adds a "Known limitation" line.',
-        },
-        reply("replies with the link."),
-        ...resolves,
-      ];
-    case "todo":
-      return [
-        { kind: "todo", executor: "agent", text: "saves a TODO (never mentioned on GitHub)." },
-        reply('replies: "Per maintainer decision, out of scope for this PR."'),
-        ...resolves,
-      ];
+function effectText(kind: EffectKind, params: PlannedEffect["params"], count: number, on: string): string {
+  const text = on ? `: "${params.text ?? ""}"` : " with the reply text below.";
+  switch (kind) {
+    case "fix":
+      return `fixes it and pushes${on}.`;
+    case "reply":
+      return `replies${on}${text}`;
+    case "pr_comment":
+      return `posts one PR-level comment${on}${text}`;
     case "resolve":
-      return thread ? [reply("replies what was done."), ...resolves] : [reply("replies what was done.")];
-    case "merge_with_follow_ups":
-      return [
-        {
-          kind: "follow_up_pr",
-          executor: "agent",
-          text: "creates one follow-up PR listing the remaining items.",
-        },
-        { kind: "reply", executor: "agent", text: "replies on each item with its link." },
-        { kind: "resolve", executor: "agent", text: "resolves each thread." },
-      ];
-    case "dismiss_stale_reviews":
-      return [{ kind: "dismiss_review", executor: "agent", text: "dismisses each listed review." }];
-    default:
-      return [];
+      return count > 1 ? `resolves the threads${on}.` : `resolves the thread${on}.`;
+    case "follow_up_pr":
+      return params.item_nos.length > 1
+        ? `creates one draft follow-up PR listing ${names(params.item_nos)} (no link needed; it does not exist yet).`
+        : `creates a new draft follow-up PR${params.title ? ` "${params.title}"` : ""} (no link needed; it does not exist yet).`;
+    case "upstream_issue":
+      return params.url
+        ? `links the upstream issue ${params.url} and adds a "Known limitation" line.`
+        : 'creates the upstream issue and adds a "Known limitation" line.';
+    case "todo":
+      return "saves a TODO (never mentioned on GitHub).";
+    case "dismiss_review":
+      return count > 1
+        ? `dismisses each of the ${count} stale reviews with the message above.`
+        : "dismisses the stale review with the message above.";
   }
 }
+
+/**
+ * The server's planned effects (RC16, RC17) as "What happens next" lines in order: one per kind and text; with
+ * `several` items the lines name them and quote the reply texts.
+ */
+export function effectLines(effects: PlannedEffect[], several = false): EffectLine[] {
+  const lines: { first: PlannedEffect; nos: number[]; count: number }[] = [];
+  for (const effect of effects) {
+    const same = lines.find(
+      (l) =>
+        l.first.kind === effect.kind &&
+        l.first.executor === effect.executor &&
+        l.first.params.text === effect.params.text,
+    );
+    const nos = effect.kind === "follow_up_pr" ? [] : effect.params.item_nos;
+    if (same) {
+      same.nos.push(...nos.filter((no) => !same.nos.includes(no)));
+      same.count += 1;
+    } else lines.push({ first: effect, nos: [...nos], count: 1 });
+  }
+  return lines.map(({ first, nos, count }) => ({
+    executor: first.executor,
+    text: effectText(first.kind, first.params, count, several && nos.length > 0 ? ` on ${names(nos)}` : ""),
+  }));
+}
+
+/** The server's plan of a card's draft (RC16): nothing to plan yet (an input is missing), loading, refused, or ready. */
+export type EffectsPreviewState =
+  | { state: "idle" }
+  | { state: "loading" }
+  | { state: "error"; message: string }
+  | {
+      state: "ready";
+      items: EffectsPreview[];
+      /** A newer draft is being planned; these effects are of the previous one. */
+      updating: boolean;
+    };
+
+/** The planned effects of item `C<no>` in `preview`, or null while it has none. */
+export const previewFor = (preview: EffectsPreviewState | undefined, no: number): PlannedEffect[] | null =>
+  preview?.state === "ready" ? (preview.items.find((i) => i.item_no === no)?.effects ?? null) : null;
+
+/** The reply text the server would post (the first reply or PR-level comment of the plan), or null. */
+export const plannedReply = (effects: PlannedEffect[]): string | null =>
+  effects.find((e) => e.kind === "reply" || e.kind === "pr_comment")?.params.text ?? null;
 
 /** Short words for an effect kind (tables, the log). */
 export const EFFECT_WORD: Record<EffectKind, string> = {
