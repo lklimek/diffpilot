@@ -183,9 +183,9 @@ impl Gateway {
         body: Option<Value>,
     ) -> Result<Response, Error> {
         let bearer = super::http::bearer(&headers).ok_or(Error::Key)?;
-        let (user, key) = self.authenticate(bearer).await?;
-        if let Some(body) = &body {
-            validate_body(body)?;
+        let key = super::store::digest(bearer.as_bytes());
+        if !self.store.key_live(&key) {
+            return Err(Error::Key);
         }
         let key_semaphore = {
             let mut keys = self.key_streams.lock().await;
@@ -213,16 +213,12 @@ impl Gateway {
         })
         .await
         .map_err(|_| Error::Busy)??;
-        let expires_at = self
-            .store
-            .lock(&user)
-            .await?
-            .record
-            .keys
-            .get(&key)
-            .ok_or(Error::Key)?
-            .expires_at;
-        let access = self.access(&user, None).await?;
+        let (user, key, tx) = self.authenticate(bearer).await?;
+        if let Some(body) = &body {
+            validate_body(body)?;
+        }
+        let expires_at = tx.record.keys.get(&key).ok_or(Error::Key)?.expires_at;
+        let access = self.access_locked(&user, tx, None).await?;
         let models = body.is_none();
         let etag = if models {
             self.models
@@ -335,14 +331,12 @@ impl Gateway {
             return Ok((status, output_headers, bytes).into_response());
         }
         let store = self.store.clone();
-        let drains = self.drains.clone();
         let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
         let mut tasks = self.tasks.lock().await;
         while tasks.try_join_next().is_some() {}
         tasks.spawn(async move {
             let mut permits = Some(permits);
-            let mut drain_permit = None;
-            let mut drain_deadline = None;
+            // The model client's 45-minute total timeout also bounds abandoned streams.
             let mut liveness = tokio::time::interval(std::time::Duration::from_secs(1));
             liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut stream = response.bytes_stream();
@@ -355,26 +349,12 @@ impl Gateway {
                     _ = async { if let Some(sender) = &sender { sender.closed().await } else { std::future::pending::<()>().await } } => {
                         sender = None;
                         permits.take();
-                        match drains.clone().try_acquire_owned() {
-                            Ok(permit) => drain_permit = Some(permit),
-                            Err(_) => { tracing::warn!("gateway abandoned stream exceeded drain capacity; reconcile worker usage"); break; }
-                        }
-                        drain_deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
                         continue;
-                    }
-                    _ = async { if let Some(at) = drain_deadline { tokio::time::sleep_until(at).await } else { std::future::pending::<()>().await } } => {
-                        tracing::warn!("gateway abandoned stream exceeded drain deadline; reconcile worker usage");
-                        break;
                     }
                     _ = liveness.tick() => {
                         if sender.is_some() && (expires_at <= super::now() || !store.key_live(&key)) {
                             sender = None;
                             permits.take();
-                            match drains.clone().try_acquire_owned() {
-                                Ok(permit) => drain_permit = Some(permit),
-                                Err(_) => break,
-                            }
-                            drain_deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
                         }
                         continue;
                     }
@@ -466,16 +446,10 @@ impl Gateway {
                         _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
                             sender = None;
                             permits.take();
-                            match drains.clone().try_acquire_owned() {
-                                Ok(permit) => drain_permit = Some(permit),
-                                Err(_) => break,
-                            }
-                            drain_deadline = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(5));
                         }
                     }
                 }
             }
-            drop(drain_permit);
         });
         let stream = futures::stream::unfold(receiver, |mut receiver| async move {
             receiver.recv().await.map(|item| (item, receiver))

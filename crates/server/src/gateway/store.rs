@@ -261,8 +261,18 @@ impl Store {
             .map_err(|_| Error::Usage)?;
         let mut tx = self.lock(user).await?;
         if !tx.record.responses.contains_key(response) {
-            if tx.record.responses.len() >= MAX_RESPONSES || response.len() > 256 {
+            if response.len() > 256 {
                 return Err(Error::Busy);
+            }
+            while tx.record.responses.len() >= MAX_RESPONSES {
+                let oldest = tx
+                    .record
+                    .responses
+                    .iter()
+                    .min_by_key(|(_, meter)| meter.recorded_at)
+                    .map(|(id, _)| id.clone())
+                    .ok_or(Error::Usage)?;
+                tx.fold_response(&oldest)?;
             }
             tx.record.responses.insert(
                 response.into(),
@@ -452,12 +462,43 @@ impl Locked {
         }
     }
 
-    pub fn key_capacity(&self) -> Result<(), Error> {
-        if self.record.keys.len() >= MAX_KEYS {
-            Err(Error::Busy)
-        } else {
-            Ok(())
+    pub fn key_capacity(&mut self) -> Result<(), Error> {
+        while self.record.keys.len() >= MAX_KEYS {
+            let oldest = self
+                .record
+                .keys
+                .iter()
+                .filter(|(_, key)| key.revoked || key.expires_at <= now())
+                .min_by_key(|(_, key)| key.expires_at)
+                .map(|(id, _)| id.clone())
+                .ok_or(Error::Busy)?;
+            self.forget_key(&oldest)?;
         }
+        Ok(())
+    }
+
+    fn fold_response(&mut self, id: &str) -> Result<(), Error> {
+        if let Some(meter) = self.record.responses.remove(id) {
+            self.record.archived_usage = self
+                .record
+                .archived_usage
+                .checked_add(meter.usage)
+                .map_err(|_| Error::Usage)?;
+            if let Some(key) = self.record.keys.get_mut(&meter.key) {
+                key.archived_usage = key
+                    .archived_usage
+                    .checked_add(meter.usage)
+                    .map_err(|_| Error::Usage)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn forget_key(&mut self, id: &str) -> Result<(), Error> {
+        remove(&self.store.root.join("keys").join(id))?;
+        remove(&self.store.root.join("keys").join(format!("{id}.retired")))?;
+        self.record.keys.remove(id);
+        Ok(())
     }
 
     fn prune(&mut self) -> Result<(), Error> {
@@ -478,24 +519,10 @@ impl Locked {
             .collect();
         let changed = !old_responses.is_empty() || !old_keys.is_empty();
         for id in old_responses {
-            if let Some(meter) = self.record.responses.remove(&id) {
-                self.record.archived_usage = self
-                    .record
-                    .archived_usage
-                    .checked_add(meter.usage)
-                    .map_err(|_| Error::Usage)?;
-                if let Some(key) = self.record.keys.get_mut(&meter.key) {
-                    key.archived_usage = key
-                        .archived_usage
-                        .checked_add(meter.usage)
-                        .map_err(|_| Error::Usage)?;
-                }
-            }
+            self.fold_response(&id)?;
         }
         for id in old_keys {
-            remove(&self.store.root.join("keys").join(&id))?;
-            remove(&self.store.root.join("keys").join(format!("{id}.retired")))?;
-            self.record.keys.remove(&id);
+            self.forget_key(&id)?;
         }
         if changed {
             self.save()?;

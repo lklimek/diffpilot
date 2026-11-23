@@ -125,7 +125,16 @@ impl Gateway {
         user: &UserId,
         rejected: Option<u64>,
     ) -> Result<Access, Error> {
-        let mut tx = self.store.lock(user).await?;
+        let tx = self.store.lock(user).await?;
+        self.access_locked(user, tx, rejected).await
+    }
+
+    pub(super) async fn access_locked(
+        &self,
+        user: &UserId,
+        mut tx: super::store::Locked,
+        rejected: Option<u64>,
+    ) -> Result<Access, Error> {
         if tx.record.reason.is_some() {
             return Err(Error::Unlinked);
         }
@@ -178,6 +187,8 @@ impl Gateway {
                 task.abort();
             }
         }
+        let mut status = None;
+        let mut id = None;
         let start = async {
             let response = self
                 .upstream
@@ -189,6 +200,8 @@ impl Gateway {
                 .json(&json!({"client_id":CLIENT_ID}))
                 .send()
                 .await?;
+            status = Some(response.status().as_u16());
+            id = request_id(response.headers());
             if response.status() == reqwest::StatusCode::NOT_FOUND {
                 return Err(Error::DeviceDisabled);
             }
@@ -220,6 +233,7 @@ impl Gateway {
             Ok(start) => start,
             Err(error) => {
                 tx.record.link_attempt = None;
+                tx.outcome("link", "start_failed", status, None, id);
                 tx.save()?;
                 active.remove(user);
                 return Err(error);
@@ -239,23 +253,36 @@ impl Gateway {
         let mut tasks = self.tasks.lock().await;
         while tasks.try_join_next().is_some() {}
         let handle = tasks.spawn(async move {
+            let mut step = "poll_failed";
+            let mut status = None;
+            let mut id = None;
             let result = async {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                    step = "poll_failed";
+                    status = None;
+                    id = None;
                     if now() >= deadline { return Err(Error::Link); }
                     if store.lock(&user).await?.record.link_attempt != Some((attempt, deadline)) {
                         return Err(Error::Link);
                     }
                     let response = upstream.client.post(format!("{}/api/accounts/deviceauth/token", upstream.auth))
                         .json(&json!({"device_auth_id":device.device_auth_id,"user_code":device.user_code})).send().await?;
+                    status = Some(response.status().as_u16());
+                    id = request_id(response.headers());
                     if matches!(response.status().as_u16(), 403 | 404) { continue; }
                     if !response.status().is_success() { return Err(Error::Link); }
                     let grant: Value = response.json().await.map_err(|_| Error::Link)?;
                     let code = grant.get("authorization_code").and_then(Value::as_str).ok_or(Error::Link)?;
                     let verifier = grant.get("code_verifier").and_then(Value::as_str).ok_or(Error::Link)?;
+                    step = "exchange_failed";
+                    status = None;
+                    id = None;
                     let response = upstream.client.post(format!("{}/oauth/token", upstream.auth)).form(&[
                         ("grant_type", "authorization_code"), ("client_id", CLIENT_ID), ("code", code),
                         ("redirect_uri", CALLBACK), ("code_verifier", verifier)]).send().await?;
+                    status = Some(response.status().as_u16());
+                    id = request_id(response.headers());
                     if !response.status().is_success() { return Err(Error::Link); }
                     let bundle = parse_bundle(response.json().await.map_err(|_| Error::Link)?).ok_or(Error::Link)?;
                     let mut tx = store.lock(&user).await?;
@@ -267,6 +294,7 @@ impl Gateway {
                     tx.record.reason = None;
                     tx.record.inflight = false;
                     tx.record.generation = tx.record.generation.checked_add(1).ok_or(Error::Usage)?;
+                    tx.outcome("link", "committed", status, None, id.take());
                     tx.save()?;
                     tx.finish_refresh()?;
                     return Ok::<_, Error>(());
@@ -275,11 +303,11 @@ impl Gateway {
             if let Ok(mut tx) = store.lock(&user).await
                 && tx.record.link_attempt == Some((attempt, deadline)) {
                 tx.record.link_attempt = None;
+                if result.is_err() { tx.outcome("link", step, status, None, id); }
                 let _ = tx.save();
             }
             let mut active = links.lock().await;
             if active.get(&user).is_some_and(|entry| entry.id == attempt) { active.remove(&user); }
-            if result.is_err() { tracing::debug!("gateway device link did not complete; existing connection retained"); }
         });
         if let Some(entry) = active.get_mut(&user_key) {
             entry.task = Some(handle);
@@ -374,7 +402,7 @@ pub(super) fn parse_bundle(value: Value) -> Option<Bundle> {
     {
         return None;
     }
-    let (account, label, plan, fedramp) = identity(id_token.expose())?;
+    let (account, label, plan, fedramp) = identity(id_token.expose(), None)?;
     let (expires_at, earliest_refresh_at) = expiry(&value, access.expose())?;
     Some(Bundle {
         access,
@@ -541,7 +569,7 @@ fn parse_refresh(value: Value, old: &Bundle) -> Option<Bundle> {
         ),
         _ => {
             let token: Token = text("id_token")?.into();
-            let claims = identity(token.expose())?;
+            let claims = identity(token.expose(), Some(old))?;
             (token, claims.0, claims.1, claims.2, claims.3)
         }
     };
@@ -580,7 +608,7 @@ fn valid_scope(scope: &str) -> bool {
         .all(|required| scope.split_whitespace().any(|s| s == *required))
 }
 
-fn identity(id_token: &str) -> Option<(String, String, String, bool)> {
+fn identity(id_token: &str, old: Option<&Bundle>) -> Option<(String, String, String, bool)> {
     // Claims come only from the fixed TLS token endpoint, never from a caller's JWT.
     let claims: Value =
         serde_json::from_slice(&URL_SAFE_NO_PAD.decode(id_token.split('.').nth(1)?).ok()?).ok()?;
@@ -604,8 +632,14 @@ fn identity(id_token: &str) -> Option<(String, String, String, bool)> {
     }
     Some((
         account,
-        claims.get("email")?.as_str()?.to_owned(),
-        auth.get("chatgpt_plan_type")?.as_str()?.to_owned(),
+        match claims.get("email") {
+            None | Some(Value::Null) => old?.label.clone(),
+            Some(value) => value.as_str()?.to_owned(),
+        },
+        match auth.get("chatgpt_plan_type") {
+            None | Some(Value::Null) => old?.plan.clone(),
+            Some(value) => value.as_str()?.to_owned(),
+        },
         auth.get("chatgpt_account_is_fedramp")
             .and_then(Value::as_bool)
             .unwrap_or(false),
@@ -613,20 +647,23 @@ fn identity(id_token: &str) -> Option<(String, String, String, bool)> {
 }
 
 fn expiry(value: &Value, access: &str) -> Option<(i64, Option<i64>)> {
-    let seconds = value.get("expires_in")?.as_i64()?;
-    if seconds <= 0 {
-        return None;
-    }
-    let mut expires_at = now().checked_add(seconds)?;
-    if let Some(exp) = access
+    let jwt_exp = access
         .split('.')
         .nth(1)
         .and_then(|p| URL_SAFE_NO_PAD.decode(p).ok())
         .and_then(|p| serde_json::from_slice::<Value>(&p).ok())
-        .and_then(|v| v.get("exp").and_then(Value::as_i64))
-    {
-        expires_at = expires_at.min(exp);
-    }
+        .and_then(|v| v.get("exp").and_then(Value::as_i64));
+    let expires_at = match value.get("expires_in") {
+        None => jwt_exp?,
+        Some(value) => {
+            let seconds = value.as_i64()?;
+            if seconds <= 0 {
+                return None;
+            }
+            let expires_at = now().checked_add(seconds)?;
+            jwt_exp.map_or(expires_at, |exp| expires_at.min(exp))
+        }
+    };
     if expires_at <= now() {
         return None;
     }

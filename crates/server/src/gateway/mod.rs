@@ -158,7 +158,6 @@ pub struct Gateway {
     refreshes: Mutex<JoinSet<()>>,
     stopping: std::sync::atomic::AtomicBool,
     key_streams: Mutex<HashMap<String, std::sync::Weak<tokio::sync::Semaphore>>>,
-    drains: Arc<tokio::sync::Semaphore>,
     streams: Arc<tokio::sync::Semaphore>,
 }
 
@@ -194,7 +193,6 @@ impl Gateway {
             refreshes: Mutex::new(JoinSet::new()),
             stopping: std::sync::atomic::AtomicBool::new(false),
             key_streams: Mutex::default(),
-            drains: Arc::new(tokio::sync::Semaphore::new(16)),
             streams: Arc::new(tokio::sync::Semaphore::new(64)),
         })
     }
@@ -283,7 +281,7 @@ impl Gateway {
         tx.save()
     }
 
-    async fn authenticate(&self, key: &str) -> Result<(UserId, String), Error> {
+    async fn authenticate(&self, key: &str) -> Result<(UserId, String, store::Locked), Error> {
         let id = digest(key.as_bytes());
         let user = self.store.key_user(&id)?;
         let tx = self.store.lock(&user).await?;
@@ -296,7 +294,7 @@ impl Gateway {
         {
             return Err(Error::Key);
         }
-        Ok((user, id))
+        Ok((user, id, tx))
     }
 
     async fn usage(&self, user: &UserId, key: Option<&str>) -> Result<PayerUsage, Error> {
