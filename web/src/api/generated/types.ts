@@ -1333,6 +1333,12 @@ github: ItemGithubFacts,
  */
 outside: OutsideResolution | null,
 /**
+ * When a complete read of the pull request first no longer produced it (deleted on GitHub, or no longer an
+ * item by the read rules, such as a person's earlier review); absent while reads produce it. Such an item
+ * leaves the queue, "Decide the rest" and bulk decisions; its decisions stay.
+ */
+gone_at?: string,
+/**
  * The item whose decision this repeat carried or re-asks (`C<no>`).
  */
 repeat_of: number | null,

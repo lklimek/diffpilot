@@ -387,6 +387,24 @@ async fn read_now(
     snapshot.ci = ci;
     snapshot.pending_checks = pending_checks;
     let new = apply(state, tenant, &handle, &observed, &snapshot).await?;
+    if snapshot.complete {
+        let read_keys: Vec<&str> = observed
+            .iter()
+            .map(|entry| entry.item.stable_key.as_str())
+            .collect();
+        let gone = state
+            .db
+            .review_loop()
+            .mark_gone(id, &read_keys, Timestamp::now())
+            .await?;
+        if !gone.is_empty() {
+            tracing::info!(
+                pr = id,
+                ?gone,
+                "items the read no longer produced leave the queue"
+            );
+        }
+    }
     add_pr_questions(state, tenant, &handle, &snapshot).await?;
     seen::mark(state, &handle, &read).await?;
     let round_count = u32::try_from(snapshot.rounds.len()).unwrap_or(u32::MAX);
@@ -917,7 +935,7 @@ fn stale_reviews<'a>(
             let raised: Vec<&ItemRecord> = items
                 .iter()
                 .filter(|item| item.author.eq_ignore_ascii_case(&request.login))
-                .filter(|item| item.state != ItemState::Outside)
+                .filter(|item| item.state != ItemState::Outside && item.gone_at.is_none())
                 .collect();
             !raised.is_empty()
                 && raised.iter().all(|item| {
@@ -1031,6 +1049,8 @@ impl Loaded {
         let followed_up = self.followed_up();
         self.items
             .iter()
+            // An item the read no longer produces waits for nobody (plan §2.1).
+            .filter(|record| record.gone_at.is_none())
             .map(|record| queue::QueueItem {
                 no: record.no,
                 state: record.state,
@@ -1157,17 +1177,22 @@ pub async fn decide(
         .filter(|record| !loaded.gates(record).is_empty())
         .map(|record| record.no)
         .collect();
-    // Items asked again need their own decision; "Decide the rest" leaves them out too (RC17).
+    // Items asked again or no longer read need their own decision; "Decide the rest" leaves them out too (RC17).
     if via == DecisionVia::Bulk
-        && let Some(record) = rows
+        && let Some((no, error)) = rows
             .iter()
             .filter_map(|row| loaded.item(row.item_no).ok())
-            .find(|record| record.state == ItemState::Reopened)
+            .find_map(|record| {
+                if record.gone_at.is_some() {
+                    Some((record.no, DecisionError::NotRead))
+                } else if record.state == ItemState::Reopened {
+                    Some((record.no, DecisionError::AskedAgain))
+                } else {
+                    None
+                }
+            })
     {
-        return Err(LoopError::Decision {
-            no: record.no,
-            error: DecisionError::AskedAgain,
-        });
+        return Err(LoopError::Decision { no, error });
     }
     match via {
         DecisionVia::Group | DecisionVia::Bulk if !gated.is_empty() => {

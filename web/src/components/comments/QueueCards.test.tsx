@@ -272,6 +272,22 @@ describe("CommentsTable (US8, US27)", () => {
     });
   });
 
+  it("an item the latest read no longer shows is listed with that fact and needs no decision (plan §2.1)", async () => {
+    render(
+      table(
+        listItems().map((i) => (i.no === 22 ? { ...i, gone_at: "2026-11-18T09:00:00Z" } : i)),
+        vi.fn(),
+      ),
+    );
+    expect(screen.queryByRole("combobox", { name: /Decision for C22/ })).toBeNull();
+    expect(screen.queryByText(/C22 \(/)).toBeNull();
+    const more = screen.queryByRole("button", { name: "Show all" });
+    if (more) await userEvent.click(more);
+    const row = document.querySelector('[data-row="C22"]') as HTMLElement;
+    expect(within(row).getByText(/not in the latest read from GitHub/)).toBeVisible();
+    expect(row.textContent).not.toMatch(/Resolved on GitHub/);
+  });
+
   it("the problem links to Questions with that item; decided rows show where they were decided", () => {
     show();
     expect(

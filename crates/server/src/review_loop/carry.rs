@@ -349,6 +349,7 @@ mod tests {
             revision: 2,
             outside: None,
             repeat_of: None,
+            gone_at: None,
             updated_at: Timestamp::now(),
         };
         assert_eq!(raised(&item, &observed("h")), None);
