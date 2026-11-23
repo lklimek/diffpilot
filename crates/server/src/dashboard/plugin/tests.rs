@@ -39,6 +39,7 @@ fn statement(mark: &str, readiness: Option<Readiness>) -> PrStatement {
         }],
         ready_to_merge: readiness,
         whose_move: None,
+        github_updated_at: None,
         mark: mark.to_owned(),
     }
 }
@@ -567,6 +568,10 @@ async fn pr_hygiene_says_whose_move_from_the_stage_owner() {
     assert_eq!(whose(3), Some(Move::Author));
     assert_eq!((whose(4), whose(5)), (None, None));
     let said = overlay.whose_move(&platform, 1).expect("statement");
+    assert_eq!(
+        said.as_of,
+        "2026-11-18T08:59:00Z".parse().expect("source time")
+    );
     assert_eq!(
         (said.plugin.as_str(), said.source.as_str(), said.url),
         (

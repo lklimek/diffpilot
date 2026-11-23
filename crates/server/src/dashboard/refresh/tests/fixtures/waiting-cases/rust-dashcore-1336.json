@@ -1,0 +1,1348 @@
+{
+  "detail": {
+    "number": 1336,
+    "title": "fix(dash-spv)!: deliver only verified InstantLocks",
+    "state": "OPEN",
+    "isDraft": false,
+    "createdAt": "2026-11-05T12:22:03Z",
+    "updatedAt": "2026-11-23T15:28:00Z",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BLOCKED",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "baseRefName": "dev",
+    "headRefOid": "ef3dc802082957e48dd37c18659efb88a28137dd",
+    "url": "https://github.com/dashpay/rust-dashcore/pull/1336",
+    "isCrossRepository": false,
+    "additions": 0,
+    "deletions": 0,
+    "headRefName": "fixture",
+    "milestone": null,
+    "baseRepository": {
+      "nameWithOwner": "dashpay/rust-dashcore",
+      "isPrivate": false,
+      "viewerPermission": "WRITE",
+      "defaultBranchRef": {
+        "name": "dev"
+      }
+    },
+    "author": {
+      "__typename": "User",
+      "login": "lklimek"
+    },
+    "labels": {
+      "nodes": [
+        {
+          "name": "ready-for-human"
+        }
+      ]
+    },
+    "participants": {
+      "totalCount": 0
+    },
+    "closingIssuesReferences": {
+      "nodes": []
+    },
+    "assignees": {
+      "nodes": []
+    },
+    "reviewRequests": {
+      "nodes": [
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "xdustinface"
+          }
+        },
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "ZocoLini"
+          }
+        },
+        {
+          "requestedReviewer": {
+            "__typename": "User",
+            "login": "QuantumExplorer"
+          }
+        }
+      ]
+    },
+    "reviews": {
+      "totalCount": 43,
+      "nodes": [
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "coderabbitai[bot]"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-16T08:33:01Z",
+          "commit": {
+            "oid": "3ccc21a1c1829b4e86e75fc33056dbbe1f0548b2"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-16T08:33:30Z",
+          "commit": {
+            "oid": "3ccc21a1c1829b4e86e75fc33056dbbe1f0548b2"
+          }
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "lklimek"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-16T08:40:14Z",
+          "commit": {
+            "oid": "bd7021c3cea1bc43665aa1a8b3c259bbadfadc57"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-16T08:40:43Z",
+          "commit": {
+            "oid": "bd7021c3cea1bc43665aa1a8b3c259bbadfadc57"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-16T08:40:44Z",
+          "commit": {
+            "oid": "bd7021c3cea1bc43665aa1a8b3c259bbadfadc57"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "state": "DISMISSED",
+          "submittedAt": "2026-11-16T08:47:37Z",
+          "commit": {
+            "oid": "bd7021c3cea1bc43665aa1a8b3c259bbadfadc57"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-16T08:49:01Z",
+          "commit": {
+            "oid": "bd7021c3cea1bc43665aa1a8b3c259bbadfadc57"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-16T09:00:27Z",
+          "commit": {
+            "oid": "bd7021c3cea1bc43665aa1a8b3c259bbadfadc57"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "state": "DISMISSED",
+          "submittedAt": "2026-11-16T09:54:36Z",
+          "commit": {
+            "oid": "1818275a6d1ae595735df2451acb71500cec2cfb"
+          }
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "ZocoLini"
+          },
+          "state": "CHANGES_REQUESTED",
+          "submittedAt": "2026-11-16T12:15:58Z",
+          "commit": {
+            "oid": "1818275a6d1ae595735df2451acb71500cec2cfb"
+          }
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "Claudius-Maginificent"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-16T16:56:21Z",
+          "commit": {
+            "oid": "1bcf72ba3a277981250d530d4eb42ea94ac5faa3"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-23T02:22:38Z",
+          "commit": {
+            "oid": "5ccffd944fe7495dcd06d8e3f203a5ad8b3ae6db"
+          }
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "Claudius-Maginificent"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-23T11:23:16Z",
+          "commit": {
+            "oid": "5ccffd944fe7495dcd06d8e3f203a5ad8b3ae6db"
+          }
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "Claudius-Maginificent"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-23T11:23:43Z",
+          "commit": {
+            "oid": "5ccffd944fe7495dcd06d8e3f203a5ad8b3ae6db"
+          }
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "Claudius-Maginificent"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-23T11:32:46Z",
+          "commit": {
+            "oid": "029cecdfc195bbf2944056ad092b29f014ed9766"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-23T11:49:22Z",
+          "commit": {
+            "oid": "ef3dc802082957e48dd37c18659efb88a28137dd"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-23T11:54:51Z",
+          "commit": {
+            "oid": "ef3dc802082957e48dd37c18659efb88a28137dd"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "state": "APPROVED",
+          "submittedAt": "2026-11-23T12:11:44Z",
+          "commit": {
+            "oid": "ef3dc802082957e48dd37c18659efb88a28137dd"
+          }
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "lklimek"
+          },
+          "state": "COMMENTED",
+          "submittedAt": "2026-11-23T12:35:41Z",
+          "commit": {
+            "oid": "ef3dc802082957e48dd37c18659efb88a28137dd"
+          }
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "coderabbitai[bot]"
+          },
+          "state": "APPROVED",
+          "submittedAt": "2026-11-23T15:26:49Z",
+          "commit": {
+            "oid": "ef3dc802082957e48dd37c18659efb88a28137dd"
+          }
+        }
+      ]
+    },
+    "comments": {
+      "nodes": [
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "coderabbitai[bot]"
+          },
+          "createdAt": "2026-11-06T16:32:16Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-10T19:40:09Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-10T19:50:31Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "createdAt": "2026-11-11T07:42:57Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-11T09:17:00Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "createdAt": "2026-11-16T07:44:37Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-16T07:44:46Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "lklimek"
+          },
+          "createdAt": "2026-11-16T07:45:03Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-16T07:55:34Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-16T08:33:28Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "createdAt": "2026-11-16T08:40:38Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-16T08:40:47Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-16T09:47:04Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "createdAt": "2026-11-16T09:48:38Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "Claudius-Maginificent"
+          },
+          "createdAt": "2026-11-16T16:26:35Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-17T09:53:25Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-18T12:43:51Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "lklimek"
+          },
+          "createdAt": "2026-11-23T02:09:23Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "createdAt": "2026-11-23T02:09:42Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "Claudius-Maginificent"
+          },
+          "createdAt": "2026-11-23T11:24:19Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "Claudius-Maginificent"
+          },
+          "createdAt": "2026-11-23T11:24:21Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "Claudius-Maginificent"
+          },
+          "createdAt": "2026-11-23T11:24:22Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "Claudius-Maginificent"
+          },
+          "createdAt": "2026-11-23T11:24:24Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "xdustinface"
+          },
+          "createdAt": "2026-11-23T11:30:31Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "createdAt": "2026-11-23T11:30:35Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-23T11:40:09Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "manki-review[bot]"
+          },
+          "createdAt": "2026-11-23T12:00:35Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "lklimek"
+          },
+          "createdAt": "2026-11-23T15:19:23Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "coderabbitai[bot]"
+          },
+          "createdAt": "2026-11-23T15:19:31Z"
+        },
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "github-actions[bot]"
+          },
+          "createdAt": "2026-11-23T15:27:46Z"
+        }
+      ]
+    },
+    "reviewThreads": {
+      "nodes": [
+        {
+          "isResolved": true,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "createdAt": "2026-11-06T15:18:40Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "createdAt": "2026-11-06T15:18:40Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-11T07:49:30Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": true,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-11T07:49:30Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": true,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-11T07:49:30Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": true,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-11T07:49:30Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": true,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-16T07:53:17Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-16T07:53:17Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": true,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "createdAt": "2026-11-16T07:55:20Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": true,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "coderabbitai"
+                },
+                "createdAt": "2026-11-16T07:55:20Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": true,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-16T08:47:37Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": true,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-16T08:47:37Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": true,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-16T09:54:36Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-23T02:22:38Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-23T02:22:38Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": true,
+          "isOutdated": true,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-23T02:22:38Z"
+              }
+            ]
+          }
+        },
+        {
+          "isResolved": false,
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "author": {
+                  "login": "manki-review"
+                },
+                "createdAt": "2026-11-23T12:11:43Z"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "timelineItems": {
+      "nodes": []
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "PENDING",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Security Audit",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:47:38Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "conflict-check",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:41:41Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Merge Conflict Check"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:59:46Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T12:01:29Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T12:11:50Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T12:37:30Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T15:28:13Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:47:16Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:50:53Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T15:22:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "check-title",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:41:29Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Title Check"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "check-title",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T15:21:59Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Title Check"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Pre-commit (ubuntu-latest)",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:44:02Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Pre-commit Checks"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "ready-for-review-trigger",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:41:13Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Ready for Review Trigger"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "ready-for-review-trigger",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:52:40Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Ready for Review Trigger"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "ready-for-review-trigger",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:58:28Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Ready for Review Trigger"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "ready-for-review-trigger",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T12:12:01Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Ready for Review Trigger"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "ready-for-review-trigger",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T12:36:16Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Ready for Review Trigger"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "ready-for-review-trigger",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T15:26:55Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Ready for Review Trigger"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Address Sanitizer",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:47:05Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Sanitizer"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "MSRV Check",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:45:32Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Thread Sanitizer",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:48:33Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Sanitizer"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Documentation",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:50:55Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Verify Test Groups",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:59:47Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Verify Action Lockfile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T12:00:10Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Ubuntu / core wallet rpc",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T12:00:19Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Ubuntu / spv",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:59:54Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Ubuntu ARM / core wallet rpc",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:41:13Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Ubuntu ARM / spv",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:44:35Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "macOS / core wallet rpc",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T12:15:52Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "macOS / spv",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:55:08Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Windows / core wallet rpc",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:45:12Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Windows / spv",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T11:42:00Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Integration Tests",
+                    "status": "COMPLETED",
+                    "conclusion": "SKIPPED",
+                    "startedAt": "2026-11-23T11:39:15Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "Continuous integration"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "StatusContext",
+                    "context": "PR Hygiene",
+                    "state": "PENDING",
+                    "createdAt": "2026-11-23T15:28:06Z"
+                  },
+                  {
+                    "__typename": "StatusContext",
+                    "context": "CodeRabbit",
+                    "state": "SUCCESS",
+                    "createdAt": "2026-11-23T15:26:52Z"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "Manki",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T12:00:40Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": ""
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "codecov/patch",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T15:26:58Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": ""
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "codecov/project",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T15:26:57Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": ""
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "hygiene": {
+    "areas": [
+      "dash-spv"
+    ],
+    "asks": [
+      {
+        "approvers": [
+          "QuantumExplorer",
+          "ZocoLini",
+          "xdustinface"
+        ],
+        "area": "dash-spv"
+      }
+    ],
+    "author": "lklimek",
+    "author_kind": "human",
+    "base": "dev",
+    "blockers": [
+      "Human approval or objection resolution is required"
+    ],
+    "changes_requested": true,
+    "ci_failing": false,
+    "created_at": "2026-11-05T12:22:03Z",
+    "draft": false,
+    "engine_state": "ready-for-human",
+    "idle": false,
+    "key": "dashpay/rust-dashcore#1336",
+    "lateness": "ok",
+    "merge_conflict": false,
+    "milestone": null,
+    "next_action": "Human approval or objection resolution is required",
+    "number": 1336,
+    "objectors": [
+      "ZocoLini",
+      "xdustinface"
+    ],
+    "repo": "dashpay/rust-dashcore",
+    "since": "2026-11-23T15:27:46Z",
+    "since_basis": "engine",
+    "stage": "review",
+    "title": "fix(dash-spv)!: deliver only verified InstantLocks",
+    "tracked": true,
+    "unresolved_comments": 0,
+    "updated_at": "2026-11-23T15:28:00Z"
+  }
+}

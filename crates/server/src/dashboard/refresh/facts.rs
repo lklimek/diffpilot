@@ -216,12 +216,12 @@ pub(super) fn pr(
         .iter()
         .filter(|(login, state, _, bot)| state == "CHANGES_REQUESTED" && !bot && !scanned(login))
         .collect();
-    let changes_requested_human_at = newest(
-        human_cr
-            .iter()
-            .filter(|(login, ..)| !requested_logins.contains(&login.to_lowercase()))
-            .filter_map(|(_, _, at, _)| *at),
-    );
+    let changes_requested_human_at = human_cr
+        .iter()
+        .filter(|(login, ..)| !requested_logins.contains(&login.to_lowercase()))
+        .map(|(_, _, at, _)| *at)
+        .collect::<Option<Vec<_>>>()
+        .and_then(|times| times.into_iter().max());
     let last_comment = detail.comments.nodes.iter().max_by_key(|c| c.created_at);
     let last_author = last_comment.and_then(|c| c.author.as_ref());
     let awaiting_our_reply = last_author.is_some_and(|a| {
@@ -269,6 +269,15 @@ pub(super) fn pr(
         None => Milestone::Unassigned,
     };
     let author = detail.author.as_ref();
+    let mut changes_requested_by = with_state("CHANGES_REQUESTED");
+    // While GitHub's decision still requests changes, GitHub enforces the request: it stays.
+    if detail.review_decision.as_deref() != Some("CHANGES_REQUESTED") {
+        let rereviewed = rereviewed_bots(rules, &detail.reviews.nodes, &detail.head_ref_oid);
+        changes_requested_by.retain(|login| !rereviewed.contains(login));
+    }
+    let changes_requested_by_bot = latest
+        .iter()
+        .any(|(login, _, _, bot)| *bot && changes_requested_by.contains(&name(login)));
     let facts = PrFacts {
         repo: item.repo.clone(),
         number: item.number,
@@ -322,16 +331,8 @@ pub(super) fn pr(
         review_pending_for_us: pending_for_us,
         review_requested_at,
         review_request_age_is_approx: approx,
-        changes_requested_by: {
-            let mut logins = with_state("CHANGES_REQUESTED");
-            // While GitHub's decision still requests changes, GitHub enforces the request: it stays.
-            if detail.review_decision.as_deref() != Some("CHANGES_REQUESTED") {
-                let rereviewed =
-                    rereviewed_bots(rules, &detail.reviews.nodes, &detail.head_ref_oid);
-                logins.retain(|login| !rereviewed.contains(login));
-            }
-            logins
-        },
+        changes_requested_by,
+        changes_requested_by_bot: Some(changes_requested_by_bot),
         changes_requested_by_human: !human_cr.is_empty(),
         changes_requested_human_at,
         reviews_truncated: detail

@@ -2467,3 +2467,5 @@ async fn unsearchable_mentions_do_not_spend_the_budget_on_unrelated_open_prs() {
             .any(|n| n.text.contains("Mentions not checked"))
     );
 }
+
+mod waiting_cases;

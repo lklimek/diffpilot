@@ -21,7 +21,7 @@ const NC_476: &str = "acme/node-client";
 /// A fresh generation time on the world's clock.
 const GENERATED: &str = "2026-11-18T08:59:00Z";
 
-fn with_plugin(w: &mut World, fake: &FakePrHygiene, timing: Timing) {
+pub(super) fn with_plugin(w: &mut World, fake: &FakePrHygiene, timing: Timing) {
     w.state.plugins = PluginHost::new(
         vec![Arc::new(PrHygiene::new(fake.url.clone()).expect("plugin"))],
         timing,
@@ -314,7 +314,7 @@ async fn a_change_signal_rereads_only_the_changed_pull_requests_with_the_details
     assert_eq!(github_log(&w).await.len(), log.len());
 }
 
-fn awaiting_ids(summary: &DashboardSummary) -> Vec<&str> {
+pub(super) fn awaiting_ids(summary: &DashboardSummary) -> Vec<&str> {
     summary
         .snapshot
         .as_ref()

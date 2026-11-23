@@ -10,6 +10,9 @@
   (K15 W3b, §11).
 - Amendment DR2 (owner, 2026-11-23; plan K15): a current statement of the reviewers' or maintainers' move comes before
   the ready label, which is the fallback (§11).
+- Amendment DR3 (owner cases, 2026-11-23; plan K15, K17): a current statement naming the reviewers' next move
+  can cover human review blockers for Waiting on others only when its data postdates the unanswered human
+  requests; active bot requests still block, and a configuration error names no waiting reviewer (§11).
 - Overrides `CLAUDE.md` "no abstraction beyond the seams the brief names" for exactly this seam.
 
 ## Context
@@ -111,10 +114,27 @@ the engine's verdict. Further sources of the same kind are expected, so the owne
 11. **Whose move** (DR1, K15 W3b): a statement may say the move is the author's or the reviewers'/maintainers', with
    the logins owing a review. PR Hygiene: the stage's owner from `/stages` (`author`; `reviewers` or `maintainers`
    with `asks[].approvers`, valid GitHub logins, at most 10, once each; `bots` and `nobody` say nothing) and the same
-   reason as its hold. A fresh statement of the reviewers' or maintainers' move lists the user's pull request under
-   Waiting on others (reason "PR Hygiene: …" with the evidence link) when nothing is the user's move; one of the
-   author's move adds nothing and vetoes nothing (neither the ready label nor a requested review). The judge's input
-   applies the same rule without statements, so every ranked pull request is judged and the input stays GitHub's.
+   reason as its hold. `configuration-error` gives no whose-move statement: the blocked stage's maintainer owner
+   does not establish that anyone owes a review; its note and Ready to merge hold still apply.
+   A fresh statement of the reviewers' or maintainers' move lists the user's pull request under Waiting on others
+   (reason "PR Hygiene: …" with the evidence link) over human change requests, the review decision and unresolved
+   threads only when the source data time (`as_of`, retained in the move statement) is later than the newest
+   unanswered human change request and is not in the future at overlay read time. The source must also have
+   observed a GitHub PR update (`github_updated_at`, PR Hygiene's `updated_at`) strictly after that request and no
+   later than the dashboard's GitHub `updatedAt`: both bounds use GitHub's clock, so source clock skew alone cannot
+   prove coverage. Missing or invalid evidence, or any unanswered human request without a submission time, keeps
+   the block. Re-requested reviews need no coverage comparison. A successful poll of unchanged older data does
+   not advance either source timestamp. Active
+   bot change requests under DR2 always block, including alongside human requests; older snapshots with unknown
+   requester types keep active requests blocking until refreshed. Human review signals can remain while the
+   author has handed the PR back for review (rust-dashcore#1336). The PR must still be the user's, open and
+   non-draft, without conflicts, with effective CI green, without a comment awaiting the user's reply or a review
+   requested from a scanned login, and outside
+   Ready to merge before any plug-in hold (K17). The statement never clears review blockers for Ready to merge.
+   One of the author's move adds nothing and vetoes nothing (neither the ready label nor a requested review).
+   The judge's input applies the same rule without statements: a PR listed here only by a statement is still
+   judged, every ranked pull request is judged, and the input stays GitHub's. Ignored policy and bot checks remain
+   governed by K12; an ignored PR Hygiene error does not make effective CI red (dash-evo-tool#1230 and #1231).
 
 ## Alternatives considered
 | Alternative | Why not |

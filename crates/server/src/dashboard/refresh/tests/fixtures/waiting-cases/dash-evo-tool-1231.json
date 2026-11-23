@@ -1,0 +1,179 @@
+{
+  "detail": {
+    "number": 1231,
+    "title": "refactor(identity): discover wallet identities through platform-wallet",
+    "state": "OPEN",
+    "isDraft": false,
+    "createdAt": "2026-11-23T01:19:04Z",
+    "updatedAt": "2026-11-23T16:02:25Z",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BLOCKED",
+    "reviewDecision": "",
+    "baseRefName": "v1.0-dev",
+    "headRefOid": "a2ad29f807d5e61a9778cde9a6a2020a99e25687",
+    "url": "https://github.com/dashpay/dash-evo-tool/pull/1231",
+    "isCrossRepository": false,
+    "additions": 0,
+    "deletions": 0,
+    "headRefName": "fixture",
+    "milestone": null,
+    "baseRepository": {
+      "nameWithOwner": "dashpay/dash-evo-tool",
+      "isPrivate": false,
+      "viewerPermission": "WRITE",
+      "defaultBranchRef": {
+        "name": "v1.0-dev"
+      }
+    },
+    "author": {
+      "__typename": "User",
+      "login": "lklimek"
+    },
+    "labels": {
+      "nodes": []
+    },
+    "participants": {
+      "totalCount": 0
+    },
+    "closingIssuesReferences": {
+      "nodes": []
+    },
+    "assignees": {
+      "nodes": []
+    },
+    "reviewRequests": {
+      "nodes": []
+    },
+    "reviews": {
+      "totalCount": 0,
+      "nodes": []
+    },
+    "comments": {
+      "nodes": [
+        {
+          "author": {
+            "__typename": "Bot",
+            "login": "coderabbitai[bot]"
+          },
+          "createdAt": "2026-11-23T01:19:10Z"
+        },
+        {
+          "author": {
+            "__typename": "User",
+            "login": "thepastaclaw"
+          },
+          "createdAt": "2026-11-23T01:26:32Z"
+        }
+      ]
+    },
+    "reviewThreads": {
+      "nodes": []
+    },
+    "timelineItems": {
+      "nodes": []
+    },
+    "commits": {
+      "nodes": [
+        {
+          "commit": {
+            "statusCheckRollup": {
+              "state": "FAILURE",
+              "contexts": {
+                "pageInfo": {
+                  "hasNextPage": false
+                },
+                "nodes": [
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T01:19:10Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "policy / reconcile",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-23T15:37:32Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": "PR Hygiene policy"
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "StatusContext",
+                    "context": "PR Hygiene",
+                    "state": "ERROR",
+                    "createdAt": "2026-11-23T15:29:16Z"
+                  },
+                  {
+                    "__typename": "CheckRun",
+                    "name": "PastaClaw review",
+                    "status": "IN_PROGRESS",
+                    "conclusion": "",
+                    "startedAt": "2026-11-23T16:02:23Z",
+                    "checkSuite": {
+                      "workflowRun": {
+                        "workflow": {
+                          "name": ""
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "__typename": "StatusContext",
+                    "context": "CodeRabbit",
+                    "state": "SUCCESS",
+                    "createdAt": "2026-11-23T15:28:50Z"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "hygiene": {
+    "areas": [],
+    "asks": [],
+    "author": "lklimek",
+    "author_kind": "human",
+    "base": "v1.0-dev",
+    "blockers": [
+      "No changed-file evidence"
+    ],
+    "changes_requested": false,
+    "ci_failing": true,
+    "created_at": "2026-11-23T01:19:04Z",
+    "draft": false,
+    "engine_state": "configuration-error",
+    "idle": false,
+    "key": "dashpay/dash-evo-tool#1231",
+    "lateness": null,
+    "merge_conflict": false,
+    "milestone": null,
+    "next_action": "No changed-file evidence",
+    "number": 1231,
+    "objectors": [],
+    "repo": "dashpay/dash-evo-tool",
+    "since": "2026-11-23T01:19:04Z",
+    "since_basis": "opened",
+    "stage": "blocked",
+    "title": "refactor(identity): discover wallet identities through platform-wallet",
+    "tracked": true,
+    "unresolved_comments": 0,
+    "updated_at": "2026-11-23T16:02:25Z"
+  }
+}

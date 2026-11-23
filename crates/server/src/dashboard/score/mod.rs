@@ -527,20 +527,24 @@ pub fn ready_label<'a>(rules: &ScoreRules, pr: &'a PrFacts) -> Option<&'a str> {
         .map(String::as_str)
 }
 
-/// Nothing on the user's PR is the user's move (K15 W1, W2, W4): [`users_pr`], no conflicts, CI green with the
-/// ignored checks left out, no change request (people; a bot's until it reviews a newer head), no unresolved thread,
-/// no comment awaiting the user's reply, no review requested from a scanned login, and not [`ready_to_merge`]
-/// (merging would be the user's move).
-pub fn nothing_is_users_move(rules: &ScoreRules, pr: &PrFacts) -> bool {
+/// The user's PR can wait for review (K15 W1, W2, W4): no author action outside review blockers, and merging is
+/// not the user's move. A current plug-in statement can assign human review blockers to reviewers.
+pub fn can_wait_for_review(rules: &ScoreRules, pr: &PrFacts) -> bool {
     users_pr(rules, pr)
         && pr.mergeable != Mergeable::Conflicting
         && pr.ci == CiEffective::Green
-        && pr.changes_requested_by.is_empty()
-        && pr.review_decision != Some(ReviewDecision::ChangesRequested)
-        && pr.unresolved_threads == 0
         && !pr.awaiting_our_reply
         && !pr.review_pending_for_us
         && !ready_to_merge(rules, pr)
+}
+
+/// Nothing on the user's PR is the user's move by GitHub's signals (K15 W2): [`can_wait_for_review`], no change
+/// request (people; a bot's until it reviews a newer head), and no unresolved thread.
+pub fn nothing_is_users_move(rules: &ScoreRules, pr: &PrFacts) -> bool {
+    can_wait_for_review(rules, pr)
+        && pr.changes_requested_by.is_empty()
+        && pr.review_decision != Some(ReviewDecision::ChangesRequested)
+        && pr.unresolved_threads == 0
 }
 
 /// A requested review keeps the PR waiting (K15 W3c): a review is requested from people or teams outside the

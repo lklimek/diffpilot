@@ -67,6 +67,7 @@ fn pr() -> PrFacts {
         review_requested_at: None,
         review_request_age_is_approx: false,
         changes_requested_by: vec![],
+        changes_requested_by_bot: Some(false),
         changes_requested_by_human: false,
         changes_requested_human_at: None,
         reviews_truncated: false,

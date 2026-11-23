@@ -657,19 +657,38 @@ fn todo_facts(todo: &StoredTodo) -> Vec<Fact> {
 
 /// Why the user's PR waits on others now (K15 W3), and whom to ping; `None` when it does not. The first that
 /// applies: a plug-in's statement that reviewers or maintainers own the stage (those it says owe a review, else the
-/// requested reviewers), the ready label, a requested review. A statement that the move is the author's adds
-/// nothing. The one rule of ranked versus Waiting on others: the read path and the judge's input both apply it.
+/// requested reviewers), the ready label, a requested review. A people's statement can cover human review blockers
+/// older than its source data with GitHub clock evidence, but never active bot requests. The read path and the
+/// judge's input both apply it.
 pub(crate) fn waiting(
     rules: &ScoreRules,
     f: &PrFacts,
     overlay: &Overlay,
 ) -> Option<(AwaitingReason, Vec<String>)> {
-    if !score::nothing_is_users_move(rules, f) {
+    if !score::can_wait_for_review(rules, f)
+        || f.changes_requested_by_bot
+            .unwrap_or(!f.changes_requested_by.is_empty())
+    {
         return None;
     }
     let requested = f.review_requested_from_others.clone();
     if let Some(statement) = overlay.whose_move(&f.repo, f.number)
         && let Move::People { owed, reason } = statement.whose
+        && f.changes_requested_human_at.map_or_else(
+            || {
+                f.changes_requested_by.iter().all(|login| {
+                    requested
+                        .iter()
+                        .any(|other| other.eq_ignore_ascii_case(login))
+                })
+            },
+            |at| {
+                at < statement.as_of
+                    && statement
+                        .github_updated_at
+                        .is_some_and(|updated| at < updated && updated <= f.updated_at)
+            },
+        )
     {
         let reason = AwaitingReason::Plugin {
             plugin: statement.plugin,
@@ -678,6 +697,9 @@ pub(crate) fn waiting(
             url: statement.url,
         };
         return Some((reason, if owed.is_empty() { requested } else { owed }));
+    }
+    if !score::nothing_is_users_move(rules, f) {
+        return None;
     }
     if let Some(label) = score::ready_label(rules, f) {
         let reason = AwaitingReason::ReadyLabel {
