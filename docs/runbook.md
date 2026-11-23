@@ -724,7 +724,7 @@ Heavy steps (image builds, R1, the smoke) run one at a time.
    (fake tokens; `generated_configs_match_the_golden_files` keeps them current, `UPDATE_GOLDEN=1` rewrites them):
 
    ```sh
-   g="$PWD/crates/runner/src/provider/codex/golden"
+   g="$(git rev-parse --show-toplevel)/crates/runner/src/provider/codex/golden"
    run() { # run CONFIG ENTRYPOINT ARGS...: one container, the config as its CODEX_HOME's config.toml
      local config="$1" entrypoint="$2"; shift 2
      docker run --rm -i --network none --user 10002:10002 --read-only --tmpfs /tmp \
@@ -732,10 +732,18 @@ Heavy steps (image builds, R1, the smoke) run one at a time.
        --mount "type=bind,source=$g/config-$config.toml,target=/job/home/config.toml,readonly" \
        --entrypoint "$entrypoint" diffpilot-runner:codex-next "$@"
    }
-   # Sub-agents off: 0 for both configs.
-   for c in analysis answer-only; do run "$c" codex debug prompt-input hi </dev/null | grep -c spawn_agent; done
-   # Code-mode tools of an answer-only job: no exec_command, write_stdin or view_image (T17).
-   run answer-only codex debug prompt-input hi </dev/null | grep -o 'declare const tools: { [a-z_]*' | sort -u
+   # Sub-agents off: "analysis 0" and "answer-only 0"; a failed prompt-input prints an error, not a count.
+   for c in analysis answer-only; do
+     out=$(run "$c" codex debug prompt-input hi </dev/null) || { echo "prompt-input failed: $c" >&2; continue; }
+     printf '%s %s\n' "$c" "$(printf '%s' "$out" | grep -c spawn_agent)"
+   done
+   # Code-mode tools of an answer-only job: a non-empty list without exec_command, write_stdin or view_image (T17).
+   if out=$(run answer-only codex debug prompt-input hi </dev/null) &&
+     tools=$(printf '%s' "$out" | grep -o 'declare const tools: { [a-z_]*' | sort -u) && [ -n "$tools" ]; then
+     printf '%s\n' "$tools"
+   else
+     echo "no code-mode tool list: prompt-input failed or the model is not in code mode" >&2
+   fi
    # Strict load with MCP servers: `thread.started` and `turn.started`, and no "required MCP servers failed" on
    # stderr; the model call then fails for lack of network and `timeout` ends it (exit 124).
    echo hi | run analysis-mcp timeout 30 codex exec --strict-config --json --skip-git-repo-check --ignore-rules -
