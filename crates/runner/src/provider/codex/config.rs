@@ -92,6 +92,9 @@ enabled = false
 [skills.bundled]
 enabled = false
 
+[agents]
+enabled = false
+
 [features]
 plugins = false
 apps = false
@@ -104,7 +107,6 @@ hooks = false
 tool_suggest = false
 goals = false
 daemon_auto_start = false
-multi_agent = false
 {extra_features}"#,
         model = toml_string(&model.model),
     );
@@ -334,12 +336,12 @@ required = false
             "approval_policy = \"never\"",
             "project_doc_max_bytes = 0",
             "hooks = false",
-            "multi_agent = false",
             "plugins = false",
         ] {
             assert!(config.lines().any(|l| l == line), "missing {line}");
         }
         assert!(config.contains("[skills.bundled]\nenabled = false"));
+        assert!(config.contains("[agents]\nenabled = false"));
         assert!(
             !config.contains("trust_level"),
             "the project is never trusted"
@@ -364,7 +366,6 @@ required = false
             "shell_tool = false",
             "unified_exec = false",
             "view_image = false",
-            "multi_agent = false",
         ] {
             assert!(
                 config.lines().any(|l| l == line),
@@ -439,6 +440,24 @@ required = false
                     "{kind:?}:\n{config}"
                 );
             }
+        }
+    }
+
+    /// Sub-agents off (ADR-002): `[agents] enabled = false` also wins over a model whose catalog entry selects
+    /// sub-agents; the deprecated `features.multi_agent` does not, and Codex 0.168+ warns about it on every job.
+    #[test]
+    fn every_job_config_disables_sub_agents() {
+        for answer_only in [false, true] {
+            let config = config_toml(
+                &model(),
+                &access("http://agentic.lan:8190/mcp"),
+                Path::new("/x"),
+                NO_PROXY,
+                AUTO_COMPACT_TOKEN_LIMIT,
+                answer_only,
+            );
+            assert!(config.contains("\n[agents]\nenabled = false\n"), "{config}");
+            assert!(!config.contains("multi_agent"), "{config}");
         }
     }
 
