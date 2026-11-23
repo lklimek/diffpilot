@@ -150,8 +150,8 @@ read with tokens (ADR-019).
   each round, so a hash of their text, or of their first lines, changes at every head. A bot without a status marker
   (CodeRabbit) withdraws a point only in words, so a bot reply whose first line concedes ("you're right", "thanks for
   the clarification") counts by its author. The prompt version is not part of it and is not compared: a new prompt alone
-  re-assesses nothing (owner decision 2026-11-23; v1.3 starts from an empty database, so no earlier format needs a
-  match). The pass is charged to its user as before.
+  re-assesses nothing (owner decision 2026-11-23; v1.3 migration 0030 cleans all earlier assessments in place,
+  so no earlier format needs a match; [ADR-025](ADR-025-container-runtime.md)). The pass is charged to its user as before.
 - **Logs.** `Usage.requests` (job result) estimates the model requests of a call from the provider's events (one per
   batch of tool calls and one for the answer); the server's `job token usage` line and the runner's session summary
   name model, effort, requests and, for `verify_comments`, the item count.

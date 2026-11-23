@@ -66,6 +66,15 @@ const NEW: &[&str] = &[
     "assessment_passes",
     "comment_sources",
 ];
+const WATCH_RUNTIME: &[&str] = &[
+    "probe",
+    "last_probe_at",
+    "last_auto_pass_at",
+    "last_auto_pass_questions",
+    "state",
+    "pass_due_at",
+    "notified_for",
+];
 
 async fn tables(pool: &SqlitePool) -> BTreeSet<String> {
     sqlx::query_scalar(
@@ -110,6 +119,19 @@ async fn snapshot(pool: &SqlitePool, table: &str, excluded: &[&str]) -> (String,
 }
 
 async fn assert_clean(db: &Db) {
+    let stale_watches: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pr_watches WHERE probe IS NOT NULL OR last_probe_at IS NOT NULL
+         OR last_auto_pass_at IS NOT NULL OR last_auto_pass_questions IS NOT NULL
+         OR pass_due_at IS NOT NULL OR notified_for IS NOT NULL
+         OR state NOT IN ('active', 'paused', 'ended')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        stale_watches, 0,
+        "watches must rebuild the cleaned review loop"
+    );
     for table in CLEANED.iter().chain(NEW) {
         let count: i64 = sqlx::query_scalar(AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
             .fetch_one(&db.pool)
@@ -171,7 +193,12 @@ async fn migration_0030_cleans_populated_0029_and_preserves_identity_and_setting
     assert_eq!(automatic, "automatic", "exercise the 0029 row shape");
     let mut kept = Vec::new();
     for table in KEPT {
-        kept.push((*table, snapshot(&old, table, &[]).await));
+        let excluded = if *table == "pr_watches" {
+            WATCH_RUNTIME
+        } else {
+            &[]
+        };
+        kept.push((*table, excluded, snapshot(&old, table, excluded).await));
     }
     let thread_columns = ["agent_thread_id", "analytic_generation", "session_state"];
     let pr = snapshot(&old, "pull_requests", &thread_columns).await;
@@ -179,8 +206,12 @@ async fn migration_0030_cleans_populated_0029_and_preserves_identity_and_setting
 
     // Use the actual startup path, including SQLx checksums and FK-enabled WAL connections.
     let db = Db::open(&path).await.unwrap();
-    for (table, before) in &kept {
-        assert_eq!(&snapshot(&db.pool, table, &[]).await, before, "{table}");
+    for (table, excluded, before) in &kept {
+        assert_eq!(
+            &snapshot(&db.pool, table, excluded).await,
+            before,
+            "{table}"
+        );
     }
     assert_eq!(snapshot(&db.pool, "pull_requests", &[]).await.1, pr.1);
     let removed: i64 = sqlx::query_scalar(
@@ -200,9 +231,9 @@ async fn migration_0030_cleans_populated_0029_and_preserves_identity_and_setting
     db.pool.close().await;
     let reopened = Db::open(&path).await.unwrap();
     assert_clean(&reopened).await;
-    for (table, before) in &kept {
+    for (table, excluded, before) in &kept {
         assert_eq!(
-            &snapshot(&reopened.pool, table, &[]).await,
+            &snapshot(&reopened.pool, table, excluded).await,
             before,
             "{table} on reopen"
         );

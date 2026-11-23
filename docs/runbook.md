@@ -225,6 +225,15 @@ roll back and report it, never delete the database.
 
 ## Upgrade to v1.3
 
+**Container cut-over:** migration 0030 cleans existing analyses and review-loop data in place, including owner
+decisions, pending or claimed decision effects, queued notifications and queued MemCan feedback writes. Settings,
+sign-ins and stored GitHub authentication stay; see the [table inventory M01–M55](contracts/containers.md#persistence-and-cut-over).
+Before deploying, let pending decision effects finish or accept that they will be dropped without execution.
+Keep the full step-2 volume backup: restoring it with the previous images and commit is the only rollback path.
+After startup, every user must relink Codex before jobs can run. Watched PRs rebuild their review-loop data on the
+next probe; automatic assessments use quota and require Codex to be linked again. At step 3 of "Upgrade", check
+sign-in and rebuild an analysis instead of opening an old one.
+
 Two optional variables are new; add them to `/srv/diffpilot/.env` to use them (step 1 of "Upgrade"):
 
 | Variable | Required | Default | Meaning |

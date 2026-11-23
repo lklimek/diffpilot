@@ -33,8 +33,8 @@ old analysis/runtime tables' rows and rebuilds the container tables with foreign
 back both cleanup and schema changes; a fresh database follows the same migration path. Do not run an
 additional purge or settings import. Migrations 0001–0029 remain unchanged; only unmerged 0030 is edited.
 
-The keep list preserves complete rows byte-for-byte, including stored GitHub authentication, cookie/OAuth
-sign-in state, PAT hashes, channel/push secrets and existing configuration bookkeeping. No credential value is
+Except for watch runtime fields, the keep list preserves complete rows byte-for-byte, including stored GitHub
+authentication, cookie/OAuth sign-in state, PAT hashes, channel/push secrets and existing configuration bookkeeping. No credential value is
 read, decrypted, exported or logged by 0030. Repository/PR identity and metadata stay so watches keep their
 original foreign keys. The only retained-table schema change removes the three legacy PR thread columns.
 Codex credentials are the explicit exception: `llm_credentials` is rebuilt empty and plan-only (CCR10);
@@ -88,7 +88,7 @@ and “new” means created empty. Settings stored outside SQLite are untouched.
 | M41 | `notification_deliveries` | Clean | Old user/decision delivery queue and retries. |
 | M42 | `notification_sends` | Clean | Old delivery/rate-limit history. |
 | M43 | `oauth_logins` | Keep | In-progress sign-in state and encrypted PKCE verifier. |
-| M44 | `pr_watches` | Keep | Watched PRs and their saved state; unchanged schema. |
+| M44 | `pr_watches` | Keep; reset runtime | Keep identity, since and paused/ended state; clear probe, last_probe_at, last_auto_pass_at/questions, pass_due_at and notified_for; other states become active. The next probe rebuilds review-loop data and allows notifications for the same round; automatic assessments use quota and require Codex relinking. Schema unchanged. |
 | M45 | `pull_requests` | Keep; schema change | Keep identity/metadata; drop agent_thread_id, analytic_generation and session_state. |
 | M46 | `questions` | Clean | Old Ask/review questions, answers and threads. |
 | M47 | `repos` | Keep | Repository identity and GitHub installation mapping for retained PRs. |

@@ -55,8 +55,10 @@ INSERT INTO agent_subscriptions (token_id, tenant_id, capabilities, last_seen_at
 VALUES ('fakePAT1', 'default', '["fix"]', '2026-11-23T00:00:00Z', 'webhook', 'https://push.example/hook', 'topic', x'001122ff');
 INSERT INTO notification_channels (id, tenant_id, user_id, kind, url, topic, secret, events, enabled)
 VALUES ('channel1', 'default', 'u1', 'ntfy', 'https://push.example', 'owner-topic', x'ff112200', '["questions_ready"]', 1);
-INSERT INTO pr_watches (user_id, pull_request_id, tenant_id, since, state)
-VALUES ('u1', 1, 'default', '2026-11-23T00:00:00Z', 'active');
+INSERT INTO pr_watches (user_id, pull_request_id, tenant_id, since, state, probe, last_probe_at,
+                        last_auto_pass_at, last_auto_pass_questions, pass_due_at, notified_for)
+VALUES ('u1', 1, 'default', '2026-11-23T00:00:00Z', 'job_running', '{"head":"head"}',
+        '2026-11-23T00:00:00Z', '2026-11-23T00:00:00Z', 2, '2026-11-23T00:00:00Z', 'round:2');
 INSERT INTO comment_prs (pull_request_id, tenant_id, read_at, github_snapshot, round_count, next_item_no, purpose, created_at)
 VALUES (1, 'default', '2026-11-23T00:00:00Z', '{}', 2, 3, 'Old purpose', '2026-11-23T00:00:00Z');
 INSERT INTO comment_items (id, tenant_id, pull_request_id, item_no, kind, stable_key, author, author_kind, title,

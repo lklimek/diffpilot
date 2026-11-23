@@ -8,6 +8,13 @@ DROP TABLE llm_credentials;
 DROP TABLE comment_assessments;
 DROP TABLE working_sessions;
 
+-- Retained watches must rediscover the cleaned review loop and notify for its first round.
+UPDATE pr_watches SET probe = NULL, last_probe_at = NULL,
+    last_auto_pass_at = NULL, last_auto_pass_questions = NULL,
+    pass_due_at = NULL, notified_for = NULL,
+    state = CASE WHEN state IN ('job_running', 'waiting_for_bot_round', 'limit_reached')
+        THEN 'active' ELSE state END;
+
 -- Children before parents; keep PR/repository identity so watches retain their original keys.
 DELETE FROM notification_deliveries;
 DELETE FROM notification_sends;
