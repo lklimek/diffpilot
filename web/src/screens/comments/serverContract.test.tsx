@@ -2,7 +2,7 @@
 // effects.rs `plan`, queue.rs `decide_rest`); the msw mocks model that contract (mocks/effects-plan.ts).
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http } from "msw";
+import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
@@ -256,6 +256,67 @@ describe("Decide sends only what the server planned for the current input (RC16)
     expect(sent[0]!.target).toEqual({ type: "existing_pr", number: 491 });
     expect(shown).toBe("Per maintainer decision, this is addressed in #491.");
     await waitFor(() => expect(byNo(22).decisions.at(-1)?.reply_text).toBe(shown));
+  });
+});
+
+describe("Merge now carries the digest of the confirmed plan (RC16 `plan_digest`, RC8 409 conflict)", () => {
+  it("a comment that joined the scope unseen refuses the decision; the plan is made again and confirmed first", async () => {
+    const sent = sentDecisions();
+    renderRoute(`${PR}/comments?item=P24`);
+    await screen.findByRole("heading", { name: /Merge now, or another round\?/ });
+    const listing = () => screen.getByText(/^creates one draft follow-up PR listing /).textContent ?? "";
+    await waitFor(() => expect(listing()).toContain("C22"));
+    // Another reader's change, not yet read by this page.
+    listItems().push({
+      ...byNo(22),
+      id: "00000000-0000-4000-8000-000000000030",
+      no: 30,
+      stable_key: "thread-30",
+      decisions: [],
+    });
+    const decide = screen.getByRole("button", { name: "Decide" });
+    await waitFor(() => expect(decide).not.toHaveAttribute("aria-disabled"));
+    await userEvent.click(decide);
+    expect(
+      await screen.findByText(
+        "What the decision would do changed since you confirmed it: C24. Check the plan again.",
+      ),
+    ).toHaveAttribute("role", "alert");
+    expect(sent[0]!.plan_digest).toEqual(expect.any(String));
+    expect(byNo(24).decisions).toHaveLength(0);
+    await waitFor(() => expect(listing()).toContain("C30"));
+    expect(screen.getByText(/What this decision acts on changed since you looked/)).toBeVisible();
+    await userEvent.click(decide);
+    expect(sent).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: "Use the new plan" }));
+    await userEvent.click(decide);
+    await waitFor(() => expect(byNo(24).decisions).toHaveLength(1));
+    expect(sent[1]!.plan_digest).not.toBe(sent[0]!.plan_digest);
+    expect(byNo(24).decisions[0]!.effects.flatMap((e) => e.params.item_nos)).toContain(30);
+  });
+});
+
+describe("A failed plan never leaves valid input blocked (RC16 unavailable)", () => {
+  it("while RC16 answers 503 Decide waits with Plan again; once the server answers, Plan again makes it available", async () => {
+    server.use(
+      http.post("/api/v1/prs/:owner/:name/:number/comments/effects-preview", () =>
+        HttpResponse.json({ code: "unavailable", message: "The service is unavailable." }, { status: 503 }),
+      ),
+    );
+    const sent = sentDecisions();
+    await open(22);
+    const planAgain = await screen.findByRole("button", { name: "Plan again" });
+    const decide = screen.getByRole("button", { name: "Decide" });
+    expect(decide).toHaveAttribute("aria-disabled", "true");
+    expect(decide).toHaveAccessibleDescription(expect.stringContaining("The service is unavailable"));
+    await userEvent.click(decide);
+    expect(sent).toHaveLength(0);
+    server.resetHandlers();
+    await userEvent.click(planAgain);
+    await waitFor(() => expect(decide).not.toHaveAttribute("aria-disabled"));
+    expect(screen.queryByRole("button", { name: "Plan again" })).toBeNull();
+    await userEvent.click(decide);
+    await waitFor(() => expect(sent).toHaveLength(1));
   });
 });
 

@@ -239,6 +239,25 @@ export function plan(item: CommentItem, request: DecideRequest, scope: PlanScope
   return { effects: out.effects, reply_text: replyText };
 }
 
+/**
+ * mod.rs `Loaded::plan_digest`: what a PR-level plan rests on ("Merge now" the items it follows up with their
+ * revisions, the dismissal the reviews it dismisses) as an opaque digest; null for other rows. The mock hashes with
+ * FNV-1a where the server uses SHA-256: clients only compare it.
+ */
+export function planDigest(item: CommentItem, request: DecideRequest, scope: PlanScope): string | null {
+  const restsOn =
+    request.kind === "merge_with_follow_ups"
+      ? scope.remaining.map((i) => `follow-up C${i.no} r${i.revision}`)
+      : request.kind === "dismiss_stale_reviews" && questionOf(item) === "dismiss"
+        ? scope.staleReviews.map((review) => `dismiss ${review}`)
+        : null;
+  if (restsOn === null) return null;
+  let hash = 0x811c9dc5;
+  for (const char of restsOn.map((line) => `${line}\n`).join(""))
+    hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193) >>> 0;
+  return hash.toString(16).padStart(8, "0");
+}
+
 const OPEN = new Set(["undecided", "assessing", "asked_back", "reopened"]);
 
 /** The item's standing decision: its latest one, not undone (mod.rs `standing`). */

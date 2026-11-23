@@ -89,14 +89,27 @@ export function useCarryOvers(pr: string | null) {
 /** How long a draft waits for more typing before its effects are planned (RC16). */
 export const PREVIEW_DEBOUNCE_MS = 250;
 
+/** A preview failure worth trying again: no answer (status 0), a server failure (5xx), 408 or 429; other 4xx are
+ * the input's. */
+export const transientFailure = (error: unknown) =>
+  !(error instanceof ApiError) ||
+  error.status === 0 ||
+  error.status >= 500 ||
+  error.status === 408 ||
+  error.status === 429;
+
+/** The wait before try `attempt + 1` of a failed preview: doubling from 1 s, at most 30 s. */
+export const previewRetryDelay = (attempt: number) => Math.min(1000 * 2 ** attempt, 30_000);
+
 /**
  * The effects the server plans for `rows` (RC16), the reply texts it would post included; read again shortly after
  * the rows stop changing, the previous answer kept meanwhile. Each answer names the rows it was planned for
  * (`data.rows`, their JSON); `current` is true once the answer is for `rows` and nothing is being planned. `inputs`
  * is what else the plan depends on (a PR-level question: the PR's items); when it changes, the rows are planned
- * again. Nothing without rows.
+ * again. Nothing without rows. `planAgain` plans at once, also while a failed try waits for the next one.
  */
 export function useEffectsPreview(pr: PrRef, rows: DecisionBatchRow[] | null, inputs: string | null = null) {
+  const client = useQueryClient();
   const draft = JSON.stringify(rows);
   const [settled, setSettled] = useState(draft);
   useEffect(() => {
@@ -104,17 +117,27 @@ export function useEffectsPreview(pr: PrRef, rows: DecisionBatchRow[] | null, in
     return () => clearTimeout(timer);
   }, [draft]);
   const planned = JSON.parse(settled) as DecisionBatchRow[] | null;
+  const queryKey = ["effects-preview", ...prKey(pr), settled, inputs];
   const query = useQuery({
-    queryKey: ["effects-preview", ...prKey(pr), settled, inputs],
+    queryKey,
     queryFn: async () => ({ rows: settled, items: await api.previewCommentEffects(pr, { rows: planned! }) }),
     enabled: planned !== null && planned.length > 0,
     placeholderData: keepPreviousData,
     // A row's plan depends only on its item (its revision is in the row); a PR-level plan also on other items.
     staleTime: inputs === null ? Infinity : 0,
+    // Transient failures are tried again for as long as the card is open (no observer, no retry); a refusal is not.
+    retry: (_, error) => transientFailure(error),
+    retryDelay: previewRetryDelay,
   });
+  // A refetch would wait out the backoff of a try still pending; the pending try is dropped instead.
+  const planAgain = async () => {
+    await client.cancelQueries({ queryKey, exact: true });
+    await query.refetch();
+  };
   return {
     ...query,
     current: query.data?.rows === draft && !query.isPlaceholderData && !query.isFetching,
+    planAgain,
   };
 }
 

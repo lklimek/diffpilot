@@ -222,11 +222,15 @@ export function effectLines(effects: PlannedEffect[], several = false): EffectLi
   }));
 }
 
-/** The server's plan of a card's draft (RC16): nothing to plan yet (an input is missing), loading, refused, or ready. */
+/**
+ * The server's plan of a card's draft (RC16): nothing to plan yet (an input is missing), loading, refused (the
+ * input's fault), failed (no answer or a server failure; tried again shortly, or at once with `planAgain`), or ready.
+ */
 export type EffectsPreviewState =
   | { state: "idle" }
   | { state: "loading" }
   | { state: "error"; message: string }
+  | { state: "failed"; message: string; planAgain: () => void }
   | {
       state: "ready";
       items: EffectsPreview[];
@@ -248,6 +252,8 @@ export function decideBlocked(preview: EffectsPreviewState, rows: DecisionBatchR
   if (rows === null) return null;
   if (preview.state === "error")
     return "The server refused this input (its message is shown above); change it to decide.";
+  if (preview.state === "failed")
+    return `The effects could not be planned (${preview.message.replace(/\.$/, "")}); diffpilot tries again shortly, or choose "Plan again".`;
   if (preview.state === "ready" && !preview.updating && preview.rows === JSON.stringify(rows)) return null;
   return PLAN_PENDING;
 }
@@ -255,6 +261,10 @@ export function decideBlocked(preview: EffectsPreviewState, rows: DecisionBatchR
 /** The planned effects of item `C<no>` in `preview`, or null while it has none. */
 export const previewFor = (preview: EffectsPreviewState | undefined, no: number): PlannedEffect[] | null =>
   preview?.state === "ready" ? (preview.items.find((i) => i.item_no === no)?.effects ?? null) : null;
+
+/** The digest of what the planned decision on `C<no>` rests on (PR-level questions), or null. */
+export const digestFor = (preview: EffectsPreviewState | undefined, no: number): string | null =>
+  preview?.state === "ready" ? (preview.items.find((i) => i.item_no === no)?.plan_digest ?? null) : null;
 
 /** The reply text the server would post (the first reply or PR-level comment of the plan), or null. */
 export const plannedReply = (effects: PlannedEffect[]): string | null =>

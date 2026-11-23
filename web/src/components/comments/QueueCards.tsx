@@ -23,6 +23,7 @@ import { COMMENT_HINT } from "./DecisionForm";
 import {
   CHOICE_LABEL,
   decideBlocked,
+  digestFor,
   EFFECT_WORD,
   missingInput,
   previewFor,
@@ -240,7 +241,7 @@ export function GroupCard({
           {problem ?? error}
         </p>
       )}
-      <DecideNote id={`${id}-blocked`} reason={blocked} />
+      <DecideNote id={`${id}-blocked`} reason={blocked} preview={preview} />
       <div className="mt-2 flex flex-wrap gap-2">
         <Tooltip tip="Stores one decision per item of this group, each with its own record (Enter).">
           <button
@@ -443,7 +444,7 @@ export function DecideRestCard({
           {error}
         </p>
       )}
-      <DecideNote id={`${id}-blocked`} reason={blocked} />
+      <DecideNote id={`${id}-blocked`} reason={blocked} preview={preview} />
       <div className="flex flex-wrap gap-2">
         <Tooltip tip="Stores one decision per included row, marked via decide the rest.">
           <button
@@ -518,7 +519,9 @@ export function PrQuestionCard({
   // The plan the owner had in view for this draft: one that changes while the card is open (other items were read
   // or decided since) needs the owner's confirmation before Decide sends it.
   const draftKey = JSON.stringify(draft);
-  const plan = decideBlocked(preview, draft) === null ? JSON.stringify(effects) : null;
+  // The plan is its effects and, for P1 and P3, the digest of what they rest on (items and their revisions, reviews).
+  const digest = digestFor(preview, item.no);
+  const plan = decideBlocked(preview, draft) === null ? JSON.stringify({ effects, digest }) : null;
   const [seenPlan, setSeenPlan] = useState<{ draft: string; plan: string } | null>(null);
   if (plan !== null && seenPlan?.draft !== draftKey) setSeenPlan({ draft: draftKey, plan });
   const rescoped = plan !== null && seenPlan?.draft === draftKey && seenPlan.plan !== plan;
@@ -528,7 +531,8 @@ export function PrQuestionCard({
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
     if (busy || blocked) return;
-    onDecide(requestFor(comment));
+    // The digest of the plan the owner confirmed: the server refuses the decision if its plan changed since (409).
+    onDecide(digest === null ? requestFor(comment) : { ...requestFor(comment), plan_digest: digest });
   };
   useCardKeys({
     options: options.length,
@@ -647,7 +651,7 @@ export function PrQuestionCard({
           {error}
         </p>
       )}
-      <DecideNote id={`${id}-blocked`} reason={blocked} />
+      <DecideNote id={`${id}-blocked`} reason={blocked} preview={preview} />
       <div className="flex flex-wrap gap-2">
         <Tooltip tip="Stores the decision on this PR-level question (Enter).">
           <button

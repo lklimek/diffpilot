@@ -20,6 +20,7 @@ import {
   listItems,
   overview,
   previewEffects,
+  reopen,
   resetReviewLoop,
   undo,
 } from "./review-loop";
@@ -248,6 +249,60 @@ describe("mock effect function (effects.rs plan)", () => {
     expect(isRefused(undo("C24", byNo(24).revision))).toBe(false);
     expect(queued()).toContain(22);
     expect(previewOf(31, request("merge_with_follow_ups")).flatMap((e) => e.params.item_nos)).toContain(22);
+  });
+
+  it("RC16 gives P1 and P3 rows a plan digest, other rows none (mod.rs `Loaded::plan_digest`)", () => {
+    const digest = (no: number, req: DecideRequest) => {
+      const answer = previewEffects([{ item_no: no, ...req }]);
+      if (isRefused(answer)) throw new Error(answer[2]);
+      return answer[0]!.plan_digest;
+    };
+    expect(digest(24, request("merge_with_follow_ups"))).toEqual(expect.any(String));
+    expect(digest(24, request("another_round"))).toBeUndefined();
+    expect(digest(22, request("fix_here"))).toBeUndefined();
+    decideAllOfThepastaclaw();
+    askDismissal();
+    expect(digest(30, request("dismiss_stale_reviews"))).toEqual(expect.any(String));
+    expect(digest(30, request("keep_reviews"))).toBeUndefined();
+  });
+
+  it("RC8 refuses a P1 whose confirmed digest no longer fits (409 conflict); a fresh digest stores the larger plan", () => {
+    const digestOf = () => {
+      const answer = previewEffects([{ item_no: 24, ...request("merge_with_follow_ups") }]);
+      if (isRefused(answer)) throw new Error(answer[2]);
+      return answer[0]!.plan_digest!;
+    };
+    expect(isRefused(decide("C11", request("fix_here", { item_revision: byNo(11).revision })))).toBe(false);
+    const confirmed = digestOf();
+    // Asked again by another reader: C11 joins what "Merge now" follows up.
+    expect(isRefused(reopen("C11", byNo(11).revision))).toBe(false);
+    const merge = (digest: string) =>
+      decide(
+        "C24",
+        request("merge_with_follow_ups", { item_revision: byNo(24).revision, plan_digest: digest }),
+      );
+    expect(merge(confirmed)).toEqual([
+      409,
+      "conflict",
+      "What the decision would do changed since you confirmed it: C24. Check the plan again.",
+    ]);
+    const fresh = digestOf();
+    expect(fresh).not.toBe(confirmed);
+    const stored = merge(fresh);
+    if (isRefused(stored)) throw new Error(stored[2]);
+    expect(stored.effects.flatMap((e) => e.params.item_nos)).toContain(11);
+  });
+
+  it("a digest on a row whose plan has none is refused; a PR-level row without one is stored as planned then", () => {
+    const row = request("fix_here", { item_revision: byNo(22).revision, plan_digest: "d" });
+    expect(decide("C22", row)).toEqual([
+      409,
+      "conflict",
+      "What the decision would do changed since you confirmed it: C22. Check the plan again.",
+    ]);
+    expect(
+      isRefused(decide("C24", request("merge_with_follow_ups", { item_revision: byNo(24).revision }))),
+    ).toBe(false);
   });
 
   it("Decide the rest leaves out gate items, repeats asked again and items without an assessment", () => {

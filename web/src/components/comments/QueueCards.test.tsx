@@ -18,7 +18,15 @@ const UNFIT: [string, EffectsPreviewState, string][] = [
   ["planning", { state: "loading" }, PENDING],
   ["planned for other rows", { state: "ready", items: [], rows: "[]", updating: false }, PENDING],
   ["refused", { state: "error", message: "C18: this decision needs a reason." }, REFUSED],
+  [
+    "failed",
+    { state: "failed", message: "The service is unavailable.", planAgain: () => {} },
+    'The effects could not be planned (The service is unavailable); diffpilot tries again shortly, or choose "Plan again".',
+  ],
 ];
+/** Plan again is offered exactly when the plan failed (not for a refusal: the input has to change). */
+const expectPlanAgain = (preview: EffectsPreviewState) =>
+  expect(screen.queryByRole("button", { name: "Plan again" }) !== null).toBe(preview.state === "failed");
 
 beforeEach(() => {
   resetReviewLoop();
@@ -76,6 +84,7 @@ describe("GroupCard (US5)", () => {
       const decide = screen.getByRole("button", { name: "Reject all 2" });
       expect(decide).toHaveAttribute("aria-disabled", "true");
       expect(decide).toHaveAccessibleDescription(expect.stringContaining(reason));
+      expectPlanAgain(preview);
       await userEvent.click(decide);
       fireEvent.keyDown(document.body, { key: "Enter" });
       expect(onDecide).not.toHaveBeenCalled();
@@ -118,6 +127,7 @@ describe("DecideRestCard (US7)", () => {
     const apply = screen.getByRole("button", { name: /^Apply \d+ decisions$/ });
     expect(apply).toHaveAttribute("aria-disabled", "true");
     expect(apply).toHaveAccessibleDescription(expect.stringContaining(reason));
+    expectPlanAgain(preview);
     await userEvent.click(apply);
     expect(onConfirm).not.toHaveBeenCalled();
   });
@@ -174,11 +184,17 @@ describe("PrQuestionCard (US11, US12)", () => {
     const handlers = { onDecide: vi.fn(), onSkip: vi.fn() };
     const onDraft = vi.fn<(rows: DecisionBatchRow[] | null) => void>();
     const view = render(card(item, handlers, { preview: { state: "loading" }, onDraft }));
-    const drafted = JSON.stringify(onDraft.mock.calls.at(-1)![0]);
-    const plan = (effects: PlannedEffect[]) =>
+    // The rows the card drafted last.
+    const drafted = () => JSON.stringify(onDraft.mock.calls.at(-1)![0]);
+    const plan = (effects: PlannedEffect[], digest?: string) =>
       view.rerender(
         card(item, handlers, {
-          preview: { state: "ready", items: [{ item_no: item.no, effects }], rows: drafted, updating: false },
+          preview: {
+            state: "ready",
+            items: [{ item_no: item.no, effects, ...(digest ? { plan_digest: digest } : {}) }],
+            rows: drafted(),
+            updating: false,
+          },
           onDraft,
         }),
       );
@@ -220,6 +236,7 @@ describe("PrQuestionCard (US11, US12)", () => {
       const decide = screen.getByRole("button", { name: "Decide" });
       expect(decide).toHaveAttribute("aria-disabled", "true");
       expect(decide).toHaveAccessibleDescription(expect.stringContaining(reason));
+      expectPlanAgain(preview);
       await userEvent.click(decide);
       fireEvent.keyDown(document.body, { key: "Enter" });
       expect(onDecide).not.toHaveBeenCalled();
@@ -242,6 +259,33 @@ describe("PrQuestionCard (US11, US12)", () => {
     expect(screen.queryByText(/What this decision acts on changed since you looked/)).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Decide" }));
     expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ kind: "merge_with_follow_ups" }));
+  });
+
+  it("Decide sends the digest of the plan the owner confirmed; a changed digest needs confirming again", async () => {
+    const { onDecide, plan } = showDrafted(byNo(24));
+    const followUp = [effect("follow_up_pr", { item_nos: [11, 22] })];
+    plan(followUp, "d1");
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    expect(onDecide).toHaveBeenLastCalledWith(
+      expect.objectContaining({ kind: "merge_with_follow_ups", plan_digest: "d1" }),
+    );
+    // Same effects, but what they rest on changed (an item's revision): the owner confirms again.
+    plan(followUp, "d2");
+    expect(screen.getByText(/What this decision acts on changed since you looked/)).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole("button", { name: "Use the new plan" }));
+    await userEvent.click(screen.getByRole("button", { name: "Decide" }));
+    expect(onDecide).toHaveBeenLastCalledWith(expect.objectContaining({ plan_digest: "d2" }));
+  });
+
+  it("a plan without a digest (Another round) sends none", async () => {
+    const { onDecide, plan } = showDrafted(byNo(24));
+    fireEvent.keyDown(document.body, { key: "2" });
+    plan([]);
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ kind: "another_round" }));
+    expect(onDecide.mock.calls[0]![0]).not.toHaveProperty("plan_digest");
   });
 
   it("dismissal: the field shows the server's default message, which is posted when left as is", async () => {

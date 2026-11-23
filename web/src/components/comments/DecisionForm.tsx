@@ -342,7 +342,7 @@ export function DecisionForm(props: DecisionFormProps) {
           {problem ?? error}
         </p>
       )}
-      <DecideNote id={`${id}-blocked`} reason={blocked} />
+      <DecideNote id={`${id}-blocked`} reason={blocked} preview={props.preview} />
       <div className="mt-2.5 flex flex-wrap gap-2">
         <Tooltip tip="Stores the decision and opens the next question (Enter).">
           <button
