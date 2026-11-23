@@ -411,12 +411,15 @@ async fn per_job_codex_home_has_lean_config_and_private_files() {
         "model_reasoning_effort = \"high\"",
         "project_doc_max_bytes = 0",
         "hooks = false",
-        "multi_agent = false",
         "approval_policy = \"never\"",
         "web_search = \"disabled\"",
     ] {
         assert!(config.lines().any(|l| l == line), "missing {line}");
     }
+    assert!(
+        config.contains("\n[agents]\nenabled = false\n"),
+        "sub-agents off"
+    );
     assert!(
         !config.contains("trust_level"),
         "the project is never trusted"

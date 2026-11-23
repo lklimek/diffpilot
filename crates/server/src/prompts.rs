@@ -49,7 +49,7 @@ pub fn required_skills() -> Vec<String> {
         .collect()
 }
 
-/// Owner default for sub-agents: off (ADR-002; threat model T5, `multi_agent = false`).
+/// Owner default for sub-agents: off (ADR-002; threat model T5, `[agents] enabled = false`).
 pub const SUB_AGENTS_DEFAULT: bool = false;
 /// Largest `plan`, `pr_context`, `analyse_flow` or `ask` prompt in bytes (about 32k tokens); a repair prompt
 /// may add its quoted output. Untrusted texts are clipped to fixed caps, so only a hunk listing can exceed it:

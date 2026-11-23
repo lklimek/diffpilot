@@ -49,7 +49,7 @@ pub(crate) const AUTO_COMPACT_TOKEN_LIMIT: u32 = 400_000;
 /// the deployed Codex with a ~300k-token fork: measure compaction time and per-request input on the real stack.
 pub(crate) const FORK_COMPACT_TOKEN_LIMIT: u32 = 80_000;
 
-/// Settings of an answer-only job (dashboard ranking), checked against the pinned Codex 0.167: `shell_tool`
+/// Settings of an answer-only job (dashboard ranking), checked against the pinned Codex 0.171: `shell_tool`
 /// off removes `exec_command` and `write_stdin` (its `unified_exec` opt-out is ignored but kept should a later
 /// version honour it), `view_image` off; with a read-only sandbox for what remains (`apply_patch`, which no key
 /// removes). The code-mode `exec`
@@ -92,6 +92,9 @@ enabled = false
 [skills.bundled]
 enabled = false
 
+[agents]
+enabled = false
+
 [features]
 plugins = false
 apps = false
@@ -104,7 +107,7 @@ hooks = false
 tool_suggest = false
 goals = false
 daemon_auto_start = false
-multi_agent = false
+multi_agent_v2 = false
 {extra_features}"#,
         model = toml_string(&model.model),
     );
@@ -334,12 +337,12 @@ required = false
             "approval_policy = \"never\"",
             "project_doc_max_bytes = 0",
             "hooks = false",
-            "multi_agent = false",
             "plugins = false",
         ] {
             assert!(config.lines().any(|l| l == line), "missing {line}");
         }
         assert!(config.contains("[skills.bundled]\nenabled = false"));
+        assert!(config.contains("[agents]\nenabled = false"));
         assert!(
             !config.contains("trust_level"),
             "the project is never trusted"
@@ -364,7 +367,6 @@ required = false
             "shell_tool = false",
             "unified_exec = false",
             "view_image = false",
-            "multi_agent = false",
         ] {
             assert!(
                 config.lines().any(|l| l == line),
@@ -442,6 +444,34 @@ required = false
         }
     }
 
+    /// Sub-agents off (ADR-002): `[agents] enabled = false` also wins over a model whose catalog entry selects
+    /// sub-agents, unless `features.multi_agent_v2` is on, so that is pinned off; the deprecated
+    /// `features.multi_agent` does neither, and Codex 0.168+ warns about it on every job.
+    #[test]
+    fn every_job_config_disables_sub_agents() {
+        for answer_only in [false, true] {
+            let config = config_toml(
+                &model(),
+                &access("http://agentic.lan:8190/mcp"),
+                Path::new("/x"),
+                NO_PROXY,
+                AUTO_COMPACT_TOKEN_LIMIT,
+                answer_only,
+            );
+            assert!(config.contains("\n[agents]\nenabled = false\n"), "{config}");
+            let features = &config[config.find("\n[features]\n").expect("a features table")..];
+            let features = &features[..features[1..].find("\n[").map_or(features.len(), |i| i + 1)];
+            assert!(
+                features.lines().any(|l| l == "multi_agent_v2 = false"),
+                "{config}"
+            );
+            assert!(
+                !config.lines().any(|l| l.starts_with("multi_agent =")),
+                "{config}"
+            );
+        }
+    }
+
     #[test]
     fn uninstalled_repo_job_has_no_github_access() {
         let mut access = access("http://agentic.lan:8190/mcp");
@@ -455,6 +485,41 @@ required = false
     #[test]
     fn no_access_means_no_mcp_server() {
         assert!(!job_config(&AgentAccess::default()).contains("mcp_servers"));
+    }
+
+    /// The generated configs as golden files `golden/config-*.toml` (fake credentials), the inputs of the offline
+    /// checks of a Codex upgrade (runbook "Codex CLI upgrade"). `UPDATE_GOLDEN=1` rewrites them.
+    #[test]
+    fn generated_configs_match_the_golden_files() {
+        let github = Path::new("/usr/local/bin/github-mcp-server");
+        for (name, access, answer_only) in [
+            (
+                "analysis-mcp",
+                access("http://memcan.invalid:8190/mcp"),
+                false,
+            ),
+            ("analysis", AgentAccess::default(), false),
+            ("answer-only", AgentAccess::default(), true),
+        ] {
+            let config = config_toml(
+                &model(),
+                &access,
+                github,
+                NO_PROXY,
+                AUTO_COMPACT_TOKEN_LIMIT,
+                answer_only,
+            );
+            let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("src/provider/codex/golden/config-{name}.toml"));
+            if std::env::var_os("UPDATE_GOLDEN").is_some() {
+                std::fs::write(&golden, &config).unwrap();
+            }
+            assert_eq!(
+                config,
+                std::fs::read_to_string(&golden).expect("golden file; run with UPDATE_GOLDEN=1"),
+                "{name} differs from its golden file (UPDATE_GOLDEN=1)"
+            );
+        }
     }
 
     #[test]

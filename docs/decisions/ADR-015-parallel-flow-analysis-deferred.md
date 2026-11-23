@@ -38,7 +38,7 @@ for a complete Tour is superseded by the owner's lazy-review decision; concurren
 
 ## Alternatives not selected
 
-Codex sub-agents inside one job stay disabled (`SUB_AGENTS_DEFAULT` and `multi_agent = false`). Delegation
+Codex sub-agents inside one job stay disabled (`SUB_AGENTS_DEFAULT` and `[agents] enabled = false`). Delegation
 would leave scheduling, per-flow progress, retry and cancellation inside one agent turn; it does not provide
 the product's independent verified flow checkpoints. Token volume and context duplication still require
 measurement. This is a design inference, not a measured speed comparison.

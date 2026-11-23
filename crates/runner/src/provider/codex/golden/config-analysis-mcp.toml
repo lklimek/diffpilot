@@ -1,0 +1,48 @@
+model = "gpt-6.1-sol"
+model_reasoning_effort = "high"
+model_auto_compact_token_limit = 400000
+sandbox_mode = "danger-full-access"
+web_search = "disabled"
+approval_policy = "never"
+project_doc_max_bytes = 0
+
+[analytics]
+enabled = false
+
+[skills.bundled]
+enabled = false
+
+[agents]
+enabled = false
+
+[features]
+plugins = false
+apps = false
+remote_plugin = false
+plugin_discovery_prefetch = false
+image_generation = false
+browser_use = false
+computer_use = false
+hooks = false
+tool_suggest = false
+goals = false
+daemon_auto_start = false
+multi_agent_v2 = false
+
+[mcp_servers.github]
+command = "/usr/local/bin/github-mcp-server"
+args = ["stdio", "--read-only", "--tools=pull_request_read,issue_read,list_issues,list_pull_requests,search_issues,search_pull_requests,search_code,get_file_contents,list_commits,get_commit"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghs_CONFIG_CANARY" }
+env_vars = ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"]
+enabled_tools = ["pull_request_read", "issue_read", "list_issues", "list_pull_requests", "search_issues", "search_pull_requests", "search_code", "get_file_contents", "list_commits", "get_commit"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+required = true
+
+[mcp_servers.memcan]
+url = "http://memcan.invalid:8190/mcp"
+http_headers = { Authorization = "Bearer memcan-CONFIG-CANARY" }
+enabled_tools = ["search", "search_memories", "search_code", "search_standards", "add_memory"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+required = false

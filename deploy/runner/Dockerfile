@@ -52,15 +52,16 @@ RUN --mount=type=cache,id=diffpilot-cargo-registry,target=/root/.cargo/registry 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS fetch
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-ARG CODEX_VERSION=0.167.0
+ARG CODEX_VERSION=0.171.0
 ARG CODEX_TARGET=x86_64-unknown-linux-musl
-# codex-package_SHA256SUMS of release rust-v0.167.0 (S1a).
-ARG CODEX_PACKAGE_SHA256=3bbf75e83de6b58aed28f2cf6e33ad423ec31fd4700a1457b94be557ea5a7c6e
+# codex-package_SHA256SUMS of release rust-v0.171.0 (equals the asset digest of the release).
+ARG CODEX_PACKAGE_SHA256=8391d67757496bfd14893eca6cbf0c96994bf2627566ff1f018f70600c9ef6b3
 ARG GITHUB_MCP_VERSION=2.1.0
 # github-mcp-server_2.1.0_checksums.txt, Linux_x86_64 (S5).
 ARG GITHUB_MCP_SHA256=a442f9db287cea01008bcb55fe6bc0292270301046c3edbd1a8b22d6e4157b2b
 # Notices the release archives lack, from the same tags: Codex LICENSE and NOTICE; github-mcp-server's dependency
-# list and the licence texts of its Go modules (third-party/ of the tag's source archive).
+# list and the licence texts of its Go modules (third-party/ of the tag's source archive). The three Codex digests
+# are sha256 of the files downloaded at tag rust-v0.171.0 (unchanged since rust-v0.167.0).
 ARG CODEX_LICENSE_SHA256=d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc
 ARG CODEX_NOTICE_SHA256=9d71575ecfd9a843fc1677b0efb08053c6ba9fd686a0de1a6f5382fd3c220915
 # The package's codex-resources/bwrap is bubblewrap (LGPL-2.0-or-later), built from codex-rs/vendor/bubblewrap.

@@ -6,7 +6,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 publish="${SR_SMOKE_PUBLISH:-$here/smoke-publish.sh}"
-image="${SR_SMOKE_IMAGE:-diffpilot-spike-codex:0.167.0}"
+image="${SR_SMOKE_IMAGE:-diffpilot-spike-codex:0.171.0}"
 mkdir -p /data/tmp
 tmp="$(mktemp -d /data/tmp/smoke-publish-check.XXXXXX)"
 # shellcheck disable=SC2317  # invoked by the EXIT trap
