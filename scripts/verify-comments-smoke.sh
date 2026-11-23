@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # verify_comments smoke (spike S13-3): one real `codex exec --output-schema` of a rendered verify_comments prompt in
 # the S1a spike container (unprivileged, read-only root fs), laid out as the runner lays out a job: cwd = job dir,
-# the read-only checkout at ./repo, the skills of the job kind (contracts verify_comments::SKILLS) copied to
-# $HOME/.agents/skills, the runner's per-job config (no GitHub or MemCan MCP: no installation token is minted here).
+# the read-only checkout at ./repo, no skills (the job kind needs none), the runner's per-job config (no GitHub or
+# MemCan MCP: no installation token is minted here).
 # The credential is handled as in schema-smoke.sh (per-job CODEX_HOME, compare-and-swap write-back); CODEX_HOME lives
 # outside the agent's working directory, and the container reports whether a credential value reached the job output.
 #
 # Usage: scripts/verify-comments-smoke.sh PROMPT_FILE REPO_DIR
 #   PROMPT_FILE  a prompt rendered as the server renders it (crates/server/src/review_loop/assess/prompt.rs)
 #   REPO_DIR     a git checkout of the head named in the prompt, with the base commit present (both checked)
-# Env:   SMOKE_SKILLS (claudius skills directory, required), SMOKE_IMAGE (diffpilot-spike-codex:0.167.0),
+# Env:   SMOKE_IMAGE (diffpilot-spike-codex:0.167.0),
 #        SMOKE_VOLUME (sr-spike-codex-home), SMOKE_MODEL (gpt-6.1-sol), SMOKE_EFFORT (high),
 #        SMOKE_ARCHIVE (/data/artifacts/diffpilot/<today>/verify-comments-smoke)
 # Prints one summary line: rc, seconds, schema verdict and the measures (tokens, items, output bytes).
@@ -23,7 +23,6 @@ image="${SMOKE_IMAGE:-diffpilot-spike-codex:0.167.0}"
 volume="${SMOKE_VOLUME:-sr-spike-codex-home}"
 model="${SMOKE_MODEL:-gpt-6.1-sol}"
 effort="${SMOKE_EFFORT:-high}"
-skills="${SMOKE_SKILLS:-}"
 kind=verify_comments
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 work="/data/tmp/verify-comments-smoke/${stamp}"
@@ -40,7 +39,6 @@ base="$(grep -m1 -oE 'base commit [0-9a-f]{40}' "${prompt}" | cut -d' ' -f3 || t
 [[ -n "${head}" && -n "${base}" ]] || die "the prompt names no base and head commit"
 [[ "$(git -C "${checkout}" rev-parse HEAD)" == "${head}" ]] || die "${checkout} is not at the prompt's head ${head}"
 git -C "${checkout}" cat-file -e "${base}^{commit}" 2>/dev/null || die "the prompt's base ${base} is missing in ${checkout}"
-[[ -n "${skills}" && -d "${skills}" ]] || die "SMOKE_SKILLS must name the claudius skills directory"
 for tool in docker git python3; do command -v "${tool}" >/dev/null || die "${tool} not found"; done
 python3 -I -c 'import jsonschema' 2>/dev/null || die "python3-jsonschema missing (apt install python3-jsonschema)"
 docker image inspect "${image}" >/dev/null 2>&1 || die "image ${image} not found (S1a harness build.sh)"
@@ -48,16 +46,11 @@ docker volume inspect "${volume}" >/dev/null 2>&1 || die "volume ${volume} not f
 case "${effort}" in low | medium | high) ;; *) die "SMOKE_EFFORT must be low, medium or high" ;; esac
 
 out="${work}/jobs/${kind}"
-mkdir -p "${work}/in" "${work}/skills" "${out}"
+mkdir -p "${work}/in" "${out}"
 chmod 777 "${out}"
 echo "verify-comments-smoke: work dir ${work}"
 cp "${prompt}" "${work}/in/prompt.txt"
 cp "${repo_root}/schemas/agent/${kind}.schema.json" "${work}/in/${kind}.schema.json"
-# The job kind's skills only, regular files only (the runner's `Skills::files`).
-for skill in severity check-pr-comments; do
-  [[ -f "${skills}/${skill}/SKILL.md" ]] || die "skill ${skill} missing in ${skills}"
-  (cd "${skills}" && find "${skill}" -type f -exec cp --parents {} "${work}/skills/" \;)
-done
 
 # The runner's per-job config (crates/runner/src/provider/codex/config.rs) without MCP servers.
 cat >"${work}/in/config.toml" <<TOML
@@ -97,8 +90,6 @@ cat >"${work}/in/job.sh" <<'JOB'
 set -u
 home=/codex/home
 mkdir -m 700 "${home}" /job/home /job/tmp
-mkdir -p /job/home/.agents
-cp -R /skills /job/home/.agents/skills
 install -m 600 /in/config.toml "${home}/config.toml"
 install -m 600 "/in/${KIND}.schema.json" "${home}/output-schema.json"
 install -m 600 /master/auth.json "${home}/auth.json"
@@ -150,7 +141,6 @@ args=(--rm --init --name "sr-verify-comments-smoke-${stamp,,}" --user 10001:1000
   --tmpfs "/codex:rw,exec,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700"
   --mount "type=volume,source=${volume},target=/master"
   --mount "type=bind,source=${work}/in,target=/in,readonly"
-  --mount "type=bind,source=${work}/skills,target=/skills,readonly"
   --mount "type=bind,source=${checkout},target=/job/repo,readonly"
   --mount "type=bind,source=${out},target=/out"
   -e "KIND=${kind}")

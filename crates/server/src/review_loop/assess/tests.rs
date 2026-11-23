@@ -489,8 +489,8 @@ async fn reassessment_for_a_new_prompt_version_charges_nobody() {
     assert_eq!(pass.user_id.as_deref(), Some("u1"));
 }
 
-/// SK1: the job reads its own claudius skills; each assessment keeps the claudius commit it was made with
-/// (provenance), also when reused, and a new claudius commit never makes an item stale (owner Q28 = c).
+/// The job mounts no claudius skill (ADR-002 amendment 2026-11-23); an assessment keeps a claudius commit the result
+/// reports (provenance), also when reused, and a new claudius commit never makes an item stale (owner Q28 = c).
 #[tokio::test]
 async fn skills_commit_is_provenance_and_never_reassesses() {
     let f = fixture(BASE).await;
@@ -501,7 +501,7 @@ async fn skills_commit_is_provenance_and_never_reassesses() {
     let first = live_pass(&f.state).await;
     let job = first.job_id.expect("job");
     let spec = f.state.db.jobs().get(job).await.expect("job").spec;
-    assert_eq!(spec.skills, ["severity", "check-pr-comments"]);
+    assert!(spec.skills.is_empty(), "{:?}", spec.skills);
     let made_with = "0123456789abcdef0123456789abcdef01234567";
     let output = json!({"purpose": "Retry RPC calls with backoff on timeout.",
         "items": [entry(&format!("C{}", same.no))], "answer": null});

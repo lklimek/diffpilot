@@ -17,9 +17,6 @@ use crate::api::review_loop::{
 
 /// Items per job at most (plan §4.2); 10 take about 5 minutes and 23 KB of output at high effort (spike S13-3).
 pub const MAX_ITEMS: usize = 10;
-/// The claudius skills a `verify_comments` job reads, mounted read-only (ADR-002 amendment, SK1); `report-format`
-/// stays unmounted. The runner refuses a job of this kind that names any other skill.
-pub const SKILLS: [&str; 2] = ["severity", "check-pr-comments"];
 /// Replies of an item's thread an input carries at most, the latest ones.
 pub const MAX_REPLIES: usize = 8;
 /// Characters of a reply an input carries at most.

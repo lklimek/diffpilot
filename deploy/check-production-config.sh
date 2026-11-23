@@ -55,7 +55,7 @@ own_values=(SR_PUBLIC_URL SR_GITHUB_APP_ID SR_GITHUB_CLIENT_ID SR_MEMCAN_URL "${
 # Variables that only the local or development overrides use.
 dev_only='^(SR_SERVER_UID|SR_SERVER_GID)$'
 # Skills some job kind requires (contracts::agent::JobKind::required_skills); a set SR_RUNNER_SKILLS must list each.
-required_skills=(severity check-pr-comments)
+required_skills=(severity)
 agent_uid=10002
 
 # load_env FILE NAME: fills the associative array NAME as docker compose reads an env file (last assignment wins,
@@ -167,8 +167,8 @@ check_env() {
   if [[ -n "${values[SR_RUNNER_SKILLS]:-}" ]]; then
     for key in "${required_skills[@]}"; do
       if [[ ",${values[SR_RUNNER_SKILLS]// /}," != *",$key,"* ]]; then
-        say "SR_RUNNER_SKILLS leaves out $key, which jobs require (every comment assessment or analysis fails);" \
-          "add it, or remove the line to use the default severity,check-pr-comments"
+        say "SR_RUNNER_SKILLS leaves out $key, which jobs require (every analysis and Ask fails);" \
+          "add it, or remove the line to use the default severity"
       fi
     done
   fi
@@ -300,8 +300,7 @@ if ((self_test)); then
   want_text="SR_ALLOWED_LOGINS still holds a placeholder" env_case "allowed logins placeholder" fail 0 \
     -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=REPLACE_WITH_GITHUB_LOGINS|'
   env_case "short runner secret" fail 0 -e 's|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=CANARY-0123456789abcdef0123456|'
-  want_text="SR_RUNNER_SKILLS leaves out check-pr-comments" env_case "skills pinned without check-pr-comments" fail 0 \
-    -e 's|^SR_RUNNER_SKILLS=.*|SR_RUNNER_SKILLS=severity|'
+  env_case "skills pinned to severity" pass 0 -e 's|^SR_RUNNER_SKILLS=.*|SR_RUNNER_SKILLS=severity|'
   want_text="SR_RUNNER_SKILLS leaves out severity" env_case "skills without severity" fail 0 \
     -e 's|^SR_RUNNER_SKILLS=.*|SR_RUNNER_SKILLS=check-pr-comments|'
   env_case "skills unset (default)" pass 0 -e '/^SR_RUNNER_SKILLS=/d'

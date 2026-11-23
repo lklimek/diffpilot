@@ -257,21 +257,15 @@ fn dashboard_spec(job: &JobRecord) -> contracts::job::spec::JobSpec {
     }
 }
 
-/// A `verify_comments` job's spec as handed out: its prompt, schema, checkout and own skills; no session, context
-/// pack or other skill, whatever was stored (ADR-023, threat model T23). Its read-only installation token is added
-/// by the claim.
+/// A `verify_comments` job's spec as handed out: its prompt, schema and checkout; no session, context pack or skill,
+/// whatever was stored (ADR-023, ADR-002 amendment 2026-11-23, threat model T23). Its read-only installation token is
+/// added by the claim.
 fn verify_spec(job: &JobRecord) -> contracts::job::spec::JobSpec {
     contracts::job::spec::JobSpec {
         session: None,
         working_session: None,
         context_pack: None,
-        skills: job
-            .spec
-            .skills
-            .iter()
-            .filter(|skill| contracts::agent::verify_comments::SKILLS.contains(&skill.as_str()))
-            .cloned()
-            .collect(),
+        skills: Vec::new(),
         flow_file: None,
         access: AgentAccess::default(),
         ..job.spec.clone()
@@ -765,9 +759,9 @@ mod tests {
         assert_eq!(s.db.jobs().github_token(job, 1).await.expect("token"), None);
     }
 
-    /// A `verify_comments` job gets a read-only installation token for the PR repository only (ADR-005), its own
-    /// skills and nothing else: no MemCan endpoint, session, context pack or other skill, whatever its stored spec
-    /// asked for (ADR-023, ADR-002 amendment, threat model T23); its model is the installation choice.
+    /// A `verify_comments` job gets a read-only installation token for the PR repository only (ADR-005) and nothing
+    /// else: no MemCan endpoint, session, context pack or skill, whatever its stored spec asked for (ADR-023, ADR-002
+    /// amendment 2026-11-23, threat model T23); its model is the installation choice.
     #[tokio::test]
     async fn verify_job_spec_has_read_only_token() {
         let capture = LogCapture::start();
@@ -819,7 +813,7 @@ mod tests {
         assert_eq!(claimed.spec.session, None);
         assert_eq!(claimed.spec.working_session, None);
         assert_eq!(claimed.spec.context_pack, None);
-        assert_eq!(claimed.spec.skills, ["severity", "check-pr-comments"]);
+        assert!(claimed.spec.skills.is_empty(), "no skill");
         let mint = s
             .github
             .received_requests()

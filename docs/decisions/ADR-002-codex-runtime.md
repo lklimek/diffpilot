@@ -42,7 +42,7 @@
 - The runner image and WP3-OPS need no seccomp or AppArmor relaxation.
 - The agent can read its per-job `CODEX_HOME` (credential copy, config); accepted under T1/T9 (WP1-T).
 
-## Amendment (2026-11-22, SK1, ADR-023)
+## Amendment (2026-11-22, SK1, ADR-023; superseded by the amendment of 2026-11-23)
 - `verify_comments` jobs mount `severity` and `check-pr-comments` (`contracts::agent::verify_comments::SKILLS`);
   analysis and Ask jobs keep `severity`. The server hands a `verify_comments` job only those skills and the runner
   refuses one with any other (`misfit`); still no MemCan endpoint and no session. `report-format` stays unmounted.
@@ -53,3 +53,14 @@
   provenance ("Assessed with claudius <short sha>"). Owner Q28 = c: it is not part of the assessment fingerprint, so
   a new claudius commit never re-assesses anything; only new or changed items and "Assess again" use the current
   skills. The prompt text change is recorded under the same `VERIFY_PROMPT_VERSION` for the same reason.
+
+## Amendment (2026-11-23, owner decision, comparison report R8 and R13)
+- `verify_comments` jobs mount no skill (`JobKind::VerifyComments.required_skills()` is empty) and the runner refuses
+  one that carries any (`misfit`). Their prompt states, in diffpilot's words, what they took from the skills: the four
+  gates the output schema allows (G-FUNDS, G-SECRET, G-CRYPTO, G-DATA), the category catalogue, the necessity rule
+  and the checking rules and decision kinds of `check-pr-comments`. Reading both skills cost about 37 KB of tool
+  output per job (S13-3 §4) and their fetch, reply and report steps conflicted with the job.
+- Analysis, repair and Ask jobs keep `severity`; the runner's claudius checkout, `SR_RUNNER_SKILLS` (default
+  `severity`) and the required-skills check at start stay for them. A list that still names `check-pr-comments` is
+  accepted.
+- Comment assessments made from then on carry no claudius commit (`skills_commit` null).

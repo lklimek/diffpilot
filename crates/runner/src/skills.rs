@@ -54,8 +54,8 @@ pub enum SkillError {
     Unavailable,
     /// A requested skill is not in the allow-list.
     #[error(
-        "the job needs the skill {0}, which SR_RUNNER_SKILLS does not list; add it there (default \
-         severity,check-pr-comments) or remove the setting"
+        "the job needs the skill {0}, which SR_RUNNER_SKILLS does not list; add it there (default severity) or \
+         remove the setting"
     )]
     NotAllowed(String),
     /// A requested skill is missing or empty in the claudius checkout.
@@ -279,28 +279,22 @@ mod tests {
             claudius(root.path()),
             "main".to_owned(),
             root.path().join("checkout"),
-            vec!["severity".to_owned()],
+            vec!["delegate".to_owned()],
             Duration::from_secs(3600),
         );
-        assert_eq!(pinned.missing_required(), ["check-pr-comments"]);
+        assert_eq!(pinned.missing_required(), ["severity"]);
         pinned.refresh_if_due().await;
-        let error = pinned
-            .required_files(&["severity".to_owned(), "check-pr-comments".to_owned()])
-            .unwrap_err();
+        let error = pinned.required_files(&["severity".to_owned()]).unwrap_err();
         assert!(
-            matches!(&error, SkillError::NotAllowed(name) if name == "check-pr-comments"),
+            matches!(&error, SkillError::NotAllowed(name) if name == "severity"),
             "{error:?}"
         );
         assert!(error.to_string().contains("SR_RUNNER_SKILLS"), "{error}");
-        let error = pinned
-            .required_files(&["severity".to_owned(), "delegate".to_owned()])
-            .unwrap_err();
-        assert!(matches!(error, SkillError::NotAllowed(_)), "{error:?}");
         let default = Skills::new(
             String::new(),
             "main".to_owned(),
             root.path().join("other"),
-            vec!["severity".to_owned(), "check-pr-comments".to_owned()],
+            vec!["severity".to_owned()],
             Duration::from_secs(3600),
         );
         assert!(default.missing_required().is_empty());

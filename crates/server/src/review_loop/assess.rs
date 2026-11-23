@@ -64,7 +64,7 @@ pub const PASS_SPACING: SignedDuration = SignedDuration::from_mins(10);
 /// recorded day needed about 55 automatic passes, plus on-demand ones (spike S13-3).
 pub const DAILY_PASSES_PER_USER: u32 = 80;
 /// Version of `prompts/verify_comments.md` with the output schema, stored with every assessment.
-pub const VERIFY_PROMPT_VERSION: u32 = 3;
+pub const VERIFY_PROMPT_VERSION: u32 = 4;
 /// The window of the daily cap.
 const DAY: SignedDuration = SignedDuration::from_hours(24);
 
@@ -782,10 +782,7 @@ async fn submit(
         session: None,
         working_session: None,
         context_pack: None,
-        skills: agent::verify_comments::SKILLS
-            .iter()
-            .map(|skill| (*skill).to_owned())
-            .collect(),
+        skills: Vec::new(),
         access: AgentAccess::default(),
     };
     Ok(state

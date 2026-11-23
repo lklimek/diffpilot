@@ -473,7 +473,7 @@ impl Executor {
 /// Why a job's kind, target and access do not fit together (ADR-018, ADR-023, threat model T17, T23): a judge job
 /// is a dashboard job and a `verify_comments` job a comments job, each the other way round too; a dashboard job
 /// carries no agent access, skills, flow file or session to resume, a `verify_comments` job no MemCan endpoint,
-/// flow file, session or skill other than its own ([`verify_comments::SKILLS`]; only the read-only GitHub token).
+/// flow file, session or skill (only the read-only GitHub token; ADR-002 amendment 2026-11-23).
 fn misfit(spec: &JobSpec) -> Option<&'static str> {
     let dashboard = matches!(spec.target, JobTarget::Dashboard { .. });
     let comments = matches!(spec.target, JobTarget::PullRequestComments(_));
@@ -489,13 +489,8 @@ fn misfit(spec: &JobSpec) -> Option<&'static str> {
     {
         return Some("a dashboard job must not carry agent access, skills or a session");
     }
-    let foreign_skill = spec
-        .skills
-        .iter()
-        .any(|skill| !verify_comments::SKILLS.contains(&skill.as_str()));
-    (comments && (holds_session || foreign_skill || spec.access.memcan.is_some())).then_some(
-        "a verify_comments job must not carry MemCan access, a session or skills other than its own",
-    )
+    (comments && (holds_session || !spec.skills.is_empty() || spec.access.memcan.is_some()))
+        .then_some("a verify_comments job must not carry MemCan access, a session or skills")
 }
 
 /// Numbers activities from 1, scrubs every known secret and then clips them, forwards at most one ready
