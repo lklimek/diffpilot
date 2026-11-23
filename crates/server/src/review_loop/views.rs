@@ -108,6 +108,11 @@ pub(crate) fn item_view(
         revision: record.revision,
         first_seen_head: record.first_seen_head.clone(),
         first_round: record.first_round,
+        written: loaded
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.written.get(&record.stable_key))
+            .cloned(),
         github: record.github.clone(),
         outside: record.outside.clone(),
         gone_at: record.gone_at,

@@ -160,7 +160,7 @@ async fn view(
 mod tests {
     use axum::body::Body;
     use axum::http::Request;
-    use contracts::api::dashboard::RepositoryRule;
+    use contracts::api::dashboard::{RepositoryRule, SlackName};
     use contracts::common::RepoRef;
     use db::repo::analyses::testing::seed_analysis;
     use db::repo::{DEFAULT_TENANT, Db};
@@ -282,6 +282,10 @@ mod tests {
             memcan_extra_projects: vec!["release-notes".to_owned()],
             ready_label: "  ready ".to_owned(),
             time_zone: Some("Europe/Warsaw".to_owned()),
+            slack_names: vec![SlackName {
+                login: "bob".to_owned(),
+                slack: "<@U01ABC>".to_owned(),
+            }],
             ..DashboardSettings::default()
         };
         for (name, alias) in [("platform", Some("PLAT")), ("legacy-tools", None)] {
@@ -330,14 +334,24 @@ mod tests {
             json!(["platform", "legacy-tools", "release-notes"])
         );
         assert_eq!(saved["defaults"], defaults());
+        assert_eq!(
+            saved["settings"]["slack_names"],
+            json!([{ "login": "bob", "slack": "<@U01ABC>" }])
+        );
         assert_eq!(h.read().await, saved);
         let mut changed = filled();
         changed["repositories"] = json!([]);
         changed["include_todos"] = json!(false);
+        // A client that does not know the Slack names table sends none: the table is emptied.
+        changed
+            .as_object_mut()
+            .expect("object")
+            .remove("slack_names");
         let (status, saved) = h.save(changed).await;
         assert_eq!(status, StatusCode::OK, "{saved}");
         assert_eq!(saved["memcan_projects"], json!(["release-notes"]));
         assert_eq!(h.read().await["settings"]["include_todos"], false);
+        assert_eq!(h.read().await["settings"]["slack_names"], json!([]));
     }
 
     #[tokio::test]

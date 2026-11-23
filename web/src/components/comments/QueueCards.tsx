@@ -1,6 +1,6 @@
 // The other question kinds of V1 (plan §2.4, §2.6): group, "Decide the rest", PR-level questions, assessment
 // running and the empty queue.
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type {
   AssessmentProgress,
   CommentItem,
@@ -15,6 +15,7 @@ import { Banner } from "../banner/Banner";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { clockText } from "../format/time";
 import { Kbd } from "../help/Kbd";
+import { CodeText } from "../section/CodeText";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
@@ -33,7 +34,7 @@ import {
   type Choice,
   type EffectsPreviewState,
 } from "./decisions";
-import { GateChip, itemId, sourceText } from "./parts";
+import { itemId, sourceText } from "./parts";
 import { DecideNote, PlannedEffects, useDraft } from "./PlannedEffects";
 
 const INPUT = "w-full rounded-md border border-muted bg-surface px-2 py-1 text-text";
@@ -57,7 +58,7 @@ const OpenItem = ({ item }: { item: CommentItem }) => (
   <OpenExternal href={item.url} label={`Open ${itemId(item)} on GitHub`} />
 );
 
-const Heading = ({ id, text }: { id: string; text: string }) => {
+const Heading = ({ id, text }: { id: string; text: ReactNode }) => {
   const ref = useRef<HTMLHeadingElement>(null);
   useEffect(() => ref.current?.focus(), [id]);
   return (
@@ -147,7 +148,18 @@ export function GroupCard({
       </p>
       <Heading
         id={`${id}-h`}
-        text={`Same recommendation: ${label}${shared ? ` — ${rec.reason}` : ""} (${items.length} items)`}
+        text={
+          <>
+            Same recommendation: {label}
+            {shared && (
+              <>
+                {" — "}
+                <CodeText text={rec.reason} />
+              </>
+            )}{" "}
+            ({items.length} items)
+          </>
+        }
       />
       <table className="w-full border-collapse text-[13px]">
         <thead>
@@ -181,7 +193,11 @@ export function GroupCard({
               </td>
               <td className="border-b border-border px-2 py-1.5">{item.title}</td>
               <td className="border-b border-border px-2 py-1.5">
-                {shared ? item.assessment?.necessity.reason : item.assessment?.recommendation.reason}
+                {item.assessment && (
+                  <CodeText
+                    text={shared ? item.assessment.necessity.reason : item.assessment.recommendation.reason}
+                  />
+                )}
               </td>
               <td className="border-b border-border px-2 py-1.5">
                 <Tooltip tip={`Takes ${itemId(item)} out of this group; it is asked on its own (i).`}>
@@ -393,7 +409,7 @@ export function DecideRestCard({
                 </td>
                 <td className="border-b border-border px-2 py-1">{item?.title}</td>
                 <td className="border-b border-border px-2 py-1">
-                  {CHOICE_LABEL[rec.kind]}: {rec.reason}
+                  {CHOICE_LABEL[rec.kind]}: <CodeText text={rec.reason} />
                 </td>
                 <td className="border-b border-border px-2 py-1">
                   {effects.map((e) => EFFECT_WORD[e.kind] ?? e.kind).join(", ") || "—"}
@@ -733,17 +749,19 @@ export function AssessmentRunningCard({ progress }: { progress: AssessmentProgre
   );
 }
 
-/** The empty queue with what was read (plan §3.2 Empty). */
+/** The empty queue with what was read (plan §3.2 Empty); `children` (how to start an agent) follow. */
 export function EmptyQueueCard({
   read,
   assessed,
   head,
   now,
+  children,
 }: {
   read: GithubRead;
   assessed: number;
   head: string;
   now: Date;
+  children?: ReactNode;
 }) {
   return (
     <section
@@ -759,15 +777,7 @@ export function EmptyQueueCard({
       <p className="text-xs text-muted">
         An empty queue says nothing about defects the reviewers did not raise.
       </p>
+      {children}
     </section>
   );
 }
-
-/** Gate chips of an item (queue rows, tables). */
-export const GateChips = ({ item }: { item: CommentItem }) => (
-  <>
-    {item.gates.map((g) => (
-      <GateChip key={g.gate} gate={g.gate} />
-    ))}
-  </>
-);

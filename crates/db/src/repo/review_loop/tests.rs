@@ -1,4 +1,5 @@
 use contracts::api::access_tokens::AccessTokenId;
+use contracts::api::dashboard::CommentTally;
 use contracts::api::review_loop::{
     AuthorKind, CarryEvidence, CarryKind, ChannelKind, CommentAssessment, CommentItemKind,
     DecisionKind, DecisionVia, DeliveryOutcome, EffectKind, EffectParams, EffectState, Executor,
@@ -889,6 +890,161 @@ async fn items_no_longer_read_are_marked_gone_and_kept() {
         panic!("a returning item changes");
     };
     assert_eq!((back.gone_at, back.revision), (None, gone.revision + 1));
+}
+
+/// My work's comment counts (R1b `WorkItem.comments`): read PRs only, no PR-level questions or gone items; waiting
+/// as the queue counts it, without items a standing "merge now" decision hands to its follow-up PR.
+#[tokio::test]
+async fn comment_tallies_count_comments_and_the_waiting_ones_per_read_pull_request_and_name_watches()
+ {
+    let db = db().await;
+    let rl = db.review_loop();
+    let waiting = new_item(&db, "dedupe-waiting").await;
+    let decided = new_item(&db, "dedupe-decided").await;
+    let gone = new_item(&db, "dedupe-gone").await;
+    let followed = new_item(&db, "dedupe-followed").await;
+    decide_one(&db, fix_decision(&decided), at(2)).await;
+    rl.mark_gone(
+        PR,
+        &["dedupe-waiting", "dedupe-decided", "dedupe-followed"],
+        at(3),
+    )
+    .await
+    .expect("gone");
+    let mut question = observed("pr:3:merge", "Merge now?");
+    question.kind = CommentItemKind::PrQuestion;
+    let UpsertOutcome::New(question) = rl
+        .upsert_item(T, PR, &question, ItemState::Undecided, at(4))
+        .await
+        .expect("question")
+    else {
+        panic!("a new question");
+    };
+    let merge = decide_one(
+        &db,
+        NewDecision {
+            kind: DecisionKind::MergeWithFollowUps,
+            reply_text: None,
+            comment: None,
+            effects: vec![NewEffect {
+                seq: 1,
+                after: None,
+                kind: EffectKind::FollowUpPr,
+                executor: Executor::Agent,
+                params: EffectParams {
+                    item_nos: vec![followed.no],
+                    ..EffectParams::default()
+                },
+            }],
+            ..fix_decision(&question)
+        },
+        at(5),
+    )
+    .await;
+    let acme = |owner: &str, name: &str, number| {
+        (
+            RepoRef {
+                owner: owner.into(),
+                name: name.into(),
+            },
+            number,
+        )
+    };
+    let wanted = [
+        acme("acme", "node-client", 501),
+        acme("ACME", "Node-Client", 482),
+        acme("acme", "other", 482),
+        acme("acme", "node-client", 490),
+    ];
+    assert!(
+        rl.comment_tallies(T, "u1", &wanted)
+            .await
+            .expect("tallies")
+            .is_empty(),
+        "no PR read successfully or watched yet"
+    );
+    db.review_loop()
+        .ensure_pr(T, 2, at(6))
+        .await
+        .expect("pr 490");
+    rl.watch(T, "u1", 2, 20, at(6)).await.expect("watch 490");
+    rl.record_read(
+        PR,
+        &ReadResult::Read {
+            snapshot: serde_json::json!({}),
+            round_count: 3,
+        },
+        at(6),
+    )
+    .await
+    .expect("read");
+    let tallies = rl.comment_tallies(T, "u1", &wanted).await.expect("tallies");
+    assert_eq!(
+        tallies,
+        [
+            PrCommentTally {
+                index: 1,
+                counts: Some(CommentTally {
+                    total: 3,
+                    needs_you: 1,
+                }),
+                watched: false,
+            },
+            // Watched, its comments never read (the watch's first read failed).
+            PrCommentTally {
+                index: 3,
+                counts: None,
+                watched: true,
+            },
+        ],
+        "C{} waits; C{} is decided, C{} gone, C{} followed up",
+        waiting.no,
+        decided.no,
+        gone.no,
+        followed.no
+    );
+    let question = rl
+        .item_by_no(PR, question.no)
+        .await
+        .expect("read")
+        .expect("question");
+    rl.undo(T, question.id, question.revision, "u1", at(7))
+        .await
+        .expect("undo");
+    assert_eq!(
+        rl.comment_tallies(T, "u1", &wanted).await.expect("tallies")[0]
+            .counts
+            .map(|counts| counts.needs_you),
+        Some(2),
+        "an undone merge decision {} hands nothing over",
+        merge.id
+    );
+    assert_eq!(
+        rl.comment_tallies(T, "u2", &wanted)
+            .await
+            .expect("tallies")
+            .iter()
+            .map(|tally| (tally.index, tally.watched))
+            .collect::<Vec<_>>(),
+        [(1, false)],
+        "another user's watch is not this user's"
+    );
+    rl.unwatch("u1", 2).await.expect("unwatch");
+    assert_eq!(
+        rl.comment_tallies(T, "u1", &wanted)
+            .await
+            .expect("tallies")
+            .len(),
+        1,
+        "an unwatched PR without a read is not listed"
+    );
+    assert!(
+        rl.comment_tallies("other", "u1", &wanted)
+            .await
+            .expect("tallies")
+            .is_empty(),
+        "another tenant reads nothing"
+    );
 }
 
 /// Plan §2.4: an answer landing on an undecided item asks it back; other states keep theirs.

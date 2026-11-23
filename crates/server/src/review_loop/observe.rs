@@ -5,7 +5,9 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use contracts::api::review_loop::{AuthorKind, CommentItemKind, ItemGithubFacts, ItemLocation};
+use contracts::api::review_loop::{
+    AuthorKind, CommentItemKind, ItemGithubFacts, ItemLocation, Written,
+};
 use contracts::api::tour::CiStatus;
 use contracts::common::LineRange;
 use contracts::ids::CommitSha;
@@ -127,6 +129,9 @@ pub struct Snapshot {
     pub thread_ids: BTreeMap<String, String>,
     /// Review node id by key of a review-body item.
     pub review_ids: BTreeMap<String, String>,
+    /// Where GitHub says each item was written, by item key; empty in a snapshot stored before it was kept.
+    #[serde(default)]
+    pub written: BTreeMap<String, Written>,
 }
 
 /// An observed item with what the server needs beside the stored fields.
@@ -158,6 +163,32 @@ fn round_of(rounds: &[RoundFact], review: Option<&str>, at: Option<Timestamp>) -
         .filter(|round| round.finished_at <= at)
         .count();
     u32::try_from(before).ok().filter(|count| *count > 0)
+}
+
+/// Where an entry of review `review` (if any) written at `at` was written: a round's own review names that round with
+/// its head and end, any other review its commit with `at`; `None` without a time.
+fn written_on(
+    rounds: &[RoundFact],
+    reviews: &[Review],
+    review: Option<&str>,
+    at: Option<Timestamp>,
+) -> Option<Written> {
+    if let Some(round) = review.and_then(|id| rounds.iter().find(|round| round.review_id == id)) {
+        return Some(Written {
+            round: Some(round.number),
+            commit: Some(CommitSha(round.head.clone())),
+            at: round.finished_at,
+        });
+    }
+    let commit = review
+        .and_then(|id| reviews.iter().find(|candidate| candidate.id == id))
+        .and_then(|review| review.commit.as_ref())
+        .map(|commit| CommitSha(commit.oid.clone()));
+    Some(Written {
+        round: None,
+        commit,
+        at: at?,
+    })
 }
 
 fn facts(replies: u32) -> ItemGithubFacts {
@@ -303,6 +334,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
     let mut keys = HashSet::new();
     let mut thread_ids = BTreeMap::new();
     let mut review_ids = BTreeMap::new();
+    let mut written = BTreeMap::new();
     let mut unresolved = 0u32;
 
     for thread in &read.threads {
@@ -347,6 +379,11 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         github.bot_status = bot.then(|| markers::bot_status(&first.body)).flatten();
         github.marker = dedupe;
         thread_ids.insert(stable_key.clone(), thread.id.clone());
+        let review_id = first.pull_request_review.as_ref().map(|r| r.id.as_str());
+        let at = parse_time(&first.created_at);
+        if let Some(on) = written_on(&rounds, &read.reviews, review_id, at) {
+            written.insert(stable_key.clone(), on);
+        }
         observed.push(Observed {
             item: ObservedItem {
                 kind: CommentItemKind::Thread,
@@ -364,11 +401,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
                 body_hash: markers::body_hash(&text),
                 body: text,
                 head: head.clone(),
-                round: round_of(
-                    &rounds,
-                    first.pull_request_review.as_ref().map(|r| r.id.as_str()),
-                    parse_time(&first.created_at),
-                ),
+                round: round_of(&rounds, review_id, at),
                 bot_severity: heading.map(|(severity, _)| severity),
                 github,
                 outside: None,
@@ -432,6 +465,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         let author_kind = bots.kind(review.author.as_ref());
         let at = review.submitted_at.as_deref().and_then(parse_time);
         let round = round_of(&rounds, Some(&review.id), at);
+        let on = written_on(&rounds, &read.reviews, Some(&review.id), at);
         let url = github_web_url(&review.url);
         let latest_round = latest_rounds
             .get(&login(review.author.as_ref()).to_lowercase())
@@ -439,6 +473,9 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         let mut push = |ordinal: usize, title: String, text: String, severity, location| {
             let stable_key = format!("review:{}:{ordinal}", review.id);
             review_ids.insert(stable_key.clone(), review.id.clone());
+            if let Some(on) = &on {
+                written.insert(stable_key.clone(), on.clone());
+            }
             observed.push(Observed {
                 item: ObservedItem {
                     kind: CommentItemKind::ReviewBody,
@@ -526,6 +563,10 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         let Some(id) = comment.database_id else {
             continue;
         };
+        let at = parse_time(&comment.created_at);
+        if let Some(on) = written_on(&rounds, &read.reviews, None, at) {
+            written.insert(format!("comment:{id}:1"), on);
+        }
         observed.push(Observed {
             item: ObservedItem {
                 kind: CommentItemKind::PrComment,
@@ -538,7 +579,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
                 body_hash: markers::body_hash(&text),
                 body: text,
                 head: head.clone(),
-                round: round_of(&rounds, None, parse_time(&comment.created_at)),
+                round: round_of(&rounds, None, at),
                 bot_severity: None,
                 github: facts(0),
                 outside: None,
@@ -571,6 +612,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
         unresolved_threads: unresolved,
         thread_ids,
         review_ids,
+        written,
     };
     (observed, snapshot)
 }

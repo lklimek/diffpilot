@@ -3,6 +3,7 @@ import type { CreateAccessToken, CreatedAccessToken } from "../../../api/generat
 import { busyTip, buttonClass } from "../../button/button";
 import { useAction } from "../../inspector/action";
 import { Tooltip } from "../../tooltip/Tooltip";
+import { writeClipboard } from "../common/copyList";
 
 /** Lifetimes offered, in days (`CreateAccessToken::EXPIRY_DAYS`); 90 is preselected. */
 const EXPIRY_DAYS = [30, 90, 365];
@@ -60,13 +61,9 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
       setSecret(created.token);
     });
   };
+  // Plain text only: a token never goes to the clipboard as HTML. Works over plain HTTP too (the LAN deployment).
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(secret ?? "");
-      setCopied("copied");
-    } catch {
-      setCopied("failed");
-    }
+    setCopied((await writeClipboard({ text: secret ?? "" })) ? "copied" : "failed");
   };
   // While the request runs the dialog stays: closing it then would hide a secret the server already made.
   const close = () => {

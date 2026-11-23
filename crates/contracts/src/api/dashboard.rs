@@ -720,6 +720,16 @@ pub struct WorkItem {
     pub llm: Option<ItemText>,
     /// The user's diffpilot analysis of this pull request, read at request time; null when none.
     pub review: Option<ReviewLink>,
+    /// Review comments diffpilot read for this pull request (Comments), counted at request time; absent before
+    /// diffpilot's first successful read of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub comments: Option<CommentTally>,
+    /// The user watches this pull request (RW1), read at request time; with `comments` absent its comments were
+    /// not read yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(as = "Option<bool>", optional)]
+    pub watched: bool,
     /// Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<PluginNote>>", optional)]
@@ -955,6 +965,17 @@ pub struct ReviewLink {
     pub has_my_state: bool,
 }
 
+/// Counts of a pull request's review comments in Comments (plan docs/review-workflow-plan.md §2.1): threads,
+/// review-body and PR-comment items of the last read, without PR-level questions and items the read no longer
+/// produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CommentTally {
+    /// Comments in any state.
+    pub total: u32,
+    /// Those waiting for a decision: the Needs you list of Comments.
+    pub needs_you: u32,
+}
+
 /// Server-sent event of `GET /api/v1/dashboard/refreshes/{id}/events`; the SSE `event` field is the tag.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -1014,6 +1035,18 @@ pub struct DashboardSettings {
     pub schedule_time: String,
     /// IANA time zone; null until the browser sends one.
     pub time_zone: Option<String>,
+    /// GitHub logins with the Slack name "Copy for Slack" writes instead of `@login` (at most 100 rows).
+    #[serde(default)]
+    pub slack_names: Vec<SlackName>,
+}
+
+/// One row of the Slack names table: a GitHub login and the text copied for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SlackName {
+    /// GitHub login (case-insensitive, unique in the table).
+    pub login: String,
+    /// Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g. `@jan.kowalski`.
+    pub slack: String,
 }
 
 impl Default for DashboardSettings {
@@ -1032,6 +1065,7 @@ impl Default for DashboardSettings {
             schedule_enabled: true,
             schedule_time: "06:00".to_owned(),
             time_zone: None,
+            slack_names: Vec::new(),
         }
     }
 }

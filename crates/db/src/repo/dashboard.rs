@@ -502,8 +502,8 @@ impl Dashboard<'_> {
         let saved = sqlx::query(
             "INSERT INTO dashboard_settings (user_id, tenant_id, linked_logins, enumerate_owners, repositories,
                  lookback_days, ready_label, skip_authors, known_bots, include_todos, memcan_extra_projects,
-                 schedule_enabled, schedule_time, time_zone, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 schedule_enabled, schedule_time, time_zone, slack_names, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (user_id) DO UPDATE SET linked_logins = excluded.linked_logins,
                  enumerate_owners = excluded.enumerate_owners, repositories = excluded.repositories,
                  lookback_days = excluded.lookback_days, ready_label = excluded.ready_label,
@@ -511,7 +511,8 @@ impl Dashboard<'_> {
                  include_todos = excluded.include_todos,
                  memcan_extra_projects = excluded.memcan_extra_projects,
                  schedule_enabled = excluded.schedule_enabled, schedule_time = excluded.schedule_time,
-                 time_zone = excluded.time_zone, updated_at = excluded.updated_at
+                 time_zone = excluded.time_zone, slack_names = excluded.slack_names,
+                 updated_at = excluded.updated_at
              WHERE dashboard_settings.tenant_id = excluded.tenant_id",
         )
         .bind(user_id)
@@ -528,6 +529,7 @@ impl Dashboard<'_> {
         .bind(settings.schedule_enabled)
         .bind(&settings.schedule_time)
         .bind(&settings.time_zone)
+        .bind(serde_json::to_string(&settings.slack_names)?)
         .bind(ts(now))
         .execute(self.pool)
         .await
@@ -1571,6 +1573,7 @@ fn settings_of(row: &SqliteRow) -> Result<StoredDashboardSettings, DbError> {
             schedule_enabled: row.try_get("schedule_enabled")?,
             schedule_time: row.try_get("schedule_time")?,
             time_zone: row.try_get("time_zone")?,
+            slack_names: json_column(row, "slack_names")?,
         },
         last_scheduled,
         updated_at: parse_ts(&row.try_get::<String, _>("updated_at")?, "updated_at")?,
@@ -1603,7 +1606,8 @@ fn judgement_of(row: &SqliteRow) -> Result<StoredJudgement, DbError> {
 #[cfg(test)]
 mod tests {
     use contracts::api::dashboard::{
-        ItemTarget, PolicyRef, RefreshFailureCode, RepositoryRule, ScanStepKey, StepState,
+        ItemTarget, PolicyRef, RefreshFailureCode, RepositoryRule, ScanStepKey, SlackName,
+        StepState,
     };
     use contracts::common::RepoRef;
     use contracts::job::spec::ReasoningEffort;
@@ -2010,6 +2014,10 @@ mod tests {
             schedule_enabled: false,
             schedule_time: "07:15".to_owned(),
             time_zone: Some("Europe/Warsaw".to_owned()),
+            slack_names: vec![SlackName {
+                login: "bob".to_owned(),
+                slack: "<@U01ABC>".to_owned(),
+            }],
         };
         dash.save_settings(T, "u1", &settings, at(0))
             .await
@@ -4216,5 +4224,19 @@ mod tests {
             stored.settings.known_bots,
             ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"]
         );
+    }
+
+    /// A settings row stored before migration 0027, or created with column defaults, has no Slack names.
+    #[tokio::test]
+    async fn rows_without_slack_names_read_an_empty_table() {
+        let db = db().await;
+        let dash = db.dashboard();
+        assert!(
+            dash.set_time_zone_if_unset(T, "u1", "Europe/Warsaw", at(0))
+                .await
+                .expect("zone")
+        );
+        let stored = dash.settings(T, "u1").await.expect("read").expect("row");
+        assert_eq!(stored.settings.slack_names, []);
     }
 }

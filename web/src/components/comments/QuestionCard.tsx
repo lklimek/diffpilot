@@ -1,5 +1,5 @@
 import { Tooltip } from "../tooltip/Tooltip";
-import { useEffect, useRef, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, type ReactNode } from "react";
 import type {
   CarryEvent,
   CodeContext,
@@ -13,14 +13,24 @@ import type {
 import { busyTip, buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
-import { clockText } from "../format/time";
+import { clockText, dateTimeText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, type EffectsPreviewState } from "./decisions";
 import { DecisionForm } from "./DecisionForm";
 import { GateMenu } from "./GateMenu";
 import { NotesElsewhere } from "./NotesElsewhere";
-import { Chip, FactChip, GateChip, GithubLinkedText, itemId, sourceText, VALIDITY } from "./parts";
+import { CodeText } from "../section/CodeText";
+import {
+  Chip,
+  FactChip,
+  GateChip,
+  GithubLinkedText,
+  itemId,
+  judgedAt,
+  sourceText,
+  validityAt,
+} from "./parts";
 
 /** The code context of the card: loading, failed, or the lines. */
 export type ContextState =
@@ -52,6 +62,8 @@ interface QuestionCardProps {
   filesHref: string | null;
   /** The PR page ("No analysis yet · Start on the PR page"). */
   prPageHref: string;
+  /** The pull request's head now: an assessment of another commit names that commit. */
+  prHead: string;
   onNavigate: Navigate;
   /** Answers in the Ask chat about this item. */
   askAnswers: number;
@@ -143,8 +155,35 @@ const Row = ({ term, children }: { term: string; children: ReactNode }) => (
   </>
 );
 
-/** The LLM assessment of the item, or why there is none. */
-function Assessment({ item }: { item: CommentItem }) {
+/**
+ * Where GitHub says the comment was written: a round's own review names the round with its commit and end, any
+ * other comment its review's commit and its own time; without them the head diffpilot first read it at.
+ */
+function Raised({ item }: { item: CommentItem }) {
+  const written = item.written;
+  if (!written)
+    return (
+      <>
+        {" "}
+        · first seen at <code>{item.first_seen_head.slice(0, 7)}</code>
+      </>
+    );
+  const on = written.commit && (
+    <>
+      {" "}
+      on <code>{written.commit.slice(0, 7)}</code>,
+    </>
+  );
+  return (
+    <>
+      {written.round !== undefined ? ` · raised in round ${written.round}` : " · written"}
+      {on} {dateTimeText(written.at)}
+    </>
+  );
+}
+
+/** The LLM assessment of the item, or why there is none; `prHead` is the pull request's head now. */
+function Assessment({ item, prHead }: { item: CommentItem; prHead: string }) {
   const a = item.assessment;
   if (item.assessment_state.state === "running")
     return <p className="m-0">LLM assessment running for this comment.</p>;
@@ -160,27 +199,37 @@ function Assessment({ item }: { item: CommentItem }) {
   return (
     <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[13px]">
       <Row term="The LLM says">
-        {VALIDITY[a.validity] ?? a.validity}
+        {validityAt(a.validity, a.head, prHead)}
+        <span className="block text-xs text-muted">
+          Judged on the code at {judgedAt(a.head, prHead)}, not on the code the comment was written on.
+        </span>
         {a.evidence.map((e) => (
           <span key={`${e.path}:${e.line}`} className="block text-xs">
             <code>
               {e.path}:{e.line}
             </code>{" "}
-            {e.note}
+            <CodeText text={e.note} />
           </span>
         ))}
       </Row>
       <Row term="Pre-existing on base">{a.pre_existing ? "yes" : "no, introduced by this PR"}</Row>
       <Row term="Necessity">
-        {a.necessity.verdict === "in" ? "in" : "out"}: {a.necessity.reason}
+        {a.necessity.verdict === "in" ? "in" : "out"}: <CodeText text={a.necessity.reason} />
         {a.necessity.better_pr && ` (better fit: ${a.necessity.better_pr})`}
       </Row>
       <Row term="Gates">{a.gates.length ? a.gates.join(", ") : "none named"}</Row>
       <Row term="Elsewhere">
-        {a.elsewhere.length ? a.elsewhere.map((e) => `${e.reference}: ${e.note}`).join("; ") : "—"}
+        {a.elsewhere.length
+          ? a.elsewhere.map((e, i) => (
+              <Fragment key={`${e.reference}:${i}`}>
+                {i > 0 && "; "}
+                {e.reference}: <CodeText text={e.note} />
+              </Fragment>
+            ))
+          : "—"}
       </Row>
       <Row term="Fix">
-        {a.fix_sketch ?? "—"}
+        {a.fix_sketch ? <CodeText text={a.fix_sketch} /> : "—"}
         {a.fix_size && ` · size ${a.fix_size}`}
       </Row>
       <Row term="Previously decided">
@@ -248,8 +297,7 @@ export function QuestionCard(props: QuestionCardProps) {
     >
       <p className="m-0 text-xs text-muted">
         {itemId(item)} · {props.position.index} of {props.position.total} · {sourceText(item)}
-        {item.first_round !== null && ` · first seen round ${item.first_round}`} at{" "}
-        <code>{item.first_seen_head.slice(0, 7)}</code>
+        <Raised item={item} />
       </p>
       <h2 id={`q-${item.id}`} ref={heading} tabIndex={-1} className="mt-1 mb-1.5 text-lg font-semibold">
         {itemId(item)} · {item.title}
@@ -435,11 +483,11 @@ export function QuestionCard(props: QuestionCardProps) {
         }
       >
         <div className="rounded-md border border-llm bg-llm-bg px-3 py-2">
-          <Assessment item={item} />
+          <Assessment item={item} prHead={props.prHead} />
         </div>
         {rec && (
           <p className="mt-2 mb-0 text-[13px]">
-            <b>Recommendation:</b> {CHOICE_LABEL[rec.kind] ?? rec.kind} — {rec.reason}{" "}
+            <b>Recommendation:</b> {CHOICE_LABEL[rec.kind] ?? rec.kind} — <CodeText text={rec.reason} />{" "}
             <ProvenanceTag source="llm" />
           </p>
         )}

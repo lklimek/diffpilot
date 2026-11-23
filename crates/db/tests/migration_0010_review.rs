@@ -257,9 +257,14 @@ async fn migration_0010_on_a_seeded_v9_database() {
         .into_iter()
         .filter(|entry| !rebuilt_0018(entry))
         .collect();
+    // 0027 adds `dashboard_settings.slack_names` in place (the schema tests check it): its table entry is compared
+    // without the added column, its rows without the value (an empty table).
+    const SLACK_NAMES_0027: &str = ", slack_names TEXT NOT NULL DEFAULT '[]'
+    CHECK (json_valid(slack_names) AND json_type(slack_names) = 'array')";
     let schema_after: Vec<_> = schema_after
         .into_iter()
         .filter(|entry| !rebuilt_0018(entry))
+        .map(|entry| entry.replace(SLACK_NAMES_0027, ""))
         .collect();
     let rows_after: Vec<(String, Vec<String>)> = rows_after
         .into_iter()
@@ -267,6 +272,7 @@ async fn migration_0010_on_a_seeded_v9_database() {
             let added: &[(usize, &str)] = match table.as_str() {
                 "jobs" => &[(4, "NULL")],
                 "questions" => &[(21, "NULL"), (3, "1")],
+                "dashboard_settings" => &[(18, "'[]'")],
                 _ => &[],
             };
             let rows = rows

@@ -18,7 +18,8 @@ import {
   resolveLocked,
   type Choice,
 } from "./decisions";
-import { GateChip, itemId, VALIDITY } from "./parts";
+import { CodeText } from "../section/CodeText";
+import { GateChip, itemId, validityAt } from "./parts";
 
 const VIA: Record<DecisionVia, string> = {
   question: "in Questions",
@@ -53,6 +54,8 @@ interface CommentsTableProps {
   prNumber: number;
   purpose: string | null;
   items: CommentItem[];
+  /** The pull request's head now: an assessment of another commit names that commit. */
+  prHead: string;
   /** Ask answers per item (live). */
   askAnswers: (item: CommentItem) => number;
   /** Questions with the item open (`?item=C14`). */
@@ -153,10 +156,20 @@ export function CommentsTable(props: CommentsTableProps) {
           {item.kind.replace("_", " ")} · {item.author_kind}
         </td>
         <td className={TD}>{problem(item)}</td>
-        <td className={TD}>{a ? `${a.necessity.verdict}: ${a.necessity.reason}` : "—"}</td>
+        <td className={TD}>
+          {a ? (
+            <>
+              {a.necessity.verdict}: <CodeText text={a.necessity.reason} />
+            </>
+          ) : (
+            "—"
+          )}
+        </td>
         <td className={TD}>{a?.elsewhere.length ? a.elsewhere.map((e) => e.reference).join(", ") : "—"}</td>
         <td className={TD}>
-          {a ? `${VALIDITY[a.validity]}${a.pre_existing ? "; pre-existing" : ""}` : "not assessed"}
+          {a
+            ? `${validityAt(a.validity, a.head, props.prHead)}${a.pre_existing ? "; pre-existing" : ""}`
+            : "not assessed"}
         </td>
         <td className={TD}>{a ? CHOICE_LABEL[a.recommendation.kind] : "—"}</td>
       </>

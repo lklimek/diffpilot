@@ -35,6 +35,7 @@ function show(item: CommentItem, props: Partial<Parameters<typeof QuestionCard>[
       flowHref={(f) => `/analyses/a#${f.step}`}
       filesHref="/analyses/a/files"
       prPageHref="/pr/acme/node-client/482"
+      prHead={item.assessment?.head ?? item.first_seen_head}
       onNavigate={vi.fn()}
       askAnswers={item.ask_answers}
       busy={false}
@@ -56,6 +57,7 @@ function show(item: CommentItem, props: Partial<Parameters<typeof QuestionCard>[
         flowHref={(f) => `/analyses/a#${f.step}`}
         filesHref="/analyses/a/files"
         prPageHref="/pr/acme/node-client/482"
+        prHead={next.assessment?.head ?? next.first_seen_head}
         onNavigate={vi.fn()}
         askAnswers={next.ask_answers}
         busy={false}
@@ -88,6 +90,72 @@ describe("QuestionCard (plan §3.2)", () => {
     expect(screen.getByRole("button", { name: "LLM assessment" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText(COMMENT_HINT)).toBeVisible();
     expectTrustWording(document.body.textContent ?? "");
+  });
+
+  it("names a round only for a comment its round's review raised; any other where GitHub says it was written", () => {
+    const header = () => screen.getByText(/^C22 · 2 of 9/);
+    const c22 = byNo(22);
+    const { rerender } = show({
+      ...c22,
+      first_round: 1,
+      written: { round: 1, commit: "a797ee1c0ffee000000000000000000000000000", at: "2026-10-26T12:00:00Z" },
+    });
+    expect(header()).toHaveTextContent(/raised in round 1 on a797ee1, 26 Oct 2026/);
+    expect(header()).not.toHaveTextContent(c22.first_seen_head.slice(0, 7));
+    // A person's thread after round 2: its review's commit and its own time, no round.
+    rerender({
+      ...c22,
+      first_round: 2,
+      written: { commit: "52d2da140191a9d47becf6a446310be803c007fc", at: "2026-11-12T09:00:00Z" },
+    });
+    expect(header()).toHaveTextContent(/written on 52d2da1, 12 Nov 2026/);
+    expect(header()).not.toHaveTextContent(/round/);
+    rerender({ ...c22, first_round: 2, written: { at: "2026-11-12T09:05:00Z" } });
+    expect(header()).toHaveTextContent(/written 12 Nov 2026/);
+    rerender({ ...c22, first_round: 2, written: undefined });
+    expect(header()).toHaveTextContent(new RegExp(`first seen at ${c22.first_seen_head.slice(0, 7)}$`));
+  });
+
+  it("says validity is judged at the PR head, so a comment fixed since is not read as a mistaken reviewer", () => {
+    show(byNo(14));
+    expect(screen.getByText("partly valid at the PR head")).toBeVisible();
+    expect(
+      screen.getByText("Judged on the code at the PR head, not on the code the comment was written on."),
+    ).toBeVisible();
+    expectTrustWording(document.body.textContent ?? "");
+  });
+
+  it("an assessment of an earlier head names that commit, not the PR head", () => {
+    const c14 = byNo(14);
+    show(c14, { prHead: "9f3c2e1d00000000000000000000000000000000" });
+    const at = c14.assessment!.head.slice(0, 7);
+    expect(screen.getByText(`partly valid at ${at}, an earlier head`)).toBeVisible();
+    expect(
+      screen.getByText(
+        `Judged on the code at ${at}, an earlier head, not on the code the comment was written on.`,
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/at the PR head/)).toBeNull();
+  });
+
+  it("shows the backtick spans of the LLM's texts as code, not as backticks", () => {
+    const c14 = byNo(14);
+    const a = c14.assessment!;
+    show({
+      ...c14,
+      assessment: {
+        ...a,
+        necessity: { ...a.necessity, reason: "`need_tok` belongs to this PR." },
+        recommendation: { ...a.recommendation, reason: "Cap `rec_tok` here." },
+        evidence: [{ ...a.evidence[0]!, note: "`ev_tok` is never reset." }],
+        elsewhere: [{ kind: "issue", reference: "#12", note: "see `else_tok`" }],
+        fix_sketch: "Add `sketch_tok`.",
+      },
+    });
+    const codes = [...document.body.querySelectorAll("code")].map((c) => c.textContent);
+    const tokens = ["need_tok", "rec_tok", "ev_tok", "else_tok", "sketch_tok"];
+    for (const token of tokens) expect(codes).toContain(token);
+    for (const token of tokens) expect(document.body.textContent).not.toContain(`\`${token}\``);
   });
 
   it("renders the comment as text: only https://github.com links become links (T24)", () => {

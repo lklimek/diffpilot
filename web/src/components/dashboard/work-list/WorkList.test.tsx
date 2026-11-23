@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useState, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { SizeMark, TodosState, WorkItem } from "../../../api/generated/types";
 import { ALL_SIZES } from "../common/size";
@@ -535,5 +535,82 @@ describe("WorkList: TODO rows kept while MemCan was unreachable (plan §G Failur
     unmount();
     render(<List todos={{ status: "read", read_at: "2026-11-18T09:24:00Z", failed_at: null }} />);
     expect(row(todoKeys[0]!)).not.toHaveTextContent(/not refreshed/);
+  });
+});
+
+describe("WorkList: comments of a pull request (owner 2026-11-23)", () => {
+  const commentsHref = (item: WorkItem) =>
+    `/pr/${item.repo!.owner}/${item.repo!.name}/${item.number}/comments`;
+  const counted: WorkItem = {
+    ...ITEMS.find((item) => item.id === "NC-482")!,
+    comments: { total: 12, needs_you: 5 },
+  };
+  const unread: WorkItem = {
+    ...ITEMS.find((item) => item.kind === "pr" && item.id !== "NC-482")!,
+    comments: undefined,
+  };
+  // A ranked issue (a P0 alarm is drawn by AlarmRow, without the comments line).
+  const issue = ITEMS.find((item) => item.kind === "issue" && item.score.tier !== "p0")!;
+  const list = (props: Partial<ComponentProps<typeof WorkList>>) => (
+    <WorkList
+      items={[counted, unread, issue]}
+      kinds={ALL_KINDS}
+      onKindsChange={vi.fn()}
+      reviewHref={reviewHref}
+      commentsHref={commentsHref}
+      now={NOW}
+      {...props}
+    />
+  );
+
+  it("counted comments link to the pull request's Comments; a pull request without counts offers Watch", async () => {
+    const onNavigate = vi.fn();
+    const onWatch = vi.fn();
+    render(list({ onNavigate, onWatch }));
+    const link = screen.getByRole("link", { name: /^12 comments · 5 need you: comments of #482 / });
+    expect(link).toHaveAttribute("href", "/pr/acme/node-client/482/comments");
+    expect(link).toHaveAccessibleDescription(/counted from its last read/);
+    await userEvent.click(link);
+    expect(onNavigate).toHaveBeenCalledWith("/pr/acme/node-client/482/comments");
+    const watch = screen.getByRole("button", { name: `Watch #${unread.number} ${unread.title}` });
+    // One way: a saved Watch reads as a note; Unwatch lives in Watched PRs.
+    expect(watch).not.toHaveAttribute("aria-pressed");
+    await userEvent.click(watch);
+    expect(onWatch).toHaveBeenCalledWith(unread);
+    expect(screen.queryByRole("button", { name: `Watch #${counted.number} ${counted.title}` })).toBeNull();
+    const issueRow = document.querySelector<HTMLElement>(`li[data-item="${issue.key}"]`)!;
+    expect(within(issueRow).queryByRole("button", { name: /^Watch/ })).toBeNull();
+    expect(issueRow.querySelector("[data-comments-link]")).toBeNull();
+  });
+
+  it("one comment reads in the singular; a Watch being saved waits, a saved one reads Watching", async () => {
+    const onWatch = vi.fn();
+    const one: WorkItem = { ...counted, comments: { total: 1, needs_you: 1 } };
+    const { rerender } = render(list({ items: [one, unread], onWatch, watchingKeys: [unread.key] }));
+    expect(screen.getByRole("link", { name: /^1 comment · 1 needs you:/ })).toBeVisible();
+    const saving = screen.getByRole("button", { name: `Watch #${unread.number} ${unread.title}` });
+    expect(saving).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(saving);
+    expect(onWatch).not.toHaveBeenCalled();
+    rerender(list({ items: [one, unread], onWatch, watchedKeys: [unread.key] }));
+    expect(screen.queryByRole("button", { name: /^Watch/ })).toBeNull();
+    expect(screen.getByText("Watching, comments not read yet")).toBeVisible();
+  });
+
+  it("a pull request the user watches whose comments were never read reads Watching, not Watch", () => {
+    render(list({ items: [{ ...unread, watched: true }], onWatch: vi.fn() }));
+    expect(screen.queryByRole("button", { name: /^Watch/ })).toBeNull();
+    expect(screen.getByText("Watching, comments not read yet")).toBeVisible();
+  });
+
+  it("a private pull request without counts says why, and offers no Watch", () => {
+    render(list({ items: [{ ...unread, private: true }], onWatch: vi.fn() }));
+    expect(screen.queryByRole("button", { name: /^Watch/ })).toBeNull();
+    expect(screen.getByText("comments not read: private repository")).toBeVisible();
+  });
+
+  it("without onWatch no Watch is offered", () => {
+    render(list({}));
+    expect(screen.queryByRole("button", { name: /^Watch/ })).toBeNull();
   });
 });

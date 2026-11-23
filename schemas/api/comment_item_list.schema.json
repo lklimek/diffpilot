@@ -87,7 +87,7 @@
           "minimum": 0
         },
         "first_seen_head": {
-          "description": "Head when first read.",
+          "description": "Head when diffpilot first read it (not the head the comment was written on).",
           "$ref": "#/$defs/CommitSha"
         },
         "first_round": {
@@ -98,6 +98,17 @@
           ],
           "format": "uint32",
           "minimum": 0
+        },
+        "written": {
+          "description": "Where GitHub says the comment was written, from the latest read; absent when that read gives no time (an\nitem it no longer produces, a read stored before this was kept).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Written"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "github": {
           "description": "GitHub facts.",
@@ -386,6 +397,40 @@
     "CommitSha": {
       "description": "A full 40-character hexadecimal git commit id.",
       "type": "string"
+    },
+    "Written": {
+      "description": "The commit and time a comment was written on, as GitHub records them.",
+      "type": "object",
+      "properties": {
+        "round": {
+          "description": "The bot round whose own review raised it (then `commit` and `at` are that round's head and end); absent for\nany other comment.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "commit": {
+          "description": "The commit its review was made on; absent for a PR comment or a review GitHub did not list.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitSha"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "at": {
+          "description": "When it was written (the review's submission, the comment's creation).",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "at"
+      ]
     },
     "ItemGithubFacts": {
       "description": "Facts diffpilot read from GitHub about an item (badges name the check).",

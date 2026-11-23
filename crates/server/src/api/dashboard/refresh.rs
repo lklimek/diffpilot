@@ -337,6 +337,7 @@ async fn items(
         items.push(item.item);
     }
     review_links(&state, &session, &mut items, &heads).await?;
+    comment_tallies(&state, &session, &mut items).await?;
     let body = ItemPage {
         mentions,
         mention_coverage,
@@ -406,6 +407,37 @@ async fn review_links(
             has_my_state: link.has_review_state,
             analysed_head: link.head_sha,
         });
+    }
+    Ok(())
+}
+
+/// Fills `comments` and `watched` of the pull requests on the page from the tenant's review-loop tables and the
+/// user's watches, read now in one statement; a pull request whose comments diffpilot never read keeps no counts.
+/// Part of the page's `ETag` like `review`.
+async fn comment_tallies(
+    state: &AppState,
+    session: &Session,
+    items: &mut [WorkItem],
+) -> Result<(), DbError> {
+    let (rows, wanted): (Vec<usize>, Vec<_>) = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.kind == ItemKind::Pr)
+        .filter_map(|(row, item)| Some((row, (item.repo.clone()?, item.number?))))
+        .unzip();
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tallies = state
+        .db
+        .review_loop()
+        .comment_tallies(&session.tenant_id, &session.user_id, &wanted)
+        .await?;
+    for tally in tallies {
+        if let Some(&row) = rows.get(tally.index) {
+            items[row].comments = tally.counts;
+            items[row].watched = tally.watched;
+        }
     }
     Ok(())
 }

@@ -1317,13 +1317,18 @@ state: ItemState,
  */
 revision: number,
 /**
- * Head when first read.
+ * Head when diffpilot first read it (not the head the comment was written on).
  */
 first_seen_head: CommitSha,
 /**
  * Bot round when first read; null before the first round.
  */
 first_round: number | null,
+/**
+ * Where GitHub says the comment was written, from the latest read; absent when that read gives no time (an
+ * item it no longer produces, a read stored before this was kept).
+ */
+written?: Written,
 /**
  * GitHub facts.
  */
@@ -1407,6 +1412,21 @@ export type CommentScope = { "scope": "in_diff",
  * Ranges, on the response's side, whose lines get a line thread.
  */
 line_thread_ranges: Array<LineRange>, } | { "scope": "not_in_diff" };
+
+/**
+ * Counts of a pull request's review comments in Comments (plan docs/review-workflow-plan.md §2.1): threads,
+ * review-body and PR-comment items of the last read, without PR-level questions and items the read no longer
+ * produces.
+ */
+export type CommentTally = {
+/**
+ * Comments in any state.
+ */
+total: number,
+/**
+ * Those waiting for a decision: the Needs you list of Comments.
+ */
+needs_you: number, };
 
 /**
  * The displayed line(s) a comment is written on.
@@ -1808,7 +1828,11 @@ schedule_time: string,
 /**
  * IANA time zone; null until the browser sends one.
  */
-time_zone: string | null, };
+time_zone: string | null,
+/**
+ * GitHub logins with the Slack name "Copy for Slack" writes instead of `@login` (at most 100 rows).
+ */
+slack_names: Array<SlackName>, };
 
 /**
  * Response of `GET`/`PUT /api/v1/settings/dashboard`.
@@ -5976,6 +6000,19 @@ changed_files: number,
 estimate: AnalysisEstimate | null, };
 
 /**
+ * One row of the Slack names table: a GitHub login and the text copied for it.
+ */
+export type SlackName = {
+/**
+ * GitHub login (case-insensitive, unique in the table).
+ */
+login: string,
+/**
+ * Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g. `@jan.kowalski`.
+ */
+slack: string, };
+
+/**
  * Facts of the stored snapshot besides its items.
  */
 export type SnapshotMeta = {
@@ -6581,6 +6618,34 @@ llm: ItemText | null,
  */
 review: ReviewLink | null,
 /**
+ * Review comments diffpilot read for this pull request (Comments), counted at request time; absent before
+ * diffpilot's first successful read of them.
+ */
+comments?: CommentTally,
+/**
+ * The user watches this pull request (RW1), read at request time; with `comments` absent its comments were
+ * not read yet.
+ */
+watched?: boolean,
+/**
  * Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
  */
 plugin_notes?: Array<PluginNote>, };
+
+/**
+ * The commit and time a comment was written on, as GitHub records them.
+ */
+export type Written = {
+/**
+ * The bot round whose own review raised it (then `commit` and `at` are that round's head and end); absent for
+ * any other comment.
+ */
+round?: number,
+/**
+ * The commit its review was made on; absent for a PR comment or a review GitHub did not list.
+ */
+commit?: CommitSha,
+/**
+ * When it was written (the review's submission, the comment's creation).
+ */
+at: string, };

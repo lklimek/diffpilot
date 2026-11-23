@@ -1108,6 +1108,54 @@ async fn pr_page_names_the_author() {
     assert_eq!(w.get(PR).await["author"], "alice");
 }
 
+/// RC4 says where GitHub records each comment as written: a bot round's own review names that round with its head
+/// and end; any other review comment its review's commit and its own time, never a round's; a PR comment its time
+/// only.
+#[tokio::test]
+async fn items_name_where_github_says_they_were_written() {
+    let w = world().await;
+    let rounds = w.get(&format!("{PR}/comments")).await["rounds"].clone();
+    let items = w.items().await;
+    let by_url = |part: &str| {
+        items
+            .iter()
+            .find(|item| item["url"].as_str().is_some_and(|url| url.ends_with(part)))
+            .unwrap_or_else(|| panic!("an item at {part}"))
+    };
+    // bob's thread in his review on 52d2da1, after rounds 1 and 2 ended: not "round 2 on 9f3c2e1".
+    assert_eq!(
+        by_url("#discussion_r3000000701")["written"],
+        json!({"commit": "52d2da140191a9d47becf6a446310be803c007fc", "at": "2026-11-12T09:00:00Z"})
+    );
+    assert_eq!(
+        by_url("#issuecomment-5000000103")["written"],
+        json!({"at": "2026-11-12T09:05:00Z"})
+    );
+    let mut in_rounds = 0;
+    for item in &items {
+        let Some(number) = item["written"]["round"].as_u64() else {
+            continue;
+        };
+        let round = rounds
+            .as_array()
+            .expect("rounds")
+            .iter()
+            .find(|round| round["number"] == number)
+            .expect("its round");
+        assert_eq!(item["author"], "thepastaclaw", "{item}");
+        assert_eq!(
+            item["written"],
+            json!({"round": number, "commit": round["head"], "at": round["finished_at"]}),
+            "{item}"
+        );
+        in_rounds += 1;
+    }
+    assert!(
+        in_rounds > 0,
+        "the fixture has items of a round's own review"
+    );
+}
+
 /// RC4 counts the reader's answered Ask questions about each item; open questions and other readers' answers are
 /// not counted.
 #[tokio::test]

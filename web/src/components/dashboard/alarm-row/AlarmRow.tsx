@@ -7,6 +7,7 @@ import type { Navigate } from "../common/navigate";
 import { FactTags, SizePill } from "../common/Tags";
 import { ScoreBreakdown } from "../score-breakdown/ScoreBreakdown";
 import { ItemAction } from "../work-item/ItemAction";
+import { CommentsInfo, type WatchState } from "../work-item/CommentsInfo";
 import { itemPlace, provisionalPill, ScoreButton } from "../work-item/WorkItemRow";
 
 interface AlarmRowProps {
@@ -14,6 +15,12 @@ interface AlarmRowProps {
   item: WorkItem;
   /** In-app href of a pull request's review (plan §F.1). */
   reviewHref?: string;
+  /** In-app href of a pull request's Comments (owner 2026-11-23), as on ranked rows. */
+  commentsHref?: string;
+  /** Watch chosen on a pull request diffpilot has no comment counts for (RW1); without it no Watch. */
+  onWatch?: () => void;
+  /** Watch of this pull request: being saved, or saved in this visit. */
+  watch?: WatchState;
   onNavigate?: Navigate;
   /** The keyboard cursor is on this alarm. */
   current?: boolean;
@@ -32,6 +39,9 @@ interface AlarmRowProps {
 export function AlarmRow({
   item,
   reviewHref,
+  commentsHref,
+  onWatch,
+  watch,
   onNavigate,
   current = false,
   focusRef,
@@ -73,6 +83,15 @@ export function AlarmRow({
           <SizePill mark={item.change_size} />
           <FactTags tags={item.tags} />
           {provisionalPill(item)}
+          {item.kind === "pr" && (
+            <CommentsInfo
+              item={item}
+              href={commentsHref}
+              onNavigate={onNavigate}
+              onWatch={onWatch}
+              watch={watch}
+            />
+          )}
         </div>
         {item.llm?.alarm && <LlmLine text={item.llm.alarm} />}
         {item.llm && <LlmLine text={item.llm.next} label="Next" />}

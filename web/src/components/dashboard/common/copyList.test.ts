@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { copyText, writeClipboard, type CopyLine } from "./copyList";
+import { atLogin, copyText, slackName, writeClipboard, type CopyLine } from "./copyList";
 
 const line = (over: Partial<CopyLine> = {}): CopyLine => ({
   repo: { owner: "dashpay", name: "platform" },
@@ -8,6 +8,24 @@ const line = (over: Partial<CopyLine> = {}): CopyLine => ({
   title: "Title",
   change_size: { size: "small", additions: 25, deletions: 3 },
   ...over,
+});
+
+describe("slackName (Settings › Slack names)", () => {
+  const names = [
+    { login: "Jun-Park", slack: "<@U01ABC>" },
+    { login: "bob", slack: "@bob.k" },
+  ];
+
+  it("writes the Slack name of a login, matched in any case, as typed", () => {
+    expect(slackName("jun-park", names)).toBe("<@U01ABC>");
+    expect(slackName("BOB", names)).toBe("@bob.k");
+  });
+
+  it("keeps @login for a login without one and a team as it is", () => {
+    expect(slackName("carol", names)).toBe("@carol");
+    expect(slackName("team:core", names)).toBe("team:core");
+    expect(slackName("carol", [])).toBe(atLogin("carol"));
+  });
 });
 
 describe("copyText", () => {
@@ -92,6 +110,48 @@ describe("writeClipboard", () => {
     expect(button).toHaveFocus();
     expect(document.querySelector("textarea")).toBeNull();
     button.remove();
+  });
+
+  it("plain text only: writeText in a secure context, and a copy event over plain HTTP sets no HTML", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const write = vi.fn();
+    Object.defineProperty(navigator, "clipboard", { value: { writeText, write }, configurable: true });
+    vi.stubGlobal("isSecureContext", true);
+    vi.stubGlobal("ClipboardItem", class {});
+    expect(await writeClipboard({ text: "srp_secret" })).toBe(true);
+    expect(writeText).toHaveBeenCalledWith("srp_secret");
+    expect(write).not.toHaveBeenCalled();
+
+    vi.stubGlobal("isSecureContext", false);
+    const data = new Map<string, string>();
+    Object.defineProperty(document, "execCommand", {
+      value: () => {
+        const event = new Event("copy", { cancelable: true }) as ClipboardEvent;
+        Object.defineProperty(event, "clipboardData", {
+          value: { setData: (type: string, value: string) => data.set(type, value) },
+        });
+        document.dispatchEvent(event);
+        return true;
+      },
+      configurable: true,
+    });
+    expect(await writeClipboard({ text: "srp_secret" })).toBe(true);
+    expect(Object.fromEntries(data)).toEqual({ "text/plain": "srp_secret" });
+    expect(writeText).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a focused text field back its focus and selection after the copy event", async () => {
+    vi.stubGlobal("isSecureContext", false);
+    Object.defineProperty(document, "execCommand", { value: () => true, configurable: true });
+    const field = document.createElement("input");
+    field.value = "srp_secret";
+    document.body.append(field);
+    field.focus();
+    field.setSelectionRange(2, 6);
+    expect(await writeClipboard({ text: "srp_secret" })).toBe(true);
+    expect(field).toHaveFocus();
+    expect([field.selectionStart, field.selectionEnd]).toEqual([2, 6]);
+    field.remove();
   });
 
   it("falls back to the copy event when the Clipboard API refuses", async () => {

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 
 // The LAN deployment (http://agentic:3000) is not a secure context: no Clipboard API there. This loads the real
 // copyList module from the dev server into a page whose origin is plain HTTP on a LAN host name, clicks a button
@@ -9,6 +9,7 @@ const LAN = "http://agentic.test:3000";
 const HARNESS = `<!doctype html><html><body style="margin:0">
 <div style="height:3000px"></div>
 <button id="copy" type="button">Copy list</button>
+<button id="plain" type="button">Copy token</button>
 <div style="height:3000px"></div>
 <script>
   window.__vite_plugin_react_preamble_installed__ = true;
@@ -34,14 +35,15 @@ const HARNESS = `<!doctype html><html><body style="margin:0">
     window.focusedAfter = document.activeElement?.id ?? null;
     window.leftovers = document.querySelectorAll("textarea").length;
   });
+  document.getElementById("plain").addEventListener("click", async () => {
+    window.copied = await writeClipboard({ text: "srp_TestToken0123" });
+  });
   window.harnessReady = true;
 </script>
 </body></html>`;
 
-test("Copy list over plain HTTP on a LAN host writes Markdown text and linked HTML to the clipboard", async ({
-  page,
-  context,
-}) => {
+/** Opens the harness on the plain-HTTP LAN origin, its modules served by the dev server. */
+async function openHarness(page: Page, context: BrowserContext) {
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: "http://localhost:5174" });
   await context.route(`${LAN}/**`, async (route) => {
     const url = new URL(route.request().url());
@@ -57,6 +59,13 @@ test("Copy list over plain HTTP on a LAN host writes Markdown text and linked HT
   await page.waitForFunction(() => (window as unknown as { harnessReady?: boolean }).harnessReady === true);
   expect(await page.evaluate(() => window.isSecureContext)).toBe(false);
   expect(await page.evaluate(() => typeof navigator.clipboard)).toBe("undefined");
+}
+
+test("Copy list over plain HTTP on a LAN host writes Markdown text and linked HTML to the clipboard", async ({
+  page,
+  context,
+}) => {
+  await openHarness(page, context);
 
   await page.locator("#copy").scrollIntoViewIfNeeded();
   const scrollBefore = await page.evaluate(() => window.scrollY);
@@ -94,4 +103,21 @@ test("Copy list over plain HTTP on a LAN host writes Markdown text and linked HT
   expect(clip.html).toContain(
     '<a href="https://github.com/dashpay/platform/pull/7">dashpay/platform#7</a> Second',
   );
+});
+
+test("a token copied over plain HTTP reaches the clipboard as plain text only, never as HTML", async ({
+  page,
+  context,
+}) => {
+  await openHarness(page, context);
+  await page.locator("#plain").click();
+  await page.waitForFunction(() => (window as unknown as { copied?: boolean }).copied !== undefined);
+  expect(await page.evaluate(() => (window as unknown as { copied: boolean }).copied)).toBe(true);
+  const reader = await context.newPage();
+  await reader.goto("http://localhost:5174/");
+  const clip = await reader.evaluate(async () => {
+    const [item] = await navigator.clipboard.read();
+    return { types: [...item!.types], text: await (await item!.getType("text/plain")).text() };
+  });
+  expect(clip).toEqual({ types: ["text/plain"], text: "srp_TestToken0123" });
 });

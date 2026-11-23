@@ -14,6 +14,7 @@ import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, EFFECT_WORD } from "./decisions";
 import { Chip, FactChip } from "./parts";
+import { StartAgentHelp } from "./StartAgentHelp";
 
 const STATE: Record<EffectState, string> = {
   waiting: "waiting for the step before",
@@ -161,22 +162,25 @@ function Agents({ subscribers, now }: { subscribers: FeedSubscriber[]; now: Date
 
 interface DecisionLogProps {
   log: CommentLog;
-  /** The pull request (commit links of agent reports). */
+  /** The pull request (commit links of agent reports, the agent prompt). */
   pr: PrRef;
+  /** This diffpilot's origin, named in the agent prompt. */
+  origin: string;
   now: Date;
   storageKey: string;
 }
 
 /**
- * V3: agents and push targets, open and failed effects, and every decision with its effects and reports; an undone
- * decision says so.
+ * V3: agents and push targets, how to start an agent (shown while none is subscribed, else collapsed), open and
+ * failed effects, and every decision with its effects and reports; an undone decision says so.
  */
-export function DecisionLog({ log, pr, now, storageKey }: DecisionLogProps) {
+export function DecisionLog({ log, pr, origin, now, storageKey }: DecisionLogProps) {
   return (
     <div>
       <CollapsibleSection title="Decision feed" level={2} storageKey={`${storageKey}:feed`}>
         <div className="rounded-lg border border-border bg-surface px-3 py-2">
           <Agents subscribers={log.subscribers} now={now} />
+          <StartAgentHelp pr={pr} origin={origin} collapsed={log.subscribers.length > 0} />
           <p className="mt-1.5 mb-0 text-xs">
             Each agent sets its own push target with its access token. A push names only the decision and the
             PR with a link to fetch it through the API; no reply text, reasons, comments or tokens. Agents

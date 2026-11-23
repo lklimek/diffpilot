@@ -123,6 +123,14 @@
             "string",
             "null"
           ]
+        },
+        "slack_names": {
+          "description": "GitHub logins with the Slack name \"Copy for Slack\" writes instead of `@login` (at most 100 rows).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SlackName"
+          },
+          "default": []
         }
       },
       "required": [
@@ -224,6 +232,24 @@
       "required": [
         "repo",
         "path"
+      ]
+    },
+    "SlackName": {
+      "description": "One row of the Slack names table: a GitHub login and the text copied for it.",
+      "type": "object",
+      "properties": {
+        "login": {
+          "description": "GitHub login (case-insensitive, unique in the table).",
+          "type": "string"
+        },
+        "slack": {
+          "description": "Text written instead of `@login`, as typed (1–80 characters, no control characters), e.g. `@jan.kowalski`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "login",
+        "slack"
       ]
     }
   }

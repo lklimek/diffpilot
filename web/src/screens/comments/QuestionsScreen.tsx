@@ -34,7 +34,8 @@ import {
   GroupCard,
   PrQuestionCard,
 } from "../../components/comments/QueueCards";
-import { entryKey, QueueList } from "../../components/comments/QueueList";
+import { StartAgentHelp } from "../../components/comments/StartAgentHelp";
+import { entryKey, inListOrder, itemsAfter, QueueList } from "../../components/comments/QueueList";
 import { Kbd } from "../../components/help/Kbd";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { buttonClass } from "../../components/button/button";
@@ -78,6 +79,8 @@ export function QuestionsScreen() {
   // The decision drafted on the shown card; the server plans it (RC16).
   const [draft, setDraft] = useState<DecisionBatchRow[] | null>(null);
   const [skipped, setSkipped] = useState<ReadonlySet<string>>(new Set());
+  // After Decide or Skip: the items that follow in the list; the first one still queued opens (plan §3.2 item 9).
+  const [after, setAfter] = useState<number[] | null>(null);
   const [individual, setIndividual] = useState<ReadonlySet<number>>(new Set());
   const [rest, setRest] = useState(false);
   const [help, setHelp] = useState(false);
@@ -92,7 +95,8 @@ export function QuestionsScreen() {
   const byNo = useMemo(() => new Map(items.map((i) => [i.no, i])), [items]);
   const storageKey = `${login}:comments-question`;
 
-  // The queue with groups split where the owner chose to discuss rows individually; skipped entries last.
+  // The queue in list order with groups split where the owner chose to discuss rows individually; skipped entries
+  // last in their section.
   const queue = useMemo(() => {
     const out: QueueEntry[] = [];
     for (const entry of overview.queue) {
@@ -104,15 +108,23 @@ export function QuestionsScreen() {
       else if (kept.length === 1)
         out.push({ ...entry, item_nos: kept, reason: nos.length > 1 ? "single" : entry.reason });
     }
-    return [...out.filter((e) => !skipped.has(entryKey(e))), ...out.filter((e) => skipped.has(entryKey(e)))];
+    return inListOrder([
+      ...out.filter((e) => !skipped.has(entryKey(e))),
+      ...out.filter((e) => skipped.has(entryKey(e))),
+    ]);
   }, [overview.queue, byNo, individual, skipped]);
 
   const asked = search.get("item");
   const askedNo = asked && /^[CP]\d+$/.test(asked) ? Number(asked.slice(1)) : null;
   const askedEntry = askedNo === null ? undefined : queue.find((e) => e.item_nos.includes(askedNo));
+  const following = after
+    ?.map((no) => queue.find((e) => e.item_nos.includes(no)))
+    .find((e) => e !== undefined);
   const entry: QueueEntry | null =
     askedEntry ??
-    (askedNo !== null && byNo.has(askedNo) ? { item_nos: [askedNo], reason: "single" } : (queue[0] ?? null));
+    (askedNo !== null && byNo.has(askedNo)
+      ? { item_nos: [askedNo], reason: "single" }
+      : (following ?? queue[0] ?? null));
   const index = entry ? queue.findIndex((e) => entryKey(e) === entryKey(entry)) : -1;
   const single = entry && entry.item_nos.length === 1 ? byNo.get(entry.item_nos[0]!) : undefined;
 
@@ -147,6 +159,7 @@ export function QuestionsScreen() {
 
   const open = (next: QueueEntry | undefined) => {
     setRest(false);
+    setAfter(null);
     if (!next) return setSearch({}, { replace: true });
     const first = byNo.get(next.item_nos[0]!);
     if (first) setSearch({ item: itemId(first) });
@@ -164,32 +177,38 @@ export function QuestionsScreen() {
         ? { state: "ready", value: context.data }
         : { state: "loading" };
 
-  const afterDecided = (what: string, count: number) => {
+  const afterDecided = (what: string, count: number, next: number[] | null) => {
     const left = Math.max(0, overview.counts.undecided - count);
     setAnnouncement(`${what}: decision recorded. ${left} ${left === 1 ? "question" : "questions"} left.`);
     setSearch({}, { replace: true });
     setSkipped(new Set());
+    setAfter(next);
   };
-  const onDecide = (item: CommentItem, request: DecideRequest) =>
+  const onDecide = (item: CommentItem, request: DecideRequest) => {
+    const next = entry && itemsAfter(queue, entry);
     decide.mutate(
       { no: item.no, body: request },
       {
         onSuccess: (decision) => {
-          afterDecided(itemId(item), 1);
+          afterDecided(itemId(item), 1, next);
           setUndoable({ no: item.no, decision: decision.id, label: itemId(item) });
         },
       },
     );
-  const onBatch = (via: "group" | "bulk", rows: DecisionBatchRow[]) =>
+  };
+  // A group goes on after itself; "Decide the rest" opens the first entry still waiting.
+  const onBatch = (via: "group" | "bulk", rows: DecisionBatchRow[]) => {
+    const next = via === "group" && entry ? itemsAfter(queue, entry) : null;
     batch.mutate(
       { via, rows },
       {
         onSuccess: () => {
-          afterDecided(`${rows.length} items`, rows.length);
+          afterDecided(`${rows.length} items`, rows.length, next);
           setUndoable(null);
         },
       },
     );
+  };
   // The item is read again before the undo is sent, so the decision's new revision is used (RC12).
   const undo = () => {
     if (!undoable) return;
@@ -208,9 +227,11 @@ export function QuestionsScreen() {
         setAssessNote({ no: item.no, text: "Asked: diffpilot's LLM assesses this comment again." }),
       onError: (failure) => setAssessNote({ no: item.no, text: errorText(failure) }),
     });
-  // "Skip for now": last in this reader's queue, here at once and on the server until the item changes.
+  // "Skip for now": last in this reader's queue, here at once and on the server until the item changes; the next
+  // entry in the list opens.
   const skip = () => {
     if (entry) setSkipped(new Set(skipped).add(entryKey(entry)));
+    setAfter(entry && [...itemsAfter(queue, entry), ...entry.item_nos]);
     for (const no of entry?.item_nos ?? []) {
       const item = byNo.get(no);
       if (item) action.mutate({ action: "skip", no, revision: item.revision });
@@ -295,7 +316,13 @@ export function QuestionsScreen() {
         assessed={overview.assessment.assessed}
         head={overview.head}
         now={now}
-      />
+      >
+        <StartAgentHelp
+          pr={pr}
+          origin={window.location.origin}
+          collapsed={(log.data?.subscribers.length ?? 0) > 0}
+        />
+      </EmptyQueueCard>
     );
   else if (entry.item_nos.length > 1)
     card = (
@@ -350,6 +377,7 @@ export function QuestionsScreen() {
             : null
         }
         prPageHref={prPath(pr)}
+        prHead={overview.head}
         onNavigate={(href) => void navigate(href)}
         askAnswers={askAnswers(single)}
         onAsk={() => ask(single)}
