@@ -243,13 +243,16 @@ fn authorization(kind: ChannelKind, secret: &str) -> String {
     }
 }
 
+/// The stored secret's change; a kept one is bound to `seen`, the secret-holding target the request was checked
+/// against, so a target changed meanwhile fails the save instead of receiving the secret.
 fn secret_update(
     cipher: &TokenCipher,
     aad: Aad<'_>,
     change: &SecretChange,
+    seen: Option<(ChannelKind, String)>,
 ) -> Result<SecretUpdate, NotifyError> {
     Ok(match change {
-        SecretChange::Keep => SecretUpdate::Keep,
+        SecretChange::Keep => SecretUpdate::Keep { seen },
         SecretChange::Replace { value } => SecretUpdate::Set(cipher.encrypt(aad, value)?),
         SecretChange::Remove => SecretUpdate::Clear,
     })
@@ -322,26 +325,24 @@ pub async fn put_channel(
     kind: ChannelKind,
     request: &PutChannelRequest,
 ) -> Result<NotificationChannel, NotifyError> {
-    let existing = state
+    let seen = state
         .db
         .review_loop()
         .channels(&session.user_id)
         .await?
         .into_iter()
-        .find(|channel| channel.kind == kind && channel.secret.is_some());
+        .find(|channel| channel.kind == kind && channel.secret.is_some())
+        .map(|channel| (channel.kind, channel.url));
     let checked = check_target(
         state,
         kind,
         &request.url,
         request.topic.as_deref(),
         &request.secret,
-        existing.as_ref().map(|channel| Stored {
-            kind: channel.kind,
-            url: &channel.url,
-        }),
+        seen.as_ref().map(|(kind, url)| Stored { kind: *kind, url }),
     )?;
     let row = channel_row(&session.user_id, kind);
-    let secret = secret_update(&cipher(state), channel_aad(&row), &request.secret)?;
+    let secret = secret_update(&cipher(state), channel_aad(&row), &request.secret, seen)?;
     let mut events = Vec::new();
     for event in &request.events {
         if !events.contains(event) {
@@ -451,27 +452,27 @@ pub async fn put_push_target(
     principal: &TokenPrincipal,
     request: &PutPushTargetRequest,
 ) -> Result<PushTarget, NotifyError> {
-    let existing = state
+    let seen = state
         .db
         .review_loop()
         .subscription(&principal.token_id, Timestamp::now())
         .await?
-        .filter(|subscription| subscription.push_secret.is_some());
+        .filter(|subscription| subscription.push_secret.is_some())
+        .and_then(|subscription| subscription.push)
+        .map(|(kind, url, _)| (kind, url));
     let checked = check_target(
         state,
         request.kind,
         &request.url,
         request.topic.as_deref(),
         &request.secret,
-        existing
-            .as_ref()
-            .and_then(|subscription| subscription.push.as_ref())
-            .map(|(kind, url, _)| Stored { kind: *kind, url }),
+        seen.as_ref().map(|(kind, url)| Stored { kind: *kind, url }),
     )?;
     let secret = secret_update(
         &cipher(state),
         push_aad(&principal.token_id.0),
         &request.secret,
+        seen,
     )?;
     let record = state
         .db
