@@ -88,7 +88,9 @@ function Marks({ entry, first }: { entry: QueueEntry; first: CommentItem }) {
         key={`gate-${g.gate}`}
         data-mark="gate"
         data-gate={g.gate}
-        className={`${MARK} rounded-full border-high-bd bg-high-bg font-semibold text-high`}
+        className={`${MARK} rounded-full border-high-bd bg-high-bg font-semibold text-high ${
+          g.source === "assessment" ? "border-dashed" : ""
+        }`}
       >
         Gate {g.gate}
         {g.source === "assessment" && <ProvenanceTag source="llm" focusable={false} />}

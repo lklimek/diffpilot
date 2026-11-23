@@ -89,8 +89,9 @@ describe("QueueList state marks in Needs you (owner 2026-11-23, plan §3.9)", ()
     const fix = c14.querySelector<HTMLElement>("[data-recommendation='fix_here']")!;
     expect(shown(fix)).toBe("LLM recommends Fix here");
     expect(fix.querySelector("[data-provenance='llm']")).not.toBeNull();
-    // The gate of C14 comes from the LLM assessment: it is tagged as LLM output too.
+    // The gate of C14 comes from the LLM assessment: tagged and dashed like LLM output, in the gate's red.
     expect(c14.querySelector("[data-gate='G-FUNDS'] [data-provenance='llm']")).not.toBeNull();
+    expect(c14.querySelector("[data-gate='G-FUNDS']")).toHaveClass("border-dashed", "text-high");
 
     const c21 = marksOf(queue, /^C21(?!\d)/)!;
     expect(c21).toHaveTextContent("asked again");
@@ -140,6 +141,10 @@ describe("QueueList state marks in Needs you (owner 2026-11-23, plan §3.9)", ()
     expect(
       marksOf(queue, /^C15(?!\d)/)!.querySelector("[data-gate='G-SECRET'] [data-provenance]"),
     ).toBeNull();
+    // The owner's own gate stays solid.
+    expect(marksOf(queue, /^C15(?!\d)/)!.querySelector("[data-gate='G-SECRET']")).not.toHaveClass(
+      "border-dashed",
+    );
     expect(shown(marksOf(queue, /^C22(?!\d)/)!.querySelector("[data-recommendation='resolve']"))).toBe(
       "LLM recommends Resolve (already fixed)",
     );

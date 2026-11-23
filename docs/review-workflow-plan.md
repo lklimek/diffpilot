@@ -325,12 +325,12 @@ targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe 
   button with a chevron (`aria-expanded`, `aria-controls`, Enter/Space); open by default; the state is remembered
   per view and user in local storage. One shared component (`CollapsibleSection`).
 - **Queue marks** (Needs you rows, owner 2026-11-23): each row names its state in words, colour only as a second
-  signal: "asked again" (amber) and "Ask answer" (blue outline), facts of the queue; "Gate G-FUNDS" (red, tagged LLM
-  when the assessment named it, untagged when you marked it); the reviewer's severity words with the GitHub tag (red
-  outline for "Blocking"); the LLM's recommendation "recommends Fix here" with the LLM tag, dashed, coloured by what it
-  asks (amber: fix here; teal: resolve, already fixed; grey: reject; blue: handled elsewhere, follow-up, upstream,
-  TODO), never the green of a fact badge. Marks are not focusable (inside the row's button); the axe sweeps check
-  their contrast in both themes.
+  signal: "asked again" (amber) and "Ask answer" (blue outline), facts of the queue; "Gate G-FUNDS" (red; dashed and
+  tagged LLM like LLM output when the assessment named it, solid and untagged when you marked it); the reviewer's
+  severity words with the GitHub tag (red outline for "Blocking"); the LLM's recommendation "recommends Fix here" with
+  the LLM tag, dashed, coloured by what it asks (amber: fix here; teal: resolve, already fixed; grey: reject; blue:
+  handled elsewhere, follow-up, upstream, TODO), never the green of a fact badge. Marks are not focusable (inside the
+  row's button); the axe sweeps check their contrast in both themes.
 - **State badges** (one per PR, on the watched list, the PR page and the Comments header), each colour
   paired with an icon and a text label, contrast ≥ 4.5:1 in both themes; first match wins:
 
