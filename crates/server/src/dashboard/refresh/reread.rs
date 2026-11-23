@@ -34,6 +34,9 @@ pub(crate) enum RereadError {
     /// The database failed.
     #[error("the dashboard snapshot could not be read or written")]
     Db(#[from] DbError),
+    /// Some requested pull requests were not read; the last good freshness time is retained.
+    #[error("the GitHub {stage} read was incomplete ({missing} pull requests missing)")]
+    Incomplete { stage: &'static str, missing: usize },
 }
 
 /// What a re-read did.
@@ -81,13 +84,33 @@ pub(crate) async fn reread(
 }
 
 /// The fact check (plan §M F3): probes at most [`PROBE_LIMIT`] of the snapshot's pull requests and re-reads at most
-/// [`REREAD_LIMIT`] whose change mark moved; a check that ran is recorded for `facts_checked_at`.
+/// [`REREAD_LIMIT`] whose change mark moved; only a complete, successful check advances `facts_checked_at`.
 pub(crate) async fn check(state: &AppState, scope: &Scope) -> Result<Reread, RereadError> {
     read_again(state, scope, None).await
 }
 
 /// Re-reads the pull requests in `changed`, or (none) those a change probe finds changed.
 async fn read_again(
+    state: &AppState,
+    scope: &Scope,
+    changed: Option<&HashSet<PrKey>>,
+) -> Result<Reread, RereadError> {
+    let readers = state.dashboard.readers();
+    let _writer = readers.writer(scope).await;
+    if readers
+        .limited_until(scope, state.dashboard.now())
+        .is_some()
+    {
+        return Ok(Reread::Skipped("GitHub rate limit"));
+    }
+    let result = read_locked(state, scope, changed).await;
+    if let Err(RereadError::Github(error)) = &result {
+        readers.remember_limit(scope, error, state.dashboard.now());
+    }
+    result
+}
+
+async fn read_locked(
     state: &AppState,
     scope: &Scope,
     changed: Option<&HashSet<PrKey>>,
@@ -127,6 +150,7 @@ async fn read_again(
         user_id: scope.user_id.clone(),
     };
     let client = WorkClient::new(state.config.github.api_url.clone(), tokens)?;
+    let mut unread = stored.pull_requests.len().saturating_sub(PROBE_LIMIT);
     let pulls: Vec<ItemRef> = match changed {
         Some(changed) => stored
             .pull_requests
@@ -140,26 +164,48 @@ async fn read_again(
             let probes = client
                 .pr_probes(&probed.iter().map(|pr| item(pr)).collect::<Vec<_>>())
                 .await?;
-            probed
+            if probes.len() != probed.len() {
+                return Err(RereadError::Incomplete {
+                    stage: "probe",
+                    missing: probed.len() - probes.len(),
+                });
+            }
+            let moved: Vec<_> = probed
                 .into_iter()
                 .filter(|pr| {
                     probes
                         .get(&item(pr))
                         .is_some_and(|probe| pr.mark.as_ref() != Some(&facts::probe_mark(probe)))
                 })
-                .take(REREAD_LIMIT)
                 .map(item)
-                .collect()
+                .collect();
+            unread += moved.len().saturating_sub(REREAD_LIMIT);
+            moved.into_iter().take(REREAD_LIMIT).collect()
         }
     };
     if pulls.is_empty() {
         if changed.is_some() {
             return Ok(Reread::Skipped("none of the user's pull requests changed"));
         }
-        state.dashboard.readers().checked(scope, record.id, now);
+        if unread > 0 {
+            return Err(RereadError::Incomplete {
+                stage: "probe",
+                missing: unread,
+            });
+        }
+        state
+            .dashboard
+            .readers()
+            .checked(scope, record.id, state.dashboard.now());
         return Ok(Reread::Unchanged);
     }
     let fetched = client.pull_requests(&pulls).await?;
+    if fetched.found.len() != pulls.len() || !fetched.notes.is_empty() {
+        return Err(RereadError::Incomplete {
+            stage: "details",
+            missing: pulls.len() - fetched.found.len(),
+        });
+    }
     let rules = ScoreRules::new(&stored.own_login, &stored.settings);
     let (updated, closed) = apply(&rules, &mut stored.pull_requests, &fetched.found);
     stored.prs_reread_at = Some(now);
@@ -168,10 +214,19 @@ async fn read_again(
         .await
     {
         Ok(()) => {
-            if changed.is_none() {
-                state.dashboard.readers().checked(scope, record.id, now);
-            }
             snooze::end_ended(state, scope, &stored).await;
+            if changed.is_none() {
+                if unread > 0 {
+                    return Err(RereadError::Incomplete {
+                        stage: "bounded fact check",
+                        missing: unread,
+                    });
+                }
+                state
+                    .dashboard
+                    .readers()
+                    .checked(scope, record.id, state.dashboard.now());
+            }
             Ok(Reread::Written { updated, closed })
         }
         Err(DbError::Conflict) => Ok(Reread::Skipped("a newer snapshot")),

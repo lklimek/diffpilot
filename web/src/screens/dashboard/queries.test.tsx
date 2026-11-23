@@ -43,6 +43,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   server.resetHandlers();
   setDashboardScenario("normal");
   resetDashboard();
@@ -488,4 +489,63 @@ it("keeps real hide failures and clears them after another hide succeeds", async
   act(() => hook.result.current.mutate("two"));
   await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
   expect(hook.result.current.error).toBeNull();
+});
+
+describe("hidden My work presence", () => {
+  it("does not read the summary for ranking SSE or its watchdog while hidden, and resyncs on return", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { client, wrapper: w } = wrapper();
+    let reads = 0;
+    server.use(
+      http.get("/api/v1/dashboard", () => {
+        reads += 1;
+        return HttpResponse.json({ ...SUMMARY_FIXTURE, latest_refresh: SCANNING });
+      }),
+    );
+    const tab = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const hook = renderHook(
+      () => {
+        const summary = useDashboardSummary(true);
+        useRefreshEvents(summary.data?.latest_refresh);
+        return summary;
+      },
+      { wrapper: w },
+    );
+    await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
+    expect(reads).toBe(1);
+    act(() => {
+      tab.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    const ranking = { ...SCANNING, state: "ranking", scanned_at: "2026-11-18T09:24:00Z" };
+    act(() =>
+      FakeEventSource.latest().emit({
+        event: "refresh",
+        data: JSON.stringify({ event: "refresh", status: ranking }),
+      }),
+    );
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: SUMMARY_KEY });
+    });
+    expect(reads).toBe(1);
+    const silent = FakeEventSource.latest();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REFRESH_SILENCE_MS + REFRESH_RECONNECT_MS);
+    });
+    expect(silent.readyState).toBe(FakeEventSource.CLOSED);
+    expect(FakeEventSource.latest()).not.toBe(silent);
+    expect(reads).toBe(1);
+    act(() => FakeEventSource.latest().fail());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REFRESH_RECONNECT_MS);
+    });
+    expect(reads).toBe(1);
+    act(() => {
+      tab.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await waitFor(() => expect(reads).toBe(2));
+    hook.unmount();
+    tab.mockRestore();
+  });
 });

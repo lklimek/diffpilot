@@ -2269,8 +2269,20 @@ async fn automatic_trigger_migration_keeps_refreshes_and_what_references_them() 
                   (9, 'r2', 'default', 'u1', 'manual', 'scanning', 't3', NULL, NULL, 0, 0, 0, NULL);
          INSERT INTO jobs (id, tenant_id, refresh_id, kind, priority, state, spec, credential_id, created_at, stage)
            VALUES ('j1', 'default', 'r1', 'judge_work', 1, 'succeeded', '{}', 'c1', 't', 'judge:r1:1');
-         INSERT INTO job_events (job_id, tenant_id, attempt, seq, at, body)
-           VALUES ('j1', 'default', 0, 1, 't', '{}');
+         INSERT INTO comment_prs (pull_request_id, tenant_id, created_at) VALUES (1, 'default', 't');
+         INSERT INTO comment_passes (id, tenant_id, pull_request_id, user_id, cause, head, items, state, created_at)
+           VALUES ('p1', 'default', 1, 'u1', 'opened', 'h', 2, 'queued', 't');
+         INSERT INTO jobs (rowid, id, tenant_id, pass_id, kind, priority, state, spec, credential_id, attempt,
+             max_attempts, lease_expires_at, job_token_hash, cancel_requested, resumes_at, ready_output,
+             ready_output_attempt, result, stage, generation, round, github_access_granted, flow_id, question_id,
+             created_at, claimed_at, finished_at)
+           VALUES (19, 'j2', 'default', 'p1', 'verify_comments', 0, 'succeeded', '{\"v\":2}', 'c2', 2,
+             4, 'lease', x'1234', 1, 'resume', '{}', 2, '{}', 'verify:p1', 1, 3, 1, 'flow', 'question',
+             'created', 'claimed', 'finished');
+         INSERT INTO job_events (rowid, job_id, tenant_id, attempt, seq, at, body)
+           VALUES (11, 'j1', 'default', 0, 1, 't', '{}'), (13, 'j2', 'default', 2, 7, 'event', '{}');
+         INSERT INTO installation_tokens (rowid, job_id, tenant_id, attempt, ciphertext, expires_at)
+           VALUES (17, 'j2', 'default', 2, x'1234', 'expires');
          INSERT INTO dashboard_judgements (tenant_id, user_id, item_key, input_fingerprint, input_version,
              prompt_version, body, refresh_id, model, judged_at, last_seen_at)
            VALUES ('default', 'u1', 'acme~platform~pr~1', 'f', 1, 1, '{}', 'r1', 'm', 't', 't');",
@@ -2278,9 +2290,52 @@ async fn automatic_trigger_migration_keeps_refreshes_and_what_references_them() 
     .execute(&db.pool)
     .await
     .expect("rows of the old schema");
+    async fn contents(db: &Db) -> Vec<(Vec<(String, String)>, Vec<String>)> {
+        let mut contents = Vec::new();
+        for table in [
+            "dashboard_refreshes",
+            "dashboard_judgements",
+            "jobs",
+            "job_events",
+            "installation_tokens",
+        ] {
+            let columns: Vec<(String, String)> =
+                sqlx::query_as("SELECT name, type FROM pragma_table_info(?) ORDER BY name")
+                    .bind(table)
+                    .fetch_all(&db.pool)
+                    .await
+                    .expect("columns");
+            let expressions: Vec<String> = columns
+                .iter()
+                .map(|(name, kind)| {
+                    if kind == "BLOB" {
+                        format!("CASE WHEN {name} IS NULL THEN NULL ELSE hex({name}) END")
+                    } else {
+                        name.clone()
+                    }
+                })
+                .collect();
+            // Both identifiers come only from the fixture schema and the fixed table list.
+            let rows = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT json_array(rowid, {}) FROM {table} ORDER BY rowid",
+                expressions.join(",")
+            )))
+            .fetch_all(&db.pool)
+            .await
+            .expect("all columns");
+            contents.push((columns, rows));
+        }
+        contents
+    }
+    let original = contents(&db).await;
     migrate(&db.pool, MIGRATIONS.len())
         .await
         .expect("upgrade in place");
+    assert_eq!(
+        contents(&db).await,
+        original,
+        "every column and rowid survives"
+    );
 
     type Row = (i64, String, String, String, i64, i64, i64);
     let rows: Vec<Row> = sqlx::query_as(

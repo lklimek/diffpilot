@@ -77,6 +77,12 @@ export const summaryRefetchInterval = (summary: DashboardSummary | undefined, no
  */
 export function useDashboardSummary(enabled: boolean) {
   const client = useQueryClient();
+  const [visible, setVisible] = useState(() => document.visibilityState === "visible");
+  useEffect(() => {
+    const changed = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", changed);
+    return () => document.removeEventListener("visibilitychange", changed);
+  }, []);
   const notCurrentReads = useRef(0);
   return useQuery({
     queryKey: SUMMARY_KEY,
@@ -88,7 +94,7 @@ export function useDashboardSummary(enabled: boolean) {
         ? { ...summary, latest_refresh: kept! }
         : summary;
     },
-    enabled,
+    enabled: enabled && visible,
     refetchInterval: (query) => summaryRefetchInterval(query.state.data, notCurrentReads.current),
   });
 }

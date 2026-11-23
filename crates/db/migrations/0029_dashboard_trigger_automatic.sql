@@ -127,11 +127,11 @@ CREATE TABLE job_events_new (
     PRIMARY KEY (job_id, attempt, seq)
 ) STRICT;
 
-INSERT INTO jobs_new (rowid, id, tenant_id, analysis_id, refresh_id, kind, priority, state, spec, credential_id,
+INSERT INTO jobs_new (rowid, id, tenant_id, analysis_id, refresh_id, pass_id, kind, priority, state, spec, credential_id,
         attempt, max_attempts, lease_expires_at, job_token_hash, cancel_requested, resumes_at, ready_output,
         ready_output_attempt, result, stage, generation, round, github_access_granted, flow_id, question_id,
         created_at, claimed_at, finished_at)
-    SELECT rowid, id, tenant_id, analysis_id, refresh_id, kind, priority, state, spec, credential_id, attempt,
+    SELECT rowid, id, tenant_id, analysis_id, refresh_id, pass_id, kind, priority, state, spec, credential_id, attempt,
         max_attempts, lease_expires_at, job_token_hash, cancel_requested, resumes_at, ready_output,
         ready_output_attempt, result, stage, generation, round, github_access_granted, flow_id, question_id,
         created_at, claimed_at, finished_at

@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use contracts::time::Timestamp;
+use sha2::{Digest, Sha256};
 
 use crate::dashboard::score::{
     CheckContext, CheckRollup, IssueFacts, MergeState, Mergeable, Milestone, MilestoneContext,
@@ -417,6 +418,7 @@ fn detail_mark(detail: &PullDetail) -> PrMark {
                         status_check_rollup: n.commit.status_check_rollup.as_ref().map(|r| {
                             RollupState {
                                 state: r.state.clone(),
+                                contexts: r.contexts.clone(),
                             }
                         }),
                     },
@@ -451,9 +453,57 @@ pub(super) fn probe_mark(probe: &PullProbe) -> PrMark {
             .first()
             .and_then(|n| n.commit.status_check_rollup.as_ref())
             .map(|rollup| name(&rollup.state)),
+        ci_contexts_digest: probe
+            .commits
+            .nodes
+            .first()
+            .and_then(|n| n.commit.status_check_rollup.as_ref())
+            .map(ci_contexts_digest),
         unresolved_threads: u32::try_from(unresolved).unwrap_or(u32::MAX),
         review_requests: probe.review_requests.total_count,
     }
+}
+
+/// Includes every input effective CI reads, sorted so GitHub's context order alone does not move the mark.
+fn ci_contexts_digest(rollup: &RollupState) -> String {
+    let mut contexts: Vec<_> = rollup
+        .contexts
+        .nodes
+        .iter()
+        .map(|context| {
+            let started = context.started_at.map(|at| at.to_string());
+            let created = context.created_at.map(|at| at.to_string());
+            let mut hash = Sha256::new();
+            for field in [
+                Some(context.typename.as_str()),
+                context.name.as_deref(),
+                context.status.as_deref(),
+                context.conclusion.as_deref(),
+                started.as_deref(),
+                context.workflow.as_deref(),
+                context.context.as_deref(),
+                context.state.as_deref(),
+                created.as_deref(),
+            ] {
+                hash.update([u8::from(field.is_some())]);
+                if let Some(text) = field {
+                    hash.update(u64::try_from(text.len()).unwrap_or(u64::MAX).to_le_bytes());
+                    hash.update(text.as_bytes());
+                }
+            }
+            hash.finalize()
+        })
+        .collect();
+    contexts.sort();
+    let mut hash = Sha256::new();
+    hash.update([u8::from(rollup.contexts.page_info.has_next_page)]);
+    for context in contexts {
+        hash.update(context);
+    }
+    hash.finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// GitHub's `mergeStateStatus`; an unknown value is [`MergeState::Unknown`].
@@ -829,6 +879,9 @@ mod tests {
                 draft: false,
                 labels: vec!["a".into(), "b".into()],
                 ci: Some("PENDING".into()),
+                ci_contexts_digest: Some(
+                    "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d".into()
+                ),
                 unresolved_threads: 1,
                 review_requests: 1,
             }
@@ -858,6 +911,51 @@ mod tests {
         let mut green = answer.clone();
         green["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["state"] = "SUCCESS".into();
         assert_ne!(marks(&green).1, probe, "CI");
+    }
+
+    #[test]
+    fn the_change_mark_sees_effective_ci_under_an_ignored_failure() {
+        let mut answer = node();
+        answer["mergeStateStatus"] = "UNSTABLE".into();
+        answer["reviewRequests"] = serde_json::json!({"totalCount": 0, "nodes": []});
+        answer["commits"] = serde_json::json!({"nodes": [{"commit": {"statusCheckRollup": {
+            "state": "FAILURE", "contexts": {"pageInfo": {"hasNextPage": false}, "nodes": [
+                {"__typename": "CheckRun", "name": "PR Hygiene", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}
+            ]}
+        }}}]});
+        let mark = |answer: &serde_json::Value| {
+            probe_mark(&serde_json::from_value(answer.clone()).expect("probe"))
+        };
+        let red = mark(&answer);
+        let detail = serde_json::from_value(answer.clone()).expect("details");
+        assert_eq!(
+            stored(&detail).facts.ci,
+            crate::dashboard::score::CiEffective::Red
+        );
+        answer["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"][1]["conclusion"] =
+            "SUCCESS".into();
+        let green = mark(&answer);
+        assert_ne!(
+            red, green,
+            "the rollup stays FAILURE while effective CI changes"
+        );
+        let detail = serde_json::from_value(answer.clone()).expect("details");
+        assert_eq!(
+            stored(&detail).facts.ci,
+            crate::dashboard::score::CiEffective::Green
+        );
+        assert_eq!(stored(&detail).ci_red, Vec::<String>::new());
+        assert_eq!(
+            stored(&detail).mark,
+            Some(green.clone()),
+            "Q2 and Q18 agree"
+        );
+        answer["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+            .as_array_mut()
+            .expect("contexts")
+            .reverse();
+        assert_eq!(mark(&answer), green, "ordering alone is not a change");
     }
 
     /// While GitHub's review decision still requests changes (a bot whose review counts on GitHub), the bot's request

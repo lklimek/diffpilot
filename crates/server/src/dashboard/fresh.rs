@@ -4,7 +4,7 @@
 //! (F3); with nobody open it sleeps and reads nothing.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use contracts::api::dashboard::{RefreshFailureCode, RefreshState, RefreshTrigger};
@@ -47,6 +47,8 @@ struct Presence {
     open: HashMap<UserKey, Visit>,
     /// Each user's last fact check and the refresh whose snapshot it checked.
     checked: HashMap<UserKey, (RefreshId, Timestamp)>,
+    limited_until: HashMap<UserKey, Timestamp>,
+    writers: HashMap<UserKey, Arc<tokio::sync::Mutex<()>>>,
 }
 
 /// Who has My work open, and when each user's facts were last checked; in memory (a restart forgets both).
@@ -112,6 +114,50 @@ impl Readers {
             .map(|(_, at)| *at)
     }
 
+    /// Serialises fact checks and plug-in re-reads, including their snapshot read and network calls.
+    pub(crate) async fn writer(&self, scope: &Scope) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self
+            .presence()
+            .writers
+            .entry(key(scope))
+            .or_default()
+            .clone();
+        lock.lock_owned().await
+    }
+
+    /// The user's GitHub backoff, shared by scans, fact checks and plug-in re-reads.
+    pub(crate) fn limited_until(&self, scope: &Scope, now: Timestamp) -> Option<Timestamp> {
+        self.presence()
+            .limited_until
+            .get(&key(scope))
+            .copied()
+            .filter(|at| *at > now)
+    }
+
+    /// Remembers a rate limit found outside a full scan; unknown retry times wait one fact-check interval.
+    pub(crate) fn remember_limit(
+        &self,
+        scope: &Scope,
+        error: &crate::github::work::WorkError,
+        now: Timestamp,
+    ) {
+        use crate::github::work::WorkError;
+        let retry = match error {
+            WorkError::PrimaryRateLimit { reset } => *reset,
+            WorkError::SecondaryRateLimit { retry_after } => retry_after
+                .and_then(|wait| SignedDuration::try_from(wait).ok())
+                .and_then(|wait| now.checked_add(wait)),
+            _ => return,
+        };
+        let retry = retry.unwrap_or(now + FACTS_EVERY);
+        let mut presence = self.presence();
+        presence
+            .limited_until
+            .entry(key(scope))
+            .and_modify(|at| *at = (*at).max(retry))
+            .or_insert(retry);
+    }
+
     fn last_check(&self, scope: &Scope) -> Option<Timestamp> {
         self.presence().checked.get(&key(scope)).map(|(_, at)| *at)
     }
@@ -165,6 +211,9 @@ pub(crate) async fn tick(state: &AppState, now: Timestamp) {
     let readers = state.dashboard.readers();
     let mut scan_started = false;
     for (scope, since) in readers.open(now) {
+        if readers.limited_until(&scope, now).is_some() {
+            continue;
+        }
         let latest = match state
             .db
             .dashboard()

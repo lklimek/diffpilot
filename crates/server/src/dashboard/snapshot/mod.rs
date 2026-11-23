@@ -127,6 +127,9 @@ pub struct PrMark {
     pub labels: Vec<String>,
     /// The head commit's CI rollup state; none without checks.
     pub ci: Option<String>,
+    /// Digest of CI context identities, states and recency (K12); absent in snapshots stored before it was kept.
+    #[serde(default)]
+    pub ci_contexts_digest: Option<String>,
     /// Review threads not resolved (of the first 100).
     pub unresolved_threads: u32,
     /// Pending review requests.

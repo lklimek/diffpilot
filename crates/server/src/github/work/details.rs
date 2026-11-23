@@ -47,7 +47,9 @@ pub const PROBE_BATCH: usize = MAX_PR_BATCH;
 const PROBE_FRAGMENT: &str = " fragment Probe on PullRequest { state updatedAt headRefOid mergeable \
 mergeStateStatus reviewDecision isDraft labels(first: 20) { nodes { name } } \
 reviewRequests(first: 20) { totalCount } reviewThreads(first: 100) { nodes { isResolved } } \
-commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }";
+commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { \
+pageInfo { hasNextPage } nodes { __typename ... on CheckRun { name status conclusion startedAt \
+checkSuite { workflowRun { workflow { name } } } } ... on StatusContext { context state createdAt } } } } } } } }";
 
 /// `mergeStateStatus` per pull request, as GitHub answered it (Q17).
 pub type MergeStates = BTreeMap<ItemRef, String>;
@@ -391,7 +393,7 @@ pub struct PullProbe {
     pub review_requests: Count,
     /// Review threads (first 100).
     pub review_threads: Nodes<Resolved>,
-    /// The head commit's CI rollup state.
+    /// The head commit's CI rollup and contexts.
     pub commits: Nodes<ProbeCommit>,
 }
 
@@ -403,14 +405,14 @@ pub struct Resolved {
     pub is_resolved: bool,
 }
 
-/// The last commit's `{ commit { statusCheckRollup { state } } }`.
+/// The last commit's CI rollup and contexts.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct ProbeCommit {
     /// The commit.
     pub commit: ProbeRollup,
 }
 
-/// A commit's CI rollup state.
+/// A commit's CI rollup and contexts.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeRollup {
@@ -418,11 +420,13 @@ pub struct ProbeRollup {
     pub status_check_rollup: Option<RollupState>,
 }
 
-/// `statusCheckRollup { state }`.
+/// The rollup inputs of the change mark, like Q2.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct RollupState {
     /// `SUCCESS`, `FAILURE`, `PENDING`, `ERROR`, `EXPECTED`.
     pub state: String,
+    /// Context states and recency used by effective CI (K12), like Q2.
+    pub contexts: Contexts,
 }
 
 /// History facts of one pull request (Q13).
