@@ -816,7 +816,7 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202; 409 `conflict` while an assessment pass of the PR is queued or running (assess again once it ends) |
 | RC8 | POST | `…/comments/items/{item}/decisions` | session_csrf | `DecideRequest` | 201 `Decision`; 409 `item_changed` |
 | RC9 | POST | `…/comments/decision-batches` | session_csrf | `DecisionBatchRequest` | 201 `Decision[]`; 400 `invalid_request` for a gate row under `bulk`/`group` or, under `table`, a batch that leaves out a waiting gate item; 409 `item_changed` naming the changed items |
-| RC10 | GET | `…/comments/log` | read | – | `CommentLog` |
+| RC10 | GET | `…/comments/log` | read | – | `CommentLog`; subscribers of the tenant's live tokens; a push target of another user's token shows only its kind and delivery state (`url`, `topic`, `secret_last4`, `last_error` null) |
 | RC11 | GET | `/api/v1/comments/carry-overs` | read | `CarryOverQuery` | `CarryOverPage` |
 | RC12 | POST | `…/comments/items/{item}/undo` | session_csrf | `ItemActionRequest` | `CommentItem` (asked again; the undone decision keeps `undone_at`); 409 `conflict` without a standing decision or once an effect is claimed; 409 `item_changed` |
 | RC13 | POST | `…/comments/items/{item}/reopen` | session_csrf | `ItemActionRequest` | `CommentItem` (state `reopened`; effects not yet claimed are cancelled); 409 `conflict` without a standing decision; 409 `item_changed` |
@@ -828,14 +828,14 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RW2 | GET | `/api/v1/watches` | read | – | `WatchList` (with the reader's assessment passes of the last 24 h and the daily limit) |
 | RW3 | GET | `/api/v1/events` | read | – | SSE `UserStreamEvent`: `user_event`, `heartbeat` (`sse-events.md`) |
 | RN1 | GET | `/api/v1/settings/notifications` | session | – | `NotificationSettings` (secrets as `secret_last4` only) |
-| RN2 | PUT / DELETE | `/api/v1/settings/notifications/channels/{kind}` | session_csrf | `PutChannelRequest` / – | `NotificationChannel` / 204; 422 `scheme_not_allowed`; 400 `invalid_request` for a URL with credentials or a denied private address, a bad ntfy topic or secret; `secret` is a `SecretChange` (absent or `keep`, `replace`, `remove`) |
-| RN3 | POST | `…/channels/{kind}/test` | session_csrf | – | `ChannelTestResult` (one attempt) |
+| RN2 | PUT / DELETE | `/api/v1/settings/notifications/channels/{kind}` | session_csrf | `PutChannelRequest` / – | `NotificationChannel` / 204; 422 `scheme_not_allowed`; 400 `invalid_request` for a URL with credentials, a loopback, link-local or reserved address or a denied private address, a bad ntfy topic or secret; 422 `secret_required` when a kept secret would follow a changed URL scheme, host or port; `secret` is a `SecretChange` (absent or `keep`, `replace`, `remove`) |
+| RN3 | POST | `…/channels/{kind}/test` | session_csrf | – | `ChannelTestResult` (one attempt); 429 `rate_limited` with `Retry-After` when 30 messages went to the channel within the hour (nothing sent, health unchanged) |
 | RF1 | GET | `/api/v1/decision-feed` | read | `FeedQuery` | `DecisionFeed`; `ETag` |
 | RF1b | GET | `/api/v1/decision-feed/decisions/{id}` | read | – | `FeedDecision` (the `fetch` link of `decision_available` and of push messages) |
 | RF2 | GET | `/api/v1/decision-feed/events` | read | `FeedQuery` | SSE `FeedEvent`; registers the subscription |
 | RF3 | POST | `/api/v1/decision-feed/decisions/{id}/claim` | token: review_loop_execute | `ClaimRequest` | 201 `Claim`; 409 `claimed`; 422 `capability_missing`; 409 `conflict` when nothing is left for an agent |
-| RF4 | POST | `/api/v1/decision-feed/effects/{id}/reports` | token: review_loop_execute | `EffectReportRequest` | 201 (no body); 409 `claimed` (not the claimer), 409 `lease_expired`; 400 for `done` without `reference` or `failed` without `message`; a repeated idempotency key is a no-op |
-| RF5 | PUT / DELETE | `/api/v1/decision-feed/push-target` | token: review_loop_execute | `PutPushTargetRequest` / – | `PushTarget` / 204; the calling token's own target only |
+| RF4 | POST | `/api/v1/decision-feed/effects/{id}/reports` | token: review_loop_execute | `EffectReportRequest` | 201 (no body); 409 `claimed` (another token's claim, or never claimed by this token), 409 `lease_expired` (this token's lease ended, also after the decision went back to the feed), 409 `conflict` (the effect already ended); 400 for `done` without `reference` or `failed` without `message`; a repeated idempotency key on the same effect is a no-op |
+| RF5 | PUT / DELETE | `/api/v1/decision-feed/push-target` | token: review_loop_execute | `PutPushTargetRequest` / – | `PushTarget` / 204; the calling token's own target only; as RN2 for the URL, and 422 `secret_required` when a kept secret would follow a changed kind or URL origin |
 
 ### Rules
 - **Who decides (T22).** Decisions, batches, re-reads, re-assessments, watches and channel settings need a session
@@ -852,11 +852,12 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
   what gets posted.
 - **Claims.** A claim covers every open agent effect of a current decision, for 30 minutes, renewed by each report;
   only decisions whose open effects all fall within the claimer's capabilities can be claimed. A report on another
-  token's claim answers 409 `claimed`; after the lease ended 409 `lease_expired`. `released` returns the decision
-  to the feed.
+  token's claim answers 409 `claimed`; after the claimer's lease ended 409 `lease_expired` (also once the feed task
+  returned the decision, until another token claims it). `released` returns the decision to the feed.
 - **Secrets (T28).** Channel and push-target secrets are accepted in requests only (`SecretChange`: an absent
   field or `{"action": "keep"}` keeps the stored one, `{"action": "replace", "value": …}` (8–4096 characters)
-  replaces it, `{"action": "remove"}` removes it); responses carry `secret_last4`. The browser notification toggle stays per browser (local storage) and is not part of RN1.
+  replaces it, `{"action": "remove"}` removes it); responses carry `secret_last4`. A stored secret is kept only while
+  the kind and the URL's scheme, host and port stay; otherwise 422 `secret_required`. The browser notification toggle stays per browser (local storage) and is not part of RN1.
 - **Outbound payloads** (contract types, plan §5.5): webhook `WebhookPayload` `{v, event, text, url, pr, at}`;
   agent push `AgentPushPayload` `{v, event, decision_id, pr, fetch}`, never reply text, reasons, comment bodies or
   secrets (contract test `push_payloads_have_a_fixed_shape`).

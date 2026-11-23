@@ -71,7 +71,8 @@ read with tokens (ADR-019).
     `review_loop:execute` token may register its own ntfy or webhook push target, woken by claimable decisions with
     IDs and a fetch link only. Channel tokens are server-side secrets (AES-GCM, masked, never in a `JobSpec`).
     Delivery: 10 s timeout, 3 attempts, failure state shown in Settings and logged once per state change; `http`/`https`
-    only, no redirects, private addresses allowed unless the operator denies them (LAN targets such as Home Assistant).
+    only, no redirects, private addresses allowed unless the operator denies them (LAN targets such as Home Assistant),
+    loopback, link-local and reserved addresses never; 30 messages an hour per target, counted from stored sends.
 12. **Phase 3: diffpilot[bot] posts** (RQ2): replies, PR-level comments, resolves and dismissals of stored decisions are
     posted by the server as the diffpilot GitHub App, with a footer naming diffpilot and the maintainer's decision. The
     App gains `pull_requests: write`; the write installation token is minted per effect for the PR repository only,
@@ -113,12 +114,12 @@ read with tokens (ADR-019).
   it waits while thepastaclaw reviews the PR (its status plug-in or its gate comment in progress or queued on the
   head), for at most 90 minutes from the change, then goes through `request_pass(Watch)`: one pass per PR, 10-minute
   spacing, 30 passes per user and 24 hours (shown in RW2). A plug-in change signal (PR Hygiene, the end of a
-  thepastaclaw round) probes its watched PRs at once. A merged or closed PR ends the watch; a user without a usable
-  token pair pauses.
-- **Questions ready.** A watch pass that leaves undecided questions writes one `questions_ready` user event per round
-  and watcher (`pr_watches.notified_for`: `round:<n>`, or `head:<sha>` before any bot round); delivery to channels is
-  the notification task's work. RW3 streams them as SSE events named `user_event` and `heartbeat`
-  (`UserStreamEvent`).
+  thepastaclaw round) probes its watched PRs at once. A user whose GitHub rate limit is used up is not probed until
+  GitHub's reset or retry time. A merged or closed PR ends the watch; a user without a usable token pair pauses.
+- **Questions ready.** A watch pass that leaves undecided questions (or a due change an on-demand pass already
+  assessed) writes one `questions_ready` user event per round and watcher (`pr_watches.notified_for`: `round:<n>`,
+  or `head:<sha>` before any bot round); delivery to channels is the notification task's work. RW3 streams them as
+  SSE events named `user_event` and `heartbeat` (`UserStreamEvent`).
 - **SK1.** `verify_comments` reads the claudius skills `severity` and `check-pr-comments` (ADR-002 amendment); each
   assessment keeps the claudius commit it was made with as provenance, never as a reason to re-assess (owner Q28 = c).
 - **"Assess again" while a pass runs** answers 409 `conflict` instead of being dropped.
