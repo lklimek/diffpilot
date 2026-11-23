@@ -12,7 +12,6 @@ use db::repo::dashboard::JudgeCounts;
 use futures::future::BoxFuture;
 
 use super::Scope;
-use crate::dashboard::plugin::Overlay;
 use crate::dashboard::score::Judgement;
 use crate::dashboard::snapshot::Snapshot;
 use crate::state::AppState;
@@ -45,14 +44,12 @@ pub trait Ranker: Send + Sync + fmt::Debug {
     /// refresh's status after each write. Runs in the refresh's task.
     fn rank(&self, state: AppState, run: RankRun) -> BoxFuture<'static, ()>;
 
-    /// Judgements of the snapshot's items to score them with, by item key; `overlay` holds the plug-in statements
-    /// the items are ranked with.
+    /// Judgements of the snapshot's items to score them with, by item key.
     fn judgements<'a>(
         &'a self,
         state: &'a AppState,
         scope: &'a Scope,
         snapshot: &'a Snapshot,
-        overlay: &'a Overlay,
     ) -> BoxFuture<'a, Result<HashMap<ItemKey, ItemJudgement>, DbError>>;
 }
 
@@ -92,7 +89,6 @@ impl Ranker for NoopRanker {
         _state: &'a AppState,
         _scope: &'a Scope,
         _snapshot: &'a Snapshot,
-        _overlay: &'a Overlay,
     ) -> BoxFuture<'a, Result<HashMap<ItemKey, ItemJudgement>, DbError>> {
         Box::pin(async { Ok(HashMap::new()) })
     }

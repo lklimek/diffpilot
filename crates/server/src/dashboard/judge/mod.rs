@@ -48,7 +48,6 @@ use jiff::tz::TimeZone;
 use self::input::Candidate;
 pub use self::input::JUDGE_INPUT_VERSION;
 use self::store::Body;
-use super::plugin::Overlay;
 use super::refresh::rank::{ItemJudgement, RankRun, Ranker};
 use super::refresh::{self, Scope};
 use super::score::{Freshness, ScoreRules};
@@ -96,9 +95,8 @@ impl Ranker for JudgeRanker {
         state: &'a AppState,
         scope: &'a Scope,
         snapshot: &'a Snapshot,
-        overlay: &'a Overlay,
     ) -> BoxFuture<'a, Result<HashMap<ItemKey, ItemJudgement>, DbError>> {
-        Box::pin(judgements(state, scope, snapshot, overlay))
+        Box::pin(judgements(state, scope, snapshot))
     }
 }
 
@@ -258,9 +256,7 @@ impl<'a> Ranking<'a> {
         }
         self.zone = zone(&snapshot);
         self.language = self.state.db.users().get(user).await?.language;
-        // The plug-in statements current now decide, as on the read path, which pull requests are ranked.
-        let overlay = self.state.plugins.overlay(now);
-        let candidates = input::candidates(&snapshot, &overlay, self.language);
+        let candidates = input::candidates(&snapshot, self.language);
         let keys: Vec<ItemKey> = candidates.iter().map(|c| c.item.key.clone()).collect();
         let stored: HashMap<ItemKey, StoredJudgement> = dashboard
             .judgements(tenant, user, &keys)
@@ -821,16 +817,15 @@ fn items(n: usize) -> String {
     }
 }
 
-/// The stored judgements that apply to the snapshot's items now (ranked with `overlay`): only items the scorer asks
-/// about, current when the fingerprint and both versions match, else inherited (provisional).
+/// The stored judgements that apply to the snapshot's items now: only items the scorer asks about, current when
+/// the fingerprint and both versions match, else inherited (provisional).
 async fn judgements(
     state: &AppState,
     scope: &Scope,
     snapshot: &Snapshot,
-    overlay: &Overlay,
 ) -> Result<HashMap<ItemKey, ItemJudgement>, DbError> {
     let language = state.db.users().get(&scope.user_id).await?.language;
-    let candidates = input::candidates(snapshot, overlay, language);
+    let candidates = input::candidates(snapshot, language);
     let asked: HashMap<&ItemKey, &Candidate<'_>> = candidates
         .iter()
         .filter(|c| c.asked())

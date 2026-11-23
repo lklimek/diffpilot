@@ -83,13 +83,8 @@ impl Candidate<'_> {
     }
 }
 
-/// Every scoreable item of the snapshot, scored at its scan time like the read path (`snapshot::build`) with the
-/// plug-in statements of `overlay`.
-pub(super) fn candidates<'a>(
-    snapshot: &'a Snapshot,
-    overlay: &Overlay,
-    language: LlmLanguage,
-) -> Vec<Candidate<'a>> {
+/// Every scoreable item of the snapshot, scored at its scan time like the read path (`snapshot::build`).
+pub(super) fn candidates(snapshot: &Snapshot, language: LlmLanguage) -> Vec<Candidate<'_>> {
     let rules = ScoreRules::new(&snapshot.own_login, &snapshot.settings);
     let at = snapshot.scanned_at;
     let todo_ids = todo_display_ids(
@@ -104,12 +99,12 @@ pub(super) fn candidates<'a>(
         Ok(item) => scored.push((source, item)),
         Err(error) => tracing::debug!(%error, "dashboard item not judged: it cannot be scored"),
     };
-    // The read path's rule: a PR under Waiting on others is not ranked, so it is not judged (B10); one a plug-in's
-    // statement of the author's move keeps ranked is.
+    // The read path's rule (K15) without plug-in statements: a statement can only list a PR under Waiting on
+    // others (W3b), so every PR the read path ranks is judged, whatever the statements are when it reads (B10).
     for pr in snapshot
         .pull_requests
         .iter()
-        .filter(|pr| snapshot::waiting(&rules, &pr.facts, overlay).is_none())
+        .filter(|pr| snapshot::waiting(&rules, &pr.facts, &Overlay::default()).is_none())
     {
         keep(Source::Pr(pr), score::score_pr(&rules, &pr.facts, None, at));
     }

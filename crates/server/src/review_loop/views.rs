@@ -335,15 +335,17 @@ fn badge_of(state: &AppState, loaded: &Loaded, waiting: usize, my_work: &MyWork)
     let now = Timestamp::now();
     let overlay = state.plugins.overlay(now);
     let pr = &loaded.handle.pr;
-    let (ci, ignored_failing) = snapshot
-        .and_then(|snapshot| snapshot.ci.as_ref())
-        .map(|ci| badge::without_ignored(ci, |name| my_work.is_ignored_check(&pr.repo, name)))
+    let (ci, ignored_not_passing) = snapshot
+        .and_then(|snapshot| Some((snapshot.ci.as_ref()?, &snapshot.pending_checks)))
+        .map(|(ci, pending)| {
+            badge::without_ignored(ci, pending, |name| my_work.is_ignored_check(&pr.repo, name))
+        })
         .unzip();
     badge::badge(&BadgeInputs {
         open: snapshot.is_none_or(|snapshot| snapshot.state == "OPEN"),
         read_failed: loaded.row.read_failure.is_some() || snapshot.is_none(),
         ci,
-        ignored_failing: ignored_failing.unwrap_or_default(),
+        ignored_not_passing: ignored_not_passing.unwrap_or_default(),
         ready_to_merge: snapshot
             .and_then(|snapshot| my_work.ready_to_merge(&pr.repo, pr.number, &snapshot.head)),
         failed_effects: standing.values().map(|s| failed(s)).sum(),
