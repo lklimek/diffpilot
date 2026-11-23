@@ -6,14 +6,14 @@ const TITLE = "How to start an agent";
 
 /**
  * The prompt for a Claude Code session that carries out the decisions on `pr` from the diffpilot at `origin` (owner
- * 2026-11-23). It holds no token: the skill reads it from the agent's env file. An agent claims a decision, then
- * reports each of its effects.
+ * 2026-11-23). It holds no token: the skill reads it from the agent's env file. It names no capabilities: the skill
+ * subscribes to every effect kind, so no decision is left unclaimable. An agent claims a decision, then reports
+ * each of its effects.
  */
 export const agentPrompt = (pr: PrRef, origin: string): string =>
   `Use the diffpilot-decisions skill to carry out my decisions on ${pr.repo.owner}/${pr.repo.name}#${pr.number} ` +
-  `from diffpilot at ${origin}: subscribe with capabilities fix,reply,resolve, claim each decision, carry out its ` +
-  `effects in this repository's checkout of the PR branch, and report each effect done or failed with the commit ` +
-  `or comment link.`;
+  `from diffpilot at ${origin}: subscribe, claim each decision, carry out its effects in this repository's ` +
+  `checkout of the PR branch, and report each effect done or failed with the commit or comment link.`;
 
 function Steps({ pr, origin }: { pr: PrRef; origin: string }) {
   const prompt = agentPrompt(pr, origin);

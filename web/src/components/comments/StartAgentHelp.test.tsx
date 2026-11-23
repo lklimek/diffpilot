@@ -12,9 +12,8 @@ const PR = { repo: { owner: "acme", name: "node-client" }, number: 482 };
 const ORIGIN = "http://agentic:3000";
 const PROMPT =
   "Use the diffpilot-decisions skill to carry out my decisions on acme/node-client#482 from diffpilot at " +
-  "http://agentic:3000: subscribe with capabilities fix,reply,resolve, claim each decision, carry out its " +
-  "effects in this repository's checkout of the PR branch, and report each effect done or failed with the " +
-  "commit or comment link.";
+  "http://agentic:3000: subscribe, claim each decision, carry out its effects in this repository's checkout of " +
+  "the PR branch, and report each effect done or failed with the commit or comment link.";
 
 /** `document.execCommand("copy")` over plain HTTP: fires a copy event when `works`; returns what it wrote. */
 function insecureCopy(works: boolean): Map<string, string> {

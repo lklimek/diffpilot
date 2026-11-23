@@ -93,8 +93,8 @@ test("notes_icons_open_new_tab", async ({ page, context }) => {
 /** The prompt the help offers for the fixture PR on this diffpilot. */
 const agentPrompt = (origin: string) =>
   `Use the diffpilot-decisions skill to carry out my decisions on acme/node-client#482 from diffpilot at ${origin}: ` +
-  "subscribe with capabilities fix,reply,resolve, claim each decision, carry out its effects in this repository's " +
-  "checkout of the PR branch, and report each effect done or failed with the commit or comment link.";
+  "subscribe, claim each decision, carry out its effects in this repository's checkout of the PR branch, and " +
+  "report each effect done or failed with the commit or comment link.";
 
 test("start_an_agent_from_the_empty_queue_and_the_decision_log", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);

@@ -286,11 +286,12 @@ Showing the read of 10:12; next read at 10:52."
 agent claims their decision; an agent needs an access token with the `review_loop_execute` scope (its checkbox in
 Settings › Access tokens). "Copy prompt" copies, as plain text, the prompt for a Claude Code session with this PR and
 `window.location.origin` filled in: "Use the diffpilot-decisions skill to carry out my decisions on
-<owner>/<repo>#<number> from diffpilot at <origin>: subscribe with capabilities fix,reply,resolve, claim each
-decision, carry out its effects in this repository's checkout of the PR branch, and report each effect done or failed
-with the commit or comment link." The prompt holds no token: the skill reads it from `~/envs/diffpilot-agent.env`
-(`SR_AGENT_KEY`, `SR_URL`; plain http needs `SR_HTTP_HOST`), never from the chat. The agent API is named as text
-(`docs/contracts/agent-api.md` §7). Shown open while no agent is subscribed, else a closed disclosure.
+<owner>/<repo>#<number> from diffpilot at <origin>: subscribe, claim each decision, carry out its effects in this
+repository's checkout of the PR branch, and report each effect done or failed with the commit or comment link." The
+prompt holds no token: the skill reads it from `~/envs/diffpilot-agent.env` (`SR_AGENT_KEY`, `SR_URL`; plain http
+needs `SR_HTTP_HOST`), never from the chat. The agent API is named as text (`docs/contracts/agent-api.md` §7). The
+skill subscribes to every effect kind by default, so a decision with a PR comment, follow-up PR or review dismissal is
+claimed too. Shown open while no agent is subscribed, else a closed disclosure.
 
 ### 3.3 V2 Table page
 "PR #482: <purpose>" line; columns of `check-pr-comments` §4 plus Decision (select), Reason / target, Resolve
