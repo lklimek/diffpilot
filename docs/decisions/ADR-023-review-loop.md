@@ -140,8 +140,11 @@ read with tokens (ADR-019).
 - **Fingerprint** format 2: purpose hash of the cleaned description, the item's comment, its bot status class, the
   replies of people (not bots: thepastaclaw re-reviews every open thread each round) and its lines; the prompt version
   is compared beside it. A pass whose every item has a stored assessment that only a new prompt version or the format
-  change made stale is the system's: `comment_passes.user_id` stays null and no user's daily cap is charged. A pass with
-  any other change is charged as before.
+  change made stale is the system's: `comment_passes.user_id` stays null and no user's daily cap is charged, once per
+  item and stored assessment (a pass since it that sent the item and stored nothing makes the next one charged). A pass
+  with any other change is charged as before. Accepted once, at the upgrade: an assessment stored by version 1 to 3 is
+  matched by its legacy fingerprint, which holds no replies or bot status, so a person's reply or a status change since
+  then is re-assessed free on the first pass.
 - **Logs.** `Usage.requests` (job result) estimates the model requests of a call from the provider's events (one per
   batch of tool calls and one for the answer); the server's `job token usage` line and the runner's session summary
   name model, effort, requests and, for `verify_comments`, the item count.

@@ -411,6 +411,40 @@ async fn one_live_pass_per_pull_request() {
     assert_eq!(rl.pass_usage("u1", at(1), PR).await.expect("usage").0, 1);
 }
 
+/// `sent_since` tells whether a pass of the pull request started after `since` sent the item, whoever was charged.
+#[tokio::test]
+async fn sent_since_finds_later_passes_of_the_item() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "dedupe-a").await;
+    let other = new_item(&db, "dedupe-b").await;
+    let pass = NewPass {
+        pull_request_id: PR,
+        user_id: None,
+        cause: PassCause::Read,
+        head: head(),
+        sent: vec![SentItem {
+            item: item.id,
+            no: item.no,
+            fingerprint: "f".into(),
+        }],
+        question: None,
+    };
+    let PassStart::Started(id) = rl.start_pass(T, &pass, at(10)).await.expect("start") else {
+        panic!("expected a start");
+    };
+    rl.finish_pass(id, false, at(20)).await.expect("finish");
+    assert!(rl.sent_since(PR, item.id, at(9)).await.expect("read"));
+    assert!(
+        !rl.sent_since(PR, item.id, at(10)).await.expect("read"),
+        "only later passes"
+    );
+    assert!(
+        !rl.sent_since(PR, other.id, at(0)).await.expect("read"),
+        "only passes that sent it"
+    );
+}
+
 #[tokio::test]
 async fn decisions_need_the_current_revision_and_supersede_the_previous() {
     let db = db().await;

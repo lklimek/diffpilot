@@ -14,7 +14,7 @@ use contracts::api::review_loop::{
 };
 use contracts::common::{LineRange, RepoRef};
 use contracts::ids::{CommentItemId, QuestionId};
-use contracts::job::result::{JobOutcome, JobResult};
+use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use db::repo::analyses::testing::seed_analysis;
 use db::repo::questions::{Asked, NewPrQuestion, PrQuestionLimits};
 use db::repo::review_loop::{ObservedItem, PassState, UpsertOutcome};
@@ -424,8 +424,8 @@ async fn pass_input_is_clean_and_carries_the_reply_chain() {
 }
 
 /// Owner decision 2026-11-23: a pass whose items only a new prompt version or fingerprint format made stale is the
-/// system's and charges nobody's daily cap; a new reply or a changed comment makes the item stale for real, and that
-/// pass is charged.
+/// system's and charges nobody's daily cap, once per item and stored assessment (a free pass that stored nothing is
+/// not repeated for free); a new reply or a changed comment makes the item stale for real, and that pass is charged.
 #[tokio::test]
 async fn reassessment_for_a_new_prompt_version_charges_nobody() {
     let f = fixture(HEAD).await;
@@ -470,6 +470,7 @@ async fn reassessment_for_a_new_prompt_version_charges_nobody() {
             legacy_fingerprint(&a, &head, code.as_deref(), &purpose, older.prompt_version),
         ),
     ] {
+        older.assessed_at = Timestamp::now();
         f.state
             .db
             .review_loop()
@@ -484,6 +485,44 @@ async fn reassessment_for_a_new_prompt_version_charges_nobody() {
         assert_eq!(pass.user_id, None, "{made_with}: nobody is charged");
         assert!(ingest_all(&f.state, &pass, None).await);
     }
+
+    // Review finding: a free pass that fails leaves the old assessment; the next pass sending the item is charged.
+    older.assessed_at = Timestamp::now();
+    f.state
+        .db
+        .review_loop()
+        .add_assessment(DEFAULT_TENANT, a.id, &older, &stored.fingerprint)
+        .await
+        .expect("stored");
+    assert_eq!(
+        charged(PassReason::Opened).await.expect("pass"),
+        PassQueued::Queued
+    );
+    let free = live_pass(&f.state).await;
+    assert_eq!(free.user_id, None);
+    let failed = JobResult {
+        outcome: JobOutcome::Failed {
+            kind: JobFailureKind::Internal,
+            message: "the provider stopped".to_owned(),
+        },
+        ..succeeded(free.job_id.expect("job"), json!({}))
+    };
+    assert!(
+        !ingest::result(&f.state, &free, failed)
+            .await
+            .expect("ingest")
+    );
+    assert_eq!(
+        charged(PassReason::Opened).await.expect("pass"),
+        PassQueued::Queued
+    );
+    let again = live_pass(&f.state).await;
+    assert_eq!(
+        again.user_id.as_deref(),
+        Some("u1"),
+        "the free re-assessment is granted once"
+    );
+    assert!(ingest_all(&f.state, &again, None).await);
 
     store_read(
         &f.state,

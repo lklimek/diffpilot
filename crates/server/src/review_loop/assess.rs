@@ -158,7 +158,7 @@ pub async fn request_pass(
 /// [`request_pass`] of an on-demand pass caused by `user`, who is charged with it: on-demand passes count toward
 /// the daily cap that stops automatic passes (plan §2.8) and still run when it is reached. A pass that only
 /// re-assesses items a new prompt version or fingerprint format made stale is charged to nobody, also an automatic
-/// one.
+/// one, once per item and stored assessment: a later pass that sends the item again is charged.
 pub async fn request_pass_for(
     state: &AppState,
     pr: i64,
@@ -280,17 +280,26 @@ async fn request(
             other => other,
         };
         if sent.len() < MAX_ITEMS_PER_PASS {
-            only_format &= stored.is_some_and(|stored| {
-                stored.fingerprint == fingerprint
-                    || stored.fingerprint
-                        == legacy_fingerprint(
-                            item,
-                            head,
-                            lines.as_deref(),
-                            &legacy_purpose,
-                            stored.assessment.prompt_version,
-                        )
-            });
+            only_format = only_format
+                && match &stored {
+                    Some(stored)
+                        if stored.fingerprint == fingerprint
+                            || stored.fingerprint
+                                == legacy_fingerprint(
+                                    item,
+                                    head,
+                                    lines.as_deref(),
+                                    &legacy_purpose,
+                                    stored.assessment.prompt_version,
+                                ) =>
+                    {
+                        // Free once: a pass since the stored assessment that sent it and stored nothing is charged.
+                        !db.review_loop()
+                            .sent_since(pr, item.id, stored.assessment.assessed_at)
+                            .await?
+                    }
+                    _ => false,
+                };
             sent.push(SentItem {
                 item: item.id,
                 no: item.no,
