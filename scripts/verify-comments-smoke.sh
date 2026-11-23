@@ -9,7 +9,7 @@
 # Usage: scripts/verify-comments-smoke.sh PROMPT_FILE REPO_DIR
 #   PROMPT_FILE  a prompt rendered as the server renders it (crates/server/src/review_loop/assess/prompt.rs)
 #   REPO_DIR     a git checkout of the head named in the prompt, with the base commit present (both checked)
-# Env:   SMOKE_IMAGE (diffpilot-spike-codex:0.167.0),
+# Env:   SMOKE_IMAGE (diffpilot-spike-codex:0.171.0),
 #        SMOKE_VOLUME (sr-spike-codex-home), SMOKE_MODEL (gpt-6.1-sol), SMOKE_EFFORT (high),
 #        SMOKE_ARCHIVE (/data/artifacts/diffpilot/<today>/verify-comments-smoke)
 # Prints one summary line: rc, seconds, schema verdict and the measures (tokens, items, output bytes).
@@ -19,7 +19,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Host-side reads of agent-writable job directories go only through this helper (no symlink following).
 report="${repo_root}/scripts/schema-smoke-report.py"
-image="${SMOKE_IMAGE:-diffpilot-spike-codex:0.167.0}"
+image="${SMOKE_IMAGE:-diffpilot-spike-codex:0.171.0}"
 volume="${SMOKE_VOLUME:-sr-spike-codex-home}"
 model="${SMOKE_MODEL:-gpt-6.1-sol}"
 effort="${SMOKE_EFFORT:-high}"
@@ -44,6 +44,14 @@ python3 -I -c 'import jsonschema' 2>/dev/null || die "python3-jsonschema missing
 docker image inspect "${image}" >/dev/null 2>&1 || die "image ${image} not found (S1a harness build.sh)"
 docker volume inspect "${volume}" >/dev/null 2>&1 || die "volume ${volume} not found (S1a codex-login.sh)"
 case "${effort}" in low | medium | high) ;; *) die "SMOKE_EFFORT must be low, medium or high" ;; esac
+[[ "${model}" =~ ^[A-Za-z0-9._-]+$ ]] || die "SMOKE_MODEL must be a plain model name"
+# The runner's per-job config of a job without MCP servers, as its golden file pins it (config.rs,
+# generated_configs_match_the_golden_files), with this run's model and effort.
+golden="${repo_root}/crates/runner/src/provider/codex/golden/config-analysis.toml"
+[[ -f "${golden}" ]] || die "golden config ${golden} not found"
+if grep -q '^\[mcp_servers' "${golden}"; then die "${golden} configures MCP servers; this smoke run mints no token"; fi
+[[ "$(grep -c '^model = ' "${golden}")" == 1 && "$(grep -c '^model_reasoning_effort = ' "${golden}")" == 1 ]] ||
+  die "${golden} has no single model and effort line to replace"
 
 out="${work}/jobs/${kind}"
 mkdir -p "${work}/in" "${out}"
@@ -52,36 +60,8 @@ echo "verify-comments-smoke: work dir ${work}"
 cp "${prompt}" "${work}/in/prompt.txt"
 cp "${repo_root}/schemas/agent/${kind}.schema.json" "${work}/in/${kind}.schema.json"
 
-# The runner's per-job config (crates/runner/src/provider/codex/config.rs) without MCP servers.
-cat >"${work}/in/config.toml" <<TOML
-model = "${model}"
-model_reasoning_effort = "${effort}"
-model_auto_compact_token_limit = 400000
-sandbox_mode = "danger-full-access"
-web_search = "disabled"
-approval_policy = "never"
-project_doc_max_bytes = 0
-
-[analytics]
-enabled = false
-
-[skills.bundled]
-enabled = false
-
-[features]
-plugins = false
-apps = false
-remote_plugin = false
-plugin_discovery_prefetch = false
-image_generation = false
-browser_use = false
-computer_use = false
-hooks = false
-tool_suggest = false
-goals = false
-daemon_auto_start = false
-multi_agent = false
-TOML
+sed -e "s/^model = .*/model = \"${model}\"/" \
+  -e "s/^model_reasoning_effort = .*/model_reasoning_effort = \"${effort}\"/" "${golden}" >"${work}/in/config.toml"
 
 cat >"${work}/in/job.sh" <<'JOB'
 #!/bin/bash
