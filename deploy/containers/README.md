@@ -74,7 +74,8 @@ runtime config. The token is passed only to that exec and written to `/run/dp/co
 `$CODEX_HOME/config.toml` links there. Codex 0.171 config edits resolve symlink targets, keeping trust/skill
 writes on tmpfs. W4 supplies the fixed per-thread MCP configuration on every start/fork/resume (CCR2).
 
-Before every job the reset removes instruction sources from HOME and CODEX_HOME: `AGENTS*.md`, `CLAUDE*.md`,
+Before every job the reset empties HOME, including shell startup files and Git config. From CODEX_HOME it
+removes instruction sources: `AGENTS*.md`, `CLAUDE*.md`,
 `instructions.md`, skills, prompts, rules, hooks, plugins, config, `.codex`, `.claude`, `.agents` and `.config`.
 It preserves thread transcripts and live app-server files, including `tmp/arg0-linux` helpers, SQLite databases
 and WAL/SHM files, `installation_id` and `app-server-control/`. Removed symlinks are never followed. Checkout and

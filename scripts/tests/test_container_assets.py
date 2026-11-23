@@ -160,7 +160,7 @@ class WorkerAssets(unittest.TestCase):
                         r"^FROM debian:bookworm-slim@sha256:[0-9a-f]{64}( AS [a-z]+)?$",
                     )
 
-    def test_warm_reset_preserves_live_runtime_files_and_removes_instructions(self):
+    def test_warm_reset_preserves_codex_runtime_and_empties_home(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             codex = root / "work/codex"
@@ -218,6 +218,16 @@ class WorkerAssets(unittest.TestCase):
                 "DP_RUNTIME_DIR": str(root / "runtime"),
             }
             for _ in range(2):
+                for name in (
+                    ".profile",
+                    ".bashrc",
+                    ".bash_profile",
+                    ".gitconfig",
+                    "other",
+                ):
+                    (home / name).write_text("planted startup data")
+                (home / "nested").mkdir()
+                (home / "nested/payload").write_text("planted startup data")
                 for parent in (home, codex):
                     for name in instruction_files:
                         (parent / name).write_text("planted instruction")
@@ -229,6 +239,7 @@ class WorkerAssets(unittest.TestCase):
                     env=env,
                     check=True,
                 )
+                self.assertEqual(list(home.iterdir()), [])
                 for name in runtime_files:
                     path = codex / name
                     self.assertTrue(path.is_file(), name)

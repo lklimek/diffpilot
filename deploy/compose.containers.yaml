@@ -58,6 +58,8 @@ services:
     <<: *hardening
     profiles: [integration]
     image: ${SR_GATEWAY_IMAGE:-v13w3-gateway:local}
+    # Shutdown can wait up to 50s for an in-flight token refresh.
+    stop_grace_period: 55s
     networks:
       control: { ipv4_address: 172.30.84.2 }
       worker: { ipv4_address: 172.30.85.2, aliases: [codex-gateway] }

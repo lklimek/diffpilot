@@ -29,7 +29,7 @@ def remove(path):
 os.umask(0o077)
 codex = Path(os.environ["CODEX_HOME"])
 home = Path(os.environ["HOME"])
-# Reset instruction sources without unlinking the running app-server's files.
+# Empty HOME; preserve live app-server files while resetting CODEX_HOME instructions.
 for parent in (home, codex):
     if parent.is_symlink():
         remove(parent)
@@ -53,7 +53,7 @@ for parent in (home, codex):
             or child.match("AGENTS*.md")
             or child.match("CLAUDE*.md")
         )
-        if instruction_source:
+        if parent == home or instruction_source:
             remove(child)
 
 preset = Path(__file__).with_name("config.toml").read_text()
