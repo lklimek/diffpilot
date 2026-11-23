@@ -103,6 +103,13 @@ install -m 600 /in/config.toml "${home}/config.toml"
 install -m 600 "/in/${KIND}.schema.json" "${home}/output-schema.json"
 install -m 600 /master/auth.json "${home}/auth.json"
 master_before="$(sha256sum /master/auth.json | cut -d' ' -f1)"
+# The credential values of the given files, one per line; checked against /out before and after any rotation.
+credential_values() {
+  grep -ohE '"(id_token|access_token|refresh_token|OPENAI_API_KEY)"[[:space:]]*:[[:space:]]*"[^"]{16,}"' "$@" \
+    2>/dev/null | sed -E 's/^.*"([^"]+)"$/\1/'
+}
+values=/codex/values
+credential_values /master/auth.json >"${values}"
 cd /job
 env -i HOME=/job/home PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin CODEX_HOME="${home}" \
   TMPDIR=/job/tmp LANG=C.UTF-8 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0=/job/repo \
@@ -121,17 +128,15 @@ if ! cmp -s "${home}/auth.json" /master/auth.json; then
 else
   state="credential unchanged"
 fi
-values=/codex/values
-grep -ohE '"(id_token|access_token|refresh_token|OPENAI_API_KEY)"[[:space:]]*:[[:space:]]*"[^"]{16,}"' \
-  /master/auth.json "${home}/auth.json" 2>/dev/null | sed -E 's/^.*"([^"]+)"$/\1/' >"${values}"
-if [ ! -s "${values}" ]; then
+credential_values /master/auth.json "${home}/auth.json" >"${values}.after"
+if [ ! -s "${values}" ] || [ ! -s "${values}.after" ]; then
   leak="output not checked: no credential value found"
-elif grep -rqF -f "${values}" /out; then
+elif grep -rqF -f "${values}" -f "${values}.after" /out; then
   leak="CREDENTIAL VALUE IN THE JOB OUTPUT"
 else
   leak="no credential value in the job output"
 fi
-rm -f "${values}" "${home}/auth.json"
+rm -f "${values}" "${values}.after" "${home}/auth.json" /out/credential.txt /out/rc
 echo "${state}; ${leak}" >/out/credential.txt
 echo "${rc}" >/out/rc
 exit "${rc}"
