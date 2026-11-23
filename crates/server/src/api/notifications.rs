@@ -6,7 +6,9 @@ use std::borrow::Cow;
 
 use axum::extract::rejection::{JsonRejection, PathRejection};
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::header::RETRY_AFTER;
+use axum::http::{HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use contracts::api::error::ApiErrorCode;
@@ -16,12 +18,50 @@ use contracts::api::review_loop::{
 use contracts::routes::{
     GET_NOTIFICATION_SETTINGS, PUT_NOTIFICATION_CHANNEL, TEST_NOTIFICATION_CHANNEL,
 };
+use contracts::time::Timestamp;
 
-use crate::api::decision_feed::{notify_code, notify_message};
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::{Session, SessionCsrf};
+use crate::review_loop::notify::outbound::UrlError;
 use crate::review_loop::notify::{self, NotifyError};
 use crate::state::AppState;
+
+/// Error code of a notification failure (RN1–RN3, RF5).
+pub(crate) fn notify_code(error: &NotifyError) -> ApiErrorCode {
+    match error {
+        NotifyError::Url(UrlError::Scheme) => ApiErrorCode::SchemeNotAllowed,
+        NotifyError::Url(_) | NotifyError::Topic(_) | NotifyError::Secret => {
+            ApiErrorCode::InvalidRequest
+        }
+        NotifyError::SecretRequired => ApiErrorCode::SecretRequired,
+        NotifyError::Limited { .. } => ApiErrorCode::RateLimited,
+        NotifyError::NotFound => ApiErrorCode::NotFound,
+        NotifyError::Cipher(_) => ApiErrorCode::Internal,
+        NotifyError::Db(error) => error.code(),
+    }
+}
+
+/// Plain message of a notification failure.
+pub(crate) fn notify_message(error: &NotifyError) -> Cow<'static, str> {
+    match error {
+        NotifyError::Url(_) | NotifyError::Topic(_) | NotifyError::Secret => {
+            Cow::Owned(format!("{error}."))
+        }
+        NotifyError::SecretRequired => Cow::Borrowed(
+            "The kind or the URL's scheme, host or port changed: replace or remove the secret, it is not sent to a \
+             new destination.",
+        ),
+        NotifyError::Limited { .. } => Cow::Owned(format!(
+            "{} messages were sent to this channel in the last hour; try again later.",
+            notify::MESSAGES_PER_HOUR
+        )),
+        NotifyError::NotFound => Cow::Borrowed("Set up this channel first."),
+        NotifyError::Cipher(_) => {
+            Cow::Borrowed("Something went wrong on the server. Try again later.")
+        }
+        NotifyError::Db(error) => error.public_message(),
+    }
+}
 
 /// A notification-settings request failed.
 #[derive(Debug, thiserror::Error)]
@@ -54,10 +94,31 @@ impl ApiErrorSource for NotificationsApiError {
     }
 }
 
-type ApiResult<T> = Result<T, ApiFailure<NotificationsApiError>>;
+/// A failed notification request; an over-limit test carries `Retry-After`.
+#[derive(Debug)]
+struct Failed(NotificationsApiError);
 
-fn failure(error: impl Into<NotificationsApiError>) -> ApiFailure<NotificationsApiError> {
-    ApiFailure(error.into())
+impl IntoResponse for Failed {
+    fn into_response(self) -> Response {
+        let retry_at = match &self.0 {
+            NotificationsApiError::Notify(NotifyError::Limited { retry_at }) => Some(*retry_at),
+            _ => None,
+        };
+        let mut response = ApiFailure(self.0).into_response();
+        if let Some(retry_at) = retry_at {
+            let seconds = retry_at.duration_since(Timestamp::now()).as_secs().max(1);
+            if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
+                response.headers_mut().insert(RETRY_AFTER, value);
+            }
+        }
+        response
+    }
+}
+
+type ApiResult<T> = Result<T, Failed>;
+
+fn failure(error: impl Into<NotificationsApiError>) -> Failed {
+    Failed(error.into())
 }
 
 type KindPath = Result<Path<ChannelKind>, PathRejection>;

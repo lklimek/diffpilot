@@ -129,7 +129,8 @@ function Agents({ subscribers, now }: { subscribers: FeedSubscriber[]; now: Date
                 <span className="text-muted">none{s.connected ? " (connected; not pushed)" : ""}</span>
               ) : (
                 <>
-                  {s.push.kind} · {s.push.url}
+                  {s.push.kind}
+                  {s.push.url && ` · ${s.push.url}`}
                   {s.push.topic && `/${s.push.topic}`}{" "}
                   {s.push.delivery.failing_since ? (
                     <Chip

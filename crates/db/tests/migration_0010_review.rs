@@ -292,9 +292,9 @@ async fn migration_0010_on_a_seeded_v9_database() {
             .map(|(_, rows)| rows.len()),
         Some(0)
     );
-    // 0017 and 0019 add the review-loop tables (with their indexes and trigger) and 0021 `dashboard_snoozes` (with its
-    // index; 0026 rebuilds it), all empty: left out of this check.
-    const ADDED_0017: [&str; 16] = [
+    // 0017 and 0019 add the review-loop tables (with their indexes and trigger), 0021 `dashboard_snoozes` (with its
+    // index; 0026 rebuilds it) and 0025 `notification_sends`, all empty: left out of this check.
+    const ADDED_0017: [&str; 17] = [
         "comment_prs",
         "comment_items",
         "comment_assessments",
@@ -311,6 +311,7 @@ async fn migration_0010_on_a_seeded_v9_database() {
         "comment_decision_undos",
         "comment_item_skips",
         "dashboard_snoozes",
+        "notification_sends",
     ];
     let added_0017 = |entry: &String| {
         entry

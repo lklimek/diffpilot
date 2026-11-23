@@ -4,12 +4,12 @@
 //!
 //! The feed is recomputed from the database by one task ([`sync`]): after a decision, claim or report (woken) and
 //! every [`SYNC_INTERVAL`] (so a lapsed lease returns its decision). Comparing with the previous computation gives
-//! `decision_available` and `decision_cancelled`.
+//! `decision_available` (also to agents whose capabilities a decision newly fits) and `decision_cancelled`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use contracts::api::access_tokens::{AccessTokenId, TokenScope};
 use contracts::api::review_loop::{
@@ -23,7 +23,7 @@ use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::review_loop::{
     ClaimOutcome, DecisionOwner, DeliveryTarget, NewUserEvent, OpenFeedEntry, ReportOutcomeRecord,
-    ReportRequest, SubscriptionRecord,
+    ReportRequest, StoredDecision, SubscriptionRecord,
 };
 use jiff::SignedDuration;
 use tokio::sync::{Notify, broadcast};
@@ -40,9 +40,6 @@ pub const SYNC_INTERVAL: Duration = Duration::from_secs(15);
 pub const PAGE_SIZE: usize = 100;
 /// Longest `reference` or `message` of a report.
 pub const MAX_REPORT_TEXT: usize = 2000;
-/// Messages per hour to one channel or push target.
-pub const MESSAGES_PER_HOUR: usize = 30;
-const HOUR: Duration = Duration::from_secs(3600);
 /// Buffered feed events per stream; a stream that falls further behind closes and reconnects.
 const SIGNAL_BUFFER: usize = 256;
 
@@ -55,11 +52,29 @@ pub struct FeedSignal {
     pub pr: PrRef,
     /// Kinds of its open agent effects: `decision_available` reaches a stream only within its capabilities.
     pub kinds: Vec<EffectKind>,
+    /// The kinds it was announced with before (it stayed claimable): a stream within those was told already.
+    pub before: Option<Vec<EffectKind>>,
     /// The event.
     pub event: FeedEvent,
 }
 
-/// In-process state of the feed and of notification deliveries (one server process serves every stream).
+impl FeedSignal {
+    /// Whether the event is news to a stream or agent with `capabilities`.
+    pub fn concerns(&self, capabilities: &[EffectKind]) -> bool {
+        match self.event {
+            FeedEvent::DecisionAvailable { .. } => {
+                within(&self.kinds, capabilities)
+                    && !self
+                        .before
+                        .as_deref()
+                        .is_some_and(|before| within(before, capabilities))
+            }
+            FeedEvent::DecisionCancelled { .. } | FeedEvent::Heartbeat { .. } => true,
+        }
+    }
+}
+
+/// In-process state of the feed (one server process serves every stream).
 #[derive(Clone)]
 pub struct FeedHub(Arc<Hub>);
 
@@ -68,11 +83,8 @@ struct Hub {
     /// Open streams per access token (FeedSubscriber.connected; no push while connected).
     connected: Mutex<HashMap<AccessTokenId, u32>>,
     sync_wanted: Notify,
-    deliveries_wanted: Notify,
     /// The claimable decisions of the last [`sync`].
     open: tokio::sync::Mutex<Vec<OpenFeedEntry>>,
-    /// Send times of the last hour per channel or push target.
-    sent: Mutex<HashMap<String, VecDeque<Instant>>>,
 }
 
 impl Default for FeedHub {
@@ -81,9 +93,7 @@ impl Default for FeedHub {
             events: broadcast::channel(SIGNAL_BUFFER).0,
             connected: Mutex::default(),
             sync_wanted: Notify::new(),
-            deliveries_wanted: Notify::new(),
             open: tokio::sync::Mutex::default(),
-            sent: Mutex::default(),
         }))
     }
 }
@@ -153,36 +163,8 @@ impl FeedHub {
         self.0.sync_wanted.notify_one();
     }
 
-    /// Asks the delivery task to look for due deliveries now.
-    pub fn wake_deliveries(&self) {
-        self.0.deliveries_wanted.notify_one();
-    }
-
     pub(crate) async fn sync_wanted(&self) {
         self.0.sync_wanted.notified().await;
-    }
-
-    pub(crate) async fn deliveries_wanted(&self) {
-        self.0.deliveries_wanted.notified().await;
-    }
-
-    /// Takes one of the hourly messages of `target`; `Err(wait)` when [`MESSAGES_PER_HOUR`] were sent within the
-    /// last hour.
-    pub(crate) fn take_message(&self, target: &str, now: Instant) -> Result<(), Duration> {
-        let mut sent = self.0.sent.lock().unwrap_or_else(PoisonError::into_inner);
-        let times = sent.entry(target.to_owned()).or_default();
-        while times
-            .front()
-            .is_some_and(|first| now.duration_since(*first) >= HOUR)
-        {
-            times.pop_front();
-        }
-        if times.len() >= MESSAGES_PER_HOUR {
-            let first = times.front().copied().unwrap_or(now);
-            return Err(HOUR.saturating_sub(now.duration_since(first)));
-        }
-        times.push_back(now);
-        Ok(())
     }
 
     fn publish(&self, signal: FeedSignal) {
@@ -462,10 +444,15 @@ pub async fn report(
         Ok(ReportOutcomeRecord::Recorded) => {}
         Ok(ReportOutcomeRecord::Duplicate) => {
             tracing::debug!(%effect, "repeated agent report ignored (same idempotency key)");
+            // A retry after a failed round check announces the round now (the check is idempotent).
+            if request.outcome == ReportOutcome::Done {
+                round_executed(state, owner.pull_request_id).await?;
+            }
             return Ok(());
         }
         Ok(ReportOutcomeRecord::NotClaimer) => return Err(FeedError::Claimed),
         Ok(ReportOutcomeRecord::LeaseExpired) => return Err(FeedError::LeaseExpired),
+        Ok(ReportOutcomeRecord::Ended) => return Err(FeedError::NothingOpen),
         Err(DbError::NotFound) => return Err(FeedError::NotFound),
         Err(error) => return Err(error.into()),
     }
@@ -479,28 +466,37 @@ pub async fn report(
     );
     state.feed.wake_sync();
     if request.outcome == ReportOutcome::Done {
-        round_executed(state, &owner, now).await?;
+        round_executed(state, owner.pull_request_id).await?;
     }
     Ok(())
 }
 
-/// Round checks run one at a time, so two last reports cannot both announce the same round.
+/// Round checks run one at a time, so two checks never announce overlapping rounds.
 static ROUND_CHECK: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(Default::default);
 
-/// After a `done` report: when every standing decision of the PR with effects is executed (each effect done or
-/// cancelled), the decisions executed since the PR's last `round_executed` event make one round; each of their
-/// deciders gets one `round_executed` event (RQ18).
-async fn round_executed(
-    state: &AppState,
-    owner: &DecisionOwner,
-    now: Timestamp,
-) -> Result<(), FeedError> {
+/// When a decision's effects last changed.
+fn finished(stored: &StoredDecision) -> Option<Timestamp> {
+    stored.decision.effects.iter().map(|e| e.updated_at).max()
+}
+
+/// After a `done` report (also a repeated one) and at the feed task's start: when every standing decision of the PR
+/// with effects is executed (each effect done or cancelled), the decisions executed since the PR's last announced
+/// round make one round; each of their deciders gets one `round_executed` event (RQ18), stored once per user and
+/// round, so a repeated check adds nothing.
+async fn round_executed(state: &AppState, pull_request_id: i64) -> Result<(), FeedError> {
     let _serial = ROUND_CHECK.lock().await;
     let rl = state.db.review_loop();
-    let decisions = rl.pr_decisions(owner.pull_request_id).await?;
+    let decisions = rl.pr_decisions(pull_request_id).await?;
     let standing = super::standing(&decisions);
     let executed = |state: EffectState| matches!(state, EffectState::Done | EffectState::Cancelled);
-    let acted: Vec<_> = standing
+    let all_executed = standing
+        .values()
+        .all(|stored| stored.decision.effects.iter().all(|e| executed(e.state)));
+    if !all_executed {
+        return Ok(());
+    }
+    let last = rl.rounds_through(pull_request_id).await?;
+    let round: Vec<(DecisionId, Timestamp)> = standing
         .values()
         .filter(|stored| {
             stored
@@ -509,40 +505,18 @@ async fn round_executed(
                 .iter()
                 .any(|effect| effect.state == EffectState::Done)
         })
+        .filter_map(|stored| Some((stored.decision.id, finished(stored)?)))
+        .filter(|(_, finished)| last.is_none_or(|last| *finished > last))
         .collect();
-    let all_executed = standing
-        .values()
-        .all(|stored| stored.decision.effects.iter().all(|e| executed(e.state)));
-    if acted.is_empty() || !all_executed {
+    let Some(through) = round.iter().map(|(_, finished)| *finished).max() else {
         return Ok(());
-    }
-    let last = rl
-        .last_user_event_at(owner.pull_request_id, UserEventKind::RoundExecuted)
-        .await?;
-    let round: Vec<DecisionId> = acted
-        .iter()
-        .filter(|stored| {
-            let finished = stored.decision.effects.iter().map(|e| e.updated_at).max();
-            last.is_none_or(|last| finished.is_some_and(|finished| finished > last))
-        })
-        .map(|stored| stored.decision.id)
-        .collect();
-    if round.is_empty() {
-        return Ok(());
-    }
-    let pr = rl
-        .feed_decision(owner.decision)
-        .await?
-        .ok_or(FeedError::NotFound)?
-        .pr;
+    };
+    let record = state.db.pull_requests().get(pull_request_id).await?;
+    let pr = PrRef {
+        repo: record.pr.repo.clone(),
+        number: record.pr.number,
+    };
     let count = u32::try_from(round.len()).unwrap_or(u32::MAX);
-    let mut users = Vec::new();
-    for decision in &round {
-        let user = rl.decision_user(*decision).await?;
-        if !users.contains(&user) {
-            users.push(user);
-        }
-    }
     let text = format!(
         "{}/{} #{}: {count} decision{} executed",
         pr.repo.owner,
@@ -550,42 +524,49 @@ async fn round_executed(
         pr.number,
         if count == 1 { "" } else { "s" }
     );
-    let url = comments_url(state, &pr);
-    for user_id in users {
-        rl.add_user_event(
-            &owner.tenant_id,
-            &NewUserEvent {
+    let mut events: Vec<NewUserEvent> = Vec::new();
+    for (decision, _) in &round {
+        let user_id = rl.decision_user(*decision).await?;
+        if !events.iter().any(|event| event.user_id == user_id) {
+            events.push(NewUserEvent {
                 user_id,
                 kind: UserEventKind::RoundExecuted,
-                pull_request_id: Some(owner.pull_request_id),
+                pull_request_id: Some(pull_request_id),
                 count,
                 text: text.clone(),
-                url: url.clone(),
-            },
-            now,
-        )
-        .await?;
+                url: Some(super::notify::comments_path(&pr)),
+            });
+        }
     }
-    tracing::info!(
-        pr = owner.pull_request_id,
-        count,
-        "agents executed every decision of a round; its deciders are notified"
-    );
-    state.feed.wake_deliveries();
+    let stored = rl
+        .add_round_events(&record.tenant_id, &events, through, Timestamp::now())
+        .await?;
+    if stored > 0 {
+        tracing::info!(
+            pr = pull_request_id,
+            count,
+            deciders = stored,
+            "agents executed every decision of a round; its deciders are notified"
+        );
+        state.notify.wake_deliveries();
+    }
     Ok(())
 }
 
-/// The absolute URL of a PR's Comments page.
-pub fn comments_url(state: &AppState, pr: &PrRef) -> Option<String> {
-    state
-        .config
-        .public_url
-        .join(&format!(
-            "pr/{}/{}/{}/comments",
-            pr.repo.owner, pr.repo.name, pr.number
-        ))
-        .ok()
-        .map(String::from)
+/// Announces the rounds completed while the server was down or whose check failed (at the feed task's start).
+pub(crate) async fn recover_rounds(state: &AppState) {
+    let prs = match state.db.review_loop().unannounced_rounds().await {
+        Ok(prs) => prs,
+        Err(error) => {
+            tracing::warn!(%error, "executed rounds could not be looked up at start; the next report checks again");
+            return;
+        }
+    };
+    for pr in prs {
+        if let Err(error) = round_executed(state, pr).await {
+            tracing::warn!(pr, %error, "an executed round could not be announced at start");
+        }
+    }
 }
 
 /// Recomputes the feed: returns lapsed claims, then announces decisions that became claimable (SSE, and a push
@@ -602,31 +583,36 @@ pub async fn sync(state: &AppState) -> Result<(), FeedError> {
     }
     let open = rl.open_feed(now).await?;
     let mut known = state.feed.0.open.lock().await;
-    let before: HashSet<DecisionId> = known.iter().map(|entry| entry.decision).collect();
+    let before: HashMap<DecisionId, &[EffectKind]> = known
+        .iter()
+        .map(|entry| (entry.decision, entry.kinds.as_slice()))
+        .collect();
     let after: HashSet<DecisionId> = open.iter().map(|entry| entry.decision).collect();
     let mut subscriptions: HashMap<String, Vec<SubscriptionRecord>> = HashMap::new();
     let mut pushes = 0;
-    for entry in open
-        .iter()
-        .filter(|entry| !before.contains(&entry.decision))
-    {
-        state.feed.publish(FeedSignal {
+    for entry in &open {
+        let was = before.get(&entry.decision).copied();
+        if was.is_some_and(|was| was == entry.kinds.as_slice()) {
+            continue;
+        }
+        let signal = FeedSignal {
             tenant_id: entry.tenant_id.clone(),
             pr: entry.pr.clone(),
             kinds: entry.kinds.clone(),
+            before: was.map(<[EffectKind]>::to_vec),
             event: FeedEvent::DecisionAvailable {
                 decision: entry.decision,
                 pr: entry.pr.clone(),
                 fetch: fetch_path(entry.decision),
             },
-        });
+        };
         if !subscriptions.contains_key(&entry.tenant_id) {
             let found = rl.subscriptions(&entry.tenant_id, now).await?;
             subscriptions.insert(entry.tenant_id.clone(), found);
         }
         for subscription in subscriptions.get(&entry.tenant_id).into_iter().flatten() {
             let wanted = subscription.push.is_some()
-                && within(&entry.kinds, &subscription.capabilities)
+                && signal.concerns(&subscription.capabilities)
                 && !state.feed.is_connected(&subscription.token_id);
             let target = DeliveryTarget::Push {
                 decision: entry.decision,
@@ -636,6 +622,7 @@ pub async fn sync(state: &AppState) -> Result<(), FeedError> {
                 pushes += 1;
             }
         }
+        state.feed.publish(signal);
     }
     for entry in known
         .iter()
@@ -645,6 +632,7 @@ pub async fn sync(state: &AppState) -> Result<(), FeedError> {
             tenant_id: entry.tenant_id.clone(),
             pr: entry.pr.clone(),
             kinds: Vec::new(),
+            before: None,
             event: FeedEvent::DecisionCancelled {
                 decision: entry.decision,
                 pr: entry.pr.clone(),
@@ -657,20 +645,20 @@ pub async fn sync(state: &AppState) -> Result<(), FeedError> {
             pushes,
             "push wake-ups queued for agents without a live stream"
         );
-        state.feed.wake_deliveries();
+        state.notify.wake_deliveries();
     }
     Ok(())
 }
 
-/// Starts the feed task and the delivery task; both stop with the server.
+/// Starts the feed task; it stops with the server.
 pub fn spawn(state: AppState) {
-    tokio::spawn(run_sync(state.clone()));
-    tokio::spawn(super::notify::run_deliveries(state));
+    tokio::spawn(run_sync(state));
 }
 
 async fn run_sync(state: AppState) {
     let mut stopping = state.stopping.subscribe();
     tracing::info!("decision feed task started");
+    recover_rounds(&state).await;
     loop {
         if let Err(error) = sync(&state).await {
             tracing::warn!(%error, "the decision feed could not be recomputed; retried shortly");
@@ -722,21 +710,6 @@ mod tests {
         for bad in ["acme", "acme/node/client", "/x", "a b/c"] {
             assert!(parse_repo(Some(bad)).is_err(), "{bad}");
         }
-    }
-
-    #[test]
-    fn hourly_message_limit_per_target() {
-        let hub = FeedHub::default();
-        let start = Instant::now();
-        for _ in 0..MESSAGES_PER_HOUR {
-            assert!(hub.take_message("channel-a", start).is_ok());
-        }
-        let wait = hub
-            .take_message("channel-a", start + Duration::from_secs(60))
-            .expect_err("limit");
-        assert_eq!(wait, Duration::from_secs(3540));
-        assert!(hub.take_message("channel-b", start).is_ok());
-        assert!(hub.take_message("channel-a", start + HOUR).is_ok());
     }
 
     #[test]

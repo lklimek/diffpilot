@@ -425,8 +425,10 @@ Every decision, supersede, reopen, gate mark and clear, "Resolve this thread", P
   targets); `warn` logged once when a channel turns failing and `info` once when it recovers, not per attempt.
 - **Outbound limits** (hosts are set by the user or an agent token; proportionate, not a full SSRF filter):
   `http`/`https` only; redirects not followed (a 3xx is a failure naming the target host); response bodies read up to
-  4 KiB and never shown; 30 messages per hour per channel **[A]**; private addresses allowed by default (Home Assistant
-  and self-hosted ntfy live on the LAN), blocked when the operator sets `SR_NOTIFY_DENY_PRIVATE=1`; the runbook lists
+  4 KiB and never shown; 30 messages per hour per channel **[A]** (counted from stored sends, per user and kind or
+  per token); loopback, link-local and reserved addresses always refused (in the URL and after resolution);
+  private addresses allowed by default (Home Assistant and self-hosted ntfy live on the LAN), blocked when the
+  operator sets `SR_NOTIFY_DENY_PRIVATE=1`; a kept secret only while kind and URL origin stay; the runbook lists
   notification hosts as operator-chosen outbound destinations.
 
 ## 6. Contracts and routes

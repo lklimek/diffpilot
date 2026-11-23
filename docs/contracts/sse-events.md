@@ -96,6 +96,6 @@ Plan `docs/review-workflow-plan.md` §2.8, §5 (ADR-023). Types in `crates/contr
   stream ends when the server stops.
 - `GET /api/v1/decision-feed/events` (RF2, `read`, query `FeedQuery`): `FeedEvent` tagged by `event`:
   `decision_available {decision, pr, fetch}` when a decision within the subscriber's capabilities becomes
-  claimable, `decision_cancelled {decision, pr}` when it leaves the feed (superseded or claimed by another agent),
+  claimable (also when its open effects shrink so that it newly fits them), `decision_cancelled {decision, pr}` when it leaves the feed (superseded or claimed by another agent),
   `heartbeat {at}`. Opening the stream records the token's subscription and capabilities; no comment text, reply
   text or secret is sent (fetch the decision with RF1b).

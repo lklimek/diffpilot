@@ -991,6 +991,11 @@
           "description": "A notification URL must use `http` or `https`.",
           "type": "string",
           "const": "scheme_not_allowed"
+        },
+        {
+          "description": "A changed kind or URL origin of a notification target needs its secret replaced or removed.",
+          "type": "string",
+          "const": "secret_required"
         }
       ]
     },

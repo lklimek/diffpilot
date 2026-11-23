@@ -152,6 +152,7 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     server::dashboard::schedule::spawn(state.clone());
     server::dashboard::plugin::spawn(state.clone());
     server::review_loop::feed::spawn(state.clone());
+    server::review_loop::notify::spawn(state.clone());
 
     let (stop, stopped) = (state.stopping.clone(), state.stopping.subscribe());
     tokio::spawn(async move {

@@ -1,17 +1,20 @@
 //! Notifications (plan §5.5, RN1–RN3, RF5): a user's ntfy and webhook channels, an agent token's push target, and
 //! the delivery task: one attempt now, retries after about 1 and 5 minutes, then the target is failing; health
-//! (last delivery, last error, failing since) is logged once per change. Secrets are stored AES-GCM under
-//! `SR_SECRET_KEY` (`secrets`), shown as their last 4 characters, sent only to their own target, never logged.
+//! (last delivery, last error, failing since) is logged once per change. At most [`MESSAGES_PER_HOUR`] messages go
+//! to one channel or push target an hour, counted from the stored sends. Secrets are stored AES-GCM under
+//! `SR_SECRET_KEY` (`secrets`), shown as their last 4 characters, sent only to their own target (a changed kind or
+//! origin needs the secret again), never logged.
 
 pub mod outbound;
 
-use std::time::Instant;
+use std::sync::Arc;
 
 use contracts::api::review_loop::{
     AgentPushEvent, AgentPushPayload, ChannelKind, ChannelTestResult, DeliveryOutcome,
     NotificationChannel, NotificationSettings, PushTarget, PutChannelRequest, PutPushTargetRequest,
     SecretChange, UserEvent, UserEventKind, WebhookPayload,
 };
+use contracts::common::PrRef;
 use contracts::ids::{DecisionId, UserEventId};
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -23,9 +26,10 @@ use futures::StreamExt;
 use jiff::SignedDuration;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use secrecy::{ExposeSecret, SecretString};
+use tokio::sync::Notify;
 use url::Url;
 
-use self::outbound::{Outbound, SendError, UrlError, check_url};
+use self::outbound::{Outbound, Reach, SendError, UrlError, check_url};
 use crate::auth::{Session, TokenPrincipal};
 use crate::secrets::{Aad, SecretError, TokenCipher};
 use crate::state::AppState;
@@ -35,10 +39,11 @@ pub const ATTEMPTS: u32 = 3;
 /// Waits before the 2nd and 3rd attempt: attempts at about now, +1 min and +5 min.
 pub const RETRY_AFTER: [SignedDuration; 2] =
     [SignedDuration::from_mins(1), SignedDuration::from_mins(4)];
+/// Messages per hour to one channel or push target.
+pub const MESSAGES_PER_HOUR: u32 = 30;
+const HOUR: SignedDuration = SignedDuration::from_hours(1);
 /// The delivery task looks for due deliveries at least this often.
 const DELIVERY_TICK: std::time::Duration = std::time::Duration::from_secs(5);
-/// User events this recent are queued for channels (each pair once).
-const EVENT_WINDOW: SignedDuration = SignedDuration::from_mins(10);
 /// Deliveries taken per round and sent at once.
 const BATCH: u32 = 50;
 const PARALLEL: usize = 8;
@@ -64,6 +69,17 @@ pub enum NotifyError {
     /// No channel of this kind (RN3) or no push target.
     #[error("the channel is not set up")]
     NotFound,
+    /// A kept secret would follow a changed kind or URL origin to another destination.
+    #[error(
+        "the kind or the URL's scheme, host or port changed, so the secret must be replaced or removed"
+    )]
+    SecretRequired,
+    /// RN3: [`MESSAGES_PER_HOUR`] messages went to the channel within the last hour.
+    #[error("{MESSAGES_PER_HOUR} messages were sent to this channel in the last hour")]
+    Limited {
+        /// When the next message may go.
+        retry_at: Timestamp,
+    },
     /// A secret could not be encrypted or decrypted.
     #[error("a stored secret could not be used")]
     Cipher(#[from] SecretError),
@@ -104,6 +120,49 @@ fn cipher(state: &AppState) -> TokenCipher {
     TokenCipher::new(&state.config.secret_key)
 }
 
+/// Wakes the delivery task (one server process sends every notification).
+#[derive(Clone, Debug, Default)]
+pub struct NotifyHub(Arc<Notify>);
+
+impl NotifyHub {
+    /// Asks the delivery task to look for due deliveries now.
+    pub fn wake_deliveries(&self) {
+        self.0.notify_one();
+    }
+
+    async fn deliveries_wanted(&self) {
+        self.0.notified().await;
+    }
+}
+
+/// Starts the delivery task; it stops with the server.
+pub fn spawn(state: AppState) {
+    tokio::spawn(run_deliveries(state));
+}
+
+/// The hourly limit's key of a channel (its user and kind, so removing and saving it again keeps the count).
+fn channel_key(user_id: &str, kind: ChannelKind) -> String {
+    format!("channel:{}", channel_row(user_id, kind))
+}
+
+fn push_key(token: &contracts::api::access_tokens::AccessTokenId) -> String {
+    format!("push:{}", token.0)
+}
+
+/// Takes one of the hourly messages of `target`; `Err(at)` when the next may go.
+async fn take_message(
+    state: &AppState,
+    tenant_id: &str,
+    target: &str,
+    now: Timestamp,
+) -> Result<Result<(), Timestamp>, DbError> {
+    state
+        .db
+        .review_loop()
+        .take_send_slot(tenant_id, target, MESSAGES_PER_HOUR, HOUR, now)
+        .await
+}
+
 /// The last 4 characters of a stored secret; `None` without one or when it cannot be decrypted.
 fn last4(state: &AppState, aad: Aad<'_>, stored: Option<&[u8]>) -> Option<String> {
     let plain = cipher(state).decrypt(aad, stored?).ok()?;
@@ -117,14 +176,21 @@ struct Checked {
     topic: Option<String>,
 }
 
+/// The stored target a save replaces, when it holds a secret: its kind and URL.
+struct Stored<'a> {
+    kind: ChannelKind,
+    url: &'a str,
+}
+
 fn check_target(
     state: &AppState,
     kind: ChannelKind,
     url: &str,
     topic: Option<&str>,
     secret: &SecretChange,
+    stored: Option<Stored<'_>>,
 ) -> Result<Checked, NotifyError> {
-    let url = check_url(url, state.config.notify_deny_private)?;
+    let url = check_url(url, Reach::of(&state.config))?;
     let topic = topic.map(str::trim).filter(|topic| !topic.is_empty());
     let topic = match (kind, topic) {
         (ChannelKind::Ntfy, None) => {
@@ -147,12 +213,24 @@ fn check_target(
             return Err(NotifyError::Topic("a webhook has no topic"));
         }
     };
-    if let SecretChange::Replace { value } = secret {
-        let usable = SECRET_CHARS.contains(&value.chars().count())
-            && HeaderValue::from_str(&authorization(kind, value)).is_ok();
-        if !usable {
-            return Err(NotifyError::Secret);
+    match secret {
+        SecretChange::Replace { value } => {
+            let usable = SECRET_CHARS.contains(&value.chars().count())
+                && HeaderValue::from_str(&authorization(kind, value)).is_ok();
+            if !usable {
+                return Err(NotifyError::Secret);
+            }
         }
+        SecretChange::Keep => {
+            let moved = stored.is_some_and(|stored| {
+                stored.kind != kind
+                    || Url::parse(stored.url).map_or(true, |old| old.origin() != url.origin())
+            });
+            if moved {
+                return Err(NotifyError::SecretRequired);
+            }
+        }
+        SecretChange::Remove => {}
     }
     Ok(Checked { url, topic })
 }
@@ -190,12 +268,29 @@ fn channel_view(state: &AppState, record: ChannelRecord) -> NotificationChannel 
     }
 }
 
-/// A token's push target as shown in the decision log (V3) and RF5; `None` without one.
-pub fn push_view(state: &AppState, record: &SubscriptionRecord) -> Option<PushTarget> {
+/// A token's push target as shown in RF5 and the decision log (V3); `None` without one. Without `detail` (another
+/// user's token in V3) only its kind and delivery state: no URL, topic, secret tail or error text.
+pub fn push_view(
+    state: &AppState,
+    record: &SubscriptionRecord,
+    detail: bool,
+) -> Option<PushTarget> {
     let (kind, url, topic) = record.push.clone()?;
+    if !detail {
+        return Some(PushTarget {
+            kind,
+            url: None,
+            topic: None,
+            secret_last4: None,
+            delivery: contracts::api::review_loop::DeliveryStatus {
+                last_error: None,
+                ..record.delivery.clone()
+            },
+        });
+    }
     Some(PushTarget {
         kind,
-        url,
+        url: Some(url),
         topic,
         secret_last4: last4(
             state,
@@ -227,12 +322,23 @@ pub async fn put_channel(
     kind: ChannelKind,
     request: &PutChannelRequest,
 ) -> Result<NotificationChannel, NotifyError> {
+    let existing = state
+        .db
+        .review_loop()
+        .channels(&session.user_id)
+        .await?
+        .into_iter()
+        .find(|channel| channel.kind == kind && channel.secret.is_some());
     let checked = check_target(
         state,
         kind,
         &request.url,
         request.topic.as_deref(),
         &request.secret,
+        existing.as_ref().map(|channel| Stored {
+            kind: channel.kind,
+            url: &channel.url,
+        }),
     )?;
     let row = channel_row(&session.user_id, kind);
     let secret = secret_update(&cipher(state), channel_aad(&row), &request.secret)?;
@@ -281,7 +387,7 @@ pub async fn delete_channel(
 }
 
 /// RN3: one test message through the user's channel of `kind`, without retry; the outcome is the channel's
-/// latest delivery.
+/// latest delivery. Over the hourly limit nothing is sent and the channel's health is unchanged.
 pub async fn test_channel(
     state: &AppState,
     session: &Session,
@@ -300,27 +406,18 @@ pub async fn test_channel(
         pr: None,
         count: 0,
         text: "diffpilot test message: this channel works".to_owned(),
-        url: state
-            .config
-            .public_url
-            .join("settings#notifications")
-            .ok()
-            .map(String::from),
+        url: Some("/settings#notifications".to_owned()),
         at: Timestamp::now(),
     };
-    let sent = if state
-        .feed
-        .take_message(&channel_key(&channel), Instant::now())
-        .is_err()
-    {
-        Err(Failure::Limited)
-    } else {
-        match Outbound::new(state.config.notify_deny_private) {
-            Ok(outbound) => send_event(state, &outbound, &channel, &event).await,
-            Err(error) => {
-                tracing::error!(%error, "the notification HTTP client for a test could not be built");
-                Err(Failure::Client)
-            }
+    let key = channel_key(&channel.user_id, channel.kind);
+    if let Err(retry_at) = take_message(state, &session.tenant_id, &key, event.at).await? {
+        return Err(NotifyError::Limited { retry_at });
+    }
+    let sent = match Outbound::new(Reach::of(&state.config)) {
+        Ok(outbound) => send_event(state, &outbound, &channel, &event).await,
+        Err(error) => {
+            tracing::error!(%error, "the notification HTTP client for a test could not be built");
+            Err(Failure::Client)
         }
     };
     let (outcome, http_status, error) = match &sent {
@@ -354,12 +451,22 @@ pub async fn put_push_target(
     principal: &TokenPrincipal,
     request: &PutPushTargetRequest,
 ) -> Result<PushTarget, NotifyError> {
+    let existing = state
+        .db
+        .review_loop()
+        .subscription(&principal.token_id, Timestamp::now())
+        .await?
+        .filter(|subscription| subscription.push_secret.is_some());
     let checked = check_target(
         state,
         request.kind,
         &request.url,
         request.topic.as_deref(),
         &request.secret,
+        existing
+            .as_ref()
+            .and_then(|subscription| subscription.push.as_ref())
+            .map(|(kind, url, _)| Stored { kind: *kind, url }),
     )?;
     let secret = secret_update(
         &cipher(state),
@@ -387,7 +494,7 @@ pub async fn put_push_target(
         kind = kind_name(request.kind),
         "an agent set its push target"
     );
-    push_view(state, &record).ok_or(NotifyError::NotFound)
+    push_view(state, &record, true).ok_or(NotifyError::NotFound)
 }
 
 /// RF5 `DELETE`: removes the calling token's push target (nothing to remove is fine).
@@ -421,9 +528,6 @@ enum Failure {
     /// The notification client could not be built.
     #[error("the notification client could not start")]
     Client,
-    /// 30 messages went to this target within the last hour.
-    #[error("30 messages were sent in the last hour; try again later")]
-    Limited,
 }
 
 impl Failure {
@@ -493,21 +597,25 @@ fn request(
 }
 
 /// `owner/name#number` of an event's pull request.
-fn pr_name(pr: &contracts::common::PrRef) -> String {
+fn pr_name(pr: &PrRef) -> String {
     format!("{}/{}#{}", pr.repo.owner, pr.repo.name, pr.number)
 }
 
-/// An absolute link: stored links relative to the instance are joined to `SR_PUBLIC_URL`.
+/// The absolute link of a stored event link (a path on this instance, joined to `SR_PUBLIC_URL`).
 fn absolute(state: &AppState, link: Option<&str>) -> Option<String> {
-    let link = link?;
-    if Url::parse(link).is_ok() {
-        return Some(link.to_owned());
-    }
-    state.config.public_url.join(link).ok().map(String::from)
+    state.config.public_url.join(link?).ok().map(String::from)
+}
+
+/// The path of a PR's Comments page on this instance, as user events store it.
+pub fn comments_path(pr: &PrRef) -> String {
+    format!(
+        "/pr/{}/{}/{}/comments",
+        pr.repo.owner, pr.repo.name, pr.number
+    )
 }
 
 /// The push message of a claimable decision: ids and the fetch path only (T28).
-pub fn push_payload(decision: DecisionId, pr: &contracts::common::PrRef) -> AgentPushPayload {
+pub fn push_payload(decision: DecisionId, pr: &PrRef) -> AgentPushPayload {
     AgentPushPayload {
         v: 1,
         event: AgentPushEvent::DecisionAvailable,
@@ -517,11 +625,13 @@ pub fn push_payload(decision: DecisionId, pr: &contracts::common::PrRef) -> Agen
     }
 }
 
+/// Sends a push of `decision` (of `pr`) to the subscription's target (the caller took the hourly slot).
 async fn send_push(
     state: &AppState,
     outbound: &Outbound,
     subscription: &SubscriptionRecord,
     decision: DecisionId,
+    pr: &PrRef,
 ) -> Result<u16, Failure> {
     let Some((kind, url, topic)) = &subscription.push else {
         return Err(UrlError::Invalid.into());
@@ -532,16 +642,7 @@ async fn send_push(
         .map(|stored| cipher(state).decrypt(push_aad(&subscription.token_id.0), stored))
         .transpose()
         .map_err(|_| Failure::Secret)?;
-    let pr = state
-        .db
-        .review_loop()
-        .feed_decision(decision)
-        .await
-        .ok()
-        .flatten()
-        .map(|found| found.pr)
-        .ok_or(Failure::Url(UrlError::Invalid))?;
-    let json = serde_json::to_vec(&push_payload(decision, &pr)).unwrap_or_default();
+    let json = serde_json::to_vec(&push_payload(decision, pr)).unwrap_or_default();
     let text = String::from_utf8_lossy(&json).into_owned();
     let (url, headers, body) = request(
         *kind,
@@ -559,10 +660,6 @@ async fn send_push(
 enum Target {
     Channel(ChannelRecord),
     Push(SubscriptionRecord),
-}
-
-fn channel_key(channel: &ChannelRecord) -> String {
-    format!("channel:{}", channel.id)
 }
 
 fn log_transition(health: &Target, transition: FailureTransition, error: Option<&str>) {
@@ -636,12 +733,11 @@ async fn try_attempt(
             let Some(event) = rl.user_event(*event).await? else {
                 return give_up("event removed").await;
             };
-            if let Err(wait) = state
-                .feed
-                .take_message(&channel_key(&channel), Instant::now())
-            {
-                let later =
-                    now + SignedDuration::try_from(wait).unwrap_or(SignedDuration::from_hours(1));
+            if !channel.events.contains(&event.kind) {
+                return give_up("channel no longer takes this event").await;
+            }
+            let key = channel_key(&channel.user_id, channel.kind);
+            if let Err(later) = take_message(state, &delivery.tenant_id, &key, now).await? {
                 tracing::debug!(
                     delivery = delivery.id,
                     "hourly message limit reached; delivery postponed"
@@ -653,24 +749,27 @@ async fn try_attempt(
         }
         DeliveryTarget::Push { decision, token } => {
             let Some(subscription) = rl.subscription(token, now).await? else {
-                return give_up("token revoked or expired").await;
+                return give_up("token revoked or expired, or its user is no longer allowed").await;
             };
             if subscription.push.is_none() {
                 return give_up("push target removed").await;
             }
-            if let Err(wait) = state
-                .feed
-                .take_message(&format!("push:{}", token.0), Instant::now())
+            if state.feed.is_connected(token) {
+                return give_up("the agent holds a live feed stream").await;
+            }
+            let Some(pr) = rl.feed_decision(*decision).await?.map(|found| found.pr) else {
+                return give_up("decision removed").await;
+            };
+            if let Err(later) =
+                take_message(state, &delivery.tenant_id, &push_key(token), now).await?
             {
-                let later =
-                    now + SignedDuration::try_from(wait).unwrap_or(SignedDuration::from_hours(1));
                 tracing::debug!(
                     delivery = delivery.id,
                     "hourly message limit reached; push postponed"
                 );
                 return rl.postpone_delivery(delivery.id, later).await;
             }
-            let sent = send_push(state, outbound, &subscription, *decision).await;
+            let sent = send_push(state, outbound, &subscription, *decision, &pr).await;
             (sent, Target::Push(subscription), None)
         }
     };
@@ -770,15 +869,13 @@ async fn send_event(
     Ok(outbound.post(&url, headers, body).await?)
 }
 
-/// Queues recent user events for their channels, then makes one attempt of every delivery due at `now`.
+/// Makes one attempt of every delivery due at `now` (user events queue theirs when stored).
 pub async fn deliver_due(
     state: &AppState,
     outbound: &Outbound,
     now: Timestamp,
 ) -> Result<(), DbError> {
-    let rl = state.db.review_loop();
-    rl.enqueue_event_deliveries(now - EVENT_WINDOW, now).await?;
-    let due = rl.due_deliveries(now, BATCH).await?;
+    let due = state.db.review_loop().due_deliveries(now, BATCH).await?;
     futures::stream::iter(due)
         .map(|delivery| attempt(state, outbound, delivery, now))
         .buffer_unordered(PARALLEL)
@@ -788,8 +885,8 @@ pub async fn deliver_due(
 }
 
 /// The delivery task: every few seconds and when woken, until the server stops.
-pub(super) async fn run_deliveries(state: AppState) {
-    let outbound = match Outbound::new(state.config.notify_deny_private) {
+async fn run_deliveries(state: AppState) {
+    let outbound = match Outbound::new(Reach::of(&state.config)) {
         Ok(outbound) => outbound,
         Err(error) => {
             tracing::error!(%error, "the notification HTTP client could not be built; no notification is sent");
@@ -804,7 +901,7 @@ pub(super) async fn run_deliveries(state: AppState) {
         }
         tokio::select! {
             () = tokio::time::sleep(DELIVERY_TICK) => {}
-            () = state.feed.deliveries_wanted() => {}
+            () = state.notify.deliveries_wanted() => {}
             _ = stopping.wait_for(|stop| *stop) => break,
         }
     }

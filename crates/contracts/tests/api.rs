@@ -286,6 +286,7 @@ fn error_codes_map_to_statuses() {
         ("capability_missing", 422),
         ("watch_limit_reached", 409),
         ("scheme_not_allowed", 422),
+        ("secret_required", 422),
     ];
     assert_eq!(ApiErrorCode::ALL.len(), expected.len());
     for (code, (name, status)) in ApiErrorCode::ALL.into_iter().zip(expected) {

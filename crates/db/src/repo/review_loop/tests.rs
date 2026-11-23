@@ -30,6 +30,8 @@ async fn db() -> Db {
     sqlx::raw_sql(
         "INSERT INTO users (id, github_id, login, created_at, updated_at)
            VALUES ('u1', 1, 'alice', 't', 't'), ('u2', 2, 'bob', 't', 't');
+         INSERT INTO tenant_allowed_logins (tenant_id, login, github_id, bound_at)
+           VALUES ('default', 'alice', 1, 't'), ('default', 'bob', 2, 't');
          INSERT INTO repos (id, tenant_id, owner, name) VALUES (1, 'default', 'acme', 'node-client');
          INSERT INTO pull_requests (id, tenant_id, repo_id, number, title, author, html_url, base_sha, head_sha,
              fetched_at)
@@ -570,6 +572,19 @@ async fn claims_hold_a_lease_and_reports_come_from_the_claimer() {
     assert_eq!(effects[1].state, EffectState::Open, "its fix is done");
     assert_eq!(effects[2].state, EffectState::Waiting);
     assert!(effects[1].claim.is_none());
+    assert_eq!(
+        rl.report(T, effects[1].id, &a, &done("k3"), lease, later)
+            .await
+            .expect("report"),
+        ReportOutcomeRecord::LeaseExpired,
+        "after the feed task returned it, the former claimer is still told its lease ended"
+    );
+    assert_eq!(
+        rl.report(T, effects[1].id, &b, &done("k3"), lease, later)
+            .await
+            .expect("report"),
+        ReportOutcomeRecord::NotClaimer
+    );
 
     // Another agent takes it, releases it, takes it again and finishes.
     assert!(matches!(
@@ -578,6 +593,13 @@ async fn claims_hold_a_lease_and_reports_come_from_the_claimer() {
             .expect("claim"),
         ClaimOutcome::Claimed(_)
     ));
+    assert_eq!(
+        rl.report(T, effects[1].id, &a, &done("k4"), lease, later)
+            .await
+            .expect("report"),
+        ReportOutcomeRecord::NotClaimer,
+        "another agent's claim is not the lapsed one's"
+    );
     let release = ReportRequest {
         outcome: ReportOutcome::Released,
         reference: None,
@@ -600,14 +622,21 @@ async fn claims_hold_a_lease_and_reports_come_from_the_claimer() {
     rl.claim(decision.id, &b, &all, lease, later)
         .await
         .expect("claim");
-    for (effect, key) in [(effects[1].id, "b2"), (effects[2].id, "b3")] {
+    for effect in [effects[1].id, effects[2].id] {
         assert_eq!(
-            rl.report(T, effect, &b, &done(key), lease, later)
+            rl.report(T, effect, &b, &done("b-done"), lease, later)
                 .await
                 .expect("report"),
-            ReportOutcomeRecord::Recorded
+            ReportOutcomeRecord::Recorded,
+            "an idempotency key is scoped per effect"
         );
     }
+    assert_eq!(
+        rl.report(T, fix, &a, &done("k5"), lease, later)
+            .await
+            .expect("report"),
+        ReportOutcomeRecord::Ended
+    );
     let item = rl.item_by_no(PR, 1).await.expect("item").expect("some");
     assert_eq!(item.state, ItemState::Done);
     assert_eq!(
@@ -1489,7 +1518,7 @@ async fn open_feed_tracks_claimable_decisions_with_their_kinds_and_owners() {
 }
 
 #[tokio::test]
-async fn event_deliveries_are_queued_once_per_subscribed_channel() {
+async fn event_deliveries_are_queued_with_the_event_per_subscribed_channel() {
     let db = db().await;
     let rl = db.review_loop();
     let channel = |events: Vec<UserEventKind>, enabled| ChannelInput {
@@ -1550,27 +1579,12 @@ async fn event_deliveries_are_queued_once_per_subscribed_channel() {
     )
     .await
     .expect("other user");
-    assert_eq!(
-        rl.enqueue_event_deliveries(at(0), at(8))
-            .await
-            .expect("queue"),
-        1,
-        "only u1's ntfy channel takes questions_ready; tests and disabled channels are left out"
-    );
-    assert_eq!(
-        rl.enqueue_event_deliveries(at(0), at(9))
-            .await
-            .expect("again"),
-        0
-    );
-    assert_eq!(
-        rl.enqueue_event_deliveries(at(5), at(9))
-            .await
-            .expect("later"),
-        0,
-        "events at or before `since` are not queued"
-    );
-    let due = rl.due_deliveries(at(8), 10).await.expect("due");
+    // Due at once and however late the delivery task looks (no age cut-off); only u1's ntfy channel takes
+    // questions_ready, tests and disabled channels are left out.
+    let due = rl
+        .due_deliveries(at(5) + SignedDuration::from_hours(3), 10)
+        .await
+        .expect("due");
     assert_eq!(
         due.iter().map(|d| d.target.clone()).collect::<Vec<_>>(),
         [DeliveryTarget::Channel {
@@ -1578,6 +1592,16 @@ async fn event_deliveries_are_queued_once_per_subscribed_channel() {
             channel: ntfy.id
         }]
     );
+    // A channel set up later does not receive earlier events.
+    rl.put_channel(
+        T,
+        "u2",
+        ChannelKind::Webhook,
+        &channel(vec![UserEventKind::QuestionsReady], true),
+    )
+    .await
+    .expect("later channel");
+    assert_eq!(rl.due_deliveries(at(8), 10).await.expect("due").len(), 1);
     rl.postpone_delivery(due[0].id, at(100))
         .await
         .expect("postpone");
@@ -1599,18 +1623,7 @@ async fn event_deliveries_are_queued_once_per_subscribed_channel() {
         rl.channel(ntfy.id).await.expect("channel").map(|c| c.kind),
         Some(ChannelKind::Ntfy)
     );
-    assert_eq!(
-        rl.last_user_event_at(PR, UserEventKind::QuestionsReady)
-            .await
-            .expect("last"),
-        Some(at(7))
-    );
-    assert_eq!(
-        rl.last_user_event_at(PR, UserEventKind::RoundExecuted)
-            .await
-            .expect("none"),
-        None
-    );
+    assert_eq!(rl.rounds_through(PR).await.expect("none"), None);
 
     let token = AccessTokenId("agentAAA".into());
     rl.subscribe(T, &token, &[EffectKind::Reply], at(1))
@@ -1631,5 +1644,117 @@ async fn event_deliveries_are_queued_once_per_subscribed_channel() {
             .await
             .expect("revoked")
             .is_none()
+    );
+}
+
+#[tokio::test]
+async fn subscriptions_of_users_off_the_allow_list_are_absent() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let token = AccessTokenId("agentAAA".into());
+    rl.subscribe(T, &token, &[EffectKind::Reply], at(1))
+        .await
+        .expect("subscribe");
+    assert_eq!(rl.subscriptions(T, at(2)).await.expect("listed").len(), 1);
+    assert_eq!(
+        rl.subscriptions(T, at(2)).await.expect("listed")[0].user_id,
+        "u1"
+    );
+    crate::repo::tenants::testing::remove_login(&db, T, "alice")
+        .await
+        .expect("remove");
+    assert!(rl.subscriptions(T, at(3)).await.expect("listed").is_empty());
+    assert!(
+        rl.subscription(&token, at(3))
+            .await
+            .expect("read")
+            .is_none(),
+        "no push goes to a removed user's target"
+    );
+}
+
+#[tokio::test]
+async fn a_round_is_announced_once_per_user() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "dedupe-a").await;
+    let decision = decide_one(&db, fix_decision(&item), at(10)).await;
+    assert!(rl.unannounced_rounds().await.expect("none").is_empty());
+    let a = AccessTokenId("agentAAA".into());
+    let all = [EffectKind::Fix, EffectKind::Reply, EffectKind::Resolve];
+    let lease = SignedDuration::from_mins(30);
+    rl.claim(decision.id, &a, &all, lease, at(11))
+        .await
+        .expect("claim");
+    let done = ReportRequest {
+        outcome: ReportOutcome::Done,
+        reference: Some("9f3c2e1a0b".into()),
+        message: None,
+        idempotency_key: "k1".into(),
+    };
+    rl.report(T, decision.effects[0].id, &a, &done, lease, at(12))
+        .await
+        .expect("report");
+    assert_eq!(rl.unannounced_rounds().await.expect("one"), [PR]);
+    let event = |user: &str| NewUserEvent {
+        user_id: user.into(),
+        kind: UserEventKind::RoundExecuted,
+        pull_request_id: Some(PR),
+        count: 1,
+        text: "acme/node-client #482: 1 decision executed".into(),
+        url: Some("/pr/acme/node-client/482/comments".into()),
+    };
+    assert_eq!(
+        rl.add_round_events(T, &[event("u1")], at(12), at(13))
+            .await
+            .expect("stored"),
+        1
+    );
+    assert_eq!(
+        rl.add_round_events(T, &[event("u1"), event("u2")], at(12), at(14))
+            .await
+            .expect("again"),
+        1,
+        "u1 was told about this round already"
+    );
+    assert_eq!(rl.rounds_through(PR).await.expect("through"), Some(at(12)));
+    assert!(rl.unannounced_rounds().await.expect("none").is_empty());
+    assert_eq!(
+        rl.user_events("u1", None, 10).await.expect("events").len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn send_slots_are_limited_per_target_within_the_window() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let hour = SignedDuration::from_hours(1);
+    for second in 0..3 {
+        assert_eq!(
+            rl.take_send_slot(T, "channel:u1/ntfy", 3, hour, at(second))
+                .await
+                .expect("slot"),
+            Ok(())
+        );
+    }
+    assert_eq!(
+        rl.take_send_slot(T, "channel:u1/ntfy", 3, hour, at(60))
+            .await
+            .expect("slot"),
+        Err(at(0) + hour)
+    );
+    assert_eq!(
+        rl.take_send_slot(T, "push:agentAAA", 3, hour, at(60))
+            .await
+            .expect("other target"),
+        Ok(())
+    );
+    assert_eq!(
+        rl.take_send_slot(T, "channel:u1/ntfy", 3, hour, at(0) + hour)
+            .await
+            .expect("slot"),
+        Ok(()),
+        "the first message left the window"
     );
 }

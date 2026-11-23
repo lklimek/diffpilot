@@ -109,6 +109,9 @@ pub struct Config {
     pub thepastaclaw_status_url: Option<Url>,
     /// Outbound notifications refuse private addresses (`SR_NOTIFY_DENY_PRIVATE=1`).
     pub notify_deny_private: bool,
+    /// Tests only: notifications may reach loopback, where the in-test HTTP targets listen.
+    #[cfg(test)]
+    pub notify_loopback: bool,
 }
 
 /// GitHub App credentials and GitHub base URLs (configurable for the fake GitHub).
@@ -416,6 +419,8 @@ impl Config {
                     });
                 }
             },
+            #[cfg(test)]
+            notify_loopback: true,
         })
     }
 }

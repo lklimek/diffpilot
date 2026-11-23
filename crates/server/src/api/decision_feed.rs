@@ -34,16 +34,15 @@ use tokio::sync::broadcast;
 use tokio::time::MissedTickBehavior;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
-use crate::api::events::{StreamSlot, holding};
+use crate::api::events::{HEARTBEAT, StreamSlot, holding, session_live};
+use crate::api::notifications::{notify_code, notify_message};
 use crate::auth::access_tokens::TokenOnly;
 use crate::auth::{Session, TokenPrincipal};
 use crate::dashboard::snapshot::{etag, etag_matches};
 use crate::review_loop::feed::{self, FeedError, FeedSignal, Presence};
-use crate::review_loop::notify::{self, NotifyError, outbound::UrlError};
+use crate::review_loop::notify::{self, NotifyError};
 use crate::state::AppState;
 
-/// Interval of the `heartbeat` event; each one re-checks the session or token.
-const HEARTBEAT: Duration = Duration::from_secs(15);
 /// A stream records the token's activity every this many heartbeats (about once a minute).
 const SEEN_EVERY: u32 = 4;
 
@@ -65,33 +64,6 @@ pub enum FeedApiError {
     /// The push target could not be saved.
     #[error(transparent)]
     Notify(#[from] NotifyError),
-}
-
-/// Error code of a notification-settings failure (shared with RN1–RN3).
-pub(crate) fn notify_code(error: &NotifyError) -> ApiErrorCode {
-    match error {
-        NotifyError::Url(UrlError::Scheme) => ApiErrorCode::SchemeNotAllowed,
-        NotifyError::Url(_) | NotifyError::Topic(_) | NotifyError::Secret => {
-            ApiErrorCode::InvalidRequest
-        }
-        NotifyError::NotFound => ApiErrorCode::NotFound,
-        NotifyError::Cipher(_) => ApiErrorCode::Internal,
-        NotifyError::Db(error) => error.code(),
-    }
-}
-
-/// Plain message of a notification-settings failure.
-pub(crate) fn notify_message(error: &NotifyError) -> Cow<'static, str> {
-    match error {
-        NotifyError::Url(_) | NotifyError::Topic(_) | NotifyError::Secret => {
-            Cow::Owned(format!("{error}."))
-        }
-        NotifyError::NotFound => Cow::Borrowed("Set up this channel first."),
-        NotifyError::Cipher(_) => {
-            Cow::Borrowed("Something went wrong on the server. Try again later.")
-        }
-        NotifyError::Db(error) => error.public_message(),
-    }
 }
 
 impl ApiErrorSource for FeedApiError {
@@ -353,10 +325,7 @@ fn visible(
 ) -> bool {
     signal.tenant_id == tenant_id
         && feed::in_repo(&signal.pr, repo)
-        && match signal.event {
-            FeedEvent::DecisionAvailable { .. } => feed::within(&signal.kinds, capabilities),
-            FeedEvent::DecisionCancelled { .. } | FeedEvent::Heartbeat { .. } => true,
-        }
+        && signal.concerns(capabilities)
 }
 
 /// Snapshot, live signals and heartbeats; ends when the session or token is no longer valid, the reader falls
@@ -454,8 +423,7 @@ pub(crate) async fn feed_stream(
                 if !heartbeat {
                     return Some(event);
                 }
-                if !session.is_live(&state).await.unwrap_or(false) {
-                    tracing::debug!(user = %session.user_id, "feed stream closed: its session or token ended");
+                if !session_live(&state, &session).await {
                     return None;
                 }
                 if touch && let Some(principal) = agent.as_ref() {

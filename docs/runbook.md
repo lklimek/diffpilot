@@ -229,17 +229,22 @@ Two optional variables are new; add them to `/srv/diffpilot/.env` to use them (s
 
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
-| `SR_THEPASTACLAW_STATUS_URL` | no | empty | URL of thepastaclaw's review-system status file, e.g. `https://thepastaclaw.github.io/review-system/data/status.json`. Set: the dashboard's thepastaclaw plug-in reads the file (no credential, revalidated by `ETag`) at most once a minute while someone uses the dashboard in a browser, and notes on the pull requests it lists "thepastaclaw: reviewing (phase, step n of m)" or "thepastaclaw: queued (reason)"; it never changes Ready to merge (ADR-022). The file trails by up to about 20 minutes. The server then needs outbound HTTPS to that host (`thepastaclaw.github.io`). Must be `http://` or `https://`. Empty: off, no request. A bad value stops the server at start (exit 1). |
-| `SR_NOTIFY_DENY_PRIVATE` | no | `0` | `1`: users' notification channels (ntfy, webhook) and agents' push targets may not reach private, loopback, link-local or unique-local addresses; `0`: they may (Home Assistant or a self-hosted ntfy on the LAN). These hosts are outbound destinations chosen by users and agents, not by the operator: with `0` the server sends to any `http`/`https` host they enter. A bad value stops the server at start (exit 1). |
+| `SR_THEPASTACLAW_STATUS_URL` | no | empty | URL of thepastaclaw's review-system status file, e.g. `https://thepastaclaw.github.io/review-system/data/status.json`. Set: the dashboard's thepastaclaw plug-in reads the file (no credential, revalidated by `ETag`) at most once a minute while someone uses the dashboard in a browser or any user watches a pull request, and notes on the pull requests it lists "thepastaclaw: reviewing (phase, step n of m)" or "thepastaclaw: queued (reason)"; it never changes Ready to merge (ADR-022). The file trails by up to about 20 minutes. The server then needs outbound HTTPS to that host (`thepastaclaw.github.io`). Must be `http://` or `https://`. Empty: off, no request. A bad value stops the server at start (exit 1). |
+| `SR_NOTIFY_DENY_PRIVATE` | no | `0` | `1`: users' notification channels (ntfy, webhook) and agents' push targets may not reach private or unique-local addresses; `0`: they may (Home Assistant or a self-hosted ntfy on the LAN). Loopback, link-local (`169.254.0.0/16`, `fe80::/10`), unspecified, multicast, broadcast and reserved addresses (also in IPv6 forms such as NAT64 or 6to4) are refused with either value, in the URL and after resolving a host name; notifications connect directly, never through a proxy from the environment. These hosts are outbound destinations chosen by users and agents, not by the operator: with `0` the server sends to any other `http`/`https` host they enter. A bad value stops the server at start (exit 1). |
 
 **Notifications** (ADR-023 decision 11). Each delivery is tried 3 times (now, after about 1 and 5 minutes, 10 s
 each); a channel or push target whose last delivery failed shows "Failing since …" with the error in Settings →
 Notifications (agents' targets in a PR's decision log). The server logs one `warn` "a notification target started
 failing" when a target starts failing and one `info` "a failing notification target delivers again" when it
 recovers, never per attempt; answers of the targets are not logged or shown. At most 30 messages an hour go to one
-target; more wait for the next free slot. Secrets of channels and push targets are encrypted under
-`SR_SECRET_KEY`; after replacing that key they cannot be decrypted: the target fails with "the stored secret could
-not be decrypted; set it again" until its owner saves the secret anew.
+target (a channel counted per user and kind, a push target per token; the count is stored, so a restart or removing
+and saving the channel does not reset it); more wait for the next free slot, and a Test press over the limit answers
+"try again later" without marking the channel failing. Events wait for their delivery however long the server was
+down. Agents' push targets receive nothing once their token is revoked or expired or its user leaves
+`SR_ALLOWED_LOGINS`, and nothing while the agent holds its feed stream. Changing a channel's or push target's
+kind or the scheme, host or port of its URL needs its secret entered again (or removed). Secrets of channels and
+push targets are encrypted under `SR_SECRET_KEY`; after replacing that key they cannot be decrypted: the target
+fails with "the stored secret could not be decrypted; set it again" until its owner saves the secret anew.
 
 ## Upgrade to v1.2
 
@@ -323,7 +328,7 @@ configured per user in Settings.
 | Variable | Required | Default | Meaning |
 |---|---|---|---|
 | `SR_MEMCAN_UI_URL` | no | empty | Base URL of the MemCan web UI **including `/ui`**, e.g. `http://memcan.example.lan:8190/ui`. The dashboard links a MemCan TODO to `<base>/tasks/<uuid>`. Must be `http://` or `https://`; a trailing `/` is removed. Empty: TODOs show without links. A bad value stops the server at start (exit 1). |
-| `SR_PR_HYGIENE_URL` | no | empty | Base URL of the PR Hygiene service, e.g. `https://pr-hygiene.services.dash.org`. Set: the dashboard's PR Hygiene plug-in reads the service's public API (no credential) at most once a minute while someone uses the dashboard in a browser, shows its statements on pull requests and holds pull requests it does not list as ready out of Ready to merge (ADR-022). The server then needs outbound HTTPS to that host. Must be `http://` or `https://`. Empty: off, no request. A bad value stops the server at start (exit 1). |
+| `SR_PR_HYGIENE_URL` | no | empty | Base URL of the PR Hygiene service, e.g. `https://pr-hygiene.services.dash.org`. Set: the dashboard's PR Hygiene plug-in reads the service's public API (no credential) at most once a minute while someone uses the dashboard in a browser or any user watches a pull request, shows its statements on pull requests and holds pull requests it does not list as ready out of Ready to merge (ADR-022). The server then needs outbound HTTPS to that host. Must be `http://` or `https://`. Empty: off, no request. A bad value stops the server at start (exit 1). |
 
 Changed behaviour of an existing variable:
 

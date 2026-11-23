@@ -177,6 +177,7 @@ async fn watch_probe_batches_ten_prs() {
 async fn unchanged_probe_reads_nothing_more() {
     let w = world().await;
     let pr = watched_482(&w).await;
+    w.age_read().await;
     mount_probe(&w.server, probe_answer("2026-11-12T10:40:12Z")).await;
     let now = Timestamp::now();
     watch::tick_at(&w.state, now).await.expect("first tick");
@@ -382,4 +383,189 @@ async fn questions_ready_event_once_per_round() {
         rl.user_events("u1", None, 10).await.expect("events").len(),
         2
     );
+}
+
+/// Plan §2.8 item 2: a plug-in change signal for a watched pull request probes it at once, before its 5 minutes are
+/// up (owner and name compared without case); a signal for a pull request nobody watches probes nothing.
+#[tokio::test]
+async fn a_plugin_change_signal_probes_the_watched_pull_request_at_once() {
+    use std::collections::HashSet;
+
+    use crate::dashboard::plugin::PrKey;
+
+    let w = world().await;
+    let pr = watched_482(&w).await;
+    mount_probe(&w.server, probe_answer("2026-11-12T10:40:12Z")).await;
+    watch::tick_at(&w.state, Timestamp::now())
+        .await
+        .expect("first tick");
+    watch::tick_at(&w.state, Timestamp::now())
+        .await
+        .expect("a tick within the interval");
+    assert_eq!(
+        received(&w.server, PROBE_MARKER).await.len(),
+        1,
+        "not due again yet"
+    );
+    let probed_at = the_watch(&w, pr).await.last_probe_at;
+
+    let unwatched = RepoRef {
+        owner: "acme".into(),
+        name: "other".into(),
+    };
+    watch::plugin_changed(&w.state, &HashSet::from([PrKey::new(&unwatched, 7)])).await;
+    assert_eq!(received(&w.server, PROBE_MARKER).await.len(), 1);
+
+    let shouted = RepoRef {
+        owner: "ACME".into(),
+        name: "Node-Client".into(),
+    };
+    watch::plugin_changed(&w.state, &HashSet::from([PrKey::new(&shouted, 482)])).await;
+    assert_eq!(
+        received(&w.server, PROBE_MARKER).await.len(),
+        2,
+        "the signal probes the watched pull request at once"
+    );
+    assert!(the_watch(&w, pr).await.last_probe_at >= probed_at);
+}
+
+/// A change whose full read is skipped as too soon after another read keeps the old probe values: the next probe
+/// sees the change again and reads it (the probe time is recorded, so the interval holds).
+#[tokio::test]
+async fn a_probe_skipped_as_too_soon_keeps_the_change_for_the_next_probe() {
+    let w = world().await;
+    let pr = watched_482(&w).await;
+    mount_probe(&w.server, probe_answer("2026-11-12T10:40:12Z")).await;
+    let reads = received(&w.server, READ_MARKER).await.len();
+    let now = Timestamp::now();
+    watch::tick_at(&w.state, now).await.expect("tick");
+    let watched = the_watch(&w, pr).await;
+    assert!(
+        watched
+            .last_probe_at
+            .is_some_and(|at| at.duration_since(now).abs() < SignedDuration::from_millis(1)),
+        "the probe time is recorded: {:?}",
+        watched.last_probe_at
+    );
+    assert!(
+        watched.probe.as_ref().is_none_or(Value::is_null),
+        "values of an unread change are not stored: {:?}",
+        watched.probe
+    );
+    assert_eq!(watched.pass_due_at, None);
+    assert_eq!(received(&w.server, READ_MARKER).await.len(), reads);
+
+    w.age_read().await;
+    let later = now + PROBE_INTERVAL + SignedDuration::from_secs(1);
+    watch::tick_at(&w.state, later).await.expect("next tick");
+    assert!(
+        received(&w.server, READ_MARKER).await.len() > reads,
+        "the change is read now"
+    );
+    let watched = the_watch(&w, pr).await;
+    assert!(watched.probe.as_ref().is_some_and(|probe| !probe.is_null()));
+    assert!(watched.pass_due_at.is_some() || watched.state == WatchState::JobRunning);
+}
+
+/// While GitHub's rate limit is used up a user's watches are not probed (neither by the scheduler nor by a plug-in
+/// signal) until the reset GitHub named; the limit is logged at `warn` once, and its end once.
+#[tokio::test]
+async fn a_rate_limited_user_is_not_probed_until_the_reset() {
+    use std::collections::HashSet;
+
+    use crate::dashboard::plugin::PrKey;
+    use crate::test_support::logs::LogCapture;
+
+    let w = world().await;
+    watched_482(&w).await;
+    let capture = LogCapture::start();
+    let now = Timestamp::now();
+    let reset = now + SignedDuration::from_mins(45);
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(body_string_contains(PROBE_MARKER))
+        .respond_with(
+            ResponseTemplate::new(403)
+                .insert_header("x-ratelimit-remaining", "0")
+                .insert_header("x-ratelimit-reset", reset.as_second().to_string().as_str()),
+        )
+        .mount(&w.server)
+        .await;
+    watch::tick_at(&w.state, now).await.expect("limited tick");
+    assert_eq!(received(&w.server, PROBE_MARKER).await.len(), 1);
+    for minutes in [1, 6, 44] {
+        watch::tick_at(&w.state, now + SignedDuration::from_mins(minutes))
+            .await
+            .expect("tick");
+    }
+    watch::plugin_changed(&w.state, &HashSet::from([PrKey::new(&pr_482().repo, 482)])).await;
+    assert_eq!(
+        received(&w.server, PROBE_MARKER).await.len(),
+        1,
+        "nothing is sent before the reset"
+    );
+    watch::tick_at(&w.state, now + SignedDuration::from_mins(46))
+        .await
+        .expect("after the reset");
+    assert_eq!(received(&w.server, PROBE_MARKER).await.len(), 2);
+
+    w.server.reset().await;
+    serve(&w.server, &[]).await;
+    mount_probe(&w.server, probe_answer("2026-11-12T10:40:12Z")).await;
+    watch::tick_at(&w.state, now + SignedDuration::from_mins(47))
+        .await
+        .expect("probed again");
+    assert_eq!(received(&w.server, PROBE_MARKER).await.len(), 1);
+    let text = capture.text();
+    assert_eq!(
+        text.matches("GitHub's rate limit stops this user's watch probes;")
+            .count(),
+        1,
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("watch probes read GitHub again after its rate limit")
+            .count(),
+        1,
+        "{text}"
+    );
+}
+
+/// A due change that an on-demand pass already assessed (the automatic pass has nothing to send) still tells the
+/// watcher, once per round, that questions wait.
+#[tokio::test]
+async fn a_due_change_assessed_on_demand_still_notifies_the_watcher() {
+    let w = world().await;
+    let pr = watched_482(&w).await;
+    mount_probe(&w.server, json!({"data": {}})).await;
+    let rl = w.state.db.review_loop();
+    for item in rl.items(pr).await.expect("items") {
+        if item.kind != contracts::api::review_loop::CommentItemKind::PrQuestion
+            && item.state != contracts::api::review_loop::ItemState::Outside
+        {
+            rl.set_item_state(
+                item.id,
+                item.revision,
+                contracts::api::review_loop::ItemState::Decided,
+                Timestamp::now(),
+            )
+            .await
+            .expect("decided");
+        }
+    }
+    let now = Timestamp::now();
+    for _ in 0..2 {
+        rl.set_pass_due("u1", pr, Some(now)).await.expect("due");
+        watch::tick_at(&w.state, now).await.expect("tick");
+    }
+    assert!(
+        rl.live_passes().await.expect("passes").is_empty(),
+        "nothing to assess"
+    );
+    let watched = the_watch(&w, pr).await;
+    assert_eq!(watched.pass_due_at, None);
+    let events = rl.user_events("u1", None, 10).await.expect("events");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].kind, UserEventKind::QuestionsReady);
+    assert_eq!(watched.notified_for.as_deref(), Some("round:3"));
 }

@@ -384,7 +384,7 @@ message: string, };
 /**
  * Machine-readable API error code.
  */
-export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable" | "refresh_running" | "github_rate_limited" | "invalid_dashboard_settings" | "cursor_expired" | "insufficient_scope" | "token_not_accepted" | "token_limit_reached" | "rate_limited" | "github_refused" | "item_changed" | "claimed" | "lease_expired" | "capability_missing" | "watch_limit_reached" | "scheme_not_allowed";
+export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable" | "refresh_running" | "github_rate_limited" | "invalid_dashboard_settings" | "cursor_expired" | "insufficient_scope" | "token_not_accepted" | "token_limit_reached" | "rate_limited" | "github_refused" | "item_changed" | "claimed" | "lease_expired" | "capability_missing" | "watch_limit_reached" | "scheme_not_allowed" | "secret_required";
 
 /**
  * A GitHub App installation.
@@ -5081,19 +5081,19 @@ export type PushTarget = {
  */
 kind: ChannelKind,
 /**
- * ntfy server URL or webhook URL.
+ * ntfy server URL or webhook URL; null in the decision log for another user's token.
  */
-url: string,
+url: string | null,
 /**
- * ntfy topic.
+ * ntfy topic; null in the decision log for another user's token.
  */
 topic: string | null,
 /**
- * Last 4 characters of the stored secret.
+ * Last 4 characters of the stored secret; null in the decision log for another user's token.
  */
 secret_last4: string | null,
 /**
- * Delivery state.
+ * Delivery state (in the decision log for another user's token without `last_error`).
  */
 delivery: DeliveryStatus, };
 
@@ -6350,7 +6350,7 @@ count: number,
  */
 text: string,
 /**
- * The PR's Comments page.
+ * The path of the PR's Comments page on this instance (`/pr/<owner>/<name>/<number>/comments`).
  */
 url: string | null,
 /**
