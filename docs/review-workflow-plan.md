@@ -107,16 +107,20 @@ GitHub" (never "resolved"), and leaves the queue, "Decide the rest" and bulk dec
 and a later read that produces it again clears the mark.
 
 **Latest bot round only (owner, 2026-11-23).** A bot's body findings are items of its latest round only: its latest
-submitted, non-dismissed review with a body (for thepastaclaw its latest round, spike S13-1 R1–R2; another bot's
-latest review with a body yields an item only when it requests changes). An earlier body finding stays the same item
-while that round's "Still open from earlier rounds" carries it (`(carried)` without a thread link, matched by title and
-path, S13-1 R5). A finding the round restates in full is that round's item: body findings carry no key (S13-1 R4), so
-the earlier copy and its decision are not linked to it. Every other earlier body finding of that bot is superseded: no
-longer an item by these rules, so a complete read marks it `gone_at` (the superseding round is the bot's latest round
-at that time) and a first read never creates it. A superseded item leaves the queue, groups, "Decide the rest", bulk
-decisions, assessment passes and the open counts of the Rounds page; its decisions stay, and their open effects stay
-claimable by agents. A latest round without body findings supersedes them all; a dismissed round neither supersedes
-nor yields items. People's review bodies, threads and PR comments are not affected.
+submitted review with a body (for thepastaclaw its latest round, spike S13-1 R1–R2; another bot's latest review with a
+body yields an item only when it requests changes). An earlier body finding stays the same item while that round
+lists it as still open without a thread link: an entry of "Still open from earlier rounds" (`(carried)`, S13-1 R5) or
+of "Disputed — left to maintainers", a trailing `— **settled:** …` clause allowed. An entry takes the bot's most recent
+earlier finding at the same title, path and lines, else one of the same title and path, each finding once; an entry
+that matches none is logged once per read. A finding the round restates in full is that round's item: body findings
+carry no key (S13-1 R4), so the earlier copy and its decision are not linked to it. Every other earlier body finding of
+that bot is superseded: no longer an item by these rules, so a complete read marks it `gone_at` (the superseding round
+is the bot's latest round at that time) and a first read never creates it. A superseded item leaves the queue, groups,
+"Decide the rest", bulk decisions, assessment passes and the open counts; its decisions stay, and their open effects
+stay claimable by agents. A latest round without body findings supersedes them all. A dismissed review yields no
+items, but a dismissed latest round still supersedes (and keeps what it lists as still open): after "Dismiss stale bot
+reviews" (P3, RQ11) or a maintainer's dismissal, nothing it superseded comes back, and its own items are marked
+`gone_at` with their decisions kept. People's review bodies, threads and PR comments are not affected.
 
 ### 2.2 LLM assessment (`verify_comments` job, RQ20)
 Per item at the PR head: validity (`valid`, `partly_valid`, `invalid`) with `file:line` evidence; pre-existing on base;
