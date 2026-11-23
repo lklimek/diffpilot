@@ -25,6 +25,17 @@ use tempfile::TempDir;
 use super::*;
 use crate::config::tests::test_config;
 
+async fn request_pass(
+    state: &AppState,
+    pr: i64,
+    reason: PassReason,
+) -> Result<PassQueued, AssessError> {
+    match reason {
+        PassReason::Watch | PassReason::Ask => super::request_pass(state, pr, reason).await,
+        _ => super::request_pass_for(state, pr, reason, "u1").await,
+    }
+}
+
 const BASE: &str = "92f2274efbb93570cc8f820a49c058cf66b0dbe9";
 const HEAD: &str = "52d2da140191a9d47becf6a446310be803c007fc";
 const PR: i64 = 1;
@@ -187,6 +198,8 @@ fn entry(item: &str) -> Value {
 
 fn succeeded(job: JobId, output: Value) -> JobResult {
     JobResult {
+        assessment: None,
+        report: None,
         job_id: job,
         attempt: 1,
         outcome: JobOutcome::Succeeded { output },

@@ -1,4 +1,4 @@
-//! `JobSpec`: everything one job needs; nothing travels through shared volumes except the session store.
+//! Self-contained job input; container identity and runtime paths follow the shared contracts.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -11,6 +11,9 @@ use crate::job::access::AgentAccess;
 /// One agent job, self-contained (brief §5 item 1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct JobSpec {
+    /// Frozen logical pass and independent method; absent outside assessment jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assessment: Option<crate::assessment::AssessmentRunRef>,
     /// Job id.
     pub job_id: JobId,
     /// Attempt number, 1-based; incremented when a lease expires.
@@ -26,12 +29,15 @@ pub struct JobSpec {
     /// Flow-only file output and no-secret checker context; absent for JSON jobs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow_file: Option<FlowFile>,
+    /// Host review files for a container verify pass; absent for other jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_data: Option<crate::agent::pr_data::PrData>,
     /// Model and reasoning effort from `select_model`.
     pub model: ModelChoice,
     /// Limits.
     pub limits: JobLimits,
-    /// The LLM credential to run with; jobs are serialised per credential (ADR-003).
-    pub credential: LlmCredentialRef,
+    /// User paying for the turn; container identity follows from kind, PR and payer.
+    pub payer: crate::ids::UserId,
     /// The pull request's analytic session to resume or fork, or none before its first checkpoint.
     pub session: Option<SessionRef>,
     /// Ask-only archive routing. Absent for analytic jobs; required for Ask.
@@ -202,6 +208,15 @@ pub enum JobPriority {
 /// Private Ask archive: restore this thread first, then the analytic `session`; save only here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkingSession {
+    /// Immutable working-thread policy; verify Ask never gains MemCan access.
+    #[serde(default)]
+    pub kind: Option<crate::runtime::ThreadKind>,
+    /// Bound first-Ask preflight; absence requires recovery before an answer.
+    #[serde(default)]
+    pub preflight: Option<crate::runtime::AskPreflight>,
+    /// Parent last-context estimate; absence or stale generation requires recovery.
+    #[serde(default)]
+    pub parent_context: Option<crate::runtime::LastContext>,
     /// SHA-256 of the authenticated user's stable id (64 lowercase hex digits).
     pub user_key: String,
     /// Analytic generation this fork is based on. Stale forks are never offered for restore.

@@ -17,8 +17,7 @@ use contracts::ids::{AnalysisId, FlowId, JobId};
 use contracts::job::access::AgentAccess;
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
-    PullRequestTarget, RepoCheckout,
+    JobLimits, JobPriority, JobSpec, JobTarget, PullRequestTarget, RepoCheckout,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -36,10 +35,7 @@ use super::batching;
 use super::context::StoredResults;
 use super::unsent::{self, Unsent};
 use super::verdict::{self, Facts, Outputs};
-use super::{
-    CREDENTIAL_ID, DriverEnd, PipelineError, control, deps, diff_files, prepare, prepass,
-    statistics,
-};
+use super::{DriverEnd, PipelineError, control, deps, diff_files, prepare, prepass, statistics};
 use crate::api::settings::plain_failure;
 use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
@@ -1072,16 +1068,17 @@ impl Driver<'_> {
                 }),
                 _ => None,
             },
+            assessment: None,
+            pr_data: None,
             model: select_model(
                 kind,
                 &ModelContext { changed_lines },
                 self.state.db.settings().llm_selection().await?.as_ref(),
             ),
             limits: JobLimits::default(),
-            credential: LlmCredentialRef {
-                id: CREDENTIAL_ID.to_owned(),
-                kind: CredentialKind::CodexChatgpt,
-            },
+            payer: contracts::ids::UserId(
+                self.state.db.analyses().get(self.analysis).await?.payer_id,
+            ),
             session: None,
             // Built at claim from the results stored then (`context::StoredPacks`).
             working_session: None,

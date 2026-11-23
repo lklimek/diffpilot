@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MintedKey",
+  "description": "A local virtual key returned only to the runner, for its tmpfs file.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "description": "Gateway-local opaque key id.",
+      "type": "string"
+    },
+    "key": {
+      "description": "Virtual key, never a real upstream credential.",
+      "$ref": "#/$defs/Secret"
+    },
+    "expires_at": {
+      "description": "Bounded lifetime (at most 90 minutes).",
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "id",
+    "key",
+    "expires_at"
+  ],
+  "$defs": {
+    "Secret": {
+      "description": "A secret string: serialised as is, never shown by `Debug`. Opaque, without length limit.",
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AssessmentRunRef",
+  "description": "Durable method identity carried by both job input and result; attempt is the enclosing job's fence.",
+  "type": "object",
+  "properties": {
+    "pass_id": {
+      "description": "Logical pass shared by an A/B pair and all its retries.",
+      "$ref": "#/$defs/PassId"
+    },
+    "method": {
+      "description": "Independent adapter.",
+      "$ref": "#/$defs/AssessmentMethod"
+    }
+  },
+  "required": [
+    "pass_id",
+    "method"
+  ],
+  "$defs": {
+    "PassId": {
+      "description": "Identifier of a `verify_comments` pass over the items of one pull request.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "AssessmentMethod": {
+      "description": "An assessment adapter; native outputs retain their own validation contracts.",
+      "oneOf": [
+        {
+          "description": "Host-supplied claudius 4.2 report.",
+          "type": "string",
+          "const": "claudius_host"
+        },
+        {
+          "description": "Existing strict prompt v4 output.",
+          "type": "string",
+          "const": "prompt_v4"
+        }
+      ]
+    }
+  }
+}

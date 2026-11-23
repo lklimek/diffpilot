@@ -1,5 +1,10 @@
 # ADR-004: Agent sessions — archive, resume, compaction, loss, deletion
 
+> Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
+> gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
+> KL1 gates credential mode; older master-credential/no-paid-API rules do not decide that open question.
+
+
 - Status: accepted (coordinator, 2026-11-16, after spikes S1b, S7; amended 2026-11-16 after the WP1-A contract
   review)
 - Source: `docs/spikes/S1b-codex-sessions-isolation.md` findings 1, 3; `S7-llm-capability.md` finding 7;

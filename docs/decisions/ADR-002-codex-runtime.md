@@ -1,5 +1,10 @@
 # ADR-002: Codex runtime — model, per-job configuration, sandbox, repository isolation, sub-agents, skills
 
+> Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
+> gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
+> KL1 gates credential mode; older master-credential/no-paid-API rules do not decide that open question.
+
+
 - Status: accepted (coordinator, 2026-11-16, after spikes S1a, S1b, S2, S7; amended 2026-11-22, 2026-11-23)
 - Source: `docs/spikes/S1a-codex-basics.md`, `S1b-codex-sessions-isolation.md`, `S2-claudius-skills.md`,
   `S7-llm-capability.md`; plan §5.2–§5.4; brief §5.

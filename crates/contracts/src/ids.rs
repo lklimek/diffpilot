@@ -153,3 +153,8 @@ mod tests {
         );
     }
 }
+
+string_id!(
+    /// Stable authenticated user id, also the payer key.
+    UserId
+);

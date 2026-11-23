@@ -44,9 +44,10 @@ use crate::config::tests::test_config;
 use crate::jobs::executor::{ExecutorError, JobExecutor, JobHandle, JobRequest, JobUpdate};
 use crate::jobs::progress::ProgressHub;
 use crate::jobs::queue::QueueExecutor;
-use crate::pipeline::{self, CREDENTIAL_ID};
+use crate::pipeline;
 use crate::test_support::logs::LogCapture;
 use crate::test_support::session_cookie;
+use db::repo::analyses::testing::CREDENTIAL as CREDENTIAL_ID;
 
 const WAIT: Duration = Duration::from_secs(20);
 const QUESTION: &str = "Can broadcast_tx now send the same transaction twice?";
@@ -460,12 +461,15 @@ impl Fixture {
 
     /// One runner claim for the pipeline credential.
     async fn claim(&self) -> Option<Claim> {
+        let mut credentials =
+            vec![json!({"credential":{"id":CREDENTIAL_ID,"kind":"codex_chatgpt"},"usable":true})];
+        if self.state.db.users().get("u2").await.is_ok() {
+            credentials
+                .push(json!({"credential":{"id":"u2","kind":"codex_chatgpt"},"usable":true}));
+        }
         let request = json!({
             "runner_id": "runner-1",
-            "credentials": [{
-                "credential": { "id": CREDENTIAL_ID, "kind": "codex_chatgpt" },
-                "usable": true,
-            }],
+            "credentials": credentials,
             "dropped_sessions": [],
         });
         let secret = self.state.config.runner_secret.expose_secret().to_owned();
@@ -478,6 +482,8 @@ impl Fixture {
 
     async fn post_result(&self, claim: &Claim, outcome: JobOutcome) {
         let result = JobResult {
+            assessment: None,
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome,
@@ -503,7 +509,7 @@ impl Fixture {
     /// A batch job of `analysis` on the pipeline credential.
     async fn batch_job(&self, analysis: AnalysisId, flow: &str) -> JobId {
         let mut spec = job_spec(analysis, contracts::agent::JobKind::AnalyseFlow);
-        spec.credential.id = CREDENTIAL_ID.to_owned();
+        spec.payer.0 = CREDENTIAL_ID.to_owned();
         self.state
             .db
             .jobs()
@@ -536,6 +542,8 @@ fn good_answer() -> Value {
 fn succeeded(job: JobId, output: Value) -> JobUpdate {
     JobUpdate::Finished {
         result: JobResult {
+            assessment: None,
+            report: None,
             job_id: job,
             attempt: 1,
             outcome: JobOutcome::Succeeded { output },
@@ -551,6 +559,8 @@ fn succeeded(job: JobId, output: Value) -> JobUpdate {
 fn finished(job: JobId, outcome: JobOutcome) -> JobUpdate {
     JobUpdate::Finished {
         result: JobResult {
+            assessment: None,
+            report: None,
             job_id: job,
             attempt: 1,
             outcome,
@@ -725,7 +735,7 @@ async fn ask_job_goes_through_the_executor_as_an_interactive_ask_job() {
     assert_eq!(spec.context_pack, None, "built at claim");
     assert_eq!(spec.skills, ["severity"], "shared rules require severity");
     assert_eq!(spec.session, None, "set at claim");
-    assert_eq!(spec.credential.id, CREDENTIAL_ID);
+    assert_eq!(spec.payer.0, CREDENTIAL_ID);
     assert_eq!(spec.access, contracts::job::access::AgentAccess::default());
     assert_eq!(
         f.state
@@ -842,6 +852,8 @@ async fn failed_ask_shows_a_plain_sentence_and_logs_no_secret_or_question() {
     f.post_job_result(
         &claim,
         JobResult {
+            assessment: None,
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome: JobOutcome::Failed {
@@ -1071,7 +1083,7 @@ impl Fixture {
         };
         let id = record.question.id;
         let mut spec = job_spec(self.analysis, contracts::agent::JobKind::Ask);
-        spec.credential.id = CREDENTIAL_ID.to_owned();
+        spec.payer.0 = CREDENTIAL_ID.to_owned();
         let handle = self
             .state
             .executor
@@ -1647,12 +1659,16 @@ async fn private_working_thread_is_committed_without_advancing_analytic_and_refo
     f.post_job_result(
         &claim,
         JobResult {
+            assessment: None,
+            report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome: JobOutcome::Succeeded {
                 output: good_answer(),
             },
             session: Some(SessionReport {
+                last_context: None,
+                preflight: None,
                 thread_id: "private-a".to_owned(),
                 outcome: SessionOutcome::Resumed,
             }),

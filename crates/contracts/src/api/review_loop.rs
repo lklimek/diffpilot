@@ -195,6 +195,14 @@ pub enum NotAssessedReason {
 /// A review-loop item with its assessment, decisions and effects (RC4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentItem {
+    /// Grounded point read from a versioned source; absent on inline threads and PR questions.
+    #[serde(default)]
+    #[ts(optional)]
+    pub point: Option<CommentPoint>,
+    /// Per-PR number of the linked point; each inline thread keeps its own item.
+    #[serde(default)]
+    #[ts(optional)]
+    pub duplicate_of: Option<u32>,
     /// Database id.
     pub id: CommentItemId,
     /// Per-PR number shown as `C<no>`, assigned at first sight, never reused.
@@ -289,6 +297,8 @@ pub struct ItemsQuery {
 pub enum Validity {
     /// Valid.
     Valid,
+    /// Already fixed at the assessed head.
+    AlreadyFixed,
     /// Partly valid.
     PartlyValid,
     /// Invalid.
@@ -389,6 +399,14 @@ pub struct CodeSummary {
 /// The LLM assessment of one item at one head (`verify_comments`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentAssessment {
+    /// Evidence from the report, labelled LLM text.
+    #[serde(default)]
+    #[ts(optional)]
+    pub evidence_text: Option<String>,
+    /// Attributed prior decision; authority and grounding are verified by server ingest.
+    #[serde(default)]
+    #[ts(optional)]
+    pub recorded_decision: Option<crate::agent::comment_report::RecordedDecision>,
     /// The job that wrote it.
     pub job: JobId,
     /// Head it was made at.
@@ -402,7 +420,7 @@ pub struct CommentAssessment {
     /// Lines that support it.
     pub evidence: Vec<AssessmentEvidence>,
     /// The problem exists on the base already.
-    pub pre_existing: bool,
+    pub pre_existing: Option<bool>,
     /// Category slug (claudius #118 catalog).
     pub category: String,
     /// Necessity.
@@ -1736,4 +1754,56 @@ pub struct EffectReportRequest {
     pub message: Option<String>,
     /// Client-generated key.
     pub idempotency_key: Uuid,
+}
+
+/// Point provenance, grounded in the source's cleaned GitHub text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CommentPoint {
+    /// Server-validated source URL.
+    pub source_url: String,
+    /// Submitted review body or PR comment.
+    pub source_kind: CommentSourceKind,
+    /// Distinct verbatim span: 12–600 characters, or the whole shorter source.
+    pub quote: String,
+}
+
+/// Stored source kind; inline threads remain independent items.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CommentSourceKind {
+    /// Submitted, non-empty review body.
+    ReviewBody,
+    /// Non-empty PR comment.
+    PrComment,
+}
+
+/// Host-assigned source role, independent of author membership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceRole {
+    /// PR author's own text, or an earlier round of a round bot.
+    Context,
+    /// Commands, pending reviews, gate or status comments; omitted from the hand-in.
+    Ignored,
+    /// Everything else, including tenant members' comments.
+    Source,
+}
+
+/// Read-only source version, including sources from which no points were read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CommentSource {
+    /// Source URL.
+    pub url: String,
+    /// Source kind.
+    pub kind: CommentSourceKind,
+    /// GitHub author login.
+    pub author: String,
+    /// Cleaned source text, retaining details content.
+    pub body: String,
+    /// SHA-256 of the cleaned text identifies this version.
+    pub body_hash: String,
+    /// Host-assigned source role.
+    pub role: SourceRole,
+    /// First successful assessment read of this source version.
+    pub read_at: Option<Timestamp>,
 }

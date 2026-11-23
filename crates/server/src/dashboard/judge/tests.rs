@@ -397,7 +397,7 @@ impl Harness {
                     .db()
                     .jobs()
                     .claim(ClaimParams {
-                        credential_ids: &[CREDENTIAL_ID.to_owned()],
+                        payer_ids: &[CREDENTIAL_ID.to_owned()],
                         job_token_hash: b"hash",
                         lease_until: now + SignedDuration::from_hours(1),
                         now,
@@ -419,6 +419,8 @@ impl Harness {
             .jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
+                    report: None,
                     job_id: job.id,
                     attempt: job.attempt,
                     outcome,
@@ -479,7 +481,7 @@ impl Harness {
                     .db()
                     .jobs()
                     .claim(ClaimParams {
-                        credential_ids: &[CREDENTIAL_ID.to_owned()],
+                        payer_ids: &[CREDENTIAL_ID.to_owned()],
                         job_token_hash: b"hash",
                         lease_until: now + SignedDuration::from_hours(1),
                         now,
@@ -1757,7 +1759,7 @@ async fn ask_holding_the_credential_does_not_count_as_unclaimed() {
         .await
         .expect("finished");
     let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::Ask);
-    spec.credential.id = CREDENTIAL_ID.to_owned();
+    spec.payer.0 = CREDENTIAL_ID.to_owned();
     h.db()
         .jobs()
         .enqueue(
@@ -1797,7 +1799,7 @@ async fn ranking_waits_for_running_analysis_job() {
         .await
         .expect("analysis");
     let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::Plan);
-    spec.credential.id = CREDENTIAL_ID.to_owned();
+    spec.payer.0 = CREDENTIAL_ID.to_owned();
     h.db()
         .jobs()
         .enqueue(
@@ -1938,6 +1940,8 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
     };
     let job = old.submit(1, 0, &input).await.expect("submit").job_id;
     let result = JobResult {
+        assessment: None,
+        report: None,
         job_id: job,
         attempt: 0,
         outcome: succeeded(neutral(&input)),
@@ -2062,7 +2066,7 @@ async fn recovery_cancels_orphan_judge_jobs() {
     let mut handles = Vec::new();
     for batch in [1, 2] {
         let mut spec = db::repo::analyses::testing::judge_spec(id);
-        spec.credential.id = CREDENTIAL_ID.to_owned();
+        spec.payer.0 = CREDENTIAL_ID.to_owned();
         let handle = h
             .state
             .executor
@@ -2452,3 +2456,5 @@ fn waiting_on_others_counts_an_unknown_request_time_from_the_opening() {
         "longest wait first"
     );
 }
+
+const CREDENTIAL_ID: &str = db::repo::analyses::testing::CREDENTIAL;

@@ -299,6 +299,8 @@ fn scrub_value(value: &mut Value, secrets: &[&str]) {
 /// Scrubs every text field of a result before it is stored (also the LLM status copied to the credential).
 fn scrub_result(result: &mut JobResult, secrets: &[&str]) {
     let JobResult {
+        assessment: _,
+        report,
         job_id: _,
         attempt: _,
         outcome,
@@ -307,6 +309,15 @@ fn scrub_result(result: &mut JobResult, secrets: &[&str]) {
         skills_commit,
         llm_call,
     } = result;
+    if let Some(report) = report {
+        report.schema_version = scrub(&report.schema_version, secrets);
+        report.metadata.report_type = scrub(&report.metadata.report_type, secrets);
+        report.metadata.input_mode = scrub(&report.metadata.input_mode, secrets);
+        report.metadata.commit = scrub(&report.metadata.commit, secrets);
+        for row in &mut report.comment_assessments {
+            scrub_value(row, secrets);
+        }
+    }
     match outcome {
         JobOutcome::Succeeded { output } => scrub_value(output, secrets),
         JobOutcome::Failed { kind: _, message } => *message = scrub(message, secrets),
@@ -515,6 +526,34 @@ async fn apply_result(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn report_provenance_rows_and_keys_are_scrubbed_before_storage() {
+        let secret = "fake-installation-token";
+        let mut result = contracts::job::result::JobResult {
+            assessment: None,
+            report: None,
+            job_id: contracts::ids::JobId::new_random(),
+            attempt: 1,
+            outcome: contracts::job::result::JobOutcome::Cancelled,
+            session: None,
+            usage: None,
+            skills_commit: None,
+            llm_call: None,
+        };
+        result.report = Some(Box::new(contracts::agent::comment_report::CommentReport {
+            schema_version: secret.into(),
+            metadata: contracts::agent::comment_report::ReportMetadata {
+                report_type: secret.into(),
+                input_mode: secret.into(),
+                pr_number: 1,
+                commit: secret.into(),
+            },
+            comment_assessments: vec![serde_json::json!({secret:{"quote":secret}})],
+        }));
+        super::scrub_result(&mut result, &[secret]);
+        assert!(!serde_json::to_string(&result).unwrap().contains(secret));
+    }
+
     use axum::body::Body;
     use axum::http::Request;
     use contracts::agent::JobKind;
@@ -570,8 +609,11 @@ mod tests {
 
         async fn enqueue(&self, credential: &str) -> (AnalysisId, JobId) {
             let analysis = seed_analysis(&self.state.db).await.expect("seed");
+            db::repo::analyses::testing::seed_payer(&self.state.db, credential)
+                .await
+                .unwrap();
             let mut spec = job_spec(analysis, JobKind::AnalyseFlow);
-            spec.credential.id = credential.to_owned();
+            spec.payer.0 = credential.to_owned();
             let job = self
                 .state
                 .db
@@ -681,6 +723,8 @@ mod tests {
 
     fn succeeded(job: JobId, attempt: u32) -> JobResult {
         JobResult {
+            assessment: None,
+            report: None,
             job_id: job,
             attempt,
             outcome: JobOutcome::Succeeded {
@@ -923,7 +967,7 @@ mod tests {
         let now = Timestamp::now();
         db.jobs()
             .claim(db::repo::jobs::ClaimParams {
-                credential_ids: &[CREDENTIAL.to_owned()],
+                payer_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
                 lease_until: now + SignedDuration::from_millis(600),
                 now,
@@ -1445,6 +1489,8 @@ mod tests {
             output: json!({ token.clone(): [format!("v{memcan}")] }),
         };
         result.session = Some(SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: format!("thread-{token}"),
             outcome: SessionOutcome::Started,
         });
@@ -1484,6 +1530,8 @@ mod tests {
         let claimed = harness.claim(CREDENTIAL).await;
         let mut result = succeeded(claimed.job, 1);
         result.session = Some(SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "thread-1".to_owned(),
             outcome: SessionOutcome::Started,
         });
@@ -1516,6 +1564,8 @@ mod tests {
         let claimed = harness.claim(CREDENTIAL).await;
         let mut result = succeeded(claimed.job, 1);
         result.session = Some(SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "S1".to_owned(),
             outcome: SessionOutcome::Started,
         });
@@ -1558,6 +1608,8 @@ mod tests {
             .expect("cancel");
         let mut result = succeeded(claimed.job, 1);
         result.session = Some(SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "S3".to_owned(),
             outcome: SessionOutcome::Started,
         });
@@ -1590,6 +1642,8 @@ mod tests {
         let mut result = succeeded(claimed.job, 1);
         result.outcome = JobOutcome::Cancelled;
         result.session = Some(SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "thread-1".to_owned(),
             outcome: SessionOutcome::Started,
         });

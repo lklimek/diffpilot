@@ -1,5 +1,10 @@
 # Threat model — diffpilot v1
 
+> v1.3 common amendment: [container contracts](containers.md) and [ADR-025](../decisions/ADR-025-container-runtime.md)
+> govern payer/container identity, gateway boundaries, in-place 0030 cleanup and report 4.2. Runtime integration is
+> owned by W3/W4/W5/W8; the older runtime description below applies until those packages replace it.
+
+
 Status: WP1-T, 2026-11-16, for the contract gate; recommendations R1–R14 decided by the coordinator (§7).
 Refines plan §5.4 (T1–T9) with spikes S1a–S7, ADR-001 and the coordinator decisions after the spikes. Scope:
 compose stack (server, runner, egress proxy), GitHub, MemCan, ChatGPT/Codex, browser; **public repositories

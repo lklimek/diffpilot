@@ -225,13 +225,15 @@ impl World {
     async fn assess(&self, key: &str, recommendation: Recommendation, gates: Vec<Gate>) {
         let item = self.item(key).await;
         let assessment = CommentAssessment {
+            evidence_text: None,
+            recorded_decision: None,
             job: JobId::new_random(),
             head: contracts::ids::CommitSha(crate::test_support::github::HEAD.into()),
             assessed_at: Timestamp::now(),
             reused_since: None,
             validity: Validity::Valid,
             evidence: vec![],
-            pre_existing: false,
+            pre_existing: Some(false),
             category: "correctness".into(),
             necessity: Necessity {
                 verdict: NecessityVerdict::In,

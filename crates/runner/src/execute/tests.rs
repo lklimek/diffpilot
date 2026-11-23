@@ -444,6 +444,8 @@ async fn requested_session_counts_as_lost_and_the_context_pack_seeds_the_new_one
     assert_eq!(
         result.session,
         Some(SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "thread-1".to_owned(),
             outcome: SessionOutcome::StartedAfterLoss
         })
@@ -471,6 +473,8 @@ async fn own_session_is_resumed_without_the_context_pack() {
     assert_eq!(
         result.session,
         Some(SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "thread-1".to_owned(),
             outcome: SessionOutcome::Resumed
         })
@@ -527,6 +531,8 @@ async fn first_job_reports_a_started_session_and_usage() {
     assert_eq!(
         result.session,
         Some(SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "thread-1".to_owned(),
             outcome: SessionOutcome::Started
         })
@@ -547,7 +553,7 @@ async fn foreign_credential_is_rejected_before_any_work() {
     let stub = Stub::new(Behaviour::Succeed);
     let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
     let mut spec = spec(JobKind::Plan, shared_repo());
-    spec.credential.id = "someone-else".to_owned();
+    spec.payer.0 = "someone-else".to_owned();
     let (result, _) = execute_collect(&executor, spec).await;
     assert!(
         matches!(
@@ -1035,6 +1041,9 @@ async fn private_forks_keep_marker_out_of_analytic_and_other_users_and_refork_on
         ask.prompt = format!("Job: ask. {text}");
         ask.session = analytic.session.clone();
         ask.working_session = Some(WorkingSession {
+            kind: None,
+            preflight: None,
+            parent_context: None,
             user_key: key.repeat(64),
             analytic_generation: 1,
             thread_id: working.map(str::to_owned),
@@ -1141,6 +1150,9 @@ async fn a_fork_compacts_once_and_falls_back_when_the_compacting_turn_fails() {
         ask.prompt = format!("Job: ask. {text}");
         ask.session = analytic.session.clone();
         ask.working_session = Some(WorkingSession {
+            kind: None,
+            preflight: None,
+            parent_context: None,
             user_key: "a".repeat(64),
             analytic_generation: generation,
             thread_id: thread.map(str::to_owned),

@@ -446,6 +446,23 @@ answer: string,
 evidence: Array<Evidence>, };
 
 /**
+ * First-Ask preflight bound to the working thread's seed and analytic generation.
+ */
+export type AskPreflight = {
+/**
+ * Working-thread seed.
+ */
+seed: SessionSeed,
+/**
+ * Analytic generation at seeding.
+ */
+generation: number,
+/**
+ * Confirmed preflight state.
+ */
+state: PreflightState, };
+
+/**
  * A private question and its LLM answer, pinned to its anchor; returned only to its asker.
  */
 export type AskQuestion = {
@@ -551,6 +568,110 @@ blocking?: Blocking,
 smallest_correction: string | null, };
 
 /**
+ * Pre-admission rejection consumes no slot.
+ */
+export type AssessmentAdmissionFailure = { "code": "assessment_daily_limit",
+/**
+ * Next UTC midnight.
+ */
+resets_at: string, } | { "code": "credential_missing" };
+
+/**
+ * GET …/comments/assessment-comparison, scoped to payer and PR.
+ */
+export type AssessmentComparison = {
+/**
+ * Frozen logical pass.
+ */
+pass: AssessmentPass,
+/**
+ * Owner revisions are selected as of this cutoff.
+ */
+cutoff: string,
+/**
+ * Independent method state and metering.
+ */
+runs: Array<AssessmentMethodRun>,
+/**
+ * Includes unmatched, missing, duplicate and failed rows explicitly.
+ */
+items: Array<AssessmentComparisonItem>, };
+
+/**
+ * Common method-local comparison row; secondary IDs never allocate primary items.
+ */
+export type AssessmentComparisonItem = {
+/**
+ * Stable comparison identity inside this pass.
+ */
+comparison_key: string,
+/**
+ * Adapter-local ID, distinct from a primary item ID.
+ */
+local_id: string,
+/**
+ * Adapter and pass.
+ */
+run: AssessmentRunRef,
+/**
+ * Adapter version.
+ */
+method_version: string,
+/**
+ * Frozen source identity.
+ */
+source: AssessmentSource,
+/**
+ * Existing primary item, only for an unambiguous alignment.
+ */
+primary_item_id: CommentItemId | null,
+/**
+ * Frozen normalized primary point hash, distinct from the full source version.
+ */
+primary_item_hash: string | null,
+/**
+ * Alignment/completeness state.
+ */
+status: ComparisonItemStatus,
+/**
+ * Canonical comparison key for a duplicate.
+ */
+duplicate_of: string | null,
+/**
+ * Normalized verdict, absent when unavailable.
+ */
+verdict: AssessmentVerdict | null,
+/**
+ * Native verdict preserved exactly.
+ */
+native_verdict: string | null,
+/**
+ * Machine proposal; absence is distinct from a missing row or verdict.
+ */
+proposal: ProposedDecision | null,
+/**
+ * Actual diffpilot owner decision reference as of the report cutoff.
+ */
+owner_decision: AssessmentOwnerDecision | null, };
+
+/**
+ * Per-user settings; changing them alone never schedules work.
+ */
+export type AssessmentConfig = {
+/**
+ * Only this method can change visible items or effects.
+ */
+primary_method: AssessmentMethod,
+/**
+ * Explicit owner/repo#number selections, empty by default.
+ */
+ab_prs: Array<string>,
+/**
+ * Optional UTC deadline, absent by default.
+ */
+ab_until: string | null, };
+
+/**
  * A line read that supports the validity reading.
  */
 export type AssessmentEvidence = {
@@ -566,6 +687,151 @@ line: number,
  * What the line shows.
  */
 note: string, };
+
+/**
+ * Non-secret immutable snapshot reference; includes source versions, scope and standing decisions.
+ */
+export type AssessmentInput = {
+/**
+ * owner/repo#number.
+ */
+pr: string,
+/**
+ * Stable PR database key.
+ */
+pull_request_id: number,
+/**
+ * Assessed head.
+ */
+head: CommitSha,
+/**
+ * Base used by both adapters.
+ */
+base: CommitSha,
+/**
+ * SHA-256 of the frozen input, including source versions and standing decisions.
+ */
+input_hash: string,
+/**
+ * SHA-256 of the frozen scope.
+ */
+scope_hash: string,
+/**
+ * Immutable host-owned non-secret snapshot reference, never model-supplied.
+ */
+snapshot_ref: string,
+/**
+ * Identical model and effort for both adapters.
+ */
+model: ModelChoice, };
+
+/**
+ * An assessment adapter; native outputs retain their own validation contracts.
+ */
+export type AssessmentMethod = "claudius_host" | "prompt_v4";
+
+/**
+ * Persisted method summary; usage and duration include failed attempts once each.
+ */
+export type AssessmentMethodRun = {
+/**
+ * Frozen method identity.
+ */
+reference: AssessmentRunRef,
+/**
+ * One job whose attempts execute this method.
+ */
+job_id: JobId,
+/**
+ * Version of the adapter.
+ */
+version: string,
+/**
+ * Current state.
+ */
+status: AssessmentRunStatus,
+/**
+ * Current attempt fence.
+ */
+attempt: number,
+/**
+ * The only accepted successful attempt, if any.
+ */
+accepted_attempt: number | null,
+/**
+ * Billable usage from all attempts, deduplicated by job/attempt.
+ */
+usage: Usage,
+/**
+ * Total duration in milliseconds across attempts.
+ */
+duration_ms: number,
+/**
+ * Scrubbed failure kind, never upstream response text.
+ */
+failure: JobFailureKind | null, };
+
+/**
+ * Actual owner choice, separate from inferred/relayed report evidence.
+ */
+export type AssessmentOwnerDecision = {
+/**
+ * Durable diffpilot decision ID.
+ */
+id: DecisionId,
+/**
+ * Revision retained in append-only history.
+ */
+revision: number,
+/**
+ * Actual deciding user.
+ */
+owner: UserId,
+/**
+ * Actual decision time.
+ */
+at: string,
+/**
+ * Actual chosen kind.
+ */
+kind: DecisionKind,
+/**
+ * Actual target.
+ */
+target: DecisionTarget | null, };
+
+/**
+ * One admitted logical pass; retries keep its original day and configuration.
+ */
+export type AssessmentPass = {
+/**
+ * Pass identity.
+ */
+id: PassId,
+/**
+ * Payer and quota owner.
+ */
+payer: UserId,
+/**
+ * Frozen input.
+ */
+input: AssessmentInput,
+/**
+ * Frozen user configuration.
+ */
+config: AssessmentConfig,
+/**
+ * Whether both adapters are scheduled.
+ */
+paired: boolean,
+/**
+ * Original UTC admission day, YYYY-MM-DD.
+ */
+day_utc: string,
+/**
+ * Original admission time.
+ */
+admitted_at: string, };
 
 /**
  * Assessment progress of a PR ("LLM assessment running: 4 of 9 comments").
@@ -597,6 +863,79 @@ head: CommitSha | null,
 at: string | null, };
 
 /**
+ * Safe quota status; unrelated jobs are unaffected.
+ */
+export type AssessmentQuota = {
+/**
+ * Logical passes still available today, out of 80.
+ */
+remaining: number,
+/**
+ * Next UTC midnight.
+ */
+resets_at: string, };
+
+/**
+ * Durable method identity carried by both job input and result; attempt is the enclosing job's fence.
+ */
+export type AssessmentRunRef = {
+/**
+ * Logical pass shared by an A/B pair and all its retries.
+ */
+pass_id: PassId,
+/**
+ * Independent adapter.
+ */
+method: AssessmentMethod, };
+
+/**
+ * Method execution status, independent of per-row completeness.
+ */
+export type AssessmentRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+/**
+ * GET /settings/comment-assessment; PUT uses AssessmentConfig and never schedules work itself.
+ */
+export type AssessmentSettings = {
+/**
+ * Effective per-user configuration.
+ */
+config: AssessmentConfig,
+/**
+ * Safe remaining/reset status.
+ */
+quota: AssessmentQuota, };
+
+/**
+ * Frozen source identity; quote and version are required for body-point alignment.
+ */
+export type AssessmentSource = { "kind": "inline",
+/**
+ * GitHub node ID.
+ */
+thread_id: string,
+/**
+ * Frozen thread body/version hash, preventing decision reuse after edits.
+ */
+version: string, } | { "kind": "body",
+/**
+ * Original report source kind.
+ */
+source_kind: CommentSourceKind,
+/**
+ * Source URL.
+ */
+url: string,
+/**
+ * Frozen body SHA-256.
+ */
+version: string,
+/**
+ * Verbatim grounded quote.
+ */
+quote: string, };
+
+/**
  * Whether an item has an LLM assessment.
  */
 export type AssessmentState = { "state": "running" } | { "state": "assessed" } | { "state": "not_assessed",
@@ -604,6 +943,11 @@ export type AssessmentState = { "state": "running" } | { "state": "assessed" } |
  * Why.
  */
 reason: NotAssessedReason, };
+
+/**
+ * A nullable common verdict never inferred from prose.
+ */
+export type AssessmentVerdict = "valid" | "invalid" | "already_fixed" | "out_of_scope";
 
 /**
  * Who wrote the item: the bot rule (`Bot` type, `[bot]` login or Settings `known_bots`, RQ17).
@@ -1149,6 +1493,14 @@ description: string, };
  */
 export type CommentAssessment = {
 /**
+ * Evidence from the report, labelled LLM text.
+ */
+evidence_text?: string,
+/**
+ * Attributed prior decision; authority and grounding are verified by server ingest.
+ */
+recorded_decision?: RecordedDecision,
+/**
  * The job that wrote it.
  */
 job: JobId,
@@ -1175,7 +1527,7 @@ evidence: Array<AssessmentEvidence>,
 /**
  * The problem exists on the base already.
  */
-pre_existing: boolean,
+pre_existing: boolean | null,
 /**
  * Category slug (claudius #118 catalog).
  */
@@ -1259,6 +1611,14 @@ total: number, };
  * A review-loop item with its assessment, decisions and effects (RC4).
  */
 export type CommentItem = {
+/**
+ * Grounded point read from a versioned source; absent on inline threads and PR questions.
+ */
+point?: CommentPoint,
+/**
+ * Per-PR number of the linked point; each inline thread keeps its own item.
+ */
+duplicate_of?: number,
 /**
  * Database id.
  */
@@ -1405,6 +1765,40 @@ decisions: Array<Decision>,
 carry_events: Array<CarryEvent>, };
 
 /**
+ * Point provenance, grounded in the source's cleaned GitHub text.
+ */
+export type CommentPoint = {
+/**
+ * Server-validated source URL.
+ */
+source_url: string,
+/**
+ * Submitted review body or PR comment.
+ */
+source_kind: CommentSourceKind,
+/**
+ * Distinct verbatim span: 12–600 characters, or the whole shorter source.
+ */
+quote: string, };
+
+/**
+ * Host report envelope; rows are decoded individually so a malformed row can be dropped.
+ */
+export type CommentReport = {
+/**
+ * Accepted versions are 4.2.x.
+ */
+schema_version: string,
+/**
+ * Host provenance, matched against the server's input.
+ */
+metadata: ReportMetadata,
+/**
+ * Independently parsed assessment rows; unknown report fields are ignored.
+ */
+comment_assessments: unknown[], };
+
+/**
  * Commenting on displayed lines, decided by the server from the pull request diff (ADR-006).
  */
 export type CommentScope = { "scope": "in_diff",
@@ -1412,6 +1806,44 @@ export type CommentScope = { "scope": "in_diff",
  * Ranges, on the response's side, whose lines get a line thread.
  */
 line_thread_ranges: Array<LineRange>, } | { "scope": "not_in_diff" };
+
+/**
+ * Read-only source version, including sources from which no points were read.
+ */
+export type CommentSource = {
+/**
+ * Source URL.
+ */
+url: string,
+/**
+ * Source kind.
+ */
+kind: CommentSourceKind,
+/**
+ * GitHub author login.
+ */
+author: string,
+/**
+ * Cleaned source text, retaining details content.
+ */
+body: string,
+/**
+ * SHA-256 of the cleaned text identifies this version.
+ */
+body_hash: string,
+/**
+ * Host-assigned source role.
+ */
+role: SourceRole,
+/**
+ * First successful assessment read of this source version.
+ */
+read_at: string | null, };
+
+/**
+ * Stored source kind; inline threads remain independent items.
+ */
+export type CommentSourceKind = "review_body" | "pr_comment";
 
 /**
  * Counts of a pull request's review comments in Comments (plan docs/review-workflow-plan.md §2.1): threads,
@@ -1527,6 +1959,28 @@ read: GithubRead, };
  * A full 40-character hexadecimal git commit id.
  */
 export type CommitSha = string;
+
+/**
+ * Distinct completeness/alignment states; null verdict and proposal remain independent.
+ */
+export type ComparisonItemStatus = "matched" | "missing_row" | "duplicate" | "unmatched" | "method_failed" | "head_mismatch";
+
+/**
+ * A worker's identity; each identity owns at most one running job.
+ */
+export type ContainerId = { "shape": "pr",
+/**
+ * Database PR key.
+ */
+pull_request_id: number,
+/**
+ * User paying for this worker's turns.
+ */
+payer: UserId, } | { "shape": "judge",
+/**
+ * Dashboard user paying for the turn.
+ */
+payer: UserId, };
 
 /**
  * Query of RC5: lines `from..=to` (defaults: the enclosing range, at most 40 lines).
@@ -1762,6 +2216,49 @@ token: AccessTokenSecret,
  * The new token as listed.
  */
 access_token: AccessToken, };
+
+/**
+ * The only supported credential mode; no paid fallback.
+ */
+export type CredentialMode = "chatgpt_plan";
+
+/**
+ * ChatGPT-plan connection state.
+ */
+export type CredentialState = "linking" | "linked" | "relink_needed";
+
+/**
+ * Non-secret status shared by gateway, server and Settings.
+ */
+export type CredentialStatus = {
+/**
+ * Only ChatGPT-plan linking is supported.
+ */
+mode: CredentialMode,
+/**
+ * Common connection state.
+ */
+state: CredentialState,
+/**
+ * Present only when relink is needed.
+ */
+relink_reason: RelinkReason | null,
+/**
+ * Human-readable connection label.
+ */
+label: string | null,
+/**
+ * Provider plan label, when supplied.
+ */
+plan: string | null,
+/**
+ * Payer pause after a usage limit.
+ */
+paused_until: string | null,
+/**
+ * Most recent model call.
+ */
+last_call: LlmCallOutcome | null, };
 
 /**
  * Server-sent event of `GET /api/v1/dashboard/refreshes/{id}/events`; the SSE `event` field is the tag.
@@ -3677,6 +4174,19 @@ replies: number,
 marker: string | null, };
 
 /**
+ * Durable CMT number allocation and previous item identities.
+ */
+export type ItemIds = {
+/**
+ * Next unused number.
+ */
+next_id: number,
+/**
+ * Known point identities.
+ */
+items: Array<PrDataItem>, };
+
+/**
  * Stable key of a work item, the normative form (`docs/contracts/http-api.md` "Item keys"):
  * `<owner>~<repo>~pr~<number>`, `<owner>~<repo>~issue~<number>` or `memcan~<uuid>`. Built and parsed only here;
  * deserialisation rejects any other form.
@@ -3834,9 +4344,19 @@ state: ItemState | null,
 kind: CommentItemKind | null, };
 
 /**
+ * Kind of a failed attempt.
+ */
+export type JobFailureKind = "configuration" | "provider_failed" | "output_not_json" | "credential_unusable" | "checkout_failed" | "timeout" | "internal" | "worker_unavailable" | "worker_lost" | "credential_missing" | "credential_relink" | "model_unavailable" | "upstream_rejected" | "report_version_unsupported" | "invalid_json_schema";
+
+/**
  * Identifier of a job (one agent run).
  */
 export type JobId = string;
+
+/**
+ * Reasons to revoke a local virtual key; none authorizes upstream revoke.
+ */
+export type KeyRevokeReason = "rotation" | "idle_stop" | "retirement";
 
 /**
  * Decisions of one kind.
@@ -3867,6 +4387,19 @@ issue: number,
  * MemCan TODOs.
  */
 todo: number, };
+
+/**
+ * Last-context estimate, separate from cumulative usage and billable job deltas.
+ */
+export type LastContext = {
+/**
+ * Input and output context tokens reported for the last completed turn.
+ */
+tokens: number,
+/**
+ * Thread generation this estimate describes; missing/stale usage needs recovery.
+ */
+generation: number, };
 
 /**
  * The latest delivery of a channel.
@@ -3979,6 +4512,15 @@ moved: Array<MovedLines>,
 comments: CommentScope, };
 
 /**
+ * Starts device linking without accepting upstream secrets or endpoints.
+ */
+export type LinkCredential = {
+/**
+ * ChatGPT-plan linking only.
+ */
+mode: CredentialMode, };
+
+/**
  * Outcome and time of an LLM call.
  */
 export type LlmCallOutcome = {
@@ -4066,6 +4608,55 @@ export type LogoutRequest = {
  * End every session of the user, not only this one.
  */
 everywhere: boolean, };
+
+/**
+ * Host provenance and author facts.
+ */
+export type Manifest = {
+/**
+ * owner/repo.
+ */
+repo: string,
+/**
+ * PR number.
+ */
+pr: number,
+/**
+ * Assessed head.
+ */
+head: string,
+/**
+ * Base branch name.
+ */
+base_ref: string,
+/**
+ * Frozen base commit for pre-existing checks.
+ */
+base_sha: string,
+/**
+ * Author-stated PR intent.
+ */
+title: string,
+/**
+ * Author-stated PR description.
+ */
+body: string,
+/**
+ * Trusted maintainer relays.
+ */
+delegates?: Array<string>,
+/**
+ * PR author's login; only their own text is author context.
+ */
+pr_author: string,
+/**
+ * Tenant members' logins, independent of source roles.
+ */
+maintainers: Array<string>,
+/**
+ * Known bot logins.
+ */
+bots: Array<string>, };
 
 /**
  * A signed-in user.
@@ -4188,6 +4779,15 @@ unchecked_logins: Array<string>,
  * Logins whose PR mention search exceeded its request budget.
  */
 timed_out_logins: Array<string>, };
+
+/**
+ * Mint a fresh, expiring key and revoke the previous key for this container.
+ */
+export type MintKey = {
+/**
+ * Worker identity and payer.
+ */
+container: ContainerId, };
 
 /**
  * Model and reasoning effort (plan §5.2, ADR-002).
@@ -4570,6 +5170,11 @@ export type PartSource = "computed" | "llm" | "not_applicable";
 export type PartStatus = "computed" | "judged" | "overridden" | "inherited" | "estimated" | "pending";
 
 /**
+ * Identifier of a `verify_comments` pass over the items of one pull request.
+ */
+export type PassId = string;
+
+/**
  * A pattern explained once and applied in several places ("same pattern × N").
  */
 export type PatternRepetition = {
@@ -4927,6 +5532,68 @@ related_work: Array<RelatedWork>,
 fit_questions: Array<FitQuestion>, };
 
 /**
+ * Self-contained host-supplied review files; GitHub shapes are opaque to contracts.
+ */
+export type PrData = {
+/**
+ * manifest.json.
+ */
+manifest: Manifest,
+/**
+ * threads.json in the gh script shape.
+ */
+threads: unknown,
+/**
+ * review-comments.json in the gh script shape.
+ */
+review_comments: unknown[],
+/**
+ * reviews.json in the gh script shape.
+ */
+reviews: unknown[],
+/**
+ * comments.json in the gh script shape.
+ */
+comments: unknown[],
+/**
+ * Base-branch convention files, relative paths below conventions/.
+ */
+conventions: { [key in string]: string },
+/**
+ * ids.json, preserving durable point identities and standing decisions.
+ */
+ids: ItemIds,
+/**
+ * scope.json; all other handed-in material is context.
+ */
+scope: ReviewScope, };
+
+/**
+ * One stable point in ids.json.
+ */
+export type PrDataItem = {
+/**
+ * CMT identifier.
+ */
+id: string,
+/**
+ * Thread node id, review:id:k or comment:id:k.
+ */
+key: string,
+/**
+ * Original source kind, inferred from the key when absent.
+ */
+source_kind: SourceKind | null,
+/**
+ * Quote only for open and decided items.
+ */
+quote: string | null,
+/**
+ * Standing maintainer decision.
+ */
+decision: RecordedDecision | null, };
+
+/**
  * One file of the pull request.
  */
 export type PrFile = {
@@ -5096,6 +5763,11 @@ base_sha: CommitSha,
 head_sha: CommitSha, };
 
 /**
+ * Durable first-Ask preflight state; pending is never interpreted as completed.
+ */
+export type PreflightState = "not_needed" | "pending" | "done";
+
+/**
  * A source of the project profile.
  */
 export type ProfileSource = "repository_file" | "memcan";
@@ -5113,6 +5785,36 @@ sources: Array<ProfileSource>,
  * may exist that `sources` does not list.
  */
 memcan: SourceCheck, };
+
+/**
+ * Machine-readable proposed action; target semantics are validated by the server.
+ */
+export type ProposedDecision = {
+/**
+ * Decision kind.
+ */
+kind: ProposedDecisionKind,
+/**
+ * Fix commit, if supplied.
+ */
+fixed_in: string | null,
+/**
+ * Target PR number.
+ */
+target_pr: number | null,
+/**
+ * Target issue or PR URL.
+ */
+target_url: string | null,
+/**
+ * Follow-up title.
+ */
+title: string | null, };
+
+/**
+ * Proposed decision kind; independent of PR-level decisions.
+ */
+export type ProposedDecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo";
 
 /**
  * A deterministic check that a badge names (brief §1, §3). No badge means LLM analysis.
@@ -5366,6 +6068,44 @@ target: DecisionTarget | null,
 reason_class: string, };
 
 /**
+ * Attributed prior decision; server verifies authority and grounding before treating it as a fact.
+ */
+export type RecordedDecision = {
+/**
+ * Recorded decision.
+ */
+kind: RecordedDecisionKind,
+/**
+ * GitHub author login.
+ */
+by: string,
+/**
+ * Named maintainer for an explicit trusted relay; never inferred.
+ */
+on_behalf_of: string | null,
+/**
+ * Link to the decision's comment.
+ */
+comment_url: string,
+/**
+ * Verbatim decision quote, at most 600 characters.
+ */
+quote: string,
+/**
+ * PR target, when supplied.
+ */
+target_pr: number | null,
+/**
+ * URL target, when supplied.
+ */
+target_url: string | null, };
+
+/**
+ * Recorded decision kind, including deferral and withdrawal.
+ */
+export type RecordedDecisionKind = "deferred" | "withdrawn" | ProposedDecisionKind;
+
+/**
  * Why a refresh failed.
  */
 export type RefreshFailure = {
@@ -5513,6 +6253,11 @@ verified: boolean, };
 export type RelatedWorkTargetKind = "pull_request" | "issue";
 
 /**
+ * Safe relink reason; never contains a token, upstream response or account identifier.
+ */
+export type RelinkReason = "terminal" | "quarantined";
+
+/**
  * A GitHub repository.
  */
 export type RepoRef = {
@@ -5547,9 +6292,141 @@ related_repos: Array<RepoRef>,
 project_profile: ProjectProfileStatus, };
 
 /**
+ * The upstream assessment, before mapping into the API's validity and necessity.
+ */
+export type ReportAssessment = "valid" | "already_fixed" | "out_of_scope" | "wrong";
+
+/**
+ * An upstream gate; only the four blocker gates map into stored gate items.
+ */
+export type ReportGate = {
+/**
+ * Upstream gate name, allowing gates beyond the four stored ones.
+ */
+gate: string,
+/**
+ * Gate evidence, labelled LLM.
+ */
+evidence: string, };
+
+/**
+ * Required host-supplied provenance; other metadata is ignored.
+ */
+export type ReportMetadata = {
+/**
+ * Must be comment_check.
+ */
+report_type: string,
+/**
+ * Host-supplied is the only accepted mode.
+ */
+input_mode: string,
+/**
+ * GitHub PR number.
+ */
+pr_number: number,
+/**
+ * Commit assessed; a differing head is labelled rather than discarded.
+ */
+commit: string, };
+
+/**
  * Outcome an agent reports for an effect.
  */
 export type ReportOutcome = "done" | "failed" | "released";
+
+/**
+ * Fields consumed from one upstream assessment; unknown fields, including severity floats, are discarded.
+ */
+export type ReportRow = {
+/**
+ * Direct canonical row ID for a duplicate from another source.
+ */
+merged_into: string | null,
+/**
+ * Upstream CMT identifier.
+ */
+id: string,
+/**
+ * Source author.
+ */
+reviewer: string,
+/**
+ * Source role.
+ */
+source_kind: SourceKind,
+/**
+ * Source URL, checked against the host scope.
+ */
+comment_url: string,
+/**
+ * Required for an inline row.
+ */
+thread_id: string | null,
+/**
+ * Required for a body or PR-comment point; server checks a distinct verbatim span.
+ */
+source_quote: string | null,
+/**
+ * Problem description.
+ */
+description: string,
+/**
+ * Validity assessment; absent on context rows.
+ */
+assessment: ReportAssessment | null,
+/**
+ * Reasoning text.
+ */
+reasoning: string,
+/**
+ * Evidence text, labelled LLM.
+ */
+evidence: string | null,
+/**
+ * Human-readable proposed action.
+ */
+proposed_action: string,
+/**
+ * Machine decision, required on assessed host rows.
+ */
+proposed_decision: ProposedDecision | null,
+/**
+ * Earlier attributed decision.
+ */
+recorded_decision: RecordedDecision | null,
+/**
+ * Optional location in file:lines notation.
+ */
+location: string | null,
+/**
+ * Draft reply, passed through the server's wording guard.
+ */
+proposed_reply: string | null,
+/**
+ * Whether the problem exists on the base.
+ */
+pre_existing: boolean | null,
+/**
+ * Category slug.
+ */
+category: string | null,
+/**
+ * Fix size.
+ */
+fix_size: FixSize | null,
+/**
+ * Named gates.
+ */
+gates: Array<ReportGate>,
+/**
+ * Threads grouped with this row, intersected with host scope.
+ */
+merged_thread_ids: Array<string>,
+/**
+ * Additional source links, subject to the same-source and author rules.
+ */
+merged_urls: Array<string>, };
 
 /**
  * Kind of a crate source.
@@ -5653,6 +6530,19 @@ head_moved: boolean,
 has_my_state: boolean, };
 
 /**
+ * What a pass may assess (10 points/threads and 5 new sources, with continuations).
+ */
+export type ReviewScope = {
+/**
+ * Open thread node ids.
+ */
+threads: Array<string>,
+/**
+ * Versioned source URLs.
+ */
+sources: Array<string>, };
+
+/**
  * Review state of one user for one analysis; a flow is reviewed when all its steps are ticked.
  */
 export type ReviewState = {
@@ -5664,6 +6554,19 @@ ticked_steps: Array<StepId>,
  * Last viewed block; null before the first visit (starts at the PR context).
  */
 last_viewed: BlockRef | null, };
+
+/**
+ * Revoke local keys without logging out or revoking an upstream credential.
+ */
+export type RevokeKeys = {
+/**
+ * Worker whose keys become unusable.
+ */
+container: ContainerId,
+/**
+ * Local-only revocation reason.
+ */
+reason: KeyRevokeReason, };
 
 /**
  * Risk at system scale, rated by the LLM (no numbers, brief §1).
@@ -5879,6 +6782,11 @@ export type SecretChange = { "action": "keep" } | { "action": "replace",
  * The new secret.
  */
 value: string, } | { "action": "remove" };
+
+/**
+ * How a private working thread was seeded.
+ */
+export type SessionSeed = "fork" | "context_pack";
 
 /**
  * Body of `PUT /api/v1/settings/llm/ask-effort`.
@@ -6097,6 +7005,16 @@ days: number, };
 export type SourceCheck = "checked" | "not_checked";
 
 /**
+ * A row's source role in the upstream report.
+ */
+export type SourceKind = "inline" | "review_body" | "pr_comment" | "reply" | "status";
+
+/**
+ * Host-assigned source role, independent of author membership.
+ */
+export type SourceRole = "context" | "ignored" | "source";
+
+/**
  * The flow of a `flow` stage.
  */
 export type StageFlow = {
@@ -6241,6 +7159,11 @@ export type SummaryQuery = {
 excluded?: boolean, };
 
 /**
+ * Immutable thread policy; resend its full configuration on start, fork and resume.
+ */
+export type ThreadKind = "analytic" | "ask" | "verify" | "judge";
+
+/**
  * LLM status of an existing GitHub review thread.
  */
 export type ThreadLlmStatus = "still_valid" | "stale" | "already_addressed";
@@ -6344,6 +7267,15 @@ reason?: UnexplainedReason, };
 export type UnexplainedReason = "too_large_for_prompt";
 
 /**
+ * Explicit user-authorized upstream unlink; distinct from retiring a local virtual key.
+ */
+export type UnlinkCredential = {
+/**
+ * User whose credential and local keys are unlinked.
+ */
+user: UserId, };
+
+/**
  * Body of `PATCH /api/v1/analyses/{id}/pending-review/comments/{comment_id}`.
  */
 export type UpdateCommentRequest = {
@@ -6351,6 +7283,28 @@ export type UpdateCommentRequest = {
  * New text.
  */
 body: string, };
+
+/**
+ * Token usage.
+ */
+export type Usage = {
+/**
+ * Input tokens, cached included.
+ */
+input_tokens: number,
+/**
+ * Cached input tokens.
+ */
+cached_input_tokens: number,
+/**
+ * Output tokens.
+ */
+output_tokens: number,
+/**
+ * Model requests of the call, counted from the provider's events (one per batch of tool calls, and the
+ * answer); null when not counted.
+ */
+requests: number | null, };
 
 /**
  * Token sums; cached input is included in input, not additional to it.
@@ -6439,6 +7393,11 @@ export type UserEventKind = "questions_ready" | "round_executed" | "test";
 export type UserFeedbackValue = "correct" | "wrong" | "irrelevant" | "overrated" | "underrated";
 
 /**
+ * Stable authenticated user id, also the payer key.
+ */
+export type UserId = string;
+
+/**
  * SSE data of RW3; the SSE `event` field is the `event` tag.
  */
 export type UserStreamEvent = { "event": "user_event",
@@ -6454,7 +7413,7 @@ at: string, };
 /**
  * The LLM's validity reading ("The LLM says: …"). Open enum.
  */
-export type Validity = "valid" | "partly_valid" | "invalid";
+export type Validity = "valid" | "already_fixed" | "partly_valid" | "invalid";
 
 /**
  * How completely the Viewed state was read.
@@ -6636,6 +7595,24 @@ watched?: boolean,
  * Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.
  */
 plugin_notes?: Array<PluginNote>, };
+
+/**
+ * Managed worker identity and current lifecycle state.
+ */
+export type WorkerStatus = {
+/**
+ * Worker identity derived from managed labels.
+ */
+container: ContainerId,
+/**
+ * Whether it is currently running.
+ */
+running: boolean, };
+
+/**
+ * Fixed workspace shape; paths never come from model output.
+ */
+export type Workspace = "pr" | "judge";
 
 /**
  * The commit and time a comment was written on, as GitHub records them.

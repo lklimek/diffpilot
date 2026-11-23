@@ -32,6 +32,9 @@ pub struct CredentialStatus {
 /// Reply to a claim.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClaimResponse {
+    /// Retired PRs: remove their containers/volumes and revoke only local keys.
+    #[serde(default)]
+    pub retire: Vec<i64>,
     /// The claimed job, or none when nothing is runnable.
     pub claim: Option<Claim>,
     /// Pull-request keys whose session files the runner must delete (explicit removal; ADR-004).

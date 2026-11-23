@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LauncherRequest",
+  "description": "One correlated launcher request on its private unix socket.",
+  "type": "object",
+  "properties": {
+    "id": {
+      "description": "Caller-generated correlation id.",
+      "type": "string"
+    },
+    "action": {
+      "description": "Operation, without Docker configuration or host paths.",
+      "$ref": "#/$defs/LauncherAction"
+    }
+  },
+  "required": [
+    "id",
+    "action"
+  ],
+  "$defs": {
+    "LauncherAction": {
+      "description": "Fixed-template container operations; files never pass through this protocol.",
+      "oneOf": [
+        {
+          "description": "Create if absent and start from the pinned template (CS1/CS2).",
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "ensure"
+            },
+            "container": {
+              "description": "Worker identity.",
+              "$ref": "#/$defs/ContainerId"
+            },
+            "memcan": {
+              "description": "Configured MemCan endpoint for CS1 only; rejected for CS2.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/McpHttpEndpoint"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "operation",
+            "container"
+          ]
+        },
+        {
+          "description": "Stop the worker and end all its turns.",
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "stop"
+            },
+            "container": {
+              "description": "Worker identity.",
+              "$ref": "#/$defs/ContainerId"
+            }
+          },
+          "required": [
+            "operation",
+            "container"
+          ]
+        },
+        {
+          "description": "Remove the worker; upstream credentials remain linked.",
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "remove"
+            },
+            "container": {
+              "description": "Worker identity.",
+              "$ref": "#/$defs/ContainerId"
+            }
+          },
+          "required": [
+            "operation",
+            "container"
+          ]
+        },
+        {
+          "description": "Run the one-shot CS3 fetch for this CS1 worker; rejected for CS2.",
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "fetch"
+            },
+            "container": {
+              "description": "PR worker identity.",
+              "$ref": "#/$defs/ContainerId"
+            }
+          },
+          "required": [
+            "operation",
+            "container"
+          ]
+        },
+        {
+          "description": "Relay proxy stdout only; stderr stays in launcher logs.",
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "attach"
+            },
+            "container": {
+              "description": "Worker identity.",
+              "$ref": "#/$defs/ContainerId"
+            }
+          },
+          "required": [
+            "operation",
+            "container"
+          ]
+        },
+        {
+          "description": "List managed workers for reconciliation.",
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "list"
+            }
+          },
+          "required": [
+            "operation"
+          ]
+        }
+      ]
+    },
+    "ContainerId": {
+      "description": "A worker's identity; each identity owns at most one running job.",
+      "oneOf": [
+        {
+          "description": "Persistent PR worker (CS1).",
+          "type": "object",
+          "properties": {
+            "shape": {
+              "type": "string",
+              "const": "pr"
+            },
+            "pull_request_id": {
+              "description": "Database PR key.",
+              "type": "integer",
+              "format": "int64"
+            },
+            "payer": {
+              "description": "User paying for this worker's turns.",
+              "$ref": "#/$defs/UserId"
+            }
+          },
+          "required": [
+            "shape",
+            "pull_request_id",
+            "payer"
+          ]
+        },
+        {
+          "description": "Ephemeral answer-only worker (CS2).",
+          "type": "object",
+          "properties": {
+            "shape": {
+              "type": "string",
+              "const": "judge"
+            },
+            "payer": {
+              "description": "Dashboard user paying for the turn.",
+              "$ref": "#/$defs/UserId"
+            }
+          },
+          "required": [
+            "shape",
+            "payer"
+          ]
+        }
+      ]
+    },
+    "UserId": {
+      "description": "Stable authenticated user id, also the payer key.",
+      "type": "string"
+    },
+    "McpHttpEndpoint": {
+      "description": "A streamable-HTTP MCP endpoint with a bearer token.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "description": "Endpoint URL.",
+          "type": "string"
+        },
+        "token": {
+          "description": "Bearer token.",
+          "$ref": "#/$defs/Secret"
+        },
+        "allow_write": {
+          "description": "Whether the agent is offered write tools; absent means read-only (Ask jobs never get them, ADR-004).",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "url",
+        "token"
+      ]
+    },
+    "Secret": {
+      "description": "A secret string: serialised as is, never shown by `Debug`. Opaque, without length limit.",
+      "type": "string"
+    }
+  }
+}

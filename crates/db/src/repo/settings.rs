@@ -66,6 +66,14 @@ impl CallFailure {
             Self::Failed(JobFailureKind::Timeout) => "timeout",
             Self::Failed(JobFailureKind::Internal) => "internal",
             Self::Failed(JobFailureKind::Configuration) => "configuration",
+            Self::Failed(JobFailureKind::WorkerUnavailable) => "worker_unavailable",
+            Self::Failed(JobFailureKind::WorkerLost) => "worker_lost",
+            Self::Failed(JobFailureKind::CredentialMissing) => "credential_missing",
+            Self::Failed(JobFailureKind::CredentialRelink) => "credential_relink",
+            Self::Failed(JobFailureKind::ModelUnavailable) => "model_unavailable",
+            Self::Failed(JobFailureKind::UpstreamRejected) => "upstream_rejected",
+            Self::Failed(JobFailureKind::ReportVersionUnsupported) => "report_version_unsupported",
+            Self::Failed(JobFailureKind::InvalidJsonSchema) => "invalid_json_schema",
         }
     }
 
@@ -400,7 +408,7 @@ impl SettingsRepo<'_> {
         tenant_id: &str,
     ) -> Result<Option<Timestamp>, DbError> {
         let since: Option<String> = sqlx::query_scalar(
-            "SELECT MAX(unusable_since) FROM llm_credentials WHERE tenant_id = ?",
+            "SELECT MAX(relink_needed_at) FROM llm_credentials WHERE tenant_id = ?",
         )
         .bind(tenant_id)
         .fetch_one(self.pool)
@@ -650,6 +658,7 @@ mod tests {
     #[tokio::test]
     async fn credential_unusable_since_follows_the_runner_report() {
         let db = Db::in_memory().await.expect("db");
+        sqlx::query("INSERT INTO users(id,github_id,login,created_at,updated_at) VALUES ('codex-1',1,'codex-1','t','t')").execute(&db.pool).await.unwrap();
         let settings = db.settings();
         assert_eq!(
             settings

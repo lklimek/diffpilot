@@ -62,6 +62,8 @@ pub struct AnalysisRecord {
     pub session_state: SessionState,
     /// claudius commit whose skills the agent used.
     pub skills_commit: Option<String>,
+    /// User currently paying for its analytic turns.
+    pub payer_id: String,
     /// User who requested it.
     pub created_by: String,
     /// When it was requested.
@@ -102,15 +104,15 @@ macro_rules! columns {
     () => {
         "a.id, a.tenant_id, a.pull_request_id, a.base_sha, a.head_sha, a.language, a.state,
     a.flows_total, a.flows_done, a.paused_until, a.user_paused_by, a.user_paused_at, a.failure_flow_id, a.failure_flow_title, a.failure_message, a.failure_reason,
-    (SELECT agent_thread_id FROM pull_requests WHERE id = a.pull_request_id) AS agent_thread_id,
-    (SELECT session_state FROM pull_requests WHERE id = a.pull_request_id) AS session_state, a.skills_commit, a.created_by, a.created_at, a.finished_at"
+    (SELECT thread_id FROM analytic_threads WHERE pull_request_id=a.pull_request_id AND user_id=COALESCE(a.payer_id,a.created_by)) AS agent_thread_id,
+    COALESCE((SELECT state FROM analytic_threads WHERE pull_request_id=a.pull_request_id AND user_id=COALESCE(a.payer_id,a.created_by)), 'none') AS session_state, a.skills_commit, a.created_by, COALESCE(a.payer_id,a.created_by) AS payer_id, a.created_at, a.finished_at"
     };
 }
 
 /// The latest pause end (after `?1`, now) among the credentials of the analysis's waiting pipeline jobs.
 macro_rules! credential_pause {
     () => {
-        "(SELECT MAX(c.paused_until) FROM jobs j JOIN llm_credentials c ON c.id=j.credential_id
+        "(SELECT MAX(c.paused_until) FROM jobs j JOIN llm_credentials c ON c.user_id=j.payer_id
           WHERE j.analysis_id=analyses.id AND j.round=analyses.round AND j.kind<>'ask' AND j.state='queued'
             AND julianday(c.paused_until)>julianday(?1))"
     };
@@ -273,6 +275,7 @@ fn record_from_row(row: &SqliteRow) -> Result<AnalysisRecord, DbError> {
         agent_thread_id: row.try_get("agent_thread_id")?,
         session_state: SessionState::parse(&session_state)?,
         skills_commit: row.try_get("skills_commit")?,
+        payer_id: row.try_get("payer_id")?,
         created_by: row.try_get("created_by")?,
         created_at: parse_ts(&created_at, "analyses.created_at")?,
         finished_at: finished_at
@@ -291,8 +294,8 @@ impl Analyses<'_> {
     ) -> Result<AnalysisRecord, DbError> {
         sqlx::query(
             "INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by,
-                 created_at, background_analysis)
-             VALUES (?, ?, ?, ?, ?, ?, 'planning', ?, ?, 0)",
+                 created_at, background_analysis,payer_id)
+             VALUES (?, ?, ?, ?, ?, ?, 'planning', ?, ?, 0,?)",
         )
         .bind(analysis.id.to_string())
         .bind(&analysis.tenant_id)
@@ -302,9 +305,22 @@ impl Analyses<'_> {
         .bind(wire_name(analysis.language)?)
         .bind(&analysis.created_by)
         .bind(ts(now))
+        .bind(&analysis.created_by)
         .execute(self.pool)
         .await?;
         self.get(analysis.id).await
+    }
+
+    /// Changes the analysis payer only while no claimed/running job owns the current container.
+    pub async fn set_payer(&self, id: AnalysisId, user: &str) -> Result<(), DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
+        let changed=sqlx::query("UPDATE analyses SET payer_id=? WHERE id=? AND NOT EXISTS(SELECT 1 FROM jobs WHERE analysis_id=analyses.id AND state IN ('claimed','running'))")
+            .bind(user).bind(id.to_string()).execute(&mut *tx).await?.rows_affected();
+        if changed != 1 {
+            return Err(DbError::Conflict);
+        }
+        tx.commit().await?;
+        Ok(())
     }
 
     /// An analysis.
@@ -711,12 +727,21 @@ impl Analyses<'_> {
     ) -> Result<(), DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let updated = sqlx::query(
-            "UPDATE pull_requests SET agent_thread_id = ?, analytic_generation = analytic_generation + 1,
-                 session_state = CASE WHEN session_state IN ('none', 'active') THEN 'active' ELSE session_state END
-             WHERE id = (SELECT pull_request_id FROM analyses WHERE id = ?)",
+            "INSERT INTO analytic_threads(tenant_id,pull_request_id,user_id,thread_id,generation,state)
+             SELECT tenant_id,pull_request_id,COALESCE(payer_id,created_by),?,1,'active' FROM analyses WHERE id=?
+             ON CONFLICT(pull_request_id,user_id) DO UPDATE SET thread_id=excluded.thread_id,state='active',generation=analytic_threads.generation+1,
+                 last_context_tokens=NULL,last_context_generation=NULL
+             WHERE analytic_threads.state IN ('none','active')",
         ).bind(thread_id).bind(id.to_string()).execute(&mut *tx).await?;
         if updated.rows_affected() == 0 {
-            return Err(DbError::NotFound);
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM analyses WHERE id=?)")
+                    .bind(id.to_string())
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if !exists {
+                return Err(DbError::NotFound);
+            }
         }
         sqlx::query("UPDATE analyses SET skills_commit = COALESCE(?, skills_commit) WHERE id = ?")
             .bind(skills_commit)
@@ -730,9 +755,9 @@ impl Analyses<'_> {
     /// Asks the runner to delete the PR session files on explicit removal.
     pub async fn request_session_drop(&self, id: i64) -> Result<(), DbError> {
         let updated = sqlx::query(
-            "UPDATE pull_requests SET session_state = CASE WHEN session_state = 'dropped' THEN 'dropped'
-                 ELSE 'drop_requested' END
-             WHERE id = ?",
+            "INSERT INTO analytic_threads(tenant_id,pull_request_id,user_id,generation,state)
+             SELECT tenant_id,pull_request_id,COALESCE(payer_id,created_by),0,'drop_requested' FROM analyses WHERE pull_request_id=? GROUP BY COALESCE(payer_id,created_by)
+             ON CONFLICT(pull_request_id,user_id) DO UPDATE SET state=CASE WHEN state='dropped' THEN state ELSE 'drop_requested' END",
         )
         .bind(id.to_string())
         .execute(self.pool)
@@ -746,7 +771,7 @@ impl Analyses<'_> {
     /// Pull-request keys whose session files the runner must delete.
     pub async fn pending_session_drops(&self) -> Result<Vec<i64>, DbError> {
         let ids: Vec<i64> = sqlx::query_scalar(
-            "SELECT p.id FROM pull_requests p WHERE p.session_state='drop_requested' AND NOT EXISTS (SELECT 1 FROM jobs j JOIN analyses a ON a.id=j.analysis_id WHERE a.pull_request_id=p.id AND j.state IN ('claimed','running')) ORDER BY p.id",
+            "SELECT DISTINCT t.pull_request_id FROM analytic_threads t WHERE t.state='drop_requested' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.pull_request_id=t.pull_request_id AND j.state IN ('claimed','running')) ORDER BY t.pull_request_id",
         )
         .fetch_all(self.pool)
         .await?;
@@ -759,7 +784,7 @@ impl Analyses<'_> {
             return Ok(());
         }
         let mut query = QueryBuilder::<Sqlite>::new(
-            "UPDATE pull_requests SET session_state = 'dropped' WHERE session_state = 'drop_requested' AND id IN (",
+            "UPDATE analytic_threads SET state = 'dropped' WHERE state = 'drop_requested' AND pull_request_id IN (",
         );
         let mut list = query.separated(", ");
         for id in ids {
@@ -778,8 +803,8 @@ pub mod testing {
     use contracts::ids::{AnalysisId, CommitSha, JobId, PassId, RefreshId};
     use contracts::job::access::AgentAccess;
     use contracts::job::spec::{
-        CredentialKind, JobLimits, JobSpec, JobTarget, LlmCredentialRef, ModelChoice,
-        PullRequestCommentsTarget, PullRequestTarget, ReasoningEffort, RepoCheckout,
+        JobLimits, JobSpec, JobTarget, ModelChoice, PullRequestCommentsTarget, PullRequestTarget,
+        ReasoningEffort, RepoCheckout,
     };
 
     use crate::error::DbError;
@@ -796,7 +821,7 @@ pub mod testing {
     }
 
     /// Credential id used by [`job_spec`].
-    pub const CREDENTIAL: &str = "codex-default";
+    pub const CREDENTIAL: &str = "u1";
 
     /// The in-memory database's only connection, held until dropped: every repository call waits meanwhile.
     #[derive(Debug)]
@@ -839,6 +864,13 @@ pub mod testing {
         Ok(id)
     }
 
+    /// Seeds a fake payer for queue/status tests that previously used opaque credential ids.
+    pub async fn seed_payer(db: &Db, user: &str) -> Result<(), DbError> {
+        sqlx::query("INSERT OR IGNORE INTO users(id,github_id,login,created_at,updated_at) SELECT ?,COALESCE(MAX(github_id),0)+1,?,'2026-11-23T00:00:00Z','2026-11-23T00:00:00Z' FROM users")
+            .bind(user).bind(user).execute(&db.pool).await?;
+        Ok(())
+    }
+
     /// Inserts a tenant (only `default` is seeded by the schema).
     pub async fn seed_tenant(db: &Db, id: &str) -> Result<(), DbError> {
         sqlx::query(
@@ -869,15 +901,14 @@ pub mod testing {
             prompt: "Analyse the flow.".to_owned(),
             output_schema: serde_json::json!({"type": "object"}),
             flow_file: None,
+            assessment: None,
+            pr_data: None,
             model: ModelChoice {
                 model: "gpt-6.1-sol".to_owned(),
                 reasoning_effort: ReasoningEffort::High,
             },
             limits: JobLimits::default(),
-            credential: LlmCredentialRef {
-                id: CREDENTIAL.to_owned(),
-                kind: CredentialKind::CodexChatgpt,
-            },
+            payer: contracts::ids::UserId(CREDENTIAL.to_owned()),
             session: None,
             working_session: None,
             context_pack: None,
@@ -1468,7 +1499,7 @@ mod tests {
     async fn claim(db: &Db, minute: u32) {
         db.jobs()
             .claim(crate::repo::jobs::ClaimParams {
-                credential_ids: &[testing::CREDENTIAL.to_owned()],
+                payer_ids: &[testing::CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
                 lease_until: at(minute + 30),
                 now: at(minute),
@@ -1694,7 +1725,10 @@ mod tests {
         db.llm_credentials()
             .register(
                 "default",
-                &testing::job_spec(id, JobKind::Plan).credential,
+                &contracts::job::spec::LlmCredentialRef {
+                    id: testing::job_spec(id, JobKind::Plan).payer.0,
+                    kind: contracts::job::spec::CredentialKind::CodexChatgpt,
+                },
                 true,
                 at(0),
             )

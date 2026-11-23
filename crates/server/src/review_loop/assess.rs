@@ -28,8 +28,7 @@ use contracts::common::LlmLanguage;
 use contracts::ids::{CommentItemId, CommitSha, JobId, PassId, QuestionId};
 use contracts::job::access::AgentAccess;
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
-    PullRequestCommentsTarget, RepoCheckout,
+    JobLimits, JobPriority, JobSpec, JobTarget, PullRequestCommentsTarget, RepoCheckout,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -53,7 +52,6 @@ use crate::github::mirror::{self, MirrorError};
 use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::model::{ModelContext, select_model};
-use crate::pipeline::CREDENTIAL_ID;
 use crate::prompts;
 use crate::state::AppState;
 
@@ -768,16 +766,23 @@ async fn submit(
         prompt: prompt::render(input, pr, language)?,
         output_schema: agent::output_schema(JobKind::VerifyComments)?,
         flow_file: None,
+        assessment: None,
+        pr_data: None,
         model: select_model(
             JobKind::VerifyComments,
             &ModelContext::default(),
             state.db.settings().llm_selection().await?.as_ref(),
         ),
         limits: JobLimits::default(),
-        credential: LlmCredentialRef {
-            id: CREDENTIAL_ID.to_owned(),
-            kind: CredentialKind::CodexChatgpt,
-        },
+        payer: contracts::ids::UserId(
+            state
+                .db
+                .review_loop()
+                .pass(pass)
+                .await?
+                .user_id
+                .ok_or(DbError::NotFound)?,
+        ),
         session: None,
         working_session: None,
         context_pack: None,

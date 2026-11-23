@@ -17,7 +17,10 @@ pub mod access_tokens;
 pub mod agent_sessions;
 pub mod analyses;
 mod analysis_progress;
+pub mod assessments;
+pub mod comment_sources;
 pub mod comments;
+pub mod container_sessions;
 pub mod dashboard;
 pub mod documents;
 pub mod feedback;
@@ -38,6 +41,10 @@ pub mod users;
 
 #[cfg(test)]
 mod concurrency_tests;
+#[cfg(test)]
+mod containers_tests;
+#[cfg(test)]
+mod migration_0030_tests;
 #[cfg(test)]
 mod schema_tests;
 
@@ -64,6 +71,30 @@ pub mod testing {
         busy_timeout: Duration,
     ) -> Result<Db, DbError> {
         Db::open_with(&dir.join("diffpilot.sqlite"), busy_timeout).await
+    }
+
+    /// Creates a populated pre-0030 database with synthetic auth, for migration/startup tests only.
+    pub async fn pre_container_database(path: &Path) -> Result<(), DbError> {
+        let options = super::SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .journal_mode(super::SqliteJournalMode::Wal)
+            .foreign_keys(true);
+        let pool = super::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        super::migrate(&pool, super::MIGRATIONS.len() - 1).await?;
+        sqlx::raw_sql(include_str!("../../tests/fixtures/pre_0030.sql"))
+            .execute(&pool)
+            .await?;
+        // Keep the synthetic browser session live regardless of when the fixture is used.
+        sqlx::query("UPDATE sessions SET last_seen_at = ?")
+            .bind(super::jobs::ts(contracts::time::Timestamp::now()))
+            .execute(&pool)
+            .await?;
+        pool.close().await;
+        Ok(())
     }
 
     /// Makes the next `count` writes of a pass's job link change nothing (so each reports a conflict), as links
@@ -110,7 +141,7 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The schema migrations in order, as `(version, description, SQL)`: the initial schema, then additive
 /// changes that upgrade an existing database in place.
-const MIGRATIONS: [(i64, &str, &str); 26] = [
+const MIGRATIONS: [(i64, &str, &str); 27] = [
     (1, "init", include_str!("../../migrations/0001_init.sql")),
     (
         2,
@@ -237,6 +268,11 @@ const MIGRATIONS: [(i64, &str, &str); 26] = [
         "dashboard_trigger_automatic",
         include_str!("../../migrations/0029_dashboard_trigger_automatic.sql"),
     ),
+    (
+        30,
+        "v13_containers",
+        include_str!("../../migrations/0030_v13_containers.sql"),
+    ),
 ];
 
 /// Starts a transaction that may write: `BEGIN IMMEDIATE` takes the write lock at once and waits on the busy
@@ -362,3 +398,6 @@ impl Db {
 }
 
 pub mod usage;
+
+#[cfg(test)]
+mod assessments_tests;

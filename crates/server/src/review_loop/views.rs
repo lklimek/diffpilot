@@ -92,6 +92,8 @@ pub(crate) fn item_view(
             .map(|item| item.no)
     });
     CommentItem {
+        point: None,
+        duplicate_of: None,
         id: record.id,
         no: record.no,
         kind: record.kind,

@@ -17,8 +17,7 @@ use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId, StepId};
 use contracts::job::access::AgentAccess;
 use contracts::job::result::{JobOutcome, JobResult};
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
-    PullRequestTarget, RepoCheckout,
+    JobLimits, JobPriority, JobSpec, JobTarget, PullRequestTarget, RepoCheckout,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -41,7 +40,7 @@ use crate::model::{ModelContext, select_model};
 use crate::pipeline::context::{StoredResults, pack};
 use crate::pipeline::prepass::PrepassRunError;
 use crate::pipeline::tour::{self, TourLoadError};
-use crate::pipeline::{self, CREDENTIAL_ID, PrDiffError, files};
+use crate::pipeline::{self, PrDiffError, files};
 use crate::prompts::{
     self, AnsweredQuestion, AskContext, AskFlowInput, AskInput, AskLinesInput, AskPrInput, Asked,
     AskedLines, JobContext, Profile, PromptError, StepSummary, ThreadQuestion, TouchedStep,
@@ -548,6 +547,8 @@ async fn submit(
         prompt,
         output_schema: agent::output_schema(JobKind::Ask)?,
         flow_file: None,
+        assessment: None,
+        pr_data: None,
         model: select_model(
             JobKind::Ask,
             &ModelContext {
@@ -556,10 +557,7 @@ async fn submit(
             state.db.settings().llm_selection().await?.as_ref(),
         ),
         limits: JobLimits::default(),
-        credential: LlmCredentialRef {
-            id: CREDENTIAL_ID.to_owned(),
-            kind: CredentialKind::CodexChatgpt,
-        },
+        payer: contracts::ids::UserId(record.user_id.clone()),
         session: None,
         working_session: None,
         context_pack: None,

@@ -186,8 +186,8 @@ pub struct JobRecord {
 /// What a runner claim needs from the queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaimParams<'p> {
-    /// Usable credential ids the runner holds.
-    pub credential_ids: &'p [String],
+    /// Usable payer ids eligible for this claim.
+    pub payer_ids: &'p [String],
     /// Hash of the new job token.
     pub job_token_hash: &'p [u8],
     /// End of the lease.
@@ -316,6 +316,8 @@ fn priority_value(priority: JobPriority) -> i64 {
 /// A result the server records itself (cancel or failure without a runner result).
 pub(crate) fn server_result(job: JobId, attempt: u32, outcome: JobOutcome) -> JobResult {
     JobResult {
+        assessment: None,
+        report: None,
         job_id: job,
         attempt,
         outcome,
@@ -417,7 +419,7 @@ async fn apply_credential_effects(
         };
         sqlx::query(
             "UPDATE llm_credentials SET last_call_at = ?, last_call_ok = ?, last_call_message = ?,
-                 last_call_failure = ? WHERE id = ?",
+                 last_call_failure = ? WHERE user_id = ?",
         )
         .bind(ts(call.at))
         .bind(message.is_none())
@@ -429,7 +431,7 @@ async fn apply_credential_effects(
     }
     match &result.outcome {
         JobOutcome::UsageLimited { resets_at } => {
-            sqlx::query("UPDATE llm_credentials SET paused_until = ? WHERE id = ?")
+            sqlx::query("UPDATE llm_credentials SET paused_until = ? WHERE user_id = ?")
                 .bind(ts(resets_at.unwrap_or(now + PAUSE_WITHOUT_RESET)))
                 .bind(credential)
                 .execute(&mut *tx)
@@ -440,7 +442,7 @@ async fn apply_credential_effects(
             ..
         } => {
             sqlx::query(
-                "UPDATE llm_credentials SET unusable_since = COALESCE(unusable_since, ?) WHERE id = ?",
+                "UPDATE llm_credentials SET state = 'relink_needed', relink_reason = 'terminal', relink_needed_at = COALESCE(relink_needed_at, ?) WHERE user_id = ?",
             )
             .bind(ts(now))
             .bind(credential)
@@ -461,7 +463,7 @@ struct Current {
 
 async fn current(tx: &mut SqliteConnection, job: JobId) -> Result<(Current, SqliteRow), DbError> {
     let row = sqlx::query(
-        "SELECT kind, state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, credential_id,
+        "SELECT kind, state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, payer_id,
              json_extract(result, '$.attempt') AS result_attempt
          FROM jobs WHERE id = ?",
     )
@@ -522,22 +524,22 @@ impl Jobs<'_> {
         };
         let (sql, owner) = match &spec.target {
             JobTarget::PullRequest(target) => (
-                "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, stage,
+                "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, payer_id, pull_request_id, stage,
                      generation, flow_id, question_id, created_at, round)
-                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, round FROM analyses WHERE id = ?",
+                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, round FROM analyses WHERE id = ?",
                 target.analysis_id.to_string(),
             ),
             JobTarget::Dashboard { refresh_id } => (
-                "INSERT INTO jobs (id, tenant_id, refresh_id, kind, priority, state, spec, credential_id, stage,
+                "INSERT INTO jobs (id, tenant_id, refresh_id, kind, priority, state, spec, payer_id, pull_request_id, stage,
                      generation, flow_id, question_id, created_at, round)
-                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ranking_attempt
+                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ranking_attempt
                  FROM dashboard_refreshes WHERE id = ? AND state = 'ranking'",
                 refresh_id.to_string(),
             ),
             JobTarget::PullRequestComments(target) => (
-                "INSERT INTO jobs (id, tenant_id, pass_id, kind, priority, state, spec, credential_id, stage,
+                "INSERT INTO jobs (id, tenant_id, pass_id, kind, priority, state, spec, payer_id, pull_request_id, stage,
                      generation, flow_id, question_id, created_at, round)
-                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, 0
+                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0
                  FROM comment_passes WHERE id = ? AND state IN ('queued', 'running')",
                 target.pass_id.to_string(),
             ),
@@ -547,7 +549,12 @@ impl Jobs<'_> {
             .bind(wire_name(spec.kind)?)
             .bind(priority_value(job.priority))
             .bind(serde_json::to_string(&spec)?)
-            .bind(&spec.credential.id)
+            .bind(&spec.payer.0)
+            .bind(match &spec.target {
+                JobTarget::PullRequest(t) => Some(t.pull_request_id),
+                JobTarget::PullRequestComments(t) => Some(t.pull_request_id),
+                JobTarget::Dashboard { .. } => None,
+            })
             .bind(job.stage.key())
             .bind(job.generation)
             .bind(flow_id)
@@ -567,7 +574,7 @@ impl Jobs<'_> {
     /// while its pass is live; interactive before batch, Ask first and `verify_comments` second within interactive,
     /// then oldest first. Never pre-empts a claimed or running job. Increments the attempt.
     pub async fn claim(&self, params: ClaimParams<'_>) -> Result<Option<JobRecord>, DbError> {
-        if params.credential_ids.is_empty() {
+        if params.payer_ids.is_empty() {
             return Ok(None);
         }
         let mut query = QueryBuilder::<Sqlite>::new(
@@ -582,22 +589,21 @@ impl Jobs<'_> {
         query.push(
             " WHERE id = (SELECT j.id FROM jobs j WHERE j.state = 'queued'
                  AND NOT EXISTS (SELECT 1 FROM analyses a WHERE a.id = j.analysis_id AND (a.state = 'cancelled' OR (a.user_paused_at IS NOT NULL AND j.kind <> 'ask')))
-                 AND NOT EXISTS (SELECT 1 FROM analyses a JOIN pull_requests p ON p.id=a.pull_request_id WHERE a.id=j.analysis_id AND p.session_state='drop_requested')
+                 AND NOT EXISTS (SELECT 1 FROM analytic_threads t WHERE t.pull_request_id=j.pull_request_id AND t.user_id=j.payer_id AND t.state='drop_requested')
                  AND NOT EXISTS (SELECT 1 FROM dashboard_refreshes d WHERE d.id = j.refresh_id AND (d.state <> 'ranking' OR d.ranking_attempt <> j.round))
                  AND NOT EXISTS (SELECT 1 FROM comment_passes p WHERE p.id = j.pass_id AND p.state NOT IN ('queued', 'running'))
-                 AND j.credential_id IN (",
+                 AND j.payer_id IN (",
         );
         let mut ids = query.separated(", ");
-        for id in params.credential_ids {
+        for id in params.payer_ids {
             ids.push_bind(id.as_str());
         }
         query.push(
             ") AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.state IN ('claimed', 'running')
-                   AND (r.analysis_id = j.analysis_id OR r.credential_id = j.credential_id
-                       OR (SELECT pull_request_id FROM analyses WHERE id = r.analysis_id) =
-                          (SELECT pull_request_id FROM analyses WHERE id = j.analysis_id)))
-               AND NOT EXISTS (SELECT 1 FROM llm_credentials c WHERE c.id = j.credential_id
-                   AND (c.unusable_since IS NOT NULL OR c.paused_until > ",
+                   AND r.payer_id = j.payer_id AND (r.pull_request_id = j.pull_request_id
+                       OR (r.kind = 'judge_work' AND j.kind = 'judge_work')))
+               AND NOT EXISTS (SELECT 1 FROM llm_credentials c WHERE c.user_id = j.payer_id
+                   AND (c.state <> 'linked' OR c.paused_until > ",
         );
         query.push_bind(ts(params.now));
         query.push(
@@ -718,7 +724,7 @@ impl Jobs<'_> {
             return Ok(Completion::AlreadyRecorded);
         }
         current.accepts(result.attempt)?;
-        let credential: String = row.try_get("credential_id")?;
+        let credential: String = row.try_get("payer_id")?;
         let mut stored = result.clone();
         let mut resumes_at = None;
         // Cancel wins: once requested, any result ends the job cancelled and its output is discarded.
@@ -770,18 +776,19 @@ impl Jobs<'_> {
             if kind == "ask" {
                 // The PR claim lock keeps the analytic generation unchanged for the entire Ask turn.
                 // Derive the owner from the durable question, never the runner's result.
-                sqlx::query("INSERT INTO working_sessions (tenant_id, pull_request_id, user_id, agent_thread_id, analytic_generation)
-                    SELECT p.tenant_id, p.id, q.user_id, ?, p.analytic_generation FROM jobs j
-                    JOIN questions q ON q.id = j.question_id JOIN analyses a ON a.id = j.analysis_id
-                    JOIN pull_requests p ON p.id = a.pull_request_id
-                    WHERE j.id = ? AND p.session_state IN ('none', 'active')
-                    ON CONFLICT (pull_request_id, user_id) DO UPDATE SET
-                        agent_thread_id = excluded.agent_thread_id, analytic_generation = excluded.analytic_generation")
+                sqlx::query("INSERT INTO working_sessions (tenant_id,pull_request_id,user_id,agent_thread_id,analytic_generation,seed_generation)
+                    SELECT j.tenant_id,j.pull_request_id,j.payer_id,?,COALESCE(t.generation,0),COALESCE(t.generation,0)
+                    FROM jobs j LEFT JOIN analytic_threads t ON t.pull_request_id=j.pull_request_id AND t.user_id=j.payer_id
+                    WHERE j.id=? AND COALESCE(t.state,'none') IN ('none','active')
+                    ON CONFLICT(pull_request_id,user_id,thread_kind) DO UPDATE SET agent_thread_id=excluded.agent_thread_id,
+                        analytic_generation=excluded.analytic_generation,seed_generation=excluded.seed_generation")
                     .bind(&session.thread_id).bind(result.job_id.to_string()).execute(&mut *tx).await?;
             } else {
-                sqlx::query("UPDATE pull_requests SET agent_thread_id = ?, analytic_generation = analytic_generation + 1,
-                    session_state = CASE WHEN session_state IN ('none', 'active') THEN 'active' ELSE session_state END
-                    WHERE id = (SELECT a.pull_request_id FROM jobs j JOIN analyses a ON a.id = j.analysis_id WHERE j.id = ?)")
+                sqlx::query("INSERT INTO analytic_threads (tenant_id,pull_request_id,user_id,thread_id,generation,state)
+                    SELECT tenant_id,pull_request_id,payer_id,?,1,'active' FROM jobs WHERE id=?
+                    ON CONFLICT(pull_request_id,user_id) DO UPDATE SET thread_id=excluded.thread_id,state='active',generation=analytic_threads.generation+1,
+                        last_context_tokens=NULL,last_context_generation=NULL
+                    WHERE analytic_threads.state IN ('none','active')")
                     .bind(&session.thread_id).bind(result.job_id.to_string()).execute(&mut *tx).await?;
             }
             sqlx::query("UPDATE analyses SET skills_commit = COALESCE(?, skills_commit) WHERE id = (SELECT analysis_id FROM jobs WHERE id = ?)")
@@ -793,19 +800,17 @@ impl Jobs<'_> {
         {
             // Valid output without a checkpoint means the old archive no longer represents this
             // generation. Neither an old analytic thread nor its private forks may be resumed.
-            sqlx::query("UPDATE pull_requests SET agent_thread_id = NULL, analytic_generation = analytic_generation + 1,
-                session_state = CASE WHEN session_state = 'active' THEN 'none' ELSE session_state END
-                WHERE id = (SELECT a.pull_request_id FROM jobs j JOIN analyses a ON a.id = j.analysis_id WHERE j.id = ?)")
-                .bind(result.job_id.to_string()).execute(&mut *tx).await?;
+            sqlx::query("UPDATE analytic_threads SET thread_id=NULL,generation=generation+1,state='none',last_context_tokens=NULL,last_context_generation=NULL
+                WHERE pull_request_id=(SELECT pull_request_id FROM jobs WHERE id=?) AND user_id=(SELECT payer_id FROM jobs WHERE id=?) AND state IN ('none','active')")
+                .bind(result.job_id.to_string()).bind(result.job_id.to_string()).execute(&mut *tx).await?;
         }
         if kind != "ask"
             && stored.session.is_some()
             && matches!(stored.outcome, JobOutcome::Cancelled)
         {
-            // Cancel wins the result, but a useful turn may already have checkpointed before cancellation.
-            sqlx::query("UPDATE pull_requests SET analytic_generation = analytic_generation + 1
-                WHERE id = (SELECT a.pull_request_id FROM jobs j JOIN analyses a ON a.id = j.analysis_id WHERE j.id = ?)")
-                .bind(result.job_id.to_string()).execute(&mut *tx).await?;
+            sqlx::query("UPDATE analytic_threads SET generation=generation+1,last_context_tokens=NULL,last_context_generation=NULL
+                WHERE pull_request_id=(SELECT pull_request_id FROM jobs WHERE id=?) AND user_id=(SELECT payer_id FROM jobs WHERE id=?)")
+                .bind(result.job_id.to_string()).bind(result.job_id.to_string()).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(Completion::Applied { state })
@@ -1084,7 +1089,7 @@ impl Jobs<'_> {
     /// Whether a claimed or running job holds `credential`.
     pub async fn credential_busy(&self, credential: &str) -> Result<bool, DbError> {
         Ok(sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM jobs WHERE credential_id = ? AND state IN ('claimed', 'running'))",
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE payer_id = ? AND state IN ('claimed', 'running'))",
         )
         .bind(credential)
         .fetch_one(self.pool)
@@ -1212,7 +1217,7 @@ impl Jobs<'_> {
         .await?;
         let paused_until: Option<Option<String>> = sqlx::query_scalar(
             "SELECT paused_until FROM llm_credentials
-                 WHERE id = (SELECT credential_id FROM jobs WHERE id = ?)",
+                 WHERE user_id = (SELECT payer_id FROM jobs WHERE id = ?)",
         )
         .bind(job.to_string())
         .fetch_optional(&mut *tx)
@@ -1355,7 +1360,9 @@ mod tests {
     }
 
     async fn db() -> Db {
-        Db::in_memory().await.expect("in-memory database")
+        let db = Db::in_memory().await.expect("in-memory database");
+        sqlx::query("INSERT INTO users(id,github_id,login,created_at,updated_at) VALUES ('spare',2,'spare','t','t')").execute(&db.pool).await.unwrap();
+        db
     }
 
     /// Stored text is fixed-width microseconds with `Z`, truncated; rows written by the running stack read back.
@@ -1463,7 +1470,7 @@ mod tests {
     async fn claim(db: &Db, second: i64) -> Option<JobRecord> {
         db.jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.to_owned()],
+                payer_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
                 lease_until: at(second + 60),
                 now: at(second),
@@ -1483,6 +1490,8 @@ mod tests {
 
     fn result(job: JobId, attempt: u32, outcome: JobOutcome) -> JobResult {
         JobResult {
+            assessment: None,
+            report: None,
             job_id: job,
             attempt,
             outcome,
@@ -1512,7 +1521,7 @@ mod tests {
             .await
             .expect("session");
         let generation = db.agent_sessions().generation(1).await.expect("generation");
-        sqlx::query("INSERT INTO working_sessions (tenant_id, pull_request_id, user_id, agent_thread_id, analytic_generation) VALUES ('default', 1, 'u1', 'private', ?)")
+        sqlx::query("INSERT INTO working_sessions (tenant_id, pull_request_id, user_id, agent_thread_id, analytic_generation, seed_generation) VALUES ('default', 1, 'u1', 'private', ?1, ?1)")
             .bind(generation).execute(&db.pool).await.expect("fork");
         let job = enqueue(&db, analysis, "f1", 0).await;
         claim(&db, 1).await.expect("claim");
@@ -1532,6 +1541,66 @@ mod tests {
                 .agent_thread_id,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn recovered_checkpoint_is_active_and_next_claim_resumes_it() {
+        for through_complete in [true, false] {
+            let db = db().await;
+            let analysis = seed_analysis(&db).await.unwrap();
+            db.analyses()
+                .set_session(analysis, "original", None)
+                .await
+                .unwrap();
+            let lost = enqueue(&db, analysis, "lost", 0).await;
+            claim(&db, 1).await.unwrap();
+            db.jobs()
+                .complete(&succeeded(lost, 1), at(2))
+                .await
+                .unwrap();
+            if through_complete {
+                let recovered = enqueue(&db, analysis, "recovered", 3).await;
+                claim(&db, 4).await.unwrap();
+                let mut output = succeeded(recovered, 1);
+                output.session = Some(contracts::job::result::SessionReport {
+                    last_context: None,
+                    preflight: None,
+                    thread_id: "recovered".into(),
+                    outcome: contracts::job::result::SessionOutcome::StartedAfterLoss,
+                });
+                db.jobs().complete(&output, at(5)).await.unwrap();
+            } else {
+                db.analyses()
+                    .set_session(analysis, "recovered", None)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                db.analyses().get(analysis).await.unwrap().session_state,
+                super::super::analyses::SessionState::Active
+            );
+            enqueue(&db, analysis, "next", 6).await;
+            let next = claim(&db, 7).await.unwrap();
+            assert_eq!(next.analysis_id, Some(analysis));
+            assert_eq!(
+                db.container_sessions()
+                    .analytic(1, &contracts::ids::UserId("u1".into()))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .thread_id,
+                "recovered"
+            );
+            db.analyses().request_session_drop(1).await.unwrap();
+            db.analyses()
+                .set_session(analysis, "forbidden", None)
+                .await
+                .unwrap();
+            assert_eq!(
+                db.analyses().get(analysis).await.unwrap().session_state,
+                super::super::analyses::SessionState::DropRequested
+            );
+        }
     }
 
     #[tokio::test]
@@ -1632,7 +1701,7 @@ mod tests {
         let other = db
             .jobs()
             .claim(ClaimParams {
-                credential_ids: &["other".to_owned()],
+                payer_ids: &["other".to_owned()],
                 job_token_hash: b"hash",
                 lease_until: at(60),
                 now: at(0),
@@ -1643,7 +1712,7 @@ mod tests {
         assert_eq!(
             db.jobs()
                 .claim(ClaimParams {
-                    credential_ids: &[],
+                    payer_ids: &[],
                     job_token_hash: b"hash",
                     lease_until: at(60),
                     now: at(0),
@@ -1653,7 +1722,7 @@ mod tests {
             None
         );
         sqlx::query(
-            "INSERT INTO llm_credentials (id, tenant_id, kind, paused_until) VALUES (?, 'default', 'codex_chatgpt', ?)",
+            "INSERT INTO llm_credentials (user_id, tenant_id, state, paused_until) VALUES (?, 'default', 'linked', ?)",
         )
         .bind(CREDENTIAL)
         .bind(ts(at(100)))
@@ -1665,7 +1734,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn second_job_of_the_same_session_is_not_claimed_while_one_runs() {
+    async fn distinct_payer_can_run_another_job_of_the_same_analysis() {
         let db = db().await;
         let analysis = seed_analysis(&db).await.expect("seed");
         let first = enqueue(&db, analysis, "f1", 0).await;
@@ -1673,7 +1742,7 @@ mod tests {
         let claimed = db
             .jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.to_owned(), "spare".to_owned()],
+                payer_ids: &[CREDENTIAL.to_owned(), "spare".to_owned()],
                 job_token_hash: b"hash",
                 lease_until: at(60),
                 now: at(0),
@@ -1681,8 +1750,8 @@ mod tests {
             .await
             .expect("claim");
         assert_eq!(claimed.map(|job| job.id), Some(first));
-        // A second credential is idle, but the PR's session already runs a job.
-        sqlx::query("UPDATE jobs SET credential_id = 'spare' WHERE id = ?")
+        // The second payer owns a distinct PR container.
+        sqlx::query("UPDATE jobs SET payer_id = 'spare' WHERE id = ?")
             .bind(second.to_string())
             .execute(&db.pool)
             .await
@@ -1690,18 +1759,18 @@ mod tests {
         let blocked = db
             .jobs()
             .claim(ClaimParams {
-                credential_ids: &["spare".to_owned()],
+                payer_ids: &["spare".to_owned()],
                 job_token_hash: b"hash",
                 lease_until: at(60),
                 now: at(1),
             })
             .await
             .expect("claim");
-        assert_eq!(blocked, None);
+        assert_eq!(blocked.map(|job| job.id), Some(second));
     }
 
     #[tokio::test]
-    async fn another_analysis_of_the_pr_waits_even_on_another_credential() {
+    async fn distinct_payer_can_run_another_analysis_of_the_pr() {
         let db = db().await;
         let analysis = seed_analysis(&db).await.expect("seed");
         let first = enqueue(&db, analysis, "f1", 0).await;
@@ -1712,7 +1781,7 @@ mod tests {
         let claimed = db
             .jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.to_owned(), "spare".to_owned()],
+                payer_ids: &[CREDENTIAL.to_owned(), "spare".to_owned()],
                 job_token_hash: b"hash",
                 lease_until: at(60),
                 now: at(0),
@@ -1720,8 +1789,8 @@ mod tests {
             .await
             .expect("claim");
         assert_eq!(claimed.map(|job| job.id), Some(first));
-        // A second credential is idle, but the PR's session already runs a job.
-        sqlx::query("UPDATE jobs SET credential_id = 'spare' WHERE id = ?")
+        // The second payer owns a distinct PR container.
+        sqlx::query("UPDATE jobs SET payer_id = 'spare' WHERE id = ?")
             .bind(second.to_string())
             .execute(&db.pool)
             .await
@@ -1729,14 +1798,14 @@ mod tests {
         let blocked = db
             .jobs()
             .claim(ClaimParams {
-                credential_ids: &["spare".to_owned()],
+                payer_ids: &["spare".to_owned()],
                 job_token_hash: b"hash",
                 lease_until: at(60),
                 now: at(1),
             })
             .await
             .expect("claim");
-        assert_eq!(blocked, None);
+        assert_eq!(blocked.map(|job| job.id), Some(second));
     }
 
     #[tokio::test]
@@ -2599,7 +2668,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn judge_job_and_analysis_job_never_run_together_on_one_credential() {
+    async fn judge_and_pr_containers_can_run_for_the_same_payer() {
         let db = db().await;
         let analysis = seed_analysis(&db).await.expect("seed");
         let refresh = seed_ranking_refresh(&db).await.expect("refresh");
@@ -2610,7 +2679,11 @@ mod tests {
             .expect("enqueue");
         let first = claim(&db, 2).await.expect("interactive judge job first");
         assert_eq!(first.kind, JobKind::JudgeWork);
-        assert_eq!(claim(&db, 3).await, None, "the credential is busy");
+        assert_eq!(
+            claim(&db, 3).await.unwrap().kind,
+            JobKind::AnalyseFlow,
+            "independent PR container"
+        );
     }
 
     fn ask_job(analysis: AnalysisId) -> NewJob {
@@ -2658,7 +2731,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ask_never_preempts_a_running_ranking_job() {
+    async fn ask_runs_on_its_pr_container_without_preempting_the_judge() {
         let db = db().await;
         let analysis = seed_analysis(&db).await.expect("seed");
         let refresh = seed_ranking_refresh(&db).await.expect("refresh");
@@ -2672,7 +2745,11 @@ mod tests {
         let ask = enqueue_new(&db, ask_job(analysis), 2).await;
         enqueue(&db, analysis, "f1", 3).await;
 
-        assert_eq!(claim(&db, 4).await, None, "no pre-emption");
+        assert_eq!(
+            claim(&db, 4).await.map(|job| job.id),
+            Some(ask),
+            "independent PR container"
+        );
         assert_eq!(
             db.jobs().get(ranking).await.expect("job"),
             running,
@@ -2682,7 +2759,7 @@ mod tests {
             .complete(&succeeded(ranking, 1), at(5))
             .await
             .expect("complete");
-        assert_eq!(claim(&db, 6).await.map(|job| job.id), Some(ask));
+        assert_eq!(claim(&db, 6).await, None, "Ask still owns the PR container");
     }
 
     #[tokio::test]
@@ -2738,7 +2815,7 @@ mod tests {
         let analysis = seed_analysis(&db).await.expect("seed");
         let refresh = seed_ranking_refresh(&db).await.expect("refresh");
         let mut judge = judge_job(refresh, 1);
-        judge.spec.credential.id = "spare".to_owned();
+        judge.spec.payer.0 = "spare".to_owned();
         db.jobs().enqueue(judge, at(0)).await.expect("judge job");
         let first = enqueue(&db, analysis, "f1", 1).await;
         enqueue(&db, analysis, "f2", 2).await;
@@ -2746,7 +2823,7 @@ mod tests {
         let jobs = db.jobs();
         let claim_on = |now: i64| {
             jobs.claim(ClaimParams {
-                credential_ids: &both,
+                payer_ids: &both,
                 job_token_hash: b"hash",
                 lease_until: at(now + 60),
                 now: at(now),
@@ -2785,6 +2862,8 @@ mod tests {
         claim(&db, 1).await.expect("claimed");
         let mut reported = succeeded(job, 1);
         reported.session = Some(contracts::job::result::SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "judge-thread".to_owned(),
             outcome: contracts::job::result::SessionOutcome::Started,
         });
@@ -2901,6 +2980,8 @@ mod tests {
         claim(&db, 1).await.expect("claimed");
         let mut reported = succeeded(job, 1);
         reported.session = Some(contracts::job::result::SessionReport {
+            last_context: None,
+            preflight: None,
             thread_id: "verify-thread".to_owned(),
             outcome: contracts::job::result::SessionOutcome::Started,
         });
@@ -2913,7 +2994,7 @@ mod tests {
             generation
         );
         let thread: Option<String> =
-            sqlx::query_scalar("SELECT agent_thread_id FROM pull_requests WHERE id = 1")
+            sqlx::query_scalar("SELECT (SELECT thread_id FROM analytic_threads WHERE pull_request_id = 1 AND user_id='u1')")
                 .fetch_one(&db.pool)
                 .await
                 .expect("thread");

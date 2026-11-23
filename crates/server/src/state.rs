@@ -92,4 +92,90 @@ pub(crate) mod tests {
         let rendered = format!("{state:?}");
         assert!(rendered.contains("QueueExecutor"), "{rendered}");
     }
+
+    #[tokio::test]
+    async fn startup_after_container_migration_recovers_and_serves_preserved_settings() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use contracts::job::spec::ReasoningEffort;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        for populated in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("diffpilot.sqlite");
+            if populated {
+                db::repo::testing::pre_container_database(&path)
+                    .await
+                    .unwrap();
+            }
+            let db = Db::open(&path).await.unwrap();
+            let mut config = test_config();
+            config.data_dir = dir.path().to_owned();
+            config.github.api_url = "http://127.0.0.1:9/".parse().unwrap();
+            let state = AppState::with_queue(config, db);
+            crate::auth::apply_allowed_logins(&state.db, &["alice".into()])
+                .await
+                .unwrap();
+            assert_eq!(
+                crate::pipeline::control::recover_cancellations(&state)
+                    .await
+                    .unwrap(),
+                0
+            );
+            assert_eq!(crate::pipeline::resume_unfinished(&state).await.unwrap(), 0);
+            assert_eq!(crate::ask::resume_unanswered(&state).await.unwrap(), 0);
+            assert_eq!(crate::review_loop::assess::resume(&state).await.unwrap(), 0);
+            crate::dashboard::refresh::recover(&state).await.unwrap();
+            let router = crate::api::router(state.clone());
+            let response = router
+                .clone()
+                .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            if !populated {
+                continue;
+            }
+            let selection = state.db.settings().llm_selection().await.unwrap().unwrap();
+            assert_eq!(selection.choice.model, "gpt-6.2-sol");
+            assert_eq!(selection.choice.reasoning_effort, ReasoningEffort::Low);
+            assert_eq!(selection.ask_effort, ReasoningEffort::High);
+            assert_eq!(selection.judge_effort, ReasoningEffort::High);
+            for path in [
+                "/api/v1/me",
+                "/api/v1/settings",
+                "/api/v1/settings/dashboard",
+            ] {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::get(path)
+                            .header("cookie", "__Host-sr_session=fake-migration-session")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK, "{path}");
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                if path == "/api/v1/settings/dashboard" {
+                    assert_eq!(json["settings"]["time_zone"], "Europe/Warsaw");
+                    assert_eq!(
+                        json["settings"]["skip_authors"],
+                        serde_json::json!(["skip-bot"])
+                    );
+                    assert_eq!(
+                        json["settings"]["repositories"][0]["branch_patterns"],
+                        serde_json::json!(["release/*"])
+                    );
+                    assert_eq!(
+                        json["settings"]["repositories"][0]["ignored_checks"],
+                        serde_json::json!(["optional"])
+                    );
+                }
+            }
+        }
+    }
 }

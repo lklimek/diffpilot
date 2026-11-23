@@ -531,7 +531,7 @@ mod tests {
         let now = Timestamp::now();
         db.jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.to_owned()],
+                payer_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
                 lease_until: now + SignedDuration::from_secs(lease_secs),
                 now,
@@ -552,6 +552,8 @@ mod tests {
 
     fn succeeded(job: JobId, attempt: u32) -> JobResult {
         JobResult {
+            assessment: None,
+            report: None,
             job_id: job,
             attempt,
             outcome: JobOutcome::Succeeded {

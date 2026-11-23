@@ -33,8 +33,7 @@ impl fmt::Debug for Secret {
 /// What the agent may reach during one job. Empty in the stored spec; filled when a runner claims the job.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentAccess {
-    /// Read-only GitHub App installation token for `github-mcp-server`; none when the App is not installed on
-    /// the PR repository (no `github-mcp-server` for the job, related-work lookup skipped).
+    /// Per-job read-only GitHub App token for the worker's `gh` token file; absent without PR-repository access.
     pub github: Option<InstallationToken>,
     /// MemCan MCP endpoint: search tools, plus `add_memory` for analytic jobs only (ADR-004; accepted risk T6).
     pub memcan: Option<McpHttpEndpoint>,

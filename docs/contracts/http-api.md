@@ -1,5 +1,10 @@
 # HTTP API (v1)
 
+> v1.3 common amendment: [container contracts](containers.md) and [ADR-025](../decisions/ADR-025-container-runtime.md)
+> govern payer/container identity, gateway boundaries, in-place 0030 cleanup and report 4.2. Runtime integration is
+> owned by W3/W4/W5/W8; the older runtime description below applies until those packages replace it.
+
+
 Source of truth: `crates/contracts/src/api/**` (types) and `crates/contracts/src/routes.rs` (`ROUTES`). Generated:
 `web/src/api/generated/{types,routes}.ts`. This page fixes what the types cannot: authentication, CSRF, status
 mapping, query rules and the endpoint × fixture-state inventory.
@@ -906,3 +911,23 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
   `job::spec::PullRequestCommentsTarget` are defined; `JobKind::VerifyComments` and the `JobTarget` variant come
   with the runner path (WP13-JOB), because they change exhaustive matches in the server, runner and the `jobs`
   table's CHECK lists.
+
+## v1.3 common DTO additions (W1)
+
+W5 registers `GET /api/v1/prs/{owner}/{name}/{number}/comments/sources` with a `CommentSource[]` response,
+including zero-point source versions. `CommentItem.point` identifies a grounded quote and its source;
+`duplicate_of` preserves independent item identities. Assessments add `already_fixed`, nullable `pre_existing`,
+`evidence_text` and attributed `recorded_decision`; absent code/fix-size stay nullable.
+
+Common gateway `CredentialStatus` uses singleton `mode: chatgpt_plan`; `LinkCredential` accepts no secrets,
+API keys or base URLs. Routes for `GET`/`DELETE /api/v1/settings/codex` and
+`POST`/`GET /api/v1/settings/codex/link` are implemented by W2/W6;
+W1 registers no credential-mode HTTP route or secret input.
+
+
+The W1 `api::assessment` contracts define `GET`/`PUT /api/v1/settings/comment-assessment` (PUT body:
+`AssessmentConfig`, GET: `AssessmentSettings`) and `GET …/comments/assessment-comparison`
+(`AssessmentComparison`, payer/PR scoped). They carry frozen method references, actual owner revisions and
+safe remaining/reset quota. `AssessmentAdmissionFailure` distinguishes daily limit (with `resets_at`) from
+missing usable credentials. W5/W6 implement route access checks and orchestration; changing configuration
+alone never schedules work. Cards show only the frozen primary; secondary results are comparison-only.

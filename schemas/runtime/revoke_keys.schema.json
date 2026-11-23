@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RevokeKeys",
+  "description": "Revoke local keys without logging out or revoking an upstream credential.",
+  "type": "object",
+  "properties": {
+    "container": {
+      "description": "Worker whose keys become unusable.",
+      "$ref": "#/$defs/ContainerId"
+    },
+    "reason": {
+      "description": "Local-only revocation reason.",
+      "$ref": "#/$defs/KeyRevokeReason"
+    }
+  },
+  "required": [
+    "container",
+    "reason"
+  ],
+  "$defs": {
+    "ContainerId": {
+      "description": "A worker's identity; each identity owns at most one running job.",
+      "oneOf": [
+        {
+          "description": "Persistent PR worker (CS1).",
+          "type": "object",
+          "properties": {
+            "shape": {
+              "type": "string",
+              "const": "pr"
+            },
+            "pull_request_id": {
+              "description": "Database PR key.",
+              "type": "integer",
+              "format": "int64"
+            },
+            "payer": {
+              "description": "User paying for this worker's turns.",
+              "$ref": "#/$defs/UserId"
+            }
+          },
+          "required": [
+            "shape",
+            "pull_request_id",
+            "payer"
+          ]
+        },
+        {
+          "description": "Ephemeral answer-only worker (CS2).",
+          "type": "object",
+          "properties": {
+            "shape": {
+              "type": "string",
+              "const": "judge"
+            },
+            "payer": {
+              "description": "Dashboard user paying for the turn.",
+              "$ref": "#/$defs/UserId"
+            }
+          },
+          "required": [
+            "shape",
+            "payer"
+          ]
+        }
+      ]
+    },
+    "UserId": {
+      "description": "Stable authenticated user id, also the payer key.",
+      "type": "string"
+    },
+    "KeyRevokeReason": {
+      "description": "Reasons to revoke a local virtual key; none authorizes upstream revoke.",
+      "oneOf": [
+        {
+          "description": "The job ended or the next turn rotates the key.",
+          "type": "string",
+          "const": "rotation"
+        },
+        {
+          "description": "Worker stopped idle.",
+          "type": "string",
+          "const": "idle_stop"
+        },
+        {
+          "description": "Worker was removed or reconciled as missing.",
+          "type": "string",
+          "const": "retirement"
+        }
+      ]
+    }
+  }
+}

@@ -949,8 +949,9 @@ async fn store(
         sqlx::query(
             "INSERT INTO comment_decisions (id, tenant_id, item_id, user_id, kind, reason, target, override,
                  resolve_ticked, reply_text, comment, recommendation, via, carried_from, supersedes, head,
-                 body_hash, start_line, end_line, decided_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 body_hash, start_line, end_line, decided_at, source_version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                (SELECT s.body_hash FROM comment_items i JOIN comment_sources s ON s.id=i.source_id WHERE i.id=?))",
         )
         .bind(id.to_string())
         .bind(tenant_id)
@@ -972,6 +973,7 @@ async fn store(
         .bind(lines.map(|lines| lines.start_line))
         .bind(lines.map(|lines| lines.end_line))
         .bind(ts(now))
+        .bind(new.item.to_string())
         .execute(&mut **tx)
         .await?;
         for effect in &new.effects {

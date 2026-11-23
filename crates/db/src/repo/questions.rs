@@ -141,7 +141,7 @@ macro_rules! question_select {
          FROM questions q
          JOIN users u ON u.id = q.user_id
          LEFT JOIN jobs j ON j.id = q.job_id
-         LEFT JOIN llm_credentials c ON c.id = j.credential_id"
+         LEFT JOIN llm_credentials c ON c.user_id = j.payer_id"
     };
 }
 
@@ -1260,7 +1260,7 @@ mod tests {
         let claimed = db
             .jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.to_owned()],
+                payer_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
                 lease_until: at(40),
                 now: at(31),
@@ -1271,6 +1271,8 @@ mod tests {
         db.jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
+                    report: None,
                     job_id: claimed.id,
                     attempt: claimed.attempt,
                     outcome: JobOutcome::UsageLimited {

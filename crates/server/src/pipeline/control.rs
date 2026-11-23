@@ -305,7 +305,7 @@ mod tests {
         let now = Timestamp::now();
         db.jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.to_owned()],
+                payer_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
                 lease_until: now + SignedDuration::from_secs(60),
                 now,
@@ -428,10 +428,14 @@ mod tests {
         db.jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
+                    report: None,
                     job_id: jobs[0],
                     attempt: 1,
                     outcome: JobOutcome::Succeeded { output: json!({}) },
                     session: Some(SessionReport {
+                        last_context: None,
+                        preflight: None,
                         outcome: SessionOutcome::Started,
                         thread_id: "analytic-thread".into(),
                     }),
@@ -445,7 +449,7 @@ mod tests {
             .unwrap();
         db.jobs()
             .claim(ClaimParams {
-                credential_ids: &[CREDENTIAL.into()],
+                payer_ids: &[CREDENTIAL.into()],
                 job_token_hash: b"ask",
                 lease_until: Timestamp::now() + SignedDuration::from_secs(60),
                 now: Timestamp::now(),
@@ -456,10 +460,14 @@ mod tests {
         db.jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
+                    report: None,
                     job_id: ask.id,
                     attempt: 1,
                     outcome: JobOutcome::Succeeded { output: json!({}) },
                     session: Some(SessionReport {
+                        last_context: None,
+                        preflight: None,
                         outcome: SessionOutcome::Started,
                         thread_id: "working-thread".into(),
                     }),

@@ -88,6 +88,12 @@ pub struct ObservedItem {
 /// A stored item.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ItemRecord {
+    /// Versioned source for a grounded body/comment point.
+    pub source_id: Option<i64>,
+    /// Verbatim source span.
+    pub quote: Option<String>,
+    /// Linked duplicate item, without merging independent thread identities.
+    pub duplicate_of: Option<CommentItemId>,
     /// Id.
     pub id: CommentItemId,
     /// `pull_requests.id`.
@@ -268,7 +274,7 @@ pub enum PassStart {
 
 const ITEM_COLUMNS: &str = "id, pull_request_id, item_no, kind, stable_key, author, author_kind, url, path,
     start_line, end_line, title, body, body_hash, first_seen_head, first_round, bot_severity, gate_marks, github,
-    state, revision, outside, repeat_of, gone_at, updated_at";
+    state, revision, outside, repeat_of, gone_at, updated_at, source_id, quote, duplicate_of";
 
 fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     let path: Option<String> = row.try_get("path")?;
@@ -285,6 +291,9 @@ fn item_from_row(row: &SqliteRow) -> Result<ItemRecord, DbError> {
     };
     let first_round: Option<i64> = row.try_get("first_round")?;
     Ok(ItemRecord {
+        source_id: row.try_get("source_id")?,
+        quote: row.try_get("quote")?,
+        duplicate_of: opt_wire_col(row, "duplicate_of")?,
         id: wire_col(row, "id")?,
         pull_request_id: row.try_get("pull_request_id")?,
         no: u32_col(row, "item_no")?,
@@ -361,6 +370,31 @@ fn lines_of(location: Option<&ItemLocation>) -> (Option<&str>, Option<u32>, Opti
 }
 
 impl ReviewLoop<'_> {
+    /// Binds a grounded point to its source version; SQL enforces PR/tenant and duplicate ownership.
+    pub async fn bind_source(
+        &self,
+        item: CommentItemId,
+        source: i64,
+        quote: &str,
+        duplicate: Option<CommentItemId>,
+    ) -> Result<(), DbError> {
+        let mut tx = super::super::write_tx(self.pool).await?;
+        let changed =
+            sqlx::query("UPDATE comment_items SET source_id=?,quote=?,duplicate_of=? WHERE id=?")
+                .bind(source)
+                .bind(quote)
+                .bind(duplicate.map(|id| id.to_string()))
+                .bind(item.to_string())
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+        if changed != 1 {
+            return Err(DbError::NotFound);
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Creates the PR's review-loop row if missing (idempotent).
     pub async fn ensure_pr(
         &self,
@@ -581,8 +615,10 @@ impl ReviewLoop<'_> {
         .transpose()?;
         sqlx::query(
             "INSERT INTO comment_assessments (tenant_id, item_id, job_id, head, fingerprint, body, prompt_version,
-                 assessed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 assessed_at,pass_id,method,payer_id)
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?,j.assessment_pass_id,j.assessment_method,
+                 CASE WHEN j.assessment_pass_id IS NOT NULL THEN j.payer_id END
+             FROM (SELECT 1) LEFT JOIN jobs j ON j.id=?",
         )
         .bind(tenant_id)
         .bind(item.to_string())
@@ -592,6 +628,7 @@ impl ReviewLoop<'_> {
         .bind(json(assessment)?)
         .bind(assessment.prompt_version)
         .bind(ts(assessment.assessed_at))
+        .bind(assessment.job.to_string())
         .execute(&mut *tx)
         .await?;
         let shown_before = latest.is_some_and(|latest| {
