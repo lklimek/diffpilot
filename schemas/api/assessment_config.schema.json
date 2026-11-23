@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AssessmentConfig",
+  "description": "Per-user settings; changing them alone never schedules work.",
+  "type": "object",
+  "properties": {
+    "primary_method": {
+      "description": "Only this method can change visible items or effects.",
+      "$ref": "#/$defs/AssessmentMethod",
+      "default": "claudius_host"
+    },
+    "ab_prs": {
+      "description": "Explicit owner/repo#number selections, empty by default.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "ab_until": {
+      "description": "Optional UTC deadline, absent by default.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time",
+      "default": null
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "AssessmentMethod": {
+      "description": "An assessment adapter; native outputs retain their own validation contracts.",
+      "oneOf": [
+        {
+          "description": "Host-supplied claudius 4.2 report.",
+          "type": "string",
+          "const": "claudius_host"
+        },
+        {
+          "description": "Existing strict prompt v4 output.",
+          "type": "string",
+          "const": "prompt_v4"
+        }
+      ]
+    }
+  }
+}

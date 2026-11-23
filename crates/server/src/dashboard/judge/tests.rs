@@ -418,6 +418,7 @@ impl Harness {
             .jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
                     report: None,
                     job_id: job.id,
                     attempt: job.attempt,
@@ -1938,6 +1939,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
     };
     let job = old.submit(1, 0, &input).await.expect("submit").job_id;
     let result = JobResult {
+        assessment: None,
         report: None,
         job_id: job,
         attempt: 0,

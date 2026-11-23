@@ -2,7 +2,8 @@
 
 > Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
 > gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
-> KL1 gates credential mode; older master-credential/no-paid-API rules do not decide that open question.
+> KL1-A selects gateway-run ChatGPT-plan device linking only. No API-key mode or paid fallback;
+> credentials never enter workers. The master-copy lifecycle below describes the superseded runtime.
 
 
 - Status: accepted (coordinator, 2026-11-16, after spikes S1a, S1b)

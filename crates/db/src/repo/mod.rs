@@ -17,6 +17,7 @@ pub mod access_tokens;
 pub mod agent_sessions;
 pub mod analyses;
 mod analysis_progress;
+pub mod assessments;
 pub mod comment_sources;
 pub mod comments;
 pub mod container_sessions;
@@ -371,3 +372,6 @@ impl Db {
 }
 
 pub mod usage;
+
+#[cfg(test)]
+mod assessments_tests;

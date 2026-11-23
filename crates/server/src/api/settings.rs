@@ -781,6 +781,7 @@ mod tests {
         let claimed: ClaimResponse = serde_json::from_slice(&bytes).expect("claim response");
         let claimed = claimed.claim.expect("a claimed job");
         let result = JobResult {
+            assessment: None,
             report: None,
             job_id: claimed.spec.job_id,
             attempt: claimed.spec.attempt,

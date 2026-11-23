@@ -552,6 +552,7 @@ mod tests {
 
     fn succeeded(job: JobId, attempt: u32) -> JobResult {
         JobResult {
+            assessment: None,
             report: None,
             job_id: job,
             attempt,

@@ -615,8 +615,10 @@ impl ReviewLoop<'_> {
         .transpose()?;
         sqlx::query(
             "INSERT INTO comment_assessments (tenant_id, item_id, job_id, head, fingerprint, body, prompt_version,
-                 assessed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                 assessed_at,pass_id,method,payer_id)
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?,j.assessment_pass_id,j.assessment_method,
+                 CASE WHEN j.assessment_pass_id IS NOT NULL THEN j.payer_id END
+             FROM (SELECT 1) LEFT JOIN jobs j ON j.id=?",
         )
         .bind(tenant_id)
         .bind(item.to_string())
@@ -626,6 +628,7 @@ impl ReviewLoop<'_> {
         .bind(json(assessment)?)
         .bind(assessment.prompt_version)
         .bind(ts(assessment.assessed_at))
+        .bind(assessment.job.to_string())
         .execute(&mut *tx)
         .await?;
         let shown_before = latest.is_some_and(|latest| {

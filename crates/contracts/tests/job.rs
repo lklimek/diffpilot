@@ -50,6 +50,7 @@ fn spec() -> JobSpec {
         prompt: "Job: analyse_flow f1.".to_owned(),
         output_schema: json!({"type": "object"}),
         flow_file: None,
+        assessment: None,
         pr_data: None,
         model: ModelChoice {
             model: "gpt-6.1-sol".to_owned(),
@@ -96,6 +97,7 @@ fn claim_response() -> ClaimResponse {
 
 fn result() -> JobResult {
     JobResult {
+        assessment: None,
         report: None,
         job_id: JobId::new_random(),
         attempt: 2,

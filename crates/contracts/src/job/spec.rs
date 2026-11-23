@@ -11,6 +11,9 @@ use crate::job::access::AgentAccess;
 /// One agent job, self-contained (brief §5 item 1).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct JobSpec {
+    /// Frozen logical pass and independent method; absent outside assessment jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assessment: Option<crate::assessment::AssessmentRunRef>,
     /// Job id.
     pub job_id: JobId,
     /// Attempt number, 1-based; incremented when a lease expires.

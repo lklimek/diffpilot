@@ -729,7 +729,7 @@ impl Analyses<'_> {
         let updated = sqlx::query(
             "INSERT INTO analytic_threads(tenant_id,pull_request_id,user_id,thread_id,generation,state)
              SELECT tenant_id,pull_request_id,COALESCE(payer_id,created_by),?,1,'active' FROM analyses WHERE id=?
-             ON CONFLICT(pull_request_id,user_id) DO UPDATE SET thread_id=excluded.thread_id,generation=analytic_threads.generation+1,
+             ON CONFLICT(pull_request_id,user_id) DO UPDATE SET thread_id=excluded.thread_id,state='active',generation=analytic_threads.generation+1,
                  last_context_tokens=NULL,last_context_generation=NULL
              WHERE analytic_threads.state IN ('none','active')",
         ).bind(thread_id).bind(id.to_string()).execute(&mut *tx).await?;
@@ -901,6 +901,7 @@ pub mod testing {
             prompt: "Analyse the flow.".to_owned(),
             output_schema: serde_json::json!({"type": "object"}),
             flow_file: None,
+            assessment: None,
             pr_data: None,
             model: ModelChoice {
                 model: "gpt-6.1-sol".to_owned(),

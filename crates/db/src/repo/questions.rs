@@ -1271,6 +1271,7 @@ mod tests {
         db.jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
                     report: None,
                     job_id: claimed.id,
                     attempt: claimed.attempt,

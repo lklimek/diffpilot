@@ -482,6 +482,7 @@ impl Fixture {
 
     async fn post_result(&self, claim: &Claim, outcome: JobOutcome) {
         let result = JobResult {
+            assessment: None,
             report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
@@ -541,6 +542,7 @@ fn good_answer() -> Value {
 fn succeeded(job: JobId, output: Value) -> JobUpdate {
     JobUpdate::Finished {
         result: JobResult {
+            assessment: None,
             report: None,
             job_id: job,
             attempt: 1,
@@ -557,6 +559,7 @@ fn succeeded(job: JobId, output: Value) -> JobUpdate {
 fn finished(job: JobId, outcome: JobOutcome) -> JobUpdate {
     JobUpdate::Finished {
         result: JobResult {
+            assessment: None,
             report: None,
             job_id: job,
             attempt: 1,
@@ -849,6 +852,7 @@ async fn failed_ask_shows_a_plain_sentence_and_logs_no_secret_or_question() {
     f.post_job_result(
         &claim,
         JobResult {
+            assessment: None,
             report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
@@ -1655,6 +1659,7 @@ async fn private_working_thread_is_committed_without_advancing_analytic_and_refo
     f.post_job_result(
         &claim,
         JobResult {
+            assessment: None,
             report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,

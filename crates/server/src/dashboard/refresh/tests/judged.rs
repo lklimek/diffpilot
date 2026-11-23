@@ -109,6 +109,7 @@ fn serve_with(
                 .expect("judged")
                 .extend(input.items.iter().cloned());
             let result = JobResult {
+                assessment: None,
                 report: None,
                 job_id: job.id,
                 attempt: job.attempt,

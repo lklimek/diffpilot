@@ -221,6 +221,7 @@ async fn container_credential_status_contains_no_auth_material() {
     let db = Db::in_memory().await.unwrap();
     analyses::testing::seed_analysis(&db).await.unwrap();
     let status = CredentialStatus {
+        mode: contracts::gateway::CredentialMode::ChatgptPlan,
         state: CredentialState::RelinkNeeded,
         relink_reason: Some(RelinkReason::Quarantined),
         label: None,
@@ -449,4 +450,85 @@ async fn container_point_bindings_stay_within_their_pull_request() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn assessment_storage_and_plan_only_constraints_exist() {
+    let db = Db::in_memory().await.unwrap();
+    analyses::testing::seed_analysis(&db).await.unwrap();
+    for table in [
+        "assessment_config",
+        "assessment_passes",
+        "assessment_method_runs",
+        "assessment_comparison_items",
+        "assessment_owner_decisions",
+        "assessment_daily_usage",
+    ] {
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?")
+                .bind(table)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 1, "{table}");
+    }
+    sqlx::query(
+        "INSERT INTO llm_credentials(user_id,tenant_id,state) VALUES('u1','default','linked')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert!(
+        sqlx::query("UPDATE llm_credentials SET mode='api_key'")
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+    let columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('llm_credentials')")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    for forbidden in [
+        "api_key",
+        "access_token",
+        "refresh_token",
+        "base_url",
+        "secret",
+    ] {
+        assert!(
+            !columns.iter().any(|c| c.contains(forbidden)),
+            "{forbidden}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn assessment_storage_defaults_and_invalid_values_are_constrained() {
+    let db = Db::in_memory().await.unwrap();
+    analyses::testing::seed_analysis(&db).await.unwrap();
+    sqlx::query("INSERT INTO assessment_config(user_id) VALUES('u1')")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let config: (String, String, Option<String>) = sqlx::query_as(
+        "SELECT primary_method,ab_prs,ab_until FROM assessment_config WHERE user_id='u1'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(config, ("claudius_host".into(), "[]".into(), None));
+    for statement in [
+        "UPDATE assessment_config SET primary_method='other'",
+        "UPDATE assessment_config SET ab_prs='{}'",
+        "UPDATE assessment_config SET ab_prs='[1]'",
+        "UPDATE assessment_config SET ab_until='tomorrow'",
+        "INSERT INTO assessment_daily_usage(user_id,day_utc,passes) VALUES('u1','2026-11-23',81)",
+        "INSERT INTO assessment_daily_usage(user_id,day_utc,passes) VALUES('u1','abcdefghij',1)",
+    ] {
+        assert!(
+            sqlx::raw_sql(statement).execute(&db.pool).await.is_err(),
+            "{statement}"
+        );
+    }
 }

@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// Mode-neutral connection state; credential-mode finalization awaits KL1.
+/// ChatGPT-plan connection state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialState {
@@ -35,9 +35,28 @@ pub enum RelinkReason {
     Quarantined,
 }
 
+/// The only supported credential mode; no paid fallback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialMode {
+    /// Gateway-run ChatGPT-plan device linking.
+    #[default]
+    ChatgptPlan,
+}
+
+/// Starts device linking without accepting upstream secrets or endpoints.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct LinkCredential {
+    /// ChatGPT-plan linking only.
+    pub mode: CredentialMode,
+}
+
 /// Non-secret status shared by gateway, server and Settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CredentialStatus {
+    /// Only ChatGPT-plan linking is supported.
+    pub mode: CredentialMode,
     /// Common connection state.
     pub state: CredentialState,
     /// Present only when relink is needed.

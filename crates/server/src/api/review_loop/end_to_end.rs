@@ -162,6 +162,7 @@ impl World {
     /// Posts the attempt's result as the runner does.
     async fn complete(&self, claim: &Claim, output: Value) {
         let result = JobResult {
+            assessment: None,
             report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,

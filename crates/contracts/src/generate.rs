@@ -78,6 +78,9 @@ const fn api_schema<T: JsonSchema>(stem: &'static str, responses: &'static [Rout
 /// Every schema of [`API_SCHEMA_DIR`]: each route a token may read (`read` and `GET /api/v1/me`) names its
 /// response here (contract test).
 pub const API_SCHEMAS: &[ApiSchema] = &[
+    api_schema::<crate::api::assessment::AssessmentSettings>("assessment_settings", &[]),
+    api_schema::<crate::api::assessment::AssessmentComparison>("assessment_comparison", &[]),
+    api_schema::<crate::assessment::AssessmentConfig>("assessment_config", &[]),
     api_schema::<ApiError>("api_error", &[]),
     api_schema::<MeResponse>("me_response", &[routes::GET_ME]),
     api_schema::<DashboardSummary>("dashboard_summary", &[routes::GET_DASHBOARD]),
@@ -178,6 +181,22 @@ pub fn generated_files() -> Result<Vec<GeneratedFile>, GenerateError> {
         });
     }
     for (name, schema) in [
+        (
+            "link_credential",
+            schema_of::<crate::gateway::LinkCredential>(),
+        ),
+        (
+            "assessment_run_ref",
+            schema_of::<crate::assessment::AssessmentRunRef>(),
+        ),
+        (
+            "assessment_admission_failure",
+            schema_of::<crate::assessment::AssessmentAdmissionFailure>(),
+        ),
+        (
+            "verify_comments_input",
+            schema_of::<crate::agent::verify_comments::VerifyCommentsInput>(),
+        ),
         ("job_spec", schema_of::<crate::job::spec::JobSpec>()),
         ("job_result", schema_of::<crate::job::result::JobResult>()),
         (
@@ -276,6 +295,10 @@ fn typescript_types() -> Result<String, GenerateError> {
         duplicate: None,
     };
     collector.visit::<crate::gateway::CredentialStatus>();
+    collector.visit::<crate::gateway::LinkCredential>();
+    collector.visit::<crate::api::assessment::AssessmentSettings>();
+    collector.visit::<crate::api::assessment::AssessmentComparison>();
+    collector.visit::<crate::assessment::AssessmentAdmissionFailure>();
     collector.visit::<crate::gateway::MintKey>();
     collector.visit::<crate::gateway::RevokeKeys>();
     collector.visit::<crate::gateway::UnlinkCredential>();

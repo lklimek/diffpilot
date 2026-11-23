@@ -19,3 +19,5 @@ pub mod review_loop;
 pub mod settings;
 pub mod tour;
 pub mod usage;
+
+pub mod assessment;

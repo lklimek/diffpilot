@@ -4,6 +4,17 @@
   "description": "The end of one job attempt; posting it twice for one attempt is idempotent.",
   "type": "object",
   "properties": {
+    "assessment": {
+      "description": "Frozen logical pass and independent method; absent outside assessment jobs.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AssessmentRunRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "report": {
       "description": "Host-supplied review report, validated by server ingest; absent for other jobs.",
       "anyOf": [
@@ -77,16 +88,50 @@
     "outcome"
   ],
   "$defs": {
+    "AssessmentRunRef": {
+      "description": "Durable method identity carried by both job input and result; attempt is the enclosing job's fence.",
+      "type": "object",
+      "properties": {
+        "pass_id": {
+          "description": "Logical pass shared by an A/B pair and all its retries.",
+          "$ref": "#/$defs/PassId"
+        },
+        "method": {
+          "description": "Independent adapter.",
+          "$ref": "#/$defs/AssessmentMethod"
+        }
+      },
+      "required": [
+        "pass_id",
+        "method"
+      ]
+    },
+    "PassId": {
+      "description": "Identifier of a `verify_comments` pass over the items of one pull request.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "AssessmentMethod": {
+      "description": "An assessment adapter; native outputs retain their own validation contracts.",
+      "oneOf": [
+        {
+          "description": "Host-supplied claudius 4.2 report.",
+          "type": "string",
+          "const": "claudius_host"
+        },
+        {
+          "description": "Existing strict prompt v4 output.",
+          "type": "string",
+          "const": "prompt_v4"
+        }
+      ]
+    },
     "CommentReport": {
       "description": "Host report envelope; rows are decoded individually so a malformed row can be dropped.",
       "type": "object",
       "properties": {
         "schema_version": {
           "description": "Accepted versions are 4.2.x.",
-          "type": "string"
-        },
-        "report_type": {
-          "description": "Must be comment_check.",
           "type": "string"
         },
         "metadata": {
@@ -101,7 +146,6 @@
       },
       "required": [
         "schema_version",
-        "report_type",
         "metadata",
         "comment_assessments"
       ]
@@ -110,6 +154,10 @@
       "description": "Required host-supplied provenance; other metadata is ignored.",
       "type": "object",
       "properties": {
+        "report_type": {
+          "description": "Must be comment_check.",
+          "type": "string"
+        },
         "input_mode": {
           "description": "Host-supplied is the only accepted mode.",
           "type": "string"
@@ -126,6 +174,7 @@
         }
       },
       "required": [
+        "report_type",
         "input_mode",
         "pr_number",
         "commit"

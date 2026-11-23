@@ -4,6 +4,13 @@
   "description": "Fields consumed from one upstream assessment; unknown fields, including severity floats, are discarded.",
   "type": "object",
   "properties": {
+    "merged_into": {
+      "description": "Direct canonical row ID for a duplicate from another source.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "id": {
       "description": "Upstream CMT identifier.",
       "type": "string"
@@ -309,6 +316,13 @@
         "by": {
           "description": "GitHub author login.",
           "type": "string"
+        },
+        "on_behalf_of": {
+          "description": "Named maintainer for an explicit trusted relay; never inferred.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "comment_url": {
           "description": "Link to the decision's comment.",

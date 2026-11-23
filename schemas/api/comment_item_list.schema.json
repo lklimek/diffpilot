@@ -844,6 +844,13 @@
           "description": "GitHub author login.",
           "type": "string"
         },
+        "on_behalf_of": {
+          "description": "Named maintainer for an explicit trusted relay; never inferred.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "comment_url": {
           "description": "Link to the decision's comment.",
           "type": "string"

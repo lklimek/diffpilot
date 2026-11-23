@@ -12,7 +12,7 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 
 ## v1.3 common contract amendment
 - [ADR-025](docs/decisions/ADR-025-container-runtime.md) and [container contracts](docs/contracts/containers.md)
-  govern W1 CCR1–CCR9; downstream W3/W4/W5/W8 implement runtime behavior and W9 removes the old runtime.
+  govern W1 CCR1–CCR13; downstream W3/W4/W5/W8 implement runtime behavior and W9 removes the old runtime.
 - Containers replace the uid/supervisor boundary (SG1–SG16); no real provider credential enters a worker.
   Agent GitHub access uses `gh` and a per-job read-only tmpfs token file; hosted web search stays disabled.
 - Workers egress via Squid, with LAN denied except MemCan. Gateway reaches fixed upstreams directly.
@@ -22,7 +22,8 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - Full fixed thread config on start/fork/resume; existing threads attach/resume before operations; CS1 cwd `/work`.
 - Server and worker checker format v3 are rebuilt together. JobSpec stays self-contained; model selection,
   fake provider and configured MemCan stay. Auth tests are fake-only; gateway lifecycle follows ADR-025.
-- KL1 blocks credential-mode DTOs and constraints (CCR10); no API-key mode or paid fallback is selected here.
+- KL1-A selects gateway-run ChatGPT-plan device linking only; CCR10 rejects API keys, secrets and base URLs.
+- CCR11–CCR13 freeze dual-method assessment passes with primary-only effects and atomic 80/day UTC quota.
 - Start v1.3 with an empty DB; guarded 0030 refuses non-empty rebuilt tables. Migrations remain append-only.
 
 ## Architecture rules (never break; details in plan §3–§5)

@@ -27,7 +27,7 @@ const DATA_BLOCK_CLOSE: &str = "```";
 
 /// What one `verify_comments` job reads besides the checkout. Every text from GitHub, an earlier LLM job or the
 /// owner is untrusted data.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VerifyCommentsInput {
     /// `owner/name#number`.
     pub pull_request: String,
@@ -48,7 +48,7 @@ pub struct VerifyCommentsInput {
 }
 
 /// One item to assess.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VerifyItem {
     /// `C<no>`.
     pub id: String,
@@ -86,7 +86,7 @@ fn is_zero(count: &u32) -> bool {
 }
 
 /// A reply in an item's thread (untrusted).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ThreadReply {
     /// Author login.
     pub author: String,
@@ -97,7 +97,7 @@ pub struct ThreadReply {
 }
 
 /// Who wrote a reply.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplyAuthorKind {
     /// A person other than the pull request's author.
@@ -110,7 +110,7 @@ pub enum ReplyAuthorKind {
 
 /// A decision already made on an item of the pull request: in diffpilot, or recorded by a reply in the item's
 /// thread.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct EarlierDecision {
     /// `C<no>`.
     pub item: String,
@@ -121,7 +121,7 @@ pub struct EarlierDecision {
 }
 
 /// The owner's question about one item, with the earlier questions of its thread.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ItemQuestion {
     /// `C<no>` of the item asked about.
     pub item: String,
@@ -132,7 +132,7 @@ pub struct ItemQuestion {
 }
 
 /// An earlier question of a thread and its answer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ThreadEntry {
     /// The question.
     pub question: String,

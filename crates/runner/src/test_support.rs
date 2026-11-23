@@ -82,6 +82,7 @@ pub(crate) fn spec(kind: JobKind, repo: &Path) -> JobSpec {
         prompt: "Job: analyse_flow f1.".to_owned(),
         output_schema: output_schema(kind).unwrap(),
         flow_file: None,
+        assessment: None,
         pr_data: None,
         model: ModelChoice {
             model: "gpt-6.1-sol".to_owned(),
@@ -119,6 +120,7 @@ pub(crate) fn judge_spec(input: &contracts::agent::judge_work::JudgeWorkInput) -
         ),
         output_schema: output_schema(JobKind::JudgeWork).unwrap(),
         flow_file: None,
+        assessment: None,
         pr_data: None,
         model: ModelChoice {
             model: "gpt-6.1-sol".to_owned(),

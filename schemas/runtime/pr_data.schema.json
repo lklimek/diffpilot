@@ -12,13 +12,19 @@
       "description": "threads.json in the gh script shape."
     },
     "review_comments": {
-      "description": "review-comments.json in the gh script shape."
+      "description": "review-comments.json in the gh script shape.",
+      "type": "array",
+      "items": true
     },
     "reviews": {
-      "description": "reviews.json in the gh script shape."
+      "description": "reviews.json in the gh script shape.",
+      "type": "array",
+      "items": true
     },
     "comments": {
-      "description": "comments.json in the gh script shape."
+      "description": "comments.json in the gh script shape.",
+      "type": "array",
+      "items": true
     },
     "conventions": {
       "description": "Base-branch convention files, relative paths below conventions/.",
@@ -65,6 +71,29 @@
           "description": "Assessed head.",
           "type": "string"
         },
+        "base_ref": {
+          "description": "Base branch name.",
+          "type": "string"
+        },
+        "base_sha": {
+          "description": "Frozen base commit for pre-existing checks.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Author-stated PR intent.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Author-stated PR description.",
+          "type": "string"
+        },
+        "delegates": {
+          "description": "Trusted maintainer relays.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "pr_author": {
           "description": "PR author's login; only their own text is author context.",
           "type": "string"
@@ -88,6 +117,10 @@
         "repo",
         "pr",
         "head",
+        "base_ref",
+        "base_sha",
+        "title",
+        "body",
         "pr_author",
         "maintainers",
         "bots"
@@ -128,6 +161,17 @@
           "description": "Thread node id, review:id:k or comment:id:k.",
           "type": "string"
         },
+        "source_kind": {
+          "description": "Original source kind, inferred from the key when absent.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "quote": {
           "description": "Quote only for open and decided items.",
           "type": [
@@ -152,6 +196,36 @@
         "key"
       ]
     },
+    "SourceKind": {
+      "description": "A row's source role in the upstream report.",
+      "oneOf": [
+        {
+          "description": "An inline review thread.",
+          "type": "string",
+          "const": "inline"
+        },
+        {
+          "description": "A point in a submitted review body.",
+          "type": "string",
+          "const": "review_body"
+        },
+        {
+          "description": "A point in a PR comment.",
+          "type": "string",
+          "const": "pr_comment"
+        },
+        {
+          "description": "Reply context only.",
+          "type": "string",
+          "const": "reply"
+        },
+        {
+          "description": "Status context only.",
+          "type": "string",
+          "const": "status"
+        }
+      ]
+    },
     "RecordedDecision": {
       "description": "Attributed prior decision; server verifies authority and grounding before treating it as a fact.",
       "type": "object",
@@ -163,6 +237,13 @@
         "by": {
           "description": "GitHub author login.",
           "type": "string"
+        },
+        "on_behalf_of": {
+          "description": "Named maintainer for an explicit trusted relay; never inferred.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "comment_url": {
           "description": "Link to the decision's comment.",

@@ -682,6 +682,7 @@ fn scrub_result(mut result: JobResult, scrubber: &Scrubber) -> JobResult {
 
 fn cancelled_result(job: JobId, attempt: u32) -> JobResult {
     JobResult {
+        assessment: None,
         report: None,
         job_id: job,
         attempt,

@@ -1068,6 +1068,7 @@ impl Driver<'_> {
                 }),
                 _ => None,
             },
+            assessment: None,
             pr_data: None,
             model: select_model(
                 kind,

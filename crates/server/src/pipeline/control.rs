@@ -428,6 +428,7 @@ mod tests {
         db.jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
                     report: None,
                     job_id: jobs[0],
                     attempt: 1,
@@ -459,6 +460,7 @@ mod tests {
         db.jobs()
             .complete(
                 &JobResult {
+                    assessment: None,
                     report: None,
                     job_id: ask.id,
                     attempt: 1,

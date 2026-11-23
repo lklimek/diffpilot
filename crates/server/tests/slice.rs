@@ -294,6 +294,7 @@ impl JobExecutor for ScriptedExecutor {
         }
         self.finished.lock().expect("lock").insert(handle.job_id);
         let result = JobResult {
+            assessment: None,
             report: None,
             job_id: handle.job_id,
             attempt: 1,
@@ -691,6 +692,7 @@ impl Harness {
     /// Posts the claimed attempt's result as the runner does.
     async fn complete(&self, claim: &Claim, outcome: JobOutcome) {
         let result = JobResult {
+            assessment: None,
             report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
@@ -3190,6 +3192,7 @@ async fn each_job_is_claimable_only_after_the_previous_result_is_stored() {
             );
         }
         let result = JobResult {
+            assessment: None,
             report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
@@ -3404,6 +3407,7 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
     assert!(queued, "the new round's plan job was not queued within 5 s");
     let resets_at = Timestamp::from_second(Timestamp::now().as_second() + 3).expect("time");
     let late = JobResult {
+        assessment: None,
         report: None,
         job_id: old.job_id,
         attempt: claim.spec.attempt,
@@ -3515,6 +3519,7 @@ async fn user_pause_keeps_the_running_result_and_next_job_uses_the_new_model() {
     assert_eq!(paused["state"]["reason"], "user");
     assert!(paused["state"]["paused_by"].is_string());
     let result = JobResult {
+        assessment: None,
         report: None,
         job_id: first.spec.job_id,
         attempt: first.spec.attempt,
@@ -3685,6 +3690,7 @@ async fn lazy_review_opens_after_context_before_any_flow() {
         }
         let claim = claim.expect("job");
         let result = JobResult {
+            assessment: None,
             report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
@@ -3795,6 +3801,7 @@ async fn lazy_review_opens_after_context_before_any_flow() {
     );
     assert!(h.runner_claim().await.is_none());
     let result = JobResult {
+        assessment: None,
         report: None,
         job_id: claim.spec.job_id,
         attempt: claim.spec.attempt,
@@ -3862,6 +3869,7 @@ async fn lazy_review_opens_after_context_before_any_flow() {
         StatusCode::OK
     );
     let result = JobResult {
+        assessment: None,
         report: None,
         job_id: next.spec.job_id,
         attempt: next.spec.attempt,

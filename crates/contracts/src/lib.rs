@@ -16,3 +16,6 @@ pub mod runtime;
 
 /// Private runner-to-launcher protocol.
 pub mod launcher;
+
+/// Common dual-method assessment contracts.
+pub mod assessment;

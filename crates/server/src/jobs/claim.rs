@@ -1075,6 +1075,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recovered_analytic_checkpoint_is_resumed_by_the_next_claim() {
+        use contracts::job::result::{JobOutcome, JobResult, SessionOutcome, SessionReport};
+        for via_result in [true, false] {
+            let s = setup().await;
+            let lost = enqueue(&s.db).await;
+            let analysis = s.db.jobs().get(lost).await.unwrap().analysis_id.unwrap();
+            let now = Timestamp::now();
+            mount_installation(&s.github).await;
+            mount_mint(&s.github, minted(now), if via_result { 3 } else { 2 }).await;
+            s.db.analyses()
+                .set_session(analysis, "original", None)
+                .await
+                .unwrap();
+            let claimed = claim_one(&s, now).await;
+            let mut result = JobResult {
+                assessment: None,
+                report: None,
+                job_id: lost,
+                attempt: claimed.spec.attempt,
+                outcome: JobOutcome::Succeeded {
+                    output: serde_json::json!({}),
+                },
+                session: None,
+                usage: None,
+                skills_commit: None,
+                llm_call: None,
+            };
+            s.db.jobs().complete(&result, now).await.unwrap();
+            if via_result {
+                let recovered = enqueue(&s.db).await;
+                let claimed = claim_one(&s, now).await;
+                result.job_id = recovered;
+                result.attempt = claimed.spec.attempt;
+                result.session = Some(SessionReport {
+                    thread_id: "recovered".into(),
+                    outcome: SessionOutcome::StartedAfterLoss,
+                    last_context: None,
+                    preflight: None,
+                });
+                s.db.jobs().complete(&result, now).await.unwrap();
+            } else {
+                s.db.analyses()
+                    .set_session(analysis, "recovered", None)
+                    .await
+                    .unwrap();
+            }
+            enqueue(&s.db).await;
+            assert_eq!(
+                claim_one(&s, now).await.spec.session.unwrap().thread_id,
+                "recovered"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn dropped_session_is_not_resumed() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
@@ -1245,6 +1300,7 @@ mod tests {
 
     fn result(job: JobId, outcome: JobOutcome) -> JobResult {
         JobResult {
+            assessment: None,
             report: None,
             job_id: job,
             attempt: 1,

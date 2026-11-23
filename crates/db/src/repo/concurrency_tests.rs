@@ -144,6 +144,7 @@ async fn claimed_job(db: &Db, analysis: contracts::ids::AnalysisId, round: i64) 
         .expect("claimed");
     assert_eq!(claimed.id, job.id);
     JobResult {
+        assessment: None,
         report: None,
         job_id: job.id,
         attempt: claimed.attempt,

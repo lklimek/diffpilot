@@ -476,6 +476,7 @@ impl<'a> Ranking<'a> {
             prompt: prompt::render(input, self.language)?,
             output_schema: contracts::agent::output_schema(JobKind::JudgeWork)?,
             flow_file: None,
+            assessment: None,
             pr_data: None,
             model: select_model(JobKind::JudgeWork, &ModelContext::default(), saved.as_ref()),
             limits: JobLimits::default(),

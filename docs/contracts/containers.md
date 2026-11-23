@@ -16,12 +16,13 @@ in `web/src/api/generated/types.ts`. Codex JSON-RPC shapes remain local to `runn
 | CCR8 | `relink_needed` distinguishes `terminal` from `quarantined`; both become gateway 403 `credential_unlinked`, job `credential_relink`, without automatic retry. DTOs contain no real credentials. | W2/W6 |
 | CCR9 | `UnlinkCredential` alone authorizes upstream revoke. `RevokeKeys` rotation/idle-stop/retirement is strictly local. Gateway owns encrypted credentials, generation CAS, durable in-flight markers and persist-before-use outside DB. Auth tests use fakes exclusively. | W2/W7 |
 
-## Neutral credential seam (KL1)
+## Plan-only credential seam (KL1-A)
 
 `CredentialStatus` and the database store connection state, safe relink reason, optional provider label/plan,
-payer pause and last model call. They define no credential-mode discriminator, API-key input or mode constraint.
-Link input/status and the final `/settings/codex[/link]` API await KL1 (CCR10). No secret export, implicit billing
-fallback, real-account login/refresh/revoke experiment or guarantee of session isolation is authorized.
+payer pause and last model call, with singleton `mode: chatgpt_plan`. `LinkCredential` accepts only that mode;
+unknown fields (including API key, token and base URL) are rejected. Migration 0030 constrains mode and state.
+W2 implements gateway device linking and W6 exposes `/settings/codex[/link]` with a disclosure that linking may
+log Codex out elsewhere. No paid fallback, secret export or guarantee of session isolation is authorized.
 A virtual key is a `Secret` delivered only to the runner for its tmpfs file; it is not an upstream credential.
 
 ## Persistence and cut-over
@@ -47,7 +48,9 @@ through seed/preflight/answer; a pending marker survives interruption and requir
 ## Review report hand-in
 
 `PrData` maps to manifest.json, threads.json, review-comments.json, reviews.json, comments.json,
-conventions/, ids.json and scope.json. Untrusted GitHub bodies retain details content after cleaning.
+conventions/, ids.json and scope.json, matching claudius 13.5.0 `460e5fd`. Manifest includes title/body,
+base_ref/base_sha and optional delegates. Comment/review files are arrays retaining GitHub timestamps, commit
+and review IDs; ids.json preserves source_kind. Untrusted bodies retain details content after cleaning.
 Only the PR author's own text is author context; tenant membership does not make someone context.
 Commands, gate/status comments and pending reviews are ignored. Latest-round bot rules remain server-owned.
 
@@ -55,9 +58,39 @@ Commands, gate/status comments and pending reviews are ignored. Latest-round bot
 Unknown fields are tolerated and discarded. Envelope rows remain JSON values for independent row decoding:
 a malformed row is dropped and logged rather than failing the whole pass. W5 enforces head/PR/scope,
 quote grounding and ID reuse, decision authority and target semantics. Severity floats and merge_class are
-not stored or displayed. The old verify prompt/output types remain available until W5 replaces its ingest;
-this common contract does not switch the live server pipeline.
+not stored or displayed. `report_type` is in metadata; duplicate `merged_into` and relay `on_behalf_of`
+survive decoding. Native `VerifyCommentsInput`/`VerifyCommentsOutput`, strict schema and adapter remain
+available for `prompt_v4`; W5 selects either adapter without weakening its validation contract.
+This common contract does not switch the live server pipeline.
 
 The runner's existing exec/credential-report plumbing is removed by W9 after W4/W8 integrate the new runtime.
 An empty event batch remains the heartbeat and carries no credential status. `retire` in claim responses is
 the common PR-container retirement instruction. Existing attempt tokens and self-fencing remain unchanged.
+
+
+## Frozen assessments and UTC admission (CCR11–CCR13)
+
+`assessment::AssessmentConfig` defaults to `claudius_host`, no selected PRs and no deadline. Pairing is frozen
+when the PR is in `ab_prs` or admission precedes `ab_until`; settings alone never schedule work. JobSpec and
+JobResult carry `AssessmentRunRef` (logical pass/method), with the enclosing job attempt as the fence.
+`api::assessment` defines Settings and read-only comparison DTOs; HTTP orchestration belongs to W5/W6.
+
+`Db::assessments().admit` validates the current usable credential and atomically reserves one of 80 UTC daily
+slots shared across the payer's tenant memberships, freezes the snapshot/configuration and inserts one or two method jobs. Jobs must use the same payer,
+pass, PR, head/base and model, with the primary first. A repeated payer/request key returns the original pass,
+even after midnight, config changes or restart. Rejected requests use no slot; admitted failures retain theirs.
+`AssessmentAdmissionFailure::AssessmentDailyLimit { resets_at }` and `AssessmentQuota` expose safe quota status.
+
+`runs` returns method job IDs separately from the retained legacy `comment_passes` APIs.
+`begin_attempt` checks the current queue attempt; `finish_attempt` accepts it once and deduplicates metering
+per job/attempt. `record_attempt_usage` can add late metering from a lost attempt without accepting its output.
+`retry_method` requeues only a retryable failed method, keeping the pass and snapshot. Secondary output writes comparison rows
+only; composite foreign keys reject secondary or cross-pass primary attribution. The existing
+`add_assessment` repository infers attribution from its job and requires the accepted primary attempt. Comparison rows retain
+native/normalized verdicts, nullable proposals, source/version/quote, explicit missing/unmatched/duplicate
+state and direct canonical links. Raw reports are not stored. Callers scrub/normalize output before persistence.
+
+`record_owner_decision` reads the actual diffpilot decision and supersession revision through a primary item;
+model attribution is never comparison truth. Head, frozen point hash and source version must match; actual decisions snapshot the source version at write time. Read snapshots select the latest
+actual owner revision at the requested cutoff; unmatched secondary rows remain unscored. W5 owns alignment,
+primary effects, sequential orchestration and final report summaries; W6 owns the Settings/Comments controls.

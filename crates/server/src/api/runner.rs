@@ -299,6 +299,7 @@ fn scrub_value(value: &mut Value, secrets: &[&str]) {
 /// Scrubs every text field of a result before it is stored (also the LLM status copied to the credential).
 fn scrub_result(result: &mut JobResult, secrets: &[&str]) {
     let JobResult {
+        assessment: _,
         report,
         job_id: _,
         attempt: _,
@@ -310,7 +311,7 @@ fn scrub_result(result: &mut JobResult, secrets: &[&str]) {
     } = result;
     if let Some(report) = report {
         report.schema_version = scrub(&report.schema_version, secrets);
-        report.report_type = scrub(&report.report_type, secrets);
+        report.metadata.report_type = scrub(&report.metadata.report_type, secrets);
         report.metadata.input_mode = scrub(&report.metadata.input_mode, secrets);
         report.metadata.commit = scrub(&report.metadata.commit, secrets);
         for row in &mut report.comment_assessments {
@@ -529,6 +530,7 @@ mod tests {
     fn report_provenance_rows_and_keys_are_scrubbed_before_storage() {
         let secret = "fake-installation-token";
         let mut result = contracts::job::result::JobResult {
+            assessment: None,
             report: None,
             job_id: contracts::ids::JobId::new_random(),
             attempt: 1,
@@ -540,8 +542,8 @@ mod tests {
         };
         result.report = Some(Box::new(contracts::agent::comment_report::CommentReport {
             schema_version: secret.into(),
-            report_type: secret.into(),
             metadata: contracts::agent::comment_report::ReportMetadata {
+                report_type: secret.into(),
                 input_mode: secret.into(),
                 pr_number: 1,
                 commit: secret.into(),
@@ -721,6 +723,7 @@ mod tests {
 
     fn succeeded(job: JobId, attempt: u32) -> JobResult {
         JobResult {
+            assessment: None,
             report: None,
             job_id: job,
             attempt,

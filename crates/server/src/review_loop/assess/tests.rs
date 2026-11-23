@@ -198,6 +198,7 @@ fn entry(item: &str) -> Value {
 
 fn succeeded(job: JobId, output: Value) -> JobResult {
     JobResult {
+        assessment: None,
         report: None,
         job_id: job,
         attempt: 1,

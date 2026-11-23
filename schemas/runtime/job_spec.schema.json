@@ -4,6 +4,17 @@
   "description": "One agent job, self-contained (brief §5 item 1).",
   "type": "object",
   "properties": {
+    "assessment": {
+      "description": "Frozen logical pass and independent method; absent outside assessment jobs.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AssessmentRunRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "job_id": {
       "description": "Job id.",
       "$ref": "#/$defs/JobId"
@@ -119,6 +130,44 @@
     "access"
   ],
   "$defs": {
+    "AssessmentRunRef": {
+      "description": "Durable method identity carried by both job input and result; attempt is the enclosing job's fence.",
+      "type": "object",
+      "properties": {
+        "pass_id": {
+          "description": "Logical pass shared by an A/B pair and all its retries.",
+          "$ref": "#/$defs/PassId"
+        },
+        "method": {
+          "description": "Independent adapter.",
+          "$ref": "#/$defs/AssessmentMethod"
+        }
+      },
+      "required": [
+        "pass_id",
+        "method"
+      ]
+    },
+    "PassId": {
+      "description": "Identifier of a `verify_comments` pass over the items of one pull request.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "AssessmentMethod": {
+      "description": "An assessment adapter; native outputs retain their own validation contracts.",
+      "oneOf": [
+        {
+          "description": "Host-supplied claudius 4.2 report.",
+          "type": "string",
+          "const": "claudius_host"
+        },
+        {
+          "description": "Existing strict prompt v4 output.",
+          "type": "string",
+          "const": "prompt_v4"
+        }
+      ]
+    },
     "JobId": {
       "description": "Identifier of a job (one agent run).",
       "type": "string",
@@ -271,11 +320,6 @@
       "type": "string",
       "format": "uuid"
     },
-    "PassId": {
-      "description": "Identifier of a `verify_comments` pass over the items of one pull request.",
-      "type": "string",
-      "format": "uuid"
-    },
     "PullRequestCommentsTarget": {
       "description": "What a `verify_comments` job works on (ADR-023, plan §4.2): the head checkout and the read-only PR-scoped token,\nno session, no MemCan.",
       "type": "object",
@@ -331,13 +375,19 @@
           "description": "threads.json in the gh script shape."
         },
         "review_comments": {
-          "description": "review-comments.json in the gh script shape."
+          "description": "review-comments.json in the gh script shape.",
+          "type": "array",
+          "items": true
         },
         "reviews": {
-          "description": "reviews.json in the gh script shape."
+          "description": "reviews.json in the gh script shape.",
+          "type": "array",
+          "items": true
         },
         "comments": {
-          "description": "comments.json in the gh script shape."
+          "description": "comments.json in the gh script shape.",
+          "type": "array",
+          "items": true
         },
         "conventions": {
           "description": "Base-branch convention files, relative paths below conventions/.",
@@ -384,6 +434,29 @@
           "description": "Assessed head.",
           "type": "string"
         },
+        "base_ref": {
+          "description": "Base branch name.",
+          "type": "string"
+        },
+        "base_sha": {
+          "description": "Frozen base commit for pre-existing checks.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Author-stated PR intent.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Author-stated PR description.",
+          "type": "string"
+        },
+        "delegates": {
+          "description": "Trusted maintainer relays.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "pr_author": {
           "description": "PR author's login; only their own text is author context.",
           "type": "string"
@@ -407,6 +480,10 @@
         "repo",
         "pr",
         "head",
+        "base_ref",
+        "base_sha",
+        "title",
+        "body",
         "pr_author",
         "maintainers",
         "bots"
@@ -447,6 +524,17 @@
           "description": "Thread node id, review:id:k or comment:id:k.",
           "type": "string"
         },
+        "source_kind": {
+          "description": "Original source kind, inferred from the key when absent.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "quote": {
           "description": "Quote only for open and decided items.",
           "type": [
@@ -471,6 +559,36 @@
         "key"
       ]
     },
+    "SourceKind": {
+      "description": "A row's source role in the upstream report.",
+      "oneOf": [
+        {
+          "description": "An inline review thread.",
+          "type": "string",
+          "const": "inline"
+        },
+        {
+          "description": "A point in a submitted review body.",
+          "type": "string",
+          "const": "review_body"
+        },
+        {
+          "description": "A point in a PR comment.",
+          "type": "string",
+          "const": "pr_comment"
+        },
+        {
+          "description": "Reply context only.",
+          "type": "string",
+          "const": "reply"
+        },
+        {
+          "description": "Status context only.",
+          "type": "string",
+          "const": "status"
+        }
+      ]
+    },
     "RecordedDecision": {
       "description": "Attributed prior decision; server verifies authority and grounding before treating it as a fact.",
       "type": "object",
@@ -482,6 +600,13 @@
         "by": {
           "description": "GitHub author login.",
           "type": "string"
+        },
+        "on_behalf_of": {
+          "description": "Named maintainer for an explicit trusted relay; never inferred.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "comment_url": {
           "description": "Link to the decision's comment.",

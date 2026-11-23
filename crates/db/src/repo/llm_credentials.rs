@@ -106,6 +106,7 @@ impl LlmCredentials<'_> {
             .await?;
         row.map(|r| {
             Ok(contracts::gateway::CredentialStatus {
+                mode: contracts::gateway::CredentialMode::ChatgptPlan,
                 state: crate::repo::jobs::parse_wire(
                     &r.try_get::<String, _>("state")?,
                     "llm_credentials.state",

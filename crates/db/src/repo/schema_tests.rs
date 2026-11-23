@@ -363,10 +363,12 @@ async fn allowlist_binds_each_github_id_once_per_tenant() {
 
 #[tokio::test]
 async fn tenant_id_on_every_table() {
+    // Assessment configuration and quota are user-wide across tenant memberships.
     let db = db().await;
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-           AND name NOT IN ('_sqlx_migrations', 'tenants', 'users', 'llm_selection') ORDER BY name",
+           AND name NOT IN ('_sqlx_migrations', 'tenants', 'users', 'llm_selection',
+               'assessment_config', 'assessment_daily_usage') ORDER BY name",
     )
     .fetch_all(&db.pool)
     .await

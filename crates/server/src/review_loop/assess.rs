@@ -766,6 +766,7 @@ async fn submit(
         prompt: prompt::render(input, pr, language)?,
         output_schema: agent::output_schema(JobKind::VerifyComments)?,
         flow_file: None,
+        assessment: None,
         pr_data: None,
         model: select_model(
             JobKind::VerifyComments,

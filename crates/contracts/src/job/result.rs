@@ -11,6 +11,9 @@ use crate::ids::JobId;
 /// The end of one job attempt; posting it twice for one attempt is idempotent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct JobResult {
+    /// Frozen logical pass and independent method; absent outside assessment jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assessment: Option<Box<crate::assessment::AssessmentRunRef>>,
     /// Host-supplied review report, validated by server ingest; absent for other jobs.
     #[serde(default)]
     pub report: Option<Box<crate::agent::comment_report::CommentReport>>,
@@ -56,7 +59,7 @@ pub enum JobOutcome {
 }
 
 /// Kind of a failed attempt.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum JobFailureKind {
     /// A required agent skill is unavailable; administrator action is needed.
@@ -133,17 +136,21 @@ pub enum SessionOutcome {
 }
 
 /// Token usage.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Usage {
     /// Input tokens, cached included.
+    #[ts(type = "number")]
     pub input_tokens: u64,
     /// Cached input tokens.
+    #[ts(type = "number")]
     pub cached_input_tokens: u64,
     /// Output tokens.
+    #[ts(type = "number")]
     pub output_tokens: u64,
     /// Model requests of the call, counted from the provider's events (one per batch of tool calls, and the
     /// answer); null when not counted.
     #[serde(default)]
+    #[ts(type = "number | null")]
     pub requests: Option<u64>,
 }
 

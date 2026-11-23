@@ -316,6 +316,7 @@ fn priority_value(priority: JobPriority) -> i64 {
 /// A result the server records itself (cancel or failure without a runner result).
 pub(crate) fn server_result(job: JobId, attempt: u32, outcome: JobOutcome) -> JobResult {
     JobResult {
+        assessment: None,
         report: None,
         job_id: job,
         attempt,
@@ -785,7 +786,7 @@ impl Jobs<'_> {
             } else {
                 sqlx::query("INSERT INTO analytic_threads (tenant_id,pull_request_id,user_id,thread_id,generation,state)
                     SELECT tenant_id,pull_request_id,payer_id,?,1,'active' FROM jobs WHERE id=?
-                    ON CONFLICT(pull_request_id,user_id) DO UPDATE SET thread_id=excluded.thread_id,generation=analytic_threads.generation+1,
+                    ON CONFLICT(pull_request_id,user_id) DO UPDATE SET thread_id=excluded.thread_id,state='active',generation=analytic_threads.generation+1,
                         last_context_tokens=NULL,last_context_generation=NULL
                     WHERE analytic_threads.state IN ('none','active')")
                     .bind(&session.thread_id).bind(result.job_id.to_string()).execute(&mut *tx).await?;
@@ -1489,6 +1490,7 @@ mod tests {
 
     fn result(job: JobId, attempt: u32, outcome: JobOutcome) -> JobResult {
         JobResult {
+            assessment: None,
             report: None,
             job_id: job,
             attempt,
@@ -1539,6 +1541,66 @@ mod tests {
                 .agent_thread_id,
             None
         );
+    }
+
+    #[tokio::test]
+    async fn recovered_checkpoint_is_active_and_next_claim_resumes_it() {
+        for through_complete in [true, false] {
+            let db = db().await;
+            let analysis = seed_analysis(&db).await.unwrap();
+            db.analyses()
+                .set_session(analysis, "original", None)
+                .await
+                .unwrap();
+            let lost = enqueue(&db, analysis, "lost", 0).await;
+            claim(&db, 1).await.unwrap();
+            db.jobs()
+                .complete(&succeeded(lost, 1), at(2))
+                .await
+                .unwrap();
+            if through_complete {
+                let recovered = enqueue(&db, analysis, "recovered", 3).await;
+                claim(&db, 4).await.unwrap();
+                let mut output = succeeded(recovered, 1);
+                output.session = Some(contracts::job::result::SessionReport {
+                    last_context: None,
+                    preflight: None,
+                    thread_id: "recovered".into(),
+                    outcome: contracts::job::result::SessionOutcome::StartedAfterLoss,
+                });
+                db.jobs().complete(&output, at(5)).await.unwrap();
+            } else {
+                db.analyses()
+                    .set_session(analysis, "recovered", None)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                db.analyses().get(analysis).await.unwrap().session_state,
+                super::super::analyses::SessionState::Active
+            );
+            enqueue(&db, analysis, "next", 6).await;
+            let next = claim(&db, 7).await.unwrap();
+            assert_eq!(next.analysis_id, Some(analysis));
+            assert_eq!(
+                db.container_sessions()
+                    .analytic(1, &contracts::ids::UserId("u1".into()))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .thread_id,
+                "recovered"
+            );
+            db.analyses().request_session_drop(1).await.unwrap();
+            db.analyses()
+                .set_session(analysis, "forbidden", None)
+                .await
+                .unwrap();
+            assert_eq!(
+                db.analyses().get(analysis).await.unwrap().session_state,
+                super::super::analyses::SessionState::DropRequested
+            );
+        }
     }
 
     #[tokio::test]

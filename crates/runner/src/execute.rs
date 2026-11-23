@@ -526,6 +526,7 @@ fn to_result(
     let at = Timestamp::now();
     match outcome {
         Ok(outcome) => JobResult {
+            assessment: None,
             report: None,
             job_id: spec.job_id,
             attempt: spec.attempt,
@@ -570,6 +571,7 @@ fn to_result(
                 status: LlmCallStatus::NotWorking { message },
             });
             JobResult {
+                assessment: None,
                 report: None,
                 job_id: spec.job_id,
                 attempt: spec.attempt,
@@ -593,6 +595,7 @@ fn failure(kind: JobFailureKind, message: &str) -> JobOutcome {
 /// A failed result before any provider call.
 fn failed(spec: &JobSpec, kind: JobFailureKind, message: &str) -> JobResult {
     JobResult {
+        assessment: None,
         report: None,
         job_id: spec.job_id,
         attempt: spec.attempt,

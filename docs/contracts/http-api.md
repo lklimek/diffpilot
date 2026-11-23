@@ -907,6 +907,15 @@ including zero-point source versions. `CommentItem.point` identifies a grounded 
 `duplicate_of` preserves independent item identities. Assessments add `already_fixed`, nullable `pre_existing`,
 `evidence_text` and attributed `recorded_decision`; absent code/fix-size stay nullable.
 
-Common gateway `CredentialStatus` is mode-neutral. Final DTOs and routes for
-`GET`/`DELETE /api/v1/settings/codex` and `POST`/`GET /api/v1/settings/codex/link` await KL1/W6;
+Common gateway `CredentialStatus` uses singleton `mode: chatgpt_plan`; `LinkCredential` accepts no secrets,
+API keys or base URLs. Routes for `GET`/`DELETE /api/v1/settings/codex` and
+`POST`/`GET /api/v1/settings/codex/link` are implemented by W2/W6;
 W1 registers no credential-mode HTTP route or secret input.
+
+
+The W1 `api::assessment` contracts define `GET`/`PUT /api/v1/settings/comment-assessment` (PUT body:
+`AssessmentConfig`, GET: `AssessmentSettings`) and `GET …/comments/assessment-comparison`
+(`AssessmentComparison`, payer/PR scoped). They carry frozen method references, actual owner revisions and
+safe remaining/reset quota. `AssessmentAdmissionFailure` distinguishes daily limit (with `resets_at`) from
+missing usable credentials. W5/W6 implement route access checks and orchestration; changing configuration
+alone never schedules work. Cards show only the frozen primary; secondary results are comparison-only.

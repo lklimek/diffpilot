@@ -11,8 +11,6 @@ use ts_rs::TS;
 pub struct CommentReport {
     /// Accepted versions are 4.2.x.
     pub schema_version: String,
-    /// Must be comment_check.
-    pub report_type: String,
     /// Host provenance, matched against the server's input.
     pub metadata: ReportMetadata,
     /// Independently parsed assessment rows; unknown report fields are ignored.
@@ -26,7 +24,7 @@ impl CommentReport {
         self.schema_version
             .strip_prefix("4.2.")
             .is_some_and(|patch| !patch.is_empty() && patch.bytes().all(|b| b.is_ascii_digit()))
-            && self.report_type == "comment_check"
+            && self.metadata.report_type == "comment_check"
             && self.metadata.input_mode == "host_supplied"
     }
 }
@@ -34,6 +32,8 @@ impl CommentReport {
 /// Required host-supplied provenance; other metadata is ignored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ReportMetadata {
+    /// Must be comment_check.
+    pub report_type: String,
     /// Host-supplied is the only accepted mode.
     pub input_mode: String,
     /// GitHub PR number.
@@ -127,6 +127,8 @@ pub struct RecordedDecision {
     pub kind: RecordedDecisionKind,
     /// GitHub author login.
     pub by: String,
+    /// Named maintainer for an explicit trusted relay; never inferred.
+    pub on_behalf_of: Option<String>,
     /// Link to the decision's comment.
     pub comment_url: String,
     /// Verbatim decision quote, at most 600 characters.
@@ -149,6 +151,8 @@ pub struct ReportGate {
 /// Fields consumed from one upstream assessment; unknown fields, including severity floats, are discarded.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ReportRow {
+    /// Direct canonical row ID for a duplicate from another source.
+    pub merged_into: Option<String>,
     /// Upstream CMT identifier.
     pub id: String,
     /// Source author.

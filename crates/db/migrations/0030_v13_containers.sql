@@ -15,10 +15,11 @@ DROP TABLE llm_credentials;
 DROP TABLE comment_assessments;
 DROP TABLE working_sessions;
 
--- KL1: common status only; credential modes, tokens and rotation state are absent.
+-- Only non-secret ChatGPT-plan status is stored; rotation state stays gateway-only.
 CREATE TABLE llm_credentials (
     user_id           TEXT NOT NULL PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
     tenant_id         TEXT NOT NULL REFERENCES tenants (id),
+    mode              TEXT NOT NULL DEFAULT 'chatgpt_plan' CHECK (mode = 'chatgpt_plan'),
     state             TEXT NOT NULL CHECK (state IN ('linking', 'linked', 'relink_needed')),
     relink_needed_at  TEXT,
     relink_reason     TEXT CHECK (relink_reason IN ('terminal', 'quarantined')),
@@ -93,11 +94,20 @@ CREATE TABLE comment_assessments (
     tenant_id TEXT NOT NULL REFERENCES tenants (id),
     item_id TEXT NOT NULL REFERENCES comment_items (id) ON DELETE CASCADE,
     job_id TEXT NOT NULL,
+    pass_id TEXT,
+    method TEXT CHECK (method IN ('claudius_host','prompt_v4')),
+    payer_id TEXT REFERENCES users(id),
     head TEXT NOT NULL,
     fingerprint TEXT NOT NULL,
     body TEXT NOT NULL CHECK (json_valid(body)),
     prompt_version INTEGER NOT NULL,
     assessed_at TEXT NOT NULL,
+    CHECK ((pass_id IS NULL AND method IS NULL AND payer_id IS NULL) OR
+           (pass_id IS NOT NULL AND method IS NOT NULL AND payer_id IS NOT NULL)),
+    FOREIGN KEY (pass_id,method,tenant_id,payer_id)
+        REFERENCES assessment_passes(id,primary_method,tenant_id,payer_id),
+    FOREIGN KEY (job_id,pass_id,method,tenant_id,payer_id)
+        REFERENCES assessment_method_runs(job_id,pass_id,method,tenant_id,payer_id),
     CHECK (json_extract(body, '$.validity') IN ('valid', 'partly_valid', 'invalid', 'already_fixed')),
     CHECK (json_type(body, '$.pre_existing') IS NULL OR json_type(body, '$.pre_existing') IN ('null', 'true', 'false')),
     CHECK (json_type(body, '$.code') IS NULL OR json_type(body, '$.code') IN ('null', 'object')),
@@ -113,6 +123,8 @@ CREATE TABLE jobs (
     analysis_id             TEXT REFERENCES analyses (id) ON DELETE CASCADE,
     refresh_id              TEXT REFERENCES dashboard_refreshes (id) ON DELETE CASCADE,
     pass_id                 TEXT REFERENCES comment_passes (id) ON DELETE CASCADE,
+    assessment_pass_id      TEXT,
+    assessment_method       TEXT CHECK (assessment_method IN ('claudius_host','prompt_v4')),
     kind                    TEXT NOT NULL CHECK (kind IN ('plan', 'pr_context', 'analyse_flow', 'ask', 'judge_work', 'verify_comments')),
     priority                INTEGER NOT NULL CHECK (priority IN (0, 1)), -- 0 interactive, 1 batch
     state                   TEXT NOT NULL CHECK (state IN ('queued', 'claimed', 'running', 'succeeded', 'failed', 'cancelled', 'paused')),
@@ -142,9 +154,13 @@ CREATE TABLE jobs (
     created_at              TEXT NOT NULL,
     claimed_at              TEXT,
     finished_at             TEXT,
-    CHECK ((analysis_id IS NOT NULL) + (refresh_id IS NOT NULL) + (pass_id IS NOT NULL) = 1),
+    UNIQUE (id,assessment_pass_id,assessment_method,tenant_id,payer_id),
+    FOREIGN KEY (assessment_pass_id,assessment_method,tenant_id,payer_id)
+        REFERENCES assessment_method_runs(pass_id,method,tenant_id,payer_id),
+    CHECK ((assessment_pass_id IS NULL) = (assessment_method IS NULL)),
+    CHECK ((analysis_id IS NOT NULL) + (refresh_id IS NOT NULL) + (pass_id IS NOT NULL) + (assessment_pass_id IS NOT NULL) = 1),
     CHECK ((kind = 'judge_work') = (refresh_id IS NOT NULL)),
-    CHECK ((kind = 'verify_comments') = (pass_id IS NOT NULL)),
+    CHECK ((kind = 'verify_comments') = (pass_id IS NOT NULL OR assessment_pass_id IS NOT NULL)),
     CHECK ((kind = 'judge_work') = (pull_request_id IS NULL)),
     CHECK (attempt >= 0 AND max_attempts > 0),
     CHECK (round >= 0)
@@ -213,3 +229,205 @@ WHEN (NEW.source_id IS NOT NULL AND NOT EXISTS (
  OR (NEW.duplicate_of IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM comment_items i WHERE i.id=NEW.duplicate_of AND i.pull_request_id=NEW.pull_request_id AND i.tenant_id=NEW.tenant_id))
 BEGIN SELECT RAISE(ABORT, 'point source or duplicate does not match pull request'); END;
+
+CREATE UNIQUE INDEX pull_requests_ownership ON pull_requests(id,tenant_id);
+CREATE UNIQUE INDEX comment_items_ownership ON comment_items(id,tenant_id,pull_request_id);
+ALTER TABLE comment_decisions ADD COLUMN source_version TEXT;
+CREATE UNIQUE INDEX comment_decisions_ownership ON comment_decisions(id,item_id,tenant_id,user_id);
+
+CREATE TABLE assessment_config (
+    user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    primary_method TEXT NOT NULL DEFAULT 'claudius_host' CHECK (primary_method IN ('claudius_host','prompt_v4')),
+    ab_prs TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(ab_prs) AND json_type(ab_prs) = 'array'),
+    ab_until TEXT CHECK (ab_until IS NULL OR (julianday(ab_until) IS NOT NULL AND substr(ab_until,-1) = 'Z'))
+) STRICT;
+CREATE TRIGGER assessment_config_prs_insert BEFORE INSERT ON assessment_config
+WHEN EXISTS (SELECT 1 FROM json_each(NEW.ab_prs) WHERE type <> 'text')
+BEGIN SELECT RAISE(ABORT,'A/B PR selections must be strings'); END;
+CREATE TRIGGER assessment_config_prs_update BEFORE UPDATE OF ab_prs ON assessment_config
+WHEN EXISTS (SELECT 1 FROM json_each(NEW.ab_prs) WHERE type <> 'text')
+BEGIN SELECT RAISE(ABORT,'A/B PR selections must be strings'); END;
+
+CREATE TABLE assessment_daily_usage (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    day_utc TEXT NOT NULL CHECK (length(day_utc)=10 AND date(day_utc,'+0 days') IS day_utc),
+    passes INTEGER NOT NULL DEFAULT 0 CHECK (passes BETWEEN 0 AND 80),
+    PRIMARY KEY (user_id,day_utc)
+) STRICT;
+
+CREATE TABLE assessment_passes (
+    id TEXT PRIMARY KEY NOT NULL,
+    tenant_id TEXT NOT NULL,
+    payer_id TEXT NOT NULL,
+    pull_request_id INTEGER NOT NULL,
+    request_key TEXT NOT NULL CHECK (length(request_key)>0),
+    head TEXT NOT NULL,
+    base TEXT NOT NULL,
+    input_hash TEXT NOT NULL CHECK (length(input_hash)=64 AND input_hash NOT GLOB '*[^0-9a-f]*'),
+    scope_hash TEXT NOT NULL CHECK (length(scope_hash)=64 AND scope_hash NOT GLOB '*[^0-9a-f]*'),
+    snapshot_ref TEXT NOT NULL CHECK (length(snapshot_ref)>0),
+    primary_method TEXT NOT NULL CHECK (primary_method IN ('claudius_host','prompt_v4')),
+    paired INTEGER NOT NULL CHECK (paired IN (0,1)),
+    config TEXT NOT NULL CHECK (json_valid(config) AND json_type(config)='object'),
+    input TEXT NOT NULL CHECK (json_valid(input) AND json_type(input)='object'),
+    day_utc TEXT NOT NULL,
+    admitted_at TEXT NOT NULL CHECK (julianday(admitted_at) IS NOT NULL AND substr(admitted_at,1,10)=day_utc AND substr(admitted_at,-1)='Z'),
+    UNIQUE (payer_id,request_key),
+    UNIQUE (id,tenant_id,payer_id),
+    UNIQUE (id,tenant_id,payer_id,pull_request_id),
+    UNIQUE (id,primary_method,tenant_id,payer_id),
+    FOREIGN KEY (tenant_id,payer_id) REFERENCES memberships(tenant_id,user_id),
+    FOREIGN KEY (pull_request_id,tenant_id) REFERENCES pull_requests(id,tenant_id),
+    FOREIGN KEY (payer_id,day_utc) REFERENCES assessment_daily_usage(user_id,day_utc),
+    CHECK (json_extract(config,'$.primary_method') IS primary_method),
+    CHECK (json_extract(input,'$.head') IS head AND json_extract(input,'$.base') IS base),
+    CHECK (json_extract(input,'$.input_hash') IS input_hash AND json_extract(input,'$.scope_hash') IS scope_hash),
+    CHECK (json_extract(input,'$.snapshot_ref') IS snapshot_ref AND json_extract(input,'$.pull_request_id') IS pull_request_id)
+) STRICT;
+CREATE TRIGGER assessment_passes_immutable BEFORE UPDATE ON assessment_passes
+BEGIN SELECT RAISE(ABORT,'assessment input is frozen'); END;
+
+CREATE TABLE assessment_method_runs (
+    pass_id TEXT NOT NULL,
+    method TEXT NOT NULL CHECK (method IN ('claudius_host','prompt_v4')),
+    tenant_id TEXT NOT NULL,
+    payer_id TEXT NOT NULL,
+    job_id TEXT NOT NULL UNIQUE,
+    version TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed','cancelled')),
+    attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt>=0),
+    accepted_attempt INTEGER CHECK (accepted_attempt=attempt AND accepted_attempt>0),
+    input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens>=0),
+    cached_input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cached_input_tokens BETWEEN 0 AND input_tokens),
+    output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens>=0),
+    requests INTEGER DEFAULT 0 CHECK (requests>=0),
+    duration_ms INTEGER NOT NULL DEFAULT 0 CHECK (duration_ms>=0),
+    failure TEXT,
+    PRIMARY KEY (pass_id,method),
+    UNIQUE (pass_id,method,tenant_id,payer_id),
+    UNIQUE (job_id,pass_id,method,tenant_id,payer_id),
+    FOREIGN KEY (pass_id,tenant_id,payer_id) REFERENCES assessment_passes(id,tenant_id,payer_id),
+    FOREIGN KEY (job_id,pass_id,method,tenant_id,payer_id)
+        REFERENCES jobs(id,assessment_pass_id,assessment_method,tenant_id,payer_id) DEFERRABLE INITIALLY DEFERRED,
+    CHECK ((status='succeeded')=(accepted_attempt IS NOT NULL))
+) STRICT;
+CREATE TRIGGER assessment_method_selection BEFORE INSERT ON assessment_method_runs
+WHEN NOT EXISTS (SELECT 1 FROM assessment_passes p WHERE p.id=NEW.pass_id AND (p.paired=1 OR p.primary_method=NEW.method))
+BEGIN SELECT RAISE(ABORT,'method is not selected for this pass'); END;
+CREATE TRIGGER assessment_method_identity BEFORE UPDATE OF pass_id,method,tenant_id,payer_id,job_id,version ON assessment_method_runs
+BEGIN SELECT RAISE(ABORT,'assessment method identity is frozen'); END;
+
+-- Deduplicate metering by the existing job/attempt fence, including failed retries.
+CREATE TABLE assessment_attempt_usage (
+    pass_id TEXT NOT NULL,
+    method TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    payer_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL CHECK (attempt>0),
+    input_tokens INTEGER NOT NULL CHECK (input_tokens>=0),
+    cached_input_tokens INTEGER NOT NULL CHECK (cached_input_tokens BETWEEN 0 AND input_tokens),
+    output_tokens INTEGER NOT NULL CHECK (output_tokens>=0),
+    requests INTEGER CHECK (requests>=0),
+    duration_ms INTEGER NOT NULL CHECK (duration_ms>=0),
+    PRIMARY KEY (pass_id,method,attempt),
+    FOREIGN KEY (pass_id,method,tenant_id,payer_id) REFERENCES assessment_method_runs(pass_id,method,tenant_id,payer_id)
+) STRICT;
+
+CREATE TABLE assessment_comparison_items (
+    pass_id TEXT NOT NULL,
+    method TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    payer_id TEXT NOT NULL,
+    pull_request_id INTEGER NOT NULL,
+    comparison_key TEXT NOT NULL CHECK (length(comparison_key)>0),
+    local_id TEXT NOT NULL,
+    method_version TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (json_valid(source) AND json_type(source)='object'),
+    primary_item_id TEXT,
+    primary_item_hash TEXT CHECK (primary_item_hash IS NULL OR (length(primary_item_hash)=64 AND primary_item_hash NOT GLOB '*[^0-9a-f]*')),
+    status TEXT NOT NULL CHECK (status IN ('matched','missing_row','duplicate','unmatched','method_failed','head_mismatch')),
+    duplicate_of TEXT CHECK (duplicate_of<>comparison_key),
+    verdict TEXT CHECK (verdict IN ('valid','invalid','already_fixed','out_of_scope')),
+    native_verdict TEXT,
+    proposal TEXT CHECK (proposal IS NULL OR (json_valid(proposal) AND json_type(proposal)='object')),
+    CHECK ((primary_item_id IS NULL)=(primary_item_hash IS NULL)),
+    PRIMARY KEY (pass_id,method,comparison_key),
+    UNIQUE (pass_id,method,comparison_key,tenant_id,payer_id,primary_item_id),
+    FOREIGN KEY (pass_id,method,tenant_id,payer_id) REFERENCES assessment_method_runs(pass_id,method,tenant_id,payer_id),
+    FOREIGN KEY (pass_id,tenant_id,payer_id,pull_request_id) REFERENCES assessment_passes(id,tenant_id,payer_id,pull_request_id),
+    FOREIGN KEY (primary_item_id,tenant_id,pull_request_id) REFERENCES comment_items(id,tenant_id,pull_request_id),
+    FOREIGN KEY (pass_id,method,duplicate_of) REFERENCES assessment_comparison_items(pass_id,method,comparison_key),
+    CHECK ((status='duplicate')=(duplicate_of IS NOT NULL)),
+    CHECK (status NOT IN ('duplicate','missing_row','method_failed') OR verdict IS NULL)
+) STRICT;
+CREATE TRIGGER assessment_duplicate_direct BEFORE INSERT ON assessment_comparison_items
+WHEN NEW.duplicate_of IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM assessment_comparison_items c WHERE c.pass_id=NEW.pass_id AND c.method=NEW.method
+    AND c.comparison_key=NEW.duplicate_of AND c.duplicate_of IS NULL)
+BEGIN SELECT RAISE(ABORT,'duplicate must reference a direct canonical row'); END;
+CREATE TRIGGER assessment_comparison_immutable BEFORE UPDATE ON assessment_comparison_items
+BEGIN SELECT RAISE(ABORT,'accepted comparison rows are immutable'); END;
+
+CREATE TABLE assessment_owner_decisions (
+    pass_id TEXT NOT NULL,
+    method TEXT NOT NULL,
+    comparison_key TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    payer_id TEXT NOT NULL,
+    primary_item_id TEXT NOT NULL,
+    decision_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision>0),
+    owner_id TEXT NOT NULL,
+    decided_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    target TEXT CHECK (target IS NULL OR json_valid(target)),
+    PRIMARY KEY (pass_id,comparison_key,revision),
+    UNIQUE (pass_id,comparison_key,decision_id),
+    FOREIGN KEY (pass_id,method,tenant_id,payer_id) REFERENCES assessment_passes(id,primary_method,tenant_id,payer_id),
+    FOREIGN KEY (pass_id,method,comparison_key,tenant_id,payer_id,primary_item_id)
+        REFERENCES assessment_comparison_items(pass_id,method,comparison_key,tenant_id,payer_id,primary_item_id),
+    FOREIGN KEY (decision_id,primary_item_id,tenant_id,owner_id) REFERENCES comment_decisions(id,item_id,tenant_id,user_id)
+) STRICT;
+CREATE TRIGGER assessment_owner_truth BEFORE INSERT ON assessment_owner_decisions
+WHEN NOT EXISTS (
+    SELECT 1 FROM comment_decisions d JOIN assessment_passes p ON p.id=NEW.pass_id
+    JOIN assessment_comparison_items c ON c.pass_id=p.id AND c.method=p.primary_method AND c.comparison_key=NEW.comparison_key
+    WHERE d.id=NEW.decision_id AND d.head=p.head AND d.kind=NEW.kind AND d.target IS NEW.target
+    AND d.decided_at=NEW.decided_at AND d.body_hash=c.primary_item_hash
+    AND (json_extract(c.source,'$.kind')='inline' OR d.source_version=json_extract(c.source,'$.version')))
+BEGIN SELECT RAISE(ABORT,'only actual owner choices at this head and source version may be attached'); END;
+CREATE TRIGGER assessment_owner_immutable BEFORE UPDATE ON assessment_owner_decisions
+BEGIN SELECT RAISE(ABORT,'owner decision history is append only'); END;
+CREATE TRIGGER assessment_owner_no_delete BEFORE DELETE ON assessment_owner_decisions
+BEGIN SELECT RAISE(ABORT,'owner decision history is append only'); END;
+
+CREATE TRIGGER assessment_primary_item BEFORE INSERT ON comment_assessments
+WHEN NEW.pass_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM assessment_passes p JOIN comment_items i ON i.pull_request_id=p.pull_request_id AND i.tenant_id=p.tenant_id
+    WHERE p.id=NEW.pass_id AND i.id=NEW.item_id AND p.head=NEW.head
+    AND EXISTS(SELECT 1 FROM assessment_method_runs r JOIN jobs j ON j.id=r.job_id
+        WHERE r.pass_id=p.id AND r.method=p.primary_method AND r.job_id=NEW.job_id
+        AND r.status='succeeded' AND r.accepted_attempt=j.attempt))
+BEGIN SELECT RAISE(ABORT,'primary assessment must match frozen head and PR'); END;
+CREATE TRIGGER assessment_primary_item_update BEFORE UPDATE ON comment_assessments
+WHEN NEW.pass_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM assessment_passes p JOIN comment_items i ON i.pull_request_id=p.pull_request_id AND i.tenant_id=p.tenant_id
+    WHERE p.id=NEW.pass_id AND i.id=NEW.item_id AND p.head=NEW.head
+    AND EXISTS(SELECT 1 FROM assessment_method_runs r JOIN jobs j ON j.id=r.job_id
+        WHERE r.pass_id=p.id AND r.method=p.primary_method AND r.job_id=NEW.job_id
+        AND r.status='succeeded' AND r.accepted_attempt=j.attempt))
+BEGIN SELECT RAISE(ABORT,'primary assessment must match frozen head and PR'); END;
+CREATE UNIQUE INDEX jobs_one_assessment_method ON jobs(assessment_pass_id,assessment_method) WHERE assessment_pass_id IS NOT NULL;
+CREATE TRIGGER assessment_job_target BEFORE INSERT ON jobs
+WHEN NEW.assessment_pass_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM assessment_passes p WHERE p.id=NEW.assessment_pass_id AND p.pull_request_id=NEW.pull_request_id
+    AND json_extract(NEW.spec,'$.assessment.pass_id') IS p.id
+    AND json_extract(NEW.spec,'$.assessment.method') IS NEW.assessment_method
+    AND json_extract(NEW.spec,'$.payer') IS p.payer_id
+    AND json_extract(NEW.spec,'$.target.pass_id') IS p.id
+    AND json_extract(NEW.spec,'$.target.repo.head_sha') IS p.head
+    AND json_extract(NEW.spec,'$.target.repo.base_sha') IS p.base)
+BEGIN SELECT RAISE(ABORT,'assessment job must use frozen input'); END;
+CREATE TRIGGER assessment_job_identity BEFORE UPDATE OF assessment_pass_id,assessment_method,payer_id,pull_request_id,tenant_id ON jobs
+WHEN OLD.assessment_pass_id IS NOT NULL OR NEW.assessment_pass_id IS NOT NULL
+BEGIN SELECT RAISE(ABORT,'assessment job identity is frozen'); END;
