@@ -261,11 +261,14 @@ impl AppserverProvider {
         events: mpsc::Sender<ProviderEvent>,
         cancelled: &mut watch::Receiver<bool>,
     ) -> Result<ProviderOutcome, ProviderError> {
-        let session = spec
-            .working_session
-            .as_ref()
-            .and_then(|w| w.thread_id.as_deref())
-            .or_else(|| spec.session.as_ref().map(|s| s.thread_id.as_str()));
+        let session = match spec.kind {
+            JobKind::VerifyComments | JobKind::JudgeWork => None,
+            _ => spec
+                .working_session
+                .as_ref()
+                .and_then(|w| w.thread_id.as_deref())
+                .or_else(|| spec.session.as_ref().map(|s| s.thread_id.as_str())),
+        };
         let mut effective = spec.clone();
         if (session.is_none()
             || spec

@@ -22,7 +22,7 @@ pub(super) async fn prepare(rpc: &mut rpc::Rpc, spec: &JobSpec) -> Result<(), Pr
         }
     }
     let mirror = crate::git::mirror_path(std::path::Path::new("/mirror"), &repo.clone_url);
-    // Retain objects and index; discard agent-writable Git policy before invoking Git.
+    // Retain only objects; rebuild the index to discard agent-writable entry flags and stat data.
     rpc.command(json!({"command":["bash","-c", r#"
 set -eu
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1
@@ -31,16 +31,13 @@ if [ -d /work/repo/.git/objects ] && [ ! -L /work/repo ] && [ ! -L /work/repo/.g
     saved=$(mktemp -d /work/git-reset.XXXXXX)
     trap 'rm -rf -- "$saved"' EXIT
     mv /work/repo/.git/objects "$saved/objects"
-    if [ -f /work/repo/.git/index ] && [ ! -L /work/repo/.git/index ]; then
-        mv /work/repo/.git/index "$saved/index"
-    fi
     rm -rf /work/repo/.git
     object_format=$(git_safe -C "$1" rev-parse --show-object-format)
     git_safe init --quiet --template= --object-format="$object_format" /work/repo
     rm -rf /work/repo/.git/objects
     mv "$saved/objects" /work/repo/.git/objects
-    if [ -f "$saved/index" ]; then mv "$saved/index" /work/repo/.git/index; fi
     rm -rf /work/repo/.git/objects/info
+    rm -f /work/repo/.git/objects/pack/multi-pack-index
     mkdir /work/repo/.git/objects/info
 else
     rm -rf /work/repo

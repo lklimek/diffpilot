@@ -858,6 +858,40 @@ async fn verify_pass_never_resumes_ephemeral_thread() {
     assert_fresh_thread(JobKind::VerifyComments).await;
 }
 
+async fn assert_ephemeral_job_ignores_supplied_analytic_session(kind: JobKind) {
+    let harness = Harness::new(Mode::Normal).await;
+    let mut spec = job(kind);
+    if kind == JobKind::JudgeWork {
+        spec.target = JobTarget::Dashboard {
+            refresh_id: contracts::ids::RefreshId::new_random(),
+        };
+    }
+    spec.session = Some(contracts::job::spec::SessionRef {
+        pull_request_id: 1,
+        thread_id: "parent".into(),
+    });
+    let (tx, _rx) = mpsc::channel(64);
+    let result = harness.provider.execute_job(&spec, tx).await;
+    let seen = harness.finish().await;
+    assert!(result.is_ok(), "{kind:?}: {result:?}");
+    assert!(
+        !seen.iter().any(|r| r["method"] == "thread/resume"),
+        "{kind:?}"
+    );
+    let start = seen.iter().find(|r| r["method"] == "thread/start").unwrap();
+    assert_eq!(start["params"]["ephemeral"], true, "{kind:?}");
+}
+
+#[tokio::test]
+async fn verify_pass_ignores_supplied_analytic_session() {
+    assert_ephemeral_job_ignores_supplied_analytic_session(JobKind::VerifyComments).await;
+}
+
+#[tokio::test]
+async fn judge_job_ignores_supplied_analytic_session() {
+    assert_ephemeral_job_ignores_supplied_analytic_session(JobKind::JudgeWork).await;
+}
+
 #[tokio::test]
 async fn verify_ask_resumes_analytic_parent_with_analytic_policy() {
     let harness = Harness::new(Mode::Normal).await;
@@ -1133,7 +1167,7 @@ async fn checkout_reuses_objects_and_discards_hostile_git_configuration() {
         .iter()
         .find(|r| r["method"] == "command/exec" && r["params"]["command"][0] == "bash")
         .unwrap();
-    for sha256 in [false, true] {
+    for sha256 in [true, false] {
         let dir = tempfile::TempDir::new().unwrap();
         let repo = dir.path().join("repo");
         let script = command["params"]["command"][2]
@@ -1161,8 +1195,8 @@ async fn checkout_reuses_objects_and_discards_hostile_git_configuration() {
                 String::from_utf8(output.stdout).unwrap().trim().to_owned()
             };
             git(&["init", "--quiet", "--object-format=sha256"]);
-            std::fs::write(source.join("source.txt"), "fixture").unwrap();
-            git(&["add", "source.txt"]);
+            std::fs::write(source.join("auth.py"), "secure_check = True").unwrap();
+            git(&["add", "auth.py"]);
             git(&[
                 "-c",
                 "user.name=Fixture",
@@ -1195,7 +1229,20 @@ async fn checkout_reuses_objects_and_discards_hostile_git_configuration() {
             );
         };
         run();
+        let tracked = if sha256 { "auth.py" } else { "Cargo.toml" };
+        let original = std::fs::read(repo.join(tracked)).unwrap();
+        std::fs::write(repo.join(tracked), "secure_check = Fals").unwrap();
+        let output = std::process::Command::new("git")
+            .args(["update-index", "--skip-worktree", tracked])
+            .current_dir(&repo)
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
         std::fs::write(repo.join(".git/objects/reuse-canary"), "keep object store").unwrap();
+        let multi_pack_index = repo.join(".git/objects/pack/multi-pack-index");
+        std::fs::write(&multi_pack_index, "untrusted index").unwrap();
         std::fs::write(repo.join(".git/config"), "[invalid config").unwrap();
         std::fs::create_dir_all(repo.join(".git/hooks")).unwrap();
         std::fs::write(
@@ -1205,6 +1252,8 @@ async fn checkout_reuses_objects_and_discards_hostile_git_configuration() {
         .unwrap();
         std::fs::write(repo.join("untracked"), "discard").unwrap();
         run();
+        assert_eq!(std::fs::read(repo.join(tracked)).unwrap(), original);
+        assert!(!multi_pack_index.exists());
         assert!(
             repo.join(".git/objects/reuse-canary").exists(),
             "object store must survive per-job preparation"
