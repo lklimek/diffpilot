@@ -183,6 +183,5 @@ for the answer).
   Against R9, V1 used a fifth less input, a quarter less output and wall time.
 
 O7 is measured (above). O10 is done: `VerifyItem.commit` (the bot round's head, else the review's commit). The
-charging question of O10 is decided: a pass that only a new prompt version or the fingerprint format made stale
-charges nobody (ADR-023 amendment 2026-11-23).
+charging question of O10 is moot: a new prompt version alone re-assesses nothing (ADR-023 amendment 2026-11-23).
 

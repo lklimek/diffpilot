@@ -838,25 +838,6 @@ impl ReviewLoop<'_> {
             .collect()
     }
 
-    /// Whether a pass of the pull request started after `since` sent `item` (charged or not, however it ended).
-    pub async fn sent_since(
-        &self,
-        pull_request_id: i64,
-        item: CommentItemId,
-        since: Timestamp,
-    ) -> Result<bool, DbError> {
-        let sent: i64 = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM comment_passes AS pass, json_each(pass.sent) AS entry
-             WHERE pass.pull_request_id = ? AND pass.created_at > ? AND json_extract(entry.value, '$.item') = ?)",
-        )
-        .bind(pull_request_id)
-        .bind(ts(since))
-        .bind(item.to_string())
-        .fetch_one(self.pool)
-        .await?;
-        Ok(sent != 0)
-    }
-
     /// Passes charged to a user since `since` (the daily cap) and the end of the PR's latest pass (spacing).
     pub async fn pass_usage(
         &self,

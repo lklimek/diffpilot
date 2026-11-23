@@ -14,7 +14,7 @@ use contracts::api::review_loop::{
 };
 use contracts::common::{LineRange, RepoRef};
 use contracts::ids::{CommentItemId, QuestionId};
-use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
+use contracts::job::result::{JobOutcome, JobResult};
 use db::repo::analyses::testing::seed_analysis;
 use db::repo::questions::{Asked, NewPrQuestion, PrQuestionLimits};
 use db::repo::review_loop::{ObservedItem, PassState, UpsertOutcome};
@@ -423,11 +423,10 @@ async fn pass_input_is_clean_and_carries_the_reply_chain() {
     );
 }
 
-/// Owner decision 2026-11-23: a pass whose items only a new prompt version or fingerprint format made stale is the
-/// system's and charges nobody's daily cap, once per item and stored assessment (a free pass that stored nothing is
-/// not repeated for free); a new reply or a changed comment makes the item stale for real, and that pass is charged.
+/// Owner decision 2026-11-23: a new prompt version alone re-assesses nothing; an item whose comment, replies or code
+/// are unchanged keeps its assessment, and a person's reply makes it stale, charged to the user.
 #[tokio::test]
-async fn reassessment_for_a_new_prompt_version_charges_nobody() {
+async fn a_new_prompt_version_alone_reassesses_nothing() {
     let f = fixture(HEAD).await;
     store_read(&f.state, "Retries timed-out calls.", json!({})).await;
     let a = item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
@@ -437,11 +436,7 @@ async fn reassessment_for_a_new_prompt_version_charges_nobody() {
         PassQueued::Queued
     );
     let first = live_pass(&f.state).await;
-    assert_eq!(
-        first.user_id.as_deref(),
-        Some("u1"),
-        "a new item is the user's"
-    );
+    assert_eq!(first.user_id.as_deref(), Some("u1"));
     assert!(ingest_all(&f.state, &first, None).await);
     let stored = f
         .state
@@ -453,41 +448,6 @@ async fn reassessment_for_a_new_prompt_version_charges_nobody() {
         .expect("assessment");
     let mut older = stored.assessment.clone();
     older.prompt_version = VERIFY_PROMPT_VERSION - 1;
-    let record = f
-        .state
-        .db
-        .pull_requests()
-        .get(PR)
-        .await
-        .expect("pull request");
-    let code = CodeReader::new(&f.state, &record.pr).lines(&a).await;
-    let purpose = purpose_hash(&record.pr.title, Some("Retries timed-out calls."));
-    let head = CommitSha(HEAD.to_owned());
-    for (made_with, fingerprint) in [
-        ("an older prompt version", stored.fingerprint.clone()),
-        (
-            "the fingerprint format before version 4",
-            legacy_fingerprint(&a, &head, code.as_deref(), &purpose, older.prompt_version),
-        ),
-    ] {
-        older.assessed_at = Timestamp::now();
-        f.state
-            .db
-            .review_loop()
-            .add_assessment(DEFAULT_TENANT, a.id, &older, &fingerprint)
-            .await
-            .expect("stored");
-        assert_eq!(
-            charged(PassReason::Opened).await.expect("pass"),
-            PassQueued::Queued
-        );
-        let pass = live_pass(&f.state).await;
-        assert_eq!(pass.user_id, None, "{made_with}: nobody is charged");
-        assert!(ingest_all(&f.state, &pass, None).await);
-    }
-
-    // Review finding: a free pass that fails leaves the old assessment; the next pass sending the item is charged.
-    older.assessed_at = Timestamp::now();
     f.state
         .db
         .review_loop()
@@ -496,33 +456,9 @@ async fn reassessment_for_a_new_prompt_version_charges_nobody() {
         .expect("stored");
     assert_eq!(
         charged(PassReason::Opened).await.expect("pass"),
-        PassQueued::Queued
+        PassQueued::Skipped,
+        "an assessment of an older prompt version is reused"
     );
-    let free = live_pass(&f.state).await;
-    assert_eq!(free.user_id, None);
-    let failed = JobResult {
-        outcome: JobOutcome::Failed {
-            kind: JobFailureKind::Internal,
-            message: "the provider stopped".to_owned(),
-        },
-        ..succeeded(free.job_id.expect("job"), json!({}))
-    };
-    assert!(
-        !ingest::result(&f.state, &free, failed)
-            .await
-            .expect("ingest")
-    );
-    assert_eq!(
-        charged(PassReason::Opened).await.expect("pass"),
-        PassQueued::Queued
-    );
-    let again = live_pass(&f.state).await;
-    assert_eq!(
-        again.user_id.as_deref(),
-        Some("u1"),
-        "the free re-assessment is granted once"
-    );
-    assert!(ingest_all(&f.state, &again, None).await);
 
     store_read(
         &f.state,
@@ -1344,8 +1280,8 @@ fn prompt_hash(template: &str) -> String {
 }
 
 /// The template with the output schema is recorded under the current [`VERIFY_PROMPT_VERSION`]
-/// (`RECORD_PROMPT_HASH=1` records it; a semantic change bumps the version, which makes every stored assessment
-/// stale through its fingerprint), and the rendered prompt is pinned (`UPDATE_GOLDEN=1` rewrites it).
+/// (`RECORD_PROMPT_HASH=1` records it; a semantic change bumps the version, which each new assessment records and
+/// which re-assesses nothing by itself), and the rendered prompt is pinned (`UPDATE_GOLDEN=1` rewrites it).
 #[test]
 fn golden_verify_comments_prompt() {
     let prompt = prompt::render(&golden_input(), &summary(HEAD), LlmLanguage::En).expect("prompt");
