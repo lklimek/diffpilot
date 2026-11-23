@@ -677,6 +677,11 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   or a release branch, every check passed except ignored ones, nothing left to answer, no ready label, not held by a
   current plug-in); they are ranked. `merge_state_pending` counts those of the user's pull requests Ready to merge
   could list whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
+  `facts_checked_at` (absent when none since the scan) is when the listed pull requests' facts were last checked
+  against GitHub after the scan, by the fact check while My work is open (plan §M, every 5 minutes; a re-read after
+  a plug-in signal reads only the signalled pull requests and does not count; a server restart forgets the time
+  until the next check). A summary read in a browser session (never with an access token) keeps My work open for
+  3 minutes.
 - **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
   with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
   recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per
@@ -715,7 +720,8 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   awaiting confirmation; shown `~N`, keeps its tier group); `unjudged` (new item, group "Not judged yet").
 - **Refreshes.** One per user is `scanning` or `ranking` at a time. R2 and a scheduled start supersede a refresh in
   `ranking` and are refused only by one in `scanning` (R2: 409 `refresh_running`; schedule: counts as done), so a
-  `paused` or `waiting_for_analysis` ranking never blocks a new scan. Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
+  `paused` or `waiting_for_analysis` ranking never blocks a new scan. `trigger` is `manual` (R2), `scheduled`
+  (ADR-020) or `automatic` (started while the user had My work open, plan §M; never while a refresh is live). Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
   rate-limit reset. `ranking` is null until the snapshot is stored; its `state` follows plan §B.3
   (`waiting_for_analysis` while a review analysis holds the LLM credential). `log` holds at most 200 plain lines
   without tokens or query strings. The newest 10 refreshes per user are kept, plus the one holding the current
