@@ -27,7 +27,7 @@ test("a ranked snapshot of the world", async ({ page, stack }) => {
   await seedTodos(page, stack);
   await refreshButton(page).click();
   await waitForRefresh(page, ranked);
-  await expect(workList(page).locator("li[data-item]")).toHaveCount(19);
+  await expect(workList(page).locator("li[data-item]")).toHaveCount(18);
 });
 
 test("Excluded lists the excluded author's pull request with its reason", async ({ page }) => {
@@ -50,12 +50,18 @@ test("Excluded lists the excluded author's pull request with its reason", async 
 test("a PR waiting only on others is not in Needs you but in Waiting on others", async ({ page }) => {
   await signIn(page);
   await expect(workList(page).locator("li[data-item]").first()).toBeVisible();
-  expect(await rowIds(page)).not.toContain("PLAT-1176");
-  await page.getByRole("button", { name: /^« More · waiting 1 · ready 1$/ }).click();
+  const ranked = await rowIds(page);
+  expect(ranked).not.toContain("PLAT-1176");
+  expect(ranked).not.toContain("CON-1541");
+  await page.getByRole("button", { name: /^« More · waiting 2 · ready 1$/ }).click();
+  // The ready label (K15 W3a); a requested review, not approved, not mergeable by the user (W3c).
   const waiting = page.getByRole("listitem").filter({ hasText: "PLAT-1176" });
   await expect(waiting).toHaveCount(1);
   await expect(waiting).toContainText("@jun-park");
   await expect(waiting).toContainText("team:core");
+  const requested = page.getByRole("listitem").filter({ hasText: "CON-1541" });
+  await expect(requested).toHaveCount(1);
+  await expect(requested).toContainText("@jun-park");
   await checkScreen(page);
 });
 
@@ -72,7 +78,7 @@ test("size pills; Sizes shown hides a size of pull requests only", async ({ page
   await tiny.click();
   await expect(tiny).toHaveAttribute("aria-pressed", "false");
   const shown = await rowIds(page);
-  for (const id of ["WUI-320", "OPS-14", "NC-476", "NC-490", "CON-1541"]) expect(shown).not.toContain(id);
+  for (const id of ["WUI-320", "OPS-14", "NC-476", "NC-490"]) expect(shown).not.toContain(id);
   expect(shown).toEqual(expect.arrayContaining(["NC-482", "PLAT-1203", ...ISSUES, "TODO-3fa91c2e"]));
   await checkScreen(page);
   await tiny.click();

@@ -42,7 +42,7 @@ test("Polish chosen: every ranking job asks for Polish texts", async ({ page, st
   await page.goto("/");
   await refreshButton(page).click();
   const done = await waitForRefresh(page, ranked);
-  expect(done.judged).toBe(19);
+  expect(done.judged).toBe(18);
 
   const log = readFileSync(join(stack.stateDir ?? "", "logs", "runner.log"), "utf8");
   const claimed = log.match(/job claimed job=\S+ attempt=\d+ kind="judge_work"/g) ?? [];
