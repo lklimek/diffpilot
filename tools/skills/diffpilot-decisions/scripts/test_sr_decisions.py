@@ -1294,3 +1294,27 @@ def test_wait_skips_malformed_events(env, fake, capsys):
     code, out, _ = run(capsys, "wait", "--timeout", "10")
     assert code == 0
     assert DEC in out and "../me" not in out
+
+
+def test_text_refuses_a_symlinked_parent_that_leads_into_a_git_work_tree(env, fake, capsys):
+    fake.on("GET", decision_path(), (200, {}, reject_decision()))
+    checkout = env["tmp"] / "checkout"
+    (checkout / "src").mkdir(parents=True)
+    (checkout / ".git").write_text("gitdir: /elsewhere\n")
+    link = env["tmp"] / "outside"
+    link.symlink_to(checkout / "src")
+    code, _, errout = run(capsys, "text", DEC, E2, "--out", str(link / "reply.md"))
+    assert code == 2 and "git work tree" in errout
+    assert not (checkout / "src" / "reply.md").exists()
+
+
+@pytest.mark.xfail(
+    strict=True, reason="repro: gh pr view --json commits lists at most 100 commits; remove with the fix"
+)
+def test_report_verify_head_cannot_decide_when_gh_lists_a_full_page(env, fake, capsys, fake_gh, monkeypatch):
+    # gh 2.105 answers `pr view --json commits` with the first 100 commits only (dashpay/platform#5210: 289
+    # commits, 100 listed, the head not among them), so a full page proves nothing about a newer commit.
+    monkeypatch.setenv("FAKE_GH_COMMITS", "\n".join(f"{n:040x}" for n in range(1, 101)))
+    code, _, errout = run(capsys, *VERIFY)
+    assert code == 4 and "could not decide" in errout, errout
+    assert fake.requests == []
