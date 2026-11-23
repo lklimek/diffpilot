@@ -212,6 +212,7 @@ impl LlmProvider for Stub {
 
 fn outcome(output: Value) -> ProviderOutcome {
     ProviderOutcome {
+        runtime_session: None,
         session_turns: None,
         output,
         session_id: Some("thread-1".to_owned()),
@@ -1501,4 +1502,34 @@ async fn fake_provider_answers_verify_jobs_for_every_item() {
         assert_eq!(ids, ["C1", "C2"]);
         assert_eq!(answer.answer.is_some(), question.is_some());
     }
+}
+
+#[test]
+fn metered_runtime_failure_preserves_usage_and_non_retryable_kind() {
+    let spec = crate::test_support::spec(JobKind::Plan, Path::new("/unused"));
+    let usage = Usage {
+        input_tokens: 17,
+        cached_input_tokens: 5,
+        output_tokens: 2,
+        requests: Some(1),
+    };
+    let result = super::to_result(
+        &spec,
+        Err(ProviderError::Metered {
+            error: Box::new(ProviderError::Runtime {
+                kind: JobFailureKind::InvalidJsonSchema,
+            }),
+            usage,
+        }),
+        SessionOutcome::Started,
+        &Scrubber::default(),
+    );
+    assert_eq!(result.usage, Some(usage));
+    assert!(matches!(
+        result.outcome,
+        JobOutcome::Failed {
+            kind: JobFailureKind::InvalidJsonSchema,
+            ..
+        }
+    ));
 }

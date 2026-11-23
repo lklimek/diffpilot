@@ -312,6 +312,7 @@ impl CodexProvider {
         }
         phases.since("session_save", step);
         Ok(ProviderOutcome {
+            runtime_session: None,
             output,
             session_id,
             session_turns,

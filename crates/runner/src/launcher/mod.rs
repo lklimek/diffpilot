@@ -24,6 +24,9 @@ pub use template::Settings;
 /// Launcher failures contain no request payloads or credentials.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Correlated failure from a remote launcher; never includes engine diagnostics.
+    #[error("launcher operation failed: {0:?}")]
+    Remote(contracts::launcher::LauncherFailure),
     /// Operator configuration is incomplete.
     #[error("missing or invalid launcher setting {0}")]
     Configuration(String),
@@ -386,7 +389,10 @@ impl Launcher {
         Ok(started && matches!(id, ContainerId::Pr { .. }))
     }
 
-    async fn fetch(&self, id: &ContainerId) -> Result<(), Error> {
+    async fn fetch(
+        &self,
+        id: &ContainerId,
+    ) -> Result<contracts::launcher::DependencySources, Error> {
         let config = self.settings.template(id, true, None)?;
         self.work_volume(id).await?;
         let name = self.settings.name(id, true);
@@ -415,7 +421,29 @@ impl Launcher {
         let result = tokio::time::timeout(std::time::Duration::from_secs(300), async {
             self.docker.start_container(&name, None).await?;
             match self.docker.wait_container(&name, None).next().await {
-                Some(Ok(status)) if status.status_code == 0 => Ok(()),
+                Some(Ok(status)) if status.status_code == 0 => {
+                    let mut outcome = contracts::launcher::DependencySources::Available;
+                    let mut logs = self.docker.logs(
+                        &name,
+                        Some(q::LogsOptionsBuilder::default().stdout(true).build()),
+                    );
+                    let mut bytes = 0usize;
+                    while let Some(Ok(bollard::container::LogOutput::StdOut { message })) =
+                        logs.next().await
+                    {
+                        bytes = bytes.saturating_add(message.len());
+                        if String::from_utf8_lossy(&message)
+                            .lines()
+                            .any(|line| line == "dependency sources resolved without a lock file")
+                        {
+                            outcome = contracts::launcher::DependencySources::ResolvedWithoutLock;
+                        }
+                        if bytes > 1024 * 1024 {
+                            break;
+                        }
+                    }
+                    Ok(outcome)
+                }
                 _ => Err(Error::Fetch),
             }
         })
@@ -436,7 +464,7 @@ impl Launcher {
         result
     }
 
-    // TODO(W4): revoke virtual keys before releasing job attachments so idle/LRU eviction has no live key.
+    // The provider retires local keys before releasing a job attachment.
     async fn sweep(&mut self) -> Result<(), Error> {
         for worker in self.list().await?.into_iter().filter(|w| w.running) {
             let name = self.settings.name(&worker.container, false);
