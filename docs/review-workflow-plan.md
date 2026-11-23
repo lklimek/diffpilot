@@ -279,7 +279,18 @@ thepastaclaw status, the Watch toggle with its badge. Two cards side by side:
    Ask chat's threads about this item are counted on the card ("1 Ask answer").
 
 **Empty:** "No undecided questions in what was read at 10:41: 14 threads (all pages read), 4 reviews, 9 comments
-assessed at 9f3c2e1." **Error:** "GitHub could not be read (rate limit). Showing the read of 10:12; next read at 10:52."
+assessed at 9f3c2e1.", followed by "How to start an agent" (below). **Error:** "GitHub could not be read (rate limit).
+Showing the read of 10:12; next read at 10:52."
+
+**How to start an agent** (owner 2026-11-23; the empty queue and V3's Decision feed): decided effects wait until an
+agent claims their decision; an agent needs an access token with the `review_loop_execute` scope (its checkbox in
+Settings › Access tokens). "Copy prompt" copies, as plain text, the prompt for a Claude Code session with this PR and
+`window.location.origin` filled in: "Use the diffpilot-decisions skill to carry out my decisions on
+<owner>/<repo>#<number> from diffpilot at <origin>: subscribe with capabilities fix,reply,resolve, claim each
+decision, carry out its effects in this repository's checkout of the PR branch, and report each effect done or failed
+with the commit or comment link." The prompt holds no token: the skill reads it from `~/envs/diffpilot-agent.env`
+(`SR_AGENT_KEY`, `SR_URL`; plain http needs `SR_HTTP_HOST`), never from the chat. The agent API is named as text
+(`docs/contracts/agent-api.md` §7). Shown open while no agent is subscribed, else a closed disclosure.
 
 ### 3.3 V2 Table page
 "PR #482: <purpose>" line; columns of `check-pr-comments` §4 plus Decision (select), Reason / target, Resolve
@@ -292,7 +303,8 @@ reason while a gate row is empty or a field is missing. Real `<table>`; selects 
 ### 3.4 V3 Decision log and execution
 Chronological: decision, item, by, at, recommendation then, `via`, override, effects with executor, claim (agent token
 name, lease), reports (done with reference, failed with reason), and GitHub facts ("Reply found on GitHub · 10:46").
-Header: agents subscribed now (token names, capabilities, last seen), open effects, failed effects.
+Header: agents subscribed now (token names, capabilities, last seen), "How to start an agent" (§3.2), open effects,
+failed effects.
 
 ### 3.5 V4 Rounds
 Per round: head, finished, bot verdict, new, still open, carried, asked again, decisions by kind, undecided (counts).

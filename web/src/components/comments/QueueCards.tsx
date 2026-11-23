@@ -730,17 +730,19 @@ export function AssessmentRunningCard({ progress }: { progress: AssessmentProgre
   );
 }
 
-/** The empty queue with what was read (plan §3.2 Empty). */
+/** The empty queue with what was read (plan §3.2 Empty); `children` (how to start an agent) follow. */
 export function EmptyQueueCard({
   read,
   assessed,
   head,
   now,
+  children,
 }: {
   read: GithubRead;
   assessed: number;
   head: string;
   now: Date;
+  children?: ReactNode;
 }) {
   return (
     <section
@@ -756,6 +758,7 @@ export function EmptyQueueCard({
       <p className="text-xs text-muted">
         An empty queue says nothing about defects the reviewers did not raise.
       </p>
+      {children}
     </section>
   );
 }

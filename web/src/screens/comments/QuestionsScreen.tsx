@@ -34,6 +34,7 @@ import {
   GroupCard,
   PrQuestionCard,
 } from "../../components/comments/QueueCards";
+import { StartAgentHelp } from "../../components/comments/StartAgentHelp";
 import { entryKey, inListOrder, itemsAfter, QueueList } from "../../components/comments/QueueList";
 import { Kbd } from "../../components/help/Kbd";
 import { Tooltip } from "../../components/tooltip/Tooltip";
@@ -315,7 +316,13 @@ export function QuestionsScreen() {
         assessed={overview.assessment.assessed}
         head={overview.head}
         now={now}
-      />
+      >
+        <StartAgentHelp
+          pr={pr}
+          origin={window.location.origin}
+          collapsed={(log.data?.subscribers.length ?? 0) > 0}
+        />
+      </EmptyQueueCard>
     );
   else if (entry.item_nos.length > 1)
     card = (

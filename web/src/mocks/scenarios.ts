@@ -330,6 +330,8 @@ const SCENARIOS = {
   "comments-no-analysis": { comments: "no-analysis" },
   "comments-running": { comments: "running" },
   "comments-empty": { comments: "empty" },
+  // The empty queue with no agent subscribed: how to start one is shown open.
+  "comments-no-agent": { comments: "no-agent" },
   "comments-github-error": { comments: "github-error" },
   "comments-watched": { comments: "watched" },
   "show-less": { showLess: true },

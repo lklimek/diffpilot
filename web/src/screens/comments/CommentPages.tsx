@@ -64,7 +64,15 @@ export function LogScreen() {
   const log = useCommentLog(pr);
   if (log.isError) return <StatusMessage kind="error">{errorText(log.error)}</StatusMessage>;
   if (!log.data) return <StatusMessage kind="loading">Loading the decision log…</StatusMessage>;
-  return <DecisionLog log={log.data} pr={pr} now={now} storageKey={`${login}:comments-log`} />;
+  return (
+    <DecisionLog
+      log={log.data}
+      pr={pr}
+      origin={window.location.origin}
+      now={now}
+      storageKey={`${login}:comments-log`}
+    />
+  );
 }
 
 /** V4 Rounds. */

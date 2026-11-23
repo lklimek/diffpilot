@@ -239,7 +239,7 @@ describe("DecisionLog (V3)", () => {
   };
 
   it("agents with push targets, decisions with via, comment and agent reports", () => {
-    render(<DecisionLog log={log()} pr={PR} now={NOW} storageKey="t" />);
+    render(<DecisionLog log={log()} pr={PR} now={NOW} storageKey="t" origin="http://agentic:3000" />);
     expect(screen.getByText("build-host-2")).toBeVisible();
     expect(screen.getByText(/failing since 09:20: HTTP 502/)).toBeVisible();
     expect(screen.getByText(/Accept despite the gate \(G-FUNDS\)/)).toBeVisible();
@@ -252,7 +252,9 @@ describe("DecisionLog (V3)", () => {
   it("shows the stored public reply; a reason left out of an edited reply is marked as not posted", () => {
     const posted =
       "Per maintainer decision, accepted despite G-FUNDS: Pre-existing fee display; tracked in #455.";
-    const { unmount } = render(<DecisionLog log={log()} pr={PR} now={NOW} storageKey="t" />);
+    const { unmount } = render(
+      <DecisionLog log={log()} pr={PR} now={NOW} storageKey="t" origin="http://agentic:3000" />,
+    );
     expect(screen.getByText(`Public reply: "${posted}"`)).toBeVisible();
     expect(screen.queryByText(/Reason \(not posted\)/)).toBeNull();
     unmount();
@@ -261,7 +263,7 @@ describe("DecisionLog (V3)", () => {
       reason: "Soft limit.",
       reply_text: "Kept as is, see #490.",
     });
-    render(<DecisionLog log={edited} pr={PR} now={NOW} storageKey="t" />);
+    render(<DecisionLog log={edited} pr={PR} now={NOW} storageKey="t" origin="http://agentic:3000" />);
     expect(screen.getByText('Public reply: "Kept as is, see #490."')).toBeVisible();
     expect(screen.getByText('Reason (not posted): "Soft limit."')).toBeVisible();
   });
@@ -279,7 +281,15 @@ describe("DecisionLog (V3)", () => {
         delivery: { ...webhook.push!.delivery, last_error: null },
       },
     };
-    render(<DecisionLog log={{ ...l, subscribers: [other] }} pr={PR} now={NOW} storageKey="t" />);
+    render(
+      <DecisionLog
+        log={{ ...l, subscribers: [other] }}
+        pr={PR}
+        now={NOW}
+        storageKey="t"
+        origin="http://agentic:3000"
+      />,
+    );
     expect(screen.getByText(/another user's token, address not shown/)).toBeVisible();
     expect(screen.getByText(/^failing since 09:20$/)).toBeVisible();
     expect(text()).not.toContain("ci.example.lan");
@@ -291,6 +301,7 @@ describe("DecisionLog (V3)", () => {
       <DecisionLog
         log={withDecision({ undone_at: "2026-11-18T09:05:00Z", kind: "another_round", item_no: 24 })}
         pr={PR}
+        origin="http://agentic:3000"
         now={NOW}
         storageKey="t"
       />,
@@ -301,14 +312,28 @@ describe("DecisionLog (V3)", () => {
 
   it("report_reference_outside_github_is_text: only https://github.com/ links open (threat model T24)", () => {
     render(
-      <DecisionLog log={reported("https://github-login.example/acme")} pr={PR} now={NOW} storageKey="t" />,
+      <DecisionLog
+        log={reported("https://github-login.example/acme")}
+        pr={PR}
+        now={NOW}
+        storageKey="t"
+        origin="http://agentic:3000"
+      />,
     );
     expect(screen.queryByRole("link", { name: /Open the reported/ })).toBeNull();
     expect(screen.getByText("https://github-login.example/acme")).toBeVisible();
   });
 
   it("a commit reference opens that commit of the PR's repository on GitHub", () => {
-    render(<DecisionLog log={reported("4c1d9e0a7b")} pr={PR} now={NOW} storageKey="t" />);
+    render(
+      <DecisionLog
+        log={reported("4c1d9e0a7b")}
+        pr={PR}
+        now={NOW}
+        storageKey="t"
+        origin="http://agentic:3000"
+      />,
+    );
     expect(screen.getByRole("link", { name: "Open commit 4c1d9e0 on GitHub (new tab)" })).toHaveAttribute(
       "href",
       "https://github.com/acme/node-client/commit/4c1d9e0a7b",

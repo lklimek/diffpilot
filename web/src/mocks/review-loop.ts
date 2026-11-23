@@ -50,7 +50,7 @@ import { liveAnalysis } from "./live-analysis";
 import { scenario } from "./scenarios";
 
 /** Mockup states of the review loop (scenario field `comments`). */
-export type CommentsMockState = "no-analysis" | "running" | "empty" | "github-error" | "watched";
+export type CommentsMockState = "no-analysis" | "running" | "empty" | "no-agent" | "github-error" | "watched";
 
 const state = (): CommentsMockState | undefined => scenario().comments;
 
@@ -518,6 +518,7 @@ export function listItems(): CommentItem[] {
   const all = items();
   switch (state()) {
     case "empty":
+    case "no-agent":
       return all.filter((i) => !isOpen(i));
     case "running":
       return all.map((i) =>
@@ -1052,55 +1053,58 @@ export function decide(raw: string, body: DecideRequest): Decision | Refusal {
 export const decideBatch = (via: "group" | "bulk" | "table", rows: DecisionBatchRow[]) =>
   storeRows(via, rows);
 
-/** RC10. */
+/** Agents subscribed to the decision feed of the fixture PR (RC10), new objects on every call. */
+const subscribers = (): CommentLog["subscribers"] => [
+  {
+    token_name: "build-host-2",
+    capabilities: ["fix", "reply", "resolve", "follow_up_pr", "upstream_issue"],
+    connected: true,
+    last_seen_at: at("09:21"),
+    push: null,
+  },
+  {
+    token_name: "laptop-cli",
+    capabilities: ["reply", "resolve", "dismiss_review"],
+    connected: false,
+    last_seen_at: at("09:10"),
+    push: {
+      kind: "ntfy",
+      url: "https://ntfy.example.lan",
+      topic: "agent-laptop",
+      secret_last4: "7c1e",
+      delivery: {
+        last: { event: null, outcome: "delivered", at: at("09:09") },
+        last_error: null,
+        failing_since: null,
+      },
+    },
+  },
+  {
+    token_name: "ci-runner",
+    capabilities: ["fix", "reply", "resolve"],
+    connected: false,
+    last_seen_at: at("08:58"),
+    push: {
+      kind: "webhook",
+      url: "https://ci.example.lan/hooks/diffpilot",
+      topic: null,
+      secret_last4: null,
+      delivery: {
+        last: { event: null, outcome: "failed", at: at("09:20") },
+        last_error: "HTTP 502 (3 attempts)",
+        failing_since: at("09:20"),
+      },
+    },
+  },
+];
+
+/** RC10; the `no-agent` scenario has no agent subscribed. */
 export function log(): CommentLog {
   const decisions = items()
     .flatMap((i) => i.decisions)
     .sort((a, b) => a.decided_at.localeCompare(b.decided_at));
   return {
-    subscribers: [
-      {
-        token_name: "build-host-2",
-        capabilities: ["fix", "reply", "resolve", "follow_up_pr", "upstream_issue"],
-        connected: true,
-        last_seen_at: at("09:21"),
-        push: null,
-      },
-      {
-        token_name: "laptop-cli",
-        capabilities: ["reply", "resolve", "dismiss_review"],
-        connected: false,
-        last_seen_at: at("09:10"),
-        push: {
-          kind: "ntfy",
-          url: "https://ntfy.example.lan",
-          topic: "agent-laptop",
-          secret_last4: "7c1e",
-          delivery: {
-            last: { event: null, outcome: "delivered", at: at("09:09") },
-            last_error: null,
-            failing_since: null,
-          },
-        },
-      },
-      {
-        token_name: "ci-runner",
-        capabilities: ["fix", "reply", "resolve"],
-        connected: false,
-        last_seen_at: at("08:58"),
-        push: {
-          kind: "webhook",
-          url: "https://ci.example.lan/hooks/diffpilot",
-          topic: null,
-          secret_last4: null,
-          delivery: {
-            last: { event: null, outcome: "failed", at: at("09:20") },
-            last_error: "HTTP 502 (3 attempts)",
-            failing_since: at("09:20"),
-          },
-        },
-      },
-    ],
+    subscribers: state() === "no-agent" ? [] : subscribers(),
     open_effects: decisions
       .flatMap((d) => d.effects)
       .filter((e) => ["open", "claimed", "waiting"].includes(e.state)).length,

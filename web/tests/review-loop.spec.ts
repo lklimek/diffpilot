@@ -90,6 +90,45 @@ test("notes_icons_open_new_tab", async ({ page, context }) => {
   await expect(tab).toHaveURL(/\/analyses\/[^/]+#f1\.2$/);
 });
 
+/** The prompt the help offers for the fixture PR on this diffpilot. */
+const agentPrompt = (origin: string) =>
+  `Use the diffpilot-decisions skill to carry out my decisions on acme/node-client#482 from diffpilot at ${origin}: ` +
+  "subscribe with capabilities fix,reply,resolve, claim each decision, carry out its effects in this repository's " +
+  "checkout of the PR branch, and report each effect done or failed with the commit or comment link.";
+
+test("start_an_agent_from_the_empty_queue_and_the_decision_log", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto(`${PR}/comments?scenario=comments-no-agent`);
+  const origin = new URL(page.url()).origin;
+  const empty = page.getByRole("region", { name: "No undecided questions" });
+  const help = empty.getByRole("region", { name: "How to start an agent" });
+  await expect(help).toContainText("review_loop_execute");
+  await expect(help.locator("[data-agent-prompt]")).toHaveText(agentPrompt(origin));
+  await help.getByRole("button", { name: "Copy prompt" }).click();
+  await expect(help.getByRole("status")).toHaveText("Copied the prompt.");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(agentPrompt(origin));
+  await expectTooltips(page);
+  await expectTrustWording(page);
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    await expectAccessible(page);
+  }
+  // The Decision log: open while no agent is subscribed, a closed disclosure once one is.
+  await page.goto(`${PR}/comments/log?scenario=comments-no-agent`);
+  const feed = page.getByRole("region", { name: "Decision feed" });
+  await expect(feed.getByRole("region", { name: "How to start an agent" })).toBeVisible();
+  await page.goto(`${PR}/comments/log`);
+  await expect(feed.getByText("build-host-2")).toBeVisible();
+  await expect(feed.getByRole("region", { name: "How to start an agent" })).toHaveCount(0);
+  await expect(feed.locator("[data-agent-prompt]")).toBeHidden();
+  await feed.getByText("How to start an agent").click();
+  await expect(feed.locator("[data-agent-prompt]")).toHaveText(agentPrompt(origin));
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    await expectAccessible(page);
+  }
+});
+
 for (const [name, url] of [
   ["PR page", PR],
   ["question", `${PR}/comments?item=C14`],
