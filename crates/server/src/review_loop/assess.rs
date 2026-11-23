@@ -17,7 +17,8 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::agent::verify_comments::{
-    EarlierDecision, InputError, ItemQuestion, ThreadEntry, VerifyCommentsInput, VerifyItem,
+    EarlierDecision, InputError, ItemQuestion, ReplyAuthorKind, ThreadEntry, ThreadReply,
+    VerifyCommentsInput, VerifyItem,
 };
 use contracts::agent::{self as agent, JobKind, StrictSchemaError};
 use contracts::api::pr::PrSummary;
@@ -440,10 +441,10 @@ fn purpose_hash(title: &str, description: Option<&str>) -> String {
         .collect()
 }
 
-/// SHA-256 hex of the PR purpose (`purpose_hash`), the normalised comment text, the bot's status, the item's context
-/// from the read (replies) and the code at its lines; code that cannot be read counts as changed at every new
-/// head. The prompt version is compared beside it; the claudius skills commit is provenance only, never part of it
-/// (Q28).
+/// SHA-256 hex of the PR purpose (`purpose_hash`), the normalised comment text, the bot's status class, the
+/// replies of people in its thread and the code at its lines; code that cannot be read counts as changed at every new
+/// head. Bot replies (re-reviews each round) and how many replies were left out are not part of it. The prompt
+/// version is compared beside it; the claudius skills commit is provenance only, never part of it (Q28).
 fn fingerprint(
     item: &ItemRecord,
     head: &CommitSha,
@@ -453,7 +454,12 @@ fn fingerprint(
 ) -> String {
     let mut hash = Sha256::new();
     hash.update(format!("fingerprint 2\n{purpose}\n{}\n", item.body_hash));
-    hash.update(serde_json::to_vec(&(item.github.bot_status, context)).unwrap_or_default());
+    let people: Vec<&ThreadReply> = context
+        .iter()
+        .flat_map(|context| &context.replies)
+        .filter(|reply| reply.author_kind != ReplyAuthorKind::Bot)
+        .collect();
+    hash.update(serde_json::to_vec(&(item.github.bot_status, people)).unwrap_or_default());
     hash.update("\n");
     hash_lines(&mut hash, item, head, code);
     hex(hash)

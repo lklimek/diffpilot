@@ -137,10 +137,11 @@ read with tokens (ADR-019).
   prompts; the description loses CodeRabbit's summary and the PR Hygiene block. Stored texts and hashes are unchanged.
 - **Prompt v4** states the gates, the category catalogue, the necessity rule and the checking rules itself and the
   job mounts no skill (ADR-002 amendment 2026-11-23). `resolve` names a commit in `<commit>..HEAD`.
-- **Fingerprint** format 2: purpose hash of the cleaned description, the item's comment, its bot status and replies
-  and its lines; the prompt version is compared beside it. A pass whose every item has a stored
-  assessment that only a new prompt version or the format change made stale is the system's: `comment_passes.user_id`
-  stays null and no user's daily cap is charged. A pass with any other change is charged as before.
+- **Fingerprint** format 2: purpose hash of the cleaned description, the item's comment, its bot status class, the
+  replies of people (not bots: thepastaclaw re-reviews every open thread each round) and its lines; the prompt version
+  is compared beside it. A pass whose every item has a stored assessment that only a new prompt version or the format
+  change made stale is the system's: `comment_passes.user_id` stays null and no user's daily cap is charged. A pass with
+  any other change is charged as before.
 - **Logs.** `Usage.requests` (job result) estimates the model requests of a call from the provider's events (one per
   batch of tool calls and one for the answer); the server's `job token usage` line and the runner's session summary
   name model, effort, requests and, for `verify_comments`, the item count.

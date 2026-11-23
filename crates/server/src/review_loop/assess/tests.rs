@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use contracts::agent::verify_comments::{
-    EarlierDecision, ItemAssessment, ItemQuestion, ReplyAuthorKind, ThreadReply,
+    EarlierDecision, ItemAssessment, ItemQuestion, MAX_REPLIES, ReplyAuthorKind, ThreadReply,
     VerifyCommentsInput,
 };
 use contracts::api::questions::AskState;
@@ -498,6 +498,87 @@ async fn reassessment_for_a_new_prompt_version_charges_nobody() {
     );
     let pass = live_pass(&f.state).await;
     assert_eq!(pass.user_id.as_deref(), Some("u1"));
+}
+
+/// Review finding on the v1.3 input: thepastaclaw re-reviews every open thread each round and the maintainer's
+/// agent answers; dash-evo-tool#1102 C1 got such replies at four heads. Bot replies, their heads and the replies left
+/// out of the window do not change the fingerprint; the bot's status class and a person's reply do.
+#[tokio::test]
+async fn bot_rounds_alone_never_make_an_item_stale() {
+    let f = fixture(HEAD).await;
+    let mut c1 = item(&f.state, "c1", "src/rpc/client.rs", (40, 43)).await;
+    let head = CommitSha(HEAD.to_owned());
+    let reply = |author: &str, author_kind, body: &str| ThreadReply {
+        author: author.to_owned(),
+        author_kind,
+        body: body.to_owned(),
+    };
+    let mut all = vec![
+        reply(
+            "Claudius-Maginificent",
+            ReplyAuthorKind::Bot,
+            "Confirmed. The contactInfo writer selects only `ECDSA_SECP256K1` keys.",
+        ),
+        reply(
+            "thepastaclaw",
+            ReplyAuthorKind::Bot,
+            "That plan resolves the finding once the pin moves.",
+        ),
+    ];
+    let mut prints = Vec::new();
+    for (round_head, answer) in [
+        (
+            "3b45d3b7",
+            "Still blocked upstream at `a78aef12a`. dashpay/platform#5546 is still an open draft.",
+        ),
+        (
+            "ed394ac5",
+            "Still blocked upstream, unchanged at this head.",
+        ),
+        (
+            "9b072e96",
+            "Still blocked on dashpay/platform#5546, which is open.",
+        ),
+        (
+            "81f765f2",
+            "Confirmed, still true at the pinned platform rev. Tracked upstream in dashpay/platform#5546.",
+        ),
+    ] {
+        all.push(reply("Claudius-Maginificent", ReplyAuthorKind::Bot, answer));
+        all.push(reply(
+            "thepastaclaw",
+            ReplyAuthorKind::Bot,
+            &format!("**Still applies** (re-reviewed at `{round_head}`): the writer still selects only secp256k1 keys."),
+        ));
+        let left_out = all.len().saturating_sub(MAX_REPLIES);
+        let context = ItemContext {
+            replies: all[left_out..].to_vec(),
+            earlier_replies: u32::try_from(left_out).expect("few"),
+        };
+        prints.push((
+            fingerprint(&c1, &head, Some("code"), "purpose", Some(&context)),
+            context,
+        ));
+    }
+    assert!(
+        prints.windows(2).all(|pair| pair[0].0 == pair[1].0),
+        "bot rounds at an unchanged status are no change"
+    );
+    let (unchanged, last) = prints.pop().expect("four rounds");
+    c1.github.bot_status = Some(BotThreadStatus::Deferred);
+    let deferred = fingerprint(&c1, &head, Some("code"), "purpose", Some(&last));
+    assert_ne!(deferred, unchanged, "a new status class is a change");
+    let mut answered = last.clone();
+    answered.replies.push(reply(
+        "lklimek",
+        ReplyAuthorKind::Owner,
+        "Deferred until platform#5546 lands.",
+    ));
+    assert_ne!(
+        fingerprint(&c1, &head, Some("code"), "purpose", Some(&answered)),
+        deferred,
+        "a person's reply is a change"
+    );
 }
 
 /// The job mounts no claudius skill (ADR-002 amendment 2026-11-23); an assessment keeps a claudius commit the result
