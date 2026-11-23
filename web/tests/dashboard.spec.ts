@@ -1,4 +1,5 @@
 import { type Page } from "@playwright/test";
+import { pauseClock, settle } from "./clock-support";
 import { expect, test } from "./fixtures";
 import { expectAccessible, expectKeyboardTooltips, netChartBar, PR_URL } from "./screens-support";
 import { ANALYSIS_ID } from "./support";
@@ -568,24 +569,6 @@ test.describe("My work (msw)", () => {
     });
   }
 });
-
-/** Stops the page's clock shortly ahead: from now on, time moves only by `runFor`. */
-async function pauseClock(page: Page): Promise<void> {
-  const now = await page.evaluate(() => Date.now());
-  await page.clock.pauseAt(now + 100);
-}
-
-/**
- * With the clock paused, fires the timers due now (TanStack Query batches its updates with `setTimeout(0)`)
- * until `check` passes with short assertions; time itself does not move.
- */
-async function settle(page: Page, check: (quick: typeof expect) => Promise<void>): Promise<void> {
-  const quick = expect.configure({ timeout: 200 });
-  await expect(async () => {
-    await page.clock.runFor(0);
-    await check(quick);
-  }).toPass({ timeout: 10_000, intervals: [50] });
-}
 
 test.describe("review start from a PR row (msw)", () => {
   const row = (page: Page) =>

@@ -64,16 +64,18 @@ test("cancel after a stored flow while the next flow runs: job stopped, results 
   const cancelledAt = Date.now();
   await checkScreen(page);
 
-  // The running attempt ends without a result, and nothing is claimed afterwards.
+  // The running attempt ends without a result, and this analysis claims no more jobs.
   await expect
     .poll(() => runnerEvents(stack).find((e) => e.event === "finished" && e.job === running.job)?.outcome, {
       timeout: 2 * CLAIM_INTERVAL_MS,
     })
     .toMatch(/^(?!succeeded$)/);
   await page.waitForTimeout(2 * CLAIM_INTERVAL_MS + 1_000);
+  const analysisJobs = new Set(sql(stack, `SELECT id FROM jobs WHERE analysis_id = '${id}'`));
+  expect(analysisJobs.has(running.job)).toBe(true);
   expect(
-    runnerEvents(stack).filter((e) => e.event === "claimed" && e.at > cancelledAt),
-    "no job claimed after the cancel",
+    runnerEvents(stack).filter((e) => e.event === "claimed" && e.at > cancelledAt && analysisJobs.has(e.job)),
+    "no job of the cancelled analysis claimed after the cancel",
   ).toEqual([]);
   expect(documents("flow"), "stored flows discarded").toBe(0);
   expect(sql(stack, `SELECT count(*) FROM documents WHERE analysis_id = '${id}'`)).toEqual(["0"]);

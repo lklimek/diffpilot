@@ -136,19 +136,23 @@ test("a file outside the PR: a link to the line instead of a comment field", asy
   await checkScreen(page);
 });
 
-test("security: comment text with markup renders as text", async ({ page }) => {
+test("security: GitHub comment markup is removed and scripts stay inert", async ({ page }) => {
   const id = await finishedReview(page);
-  const markup = '<img src=x onerror="window.__xss=1"><script>window.__xss=2</script>';
+  const plain = "Keep the RPC timeout.";
+  const markup = `<b data-xss>${plain}</b><img src=x onerror="window.__xss=1"><script>window.__xss=2</script>`;
   await openStep(page, 1, 3);
   await comment(page, 97, "src/rpc/client.rs:97", markup);
   await expect(
     inspector(page).getByRole("status").filter({ hasText: "Added to your GitHub pending review" }),
   ).toBeVisible();
   expect((await pending(page, id)).comments.map((c) => c.body)).toContain(markup);
+  await expect(page.locator("#root [data-xss], #root img, #root script")).toHaveCount(0);
+  expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined();
   await page.reload();
   await navTo(page, /^Pending review on GitHub/);
-  await expect(page.getByRole("main").getByText(markup)).toBeVisible();
-  await expect(page.locator("#root img, #root script")).toHaveCount(0);
+  await expect(page.getByRole("main").getByText(plain, { exact: true })).toBeVisible();
+  await expect(page.getByRole("main").getByText(markup)).toHaveCount(0);
+  await expect(page.locator("#root [data-xss], #root img, #root script")).toHaveCount(0);
   expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined();
   await checkScreen(page);
 });

@@ -1,7 +1,8 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, http, HttpResponse } from "msw";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
 import type { AnalysisSummary, ResolvePrResponse } from "../../api/generated/types";
@@ -10,6 +11,12 @@ import { MOVED_HEAD, setScenario } from "../../mocks/scenarios";
 import { SETTLE_MS } from "../../components/pr-check/PrCheckCard";
 
 const server = startMockServer();
+
+beforeEach(() => {
+  FakeEventSource.reset();
+  vi.stubGlobal("EventSource", FakeEventSource);
+});
+afterEach(() => vi.unstubAllGlobals());
 const analysis = seedFor("default", "analysis") as AnalysisSummary;
 const PR_URL = "https://github.com/acme/node-client/pull/482";
 const PROGRESS = `/analyses/${analysis.id}/progress`;
@@ -445,6 +452,7 @@ describe("Recent reviews", () => {
     await waitFor(() =>
       expect(router.state.location.pathname).toMatch(new RegExp(`^/analyses/${analysis.id}`)),
     );
+    expect(await screen.findByRole("navigation", { name: "Flows and steps" })).toBeVisible();
     expectTrustWording(section.textContent ?? "");
   });
 

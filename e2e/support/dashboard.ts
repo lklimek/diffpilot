@@ -45,6 +45,12 @@ export function worldSettings() {
 }
 export type DashboardSettings = ReturnType<typeof worldSettings>;
 
+/** Signs in without opening My work, so its first automatic scan uses the prepared settings and fixtures. */
+export async function signInForDashboardSetup(page: Page): Promise<void> {
+  const response = await page.request.get("/auth/github/login");
+  expect(response.ok()).toBe(true);
+}
+
 /**
  * Text the judge job carries (scanned facts of the private repository, a TODO description) and writes (the fake
  * judgement): it may reach the database and the browser, never a log.
@@ -132,6 +138,7 @@ export async function githubFaults(page: Page, stack: Stack, faults: unknown[]):
 /** A refresh as R2b reports it (the fields the journeys read). */
 export interface Refresh {
   id: string;
+  trigger: "manual" | "scheduled" | "automatic";
   state: string;
   judged: number;
   reused: number;
