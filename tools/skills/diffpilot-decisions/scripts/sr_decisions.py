@@ -34,7 +34,7 @@ ENV_KEYS = ("SR_AGENT_KEY", "SR_URL", "SR_HTTP_HOST")
 DEFAULT_URL = "http://localhost:3000"
 SCOPE = "review_loop_execute"
 KINDS = ("fix", "reply", "resolve", "pr_comment", "follow_up_pr", "upstream_issue", "todo", "dismiss_review")
-DEFAULT_CAPABILITIES = ["fix", "reply", "resolve"]
+DEFAULT_CAPABILITIES = list(KINDS)
 TOKEN_RE = re.compile(r"srp_[0-9A-Za-z]{8}_[A-Za-z0-9_-]{43}")
 REPO_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 HOST_RE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*")
@@ -54,6 +54,9 @@ REFERENCED_KINDS = ("fix", "follow_up_pr", "upstream_issue")
 REPLY_KINDS = ("reply", "pr_comment")
 ENDED_STATES = ("done", "failed", "cancelled")
 GH_TIMEOUT = 60
+# GitHub moves a PR head shortly after a push: a `behind` compare is read again this often, this far apart.
+HEAD_REREADS = 3
+HEAD_REREAD_DELAY = 5
 CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 30
 COMMAND_DEADLINE = 180
@@ -1079,35 +1082,46 @@ def _verify_head(args, reference: str | None) -> None:
     repo, number = spec.groups()
     sha = reference.lower()
     undecided = "the check could not decide; do not report done, retry or tell the user"
-    view = _gh(["gh", "pr", "view", number, "--repo", repo, "--json", "headRefOid", "--jq", ".headRefOid"])
-    if view.returncode != 0:
-        raise SrError(f"gh could not read the head of {repo}#{number} ({_gh_failure(view)}); {undecided}", EXIT_SERVER)
-    head = view.stdout.strip().lower()
-    if not SHA_RE.fullmatch(head):
-        raise SrError(f"gh answered no head commit for {repo}#{number}; {undecided}", EXIT_SERVER)
-    if head == sha:
-        return
-    compare = _gh(["gh", "api", f"repos/{repo}/compare/{sha}...{head}", "--jq", ".status"])
-    if compare.returncode != 0 and "(HTTP 404)" in compare.stderr:
-        raise SrError(
-            f"GitHub does not know {sha} in {repo}: push the fix to the PR's head branch, or report it failed",
-            EXIT_CONFIG,
-        )
-    if compare.returncode != 0:
-        raise SrError(
-            f"gh could not compare {sha} with the head of {repo}#{number} ({_gh_failure(compare)}); {undecided}",
-            EXIT_SERVER,
-        )
-    status = compare.stdout.strip()
-    if status in ("ahead", "identical"):
-        return
-    if status in ("behind", "diverged"):
-        raise SrError(
-            f"{sha} is not in the head {head} of {repo}#{number}: the pull request does not hold the fix; "
-            "push it to the PR's head branch, or report the fix failed",
-            EXIT_CONFIG,
-        )
-    raise SrError(f"gh answered the compare status {quoted(status)}; {undecided}", EXIT_SERVER)
+    for attempt in range(HEAD_REREADS + 1):
+        if attempt:
+            _sleep(HEAD_REREAD_DELAY)
+        view = _gh(["gh", "pr", "view", number, "--repo", repo, "--json", "headRefOid", "--jq", ".headRefOid"])
+        if view.returncode != 0:
+            raise SrError(
+                f"gh could not read the head of {repo}#{number} ({_gh_failure(view)}); {undecided}", EXIT_SERVER
+            )
+        head = view.stdout.strip().lower()
+        if not SHA_RE.fullmatch(head):
+            raise SrError(f"gh answered no head commit for {repo}#{number}; {undecided}", EXIT_SERVER)
+        if head == sha:
+            return
+        compare = _gh(["gh", "api", f"repos/{repo}/compare/{sha}...{head}", "--jq", ".status"])
+        if compare.returncode != 0 and "(HTTP 404)" in compare.stderr:
+            raise SrError(
+                f"GitHub does not know {sha} in {repo}: push the fix to the PR's head branch, or report it failed",
+                EXIT_CONFIG,
+            )
+        if compare.returncode != 0:
+            raise SrError(
+                f"gh could not compare {sha} with the head of {repo}#{number} ({_gh_failure(compare)}); {undecided}",
+                EXIT_SERVER,
+            )
+        status = compare.stdout.strip()
+        if status in ("ahead", "identical"):
+            return
+        if status == "diverged":
+            raise SrError(
+                f"{sha} is not in the head {head} of {repo}#{number}: the pull request does not hold the fix; "
+                "push it to the PR's head branch, or report the fix failed",
+                EXIT_CONFIG,
+            )
+        if status != "behind":
+            raise SrError(f"gh answered the compare status {quoted(status)}; {undecided}", EXIT_SERVER)
+    raise SrError(
+        f"GitHub has not moved the PR head yet ({repo}#{number} is at {head}, behind {sha}); "
+        "run the same command again shortly",
+        EXIT_SERVER,
+    )
 
 
 def cmd_report(client: Client, args) -> int:
@@ -1182,7 +1196,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
             "--capabilities",
             type=_capabilities,
             default=list(DEFAULT_CAPABILITIES),
-            help=f"effect kinds you execute (default {','.join(DEFAULT_CAPABILITIES)})",
+            help="effect kinds you execute (default: all eight; a decision needs every open kind)",
         )
 
     def filters(p):

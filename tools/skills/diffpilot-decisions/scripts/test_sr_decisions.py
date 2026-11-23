@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import socket
@@ -153,6 +154,35 @@ def claim_body(fd=None, lease="2026-11-23T10:30:00Z"):
     return {"decision": fd or feed_decision(effects=fix_effects("claimed")), "lease_until": lease}
 
 
+ALL_KINDS = "fix,reply,resolve,pr_comment,follow_up_pr,upstream_issue,todo,dismiss_review"
+
+
+def claim_server(fd: dict, lease: str = "2026-11-23T10:30:00Z"):
+    """RF3 as the server's `claim_refusal` (crates/db/src/repo/review_loop/decisions.rs) decides: 409 conflict
+    without an open agent effect; per remaining agent effect, 409 claimed for another agent's claim and 422
+    capability_missing for a kind outside the capabilities; else 201 with every remaining effect claimed."""
+
+    def answer(req):
+        capabilities = set((req["body"] or {}).get("capabilities") or [])
+        remaining = [
+            e
+            for e in fd["decision"]["effects"]
+            if e["executor"] == "agent" and e["state"] in ("waiting", "open", "claimed")
+        ]
+        if not remaining:
+            return (409, {}, err("conflict"))
+        for eff in remaining:
+            if (eff.get("claim") or {}).get("token_name", "agent") != "agent":
+                return (409, {}, err("claimed"))
+            if eff["kind"] not in capabilities:
+                return (422, {}, err("capability_missing"))
+        body = as_claimed(copy.deepcopy(fd))
+        body["lease_until"] = lease
+        return (201, {}, body)
+
+    return answer
+
+
 ME = {"user": {"login": "octo", "name": None, "avatar_url": None, "language": "en"}, "csrf_token": None}
 
 
@@ -221,6 +251,8 @@ class Fake:
                 outer.requests.append(req)
                 queue = outer.routes.get((method, parts.path)) or [(404, {}, err("not_found"))]
                 resp = queue.pop(0) if len(queue) > 1 else queue[0]
+                if callable(resp):
+                    resp = resp(req)
                 if isinstance(resp, Drop):
                     self.close_connection = True
                     return
@@ -538,7 +570,7 @@ def test_list_sends_capabilities_and_repo_and_prints_decisions(env, fake, capsys
     fake.on("GET", FEED, (200, {}, feed_page([feed_decision()])))
     code, out, errout = run(capsys, "list", "--repo", "acme/widget")
     assert code == 0, errout
-    assert fake.requests[0]["query"] == {"capabilities": "fix,reply,resolve", "repo": "acme/widget"}
+    assert fake.requests[0]["query"] == {"capabilities": ALL_KINDS, "repo": "acme/widget"}
     assert DEC in out and "acme/widget#482" in out and "C3" in out and "fix_here" in out
     assert "1 fix" in out and "2 reply after 1" in out and "3 resolve after 2" in out
     assert out.index("1 fix") < out.index("2 reply") < out.index("3 resolve")
@@ -843,9 +875,9 @@ def as_claimed(fd: dict) -> dict:
 
 def serve_claimed(fake, did: str, fd: dict, claim=None) -> None:
     """RF1b and RF3 of a decision this agent holds; `claim` overrides the claim answer."""
-    body = as_claimed(fd)
-    fake.on("GET", decision_path(did), (200, {}, body["decision"]))
-    fake.on("POST", claim_path(did), claim or (201, {}, body))
+    held = as_claimed(fd)["decision"]
+    fake.on("GET", decision_path(did), (200, {}, held))
+    fake.on("POST", claim_path(did), claim or claim_server(held))
 
 
 def test_combine_claims_each_decision_and_writes_one_comment_for_one_review(env, fake, capsys):
@@ -858,7 +890,7 @@ def test_combine_claims_each_decision_and_writes_one_comment_for_one_review(env,
     assert E1 in out and E2 in out
     claims = [r for r in fake.requests if r["method"] == "POST"]
     assert [r["path"] for r in claims] == [claim_path(DEC), claim_path(DEC2)]
-    assert all(r["body"] == {"capabilities": ["fix", "reply", "resolve"]} for r in claims)
+    assert all(r["body"] == {"capabilities": ALL_KINDS.split(",")} for r in claims)
 
 
 def test_combine_writes_one_comment_per_review_of_a_merge_decision(env, fake, capsys, monkeypatch):
@@ -952,17 +984,17 @@ def test_combine_refuses_decisions_of_different_pull_requests(env, fake, capsys)
 
 
 def test_claim_posts_capabilities_and_prints_lease_and_effects_in_seq_order(env, fake, capsys):
-    shuffled = feed_decision(effects=list(reversed(fix_effects("claimed"))))
-    fake.on("POST", claim_path(), (201, {}, claim_body(shuffled)))
+    shuffled = feed_decision(effects=list(reversed(fix_effects())))
+    fake.on("POST", claim_path(), claim_server(shuffled))
     code, out, errout = run(capsys, "claim", DEC)
     assert code == 0, errout
-    assert fake.requests[0]["body"] == {"capabilities": ["fix", "reply", "resolve"]}
+    assert fake.requests[0]["body"] == {"capabilities": ALL_KINDS.split(",")}
     assert "2026-11-23T10:30:00Z" in out
     assert out.index(E1) < out.index(E2) < out.index(E3)
 
 
 def test_claim_json_prints_the_claim(env, fake, capsys):
-    fake.on("POST", claim_path(), (201, {}, claim_body()))
+    fake.on("POST", claim_path(), claim_server(feed_decision()))
     code, out, _ = run(capsys, "claim", DEC, "--json")
     assert code == 0
     assert json.loads(out)["lease_until"] == "2026-11-23T10:30:00Z"
@@ -985,6 +1017,34 @@ def test_claim_refusals_exit_6(env, fake, capsys, status, code_, fragment):
     assert_no_secret(out, errout)
 
 
+@pytest.mark.parametrize(
+    ("fd", "argv", "fragment"),
+    [
+        (feed_decision(), ["--capabilities", "fix,reply"], "outside your capabilities"),
+        (feed_decision(effects=[effect(E1, 1, "pr_comment", text="x", thread=None)]), [], None),
+        (feed_decision(effects=[effect(E1, 1, "dismiss_review", text="x", thread=None)]), [], None),
+        (feed_decision(effects=[effect(E1, 1, "follow_up_pr"), effect(E2, 2, "reply", after=1, text="x")]), [], None),
+        (feed_decision(effects=[done(effect(E1, 1, "reply", text="x"), "u")]), [], "nothing left"),
+    ],
+)
+def test_claim_as_the_server_decides_with_the_default_capabilities(env, fake, capsys, fd, argv, fragment):
+    fake.on("POST", claim_path(), claim_server(fd))
+    code, _, errout = run(capsys, "claim", DEC, *argv)
+    if fragment is None:
+        assert code == 0, errout
+    else:
+        assert code == 6 and fragment in errout
+
+
+def test_claim_of_a_decision_another_agent_holds_exits_6(env, fake, capsys):
+    fd = feed_decision(effects=fix_effects("claimed"))
+    for eff in fd["decision"]["effects"]:
+        eff["claim"] = {"token_name": "other-agent", "lease_until": "2026-11-23T10:30:00Z"}
+    fake.on("POST", claim_path(), claim_server(fd))
+    code, _, errout = run(capsys, "claim", DEC)
+    assert code == 6 and "another agent" in errout
+
+
 def test_claim_insufficient_scope_exits_3(env, fake, capsys):
     fake.on("POST", claim_path(), (403, {}, err("insufficient_scope")))
     code, _, errout = run(capsys, "claim", DEC)
@@ -992,15 +1052,17 @@ def test_claim_insufficient_scope_exits_3(env, fake, capsys):
 
 
 def test_renew_claims_again_and_prints_the_new_lease(env, fake, capsys):
-    fake.on("POST", claim_path(), (201, {}, claim_body(lease="2026-11-23T11:00:00Z")))
+    fake.on(
+        "POST", claim_path(), claim_server(feed_decision(effects=fix_effects("claimed")), lease="2026-11-23T11:00:00Z")
+    )
     code, out, _ = run(capsys, "renew", DEC)
     assert code == 0
     assert "2026-11-23T11:00:00Z" in out
-    assert fake.requests[0]["body"] == {"capabilities": ["fix", "reply", "resolve"]}
+    assert fake.requests[0]["body"] == {"capabilities": ALL_KINDS.split(",")}
 
 
 def test_429_waits_retry_after_once_then_succeeds(env, fake, capsys):
-    fake.on("POST", claim_path(), (429, {"Retry-After": "3"}, err("rate_limited")), (201, {}, claim_body()))
+    fake.on("POST", claim_path(), (429, {"Retry-After": "3"}, err("rate_limited")), claim_server(feed_decision()))
     code, _, _ = run(capsys, "claim", DEC)
     assert code == 0
     assert env["sleeps"] == [3]
@@ -1030,7 +1092,8 @@ def test_report_done_posts_reference_and_a_uuid_key(env, fake, capsys):
 
 @pytest.fixture
 def fake_gh(env, monkeypatch):
-    """A `gh` on PATH: `pr view` prints FAKE_GH_HEAD, `api` prints FAKE_GH_STATUS or fails as FAKE_GH_API_FAIL says."""
+    """A `gh` on PATH: the n-th `pr view` prints the n-th word of FAKE_GH_HEAD, the n-th `api` the n-th of
+    FAKE_GH_STATUS (the last one once used up), or fails as FAKE_GH_API_FAIL says."""
     bindir = env["tmp"] / "bin"
     bindir.mkdir()
     calls = env["tmp"] / "gh-calls"
@@ -1038,14 +1101,17 @@ def fake_gh(env, monkeypatch):
     gh.write_text(
         "#!/bin/sh\n"
         f"printf '%s ' \"$@\" >> '{calls}'; echo >> '{calls}'\n"
+        f"n=$(grep -c \"^$1 \" '{calls}')\n"
+        "pick() { v=$(printf '%s\\n' $1 | sed -n \"${2}p\"); [ -n \"$v\" ] || v=$(printf '%s\\n' $1 | tail -n 1); "
+        "printf '%s\\n' \"$v\"; }\n"
         'case "$1" in\n'
         '  pr) [ -n "$FAKE_GH_VIEW_FAIL" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }\n'
-        "      printf '%s\\n' \"$FAKE_GH_HEAD\" ;;\n"
+        '      pick "$FAKE_GH_HEAD" "$n" ;;\n'
         '  api) case "$FAKE_GH_API_FAIL" in\n'
         '        404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;\n'
         '        ?*) echo "gh: Server Error (HTTP 502)" >&2; exit 1 ;;\n'
         "      esac\n"
-        "      printf '%s\\n' \"$FAKE_GH_STATUS\" ;;\n"
+        '      pick "$FAKE_GH_STATUS" "$n" ;;\n'
         "esac\n"
     )
     gh.chmod(0o755)
@@ -1089,12 +1155,37 @@ def test_report_verify_head_accepts_an_identical_compare(env, fake, capsys, fake
     assert run(capsys, *VERIFY)[0] == 0
 
 
-@pytest.mark.parametrize("status", ["behind", "diverged"])
-def test_report_done_is_refused_when_the_pr_head_lacks_the_commit(env, fake, capsys, fake_gh, monkeypatch, status):
-    monkeypatch.setenv("FAKE_GH_STATUS", status)
+def test_report_done_is_refused_when_the_pr_head_has_diverged(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_STATUS", "diverged")
     code, _, errout = run(capsys, *VERIFY)
     assert code == 2
     assert "not in" in errout and "failed" in errout
+    assert fake.requests == []
+    assert env["sleeps"] == []
+
+
+@pytest.mark.parametrize(
+    ("heads", "statuses"),
+    [(f"{'9' * 40} {SHA}", "behind"), (f"{'9' * 40} {'8' * 40}", "behind ahead")],
+)
+def test_report_verify_head_rereads_a_head_github_has_not_moved_yet(
+    env, fake, capsys, fake_gh, monkeypatch, heads, statuses
+):
+    monkeypatch.setenv("FAKE_GH_HEAD", heads)
+    monkeypatch.setenv("FAKE_GH_STATUS", statuses)
+    fake.on("POST", report_path(), (201, {}, None))
+    code, _, errout = run(capsys, *VERIFY)
+    assert code == 0, errout
+    assert env["sleeps"] == [5]
+
+
+def test_report_verify_head_still_behind_after_three_rereads_exits_4(env, fake, capsys, fake_gh, monkeypatch):
+    monkeypatch.setenv("FAKE_GH_STATUS", "behind")
+    code, _, errout = run(capsys, *VERIFY)
+    assert code == 4
+    assert "has not moved the PR head yet" in errout and "same command again" in errout
+    assert env["sleeps"] == [5, 5, 5]
+    assert [c.split()[0] for c in gh_calls(fake_gh)] == ["pr", "api"] * 4
     assert fake.requests == []
 
 
@@ -1190,7 +1281,7 @@ def test_a_different_report_on_the_same_effect_gets_a_new_key(env, fake, capsys)
 
 def test_a_claim_drops_a_pending_release_key(env, fake, capsys):
     fake.on("POST", report_path(), (500, {}, err("internal")), (201, {}, None))
-    fake.on("POST", claim_path(), (201, {}, claim_body()))
+    fake.on("POST", claim_path(), claim_server(feed_decision()))
     run(capsys, "report", E1, "released")
     run(capsys, "claim", DEC)
     run(capsys, "report", E1, "released")
@@ -1264,7 +1355,7 @@ def test_wait_skips_heartbeats_and_cancellations_and_prints_the_first_available(
     assert time.monotonic() - started < 3
     assert DEC in out and DEC2 not in out
     req = fake.requests[0]
-    assert req["query"] == {"capabilities": "fix,reply,resolve", "repo": "acme/widget"}
+    assert req["query"] == {"capabilities": ALL_KINDS, "repo": "acme/widget"}
     assert req["headers"]["Accept"] == "text/event-stream"
 
 
@@ -1421,7 +1512,6 @@ def test_report_verify_head_accepts_a_fix_below_the_head_of_a_long_pr(env, fake,
     assert all("commits" not in call for call in gh_calls(fake_gh))
 
 
-@pytest.mark.xfail(strict=True, reason="repro: combine re-claims with fix,reply,resolve, which the server refuses")
 def test_combine_as_the_skill_writes_it_claims_with_capabilities_covering_pr_comment(env, fake, capsys):
     # The server refuses a claim whose capabilities miss a remaining agent effect's kind (422 capability_missing,
     # crates/db/src/repo/review_loop/decisions.rs claim_refusal), so a re-claim of a decision holding pr_comment

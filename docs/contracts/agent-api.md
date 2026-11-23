@@ -255,10 +255,9 @@ codes: see `SKILL.md`.
    The skill never prints the token or asks for it.
 3. **Run.** In a Claude Code session in that checkout, paste the prompt the pull request page shows:
 
-   > Use the diffpilot-decisions skill to carry out my decisions on <owner>/<repo>#<number> from diffpilot at
-   > <server origin>: subscribe with capabilities fix,reply,resolve, claim each decision, carry out its effects in
-   > this repository's checkout of the PR branch, and report each effect done or failed with the commit or comment
-   > link.
+   ```text
+   Use the diffpilot-decisions skill to carry out my decisions on <owner>/<repo>#<number> from diffpilot at <server origin>: subscribe, claim each decision, carry out its effects in this repository's checkout of the PR branch, and report each effect done or failed with the commit or comment link.
+   ```
 
 The session claims one decision at a time (the claim covers all its agent effects; decisions whose `pr_comment`
 effects answer one review are claimed together), executes the effects in `seq` order with its own git and `gh`, and
