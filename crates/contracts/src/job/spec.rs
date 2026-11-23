@@ -52,7 +52,7 @@ pub struct JobSpec {
 }
 
 /// What a job works on (ADR-018); exhaustive matches mark every pull-request-only site.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ts_rs::TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobTarget {
     /// A job of an analysis: checkout, the pull request's sessions, GitHub and MemCan access.
@@ -64,6 +64,8 @@ pub enum JobTarget {
     },
     /// A `verify_comments` job (ADR-023): checkout and the read-only GitHub token, no session, no MemCan.
     PullRequestComments(PullRequestCommentsTarget),
+    /// Private comment Ask without an analysis or assessment pass; payer owns its Verify thread.
+    PullRequestAsk(PullRequestAskTarget),
 }
 
 impl JobTarget {
@@ -71,7 +73,7 @@ impl JobTarget {
     pub fn pull_request(&self) -> Option<&PullRequestTarget> {
         match self {
             Self::PullRequest(target) => Some(target),
-            Self::Dashboard { .. } | Self::PullRequestComments(_) => None,
+            Self::Dashboard { .. } | Self::PullRequestComments(_) | Self::PullRequestAsk(_) => None,
         }
     }
 
@@ -80,6 +82,7 @@ impl JobTarget {
         match self {
             Self::PullRequest(target) => Some(&target.repo),
             Self::PullRequestComments(target) => Some(&target.repo),
+            Self::PullRequestAsk(target) => Some(&target.repo),
             Self::Dashboard { .. } => None,
         }
     }
@@ -91,11 +94,12 @@ impl JobTarget {
 }
 
 /// The pull request an analysis job works on.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ts_rs::TS)]
 pub struct PullRequestTarget {
     /// The analysis the job belongs to.
     pub analysis_id: AnalysisId,
     /// Stable database key of the pull request; root of its analytic and private working archives.
+    #[ts(type = "number")]
     pub pull_request_id: i64,
     /// The repository to check out.
     pub repo: RepoCheckout,
@@ -103,9 +107,10 @@ pub struct PullRequestTarget {
 
 /// What a `verify_comments` job works on (ADR-023, plan §4.2): the head checkout and the read-only PR-scoped token,
 /// no session, no MemCan.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ts_rs::TS)]
 pub struct PullRequestCommentsTarget {
     /// Stable database key of the pull request.
+    #[ts(type = "number")]
     pub pull_request_id: i64,
     /// The repository to check out (head).
     pub repo: RepoCheckout,
@@ -113,8 +118,19 @@ pub struct PullRequestCommentsTarget {
     pub pass_id: PassId,
 }
 
+/// Private comment Ask, scoped by `JobSpec::payer`; no assessment quota or analytic archive.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ts_rs::TS)]
+#[serde(deny_unknown_fields)]
+pub struct PullRequestAskTarget {
+    /// Stable database key of the pull request.
+    #[ts(type = "number")]
+    pub pull_request_id: i64,
+    /// Frozen checkout for the question and its evidence.
+    pub repo: RepoCheckout,
+}
+
 /// Where the runner fetches the repository from.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ts_rs::TS)]
 pub struct RepoCheckout {
     /// Clone URL (any scheme; `file://` in development).
     pub clone_url: String,

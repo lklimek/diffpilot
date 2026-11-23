@@ -467,6 +467,11 @@ async fn save_working_checkpoint(
     let session = result.session.as_ref().ok_or(DbError::Conflict)?;
     let route = spec.working_session.as_ref();
     let kind = route.and_then(|r| r.kind).unwrap_or(ThreadKind::Ask);
+    if matches!(spec.target, JobTarget::PullRequestAsk(_))
+        && route.and_then(|r| r.kind) != Some(ThreadKind::Verify)
+    {
+        return Err(DbError::Conflict);
+    }
     if !matches!(kind, ThreadKind::Ask | ThreadKind::Verify) {
         return Err(DbError::Conflict);
     }
@@ -636,6 +641,16 @@ impl Jobs<'_> {
                  SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, round FROM analyses WHERE id = ?",
                 target.analysis_id.to_string(),
             ),
+            JobTarget::PullRequestAsk(target) => (
+                "INSERT INTO jobs (id,tenant_id,private_question_id,kind,priority,state,spec,payer_id,pull_request_id,stage,
+                     generation,flow_id,question_id,created_at,round)
+                 SELECT ?,tenant_id,id,?,?,'queued',?,?,?,?,?,?,?,?,0 FROM questions
+                 WHERE id=? AND analysis_id IS NULL AND private_ask=1 AND kind='comment_item' AND pull_request_id IS NOT NULL",
+                match &job.stage {
+                    JobStage::Ask(question) if spec.kind == JobKind::Ask && target.pull_request_id > 0 => question.to_string(),
+                    _ => return Err(DbError::Conflict),
+                },
+            ),
             JobTarget::Dashboard { refresh_id } => (
                 "INSERT INTO jobs (id, tenant_id, refresh_id, kind, priority, state, spec, payer_id, pull_request_id, stage,
                      generation, flow_id, question_id, created_at, round)
@@ -660,6 +675,7 @@ impl Jobs<'_> {
             .bind(match &spec.target {
                 JobTarget::PullRequest(t) => Some(t.pull_request_id),
                 JobTarget::PullRequestComments(t) => Some(t.pull_request_id),
+                JobTarget::PullRequestAsk(t) => Some(t.pull_request_id),
                 JobTarget::Dashboard { .. } => None,
             })
             .bind(job.stage.key())
@@ -1136,6 +1152,29 @@ impl Jobs<'_> {
         .bind(generation)
         .fetch_optional(self.pool)
         .await?;
+        row.as_ref().map(job_from_row).transpose()
+    }
+
+    /// The private question's live or succeeded job; the caller's payer must own it.
+    pub async fn current_for_private_question(
+        &self,
+        question: QuestionId,
+        payer: &contracts::ids::UserId,
+        generation: u32,
+    ) -> Result<Option<JobRecord>, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            job_columns!(),
+            " FROM jobs WHERE private_question_id=? AND payer_id=? AND generation=?
+             AND state NOT IN ('failed','cancelled') ORDER BY created_at DESC,rowid DESC LIMIT 1"
+        ))
+        .bind(question.to_string())
+        .bind(&payer.0)
+        .bind(generation)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
         row.as_ref().map(job_from_row).transpose()
     }
 

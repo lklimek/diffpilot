@@ -163,3 +163,28 @@ state and direct canonical links. Raw reports are not stored. Callers scrub/norm
 model attribution is never comparison truth. Head, frozen point hash and source version must match; actual decisions snapshot the source version at write time. Read snapshots select the latest
 actual owner revision at the requested cutoff; unmatched secondary rows remain unscored. W5 owns alignment,
 primary effects, sequential orchestration and final report summaries; W6 owns the Settings/Comments controls.
+
+## Private comment Ask without an analysis (approved W8 contract amendment)
+
+CR1 (approved by the coordinator, 2026-11-23): a comment question without a review-ready analysis uses `JobKind::Ask` with
+`JobTarget::PullRequestAsk { pull_request_id, repo }` (`type: pull_request_ask`). This target has neither
+`AnalysisId` nor `PassId`; unexpected target fields are rejected. `JobSpec.payer` is the authenticated asker.
+It uses the (PR, payer) CS1 slot and an immutable `ThreadKind::Verify` working thread, independently of the
+analytic and ordinary Ask threads. It never forks an analytic thread and has no MemCan endpoint.
+
+The server supplies a bounded private context pack containing public PR/comment data and only that payer's
+latest 20 final answers across the PR. Follow-ups retain their original anchor and owner. Prompt data remains
+fenced; answers use the existing Ask schema, wording/size/evidence checks, pinned to the queued checkout.
+On restart, pending, answering and provisional private questions reattach to the durable job; submission is
+idempotent by question/generation. Working checkpoints retain the existing attempt, seed and generation fences.
+A lost working archive falls back to the private pack. W4 must handle this target with the same Verify policy,
+full fixed start/fork/resume configuration and `/work` cwd as comment Ask with an analysis.
+
+0030 adds `questions.private_ask` to separate private recovery from legacy assessment-question continuations.
+New private questions cannot be selected by those continuations, including the interval before job submission.
+`jobs.private_question_id` has a composite FK to (question, PR, user, tenant); CHECKs bind target, payer,
+question/stage, kind and absence of assessment attribution. A partial unique index prevents repeated live or
+successful jobs for one private question/generation. Queue admission and claim use immediate write transactions;
+results and checkpoint publication retain their existing fencing. No assessment pass or daily quota row is
+created, including when the payer has already used all 80 daily assessment slots. Ask's own hourly/PR limits
+and linked-plan admission still apply. Only unapplied 0030 is amended, with its checksum re-recorded.

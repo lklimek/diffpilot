@@ -471,3 +471,41 @@ fn memcan_endpoint_without_allow_write_is_read_only() {
             .expect("endpoint");
     assert!(!endpoint.allow_write);
 }
+
+#[test]
+fn private_pr_ask_target_needs_neither_analysis_nor_pass() {
+    let target: JobTarget = serde_json::from_value(json!({
+        "type": "pull_request_ask", "pull_request_id": 42,
+        "repo": {"clone_url": "file:///fake", "base_sha": "base", "head_sha": "head"}
+    }))
+    .expect("private Ask target");
+    assert_eq!(target.analysis_id(), None);
+    assert!(target.checkout().is_some());
+    assert_eq!(
+        serde_json::to_value(target).unwrap()["type"],
+        "pull_request_ask"
+    );
+}
+
+#[test]
+fn private_pr_ask_target_rejects_analysis_and_pass_fields() {
+    for field in ["analysis_id", "pass_id"] {
+        let mut target = json!({"type":"pull_request_ask", "pull_request_id":42,
+            "repo":{"clone_url":"file:///fake", "base_sha":"b", "head_sha":"h"}});
+        target[field] = json!(AnalysisId::new_random());
+        assert!(serde_json::from_value::<JobTarget>(target).is_err());
+    }
+}
+
+#[test]
+fn job_target_typescript_numbers_match_json_numbers() {
+    use ts_rs::TS;
+    let config = ts_rs::Config::new();
+    for declaration in [
+        contracts::job::spec::PullRequestAskTarget::decl(&config),
+        PullRequestTarget::decl(&config),
+        PullRequestCommentsTarget::decl(&config),
+    ] {
+        assert!(!declaration.contains("bigint"), "{declaration}");
+    }
+}

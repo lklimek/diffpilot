@@ -286,7 +286,8 @@ async fn prepare_spec(
 ) -> Result<contracts::job::spec::JobSpec, ClaimError> {
     let mut spec = job.spec.clone();
     let (analysis, pull_request_id) = match &spec.target {
-        JobTarget::PullRequest(target) => (target.analysis_id, target.pull_request_id),
+        JobTarget::PullRequest(target) => (Some(target.analysis_id), target.pull_request_id),
+        JobTarget::PullRequestAsk(target) => (None, target.pull_request_id),
         JobTarget::Dashboard { .. } | JobTarget::PullRequestComments(_) => {
             return Err(DbError::NotFound.into());
         }
@@ -302,7 +303,10 @@ async fn prepare_spec(
         }
     }
     use contracts::runtime::{AskPreflight, PreflightState, SessionSeed, ThreadKind};
-    let owner = db.analyses().get(analysis).await?;
+    let owner = match analysis {
+        Some(analysis) => Some(db.analyses().get(analysis).await?),
+        None => None,
+    };
     let analytic = db
         .container_sessions()
         .analytic(pull_request_id, &spec.payer)
@@ -313,7 +317,10 @@ async fn prepare_spec(
     });
     spec.working_session = if let JobStage::Ask(question) = job.stage {
         let record = db.questions().get(question, Timestamp::now()).await?;
-        if record.analysis_id != Some(analysis) || record.user_id != spec.payer.0 {
+        if record.analysis_id != analysis
+            || record.pull_request_id != Some(pull_request_id)
+            || record.user_id != spec.payer.0
+        {
             return Err(DbError::Conflict.into());
         }
         let kind = if matches!(
@@ -325,7 +332,11 @@ async fn prepare_spec(
             ThreadKind::Ask
         };
         // Forks never cross payer or policy boundaries, even if this user analysed an older head.
-        if spec.payer.0 != owner.payer_id || kind == ThreadKind::Verify {
+        if owner
+            .as_ref()
+            .is_none_or(|owner| spec.payer.0 != owner.payer_id)
+            || kind == ThreadKind::Verify
+        {
             spec.session = None;
         }
         let generation = db.agent_sessions().generation(pull_request_id).await?;
@@ -373,10 +384,27 @@ async fn prepare_spec(
     } else {
         None
     };
-    spec.context_pack = packs
-        .pack(analysis, &job.stage)
-        .await
-        .map_err(ClaimError::ContextPack)?;
+    spec.context_pack = match analysis {
+        Some(analysis) => packs
+            .pack(analysis, &job.stage)
+            .await
+            .map_err(ClaimError::ContextPack)?,
+        None => {
+            let JobStage::Ask(question) = job.stage else {
+                return Err(DbError::Conflict.into());
+            };
+            let mut pr = db.pull_requests().get(pull_request_id).await?.pr;
+            if let Some(repo) = spec.target.checkout() {
+                pr.base_sha = repo.base_sha.clone();
+                pr.head_sha = repo.head_sha.clone();
+            }
+            Some(
+                crate::ask::private_context_pack(db, &pr, question)
+                    .await
+                    .map_err(ClaimError::ContextPack)?,
+            )
+        }
+    };
     Ok(spec)
 }
 
@@ -394,6 +422,10 @@ async fn github_access(
     // The PR repository only (ADR-005): an analysis job's, or a `verify_comments` job's pull request.
     let repo = match &job.spec.target {
         JobTarget::PullRequest(target) => db.analyses().summary(target.analysis_id).await?.pr.repo,
+        JobTarget::PullRequestAsk(contracts::job::spec::PullRequestAskTarget {
+            pull_request_id,
+            ..
+        }) => db.pull_requests().get(*pull_request_id).await?.pr.repo,
         JobTarget::PullRequestComments(target) => {
             db.pull_requests()
                 .get(target.pull_request_id)

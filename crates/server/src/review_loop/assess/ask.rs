@@ -1,6 +1,6 @@
 //! Ask on a review-comment item (T-L4): with a review-ready analysis of the pull request's head the question goes
 //! to the normal Ask session (`crate::ask`); without one it is stored for the pull request and answered by a
-//! `verify_comments` question pass. Either way the chat is the reader's own, per (pull request, user).
+//! private Verify-kind Ask job. Either way the chat is the reader's own, per (pull request, user).
 
 use contracts::api::analyses::AnalysisState;
 use contracts::api::questions::{AnchoredAskRequest, AskAnchor, AskQuestion, AskState};
@@ -13,7 +13,6 @@ use db::repo::questions::{Asked, NewPrQuestion, PrQuestionLimits, QuestionUpdate
 use db::repo::review_loop::PassRecord;
 use jiff::SignedDuration;
 
-use super::{PassReason, request_pass};
 use crate::ask::{self, AskError, MAX_QUESTIONS_PER_ANALYSIS, MAX_QUESTIONS_PER_USER_PER_HOUR};
 use crate::auth::Session;
 use crate::state::AppState;
@@ -45,7 +44,7 @@ pub enum ItemAskError {
 }
 
 /// Stores the reader's question about a comment item of `repo#number` and starts its answer: through the Ask
-/// session of a review-ready analysis of the current head, else through a `verify_comments` question pass.
+/// session of a review-ready analysis of the current head, else through a private Verify-kind Ask job.
 pub async fn ask_about_item(
     state: &AppState,
     session: &Session,
@@ -92,7 +91,9 @@ pub async fn ask_about_item(
         question.mine = Some(true);
         return Ok(question);
     }
-    // TODO: use a private Verify-kind Ask job when the PR-only Ask target contract is available.
+    crate::jobs::payer::require_linked(db, &session.user_id)
+        .await
+        .map_err(AskError::from)?;
     let parent_id = match parent {
         Some(parent) => Some(ask::thread_root(
             &parent,
@@ -115,7 +116,11 @@ pub async fn ask_about_item(
         user_id: session.user_id.clone(),
         text: text.to_owned(),
     };
-    let mut stored = match db.questions().create_for_pr(question, limits, now).await {
+    let mut stored = match db
+        .questions()
+        .create_private_for_pr(question, limits, now)
+        .await
+    {
         Ok(Asked::Stored(record)) => record.question,
         Ok(Asked::AnalysisLimit) => return Err(AskError::AnalysisLimit.into()),
         Ok(Asked::UserLimit) => return Err(AskError::UserLimit.into()),
@@ -123,13 +128,7 @@ pub async fn ask_about_item(
         Err(error) => return Err(error.into()),
     };
     tracing::info!(pr, question = %stored.id, "question about a comment item asked without an analysis");
-    // A busy pass takes the question when it ends; a failed request is retried by the next pass or at start.
-    match request_pass(state, pr, PassReason::Ask).await {
-        Ok(queued) => tracing::debug!(pr, ?queued, "question pass requested"),
-        Err(error) => {
-            tracing::warn!(pr, error = ?error, "the question pass could not be requested; the question waits")
-        }
-    }
+    ask::start(state, stored.id);
     stored.mine = Some(true);
     Ok(stored)
 }

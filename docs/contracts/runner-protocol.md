@@ -288,3 +288,12 @@ The result transports the text as a JSON string; the server ignores any checker 
 and repeats parsing/verification from trusted context. Only canonical JSON is stored.
 Repairs restore the rejected file explicitly because session archives do not contain
 job working files. Plan, PR context and Ask continue using schema-constrained JSON.
+
+## Standalone private comment Ask (v1.3 W8 amendment)
+
+`JobTarget::PullRequestAsk` serializes as `{type: "pull_request_ask", pull_request_id, repo}` and is valid only
+for `JobKind::Ask`. It has no analysis/pass ID. The claim carries the authenticated payer, no analytic session,
+`working_session.kind = verify`, a context-pack seed and the payer's private working thread when available.
+MemCan is absent; GitHub remains read-only and scoped to the target PR repository. The working checkpoint is
+stored per (PR, payer, verify). Quota admission applies to assessment passes only; this job is independent.
+See [container contracts](containers.md#private-comment-ask-without-an-analysis-approved-w8-contract-amendment).

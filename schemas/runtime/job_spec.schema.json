@@ -256,6 +256,31 @@
           "required": [
             "type"
           ]
+        },
+        {
+          "description": "Private comment Ask without an analysis or assessment pass; payer owns its Verify thread.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pull_request_ask"
+            },
+            "pull_request_id": {
+              "description": "Stable database key of the pull request.",
+              "type": "integer",
+              "format": "int64"
+            },
+            "repo": {
+              "description": "Frozen checkout for the question and its evidence.",
+              "$ref": "#/$defs/RepoCheckout"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "pull_request_id",
+            "repo"
+          ]
         }
       ]
     },

@@ -36,6 +36,52 @@ impl QueueExecutor {
 }
 
 impl QueueExecutor {
+    /// Enqueues a payer-owned PR Ask once per question, independently of analysis and assessment passes.
+    async fn submit_private_ask(&self, request: JobRequest) -> Result<JobHandle, ExecutorError> {
+        let JobStage::Ask(question) = request.stage else {
+            return Err(DbError::Conflict.into());
+        };
+        let payer = request.spec.payer.clone();
+        let generation = request.generation;
+        let current = || async {
+            Ok::<_, ExecutorError>(
+                self.db
+                    .jobs()
+                    .current_for_private_question(question, &payer, generation)
+                    .await?
+                    .map(|job| JobHandle { job_id: job.id }),
+            )
+        };
+        if let Some(handle) = current().await? {
+            return Ok(handle);
+        }
+        let mut spec = request.spec;
+        let saved = self.db.settings().llm_selection().await?;
+        spec.model = crate::model::select_model(
+            spec.kind,
+            &crate::model::ModelContext::default(),
+            saved.as_ref(),
+        );
+        match self
+            .db
+            .jobs()
+            .enqueue_linked(
+                NewJob {
+                    spec,
+                    priority: request.priority,
+                    stage: request.stage,
+                    generation,
+                },
+                Timestamp::now(),
+            )
+            .await
+        {
+            Ok(job) => Ok(JobHandle { job_id: job.id }),
+            Err(DbError::Conflict) => current().await?.ok_or(ExecutorError::Db(DbError::Conflict)),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Enqueues a dashboard job: idempotent per (refresh, stage, generation) in the refresh's ranking attempt, with
     /// the model from `select_model`; no analysis to serialise on, pause or supersede.
     async fn submit_dashboard(
@@ -140,6 +186,7 @@ impl JobExecutor for QueueExecutor {
                 JobTarget::Dashboard { refresh_id } => {
                     return self.submit_dashboard(*refresh_id, request).await;
                 }
+                JobTarget::PullRequestAsk(_) => return self.submit_private_ask(request).await,
                 JobTarget::PullRequestComments(target) => {
                     return self.submit_verify(target.pass_id, request).await;
                 }

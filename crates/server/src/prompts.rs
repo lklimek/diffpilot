@@ -763,6 +763,66 @@ pub fn ask_pr(input: &AskPrInput<'_>) -> Result<String, PromptError> {
     within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
 }
 
+/// A comment Ask without an analysis uses the same answer rules and data fences, with no MemCan profile.
+pub fn ask_comment(
+    pr: &PrSummary,
+    language: LlmLanguage,
+    item: &VerifyItem,
+    question: &str,
+    thread: &[ThreadQuestion<'_>],
+) -> Result<String, PromptError> {
+    let task = fill(
+        ASK_PR,
+        &[
+            ("ask_rules", part("ask_rules")?),
+            ("lenses", part("lenses")?),
+            (
+                "profile",
+                &profile(Profile {
+                    file: None,
+                    memcan: None,
+                })?,
+            ),
+            (
+                "flows",
+                &lines_block("planned flows", Vec::new(), MAX_ASK_CONTEXT_BYTES)?,
+            ),
+            (
+                "context",
+                &json_block("PR context", "", MAX_ASK_CONTEXT_BYTES)?,
+            ),
+            (
+                "question",
+                &clipped_data("question", question, MAX_QUESTION_CHARS)?,
+            ),
+            ("thread", &thread_block(thread)?),
+            ("subject", &subject_block(Some(item))?),
+        ],
+    )?;
+    let prompt = frame_inner("ask", pr, language, SUB_AGENTS_DEFAULT, None, &task)?;
+    within_budget("ask", prompt, PROMPT_BUDGET_BYTES)
+}
+
+/// Private recovery pack: public PR/comment context and only the payer's earlier final answers.
+pub fn comment_context(
+    pr: &PrSummary,
+    item: &VerifyItem,
+    earlier: &[(String, contracts::agent::ask::AskOutput)],
+) -> Result<String, PromptError> {
+    let mut pack = clipped_data(
+        "pull request",
+        &serde_json::to_string(pr)?,
+        MAX_ASK_CONTEXT_BYTES,
+    )?;
+    pack.push_str(&subject_block(Some(item))?);
+    pack.push_str(&json_block(
+        "your earlier answers",
+        &serde_json::to_string(earlier)?,
+        MAX_ASK_CONTEXT_BYTES,
+    )?);
+    within_budget("private context pack", pack, CONTEXT_PACK_BUDGET_BYTES)
+}
+
 /// The earlier questions of a follow-up's thread with an introduction, or nothing for a first question: the first
 /// question, then the latest follow-ups that fit [`MAX_ASK_THREAD_BYTES`] (at most [`MAX_THREAD_FOLLOW_UPS`]), with a
 /// note on the omitted ones. Each entry is clipped to at most half the budget, so the first always fits; a clipped
@@ -1428,7 +1488,24 @@ pub(crate) fn read_only_rules() -> Result<String, PromptError> {
 
 /// Header, rules block and pre-pass notices, then the task.
 fn frame(job: &str, context: JobContext<'_>, task: &str) -> Result<String, PromptError> {
-    let pr = context.pr;
+    frame_inner(
+        job,
+        context.pr,
+        context.language,
+        context.sub_agents,
+        Some(context.prepass),
+        task,
+    )
+}
+
+fn frame_inner(
+    job: &str,
+    pr: &PrSummary,
+    language: LlmLanguage,
+    sub_agents: bool,
+    prepass: Option<&Prepass>,
+    task: &str,
+) -> Result<String, PromptError> {
     let header = fill(
         HEADER,
         &[
@@ -1439,12 +1516,12 @@ fn frame(job: &str, context: JobContext<'_>, task: &str) -> Result<String, Promp
             ("head", &plain(&pr.head_sha.0)),
         ],
     )?;
-    let language = match context.language {
+    let language = match language {
         LlmLanguage::En => part("language_en")?,
         LlmLanguage::Pl => part("language_pl")?,
         LlmLanguage::Ru => part("language_ru")?,
     };
-    let sub_agents = if context.sub_agents {
+    let sub_agents = if sub_agents {
         part("sub_agents_on")?
     } else {
         part("sub_agents_off")?
@@ -1478,7 +1555,9 @@ fn frame(job: &str, context: JobContext<'_>, task: &str) -> Result<String, Promp
             ("defect_form", defect_form),
         ],
     )?;
-    let prepass = context.prepass;
+    let Some(prepass) = prepass else {
+        return Ok(format!("{header}\n{rules}\n{}\n", task.trim_end()));
+    };
     let mut sides: BTreeMap<&str, BTreeSet<LineSide>> = BTreeMap::new();
     let generated = prepass
         .not_rendered
