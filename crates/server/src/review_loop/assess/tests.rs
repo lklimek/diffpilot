@@ -954,3 +954,110 @@ fn golden_verify_comments_prompt() {
         "prompts/golden/verify_comments.txt differs (UPDATE_GOLDEN=1)"
     );
 }
+
+/// Plan §2.8, §4.2: the spacing and the daily cap hold back passes, not the watcher's questions. When an on-demand
+/// pass already assessed every item, an automatic request finds nothing to assess (so the watcher hears of the
+/// questions) instead of the limit.
+#[tokio::test]
+async fn automatic_request_with_nothing_to_assess_is_not_held_back() {
+    for (passes, ended, held) in [
+        (
+            DAILY_PASSES_PER_USER,
+            SignedDuration::from_hours(1),
+            "daily cap",
+        ),
+        (1, SignedDuration::from_mins(1), "spacing"),
+    ] {
+        let f = fixture(HEAD).await;
+        watch(&f.state).await;
+        item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
+        seed_passes(&f.state, passes, ended).await;
+        assert_eq!(
+            request_pass(&f.state, PR, PassReason::Opened)
+                .await
+                .expect("pass"),
+            PassQueued::Queued
+        );
+        let pass = live_pass(&f.state).await;
+        assert!(ingest_all(&f.state, &pass, None).await);
+        assert_eq!(
+            request_pass(&f.state, PR, PassReason::Watch)
+                .await
+                .expect("pass"),
+            PassQueued::Skipped,
+            "held back by the {held}"
+        );
+    }
+}
+
+/// Plan §4.2, US2: without a stored profile of an analysis the assessment still gets the project profile, read
+/// from the pull request's current base.
+#[tokio::test]
+async fn project_profile_comes_from_the_current_base() {
+    let f = fixture(HEAD).await;
+    item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Opened)
+            .await
+            .expect("pass"),
+        PassQueued::Queued
+    );
+    let pass = live_pass(&f.state).await;
+    let job = f
+        .state
+        .db
+        .jobs()
+        .get(pass.job_id.expect("job"))
+        .await
+        .expect("job");
+    let input = VerifyCommentsInput::from_prompt(&job.spec.prompt).expect("input");
+    let profile =
+        std::fs::read_to_string(fixture_dir().join("repo/base/.claudius/project-profile.md"))
+            .expect("fixture profile");
+    assert_eq!(
+        input.project_profile,
+        Some(profile.chars().take(prompts::MAX_PROFILE_CHARS).collect())
+    );
+}
+
+/// A pass whose input cannot be built is not left live, so later requests are not refused as already running.
+#[tokio::test]
+async fn a_pass_whose_input_fails_is_not_left_running() {
+    let f = fixture(HEAD).await;
+    item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
+    let analysis = f
+        .state
+        .db
+        .analyses()
+        .latest_for_pr(PR, LlmLanguage::En)
+        .await
+        .expect("analysis")
+        .expect("seeded");
+    f.state
+        .db
+        .documents()
+        .put(
+            analysis.id,
+            DocumentKind::PrContext,
+            "",
+            &json!({"unreadable": true}),
+            Timestamp::now(),
+        )
+        .await
+        .expect("stored");
+    assert!(
+        request_pass(&f.state, PR, PassReason::Opened)
+            .await
+            .is_err()
+    );
+    assert!(
+        f.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .expect("passes")
+            .is_empty(),
+        "a pass without a job blocks every later request"
+    );
+}

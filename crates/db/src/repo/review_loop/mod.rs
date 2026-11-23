@@ -24,7 +24,7 @@ pub use actions::ActionOutcome;
 pub use carry::NewCarryEvent;
 pub use decisions::{
     ClaimOutcome, DecideOutcome, DecisionOwner, NewDecision, NewEffect, OpenFeedEntry,
-    ReportOutcomeRecord, ReportRequest, StoredDecision,
+    ReportOutcomeRecord, ReportRequest, ScopeGuard, StoredDecision,
 };
 pub use items::{
     CommentPrRecord, ItemRecord, NewPass, ObservedItem, PassCause, PassRecord, PassStart,

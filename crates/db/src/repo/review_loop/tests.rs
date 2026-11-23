@@ -140,6 +140,7 @@ fn fix_decision(item: &ItemRecord) -> NewDecision {
                 params: EffectParams::default(),
             },
         ],
+        scope: ScopeGuard::default(),
     }
 }
 
@@ -2210,4 +2211,154 @@ async fn send_slots_are_limited_per_target_within_the_window() {
         Ok(()),
         "the first message left the window"
     );
+}
+
+/// RQ4, RQ5, RQ11: a PR-level decision is stored only while what its scope rests on is unchanged: the items it acts
+/// on (a gate marked meanwhile changes the item) and, when named, no item raised since.
+#[tokio::test]
+async fn a_pr_level_decision_is_refused_when_its_scope_changed() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let question = new_item(&db, "pr-question").await;
+    let scoped = new_item(&db, "scoped").await;
+    let mut decision = fix_decision(&question);
+    decision.effects = Vec::new();
+    decision.scope = ScopeGuard {
+        items: vec![(scoped.id, scoped.revision)],
+        last_no: None,
+    };
+    let gated = rl
+        .set_gates(
+            scoped.id,
+            scoped.revision,
+            &[GateMark {
+                gate: Gate::Funds,
+                source: GateSource::Owner,
+            }],
+            at(5),
+        )
+        .await
+        .expect("gates");
+    assert_eq!(
+        rl.decide(T, std::slice::from_ref(&decision), at(6))
+            .await
+            .expect("decide"),
+        DecideOutcome::ItemChanged(vec![scoped.no]),
+        "a gate item is never swept into a PR-level decision"
+    );
+    decision.scope = ScopeGuard {
+        items: vec![(gated.id, gated.revision)],
+        last_no: Some(gated.no),
+    };
+    let late = new_item(&db, "raised-meanwhile").await;
+    assert_eq!(
+        rl.decide(T, std::slice::from_ref(&decision), at(7))
+            .await
+            .expect("decide"),
+        DecideOutcome::ItemChanged(vec![late.no])
+    );
+    decision.scope.last_no = Some(late.no);
+    decide_one(&db, decision, at(8)).await;
+}
+
+/// Plan §2.3, RQ3: a claim whose lease ended is settled before the decision is claimed again: what waits on a
+/// failed effect is cancelled and a reopened item's work is not handed out, even before the expiry sweep ran.
+#[tokio::test]
+async fn an_ended_lease_is_settled_before_the_decision_is_claimed_again() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let (a, b) = (
+        AccessTokenId("agentAAA".into()),
+        AccessTokenId("agentBBB".into()),
+    );
+    let lease = SignedDuration::from_mins(30);
+    let all = [EffectKind::Fix, EffectKind::Reply, EffectKind::Resolve];
+
+    let item = new_item(&db, "lapsed-after-failure").await;
+    let failed = decide_one(&db, fix_decision(&item), at(10)).await;
+    rl.claim(failed.id, &a, &all, lease, at(11))
+        .await
+        .expect("claim");
+    let failure = ReportRequest {
+        outcome: ReportOutcome::Failed,
+        reference: None,
+        message: Some("the fix does not build".into()),
+        idempotency_key: "k1".into(),
+    };
+    rl.report(T, failed.effects[0].id, &a, &failure, lease, at(12))
+        .await
+        .expect("report");
+    let ended = at(12) + lease + SignedDuration::from_secs(1);
+    assert_eq!(
+        rl.claim(failed.id, &b, &all, lease, ended)
+            .await
+            .expect("claim"),
+        ClaimOutcome::NothingOpen,
+        "a reply and resolve after a failed fix are never handed out"
+    );
+    assert_eq!(
+        effect_states(&db, &failed).await,
+        [
+            EffectState::Failed,
+            EffectState::Cancelled,
+            EffectState::Cancelled
+        ]
+    );
+
+    let item = new_item(&db, "lapsed-after-reopen").await;
+    let reopened = decide_one(&db, fix_decision(&item), at(10)).await;
+    rl.claim(reopened.id, &a, &all, lease, at(11))
+        .await
+        .expect("claim");
+    let item = rl
+        .item_by_no(PR, item.no)
+        .await
+        .expect("read")
+        .expect("item");
+    rl.reopen(item.id, item.revision, at(12))
+        .await
+        .expect("reopen");
+    let ended = at(11) + lease + SignedDuration::from_secs(1);
+    assert_eq!(
+        rl.claim(reopened.id, &a, &all, lease, ended)
+            .await
+            .expect("claim"),
+        ClaimOutcome::NothingOpen,
+        "the owner is reconsidering the item"
+    );
+    assert_eq!(
+        effect_states(&db, &reopened).await,
+        [EffectState::Cancelled; 3]
+    );
+
+    let item = new_item(&db, "lapsed-healthy").await;
+    let healthy = decide_one(&db, fix_decision(&item), at(10)).await;
+    rl.claim(healthy.id, &a, &all, lease, at(11))
+        .await
+        .expect("claim");
+    let ended = at(11) + lease + SignedDuration::from_secs(1);
+    assert_eq!(
+        rl.claim(healthy.id, &b, &all, lease, ended)
+            .await
+            .expect("claim"),
+        ClaimOutcome::Claimed(ended + lease),
+        "another agent takes over work whose lease ended"
+    );
+}
+
+/// The states of the decision's effects, in order.
+async fn effect_states(
+    db: &Db,
+    decision: &contracts::api::review_loop::Decision,
+) -> Vec<EffectState> {
+    db.review_loop()
+        .feed_decision(decision.id)
+        .await
+        .expect("fetch")
+        .expect("some")
+        .decision
+        .effects
+        .iter()
+        .map(|effect| effect.state)
+        .collect()
 }
