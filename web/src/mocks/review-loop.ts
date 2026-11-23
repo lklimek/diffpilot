@@ -106,7 +106,7 @@ const facts = (fields: Partial<CommentItem["github"]> = {}): CommentItem["github
 
 /** A thread item of thepastaclaw at the head. */
 function item(no: number, fields: Partial<CommentItem> & Pick<CommentItem, "title" | "body">): CommentItem {
-  return {
+  const built: CommentItem = {
     id: `00000000-0000-4000-8000-${String(no).padStart(12, "0")}`,
     no,
     kind: "thread",
@@ -130,6 +130,11 @@ function item(no: number, fields: Partial<CommentItem> & Pick<CommentItem, "titl
     ask_answers: 0,
     ...fields,
   };
+  // RC4: the first round's own commit and end, from the read's rounds.
+  const round = ROUNDS.find((r) => r.number === built.first_round);
+  return round
+    ? { ...built, first_round_commit: { head: round.head, finished_at: round.finished_at } }
+    : built;
 }
 
 const gate = (g: Gate) => [{ gate: g, source: "assessment" as const }];

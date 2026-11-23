@@ -1317,13 +1317,18 @@ state: ItemState,
  */
 revision: number,
 /**
- * Head when first read.
+ * Head when diffpilot first read it (not the head the comment was written on).
  */
 first_seen_head: CommitSha,
 /**
  * Bot round when first read; null before the first round.
  */
 first_round: number | null,
+/**
+ * The commit `first_round` reviewed and when it ended, from the latest read; absent without a round or when
+ * that read lists no such round.
+ */
+first_round_commit?: RoundCommit,
 /**
  * GitHub facts.
  */
@@ -5708,6 +5713,19 @@ undecided: number,
  * Decisions by kind.
  */
 decisions: Array<KindCount>, };
+
+/**
+ * A bot round's reviewed commit and end.
+ */
+export type RoundCommit = {
+/**
+ * Head the round reviewed.
+ */
+head: CommitSha,
+/**
+ * When the round's review was submitted.
+ */
+finished_at: string, };
 
 /**
  * Kind of rule.

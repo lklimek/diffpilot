@@ -18,7 +18,7 @@ import {
   resolveLocked,
   type Choice,
 } from "./decisions";
-import { GateChip, itemId, VALIDITY } from "./parts";
+import { GateChip, itemId, validityAtHead } from "./parts";
 
 const VIA: Record<DecisionVia, string> = {
   question: "in Questions",
@@ -156,7 +156,7 @@ export function CommentsTable(props: CommentsTableProps) {
         <td className={TD}>{a ? `${a.necessity.verdict}: ${a.necessity.reason}` : "—"}</td>
         <td className={TD}>{a?.elsewhere.length ? a.elsewhere.map((e) => e.reference).join(", ") : "—"}</td>
         <td className={TD}>
-          {a ? `${VALIDITY[a.validity]}${a.pre_existing ? "; pre-existing" : ""}` : "not assessed"}
+          {a ? `${validityAtHead(a.validity)}${a.pre_existing ? "; pre-existing" : ""}` : "not assessed"}
         </td>
         <td className={TD}>{a ? CHOICE_LABEL[a.recommendation.kind] : "—"}</td>
       </>

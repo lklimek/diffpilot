@@ -87,7 +87,7 @@
           "minimum": 0
         },
         "first_seen_head": {
-          "description": "Head when first read.",
+          "description": "Head when diffpilot first read it (not the head the comment was written on).",
           "$ref": "#/$defs/CommitSha"
         },
         "first_round": {
@@ -98,6 +98,17 @@
           ],
           "format": "uint32",
           "minimum": 0
+        },
+        "first_round_commit": {
+          "description": "The commit `first_round` reviewed and when it ended, from the latest read; absent without a round or when\nthat read lists no such round.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RoundCommit"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "github": {
           "description": "GitHub facts.",
@@ -386,6 +397,25 @@
     "CommitSha": {
       "description": "A full 40-character hexadecimal git commit id.",
       "type": "string"
+    },
+    "RoundCommit": {
+      "description": "A bot round's reviewed commit and end.",
+      "type": "object",
+      "properties": {
+        "head": {
+          "description": "Head the round reviewed.",
+          "$ref": "#/$defs/CommitSha"
+        },
+        "finished_at": {
+          "description": "When the round's review was submitted.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "head",
+        "finished_at"
+      ]
     },
     "ItemGithubFacts": {
       "description": "Facts diffpilot read from GitHub about an item (badges name the check).",

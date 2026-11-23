@@ -88,6 +88,10 @@ export const VALIDITY: Record<Validity, string> = {
   invalid: "invalid",
 };
 
+/** "invalid at the PR head": the LLM judges validity on the code at the head, so a comment fixed since reads invalid. */
+export const validityAtHead = (validity: Validity): string =>
+  `${VALIDITY[validity] ?? validity} at the PR head`;
+
 /** Plain text with only `https://github.com/…` links (threat model T24); any other URL stays text. */
 export function GithubLinkedText({ text }: { text: string }) {
   const parts = text.split(/(https:\/\/github\.com\/[^\s)<>"']+)/g);

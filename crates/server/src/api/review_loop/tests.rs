@@ -1108,6 +1108,41 @@ async fn pr_page_names_the_author() {
     assert_eq!(w.get(PR).await["author"], "alice");
 }
 
+/// RC4 names the commit and end of an item's first round from the read's rounds, not the head diffpilot first read
+/// it at; an item without a round has none.
+#[tokio::test]
+async fn items_name_the_commit_of_their_first_round() {
+    let w = world().await;
+    let rounds = w.get(&format!("{PR}/comments")).await["rounds"].clone();
+    let items = w.items().await;
+    let mut named = 0;
+    for item in &items {
+        match item["first_round"].as_u64() {
+            Some(number) => {
+                let round = rounds
+                    .as_array()
+                    .expect("rounds")
+                    .iter()
+                    .find(|round| round["number"] == number)
+                    .expect("its round");
+                assert_eq!(
+                    item["first_round_commit"],
+                    json!({"head": round["head"], "finished_at": round["finished_at"]}),
+                    "{item}"
+                );
+                named += 1;
+            }
+            None => assert!(item.get("first_round_commit").is_none(), "{item}"),
+        }
+    }
+    assert!(named > 0, "the fixture has items of a round");
+    assert!(
+        items.iter().any(|item| item["first_round"].is_u64()
+            && item["first_round_commit"]["head"] != item["first_seen_head"]),
+        "a round's commit differs from the head diffpilot first read"
+    );
+}
+
 /// RC4 counts the reader's answered Ask questions about each item; open questions and other readers' answers are
 /// not counted.
 #[tokio::test]

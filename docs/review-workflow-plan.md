@@ -243,7 +243,9 @@ thepastaclaw status, the Watch toggle with its badge. Two cards side by side:
   assessment state ("LLM assessment running: 4 of 9 comments"), "Open Comments" and "Table".
 
 ### 3.2 V1 Questions: the card (top to bottom: context, evidence, assessment, recommendation, decision)
-1. Header: `C14 · 2 of 9`; source and author ("thepastaclaw · bot · inline thread"); first seen (round, head); the
+1. Header: `C14 · 2 of 9`; source and author ("thepastaclaw · bot · inline thread"); "raised in round 1 on a797ee1,
+   26 Oct 2026, 14:05" (the round's own commit and end, `first_round_commit`; owner 2026-11-23), else "first seen at"
+   the head of diffpilot's first read; the
    bot's severity marker as a GitHub-tagged claim; gate chip; category; repeat-of link; **notes elsewhere**: icons only,
    each with an accessible name and a tooltip on hover and focus ("Flows: the LLM flagged these lines (1 flag)",
    "Files: incidental-change note", "Dependencies: 3 changed callers", "PR Hygiene: 2 blockers", "thepastaclaw:
@@ -301,8 +303,10 @@ effects, Reopen). All PRs: one row per PR with the same counts.
 
 ### 3.7 Wording (brief §1; the wording checks cover `components/comments/**`, `screens/pr/**`, `screens/comments/**`)
 LLM text: "LLM" tag; tooltip "written by diffpilot's LLM, not checked". Validity reads "The LLM says: valid / partly
-valid / invalid". Section title "LLM assessment", never "verification" or "verified". A bot's severity is its own
-words with the "GitHub" tag. No numeric confidence; counts, never percentages. External agents' reports read "Agent
+valid / invalid at the PR head", with "Judged on the code at the PR head, not on the code the comment was written on."
+(a comment fixed since reads invalid; owner 2026-11-23). Section title "LLM assessment", never "verification" or
+"verified". A bot's severity is its own words with the "GitHub" tag. No numeric confidence; counts, never
+percentages. External agents' reports read "Agent
 <token name> reports: replied (link)"; a GitHub read adds a fact badge. Plug-in statements are attributed
 ("thepastaclaw status: reviewing (verify, 3/5) · data of 10:21").
 

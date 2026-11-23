@@ -817,7 +817,7 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC1 | GET | `/api/v1/prs/{owner}/{name}/{number}` | read | – | `PrPage`; a known PR that GitHub could not be read for yet is still served (header from the stored PR, `state` and `base` empty, the failure in `comments.read.failure`) |
 | RC2 | GET | `…/comments` | read | – | `CommentsOverview` |
 | RC3 | POST | `…/comments/read` | session_csrf | – | 202 (429 `rate_limited` under 10 s) |
-| RC4 | GET | `…/comments/items` | read | `ItemsQuery` | `CommentItem[]` |
+| RC4 | GET | `…/comments/items` | read | `ItemsQuery` | `CommentItem[]`; `first_seen_head` is the head of diffpilot's first read, `first_round_commit` (`RoundCommit { head, finished_at }`) the commit `first_round` reviewed and its end, from the latest read's rounds (absent without a round or when that read lists no such round) |
 | RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
 | RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202; 409 `conflict` while an assessment pass of the PR is queued or running (assess again once it ends) |
 | RC8 | POST | `…/comments/items/{item}/decisions` | session_csrf | `DecideRequest` | 201 `Decision`; 409 `item_changed`; 409 `conflict` when its `plan_digest` no longer matches the plan |

@@ -90,6 +90,34 @@ describe("QuestionCard (plan §3.2)", () => {
     expectTrustWording(document.body.textContent ?? "");
   });
 
+  it("names the round a comment was raised in with that round's commit, not the head of the first read", () => {
+    const header = () => screen.getByText(/^C22 · 2 of 9/);
+    const c22 = byNo(22);
+    const { rerender } = show({
+      ...c22,
+      first_round: 1,
+      first_round_commit: {
+        head: "a797ee1c0ffee000000000000000000000000000",
+        finished_at: "2026-10-26T12:00:00Z",
+      },
+    });
+    expect(header()).toHaveTextContent(/raised in round 1 on a797ee1, 26 Oct 2026/);
+    expect(header()).not.toHaveTextContent(c22.first_seen_head.slice(0, 7));
+    rerender({ ...c22, first_round: 2, first_round_commit: undefined });
+    expect(header()).toHaveTextContent(/raised in round 2$/);
+    rerender({ ...c22, first_round: null, first_round_commit: undefined });
+    expect(header()).toHaveTextContent(`first seen at ${c22.first_seen_head.slice(0, 7)}`);
+  });
+
+  it("says validity is judged at the PR head, so a comment fixed since is not read as a mistaken reviewer", () => {
+    show(byNo(14));
+    expect(screen.getByText("partly valid at the PR head")).toBeVisible();
+    expect(
+      screen.getByText("Judged on the code at the PR head, not on the code the comment was written on."),
+    ).toBeVisible();
+    expectTrustWording(document.body.textContent ?? "");
+  });
+
   it("renders the comment as text: only https://github.com links become links (T24)", () => {
     show(byNo(14));
     const quote = document.querySelector("[data-comment-text]")!;

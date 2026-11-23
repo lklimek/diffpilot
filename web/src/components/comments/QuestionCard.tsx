@@ -13,14 +13,14 @@ import type {
 import { busyTip, buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
-import { clockText } from "../format/time";
+import { clockText, dateTimeText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, type EffectsPreviewState } from "./decisions";
 import { DecisionForm } from "./DecisionForm";
 import { GateMenu } from "./GateMenu";
 import { NotesElsewhere } from "./NotesElsewhere";
-import { Chip, FactChip, GateChip, GithubLinkedText, itemId, sourceText, VALIDITY } from "./parts";
+import { Chip, FactChip, GateChip, GithubLinkedText, itemId, sourceText, validityAtHead } from "./parts";
 
 /** The code context of the card: loading, failed, or the lines. */
 export type ContextState =
@@ -143,6 +143,32 @@ const Row = ({ term, children }: { term: string; children: ReactNode }) => (
   </>
 );
 
+/**
+ * Where the comment comes from: its bot round with that round's own commit and end, else the head diffpilot first
+ * read it at (never the head of a later first read paired with an old round).
+ */
+function Raised({ item }: { item: CommentItem }) {
+  const round = item.first_round_commit;
+  if (item.first_round === null)
+    return (
+      <>
+        {" "}
+        · first seen at <code>{item.first_seen_head.slice(0, 7)}</code>
+      </>
+    );
+  return (
+    <>
+      {` · raised in round ${item.first_round}`}
+      {round && (
+        <>
+          {" "}
+          on <code>{round.head.slice(0, 7)}</code>, {dateTimeText(round.finished_at)}
+        </>
+      )}
+    </>
+  );
+}
+
 /** The LLM assessment of the item, or why there is none. */
 function Assessment({ item }: { item: CommentItem }) {
   const a = item.assessment;
@@ -160,7 +186,10 @@ function Assessment({ item }: { item: CommentItem }) {
   return (
     <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[13px]">
       <Row term="The LLM says">
-        {VALIDITY[a.validity] ?? a.validity}
+        {validityAtHead(a.validity)}
+        <span className="block text-xs text-muted">
+          Judged on the code at the PR head, not on the code the comment was written on.
+        </span>
         {a.evidence.map((e) => (
           <span key={`${e.path}:${e.line}`} className="block text-xs">
             <code>
@@ -248,8 +277,7 @@ export function QuestionCard(props: QuestionCardProps) {
     >
       <p className="m-0 text-xs text-muted">
         {itemId(item)} · {props.position.index} of {props.position.total} · {sourceText(item)}
-        {item.first_round !== null && ` · first seen round ${item.first_round}`} at{" "}
-        <code>{item.first_seen_head.slice(0, 7)}</code>
+        <Raised item={item} />
       </p>
       <h2 id={`q-${item.id}`} ref={heading} tabIndex={-1} className="mt-1 mb-1.5 text-lg font-semibold">
         {itemId(item)} · {item.title}

@@ -223,10 +223,15 @@ pub struct CommentItem {
     pub state: ItemState,
     /// Revision; a decision names the revision it saw (409 `item_changed` otherwise).
     pub revision: u32,
-    /// Head when first read.
+    /// Head when diffpilot first read it (not the head the comment was written on).
     pub first_seen_head: CommitSha,
     /// Bot round when first read; null before the first round.
     pub first_round: Option<u32>,
+    /// The commit `first_round` reviewed and when it ended, from the latest read; absent without a round or when
+    /// that read lists no such round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub first_round_commit: Option<RoundCommit>,
     /// GitHub facts.
     pub github: ItemGithubFacts,
     /// Set when resolved outside diffpilot.
@@ -247,6 +252,15 @@ pub struct CommentItem {
     pub decisions: Vec<Decision>,
     /// Answers in the Ask chat about this item.
     pub ask_answers: u32,
+}
+
+/// A bot round's reviewed commit and end.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct RoundCommit {
+    /// Head the round reviewed.
+    pub head: CommitSha,
+    /// When the round's review was submitted.
+    pub finished_at: Timestamp,
 }
 
 /// Query of RC4.
