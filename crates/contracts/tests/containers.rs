@@ -298,3 +298,11 @@ fn assessment_typescript_numbers_match_json_numbers() {
         assert!(!declaration.contains("bigint"), "{declaration}");
     }
 }
+
+#[test]
+fn device_link_response_contains_only_the_public_code_url_and_expiry() {
+    let value = serde_json::json!({"user_code":"FAKE-CODE","verification_url":"https://auth.openai.com/codex/device",
+        "expires_at":"2026-11-23T20:00:00Z"});
+    let link: contracts::gateway::DeviceLink = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(link).unwrap(), value);
+}

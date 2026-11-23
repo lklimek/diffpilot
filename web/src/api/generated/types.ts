@@ -2864,6 +2864,23 @@ notes: NotesState,
 repositories: Array<DependencyRepository>, };
 
 /**
+ * Public device-code challenge; upstream tokens never cross this boundary.
+ */
+export type DeviceLink = {
+/**
+ * Short code the owner enters at the provider.
+ */
+user_code: string,
+/**
+ * Fixed provider verification page.
+ */
+verification_url: string,
+/**
+ * Deadline of the staged attempt.
+ */
+expires_at: string, };
+
+/**
  * A diff hunk.
  */
 export type DiffHunk = {

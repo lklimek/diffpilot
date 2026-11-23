@@ -52,6 +52,17 @@ pub struct LinkCredential {
     pub mode: CredentialMode,
 }
 
+/// Public device-code challenge; upstream tokens never cross this boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct DeviceLink {
+    /// Short code the owner enters at the provider.
+    pub user_code: String,
+    /// Fixed provider verification page.
+    pub verification_url: String,
+    /// Deadline of the staged attempt.
+    pub expires_at: Timestamp,
+}
+
 /// Non-secret status shared by gateway, server and Settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CredentialStatus {
