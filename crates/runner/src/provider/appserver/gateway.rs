@@ -26,14 +26,24 @@ impl GatewayClient {
             || base.fragment().is_some()
             || base.path() != "/"
         {
-            return Err(runtime(JobFailureKind::Configuration));
+            return Err(fault(
+                JobFailureKind::Configuration,
+                "gateway/config",
+                "invalid admin base URL",
+            ));
         }
         let client = Client::builder()
             .timeout(Duration::from_secs(15))
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .build()
-            .map_err(|_| runtime(JobFailureKind::Configuration))?;
+            .map_err(|_| {
+                fault(
+                    JobFailureKind::Configuration,
+                    "gateway/config",
+                    "HTTP client construction",
+                )
+            })?;
         Ok(Self {
             client,
             base,
@@ -46,10 +56,17 @@ impl GatewayClient {
         path: &str,
         body: Option<&T>,
     ) -> Result<reqwest::Response, ProviderError> {
+        let step = if path.ends_with("/mint") {
+            "mint"
+        } else if path.ends_with("/revoke") {
+            "revoke"
+        } else {
+            "usage"
+        };
         let url = self
             .base
             .join(path)
-            .map_err(|_| runtime(JobFailureKind::Configuration))?;
+            .map_err(|_| fault(JobFailureKind::Configuration, "gateway", "admin URL"))?;
         let request = match body {
             Some(body) => self.client.post(url).json(body),
             None => self.client.get(url),
@@ -58,12 +75,24 @@ impl GatewayClient {
             .bearer_auth(self.scope.expose())
             .send()
             .await
-            .map_err(|_| runtime(JobFailureKind::WorkerUnavailable))?;
+            .map_err(|_| fault(JobFailureKind::WorkerUnavailable, "gateway", step))?;
         match response.status() {
-            StatusCode::NOT_FOUND => Err(runtime(JobFailureKind::CredentialMissing)),
-            StatusCode::FORBIDDEN => Err(runtime(JobFailureKind::CredentialRelink)),
+            StatusCode::NOT_FOUND => Err(fault(
+                JobFailureKind::CredentialMissing,
+                "gateway",
+                "credential not found",
+            )),
+            StatusCode::FORBIDDEN => Err(fault(
+                JobFailureKind::CredentialRelink,
+                "gateway",
+                "credential requires relink",
+            )),
             status if status.is_success() => Ok(response),
-            _ => Err(runtime(JobFailureKind::WorkerUnavailable)),
+            _ => Err(fault(
+                JobFailureKind::WorkerUnavailable,
+                "gateway",
+                "admin rejected request",
+            )),
         }
     }
 
@@ -77,7 +106,13 @@ impl GatewayClient {
         .await?
         .json()
         .await
-        .map_err(|_| runtime(JobFailureKind::WorkerUnavailable))
+        .map_err(|_| {
+            fault(
+                JobFailureKind::WorkerUnavailable,
+                "gateway/mint",
+                "invalid mint response",
+            )
+        })
     }
 
     pub(super) async fn revoke(&self, container: &ContainerId) -> Result<(), ProviderError> {
@@ -98,12 +133,22 @@ impl GatewayClient {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         {
-            return Err(runtime(JobFailureKind::WorkerUnavailable));
+            return Err(fault(
+                JobFailureKind::WorkerUnavailable,
+                "gateway/usage",
+                "invalid key identifier",
+            ));
         }
         self.request::<()>(&format!("admin/keys/{key}/usage"), None)
             .await?
             .json()
             .await
-            .map_err(|_| runtime(JobFailureKind::WorkerUnavailable))
+            .map_err(|_| {
+                fault(
+                    JobFailureKind::WorkerUnavailable,
+                    "gateway/usage",
+                    "invalid usage response",
+                )
+            })
     }
 }

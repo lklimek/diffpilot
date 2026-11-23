@@ -142,6 +142,14 @@ enum Mode {
     BadMeter,
     Symlink,
     ModelsFailure,
+    FetchNoLock,
+    StopFailure,
+    BadResponseId,
+    BadJson,
+    MissingThread,
+    ServerRequest,
+    MissingUsage,
+    InvalidTemplate,
     Oversize,
 }
 
@@ -216,12 +224,19 @@ impl Harness {
                             let workers = if operation == "list" && mode == Mode::StartupRecovery {
                                 json!([{"container":{"shape":"pr","pull_request_id":1,"payer":"payer-17"},"running":true}])
                             } else {json!([])};
-                            stream.write_all(format!("{}\n", json!({"id":request["id"],"workers":workers})).as_bytes()).await.unwrap();
+                            let response = if (mode == Mode::InvalidTemplate && operation == "ensure") || (mode == Mode::StopFailure && operation == "stop") {
+                                json!({"id":request["id"],"error":"invalid_template","workers":[]})
+                            } else if mode == Mode::FetchNoLock && operation == "fetch" {
+                                json!({"id":request["id"],"fetch":"resolved_without_lock","workers":[]})
+                            } else { json!({"id":request["id"],"workers":workers}) };
+                            stream.write_all(format!("{response}\n").as_bytes()).await.unwrap();
                             if operation != "attach" { return; }
                             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
                             let mut inherited = HashMap::<String, Usage>::new();
                             let mut last = HashMap::<String, u64>::new();
                             let mut serial = 0;
+                            let mut ephemeral = std::collections::HashSet::new();
+                            let mut materialized = std::collections::HashSet::from(["parent".to_owned(), "working".to_owned()]);
                             use futures::{SinkExt, StreamExt};
                             while let Some(Ok(message)) = ws.next().await {
                                 let tokio_tungstenite::tungstenite::Message::Text(text) = message else { break; };
@@ -232,6 +247,19 @@ impl Harness {
                                 let p = &request["params"];
                                 let mut result = json!({});
                                 let mut notifications = Vec::new();
+                                if method == "model/list" {
+                                    let injected = match mode {
+                                        Mode::BadJson => Some("invalid JSON".to_owned()),
+                                        Mode::BadResponseId => Some(json!({"id":999999,"result":{}}).to_string()),
+                                        Mode::ServerRequest => Some(json!({"id":"server-call","method":"item/tool/requestUserInput","params":{"secret":"model-key-canary"}}).to_string()),
+                                        _ => None,
+                                    };
+                                    if let Some(injected) = injected {
+                                        let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(injected.into())).await;
+                                        if mode == Mode::ServerRequest { let _ = ws.next().await; }
+                                        break;
+                                    }
+                                }
                                 match method {
                                     "command/exec" => result = json!({"exitCode":0}),
                                     "skills/list" => result = json!({"data":[{"cwd":"/work","skills":[]}]}),
@@ -244,21 +272,27 @@ impl Harness {
                                     },
                                     "thread/start" | "thread/resume" | "thread/fork" => {
                                         let parent = p["threadId"].as_str().unwrap_or("");
-                                        if mode == Mode::LostWorking && parent == "lost" {
-                                            let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({"id":request["id"],"error":{"code":-32603,"message":"no rollout found for lost"}}).to_string().into())).await;
+                                        if (mode == Mode::LostWorking && parent == "lost")
+                                            || (matches!(method, "thread/resume" | "thread/fork")
+                                                && (ephemeral.contains(parent) || !materialized.contains(parent))) {
+                                            let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({"id":request["id"],"error":{"code":-32603,"message":format!("no rollout found for thread id {parent}")}}).to_string().into())).await;
                                             continue;
                                         }
                                         let thread = if method == "thread/resume" { parent.to_owned() } else { serial += 1; format!("thread-{serial}") };
                                         let baseline = inherited.get(parent).copied().unwrap_or(Usage { input_tokens:300_000, cached_input_tokens:200_000, output_tokens:9_000, requests: None });
+                                        if p["ephemeral"] == true { ephemeral.insert(thread.clone()); }
+                                        if method == "thread/fork" { materialized.insert(thread.clone()); }
                                         if method == "thread/start" { inherited.insert(thread.clone(),Usage::default()); last.insert(thread.clone(),0); }
                                         else { inherited.insert(thread.clone(),baseline); last.entry(thread.clone()).or_insert(90_000); }
                                         let total = inherited[&thread];
                                         let history = total.input_tokens != 0;
                                         result = json!({"thread":{"id":thread,"turns":if history { json!([{"id":"old","status":"completed","items":[]}]) } else { json!([]) }}});
                                         if history { notifications.push(token_notification(&thread, "old", total, last[&thread])); }
+                                        if mode == Mode::MissingThread { result = json!({"thread":{}}); }
                                     },
                                     "turn/start" | "thread/compact/start" => {
                                         let thread = p["threadId"].as_str().unwrap();
+                                        if method == "turn/start" && !ephemeral.contains(thread) { materialized.insert(thread.to_owned()); }
                                         if mode == Mode::DropTurn { break; }
                                         if mode == Mode::Oversize {
                                             let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text("x".repeat(rpc::MAX_MESSAGE + 1).into())).await;
@@ -277,11 +311,11 @@ impl Harness {
                                             charge.input_tokens += delta.input_tokens; charge.cached_input_tokens += delta.cached_input_tokens; charge.output_tokens += delta.output_tokens; charge.requests = Some(charge.requests.unwrap() + 1);
                                             *totals.lock().unwrap() = charge;
                                             if mode == Mode::Tool { notifications.push(json!({"method":"item/started","params":{"threadId":thread,"turnId":turn,"item":{"type":"dynamicToolCall","tool":"exec"}}})); }
-                                            notifications.push(token_notification(thread,&turn,total,last[thread]));
+                                            if mode != Mode::MissingUsage { notifications.push(token_notification(thread,&turn,total,last[thread])); }
                                             let item = json!({"type":"agentMessage","phase":"final_answer","text":"{\"answer\":\"model-key-canary github-token-canary\"}"});
                                             notifications.push(json!({"method":"item/completed","params":{"threadId":thread,"turnId":turn,"item":item}}));
-                                            let error = if mode == Mode::Schema { json!({"message":"backend: {\"error\":{\"code\":\"invalid_json_schema\"}}", "codexErrorInfo":"other"}) } else { Value::Null };
-                                            notifications.push(json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":turn,"status":if mode == Mode::Schema {"failed"} else {"completed"},"error":error,"items":if mode == Mode::CompletionTool {json!([item,{"type":"commandExecution","command":"fake"}])} else {json!([item])}}}}));
+                                            let error = if mode == Mode::Schema && !compact { json!({"message":"backend: {\"error\":{\"code\":\"invalid_json_schema\"}}", "codexErrorInfo":"other"}) } else { Value::Null };
+                                            notifications.push(json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":turn,"status":if mode == Mode::Schema && !compact {"failed"} else {"completed"},"error":error,"items":if mode == Mode::CompletionTool {json!([item,{"type":"commandExecution","command":"fake"}])} else {json!([item])}}}}));
                                         }
                                     },
                                     "fs/getMetadata" => result = json!({"isFile":true,"isDirectory":true,"isSymlink": mode == Mode::Symlink}),
@@ -796,4 +830,481 @@ fn usage_limit_info_keeps_a_known_backend_reset_time() {
     assert!(
         matches!(error,ProviderError::UsageLimit {resets_at:Some(at)} if at == contracts::time::Timestamp::from_second(1_900_000_000).unwrap())
     );
+}
+
+async fn assert_fresh_thread(kind: JobKind) {
+    let harness = Harness::new(Mode::Normal).await;
+    let mut spec = secret_job(kind);
+    if kind == JobKind::Ask {
+        spec.context_pack = Some("private context".into());
+    }
+    let (tx, _rx) = mpsc::channel(64);
+    let result = harness.provider.execute_job(&spec, tx).await;
+    let seen = harness.finish().await;
+    assert!(result.is_ok(), "{kind:?}: {result:?}");
+    assert!(!seen.iter().any(|r| r["method"] == "thread/resume"));
+}
+
+#[tokio::test]
+async fn new_plan_starts_without_resuming_unmaterialized_thread() {
+    assert_fresh_thread(JobKind::Plan).await;
+}
+#[tokio::test]
+async fn context_pack_ask_starts_without_resuming_unmaterialized_thread() {
+    assert_fresh_thread(JobKind::Ask).await;
+}
+#[tokio::test]
+async fn verify_pass_never_resumes_ephemeral_thread() {
+    assert_fresh_thread(JobKind::VerifyComments).await;
+}
+
+#[tokio::test]
+async fn verify_ask_resumes_analytic_parent_with_analytic_policy() {
+    let harness = Harness::new(Mode::Normal).await;
+    let mut spec = secret_job(JobKind::Ask);
+    spec.session = Some(contracts::job::spec::SessionRef {
+        pull_request_id: 1,
+        thread_id: "parent".into(),
+    });
+    spec.working_session.as_mut().unwrap().kind = Some(ThreadKind::Verify);
+    spec.access.memcan = Some(contracts::job::access::McpHttpEndpoint {
+        url: "http://memcan.fake/mcp".into(),
+        token: contracts::job::access::Secret::new("fake"),
+        allow_write: true,
+    });
+    let (tx, _rx) = mpsc::channel(64);
+    harness.provider.execute_job(&spec, tx).await.unwrap();
+    let seen = harness.finish().await;
+    let parent = seen
+        .iter()
+        .find(|r| r["method"] == "thread/resume" && r["params"]["threadId"] == "parent")
+        .unwrap();
+    assert_eq!(
+        parent["params"]["config"]["mcp_servers"]["memcan"]["enabled"],
+        true
+    );
+    let fork = seen.iter().find(|r| r["method"] == "thread/fork").unwrap();
+    assert_eq!(
+        fork["params"]["config"]["mcp_servers"]["memcan"]["enabled"],
+        false
+    );
+}
+
+#[test]
+fn deterministic_metadata_and_model_failures_are_not_retryable() {
+    let spec = job(JobKind::Ask);
+    assert!(matches!(
+        config::needs_compaction(spec.working_session.as_ref().unwrap(), SessionSeed::Fork),
+        Err(ProviderError::Runtime {
+            kind: JobFailureKind::Configuration
+        })
+    ));
+    assert!(matches!(
+        rpc::failure(&json!({"codexErrorInfo":"modelNotFound","message":"unknown model"})),
+        ProviderError::Runtime {
+            kind: JobFailureKind::ModelUnavailable
+        }
+    ));
+}
+
+#[test]
+fn memcan_allowlist_honours_thread_kind_and_endpoint_write_permission() {
+    let read = json!([
+        "search",
+        "search_memories",
+        "search_code",
+        "search_standards"
+    ]);
+    let write = json!([
+        "search",
+        "search_memories",
+        "search_code",
+        "search_standards",
+        "add_memory"
+    ]);
+    for kind in [
+        ThreadKind::Analytic,
+        ThreadKind::Ask,
+        ThreadKind::Verify,
+        ThreadKind::Judge,
+    ] {
+        for allow_write in [false, true] {
+            let endpoint = contracts::job::access::McpHttpEndpoint {
+                url: "http://memcan.fake/mcp".into(),
+                token: contracts::job::access::Secret::new("fake"),
+                allow_write,
+            };
+            let params =
+                config::thread_params(kind, &job(JobKind::Plan).model, 500_000, Some(&endpoint));
+            let expected = if kind.memcan_write() && allow_write {
+                write.clone()
+            } else {
+                read.clone()
+            };
+            assert_eq!(
+                params["config"]["mcp_servers"]["memcan"]["enabled_tools"],
+                expected
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancellation_between_lost_session_attempts_prevents_fallback_turn() {
+    let harness = Harness::new(Mode::LostWorking).await;
+    let mut spec = secret_job(JobKind::Ask);
+    let working = spec.working_session.as_mut().unwrap();
+    working.thread_id = Some("lost".into());
+    working.kind = Some(ThreadKind::Ask);
+    let (tx, _rx) = mpsc::channel(64);
+    let run = harness.provider.execute_job(&spec, tx);
+    let cancel = async {
+        loop {
+            if harness
+                .seen
+                .lock()
+                .await
+                .iter()
+                .any(|r| r["action"]["operation"] == "stop")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let guard = harness.provider.gate.lock().await;
+        harness.provider.cancel(spec.job_id).await.unwrap();
+        drop(guard);
+    };
+    let (result, ()) =
+        tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(run, cancel) })
+            .await
+            .unwrap();
+    let seen = harness.finish().await;
+    assert!(
+        matches!(result, Err(ProviderError::Cancelled)),
+        "{result:?}"
+    );
+    assert!(!seen.iter().any(|r| r["method"] == "turn/start"));
+}
+
+#[tokio::test]
+async fn failed_answer_retains_fork_and_completed_preflight_checkpoint() {
+    let harness = Harness::new(Mode::Schema).await;
+    let mut spec = secret_job(JobKind::Ask);
+    spec.session = Some(contracts::job::spec::SessionRef {
+        pull_request_id: 1,
+        thread_id: "parent".into(),
+    });
+    spec.working_session.as_mut().unwrap().analytic_generation = 7;
+    let (tx, _rx) = mpsc::channel(64);
+    let (_, usage, checkpoint) = harness
+        .provider
+        .execute_job(&spec, tx)
+        .await
+        .unwrap_err()
+        .into_details();
+    let seen = harness.finish().await;
+    let checkpoint = checkpoint.expect("failed answer must retain acknowledged compaction");
+    let fork = seen.iter().find(|r| r["method"] == "thread/fork").unwrap();
+    assert_ne!(
+        checkpoint.thread_id,
+        fork["params"]["threadId"].as_str().unwrap()
+    );
+    assert_eq!(
+        checkpoint.preflight.as_ref().unwrap().state,
+        PreflightState::Done
+    );
+    assert_eq!(checkpoint.preflight.as_ref().unwrap().generation, 7);
+    assert_eq!(usage.unwrap().requests, Some(2));
+}
+
+#[tokio::test]
+async fn invalid_worker_template_is_configuration_failure() {
+    let harness = Harness::new(Mode::InvalidTemplate).await;
+    let (tx, _rx) = mpsc::channel(64);
+    let error = harness
+        .provider
+        .execute_job(&secret_job(JobKind::Plan), tx)
+        .await
+        .unwrap_err()
+        .into_parts()
+        .0;
+    harness.finish().await;
+    assert!(
+        matches!(
+            error,
+            ProviderError::Runtime {
+                kind: JobFailureKind::Configuration
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn dependency_source_facts_are_command_activity() {
+    let harness = Harness::new(Mode::FetchNoLock).await;
+    let (tx, mut rx) = mpsc::channel(64);
+    let _ = harness
+        .provider
+        .execute_job(&secret_job(JobKind::Plan), tx)
+        .await;
+    harness.finish().await;
+    let mut fact = None;
+    while let Ok(event) = rx.try_recv() {
+        if let ProviderEvent::Activity(event) = event
+            && event.summary.starts_with("Dependency sources")
+        {
+            fact = Some(event);
+        }
+    }
+    assert_eq!(
+        fact.unwrap().activity,
+        contracts::job::event::ActivityKind::Command
+    );
+}
+
+fn provider_call(spec: &JobSpec) -> ProviderCall {
+    ProviderCall {
+        job_spec: Some(Box::new(spec.clone())),
+        job_id: spec.job_id,
+        job_dir: "/unused".into(),
+        codex_home: "/unused".into(),
+        session_dir: "/unused".into(),
+        restore_dir: "/unused".into(),
+        prompt: spec.prompt.clone(),
+        output_schema: spec.output_schema.clone(),
+        flow_file: None,
+        model: spec.model.clone(),
+        limits: spec.limits,
+        access: spec.access.clone(),
+        skills: Vec::new(),
+        answer_only: false,
+        compact_on_start: false,
+        phases: Default::default(),
+    }
+}
+
+#[tokio::test]
+async fn legacy_trait_calls_preserve_self_contained_ask_routing() {
+    for resume in [false, true] {
+        let harness = Harness::new(Mode::LostWorking).await;
+        let mut spec = secret_job(JobKind::Ask);
+        spec.session = Some(contracts::job::spec::SessionRef {
+            pull_request_id: 1,
+            thread_id: "parent".into(),
+        });
+        let working = spec.working_session.as_mut().unwrap();
+        working.thread_id = Some("lost".into());
+        working.kind = Some(ThreadKind::Ask);
+        working.preflight = Some(AskPreflight {
+            seed: SessionSeed::Fork,
+            generation: 0,
+            state: PreflightState::Done,
+        });
+        let call = provider_call(&spec);
+        let (tx, _rx) = mpsc::channel(64);
+        let result = if resume {
+            harness.provider.resume("parent", &call, tx).await
+        } else {
+            harness.provider.run(&call, tx).await
+        };
+        let seen = harness.finish().await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(seen.iter().any(|r| r["method"] == "thread/fork"));
+        assert!(
+            !seen
+                .iter()
+                .any(|r| r["method"] == "turn/start" && r["params"]["threadId"] == "parent")
+        );
+    }
+}
+
+#[tokio::test]
+async fn checkout_reuses_objects_and_discards_hostile_git_configuration() {
+    let harness = Harness::new(Mode::Normal).await;
+    let (tx, _rx) = mpsc::channel(64);
+    let _ = harness
+        .provider
+        .execute_job(&secret_job(JobKind::Plan), tx)
+        .await;
+    let seen = harness.finish().await;
+    let command = seen
+        .iter()
+        .find(|r| r["method"] == "command/exec" && r["params"]["command"][0] == "bash")
+        .unwrap();
+    for sha256 in [false, true] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo = dir.path().join("repo");
+        let script = command["params"]["command"][2]
+            .as_str()
+            .unwrap()
+            .replace("/work", dir.path().to_str().unwrap());
+        let commits = crate::test_support::commits();
+        let mut source = crate::test_support::shared_repo().to_owned();
+        let (head, base) = if sha256 {
+            source = dir.path().join("source");
+            std::fs::create_dir_all(&source).unwrap();
+            let git = |args: &[&str]| {
+                let output = std::process::Command::new("git")
+                    .current_dir(&source)
+                    .args(args)
+                    .env("HOME", dir.path())
+                    .env("XDG_CONFIG_HOME", dir.path())
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            };
+            git(&["init", "--quiet", "--object-format=sha256"]);
+            std::fs::write(source.join("source.txt"), "fixture").unwrap();
+            git(&["add", "source.txt"]);
+            git(&[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            ]);
+            let head = git(&["rev-parse", "HEAD"]);
+            (head.clone(), head)
+        } else {
+            (commits.head, commits.base)
+        };
+        let run = || {
+            let output = std::process::Command::new("bash")
+                .args(["-c", &script, "checkout-test"])
+                .arg(&source)
+                .arg(&head)
+                .arg(&base)
+                .env("HOME", dir.path())
+                .env("XDG_CONFIG_HOME", dir.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run();
+        std::fs::write(repo.join(".git/objects/reuse-canary"), "keep object store").unwrap();
+        std::fs::write(repo.join(".git/config"), "[invalid config").unwrap();
+        std::fs::create_dir_all(repo.join(".git/hooks")).unwrap();
+        std::fs::write(
+            repo.join(".git/hooks/post-checkout"),
+            "#!/bin/sh\nexit 42\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join("untracked"), "discard").unwrap();
+        run();
+        assert!(
+            repo.join(".git/objects/reuse-canary").exists(),
+            "object store must survive per-job preparation"
+        );
+        assert!(!repo.join("untracked").exists());
+        assert!(!repo.join(".git/hooks/post-checkout").exists());
+    }
+}
+
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+#[tokio::test]
+async fn reconciliation_failure_logs_both_sums_without_tokens() {
+    use tracing::instrument::WithSubscriber;
+    let logs = CapturedLogs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(logs.clone())
+        .finish();
+    let harness = Harness::new(Mode::BadMeter).await;
+    let mut spec = secret_job(JobKind::Ask);
+    spec.session = Some(contracts::job::spec::SessionRef {
+        pull_request_id: 1,
+        thread_id: "parent".into(),
+    });
+    let (tx, _rx) = mpsc::channel(64);
+    let result = harness
+        .provider
+        .execute_job(&spec, tx)
+        .with_subscriber(subscriber)
+        .await;
+    harness.finish().await;
+    assert!(result.is_err());
+    let log = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(log.contains("usage reconciliation mismatch"), "{log}");
+    assert!(
+        log.contains("input_tokens: 120") && log.contains("input_tokens: 121"),
+        "{log}"
+    );
+    assert!(!log.contains("model-key-canary") && !log.contains("github-token-canary"));
+}
+
+#[tokio::test]
+async fn protocol_failure_logs_identify_method_and_step_without_payloads() {
+    use tracing::instrument::WithSubscriber;
+    for (mode, step) in [
+        (Mode::BadJson, "invalid JSON frame"),
+        (Mode::BadResponseId, "response id mismatch"),
+        (Mode::MissingThread, "missing thread.id"),
+        (Mode::ServerRequest, "item/tool/requestUserInput"),
+        (Mode::MissingUsage, "completed without token usage update"),
+        (Mode::StopFailure, "worker may still be running"),
+    ] {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_writer(logs.clone())
+            .finish();
+        let harness = Harness::new(mode).await;
+        let mut spec = secret_job(JobKind::Plan);
+        if mode == Mode::StopFailure {
+            spec = job(JobKind::JudgeWork);
+            spec.target = JobTarget::Dashboard {
+                refresh_id: contracts::ids::RefreshId::new_random(),
+            };
+        }
+        let (tx, _rx) = mpsc::channel(64);
+        let result = harness
+            .provider
+            .execute_job(&spec, tx)
+            .with_subscriber(subscriber)
+            .await;
+        harness.finish().await;
+        assert!(result.is_err());
+        let log = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains(step) && log.contains("method=") && log.contains("step="),
+            "{log}"
+        );
+        if mode == Mode::StopFailure {
+            assert!(log.contains("ERROR"), "{log}");
+        }
+        assert!(!log.contains("model-key-canary") && !log.contains("github-token-canary"));
+    }
 }

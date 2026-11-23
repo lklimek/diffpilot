@@ -550,10 +550,12 @@ fn to_result(
             }),
         },
         Err(error) => {
-            let (error, usage) = error.into_parts();
+            let (error, usage, session) = error.into_details();
             let message = clip(&scrubber.text(&error.to_string()), MESSAGE_MAX_CHARS);
             let outcome = match error {
-                ProviderError::Metered { .. } => failure(JobFailureKind::Internal, &message),
+                ProviderError::Metered { .. } | ProviderError::Checkpoint { .. } => {
+                    failure(JobFailureKind::Internal, &message)
+                }
                 ProviderError::Runtime { kind } => failure(kind, &message),
                 ProviderError::Cancelled => JobOutcome::Cancelled,
                 ProviderError::UsageLimit { resets_at } => JobOutcome::UsageLimited { resets_at },
@@ -582,7 +584,7 @@ fn to_result(
                 job_id: spec.job_id,
                 attempt: spec.attempt,
                 outcome,
-                session: None,
+                session,
                 usage,
                 skills_commit: None,
                 llm_call,

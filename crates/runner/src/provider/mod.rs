@@ -112,6 +112,15 @@ pub struct ProviderOutcome {
 /// An agent call failed; `Display` is a plain message safe to report as the LLM status.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
+    /// Failed call with its latest acknowledged persistent-thread checkpoint.
+    #[error("{error}")]
+    Checkpoint {
+        /// Safe underlying failure.
+        #[source]
+        error: Box<ProviderError>,
+        /// Persist under the job attempt and generation fence, even when the answer failed.
+        session: Box<contracts::job::result::SessionReport>,
+    },
     /// Failed call with the gateway's response-ID usage, including any completed compaction.
     #[error("{error}")]
     Metered {
@@ -171,17 +180,40 @@ pub enum ProviderError {
 impl ProviderError {
     /// Separate a call's failure from its optional authoritative usage for JobResult persistence.
     pub fn into_parts(self) -> (Self, Option<Usage>) {
+        let (error, usage, _) = self.into_details();
+        (error, usage)
+    }
+
+    /// Separate failure, authoritative usage and acknowledged checkpoint for fenced persistence.
+    pub fn into_details(
+        self,
+    ) -> (
+        Self,
+        Option<Usage>,
+        Option<contracts::job::result::SessionReport>,
+    ) {
         let mut error = self;
         let mut metered = None;
-        while let Self::Metered {
-            error: source,
-            usage,
-        } = error
-        {
-            metered.get_or_insert(usage);
-            error = *source;
+        let mut checkpoint = None;
+        loop {
+            match error {
+                Self::Metered {
+                    error: source,
+                    usage,
+                } => {
+                    metered.get_or_insert(usage);
+                    error = *source;
+                }
+                Self::Checkpoint {
+                    error: source,
+                    session,
+                } => {
+                    checkpoint.get_or_insert(*session);
+                    error = *source;
+                }
+                error => return (error, metered, checkpoint),
+            }
         }
-        (error, metered)
     }
 }
 
