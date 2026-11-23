@@ -1,4 +1,5 @@
 import { type Page } from "@playwright/test";
+import { pauseClock, settle } from "./clock-support";
 import { PINNED_NOW, expect, test } from "./fixtures";
 import { expectAccessible, expectTooltips } from "./screens-support";
 import { ANALYSIS_ID, expectTrustWording } from "./support";
@@ -100,18 +101,25 @@ test.describe("stage and liveness", () => {
   test("the stage line follows the server: planning, PR context, flow 1 with its title; time is real", async ({
     page,
   }) => {
+    await pauseClock(page);
     await open(page, "first-flow");
-    await expect(page.getByText("Planning flows…")).toBeVisible();
-    await expect(page.getByText("Reading the PR context.")).toBeVisible();
+    await settle(page, (quick) => quick(page.getByText("Planning flows…")).toBeVisible());
+    await page.clock.runFor(400);
+    await settle(page, (quick) => quick(page.getByText("Reading the PR context.")).toBeVisible());
     await expect(page.getByText("0 of 1 flow analysed")).toBeVisible();
     // The first heartbeat gives the server's clock; only then is a time shown.
     await expect(indicator(page)).toHaveText("Working");
     await page.clock.runFor(16_000);
-    await expect(indicator(page)).toHaveText("Working · this stage started less than a minute ago");
+    await settle(page, (quick) =>
+      quick(indicator(page)).toHaveText("Working · this stage started less than a minute ago"),
+    );
     await page.clock.runFor(15_000);
-    await expect(page.getByText("Analysing flow 1 of 1: Send an RPC request with retry")).toBeVisible();
+    await settle(page, (quick) =>
+      quick(page.getByText("Analysing flow 1 of 1: Send an RPC request with retry")).toBeVisible(),
+    );
     await expect(bar(page)).toHaveAttribute("aria-valuenow", "0");
     await expect(rest(page)).not.toHaveCSS("animation-name", "none");
+    await page.clock.resume();
     await expectTrustWording(page);
     await expectAccessible(page);
   });

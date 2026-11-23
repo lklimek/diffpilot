@@ -1,4 +1,4 @@
-// My work (v1.1 plan §A.4, §B.3, §F): sign in → the dashboard at `/` → Refresh → scan progress → the provisional
+// My work (v1.1 plan §A.4, §B.3, §F, §M): open the dashboard at `/` → automatic scan → the provisional
 // list → the ranked list (fake provider's neutral judgements), in the tab title too; TODO rows off and on; a row's
 // Review link and the moved `/?pr=` deep link; cancel during a scan; MemCan down keeps the TODO rows.
 import { checkScreen, memcan, PR_URL, signIn } from "../support/app";
@@ -11,6 +11,7 @@ import {
   rowIds,
   saveSettings,
   seedTodos,
+  signInForDashboardSetup,
   waitForRefresh,
   workList,
   worldSettings,
@@ -22,7 +23,7 @@ test.describe.configure({ mode: "serial" });
 
 const TODOS = ["TODO-3fa91c2e", "TODO-91bd0a44"];
 
-test("sign in → My work → Refresh → progress → provisional list → ranked list", async ({ page, stack }) => {
+test("My work: automatic scan → provisional → ranked → manual refresh", async ({ page, stack }) => {
   test.skip(
     !stack.script || !stack.memcan,
     "needs the fake provider's script and fake MemCan (a local stack)",
@@ -30,16 +31,15 @@ test("sign in → My work → Refresh → progress → provisional list → rank
   stack.secrets.push(...JUDGE_DATA);
   // A slow judge keeps the provisional list on screen for a while (4 recorded lines per job of 8 items).
   stack.script?.([{ id: "slow-judge", job: "judge_work", action: { replay: { step_delay_ms: 3000 } } }]);
-  await signIn(page);
+  await signInForDashboardSetup(page);
+  await saveSettings(page, { ...worldSettings(), schedule_enabled: false });
+  await seedTodos(page, stack);
+  await page.goto("/");
+  await waitForRefresh(page, (r) => r.state === "scanning");
+  // The first summary read wakes the scanner; reload to observe it without waiting for the 60 s summary poll.
+  await page.reload();
   await expect(page).toHaveURL(/\/$/);
   await expect(page).toHaveTitle("diffpilot My work");
-  await expect(page.getByText("Nothing scanned yet.")).toBeVisible();
-  await checkScreen(page);
-  await screens(page, "dashboard-empty");
-
-  await saveSettings(page, worldSettings());
-  await seedTodos(page, stack);
-  await refreshButton(page).click();
   const progress = page.getByRole("region", { name: "Refreshing from GitHub and MemCan" });
   await expect(progress.getByRole("progressbar", { name: "Scan progress" })).toBeVisible();
   await expect(progress.locator("li[data-step]")).toHaveText([
@@ -72,18 +72,31 @@ test("sign in → My work → Refresh → progress → provisional list → rank
   await screens(page, "dashboard-provisional");
 
   const done = await waitForRefresh(page, ranked, 150_000);
+  expect(done.trigger).toBe("automatic");
   expect([done.judged, done.reused]).toEqual([18, 0]);
   // Mention-only WUI-305 is a quick reply outside the ranking.
-  await page.getByRole("region", { name: "Mentions" }).getByRole("button", { name: /^Mentions/ }).click();
-  await expect(page.getByRole("link", { name: "Open mention on acme/wallet-ui#305 on GitHub" })).toBeVisible();
+  await page
+    .getByRole("region", { name: "Mentions" })
+    .getByRole("button", { name: /^Mentions/ })
+    .click();
+  await expect(
+    page.getByRole("link", { name: "Open mention on acme/wallet-ui#305 on GitHub" }),
+  ).toBeVisible();
   await expect(banner).toHaveCount(0);
   await expect(page).toHaveTitle("diffpilot My work: ready");
   await expect(page.getByRole("heading", { name: /^Not judged yet/ })).toHaveCount(0);
   expect(await groupIds(page, "P1")).toEqual(["PLAT-1203", "WUI-320", "NC-482"]);
   expect((await groupIds(page, "P2"))[0]).toBe("WUI-311");
-  await expect(page.getByText(/^Refreshed manually at \d\d:\d\d · .* · judged 18 · reused 0$/)).toBeVisible();
+  await expect(
+    page.getByText(/^Refreshed automatically at \d\d:\d\d · .* · judged 18 · reused 0$/),
+  ).toBeVisible();
   await checkScreen(page);
   await screens(page, "dashboard-ranked");
+
+  await refreshButton(page).click();
+  const manual = await waitForRefresh(page, (r) => r.id !== done.id && ranked(r));
+  expect([manual.trigger, manual.judged, manual.reused]).toEqual(["manual", 0, 18]);
+  await expect(page.getByText(/^Refreshed manually at \d\d:\d\d · .* · judged 0 · reused 18$/)).toBeVisible();
 });
 
 test("TODO rows: hidden when MemCan TODOs are switched off, back when on", async ({ page, stack }) => {
@@ -120,6 +133,7 @@ test("a PR row's Review opens /review with the PR checked; /?pr= moves there", a
 
 test("cancel during a scan: the scan stops, the list stays", async ({ page }) => {
   await signIn(page);
+  await expect(workList(page).locator("li[data-item]").first()).toBeVisible();
   const before = await rowIds(page);
   const shown = await latestRefresh(page);
   await refreshButton(page).click();

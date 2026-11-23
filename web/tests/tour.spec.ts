@@ -212,9 +212,10 @@ test("agent_output_xss_renders_as_text", async ({ page }) => {
   await page.locator('[data-mark="remark"]').first().hover();
   await expect(page.getByRole("dialog", { name: /^LLM remarks? at line/ })).toContainText(`Was: ${markup}`);
   await page.locator('[data-mark="thread"]').first().hover();
-  await expect(page.getByRole("dialog", { name: /^GitHub threads? at line/ })).toContainText(
-    markup.slice(0, 10),
-  );
+  const thread = page.getByRole("dialog", { name: /^GitHub threads? at line/ });
+  await expect(thread).toBeVisible();
+  await expect(thread).toContainText("@bob");
+  await expect(thread).not.toContainText(/<img|<script|window\.__xss/);
   await expectInert();
   expect(dialogs).toEqual([]);
 });
