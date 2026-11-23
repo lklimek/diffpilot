@@ -1019,7 +1019,10 @@ impl Loaded {
         let assessments = view
             .assessments
             .into_iter()
-            .filter_map(|(item, stored)| numbers.get(&item).map(|no| (*no, stored)))
+            .filter_map(|(item, mut stored)| {
+                assess::guard_posted(&mut stored.assessment);
+                numbers.get(&item).map(|no| (*no, stored))
+            })
             .collect();
         Ok(Self {
             decisions: view.decisions,

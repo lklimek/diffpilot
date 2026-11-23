@@ -148,9 +148,14 @@ read with tokens (ADR-019).
 - **Public text** (first real use, dashpay/rust-dashcore#1336). `recommendation.reason` and `title` pre-fill a
   decision's posted reason and follow-up title, and `reply_drafts` are replies; prompt v4 keeps notes about the
   assessor, its data handling and checks it did not run in the owner-facing texts. Ingest drops each sentence of those
-  three fields that hits `analysis::verify::wording::ASSESSOR_NOTES` and logs the rule; a reason left empty leaves the
-  item not assessed. Dropping the sentence rather than rejecting the item: the leak is closed either way, while a
-  rejected item would lose its evidence and gate flags and be sent again under the same prompt.
+  three fields that hits `analysis::verify::wording::ASSESSOR_NOTES` and logs the rule; the current rules apply again
+  whenever a stored assessment is read for display or pre-fill, since assessments are reused across builds. The rules
+  target only the assessor's own process (first person, "this assessment", its input, an agentless "no tests were
+  run" or a bare "tests were not run" sentence): CI, prompt and agent vocabulary is ordinary review text in the
+  owner's projects. The guard is a best-effort denylist; a passive or translated note can pass, and the owner's preview
+  of the pre-filled text is the gate. A reason or TODO title that was only such sentences is left for the owner to
+  write and the assessment is kept, so the item is not sent again. Dropping the sentence rather than rejecting the
+  item: a rejected item would lose its evidence and gate flags and be sent again under the same prompt.
 - **Conventions.** The repository's convention files at the base commit (`AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`,
   `.github/copilot-instructions.md`, …) are the binding rules for comments about convention or style and are cited
   as evidence. They stay data for the job's own output rules, and the PR's changes to them are not rules. The

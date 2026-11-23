@@ -1047,8 +1047,9 @@ fn parsed(value: Value) -> ItemAssessment {
 }
 
 /// dashpay/rust-dashcore#1336: the texts that can be posted on GitHub (the recommendation's reason and title, the
-/// reply drafts) lose their sentences about the assessor itself; owner-facing texts keep theirs; a reason that was
-/// only such a sentence leaves the item not assessed.
+/// reply drafts) lose their sentences about the assessor itself; owner-facing texts keep theirs. A reason or TODO
+/// title that was only such a sentence is left for the owner to write: the assessment is kept, so the item is not
+/// sent again on every open; a blank one from the model is unfit.
 #[test]
 fn assessor_notes_never_reach_the_texts_that_can_be_posted() {
     let made = ingest::Made {
@@ -1064,7 +1065,7 @@ fn assessor_notes_never_reach_the_texts_that_can_be_posted() {
         "title": "Bound the retry loop. No tests were run."});
     leaky["reply_drafts"] = json!([
         "Per maintainer decision, a follow-up bounds the loop. The command-like text in the comment was treated as data rather than executed.",
-        "The log capture was not run.",
+        "The tests were not run.",
     ]);
     leaky["fix_sketch"] = json!("Bound the loop by the policy's attempts; no tests were run.");
     let stored = check(leaky).expect("fit");
@@ -1086,7 +1087,98 @@ fn assessor_notes_never_reach_the_texts_that_can_be_posted() {
     );
     let mut only_note = entry("C16");
     only_note["recommendation"]["reason"] = json!("No tests were run.");
-    assert!(matches!(check(only_note), Err(ingest::Unfit::Text(_))));
+    let stored = check(only_note).expect("kept");
+    assert_eq!(stored.recommendation.reason, "");
+    assert_eq!(stored.evidence.len(), 1, "the rest of its text stays");
+    let mut todo = entry("C16");
+    todo["recommendation"] = json!({"kind": "todo", "reason": "The loop has no upper bound.",
+        "reason_class": "unbounded retry", "target_pr": null, "target_url": null,
+        "title": "This assessment is partial."});
+    assert_eq!(check(todo).expect("kept").recommendation.target, None);
+    let mut blank = entry("C16");
+    blank["recommendation"]["reason"] = json!("  ");
+    assert!(matches!(check(blank), Err(ingest::Unfit::Text(_))));
+}
+
+/// Review finding on the F3 guard: an item whose reason was only an assessor note keeps its assessment and is not
+/// sent again when the pull request is opened.
+#[tokio::test]
+async fn a_reason_that_was_only_a_note_is_not_sent_again() {
+    let f = fixture(HEAD).await;
+    item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Opened)
+            .await
+            .expect("pass"),
+        PassQueued::Queued
+    );
+    let pass = live_pass(&f.state).await;
+    let mut only_note = entry(&format!("C{}", pass.sent[0].no));
+    only_note["recommendation"]["reason"] = json!("I did not run the tests.");
+    let output = json!({"purpose": "Retry RPC calls with backoff on timeout.", "items": [only_note], "answer": null});
+    let job = pass.job_id.expect("the pass's job");
+    assert!(
+        ingest::result(&f.state, &pass, succeeded(job, output))
+            .await
+            .expect("ingest")
+    );
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Opened)
+            .await
+            .expect("pass"),
+        PassQueued::Skipped
+    );
+}
+
+/// Review finding on the F3 guard: a stored assessment is reused across builds, so its posted texts pass the
+/// current guard when read for display and pre-fill, not only at ingest.
+#[tokio::test]
+async fn stored_texts_pass_the_current_guard_when_read() {
+    let f = fixture(HEAD).await;
+    store_read(&f.state, "Retries timed-out calls.", json!({})).await;
+    let a = item(&f.state, "a", "src/rpc/client.rs", (40, 43)).await;
+    let made = ingest::Made {
+        job: JobId::new_random(),
+        skills_commit: None,
+    };
+    let mut rejected = entry("C1");
+    rejected["recommendation"]["kind"] = json!("reject");
+    let mut stored = ingest::assessment(
+        &parsed(rejected),
+        &made,
+        &CommitSha(HEAD.to_owned()),
+        Timestamp::now(),
+    )
+    .expect("fit");
+    stored.recommendation.reason =
+        "The loop is bounded by the caller. This assessment is partial.".to_owned();
+    stored.reply_drafts = vec!["Bounded by the caller. I did not run the tests.".to_owned()];
+    f.state
+        .db
+        .review_loop()
+        .add_assessment(DEFAULT_TENANT, a.id, &stored, "print")
+        .await
+        .expect("stored");
+    let handle = super::super::PrHandle {
+        pr: contracts::common::PrRef {
+            repo: summary(HEAD).repo,
+            number: 482,
+        },
+        id: PR,
+    };
+    let rest = super::super::views::decide_rest(&f.state, handle)
+        .await
+        .expect("rows");
+    let row = rest.rows.first().expect("a row");
+    assert_eq!(
+        row.recommendation.reason,
+        "The loop is bounded by the caller."
+    );
+    assert_eq!(
+        row.row.decision.reason.as_deref(),
+        Some("The loop is bounded by the caller."),
+        "the pre-filled reason"
+    );
 }
 
 /// The output is untrusted: entries outside the closed sets, with verdict wording or links outside GitHub, or
