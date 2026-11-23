@@ -19,6 +19,7 @@ use super::settings;
 use crate::state::AppState;
 
 pub use page::{CursorError, NO_SNAPSHOT, etag, etag_matches, page, revision};
+pub(crate) use view::waiting;
 pub use view::{View, ViewItem, build};
 
 /// Version of [`Snapshot`]; a stored document of another version reads as no snapshot (refresh again).

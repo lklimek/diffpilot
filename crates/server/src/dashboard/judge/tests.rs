@@ -432,7 +432,7 @@ impl Harness {
 
     async fn judgements(&self, user: &str, snapshot: &Snapshot) -> HashMap<ItemKey, ItemJudgement> {
         JudgeRanker
-            .judgements(&self.state, &scope(user), snapshot)
+            .judgements(&self.state, &scope(user), snapshot, &Overlay::default())
             .await
             .expect("judgements")
     }
@@ -523,7 +523,7 @@ impl Harness {
 // Fingerprint (plan §B.4)
 
 fn fingerprints(snapshot: &Snapshot) -> HashMap<ItemKey, String> {
-    candidates(snapshot, LlmLanguage::En)
+    candidates(snapshot, &Overlay::default(), LlmLanguage::En)
         .into_iter()
         .map(|c| (c.item.key.clone(), c.fingerprint))
         .collect()
@@ -604,7 +604,7 @@ fn judge_input_shows_no_age_and_only_plan_facts() {
     p.facts.review_requested_at = Some(now() - SignedDuration::from_hours(24));
     p.facts.body = format!("{}  tail", "word ".repeat(100));
     let snap = snapshot(vec![p], vec![], vec![]);
-    let items = candidates(&snap, LlmLanguage::En);
+    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
     let item = &items[0].item;
     let block = JudgeWorkInput {
         items: vec![item.clone()],
@@ -630,7 +630,7 @@ fn unsure_human_waiting_default_is_sent_with_its_age_class() {
     p.facts.review_request_age_is_approx = true;
     p.facts.review_requested_at = Some(now() - SignedDuration::from_hours(24));
     let snap = snapshot(vec![p], vec![], vec![]);
-    let items = candidates(&snap, LlmLanguage::En);
+    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
     let item = &items[0].item;
     assert!(item.asks.contains(&ScoreComponent::HumanWaiting), "premise");
     let default = item
@@ -660,7 +660,7 @@ fn closing_issues_are_judged_inputs_and_old_snapshots_load() {
         title: "Crash on start".to_owned(),
     }];
     let snap = snapshot(vec![p.clone()], vec![], vec![]);
-    let items = candidates(&snap, LlmLanguage::En);
+    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
     assert_eq!(
         items[0].item.facts.linked_issues,
         vec![LinkedIssue {
@@ -688,7 +688,7 @@ fn excluded_author_items_never_reach_the_judge() {
         vec![],
         vec![todo("Check acme/wallet-ui#9 before the release")],
     );
-    let items = candidates(&snap, LlmLanguage::En);
+    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
     let pr_item = items.iter().find(|c| c.item.key == key(9)).expect("scored");
     assert!(!pr_item.asked());
     assert!(pr_item.item.suggested_merges.is_empty());
@@ -699,8 +699,12 @@ fn excluded_author_items_never_reach_the_judge() {
 #[test]
 fn language_changes_the_fingerprint() {
     let snap = snapshot(vec![pr(1, "fix: x")], vec![], vec![]);
-    let english = candidates(&snap, LlmLanguage::En)[0].fingerprint.clone();
-    let polish = candidates(&snap, LlmLanguage::Pl)[0].fingerprint.clone();
+    let english = candidates(&snap, &Overlay::default(), LlmLanguage::En)[0]
+        .fingerprint
+        .clone();
+    let polish = candidates(&snap, &Overlay::default(), LlmLanguage::Pl)[0]
+        .fingerprint
+        .clone();
     assert_ne!(english, polish);
 }
 
@@ -729,7 +733,7 @@ fn todo_naming_a_pull_request_is_a_suggested_merge() {
         vec![],
         vec![todo("Follow up acme/wallet-ui#5 after release")],
     );
-    let items = candidates(&snap, LlmLanguage::En);
+    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
     let todo_key = items
         .iter()
         .find(|c| c.item.kind == contracts::api::dashboard::ItemKind::Todo)
@@ -783,7 +787,7 @@ fn golden_input() -> JudgeWorkInput {
         vec![todo("Write docs")],
     );
     JudgeWorkInput {
-        items: candidates(&snap, LlmLanguage::En)
+        items: candidates(&snap, &Overlay::default(), LlmLanguage::En)
             .into_iter()
             .map(|c| c.item)
             .collect(),
@@ -1171,7 +1175,7 @@ async fn also_ids_limited_to_suggestions() {
         vec![todo("Follow up acme/wallet-ui#5")],
     );
     let id = h.rank("u1", &snap).await;
-    let todo_key = candidates(&snap, LlmLanguage::En)
+    let todo_key = candidates(&snap, &Overlay::default(), LlmLanguage::En)
         .iter()
         .find(|c| c.item.kind == contracts::api::dashboard::ItemKind::Todo)
         .map(|c| c.item.key.clone())
@@ -1347,7 +1351,9 @@ fn unasked_eligibility_answer_is_dropped() {
         next: "n".into(),
     };
     let snap = snapshot(vec![pr(1, "fix: x")], vec![], vec![]);
-    let mut item = candidates(&snap, LlmLanguage::En)[0].item.clone();
+    let mut item = candidates(&snap, &Overlay::default(), LlmLanguage::En)[0]
+        .item
+        .clone();
     assert!(!item.asks_eligibility, "premise");
     assert_eq!(
         store::Body::of(answer.clone(), &item, LlmLanguage::En).eligibility,
@@ -1521,7 +1527,7 @@ fn a_pull_request_waiting_only_on_others_is_not_in_needs_you() {
         "ranked: {ranked:?}"
     );
     assert_eq!(view.item_counts.total, 1);
-    let judged: Vec<_> = candidates(&snap, LlmLanguage::En)
+    let judged: Vec<_> = candidates(&snap, &Overlay::default(), LlmLanguage::En)
         .into_iter()
         .map(|c| c.item.id.clone())
         .collect();
@@ -1585,7 +1591,7 @@ fn a_waiting_pull_request_returns_to_needs_you_when_it_becomes_the_users_move() 
         change(&mut item.facts);
         let snap = snapshot(vec![item], vec![], vec![]);
         let view = snapshot::build(&snap, &HashMap::new(), None, &Default::default());
-        let judged = candidates(&snap, LlmLanguage::En)
+        let judged = candidates(&snap, &Overlay::default(), LlmLanguage::En)
             .iter()
             .filter(|c| c.asked())
             .count();
@@ -1677,7 +1683,11 @@ async fn unclaimed_judge_job_ends_the_ranking() {
         provisional: None,
     };
     let input = JudgeWorkInput {
-        items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
+        items: vec![
+            candidates(&snap, &Overlay::default(), LlmLanguage::En)[0]
+                .item
+                .clone(),
+        ],
     };
     let job = ranking.submit(1, 0, &input).await.expect("submit").job_id;
     // Paused for the usage limit: the wait does not count, and starts again after the pause.
@@ -1738,7 +1748,11 @@ async fn ask_holding_the_credential_does_not_count_as_unclaimed() {
         provisional: None,
     };
     let input = JudgeWorkInput {
-        items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
+        items: vec![
+            candidates(&snap, &Overlay::default(), LlmLanguage::En)[0]
+                .item
+                .clone(),
+        ],
     };
     let job = ranking.submit(1, 0, &input).await.expect("submit").job_id;
     let analysis = db::repo::analyses::testing::seed_analysis(h.db())
@@ -1923,7 +1937,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
             .expect("refresh")),
         before
     );
-    let candidates = candidates(&snap, LlmLanguage::En);
+    let candidates = candidates(&snap, &Overlay::default(), LlmLanguage::En);
     let queued = Queued {
         item: candidates[0].item.clone(),
         fingerprint: candidates[0].fingerprint.clone(),
@@ -2143,7 +2157,7 @@ fn release_tag_that_keeps_the_milestone_bonus_keeps_the_fingerprint() {
             milestone_titles: Some(vec!["v1.8.0".into()]),
         };
         let snap = snapshot(vec![p], vec![], vec![]);
-        let items = candidates(&snap, LlmLanguage::En);
+        let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
         let bonus = items[0]
             .item
             .known
@@ -2165,7 +2179,7 @@ fn release_tag_that_keeps_the_milestone_bonus_keeps_the_fingerprint() {
 #[test]
 fn judge_sees_the_computed_default_it_confirms() {
     let snap = snapshot(vec![], vec![issue(7, "Crash")], vec![]);
-    let items = candidates(&snap, LlmLanguage::En);
+    let items = candidates(&snap, &Overlay::default(), LlmLanguage::En);
     let item = &items[0].item;
     assert!(
         item.asks.contains(&ScoreComponent::HumanWaiting),
@@ -2290,6 +2304,11 @@ impl crate::dashboard::plugin::DashboardPlugin for AuthorsMove {
 
 /// The overlay of a current statement that `repo#number` is the author's move.
 async fn authors_move(repo: &RepoRef, number: u32) -> crate::dashboard::plugin::Overlay {
+    authors_move_host(repo, number).await.overlay(now())
+}
+
+/// A plug-in host whose current statement says `repo#number` is the author's move.
+async fn authors_move_host(repo: &RepoRef, number: u32) -> crate::dashboard::plugin::PluginHost {
     use crate::dashboard::plugin::{Move, PluginData, PluginHost, PrKey, PrStatement, Timing};
     let statement = PrStatement {
         url: "https://hygiene.example.test/api/v1/prs/acme/wallet-ui/5949".to_owned(),
@@ -2309,7 +2328,7 @@ async fn authors_move(repo: &RepoRef, number: u32) -> crate::dashboard::plugin::
     };
     let host = PluginHost::new(vec![Arc::new(plugin)], Timing::default());
     host.poll_once(now()).await;
-    host.overlay(now())
+    host
 }
 
 /// K15 with the judge's input: a current statement of the author's move keeps a labelled PR ranked (the label
@@ -2327,13 +2346,45 @@ async fn a_pull_request_ranked_by_an_authors_move_statement_is_judged() {
         "the author's move keeps it ranked: {ranked:?}"
     );
     assert!(view.awaiting.is_empty(), "{:?}", view.awaiting);
-    let judged: Vec<_> = candidates(&snap, LlmLanguage::En)
+    let judged: Vec<_> = candidates(&snap, &overlay, LlmLanguage::En)
         .into_iter()
         .map(|c| c.item.id.clone())
         .collect();
     assert!(
         judged.contains(&"wallet-ui#5949".to_owned()),
         "a ranked pull request goes to the judge: {judged:?}"
+    );
+}
+
+/// K15 at ranking time: the ranking reads the plug-in statements current then, so a PR an author's-move statement
+/// keeps ranked is sent to the judge, and its judgement applies on the read path with the same statements.
+#[tokio::test]
+async fn the_ranking_judges_a_pull_request_an_authors_move_statement_keeps_ranked() {
+    let mut h = harness().await;
+    h.state.plugins = authors_move_host(&repo("wallet-ui"), 5949).await;
+    let mut labelled = pr(5949, "feat(sdk): ready for a human");
+    labelled.facts.labels = vec!["ready-for-human".to_owned()];
+    let snap = snapshot(vec![labelled, pr(2, "fix: other")], vec![], vec![]);
+    let id = h.rank("u1", &snap).await;
+    let (_, input) = h.serve(|input| succeeded(neutral(input))).await;
+    let mut sent: Vec<_> = input.items.iter().map(|i| i.id.as_str()).collect();
+    sent.sort_unstable();
+    assert_eq!(sent, ["wallet-ui#2", "wallet-ui#5949"]);
+    assert_eq!(h.ranked("u1", id).await.state, RefreshState::Finished);
+    let key = ItemKey::new(&ItemTarget::PullRequest {
+        repo: repo("wallet-ui"),
+        number: 5949,
+    })
+    .expect("key");
+    let overlay = h.state.plugins.overlay(now());
+    let applied = JudgeRanker
+        .judgements(&h.state, &scope("u1"), &snap, &overlay)
+        .await
+        .expect("judgements");
+    assert!(applied.contains_key(&key), "{applied:?}");
+    assert!(
+        !h.judgements("u1", &snap).await.contains_key(&key),
+        "without the statement it waits on others: no judgement applies"
     );
 }
 

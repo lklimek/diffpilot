@@ -1910,11 +1910,22 @@ fn release_branch_patterns_fall_back_to_builtins() {
     );
 }
 
-/// The PRs [`waits_on_others`] by GitHub's signals, longest wait first (K15 W5).
-fn awaiting_others<'a>(r: &ScoreRules, prs: &'a [PrFacts]) -> Vec<&'a PrFacts> {
-    let mut rows: Vec<&PrFacts> = prs.iter().filter(|pr| waits_on_others(r, pr)).collect();
+/// K15 by GitHub's signals alone: the read path's rule without a plug-in statement.
+fn waits_on_others(r: &ScoreRules, pr: &PrFacts) -> bool {
+    crate::dashboard::snapshot::waiting(r, pr, &crate::dashboard::plugin::Overlay::default())
+        .is_some()
+}
+
+/// The PRs [`waits_on_others`], longest wait first (K15 W5); a PR without a known request time waits since it was
+/// `opened`.
+fn awaiting_others<'a>(r: &ScoreRules, prs: &'a [PrFacts], opened: Timestamp) -> Vec<&'a PrFacts> {
+    let mut rows: Vec<(&PrFacts, Timestamp)> = prs
+        .iter()
+        .filter(|pr| waits_on_others(r, pr))
+        .map(|pr| (pr, pr.others_review_requested_at.unwrap_or(opened)))
+        .collect();
     by_longest_wait(r, &mut rows);
-    rows
+    rows.into_iter().map(|(pr, _)| pr).collect()
 }
 
 #[test]
@@ -1971,11 +1982,18 @@ fn awaiting_others_lists_waiting_prs_longest_wait_first() {
             ..waiting(11, "alice-ci", Some(7.0))
         },
     ];
-    let numbers: Vec<u32> = awaiting_others(&rules(), &prs)
-        .iter()
-        .map(|p| p.number)
-        .collect();
-    assert_eq!(numbers, [11, 2, 1, 3]);
+    let numbers = |opened| -> Vec<u32> {
+        awaiting_others(&rules(), &prs, opened)
+            .iter()
+            .map(|p| p.number)
+            .collect()
+    };
+    assert_eq!(numbers(ago(1.0)), [11, 2, 1, 3]);
+    assert_eq!(
+        numbers(ago(30.0)),
+        [3, 11, 2, 1],
+        "no known request: waits since its opening"
+    );
 }
 
 /// K15: the user's PR waits on others (Waiting on others, not Needs you) when nothing is the user's move (W2: no
@@ -2216,7 +2234,7 @@ fn awaiting_others_leaves_out_excluded_authors() {
         ..pr()
     };
     let prs = vec![ready(1, "alice"), ready(2, "alice-ci")];
-    let numbers: Vec<u32> = awaiting_others(&ScoreRules::new("alice", &settings), &prs)
+    let numbers: Vec<u32> = awaiting_others(&ScoreRules::new("alice", &settings), &prs, ago(2.0))
         .iter()
         .map(|p| p.number)
         .collect();

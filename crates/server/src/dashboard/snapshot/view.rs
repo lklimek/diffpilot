@@ -652,8 +652,9 @@ fn todo_facts(todo: &StoredTodo) -> Vec<Fact> {
 
 /// Why the user's PR waits on others now (K15 W3), and whom to ping; `None` when it does not. A plug-in that says
 /// the move is the author's keeps it out; the ready label comes first, then the plug-in's reviewers' or
-/// maintainers' move (those it says owe a review, else the requested reviewers), then a requested review.
-fn waiting(
+/// maintainers' move (those it says owe a review, else the requested reviewers), then a requested review. The one
+/// rule of ranked versus Waiting on others: the read path and the judge's input both apply it.
+pub(crate) fn waiting(
     rules: &ScoreRules,
     f: &PrFacts,
     overlay: &Overlay,
@@ -696,15 +697,20 @@ fn waiting(
 /// oldest open request to others; when the timeline did not show it (older than its last 50 events, a team request,
 /// or none), the PR's creation time.
 fn awaiting(rules: &ScoreRules, snapshot: &Snapshot, overlay: &Overlay) -> Vec<AwaitingItem> {
-    let mut rows: Vec<&PrFacts> = snapshot
+    let mut rows: Vec<(&PrFacts, Timestamp)> = snapshot
         .pull_requests
         .iter()
-        .map(|pr| &pr.facts)
-        .filter(|f| waiting(rules, f, overlay).is_some())
+        .filter(|pr| waiting(rules, &pr.facts, overlay).is_some())
+        .map(|pr| {
+            (
+                &pr.facts,
+                waiting_since(pr.facts.others_review_requested_at, pr.created_at),
+            )
+        })
         .collect();
     score::by_longest_wait(rules, &mut rows);
     rows.into_iter()
-        .filter_map(|f| {
+        .filter_map(|(f, since)| {
             let stored = snapshot
                 .pull_requests
                 .iter()
@@ -718,7 +724,7 @@ fn awaiting(rules: &ScoreRules, snapshot: &Snapshot, overlay: &Overlay) -> Vec<A
                 url: github_url(&f.repo, "pull", f.number),
                 waiting_on,
                 reason,
-                waiting_since: waiting_since(f.others_review_requested_at, stored.created_at),
+                waiting_since: since,
                 tags: ci_tag(stored).into_iter().collect(),
                 change_size: score::size_mark(f),
                 // Never ranked (K15).

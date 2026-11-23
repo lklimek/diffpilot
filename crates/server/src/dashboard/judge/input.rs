@@ -17,10 +17,11 @@ use sha2::{Digest, Sha256};
 
 use super::JUDGE_PROMPT_VERSION;
 use super::store::Body;
+use crate::dashboard::plugin::Overlay;
 use crate::dashboard::score::{
     self, Judgement, Milestone, PrFacts, ScoreError, ScoreRules, Scored, todo_display_ids,
 };
-use crate::dashboard::snapshot::{Snapshot, StoredIssue, StoredPr, StoredTodo};
+use crate::dashboard::snapshot::{self, Snapshot, StoredIssue, StoredPr, StoredTodo};
 
 /// Version of the judged inputs and their fingerprint; a bump re-judges every item within the caps.
 pub const JUDGE_INPUT_VERSION: u32 = 3;
@@ -82,8 +83,13 @@ impl Candidate<'_> {
     }
 }
 
-/// Every scoreable item of the snapshot, scored at its scan time like the read path (`snapshot::build`).
-pub(super) fn candidates(snapshot: &Snapshot, language: LlmLanguage) -> Vec<Candidate<'_>> {
+/// Every scoreable item of the snapshot, scored at its scan time like the read path (`snapshot::build`) with the
+/// plug-in statements of `overlay`.
+pub(super) fn candidates<'a>(
+    snapshot: &'a Snapshot,
+    overlay: &Overlay,
+    language: LlmLanguage,
+) -> Vec<Candidate<'a>> {
     let rules = ScoreRules::new(&snapshot.own_login, &snapshot.settings);
     let at = snapshot.scanned_at;
     let todo_ids = todo_display_ids(
@@ -98,11 +104,12 @@ pub(super) fn candidates(snapshot: &Snapshot, language: LlmLanguage) -> Vec<Cand
         Ok(item) => scored.push((source, item)),
         Err(error) => tracing::debug!(%error, "dashboard item not judged: it cannot be scored"),
     };
-    // Like the read path: a PR waiting only on others is not ranked, so it is not judged (B10).
+    // The read path's rule: a PR under Waiting on others is not ranked, so it is not judged (B10); one a plug-in's
+    // statement of the author's move keeps ranked is.
     for pr in snapshot
         .pull_requests
         .iter()
-        .filter(|pr| !score::waits_on_others(&rules, &pr.facts))
+        .filter(|pr| snapshot::waiting(&rules, &pr.facts, overlay).is_none())
     {
         keep(Source::Pr(pr), score::score_pr(&rules, &pr.facts, None, at));
     }
