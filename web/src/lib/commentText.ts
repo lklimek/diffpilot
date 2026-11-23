@@ -1,7 +1,7 @@
 type Part = { text: string; code: boolean };
 type Details = { start: number; summary: string[] | null; prompt: boolean };
 
-const PROMPT = /\bprompt (?:to fix (?:the )?issue|for ai agents)\b/i;
+const PROMPT = /\bprompt (?:to fix|for ai agents)\b/i;
 const BLOCK_TAG =
   /^(?:section|article|header|footer|main|aside|nav|details|summary|p|div|br|hr|dl|dd|dt|li|ul|ol|h[1-6]|blockquote|tr)$/;
 const HTML_TAGS = new Set(
@@ -63,10 +63,6 @@ function plainMarkdown(text: string): string {
   return plainEmphasis(parts.join(""));
 }
 
-function isPromptHeading(text: string): boolean {
-  return PROMPT.test(plainMarkdown(text).replace(/\*\*|__/g, ""));
-}
-
 /** Index exact backtick runs on each line so unmatched delimiters never rescan the body. */
 function codeEnds(body: string): Map<number, number> {
   const ends = new Map<number, number>();
@@ -97,48 +93,28 @@ export function commentText(body: string): string {
   const hidden: string[] = [];
   const anchors: string[] = [];
   const inlineEnds = codeEnds(body);
-  let promptDetails = 0;
-  let agentPrompt = false;
-  let promptHeading: { level: number; depth: number } | null = null;
-  let heading: { name: string; level: number; start: number; position: number; text: string[] } | null = null;
+  const markerStarts: number[] = [];
+  const omitted: { start: number; end: number }[] = [];
   const current = () => details.at(-1);
-  const lineEnd = /[ \t]*(?=\n|$)/y;
-  const headingBoundary = (index: number) =>
-    /(?:^|\n) {0,3}$/.test(body.slice(Math.max(0, index - 4), index));
-  const headingLine = (start: number, end: number) => {
-    lineEnd.lastIndex = end;
-    return headingBoundary(start) && lineEnd.test(body) && !body.slice(start, end).includes("\n");
-  };
   const append = (text: string, code = false) => {
     if (!text || hidden.length) return;
-    heading?.text.push(code ? "" : text);
-    current()?.summary?.push(code ? "" : text);
-    if (!agentPrompt && promptHeading === null && !promptDetails) parts.push({ text, code });
+    current()?.summary?.push(text);
+    parts.push({ text, code });
   };
   const lineBreak = () => {
     const last = parts.at(-1);
     if (last && !last.text.endsWith("\n")) append("\n");
   };
-  const startHeading = (level: number) => {
-    if (promptHeading !== null && level <= promptHeading.level) promptHeading = null;
-  };
-  const markPromptDetails = () => {
+  const finishSummary = () => {
     const block = current();
-    if (block && !block.prompt && isPromptHeading(block.summary?.join("") ?? "")) {
-      block.prompt = true;
-      promptDetails++;
-      parts.length = Math.min(parts.length, block.start);
+    if (block?.summary) {
+      block.prompt ||= PROMPT.test(plainMarkdown(block.summary.join("")));
+      block.summary = null;
     }
   };
-  const closeDetails = () => {
-    markPromptDetails();
-    if (details.length && promptHeading && promptHeading.depth >= details.length) promptHeading = null;
-    if (details.pop()?.prompt) promptDetails--;
-    lineBreak();
-  };
-  // Quoted attributes, code and comments are consumed before any heading or tag structure.
+  // Quoted attributes, code and comments are consumed before any tag structure.
   const tokens =
-    /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)|`+|~{3,}|<!--[\s\S]*?(?:-->|$)|<[a-zA-Z][\w+.-]*:[^\s<>]+>|<\/?[a-zA-Z][\w:-]*(?=[\s/>]|$)(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^'">])*(?:>|$)|^ {0,3}#{1,6}[ \t]+[^#<`\n]*|\*\*[^*<`\n]+\*\*|__[^_<`\n]+__|^[^<`\n]+\n {0,3}(?:={3,}|-{3,})[ \t]*(?=\n|$)/gm;
+    /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)|`+|~{3,}|<!--[\s\S]*?(?:-->|$)|<[a-zA-Z][\w+.-]*:[^\s<>]+>|<\/?[a-zA-Z][\w:-]*(?=[\s/>]|$)(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^'">])*(?:>|$)/gm;
   let from = 0;
   for (let token = tokens.exec(body); token; token = tokens.exec(body)) {
     append(body.slice(from, token.index));
@@ -146,7 +122,7 @@ export function commentText(body: string): string {
     from = tokens.lastIndex;
     if (token[1]) {
       const fence = token[1];
-      const end = /^ {0,3}(`+|~+)[ \t]*(?=\n|$)/gm;
+      const end = /^ {0,3}(`+|~+)[ \t\r]*(?=\n|$)/gm;
       end.lastIndex = from;
       let closing: RegExpExecArray | null;
       do {
@@ -168,28 +144,11 @@ export function commentText(body: string): string {
       } else append(raw);
     } else if (raw.startsWith("<!--")) {
       if (hidden.length) continue;
-      if (/ai-agent-prompt\s*:\s*start/i.test(raw)) agentPrompt = true;
-      if (/ai-agent-prompt\s*:\s*end/i.test(raw)) {
-        agentPrompt = false;
-        promptHeading = null;
-      }
-    } else if (!raw.startsWith("<")) {
-      const hashes = raw.trimStart().match(/^#+/);
-      const level = hashes ? hashes[0].length : raw.includes("\n") ? (raw.includes("=") ? 1 : 2) : 7;
-      const prompt = isPromptHeading(raw);
-      if (
-        heading ||
-        current()?.summary ||
-        hidden.length ||
-        agentPrompt ||
-        promptDetails ||
-        (level === 7 && !headingLine(token.index, from))
-      )
-        append(raw);
-      else {
-        startHeading(level);
-        if (prompt) promptHeading = { level, depth: details.length };
-        else append(raw);
+      const marker = /^<!--\s*ai-agent-prompt\s*:\s*(start|end)\s*-->$/i.exec(raw);
+      if (marker?.[1]?.toLowerCase() === "start") markerStarts.push(parts.length);
+      else if (marker) {
+        const start = markerStarts.pop();
+        if (start !== undefined) omitted.push({ start, end: parts.length });
       }
     } else if (/^<[a-zA-Z][\w+.-]*:/.test(raw)) {
       append(raw.slice(1, -1));
@@ -208,36 +167,7 @@ export function commentText(body: string): string {
         continue;
       }
       if (hidden.length) continue;
-      if (
-        !agentPrompt &&
-        !promptDetails &&
-        !current()?.summary &&
-        (/^h[1-6]$/.test(name) ||
-          ((name === "strong" || name === "b") && (!heading || heading.name === name)))
-      ) {
-        if (!closing) {
-          const level: number = name.startsWith("h") ? Number(name[1]) : 7;
-          if (level < 7) {
-            startHeading(level);
-            lineBreak();
-          }
-          if (level < 7 || headingBoundary(token.index)) {
-            heading = { name, level, start: parts.length, position: token.index, text: [] };
-          }
-        } else if (heading?.name === name) {
-          const finished = heading;
-          heading = null;
-          if (finished.level < 7 || headingLine(finished.position, from)) {
-            const wasHidden = promptHeading !== null;
-            startHeading(finished.level);
-            if (isPromptHeading(finished.text.join(""))) {
-              parts.length = Math.min(parts.length, finished.start);
-              promptHeading = { level: finished.level, depth: details.length };
-            } else if (wasHidden && promptHeading === null) append(finished.text.join(""));
-          }
-          if (finished.level < 7) lineBreak();
-        }
-      } else if (name === "a") {
+      if (name === "a") {
         if (closing) {
           const url = anchors.pop();
           if (url) append(` (${url})`);
@@ -245,16 +175,18 @@ export function commentText(body: string): string {
           anchors.push(linkUrl(raw));
         }
       } else if (name === "details") {
-        if (closing) closeDetails();
-        else {
+        if (closing) {
+          finishSummary();
+          const block = details.pop();
+          lineBreak();
+          if (block?.prompt) omitted.push({ start: block.start, end: parts.length });
+        } else {
           lineBreak();
           details.push({ start: parts.length, summary: null, prompt: false });
         }
       } else if (name === "summary") {
         if (closing) {
-          markPromptDetails();
-          const block = current();
-          if (block) block.summary = null;
+          finishSummary();
         } else {
           const block = current();
           if (block) block.summary = [];
@@ -264,8 +196,13 @@ export function commentText(body: string): string {
     }
   }
   append(body.slice(from));
-  while (details.length) closeDetails();
   for (const url of anchors.reverse()) if (url) append(` (${url})`);
+  // Only completed structures hide text; overlapping ranges are combined in one linear pass.
+  const boundaries = new Int32Array(parts.length + 1);
+  for (const { start, end } of omitted) {
+    boundaries[start]!++;
+    boundaries[end]!--;
+  }
   // Join prose before normalising it: markup may split a Markdown link or emphasis span.
   const output: string[] = [];
   let prose: string[] = [];
@@ -277,7 +214,11 @@ export function commentText(body: string): string {
     );
     prose = [];
   };
-  for (const part of parts) {
+  let omittedDepth = 0;
+  for (let index = 0; index < parts.length; index++) {
+    omittedDepth += boundaries[index]!;
+    if (omittedDepth) continue;
+    const part = parts[index]!;
     if (part.code) {
       flush();
       output.push(part.text);

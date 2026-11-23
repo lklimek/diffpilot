@@ -61,12 +61,15 @@ describe("GitHub comment display text", () => {
       "Finding.<details><summary><b>Prompt to fix issue</b></summary>Do it.</details>Tail.",
       "Finding.\nTail.",
     ],
-    ["unclosed prompt", "Keep.\n<details><summary>Prompt for AI agents</summary>Drop.", "Keep."],
-    ["unclosed prompt summary", "Keep.<details><summary>Prompt for AI agents\nDrop.", "Keep."],
     [
-      "plain heading prompt",
-      "Finding.\n\n### Prompt for AI agents\n```\nFix it\n```\n### Evidence\nKeep this.",
-      "Finding.\n\n### Evidence\nKeep this.",
+      "unclosed prompt",
+      "Keep.\n<details><summary>Prompt for AI agents</summary>Keep too.",
+      "Keep.\nPrompt for AI agents\nKeep too.",
+    ],
+    [
+      "unclosed prompt summary",
+      "Keep.<details><summary>Prompt for AI agents\nKeep too.",
+      "Keep.\nPrompt for AI agents\nKeep too.",
     ],
     ["unclosed comment", "Keep. <!-- private", "Keep."],
     ["unclosed tags", 'Keep <b>finding</b>.<img src="x"', "Keep finding."],
@@ -126,37 +129,7 @@ describe("GitHub comment display text", () => {
       "docs (https://example.com)",
     ],
     ["Windows paths", String.raw`src\_private_\file.ts`, String.raw`src\_private_\file.ts`],
-    [
-      "formatted HTML prompt heading",
-      "Finding.<h3>__Prompt for AI agents__</h3>Drop.<h3>Evidence</h3>Keep.",
-      "Finding.\nEvidence\nKeep.",
-    ],
     ["unquoted HTML link", "<a href=https://example.com/docs>docs</a>", "docs (https://example.com/docs)"],
-    [
-      "HTML headings",
-      "Finding.<h3>Prompt for AI agents</h3>Drop.<h4>Nested</h4>Drop too.<h3>Evidence</h3>Keep.",
-      "Finding.\nEvidence\nKeep.",
-    ],
-    [
-      "bold heading",
-      "Finding.\n**Prompt for AI agents**\nDrop.\n**Evidence**\nKeep.",
-      "Finding.\nEvidence\nKeep.",
-    ],
-    [
-      "underscore heading",
-      "Finding.\n__Prompt to fix the issue:__\nDrop.\n__Evidence__\nKeep.",
-      "Finding.\nEvidence\nKeep.",
-    ],
-    [
-      "HTML bold heading",
-      "Finding.\n<strong>Prompt for AI agents</strong>\nDrop.\n<strong>Evidence</strong>\nKeep.",
-      "Finding.\nEvidence\nKeep.",
-    ],
-    [
-      "setext heading",
-      "Finding.\nPrompt for AI agents\n--------------------\nDrop.\nEvidence\n--------\nKeep.",
-      "Finding.\nEvidence\n--------\nKeep.",
-    ],
     [
       "flattened excerpt",
       "Finding. ### Prompt for AI agents Drop. ### Evidence Keep.",
@@ -170,12 +143,12 @@ describe("GitHub comment display text", () => {
     [
       "inline bold inside a prompt",
       "Finding.\n**Prompt for AI agents**\nUse **nonce** to fix it.\n**Evidence**\nKeep.",
-      "Finding.\nEvidence\nKeep.",
+      "Finding.\nPrompt for AI agents\nUse nonce to fix it.\nEvidence\nKeep.",
     ],
     [
       "inline HTML bold inside a prompt",
       "Finding.\n<strong>Prompt for AI agents</strong>\nUse <b>nonce</b> to fix it.\n<strong>Evidence</strong>\nKeep.",
-      "Finding.\nEvidence\nKeep.",
+      "Finding.\nPrompt for AI agents\nUse nonce to fix it.\nEvidence\nKeep.",
     ],
     ["emphasis", "*Important* and _careful_.", "Important and careful."],
     ["one-character emphasis", "*x* _y_", "x y"],
@@ -216,12 +189,12 @@ describe("GitHub comment display text", () => {
     [
       "bold after a numbered step",
       "Finding.\n**Prompt for AI agents**\nStep 1: **nonce** must be reused.\n**Evidence**\nKeep.",
-      "Finding.\nEvidence\nKeep.",
+      "Finding.\nPrompt for AI agents\nStep 1: nonce must be reused.\nEvidence\nKeep.",
     ],
     [
       "bold after a list number",
       "Finding.\n**Prompt for AI agents**\n1. **nonce** must be reused.\n**Evidence**\nKeep.",
-      "Finding.\nEvidence\nKeep.",
+      "Finding.\nPrompt for AI agents\n1. nonce must be reused.\nEvidence\nKeep.",
     ],
     [
       "inline prompt mention",
@@ -236,7 +209,7 @@ describe("GitHub comment display text", () => {
     [
       "inline HTML bold after a colon",
       "Finding.\n<strong>Prompt for AI agents</strong>\nStep 1: <strong>nonce</strong> must be reused.\n<strong>Evidence</strong>\nKeep.",
-      "Finding.\nEvidence\nKeep.",
+      "Finding.\nPrompt for AI agents\nStep 1: nonce must be reused.\nEvidence\nKeep.",
     ],
     [
       "Markdown URL parameter",
@@ -284,31 +257,121 @@ describe("GitHub comment display text", () => {
     ],
     ["case-insensitive known tags", "<SECTION><EM>Keep</EM></SECTION>", "Keep"],
     [
-      "prompt scoped to details",
-      "<details><summary>Instructions</summary>\n### Prompt for AI agents\nDrop.</details>Keep.",
-      "Instructions\n\nKeep.",
-    ],
-    [
-      "prompt ending at a marker",
-      "### Prompt for AI agents\nDrop.<!-- ai-agent-prompt:end -->Keep.",
-      "Keep.",
-    ],
-    [
-      "unmatched details end inside a prompt",
-      "### Prompt for AI agents\nDrop.</details>Still drop.\n### Evidence\nKeep.",
-      "### Evidence\nKeep.",
-    ],
-    [
-      "lower-level heading inside a prompt",
-      "## Prompt for AI agents\nDrop.\n### Evidence\nDrop too.\n## Finding\nKeep.",
-      "## Finding\nKeep.",
-    ],
-    [
       "URL and glob punctuation",
       "https://example.com/?q=(**cache**) ./dir/(_cache_).ts **/*.ts _private_/* src/__init__.py",
       "https://example.com/?q=(**cache**) ./dir/(_cache_).ts **/*.ts _private_/* src/__init__.py",
     ],
   ])("conservatively handles %s", (_, body, expected) => expect(commentText(body)).toBe(expected));
+
+  it.each(["\n", "\r\n"])("removes complete prompt structures with %j line endings", (newline) => {
+    const body = [
+      "Before.",
+      "<!-- ai-agent-prompt:start -->",
+      "Hidden marker text.",
+      "<!-- ai-agent-prompt:end -->",
+      "Between.",
+      "<details>",
+      "<summary><b>PROMPT TO FIX</b> the retry</summary>",
+      "Hidden outer text.",
+      "<details><summary>Evidence</summary>Hidden nested text.</details>",
+      "Hidden after nested details.",
+      "</details>",
+      "After.",
+    ].join(newline);
+    expect(commentText(body)).toBe(["Before.", "", "Between.", "", "After."].join(newline));
+  });
+
+  it.each([
+    ["unclosed marker", "Before.<!-- ai-agent-prompt:start -->Keep `nonce`.", "Before.Keep `nonce`."],
+    ["unmatched marker end", "Before.<!-- ai-agent-prompt:end -->Keep.", "Before.Keep."],
+    [
+      "marker words in a comment",
+      "Before.<!-- example: ai-agent-prompt:start -->Keep.<!-- ai-agent-prompt:end -->After.",
+      "Before.Keep.After.",
+    ],
+    [
+      "unclosed outer details",
+      "Before.<details><summary>Prompt for AI agents</summary>Keep.<details>Nested.</details>After.",
+      "Before.\nPrompt for AI agents\nKeep.\nNested.\nAfter.",
+    ],
+    [
+      "nested markers",
+      "Before.<!-- ai-agent-prompt:start -->Hidden.<!-- ai-agent-prompt:start -->Hidden too.<!-- ai-agent-prompt:end -->Still hidden.<!-- ai-agent-prompt:end -->After.",
+      "Before.After.",
+    ],
+    [
+      "markers in code",
+      "`<!-- ai-agent-prompt:start -->` Keep. `<!-- ai-agent-prompt:end -->`",
+      "`<!-- ai-agent-prompt:start -->` Keep. `<!-- ai-agent-prompt:end -->`",
+    ],
+    [
+      "details in code",
+      "`<details><summary>Prompt for AI agents</summary>Keep.</details>`",
+      "`<details><summary>Prompt for AI agents</summary>Keep.</details>`",
+    ],
+  ])("preserves content around %s", (_, body, expected) => expect(commentText(body)).toBe(expected));
+
+  it.each(["\n", "\r\n"])("keeps heading text and code with %j line endings", (newline) => {
+    const body = [
+      "Finding.",
+      "<strong>Prompt for AI agents</strong>:",
+      "Keep this text.",
+      "<strong>Evidence in `send_with_retry`</strong>",
+      "<strong>`nonce`</strong>",
+      "**Prompt for AI agents**:",
+      "Keep this too.",
+    ].join(newline);
+    expect(commentText(body)).toBe(
+      [
+        "Finding.",
+        "Prompt for AI agents:",
+        "Keep this text.",
+        "Evidence in `send_with_retry`",
+        "`nonce`",
+        "Prompt for AI agents:",
+        "Keep this too.",
+      ].join(newline),
+    );
+  });
+
+  it("keeps all text in an excerpt after line boundaries are flattened", () => {
+    const body =
+      "Finding.\n**Prompt for AI agents**\nKeep the finding.\n**Evidence in `send_with_retry`**\nKeep the evidence.";
+    const excerpt = body.trim().split(/\s+/).join(" ").slice(0, 200);
+    expect(commentText(excerpt)).toBe(
+      "Finding. Prompt for AI agents Keep the finding. **Evidence in `send_with_retry`** Keep the evidence.",
+    );
+  });
+
+  it.each(["\n", "\r\n"])("keeps literal code inside prompt structures with %j line endings", (newline) => {
+    const body = [
+      "Before.",
+      "```html",
+      "<!-- ai-agent-prompt:start -->",
+      "<details><summary>Prompt for AI agents</summary>Literal.</details>",
+      "<!-- ai-agent-prompt:end -->",
+      "```",
+      "<details><summary>Prompt for AI agents</summary>",
+      "```html",
+      "</details>",
+      "```",
+      "Hidden after literal closing tag.",
+      "</details>",
+      "After.",
+    ].join(newline);
+    expect(commentText(body)).toBe(
+      [
+        "Before.",
+        "```html",
+        "<!-- ai-agent-prompt:start -->",
+        "<details><summary>Prompt for AI agents</summary>Literal.</details>",
+        "<!-- ai-agent-prompt:end -->",
+        "```",
+        "",
+        "After.",
+      ].join(newline),
+    );
+  });
 
   it.each(["```", "~~~"])("keeps code in an excerpt cut inside a %s fence", (fence) => {
     const body = `Finding.\n${fence}html\n<details>\nVec<u8>\n${"literal **code** ".repeat(30)}\n${fence}`;
@@ -324,6 +387,11 @@ describe("GitHub comment display text", () => {
     ["unmatched backtick runs", Array.from({ length: 600 }, (_, i) => "`".repeat(i + 1) + "x").join(" ")],
     ["unclosed labels", "["],
     ["nested details", "<details>x"],
+    ["complete prompt details", "<details><summary>Prompt for AI agents</summary>x</details>"],
+    [
+      "nested prompt details",
+      "<details><summary>Prompt for AI agents</summary>".repeat(1000) + "x" + "</details>".repeat(1000),
+    ],
     ["whitespace without a newline", " ".repeat(199_999) + "x"],
   ])("normalises 200 kB of %s within 200 ms", (_, pattern) => {
     const body = pattern.repeat(Math.ceil(200_000 / pattern.length)).slice(0, 200_000);

@@ -948,7 +948,7 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
           {
             ...thread,
             excerpt:
-              "<!-- hidden --><b>Finding</b> [docs](https://example.com) <h3>Prompt for AI agents</h3>Drop.",
+              "<!-- hidden --><b>Finding</b> [docs](https://example.com) <details><summary>Prompt for AI agents</summary>Drop.</details>",
           },
         ]}
       />,

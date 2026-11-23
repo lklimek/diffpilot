@@ -281,7 +281,7 @@ describe("DecisionLog (V3)", () => {
       <DecisionLog
         log={withDecision({
           reply_text:
-            "<!-- hidden --><b>Finding</b>: `nonce`. [docs](https://example.com)\n**Prompt for AI agents**\nDrop.",
+            "<!-- hidden --><b>Finding</b>: `nonce`. [docs](https://example.com)<details><summary>Prompt for AI agents</summary>Drop.</details>",
         })}
         pr={PR}
         now={NOW}

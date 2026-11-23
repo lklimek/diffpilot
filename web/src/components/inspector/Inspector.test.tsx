@@ -507,7 +507,7 @@ describe("Inspector trust rules", () => {
     const t = structuredClone(tour);
     const thread = t.threads[0]!;
     thread.excerpt =
-      "<!-- hidden --><b>Finding</b> [docs](https://example.com) <h3>Prompt for AI agents</h3>Drop.";
+      "<!-- hidden --><b>Finding</b> [docs](https://example.com) <details><summary>Prompt for AI agents</summary>Drop.</details>";
     thread.llm_reason = "**LLM reason**";
     render(<Inspector tour={t} block={atStep(thread.step_id!)} />);
     const item = document.querySelector(`[data-thread-id="${thread.id}"]`)!;
