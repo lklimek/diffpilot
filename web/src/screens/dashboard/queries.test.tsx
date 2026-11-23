@@ -19,9 +19,9 @@ import {
   SUMMARY_KEY,
   refreshKey,
   loadAllItems,
-  PLUGIN_REFETCH_MS,
   PLUGIN_RETRY_MS,
   PLUGIN_RETRY_READS,
+  SUMMARY_REFETCH_MS,
   summaryRefetchInterval,
   resetSentTimeZones,
   useDashboardSummary,
@@ -243,7 +243,7 @@ describe("useStartRefresh (R2)", () => {
   });
 });
 
-describe("summaryRefetchInterval (ADR-022)", () => {
+describe("summaryRefetchInterval (ADR-022, plan §M)", () => {
   const summary = { revision: "r", latest_refresh: null } as unknown as DashboardSummary;
   const plugin = {
     plugin: "pr-hygiene",
@@ -252,12 +252,12 @@ describe("summaryRefetchInterval (ADR-022)", () => {
     state: "current" as const,
     as_of: "2026-11-18T10:00:00Z",
   };
-  it("reads the summary again every minute only while it lists a dashboard plug-in", () => {
-    expect(summaryRefetchInterval(undefined)).toBe(false);
-    expect(summaryRefetchInterval(summary)).toBe(false);
-    expect(summaryRefetchInterval({ ...summary, plugins: [] })).toBe(false);
-    expect(summaryRefetchInterval({ ...summary, plugins: [plugin] })).toBe(PLUGIN_REFETCH_MS);
-    expect(PLUGIN_REFETCH_MS).toBe(60_000);
+  it("reads the summary again every minute, with or without a dashboard plug-in (My work stays open)", () => {
+    expect(summaryRefetchInterval(undefined)).toBe(SUMMARY_REFETCH_MS);
+    expect(summaryRefetchInterval(summary)).toBe(SUMMARY_REFETCH_MS);
+    expect(summaryRefetchInterval({ ...summary, plugins: [] })).toBe(SUMMARY_REFETCH_MS);
+    expect(summaryRefetchInterval({ ...summary, plugins: [plugin] })).toBe(SUMMARY_REFETCH_MS);
+    expect(SUMMARY_REFETCH_MS).toBe(60_000);
   });
 
   it("reads it within seconds while a plug-in is not current, for a bounded number of reads", () => {
@@ -265,7 +265,7 @@ describe("summaryRefetchInterval (ADR-022)", () => {
       const off = { ...summary, plugins: [{ ...plugin, state }] };
       expect(summaryRefetchInterval(off, 1)).toBe(PLUGIN_RETRY_MS);
       expect(summaryRefetchInterval(off, PLUGIN_RETRY_READS)).toBe(PLUGIN_RETRY_MS);
-      expect(summaryRefetchInterval(off, PLUGIN_RETRY_READS + 1)).toBe(PLUGIN_REFETCH_MS);
+      expect(summaryRefetchInterval(off, PLUGIN_RETRY_READS + 1)).toBe(SUMMARY_REFETCH_MS);
     }
     expect(PLUGIN_RETRY_MS).toBe(5_000);
   });
@@ -288,7 +288,7 @@ describe("summaryRefetchInterval (ADR-022)", () => {
     await waitFor(() => expect(reads).toBe(3));
     await vi.advanceTimersByTimeAsync(PLUGIN_RETRY_MS * 3);
     expect(reads).toBe(3);
-    await vi.advanceTimersByTimeAsync(PLUGIN_REFETCH_MS);
+    await vi.advanceTimersByTimeAsync(SUMMARY_REFETCH_MS);
     await waitFor(() => expect(reads).toBe(4));
   });
 });

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { RefreshStatus, ScheduleStatus } from "../../../api/generated/types";
+import type { RefreshStatus, ScheduleStatus, SnapshotMeta } from "../../../api/generated/types";
 import { FAILED, RANKING, SCANNING, SUMMARY, NOW } from "../test-fixtures";
 import { RefreshControl } from "./RefreshControl";
 
@@ -10,12 +10,15 @@ const button = () => screen.getByRole("button", { name: /Refresh|Retry/ });
 /** The visible scan line of the top bar. */
 const info = () => document.querySelector<HTMLElement>("[data-scan-info]")!;
 
-function renderControl(latest: RefreshStatus | null, extra: { schedule?: ScheduleStatus; now?: Date } = {}) {
+function renderControl(
+  latest: RefreshStatus | null,
+  extra: { schedule?: ScheduleStatus; now?: Date; snapshot?: SnapshotMeta } = {},
+) {
   const onRefresh = vi.fn();
   render(
     <RefreshControl
       latest={latest}
-      snapshot={latest === null ? null : snapshot}
+      snapshot={latest === null ? null : (extra.snapshot ?? snapshot)}
       schedule={extra.schedule ?? SUMMARY.schedule}
       onRefresh={onRefresh}
       now={extra.now ?? NOW}
@@ -37,6 +40,33 @@ describe("RefreshControl", () => {
   it("says automatically for a scheduled refresh", () => {
     renderControl({ ...finished, trigger: "scheduled" });
     expect(info()).toHaveTextContent(/Refreshed automatically at/);
+    fireEvent.focus(info());
+    expect(screen.getByRole("tooltip")).toHaveTextContent("The daily schedule started it.");
+  });
+
+  it("says automatically for a refresh started while My work was open (plan §M)", () => {
+    renderControl({ ...finished, trigger: "automatic" });
+    expect(info()).toHaveTextContent(/Refreshed automatically at/);
+    fireEvent.focus(info());
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "It started by itself while My work was open: every 30 minutes, and on opening after 15.",
+    );
+  });
+
+  it("says when the listed pull requests were checked after the scan", () => {
+    const checked = new Date(NOW.getTime() - 2 * 60_000).toISOString();
+    renderControl(finished, { snapshot: { ...snapshot, facts_checked_at: checked } });
+    expect(info()).toHaveTextContent(/2 h 13 min ago · PRs checked 2 min ago · judged 6/);
+    fireEvent.focus(info());
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "CI, reviews and merge state of the listed pull requests were read from GitHub at",
+    );
+    expect(screen.getByRole("tooltip")).toHaveTextContent("every 5 minutes while My work is open.");
+  });
+
+  it("says nothing of a check when none followed the scan", () => {
+    renderControl(finished);
+    expect(info()).not.toHaveTextContent("PRs checked");
   });
 
   it("blocks Refresh while a scan runs, keeping the button focusable with its reason", () => {

@@ -26,7 +26,14 @@ interface Info {
   error?: boolean;
 }
 
-const how = (trigger: RefreshStatus["trigger"]) => (trigger === "scheduled" ? "automatically" : "manually");
+const how = (trigger: RefreshStatus["trigger"]) => (trigger === "manual" ? "manually" : "automatically");
+
+/** Who started a refresh, for the scan info's tip. */
+const startedBy: Record<RefreshStatus["trigger"], string> = {
+  manual: "You started it.",
+  scheduled: "The daily schedule started it.",
+  automatic: "It started by itself while My work was open: every 30 minutes, and on opening after 15.",
+};
 
 function scanInfo(latest: RefreshStatus | null, snapshot: SnapshotMeta | null, now: Date): Info {
   const at = (iso: string) => clockText(iso, now);
@@ -85,9 +92,14 @@ function scanInfo(latest: RefreshStatus | null, snapshot: SnapshotMeta | null, n
     };
   }
   const counts = own ? ` · judged ${own.judged} · reused ${own.reused}` : "";
+  const factsAt = snapshot.facts_checked_at;
+  const facts = factsAt ? ` · PRs checked ${agoText(factsAt, now)}` : "";
+  const factsTip = factsAt
+    ? ` CI, reviews and merge state of the listed pull requests were read from GitHub at ${at(factsAt)}; they are checked every 5 minutes while My work is open.`
+    : "";
   return {
-    text: `Refreshed${trigger} at ${at(snapshot.scanned_at)} · ${agoText(snapshot.scanned_at, now)}${counts}`,
-    tip: `Last scan: ${started}. ${checked}${ranked}.${own ? ` The LLM judged ${own.judged} items and reused ${own.reused} earlier judgements whose inputs did not change.` : ""}`,
+    text: `Refreshed${trigger} at ${at(snapshot.scanned_at)} · ${agoText(snapshot.scanned_at, now)}${facts}${counts}`,
+    tip: `Last scan: ${started}.${own ? ` ${startedBy[own.trigger]}` : ""} ${checked}${ranked}.${own ? ` The LLM judged ${own.judged} items and reused ${own.reused} earlier judgements whose inputs did not change.` : ""}${factsTip}`,
   };
 }
 
