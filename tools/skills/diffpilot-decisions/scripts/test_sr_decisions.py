@@ -1698,3 +1698,16 @@ def test_combine_as_the_skill_writes_it_claims_with_capabilities_covering_pr_com
     claims = [r for r in fake.requests if r["method"] == "POST"]
     assert claims or code == 2, errout
     assert all("pr_comment" in r["body"]["capabilities"] for r in claims)
+
+
+def test_footer_append_refuses_a_symlinked_parent_that_leads_into_a_git_work_tree(env, fake, capsys):
+    checkout = env["tmp"] / "checkout"
+    (checkout / "docs").mkdir(parents=True)
+    (checkout / ".git").write_text("gitdir: /elsewhere\n")
+    tracked = checkout / "docs" / "body.md"
+    tracked.write_text("x")
+    link = env["tmp"] / "outside"
+    link.symlink_to(checkout / "docs")
+    code, _, errout = run(capsys, "footer", "--append", str(link / "body.md"))
+    assert code == 2 and "git work tree" in errout
+    assert tracked.read_text() == "x"
