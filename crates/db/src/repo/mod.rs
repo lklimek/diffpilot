@@ -66,6 +66,23 @@ pub mod testing {
         Db::open_with(&dir.join("diffpilot.sqlite"), busy_timeout).await
     }
 
+    /// Makes the next write of a pass's job link change nothing (so it reports a conflict), as a link lost right
+    /// after its job was submitted; later links are written.
+    pub async fn lose_next_pass_job_link(db: &Db) -> Result<(), DbError> {
+        sqlx::raw_sql(
+            "CREATE TABLE lost_pass_job_links (lost INTEGER NOT NULL);
+             CREATE TRIGGER lose_next_pass_job_link BEFORE UPDATE OF job_id ON comment_passes
+             WHEN NOT EXISTS (SELECT 1 FROM lost_pass_job_links)
+             BEGIN
+                 INSERT INTO lost_pass_job_links (lost) VALUES (1);
+                 SELECT RAISE(IGNORE);
+             END;",
+        )
+        .execute(&db.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Makes every later write of an in-memory `db` fail while reads still work, as on a full disk
     /// ([`Db::in_memory`] has one connection, which keeps the setting).
     pub async fn refuse_writes(db: &Db) -> Result<(), DbError> {
