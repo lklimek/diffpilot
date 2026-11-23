@@ -86,6 +86,24 @@ describe("api client", () => {
     );
   });
 
+  it("a 202 Accepted without a body is a success (RC3 read again, RC6 assess again)", async () => {
+    server.use(
+      me("tok-1"),
+      http.post(
+        `${BASE}/api/v1/prs/acme/node-client/482/comments/read`,
+        () => new HttpResponse(null, { status: 202 }),
+      ),
+      http.post(
+        `${BASE}/api/v1/prs/acme/node-client/482/comments/items/:item/assess`,
+        () => new HttpResponse(null, { status: 202 }),
+      ),
+    );
+    const api = createApiClient(BASE);
+    const pr = { repo: { owner: "acme", name: "node-client" }, number: 482 };
+    await expect(api.readComments(pr)).resolves.toBeUndefined();
+    await expect(api.assessComment(pr, 14)).resolves.toBeUndefined();
+  });
+
   it("does not send the CSRF header on GET routes", async () => {
     let header: string | null = "unset";
     server.use(
