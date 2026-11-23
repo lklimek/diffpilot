@@ -202,7 +202,7 @@ reserved: a running pass shows as the item's assessment state);
 - **Assessment, bounded LLM cost.** Each detection that finds new or changed items spends LLM tokens. Bounds: one
   `verify_comments` job per PR queued or running; while the thepastaclaw plug-in reports the PR's head as reviewing or
   queued, the pass waits for the round's end (at most 90 minutes **[A]**) so one round is assessed once; at least 10
-  minutes between passes on one PR **[A]**; fingerprint reuse (§4.2); the daily per-user cap shared with on-demand
+  minutes between passes on one PR **[S-3]**; fingerprint reuse (§4.2); the daily per-user cap shared with on-demand
   passes; when the cap is reached the list says "Not assessed automatically: today's limit" and the PR stays on demand.
 - **Notification.** A pass that adds questions creates one per-user event "acme/node-client #482: 5 questions ready"
   (one per round, RQ18), delivered to open tabs as a browser notification and to the user's push channels (§5.5).
@@ -346,10 +346,10 @@ demand), served by range (brief §7).
 - **Input** (context pack, fenced as data): PR title and description, the PR context of the latest analysis if any,
   the project profile from the base ref if present, items (comment text, location, author kind), earlier decisions on
   this PR, and for a question mode the item and the owner's question.
-- **Batching and cost:** ≤ 10 items per job **[A]**; an item is re-assessed only when its comment text, its thread's
+- **Batching and cost:** ≤ 10 items per job **[S-3]**; an item is re-assessed only when its comment text, its thread's
   code lines or the PR purpose changed (fingerprint; otherwise the stored assessment is reused and shown with "code
-  at these lines unchanged since 3f9a1c2"); a daily cap per user as a code constant, the remainder shown "Not assessed
-  yet: daily limit".
+  at these lines unchanged since 3f9a1c2"); a daily cap per user as a code constant (80 passes **[S-3]**), the
+  remainder shown "Not assessed yet: daily limit".
 - **Triggers:** opening Comments or the PR page with unassessed items; new comments or a moved head found by a read;
   "Assess again" on an item; an owner question.
 - **Priority and model:** claimed after `ask` and before dashboard ranking and batch jobs; `select_model` arm
@@ -594,8 +594,8 @@ Named tests (besides §7): `effects_follow_matrix`, `gate_items_never_grouped_or
 | RQ23 | Notification channel without an open tab | b, extended: browser notification plus per-user ntfy (first-class) and generic webhook in Settings; agent tokens may register an ntfy or webhook push target; bounded retries; failures visible in Settings (§5.5) |
 
 ## 12. Assumptions to confirm
-**[A]** review-body split ordinals stay stable across passes; **[A]** ≤ 10 items per job fits the prompt; **[A]** the
+**[A]** review-body split ordinals stay stable across passes; ≤ 10 items per job fits the prompt **[S-3]**; **[A]** the
 merge question repeats after each round from round 3; **[A]** `lastEditedAt` changes on thepastaclaw's in-place edits;
 **[A]** Q-L reads cost about one point per page; **[A]** Watch constants (20 PRs, 5-minute probe, 90-minute bot-round
-wait, 10-minute spacing) to be checked against S13-2 and the owner's usage; **[A]** notification constants (3 attempts,
-10 s timeout, 30 messages per hour per channel, 30-day delivery log).
+wait) to be checked against S13-2 and the owner's usage; 10-minute spacing **[S-3]**; **[A]** notification constants
+(3 attempts, 10 s timeout, 30 messages per hour per channel, 30-day delivery log).

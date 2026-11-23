@@ -133,7 +133,7 @@ describe("WatchedList (V6)", () => {
       />,
     );
     expect(screen.getByText(/4 of 20 watched/)).toBeVisible();
-    expect(screen.getByText(/Assessments charged to you in the last 24 hours: 7 of 30/)).toBeVisible();
+    expect(screen.getByText(/Assessments charged to you in the last 24 hours: 7 of 80/)).toBeVisible();
     expect(screen.getByText("Waiting for bot round")).toBeVisible();
     expect(screen.getByText(/watching ended/)).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Unwatch acme/wire-codec #77" }));

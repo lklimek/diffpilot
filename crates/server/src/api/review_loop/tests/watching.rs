@@ -100,7 +100,7 @@ async fn watch_routes_watch_list_and_unwatch() {
     assert_eq!(list["watches"][0]["pr"]["number"], 482, "{list}");
     assert_eq!(list["watches"][0]["state"], "active");
     assert_eq!(list["limit"], 20);
-    assert_eq!(list["daily_limit"], 30);
+    assert_eq!(list["daily_limit"], 80);
     assert!(list["passes_today"].is_u64(), "{list}");
     let (status, _) = w.call("DELETE", &format!("{PR}/watch"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);

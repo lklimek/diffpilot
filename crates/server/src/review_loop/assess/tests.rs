@@ -443,7 +443,7 @@ async fn pass_sends_at_most_ten_items() {
     assert_eq!(MAX_ITEMS_PER_PASS, 10);
 }
 
-/// Ends `count` passes charged to `u1`, the last one `ended` ago.
+/// Ends `count` passes charged to `u1`, a minute apart (all inside the cap's 24 hours), the last one `ended` ago.
 async fn seed_passes(state: &AppState, count: u32, ended: SignedDuration) {
     let now = Timestamp::now();
     for n in 0..count {
@@ -455,7 +455,7 @@ async fn seed_passes(state: &AppState, count: u32, ended: SignedDuration) {
             sent: Vec::new(),
             question: None,
         };
-        let started = now - SignedDuration::from_mins(i64::from(count - n) * 20);
+        let started = now - ended - SignedDuration::from_mins(i64::from(count - n));
         let PassStart::Started(id) = state
             .db
             .review_loop()
@@ -926,7 +926,6 @@ fn prompt_hash(template: &str) -> String {
 /// The template with the output schema is recorded under the current [`VERIFY_PROMPT_VERSION`]
 /// (`RECORD_PROMPT_HASH=1` records it; a semantic change bumps the version, which makes every stored assessment
 /// stale through its fingerprint), and the rendered prompt is pinned (`UPDATE_GOLDEN=1` rewrites it).
-// TODO(S13-3): calibrate the prompt against real Codex runs once the spike is approved.
 #[test]
 fn golden_verify_comments_prompt() {
     let prompt = prompt::render(&golden_input(), &summary(HEAD), LlmLanguage::En).expect("prompt");
