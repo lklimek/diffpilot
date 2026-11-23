@@ -77,8 +77,9 @@ fn rollup(found: Option<&StatusRollup>) -> Option<CheckRollup> {
 }
 
 /// Bots whose last change request is followed by a review of theirs on another commit, in any state: the request no
-/// longer counts (K15 W2, K17 R5). A request whose commit is unknown keeps counting.
-fn rereviewed_bots(rules: &ScoreRules, reviews: &[ReviewNode]) -> BTreeSet<String> {
+/// longer counts (K15 W2, K17 R5). A request on the current `head` (no newer head exists) or of an unknown commit
+/// keeps counting.
+fn rereviewed_bots(rules: &ScoreRules, reviews: &[ReviewNode], head: &str) -> BTreeSet<String> {
     let mut requested: BTreeMap<&str, Option<&str>> = BTreeMap::new();
     let mut moved_on = BTreeSet::new();
     for review in reviews {
@@ -94,6 +95,7 @@ fn rereviewed_bots(rules: &ScoreRules, reviews: &[ReviewNode]) -> BTreeSet<Strin
             moved_on.remove(&name(login));
         } else if let (Some(Some(at)), Some(commit)) = (requested.get(login), commit)
             && *at != commit
+            && *at != head
         {
             moved_on.insert(name(login));
         }
@@ -319,9 +321,13 @@ pub(super) fn pr(
         review_requested_at,
         review_request_age_is_approx: approx,
         changes_requested_by: {
-            let rereviewed = rereviewed_bots(rules, &detail.reviews.nodes);
             let mut logins = with_state("CHANGES_REQUESTED");
-            logins.retain(|login| !rereviewed.contains(login));
+            // While GitHub's decision still requests changes, GitHub enforces the request: it stays.
+            if detail.review_decision.as_deref() != Some("CHANGES_REQUESTED") {
+                let rereviewed =
+                    rereviewed_bots(rules, &detail.reviews.nodes, &detail.head_ref_oid);
+                logins.retain(|login| !rereviewed.contains(login));
+            }
             logins
         },
         changes_requested_by_human: !human_cr.is_empty(),
@@ -598,9 +604,14 @@ mod tests {
     /// The user's approved, ready-labelled PR with green CI, mergeable, nothing else to answer (dashpay/platform#5951
     /// at the 2026-11-23 scan), with `reviews` in order: its change requests and whether it waits on others (K15).
     fn blocked_by(reviews: Vec<serde_json::Value>) -> (Vec<String>, bool) {
+        blocked_by_with("APPROVED", reviews)
+    }
+
+    /// [`blocked_by`] with GitHub's review decision `decision`.
+    fn blocked_by_with(decision: &str, reviews: Vec<serde_json::Value>) -> (Vec<String>, bool) {
         let mut node = node();
         node["labels"] = serde_json::json!({"nodes": [{"name": "ready-for-human"}]});
-        node["reviewDecision"] = "APPROVED".into();
+        node["reviewDecision"] = decision.into();
         node["mergeStateStatus"] = "UNSTABLE".into();
         node["baseRepository"] = serde_json::json!({"nameWithOwner": "acme/platform", "isPrivate": false,
             "defaultBranchRef": {"name": "main"}, "viewerPermission": "WRITE"});
@@ -640,8 +651,10 @@ mod tests {
         );
     }
 
-    /// A bot's change request stands while the bot has not reviewed another commit, or the request's commit is
-    /// unknown; a new request on the newer head stands; a person's request stands until GitHub clears it.
+    /// A bot's change request stands while the bot has not reviewed another commit, while the request is on the
+    /// current head (a later review of an older commit is no newer head), or the request's commit is unknown; a new
+    /// request on the newer head stands; another bot's review clears nothing; a person's request stands until GitHub
+    /// clears it.
     #[test]
     fn a_change_request_stands_until_its_bot_reviews_a_newer_head() {
         let bot = |state, commit| review("thepastaclaw", "User", state, commit);
@@ -681,11 +694,41 @@ mod tests {
         );
         assert_eq!(
             blocked_by(vec![
+                bot("CHANGES_REQUESTED", Some(HEAD)),
+                bot("COMMENTED", Some(OLD_HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "the request on the current head, a later review of an older commit"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", Some(OLD_HEAD)),
+                review("DCG-Claude", "User", "COMMENTED", Some(HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "another bot's review"
+        );
+        assert_eq!(
+            blocked_by(vec![
                 review("ana", "User", "CHANGES_REQUESTED", Some(OLD_HEAD)),
                 review("ana", "User", "COMMENTED", Some(HEAD)),
             ]),
             blocked("ana"),
             "a person's stale request"
+        );
+    }
+
+    /// While GitHub's review decision still requests changes (a bot whose review counts on GitHub), the bot's request
+    /// stays in the facts, so the row keeps its "changes requested" tag and stays the user's move.
+    #[test]
+    fn a_bots_change_request_stands_while_github_still_requests_changes() {
+        let bot = |state, commit| review("thepastaclaw", "User", state, Some(commit));
+        assert_eq!(
+            blocked_by_with(
+                "CHANGES_REQUESTED",
+                vec![bot("CHANGES_REQUESTED", OLD_HEAD), bot("COMMENTED", HEAD)]
+            ),
+            (vec!["thepastaclaw".to_owned()], false)
         );
     }
 }

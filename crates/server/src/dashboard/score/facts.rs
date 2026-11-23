@@ -184,7 +184,8 @@ pub struct PrFacts {
     pub review_requested_at: Option<Timestamp>,
     /// `review_requested_at` fell back to `updatedAt`.
     pub review_request_age_is_approx: bool,
-    /// Logins whose latest review requests changes; a bot's only until it reviews another commit (K15 W2).
+    /// Logins whose latest review requests changes; a bot's only until it reviews a newer head, unless GitHub's
+    /// review decision still requests changes (K15 W2).
     pub changes_requested_by: Vec<String>,
     /// One of them is a human outside the scanned logins.
     pub changes_requested_by_human: bool,

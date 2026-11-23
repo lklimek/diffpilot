@@ -425,7 +425,7 @@ fn human_waiting(rules: &ScoreRules, pr: &PrFacts, now: Timestamp) -> Part {
             && !pr.changes_requested_by_human
             && (pr.reviews_truncated || pr.changes_requested_by.is_empty()) =>
         {
-            hints.push("changes requested but no change request among the last 20 reviews: verify; a human one scores by age".into());
+            hints.push("GitHub's review decision is changes requested, but the last 20 reviews hold no change request from another person: verify; a human one scores by age".into());
         }
         _ => {}
     }

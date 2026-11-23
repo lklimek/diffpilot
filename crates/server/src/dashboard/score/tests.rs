@@ -600,9 +600,12 @@ fn human_waiting_change_requests_and_unanswered_comments() {
         PartStatus::Estimated
     );
     assert!(
-        part(&invisible, C::HumanWaiting)
-            .basis
-            .contains("20 reviews")
+        part(&invisible, C::HumanWaiting).basis.contains(
+            "GitHub's review decision is changes requested, but the last 20 reviews hold no change request from \
+             another person"
+        ),
+        "{}",
+        part(&invisible, C::HumanWaiting).basis
     );
     let rerequested = scored(&cr(None, true, None));
     assert_eq!(
@@ -1997,10 +2000,10 @@ fn awaiting_others_lists_waiting_prs_longest_wait_first() {
 }
 
 /// K15: the user's PR waits on others (Waiting on others, not Needs you) when nothing is the user's move (W2: no
-/// conflicts, CI green with ignored checks left out, no change request from people or bots, no unresolved thread, no
-/// comment awaiting the reply, no review requested from the user; W1: the user's, not a draft) and it waits on
-/// people (W3): the ready label even when approved or mergeable, or a review requested from others while not
-/// approved and GitHub does not let the user merge it, also without the label or any approval.
+/// conflicts, CI green with ignored checks left out, no change request (people; a bot's until it reviews a newer
+/// head), no unresolved thread, no comment awaiting the reply, no review requested from the user; W1: the user's, not
+/// a draft) and it waits on people (W3): the ready label even when approved or mergeable, or a review requested from
+/// others while not approved and GitHub does not let the user merge it, also without the label or any approval.
 #[test]
 fn waits_on_others_only_when_nothing_is_the_users_move() {
     use crate::dashboard::score::ReviewDecision as D;
