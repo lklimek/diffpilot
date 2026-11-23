@@ -77,7 +77,7 @@ fi
 versions="$(docker run --rm --network none --entrypoint /bin/sh "$skeleton" -c \
   'codex --version; github-mcp-server --version 2>&1 | grep Version; git --version; rg --version | head -n 1;
    id runner; id agent; find / -xdev -type f -perm /6000 | wc -l')"
-codex_ok=0; grep -q '^codex-cli 0\.167\.0$' <<< "$versions" && grep -q '2\.1\.0' <<< "$versions" && codex_ok=1
+codex_ok=0; grep -q '^codex-cli 0\.171\.0$' <<< "$versions" && grep -q '2\.1\.0' <<< "$versions" && codex_ok=1
 suid="$(tail -n 1 <<< "$versions")"
 if [[ $codex_ok == 1 && $suid == 0 ]] && grep -q 'uid=10001(runner) gid=10001(runner) groups=10001(runner)' <<< "$versions" \
    && grep -q 'uid=10002(agent) gid=10002(agent) groups=10002(agent)' <<< "$versions"; then r=PASS; else r=FAIL; fi

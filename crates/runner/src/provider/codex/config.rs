@@ -49,7 +49,7 @@ pub(crate) const AUTO_COMPACT_TOKEN_LIMIT: u32 = 400_000;
 /// the deployed Codex with a ~300k-token fork: measure compaction time and per-request input on the real stack.
 pub(crate) const FORK_COMPACT_TOKEN_LIMIT: u32 = 80_000;
 
-/// Settings of an answer-only job (dashboard ranking), checked against the pinned Codex 0.167: `shell_tool`
+/// Settings of an answer-only job (dashboard ranking), checked against the pinned Codex 0.171: `shell_tool`
 /// off removes `exec_command` and `write_stdin` (its `unified_exec` opt-out is ignored but kept should a later
 /// version honour it), `view_image` off; with a read-only sandbox for what remains (`apply_patch`, which no key
 /// removes). The code-mode `exec`

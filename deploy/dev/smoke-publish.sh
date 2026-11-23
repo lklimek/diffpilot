@@ -16,7 +16,7 @@ set -euo pipefail
 
 stage="${1:?usage: smoke-publish.sh STAGE OUT_DIR VOLUME HOST_VALUES}"
 out="${2:?out dir}" volume="${3:?volume}" values="${4:?host value list}"
-image="${SR_SMOKE_IMAGE:-diffpilot-spike-codex:0.167.0}"
+image="${SR_SMOKE_IMAGE:-diffpilot-spike-codex:0.171.0}"
 container_args=(--rm --network none --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges
   --mount "type=volume,source=$volume,target=/s,readonly")
 

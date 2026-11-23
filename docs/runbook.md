@@ -695,6 +695,9 @@ Development without containers: `deploy/dev/stack.sh` (fake GitHub, fake provide
 `deploy/dev/real-codex-smoke.sh` with `SR_SMOKE_ISOLATION=supervisor` runs one analysis with the production runner
 image under its supervisor behind the egress proxy; `SR_SMOKE_STATE_VOLUME=diffpilot-local_runner-state` (local
 stack's runner stopped first) reuses the stack's Codex credential instead of a second copy.
+These smoke scripts and `scripts/schema-smoke.sh` default to the S1a spike image `diffpilot-spike-codex:0.171.0`
+(the runner's Codex pin); build it from the S1a harness Dockerfile (`docs/spikes/S1a-codex-basics.md`) with
+`--build-arg CODEX_VERSION=… --build-arg CODEX_PACKAGE_SHA256=…` from `deploy/runner/Dockerfile`.
 
 
 ### Usage and analysis statistics logs
