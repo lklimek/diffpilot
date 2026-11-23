@@ -25,6 +25,7 @@ python3 $S renew D                                # extends the lease (each repo
 `text`, `combine`: a reply or PR-level comment waiting on a `fix`, `follow_up_pr` or `upstream_issue` ends with that effect's reported reference (never after a `todo`; skipped when the text has it); refused until it is reported done. Files: omit `--out` (private temp file outside the checkout); `--out` only for a new path outside any git work tree, e.g. in `mktemp -d`.
 
 `--capabilities` (list, wait, claim, renew, combine): default all eight kinds (`fix`, `reply`, `resolve`, `pr_comment`, `follow_up_pr`, `upstream_issue`, `todo`, `dismiss_review`); a decision is claimable only when every open effect is within them. Narrow only when the user asks, and then the same set everywhere.
+Drop a kind you cannot execute before claiming (e.g. `todo` without the `memcan:todo` skill, `dismiss_review` without write access): a claimed effect you then fail cancels the effects waiting on it.
 
 Exit codes: 0 ok, 2 configuration or bad request, 3 token rejected or scope missing, 4 server unreachable/failed (`report`: run the same command again, it reuses its idempotency key), 5 nothing claimable, 6 not yours or gone (another agent's claim, superseded, done, outside capabilities, unknown id), 7 lease ended (`claim D` again, `show D`, then repeat). Relay the stderr sentence.
 
