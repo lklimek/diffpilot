@@ -509,6 +509,44 @@ async fn a_superseded_body_finding_keeps_its_decision_and_open_effects() {
     assert_eq!(status, StatusCode::CREATED, "{claim}");
 }
 
+/// The recorded reviews with round r5 dismissed, as GitHub shows it after RQ11's dismissal or a maintainer's.
+fn r5_dismissed(answer: &mut Value) {
+    for review in answer["data"]["repository"]["pullRequest"]["reviews"]["nodes"]
+        .as_array_mut()
+        .expect("reviews")
+    {
+        if review["id"] == "PRR_fixture482_r5" {
+            review["state"] = json!("DISMISSED");
+        }
+    }
+}
+
+/// Plan §2.1 I2 with RQ11: dismissing the latest round (P3 "Dismiss stale bot reviews", or a maintainer on GitHub)
+/// does not reopen the earlier body findings that round superseded.
+#[tokio::test]
+#[ignore = "owner decision pending: whether a dismissed latest round re-opens the findings it superseded"]
+async fn dismissing_the_latest_round_does_not_reopen_superseded_body_findings() {
+    let w = world().await;
+    let latest_r2: &dyn Fn(&mut Value) = &without_r5;
+    serve(&w.server, &[("reviews.json", latest_r2)]).await;
+    w.get(&format!("{PR}/comments")).await;
+    let no = w.item(R1_BODY).await["no"].clone();
+    w.reread(&[]).await;
+    assert!(
+        w.item(R1_BODY).await["gone_at"].is_string(),
+        "r5 supersedes it"
+    );
+
+    let dismissed: &dyn Fn(&mut Value) = &r5_dismissed;
+    w.reread(&[("reviews.json", dismissed)]).await;
+    let after = w.get(&format!("{PR}/comments")).await;
+    let item = w.item(R1_BODY).await;
+    assert!(
+        item["gone_at"].is_string() && !queued(&after, &no),
+        "dismissing r5 brings r1's superseded finding back into the queue: {item}"
+    );
+}
+
 /// The RC16 preview of a decision of `kind` on the item `key`: (the decision body, its `plan_digest`).
 async fn previewed(w: &World, key: &str, kind: &str) -> (Value, Value) {
     let item = w.item(key).await;
