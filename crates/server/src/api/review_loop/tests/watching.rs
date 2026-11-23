@@ -383,3 +383,47 @@ async fn questions_ready_event_once_per_round() {
         2
     );
 }
+
+/// Plan §2.8 item 2: a plug-in change signal for a watched pull request probes it at once, before its 5 minutes are
+/// up (owner and name compared without case); a signal for a pull request nobody watches probes nothing.
+#[tokio::test]
+async fn a_plugin_change_signal_probes_the_watched_pull_request_at_once() {
+    use std::collections::HashSet;
+
+    use crate::dashboard::plugin::PrKey;
+
+    let w = world().await;
+    let pr = watched_482(&w).await;
+    mount_probe(&w.server, probe_answer("2026-11-12T10:40:12Z")).await;
+    watch::tick_at(&w.state, Timestamp::now())
+        .await
+        .expect("first tick");
+    watch::tick_at(&w.state, Timestamp::now())
+        .await
+        .expect("a tick within the interval");
+    assert_eq!(
+        received(&w.server, PROBE_MARKER).await.len(),
+        1,
+        "not due again yet"
+    );
+    let probed_at = the_watch(&w, pr).await.last_probe_at;
+
+    let unwatched = RepoRef {
+        owner: "acme".into(),
+        name: "other".into(),
+    };
+    watch::plugin_changed(&w.state, &HashSet::from([PrKey::new(&unwatched, 7)])).await;
+    assert_eq!(received(&w.server, PROBE_MARKER).await.len(), 1);
+
+    let shouted = RepoRef {
+        owner: "ACME".into(),
+        name: "Node-Client".into(),
+    };
+    watch::plugin_changed(&w.state, &HashSet::from([PrKey::new(&shouted, 482)])).await;
+    assert_eq!(
+        received(&w.server, PROBE_MARKER).await.len(),
+        2,
+        "the signal probes the watched pull request at once"
+    );
+    assert!(the_watch(&w, pr).await.last_probe_at >= probed_at);
+}
