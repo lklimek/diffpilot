@@ -48,11 +48,13 @@ pub fn select_model(
     }
 }
 
-/// Supported catalog recorded by the deployment's Codex spike S1a.
+/// Supported catalog: the Codex spike S1a models plus the 6.2 models of Codex 0.171 (ADR-002).
 pub const MODELS: &[(&str, &str)] = &[
+    ("gpt-6.2-sol", "Sol 6.2"),
     ("gpt-6.1-sol", "Sol 6.1"),
     ("gpt-6-sol", "Sol 6"),
     ("gpt-5.6-sol", "Sol 5.6"),
+    ("gpt-6.2-astra", "Astra 6.2"),
     ("gpt-6-astra", "Astra 6"),
 ];
 
@@ -193,6 +195,28 @@ mod tests {
             "gpt-6.1-sol",
             "a model outside the catalog falls back to Sol"
         );
+    }
+
+    /// Sol 6.2 and Astra 6.2 (Codex 0.171) are selectable; the default stays Sol 6.1.
+    #[test]
+    fn sol_and_astra_6_2_are_selectable_and_the_default_stays_sol_6_1() {
+        let shown = selection(None);
+        assert_eq!(shown.current.model, "gpt-6.1-sol");
+        for (id, label) in [("gpt-6.2-sol", "Sol 6.2"), ("gpt-6.2-astra", "Astra 6.2")] {
+            let saved = saved(id, ReasoningEffort::Medium, ReasoningEffort::Low);
+            assert_eq!(
+                select_model(JobKind::Plan, &ModelContext::default(), Some(&saved)),
+                saved.choice,
+                "{id}"
+            );
+            assert!(
+                shown
+                    .models
+                    .iter()
+                    .any(|option| option.id == id && option.label == label),
+                "{id} offered as {label}"
+            );
+        }
     }
 
     #[test]

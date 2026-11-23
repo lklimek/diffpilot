@@ -108,6 +108,11 @@ pub(crate) fn item_view(
         revision: record.revision,
         first_seen_head: record.first_seen_head.clone(),
         first_round: record.first_round,
+        written: loaded
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.written.get(&record.stable_key))
+            .cloned(),
         github: record.github.clone(),
         outside: record.outside.clone(),
         gone_at: record.gone_at,
@@ -206,7 +211,7 @@ fn counts(loaded: &Loaded, waiting: usize) -> CommentCounts {
             loaded
                 .items
                 .iter()
-                .filter(|item| item.state == ItemState::Reopened)
+                .filter(|item| item.state == ItemState::Reopened && item.gone_at.is_none())
                 .count(),
         ),
         waiting_for_agents: count(standing.values().filter(|s| effects_open(s)).count()),
@@ -263,6 +268,11 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> Assess
     }
 }
 
+/// Open and still produced by the read: an item marked `gone_at` (such as a superseded body finding) waits for nobody.
+fn waits(item: &ItemRecord) -> bool {
+    queue::is_open(item.state) && item.gone_at.is_none()
+}
+
 fn rounds(loaded: &Loaded, events: &[contracts::api::review_loop::CarryEvent]) -> Vec<Round> {
     let Some(snapshot) = &loaded.snapshot else {
         return Vec::new();
@@ -313,17 +323,12 @@ fn rounds(loaded: &Loaded, events: &[contracts::api::review_loop::CarryEvent]) -
                         .items
                         .iter()
                         .filter(|item| item.first_round.is_some_and(|first| first <= round.number))
-                        .filter(|item| queue::is_open(item.state))
+                        .filter(|item| waits(item))
                         .count(),
                 ),
                 carried: carried(contracts::api::review_loop::CarryKind::Carried),
                 asked_again: carried(contracts::api::review_loop::CarryKind::AskedAgain),
-                undecided: count(
-                    of_round
-                        .iter()
-                        .filter(|item| queue::is_open(item.state))
-                        .count(),
-                ),
+                undecided: count(of_round.iter().filter(|item| waits(item)).count()),
                 decisions: kinds,
             }
         })

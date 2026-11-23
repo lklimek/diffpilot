@@ -40,9 +40,12 @@ export async function checkPr(page: Page): Promise<void> {
   await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();
 }
 
+/** The fixture PR's PR page (review-workflow-plan §3.1 V0): Review a PR shows its latest analysis's progress. */
+export const PR_PAGE_PATH = "/pr/acme/node-client/482";
+
 /**
  * Presses the check card's Start analysis (or Start analysis anyway) and returns the new analysis id
- * (progress screen open).
+ * (the PR page open, showing that analysis's progress).
  */
 export async function startAnalysis(page: Page): Promise<string> {
   const created = page.waitForResponse(
@@ -56,18 +59,23 @@ export async function startAnalysis(page: Page): Promise<string> {
   const response = await created;
   expect(response.status(), await response.text()).toBe(201);
   const { id } = (await response.json()) as { id: string };
-  await expect(page).toHaveURL(new RegExp(`/analyses/${id}/progress$`));
+  await expect(page).toHaveURL(new RegExp(`${PR_PAGE_PATH}$`));
+  await expect(page.getByRole("region", { name: "Analysis progress" })).toBeVisible();
+  const shown = await page.request.get("/api/v1/prs/acme/node-client/482");
+  expect(shown.ok(), await shown.text()).toBe(true);
+  const { analysis } = (await shown.json()) as { analysis: { id: string } | null };
+  expect(analysis?.id, "the analysis the PR page shows").toBe(id);
   return id;
 }
 
-/** Checks the PR on the review start page and starts its analysis: returns the new analysis id (progress open). */
+/** Checks the PR on the review start page and starts its analysis: returns the new analysis id (PR page open). */
 export async function analyze(page: Page): Promise<string> {
   await checkPr(page);
   return startAnalysis(page);
 }
 
 /**
- * On the progress screen: once the plan is ready, opts in to analysing every remaining flow. Flows run on request
+ * On the PR page: once the plan is ready, opts in to analysing every remaining flow. Flows run on request
  * only, so the switch must read off first; a server that starts it on fails here.
  */
 export async function analyseAllRemainingFlows(page: Page): Promise<void> {
@@ -214,7 +222,8 @@ export interface RequiredTip {
 
 const REVIEW = 'nav[aria-label="Flows and steps"]';
 const PROGRESS = 'section[aria-label="Analysis progress"]';
-const HOME = 'form:has(input[type="url"])';
+// Home's PR URL field is required (PrUrlForm.tsx); the URL fields of Settings → Notifications are not.
+const HOME = 'form:has(input[type="url"][required])';
 
 /** The controls of web/src/components that carry a tooltip, per screen. */
 export const REQUIRED_TIPS: RequiredTip[] = [

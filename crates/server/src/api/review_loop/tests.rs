@@ -307,8 +307,8 @@ async fn comments_work_without_analysis() {
     let items = w.items().await;
     assert_eq!(
         items.len(),
-        13,
-        "12 GitHub items and the round-3 merge question"
+        12,
+        "11 GitHub items (r5 supersedes r1's body finding) and the round-3 merge question"
     );
     // Opening Comments starts one `verify_comments` pass; its items show the assessment as running.
     for item in items.iter().filter(|item| item["kind"] != "pr_question") {
@@ -339,7 +339,7 @@ async fn comments_work_without_analysis() {
     let numbers: Vec<u64> = items.iter().filter_map(|i| i["no"].as_u64()).collect();
     assert_eq!(
         numbers,
-        (1..=13).collect::<Vec<_>>(),
+        (1..=12).collect::<Vec<_>>(),
         "C<no> numbered at first sight"
     );
     let page = w.get(PR).await;
@@ -381,7 +381,7 @@ async fn round_three_asks_merge_question_once() {
     let overview = w.get(&format!("{PR}/comments")).await;
     assert_eq!(
         overview["queue"][0],
-        json!({"item_nos": [13], "reason": "pr_question"})
+        json!({"item_nos": [12], "reason": "pr_question"})
     );
     let merge = w.item("pr:3:merge").await;
     assert_eq!(merge["author_kind"], "diffpilot");
@@ -417,7 +417,7 @@ async fn round_three_asks_merge_question_once() {
             .as_array()
             .expect("queue")
             .iter()
-            .all(|entry| entry["item_nos"] != json!([13])),
+            .all(|entry| entry["item_nos"] != json!([12])),
         "only the latest merge question waits"
     );
 }
@@ -438,7 +438,7 @@ async fn stale_review_dismissal_question_after_round() {
             row
         })
         .collect();
-    assert_eq!(rows.len(), 5);
+    assert_eq!(rows.len(), 4);
     let (status, body) = w
         .post(
             &format!("{PR}/comments/decision-batches"),
@@ -930,7 +930,7 @@ async fn effects_preview_and_github_failure_keeps_the_last_read() {
         overview["read"]["read_at"].is_string(),
         "the last good read stays"
     );
-    assert_eq!(w.items().await.len(), 13);
+    assert_eq!(w.items().await.len(), 12);
 }
 
 /// T22: decisions, gate marks, re-reads and item actions refuse access tokens.
@@ -1106,6 +1106,54 @@ async fn assess_again_while_a_pass_runs_is_a_conflict() {
 async fn pr_page_names_the_author() {
     let w = world().await;
     assert_eq!(w.get(PR).await["author"], "alice");
+}
+
+/// RC4 says where GitHub records each comment as written: a bot round's own review names that round with its head
+/// and end; any other review comment its review's commit and its own time, never a round's; a PR comment its time
+/// only.
+#[tokio::test]
+async fn items_name_where_github_says_they_were_written() {
+    let w = world().await;
+    let rounds = w.get(&format!("{PR}/comments")).await["rounds"].clone();
+    let items = w.items().await;
+    let by_url = |part: &str| {
+        items
+            .iter()
+            .find(|item| item["url"].as_str().is_some_and(|url| url.ends_with(part)))
+            .unwrap_or_else(|| panic!("an item at {part}"))
+    };
+    // bob's thread in his review on 52d2da1, after rounds 1 and 2 ended: not "round 2 on 9f3c2e1".
+    assert_eq!(
+        by_url("#discussion_r3000000701")["written"],
+        json!({"commit": "52d2da140191a9d47becf6a446310be803c007fc", "at": "2026-11-12T09:00:00Z"})
+    );
+    assert_eq!(
+        by_url("#issuecomment-5000000103")["written"],
+        json!({"at": "2026-11-12T09:05:00Z"})
+    );
+    let mut in_rounds = 0;
+    for item in &items {
+        let Some(number) = item["written"]["round"].as_u64() else {
+            continue;
+        };
+        let round = rounds
+            .as_array()
+            .expect("rounds")
+            .iter()
+            .find(|round| round["number"] == number)
+            .expect("its round");
+        assert_eq!(item["author"], "thepastaclaw", "{item}");
+        assert_eq!(
+            item["written"],
+            json!({"round": number, "commit": round["head"], "at": round["finished_at"]}),
+            "{item}"
+        );
+        in_rounds += 1;
+    }
+    assert!(
+        in_rounds > 0,
+        "the fixture has items of a round's own review"
+    );
 }
 
 /// RC4 counts the reader's answered Ask questions about each item; open questions and other readers' answers are

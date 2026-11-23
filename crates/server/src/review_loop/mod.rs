@@ -407,6 +407,7 @@ async fn read_now(
             tracing::info!(
                 pr = id,
                 ?gone,
+                latest_round = snapshot.rounds.len(),
                 "items the read no longer produced leave the queue"
             );
         }
@@ -1086,6 +1087,7 @@ impl Loaded {
                 revision: record.revision,
                 gated: !self.gates(record).is_empty(),
                 blocking: record.bot_severity.as_deref() == Some("Blocking"),
+                review_body: record.kind == CommentItemKind::ReviewBody,
                 first_round: record.first_round,
                 recommendation: self
                     .assessments

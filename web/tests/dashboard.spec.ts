@@ -76,6 +76,30 @@ test.describe("My work (msw)", () => {
     await expectKeyboardTooltips(page);
   });
 
+  test("a pull request's comment counts open its Comments; without counts Watch reads them (owner 2026-11-23)", async ({
+    page,
+  }) => {
+    await open(page);
+    await main(page)
+      .getByRole("link", { name: /^15 comments · 10 need you: comments of #482 / })
+      .click();
+    await expect(page).toHaveURL("/pr/acme/node-client/482/comments");
+    await expect(page.getByRole("navigation", { name: "Queue" })).toBeVisible();
+    await page.goBack();
+    await main(page)
+      .getByRole("button", { name: /^Watch #1203 / })
+      .click();
+    await expect(
+      main(page).getByRole("link", { name: /^0 comments · 0 need you: comments of #1203 / }),
+    ).toBeVisible();
+    await expect(main(page).getByRole("button", { name: /^Watch #1203 / })).toHaveCount(0);
+    for (const colorScheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme });
+      await expectAccessible(page);
+    }
+    await expectKeyboardTooltips(page);
+  });
+
   test("every row shows a GitHub / MemCan icon link without hover; it opens a new tab, not the row", async ({
     page,
   }) => {
@@ -243,6 +267,54 @@ test.describe("My work (msw)", () => {
     expect(copied.html).toContain(
       '<a href="https://github.com/acme/platform/pull/1176">acme/platform#1176</a>',
     );
+  });
+
+  test("Copy for Slack: a row's Slack icon and the list write the Slack names of Settings instead of GitHub logins", async ({
+    page,
+    context,
+  }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await open(page);
+    const waiting = page
+      .getByRole("complementary")
+      .locator("details", { has: page.getByRole("heading", { name: "Waiting on others" }) });
+    const read = () =>
+      page.evaluate(async () => {
+        const [item] = await navigator.clipboard.read();
+        return {
+          text: await (await item!.getType("text/plain")).text(),
+          html: await (await item!.getType("text/html")).text(),
+        };
+      });
+    const row = waiting.getByRole("button", { name: "Copy line of PLAT-1176 for Slack" });
+    const box = (await row.boundingBox())!;
+    expect(Math.min(box.width, box.height)).toBeGreaterThanOrEqual(24);
+    await row.focus();
+    await page.keyboard.press("Enter");
+    await expect(waiting.getByText("Copied the line of PLAT-1176.")).toBeAttached();
+    // fixtures/dashboard/api/settings.json maps jun-park to @jun.park; tobias-w has no Slack name.
+    expect((await read()).text).toBe(
+      "[acme/platform#1176](https://github.com/acme/platform/pull/1176) feat(sync): parallel header download - large (+3200 / -400) — waits on @jun.park, team:core for 11 d",
+    );
+    const list = waiting.getByRole("button", { name: "Copy for Slack: list of PRs waiting on others" });
+    await expect(list).toHaveText("Copy for Slack");
+    await list.click();
+    await expect(waiting.getByRole("status").filter({ hasText: /^Copied \d+ lines/ })).toHaveText(
+      "Copied 3 lines.",
+    );
+    const clip = await read();
+    expect(clip.text.split("\n")).toHaveLength(3);
+    expect(clip.text).toContain("waits on @jun.park, team:core for 11 d");
+    expect(clip.text).toContain("waits on @tobias-w for");
+    expect(clip.html).toContain("waits on @jun.park, team:core for 11 d");
+    // The panel itself keeps the GitHub logins; the plain copy too.
+    await expect(waiting.getByText(/^waits on @jun-park, team:core for/)).toBeVisible();
+    await waiting.getByRole("button", { name: "Copy line of PLAT-1176", exact: true }).click();
+    // The clipboard may still be written when first read ("Clipboard data has changed"): read until it holds the line.
+    await expect(async () =>
+      expect((await read()).text).toContain("waits on @jun-park, team:core for 11 d"),
+    ).toPass();
   });
 
   test("kind toggles combine by keyboard, the last one on stays on, and the choice is remembered", async ({

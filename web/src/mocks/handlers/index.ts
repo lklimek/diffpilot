@@ -19,6 +19,7 @@ import {
   snoozeDashboardItem,
   startDashboardRefresh,
   wakeDashboardItem,
+  watchDashboardPr,
 } from "./dashboard";
 import {
   createAccessToken,
@@ -111,5 +112,6 @@ export const handlers = [
   listAccessTokens,
   createAccessToken,
   revokeAccessToken,
+  watchDashboardPr,
   ...reviewLoopHandlers,
 ];

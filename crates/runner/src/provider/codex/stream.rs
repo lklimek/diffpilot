@@ -73,6 +73,9 @@ pub(crate) struct CodexStream {
     running: usize,
     /// Model requests seen: batches of tool calls and the answer.
     requests: u64,
+    /// `codex exec` reported a sub-agent call although every config disables sub-agents (warned; best effort,
+    /// its JSONL drops the V2 message tools).
+    sub_agent_used: bool,
 }
 
 #[derive(Deserialize)]
@@ -169,6 +172,12 @@ impl CodexStream {
         self.web_search_used
     }
 
+    /// Whether Codex called a sub-agent tool, which runs outside usage accounting and the session archive.
+    #[cfg(test)]
+    pub(crate) fn sub_agent_used(&self) -> bool {
+        self.sub_agent_used
+    }
+
     /// Takes one JSONL line; returns the activity it represents, with an unscrubbed and unclipped summary.
     /// Only completed items are activities; command output, MCP results and file contents never are.
     pub(crate) fn line(&mut self, line: &str) -> Option<(ActivityKind, String)> {
@@ -224,6 +233,13 @@ impl CodexStream {
             tracing::warn!(
                 job = %self.job.map_or_else(String::new, |job| job.to_string()),
                 "Codex ran its hosted web search although the config disables it; that traffic bypasses the egress proxy"
+            );
+        }
+        if matches!(item, Item::CollabToolCall {}) && !self.sub_agent_used {
+            self.sub_agent_used = true;
+            tracing::warn!(
+                job = %self.job.map_or_else(String::new, |job| job.to_string()),
+                "Codex called a sub-agent tool although the config disables sub-agents; its usage and history are not recorded; check [agents] and multi_agent_v2 against this Codex version"
             );
         }
         if self.answer_only && self.tool_used.is_none() {
@@ -760,6 +776,27 @@ mod tests {
         judge.line(search);
         assert!(judge.web_search_used());
         assert_eq!(judge.tool_used(), Some("web_search"));
+    }
+
+    /// Sub-agents are off for every job (ADR-002); a sub-agent call `codex exec` reports (S1b saw only `wait`)
+    /// is only warned about, except in answer-only jobs, where any tool fails the job.
+    #[test]
+    fn sub_agent_call_is_noted_in_every_job() {
+        let wait = r#"{"type":"item.completed","item":{"id":"u2","type":"collab_tool_call","tool":"wait","status":"completed"}}"#;
+        let mut stream = CodexStream::for_job(JobId::new_random(), false);
+        assert!(!stream.sub_agent_used());
+        stream.line(wait);
+        stream.line(ANSWER);
+        stream.line(DONE);
+        assert!(stream.sub_agent_used());
+        assert!(
+            stream.finish(Exit::Code(0)).is_ok(),
+            "a review job only warns"
+        );
+        let mut judge = CodexStream::for_job(JobId::new_random(), true);
+        judge.line(wait);
+        assert!(judge.sub_agent_used());
+        assert_eq!(judge.tool_used(), Some("collab_tool_call"));
     }
 
     #[test]

@@ -95,7 +95,7 @@ included; out of scope now, all data kept; RQ14, RQ22).
 | ID | Source (WM §6.1) | Read by | Stable key | Question |
 |---|---|---|---|---|
 | I1 | review thread (F3) | server, GitHub | the bot's `dedupe=` marker, else thread node id | yes |
-| I2 | review-body item (F4: `CHANGES_REQUESTED` bodies, each human's latest review, bot body findings without a thread) | server reads; Codex splits a body into items | review id + ordinal of the split **[A]** | yes |
+| I2 | review-body item (F4: `CHANGES_REQUESTED` bodies, each human's latest review, bot body findings without a thread, of each bot's latest round only) | server reads; Codex splits a body into items | review id + ordinal of the split **[A]** | yes |
 | I3 | human PR-level comment | as I2 | comment id + ordinal | yes |
 | I4 | PR-level question (round-3 merge, stale-review dismissal) | server, from rounds | `pr:<round>:merge`, `pr:<round>:dismiss` | yes |
 
@@ -105,6 +105,23 @@ diffpilot keep their GitHub state and leave the queue when resolved (US17). An i
 (deleted on GitHub, or no longer an item by these rules) is marked `gone_at`, labelled "Not in the latest read from
 GitHub" (never "resolved"), and leaves the queue, "Decide the rest" and bulk decisions; its row and decisions stay,
 and a later read that produces it again clears the mark.
+
+**Latest bot round only (owner, 2026-11-23).** A bot's body findings are items of its latest round only: its latest
+submitted review with a body (for thepastaclaw its latest round, spike S13-1 R1–R2; another bot's latest review with a
+body yields an item only when it requests changes). An earlier body finding stays the same item while that round
+lists it as still open without a thread link: an entry of "Still open from earlier rounds" (`(carried)`, S13-1 R5) or
+of "Disputed — left to maintainers", a trailing `— **settled:** …` clause allowed. An entry takes the bot's most recent
+earlier finding at the same title, path and lines, else one of the same title and path, and an entry without a path
+last, one of the same title; each finding once. A copy in a dismissed review takes its entry but stays no item, so an
+older copy that round superseded does not come back. An entry that matches none is logged once per read. A finding the round restates in full is that round's item: body findings
+carry no key (S13-1 R4), so the earlier copy and its decision are not linked to it. Every other earlier body finding of
+that bot is superseded: no longer an item by these rules, so a complete read marks it `gone_at` (the superseding round
+is the bot's latest round at that time) and a first read never creates it. A superseded item leaves the queue, groups,
+"Decide the rest", bulk decisions, assessment passes and the open counts; its decisions stay, and their open effects
+stay claimable by agents. A latest round without body findings supersedes them all. A dismissed review yields no
+items, but a dismissed latest round still supersedes (and keeps what it lists as still open): after "Dismiss stale bot
+reviews" (P3, RQ11) or a maintainer's dismissal, nothing it superseded comes back, and its own items are marked
+`gone_at` with their decisions kept. People's review bodies, threads and PR comments are not affected.
 
 ### 2.2 LLM assessment (`verify_comments` job, RQ20)
 Per item at the PR head: validity (`valid`, `partly_valid`, `invalid`) with `file:line` evidence; pre-existing on base;
@@ -150,10 +167,16 @@ A = an external agent; E = an external agent in phases 1–2, diffpilot[bot] in 
 ### 2.4 Queue, groups, "Decide the rest", table page
 One question at a time, deterministic order: 1. PR-level questions (I4); 2. repeats asked again; 3. answers to the
 owner's questions; 4. gate items; 5. items the reviewer marked Blocking (the bot's claim, WM §11), by first round, then
-ID; 6. other single items; 7. groups. A **group** is two or more assessed non-gate items with the same recommended
-decision kind and reason class or target, with one decision and "Discuss individually" per row. **Decide the rest
-per recommendation** opens a confirmation list (rows untickable) with the count and the gate items named as left
-out; nothing is stored before confirmation; records carry `via = bulk`. The **table page** (RQ21) shows the columns of
+ID; 6. other single items; 7. groups. The Questions page lists and asks the PR-level questions after all the
+others, in a section at the end of its list (owner 2026-11-23); `j`/`k` and Decide follow that list. A **group** is
+two or more assessed non-gate items with the same recommended decision kind and reason class or target, with one
+decision and "Discuss individually" per row. Review-body items recommended "Resolve" form one group of their own,
+Blocking ones and any reason class included (owner, 2026-11-23): they have no thread, so "Resolve" posts at most a line
+in a PR-level comment (a person's body; a bot's gets none), and the group is a confirmation list with each row's
+reason; one such item alone keeps its place above; gate items, repeats asked again, answers and skipped items stay
+single. **Decide the rest per recommendation** opens a confirmation list (rows untickable) with the count and the gate
+items named as left out; nothing is stored before confirmation; records carry `via = bulk`. The **table page** (RQ21)
+shows the columns of
 claudius `check-pr-comments` §4 (ID, Source, Problem, Scope, Elsewhere, Opinion, Recommendation) under one line
 "PR #N: <purpose>", plus a decision select per row (default = recommendation; empty for gate rows), the reason or
 target field the choice needs, "Resolve" (ticked by default), the owner's comment and an Ask indicator; one submit
@@ -227,7 +250,9 @@ read "Needs an analysis" and link to the PR page.
 | V5 | Carry-overs, this PR / all PRs | `…/comments/carry-overs`, `/comments/carry-overs` | — | 1 |
 | V6 | Watched PRs (list), Watch toggle on V0 | `/watching` | view 3 (partly) | 1 |
 | V7 | Settings → Notifications: browser toggle, ntfy, webhook, per-event toggles, Send test, last delivery | `/settings#notifications` | — | 1 |
-My work stays unchanged (owner 2026-11-22): no chips, toggles or badges there; the cross-PR view (WM view 3) is the watched list V6. WM view 4 (push
+My work stays unchanged (owner 2026-11-22): no chips, toggles or badges there, except one link per pull request
+(owner 2026-11-23): "12 comments · 5 need you" opening its Comments, or Watch when diffpilot never read its comments
+(`WorkItem.comments`, v1.1 plan §F.1); the cross-PR view (WM view 3) is the watched list V6. WM view 4 (push
 state) is out of scope (RQ15).
 
 ### 3.1 V0 PR page
@@ -239,7 +264,11 @@ thepastaclaw status, the Watch toggle with its badge. Two cards side by side:
   assessment state ("LLM assessment running: 4 of 9 comments"), "Open Comments" and "Table".
 
 ### 3.2 V1 Questions: the card (top to bottom: context, evidence, assessment, recommendation, decision)
-1. Header: `C14 · 2 of 9`; source and author ("thepastaclaw · bot · inline thread"); first seen (round, head); the
+1. Header: `C14 · 2 of 9`; source and author ("thepastaclaw · bot · inline thread"); "raised in round 1 on a797ee1,
+   26 Oct 2026, 14:05" for a comment of that round's own review (the round's commit and end, `written`; owner
+   2026-11-23); any other comment, a person's thread or a PR comment, "written on 52d2da1, 12 Nov 2026, 09:00" (its
+   review's commit and its own time; a PR comment has no commit), never a round it merely followed; without either
+   "first seen at" the head of diffpilot's first read; the
    bot's severity marker as a GitHub-tagged claim; gate chip; category; repeat-of link; **notes elsewhere**: icons only,
    each with an accessible name and a tooltip on hover and focus ("Flows: the LLM flagged these lines (1 flag)",
    "Files: incidental-change note", "Dependencies: 3 changed callers", "PR Hygiene: 2 blockers", "thepastaclaw:
@@ -264,11 +293,26 @@ thepastaclaw status, the Watch toggle with its badge. Two cards side by side:
    decision (C14)."
 9. Actions: **Decide** (Enter), **Ask about this comment** (`a`; the shared Ask button and floating Ask chat of Flows
    and Files, brief amendment 2026-11-19, subject chip "Comment C14"; no separate ask box), **Skip for now**. After
-   Decide the next card opens with focus on its heading; the live region announces the outcome and the count; Undo
-   until an effect is claimed. The Ask chat's threads about this item are counted on the card ("1 Ask answer").
+   Decide the next card opens with focus on its heading: the entry after the decided one in the list (after a group,
+   the entry after the group; after the last entry, the first one still waiting), skipping entries a decision took
+   out of the queue (owner 2026-11-23); Skip for now moves on the same way, and "Decide the rest" opens the first
+   entry still waiting. The live region announces the outcome and the count; Undo until an effect is claimed. The
+   Ask chat's threads about this item are counted on the card ("1 Ask answer").
 
 **Empty:** "No undecided questions in what was read at 10:41: 14 threads (all pages read), 4 reviews, 9 comments
-assessed at 9f3c2e1." **Error:** "GitHub could not be read (rate limit). Showing the read of 10:12; next read at 10:52."
+assessed at 9f3c2e1.", followed by "How to start an agent" (below). **Error:** "GitHub could not be read (rate limit).
+Showing the read of 10:12; next read at 10:52."
+
+**How to start an agent** (owner 2026-11-23; the empty queue and V3's Decision feed): decided effects wait until an
+agent claims their decision; an agent needs an access token with the `review_loop_execute` scope (its checkbox in
+Settings › Access tokens). "Copy prompt" copies, as plain text, the prompt for a Claude Code session with this PR and
+`window.location.origin` filled in: "Use the diffpilot-decisions skill to carry out my decisions on
+<owner>/<repo>#<number> from diffpilot at <origin>: subscribe, claim each decision, carry out its effects in this
+repository's checkout of the PR branch, and report each effect done or failed with the commit or comment link." The
+prompt holds no token: the skill reads it from `~/envs/diffpilot.env` (`SR_AGENT_KEY`, `SR_URL`; plain http
+needs `SR_HTTP_HOST`), never from the chat. The agent API is named as text (`docs/contracts/agent-api.md` §7). The
+skill subscribes to every effect kind by default, so a decision with a PR comment, follow-up PR or review dismissal is
+claimed too. Shown open while no agent is subscribed, else a closed disclosure.
 
 ### 3.3 V2 Table page
 "PR #482: <purpose>" line; columns of `check-pr-comments` §4 plus Decision (select), Reason / target, Resolve
@@ -281,7 +325,8 @@ reason while a gate row is empty or a field is missing. Real `<table>`; selects 
 ### 3.4 V3 Decision log and execution
 Chronological: decision, item, by, at, recommendation then, `via`, override, effects with executor, claim (agent token
 name, lease), reports (done with reference, failed with reason), and GitHub facts ("Reply found on GitHub · 10:46").
-Header: agents subscribed now (token names, capabilities, last seen), open effects, failed effects.
+Header: agents subscribed now (token names, capabilities, last seen), "How to start an agent" (§3.2), open effects,
+failed effects.
 
 ### 3.5 V4 Rounds
 Per round: head, finished, bot verdict, new, still open, carried, asked again, decisions by kind, undecided (counts).
@@ -293,9 +338,12 @@ changed, carried effects pending); dated list (item, repeat of, decision carried
 effects, Reopen). All PRs: one row per PR with the same counts.
 
 ### 3.7 Wording (brief §1; the wording checks cover `components/comments/**`, `screens/pr/**`, `screens/comments/**`)
-LLM text: "LLM" tag; tooltip "written by diffpilot's LLM, not checked". Validity reads "The LLM says: valid / partly
-valid / invalid". Section title "LLM assessment", never "verification" or "verified". A bot's severity is its own
-words with the "GitHub" tag. No numeric confidence; counts, never percentages. External agents' reports read "Agent
+LLM text: "LLM" tag; tooltip "written by diffpilot's LLM, not checked"; its backtick spans and fences render as code.
+Validity reads "The LLM says: valid / partly valid / invalid at the PR head", with "Judged on the code at the PR head,
+not on the code the comment was written on." (a comment fixed since reads invalid; owner 2026-11-23); an assessment
+of an earlier head names that commit instead, "invalid at a1b2c3d, an earlier head", in the card and the table.
+Section title "LLM assessment", never "verification" or "verified". A bot's severity is its own words with the
+"GitHub" tag. No numeric confidence; counts, never percentages. External agents' reports read "Agent
 <token name> reports: replied (link)"; a GitHub read adds a fact badge. Plug-in statements are attributed
 ("thepastaclaw status: reviewing (verify, 3/5) · data of 10:21").
 
@@ -311,6 +359,13 @@ targets ≥ 24 px; focus not hidden by sticky bars; no colour-only meaning; axe 
 - **Collapsible sections:** every section heading (h2/h3 of a page or card, not the question title) is a disclosure
   button with a chevron (`aria-expanded`, `aria-controls`, Enter/Space); open by default; the state is remembered
   per view and user in local storage. One shared component (`CollapsibleSection`).
+- **Queue marks** (Needs you rows, owner 2026-11-23): each row names its state in words, colour only as a second
+  signal: "asked again" (amber) and "Ask answer" (blue outline), facts of the queue; "Gate G-FUNDS" (red; dashed and
+  tagged LLM like LLM output when the assessment named it, solid and untagged when you marked it); the reviewer's
+  severity words with the GitHub tag (red outline for "Blocking"); the LLM's recommendation "recommends Fix here" with
+  the LLM tag, dashed, coloured by what it asks (amber: fix here; teal: resolve, already fixed; grey: reject; blue:
+  handled elsewhere, follow-up, upstream, TODO), never the green of a fact badge. Marks are not focusable (inside the
+  row's button); the axe sweeps check their contrast in both themes.
 - **State badges** (one per PR, on the watched list, the PR page and the Comments header), each colour
   paired with an icon and a text label, contrast ≥ 4.5:1 in both themes; first match wins:
 

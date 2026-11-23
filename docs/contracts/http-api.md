@@ -697,7 +697,15 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   `why`, `next`, `alarm` and `also_keys` (items merged into this one, only from server-suggested pairs). `url` is
   built by the server only: GitHub `https://github.com/<owner>/<name>/pull|issues/<number>`, a TODO
   `<SR_MEMCAN_UI_URL>/tasks/<uuid>`, null without `SR_MEMCAN_UI_URL`. `review` is read from `analyses` at request
-  time (newest analysis of the PR, head moved, the reader's saved state), never stored in the snapshot. `tags` and
+  time (newest analysis of the PR, head moved, the reader's saved state), never stored in the snapshot. `comments`
+  (pull requests only) is read from the review-loop tables at request time, in one statement per page:
+  `CommentTally { total, needs_you }` counts the comment items of the tenant's last successful read of the PR
+  (PR-level questions and items the read no longer produces left out) and those waiting for a decision (Comments'
+  Needs you: an open state, not handed to a standing "merge now" decision's follow-up PR); absent before the first
+  successful read, when the web offers Watch (RW1) instead, except on a private PR (RW1 reads public repositories
+  only). `watched` (pull requests only, omitted when false) says the user watches the PR (RW1), read in the same
+  statement; with `comments` absent the row reads "Watching, comments not read yet". Like `review` both are part of
+  the page's `ETag`. `tags` and
   `facts` come from scan facts only; `llm` text is shown with the "LLM" tag.
 - **Scores.** Integers only: points in tenths. `total_tenths` is the sum of the parts' `points_tenths` (a pending
   part counts 0); `parts` lists the twelve `ScoreComponent`s in display order, each with `source` and a plain
@@ -720,7 +728,10 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   naming the first failing field. `skip_authors` are excluded authors (every pull request and issue they author is left
   out of the dashboard, whatever its relation to the user; they are not bots); `known_bots` are the
   logins treated as bots besides GitHub `Bot` accounts and `[bot]` logins (absent in a request: the defaults,
-  `thepastaclaw`, `Claudius-Maginificent`, `DCG-Claude`). R6b stores the browser's IANA zone (sent once on the first dashboard visit
+  `thepastaclaw`, `Claudius-Maginificent`, `DCG-Claude`). `slack_names` is the user's Slack names table (G18, at
+  most 100 rows): a GitHub login (unique, any case) and the text "Copy for Slack" writes instead of `@login` (1–80
+  characters as typed, no control character, no white space at either end; absent in a request: an empty table).
+  My work reads it with R6 only for Copy for Slack (plan K19). R6b stores the browser's IANA zone (sent once on the first dashboard visit
   while none is stored). R7 sets the installation-wide ranking effort (`low` default, `medium`, `high`);
   `LlmSelection.judge_effort` reports it, and `changed_by`/`changed_at` are shared with the model choice.
 - **Access tokens (R8–R10, ADR-019).** Token `srp_<id>_<secret>`: `id` 8 base62 characters, secret 32 random bytes
@@ -812,7 +823,7 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC1 | GET | `/api/v1/prs/{owner}/{name}/{number}` | read | – | `PrPage`; a known PR that GitHub could not be read for yet is still served (header from the stored PR, `state` and `base` empty, the failure in `comments.read.failure`) |
 | RC2 | GET | `…/comments` | read | – | `CommentsOverview` |
 | RC3 | POST | `…/comments/read` | session_csrf | – | 202 (429 `rate_limited` under 10 s) |
-| RC4 | GET | `…/comments/items` | read | `ItemsQuery` | `CommentItem[]` |
+| RC4 | GET | `…/comments/items` | read | `ItemsQuery` | `CommentItem[]`; `first_seen_head` is the head of diffpilot's first read, `written` (`Written { round?, commit?, at }`) where GitHub says the comment was written, from the latest read: for a comment of a round's own review that round with its head and end; for any other its review's commit (absent for a PR comment) and the review's submission or the comment's creation (absent when that read gives no time, or for a read stored before it was kept) |
 | RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
 | RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202; 409 `conflict` while an assessment pass of the PR is queued or running (assess again once it ends) |
 | RC8 | POST | `…/comments/items/{item}/decisions` | session_csrf | `DecideRequest` | 201 `Decision`; 409 `item_changed`; 409 `conflict` when its `plan_digest` no longer matches the plan |

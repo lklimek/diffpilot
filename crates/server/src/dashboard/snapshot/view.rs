@@ -477,6 +477,8 @@ fn work_item(
             score: scored.score,
             llm,
             review: None,
+            comments: None,
+            watched: false,
             plugin_notes: Vec::new(),
         },
         head_sha,

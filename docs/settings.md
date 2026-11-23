@@ -270,6 +270,14 @@ While it is on, the server keeps your GitHub sign-in for up to 30 days after you
 - **Limits:** A time zone name such as Europe/Warsaw.
 - **Example:** Europe/Warsaw.
 
+### Slack names
+
+- **What:** Your table of GitHub logins and the name to write for each in Slack. Copy for Slack in Waiting on others (the Slack icon of a row, and Copy for Slack next to Copy list) writes the Slack name instead of @login; Copy list and the plain copy icon keep @login.
+- **When used:** Only when you copy for Slack on My work. Nothing is sent to Slack: the text goes to your clipboard.
+- **Empty or default:** No rows: Copy for Slack writes @login for every login, like Copy list.
+- **Limits:** Up to 100 rows. Each GitHub login once (any case); the Slack name is copied as you type it, 1 to 80 characters without control characters.
+- **Example:** jun-park → @jun.park.
+
 ### Ranking limits
 
 - **What:** The LLM judges at most 48 items per refresh and 120 per day for each user.

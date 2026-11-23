@@ -6,7 +6,7 @@
 # job per credential). A run passes when every job exits 0 and its output validates against its schema.
 #
 # Usage: scripts/schema-smoke.sh [job-kind ...]   (default: plan pr_context analyse_flow ask)
-# Env:   SMOKE_IMAGE (diffpilot-spike-codex:0.167.0), SMOKE_VOLUME (sr-spike-codex-home),
+# Env:   SMOKE_IMAGE (diffpilot-spike-codex:0.171.0), SMOKE_VOLUME (sr-spike-codex-home),
 #        SMOKE_MODEL (gpt-6.1-sol), SMOKE_EFFORT (low), SMOKE_PROXY (unset = direct egress),
 #        SMOKE_ARCHIVE (/data/artifacts/diffpilot/<today>/schema-smoke)
 # Needs: docker, git, gh (read-only API call), python3 with jsonschema (apt python3-jsonschema).
@@ -15,7 +15,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Host-side reads of agent-writable job directories go only through this helper (no symlink following).
 report="${repo_root}/scripts/schema-smoke-report.py"
-image="${SMOKE_IMAGE:-diffpilot-spike-codex:0.167.0}"
+image="${SMOKE_IMAGE:-diffpilot-spike-codex:0.171.0}"
 volume="${SMOKE_VOLUME:-sr-spike-codex-home}"
 model="${SMOKE_MODEL:-gpt-6.1-sol}"
 effort="${SMOKE_EFFORT:-low}"
@@ -30,7 +30,7 @@ if [[ $# -gt 0 ]]; then kinds=("$@"); else kinds=(plan pr_context analyse_flow a
 die() { echo "schema-smoke: $*" >&2; exit 1; }
 for tool in docker git gh python3; do command -v "${tool}" >/dev/null || die "${tool} not found"; done
 python3 -I -c 'import jsonschema' 2>/dev/null || die "python3-jsonschema missing (apt install python3-jsonschema)"
-docker image inspect "${image}" >/dev/null 2>&1 || die "image ${image} not found (S1a harness build.sh)"
+docker image inspect "${image}" >/dev/null 2>&1 || die "image ${image} not found (deploy/dev/spike-codex/build.sh)"
 docker volume inspect "${volume}" >/dev/null 2>&1 || die "volume ${volume} not found (S1a codex-login.sh)"
 for kind in "${kinds[@]}"; do
   [[ -f "${repo_root}/schemas/agent/${kind}.schema.json" ]] || die "unknown job kind ${kind}"

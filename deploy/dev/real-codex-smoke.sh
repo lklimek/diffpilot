@@ -17,7 +17,7 @@
 # Inputs:
 #   SR_DEV_SERVER_BIN, SR_DEV_FAKE_GITHUB_BIN, SR_DEV_RUNNER_BIN (all required; the runner runs inside the image,
 #                         so it must be built against the image's libc; any build with the Codex provider)
-#   SR_SMOKE_IMAGE        Codex image (default diffpilot-spike-codex:0.167.0; Codex at /usr/local/bin/codex,
+#   SR_SMOKE_IMAGE        Codex image (default diffpilot-spike-codex:0.171.0; Codex at /usr/local/bin/codex,
 #                         user 10001, /codex-home owned by it)
 #   SR_SMOKE_CODEX_VOLUME volume holding the Codex login auth.json (default sr-spike-codex-home)
 #   SR_SMOKE_STATE_VOLUME an existing runner state volume that already holds the credential
@@ -57,7 +57,7 @@ recordings="$(cd "${2:?recordings dir}" && pwd)"
 out="$(realpath -m "${3:?out dir}")"
 [[ ! -e "$out" || -z "$(ls -A "$out")" ]] || { echo "real-codex-smoke.sh: $out is not empty" >&2; exit 1; }
 : "${SR_DEV_SERVER_BIN:?}" "${SR_DEV_FAKE_GITHUB_BIN:?}" "${SR_DEV_RUNNER_BIN:?}"
-image="${SR_SMOKE_IMAGE:-diffpilot-spike-codex:0.167.0}"
+image="${SR_SMOKE_IMAGE:-diffpilot-spike-codex:0.171.0}"
 codex_volume="${SR_SMOKE_CODEX_VOLUME:-sr-spike-codex-home}"
 cap="${SR_SMOKE_CAP_SECONDS:-2700}"
 provider="${SR_SMOKE_PROVIDER:-codex}"

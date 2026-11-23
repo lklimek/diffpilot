@@ -15,6 +15,7 @@ const DEFAULTS: DashboardSettings = {
   schedule_enabled: true,
   schedule_time: "06:00",
   time_zone: "Europe/Warsaw",
+  slack_names: [],
 };
 
 const row = (repo: string, extra: Partial<RepositoryRule> = {}): RepositoryRule => {
@@ -193,6 +194,33 @@ describe("dashboard settings validation (plan §F.6)", () => {
     expect(checkEntry("known_bots", "thepastaclaw", ["ThePastaClaw"], "alice")).toBe(
       'Known bots: "thepastaclaw" is already listed.',
     );
+  });
+
+  it("G18 Slack names: login syntax, each login once (any case), a Slack name of 1–80 characters, at most 100", () => {
+    const named = (login: string, slack: string) => ({ login, slack });
+    expect(errors({ slack_names: [named("bob", "@bob.k"), named("Carol-2", "<@U01ABC>")] })).toEqual({});
+    expect(errors({ slack_names: [named("a b", "@ab")] })["slack_names.0.login"]).toBe(
+      'Slack names: "a b" is not a GitHub login (letters, digits, - or _, up to 39).',
+    );
+    expect(errors({ slack_names: [named("bob", "@b"), named("Bob", "@bb")] })["slack_names.1.login"]).toBe(
+      'Slack names: "Bob" is listed twice.',
+    );
+    const rule =
+      'Slack names: the Slack name of "bob" uses 1 to 80 characters, without control characters or white space at either end.';
+    for (const bad of ["", " @bob", "@bo\nb", "@bo\u0007b", "x".repeat(81)])
+      expect(errors({ slack_names: [named("bob", bad)] })["slack_names.0.slack"]).toBe(rule);
+    expect(errors({ slack_names: [named("bob", "ż".repeat(80))] })).toEqual({});
+    expect(errors({ slack_names: [named("alice", "@me")] })).toEqual({});
+    const many = Array.from({ length: 101 }, (_, i) => named(`user${i}`, `@user${i}`));
+    expect(errors({ slack_names: many }).slack_names).toBe("Slack names: at most 100.");
+    expect(errors({ slack_names: many.slice(0, 100) })).toEqual({});
+  });
+
+  it("G18 the form trims both columns of a Slack names row", () => {
+    const draft = toDraft({ ...DEFAULTS, slack_names: [{ login: "bob", slack: "@bob" }] });
+    expect(
+      fromDraft({ ...draft, slack_names: [{ login: " bob ", slack: " <@U01ABC> " }] }).slack_names,
+    ).toEqual([{ login: "bob", slack: "<@U01ABC>" }]);
   });
 
   it("G17 MemCan projects: name syntax, unique, at most 10", () => {

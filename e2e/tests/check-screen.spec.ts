@@ -20,9 +20,11 @@ const page = (
     }
   </script></body></html>`;
 
-// Home's form (web/src/components/pr-form/PrUrlForm.tsx): a URL field and its submit control.
+// Home's form (web/src/components/pr-form/PrUrlForm.tsx): a required URL field and its submit control.
 const home = (submit: string) =>
-  `<form><label>GitHub pull request URL <input type="url"></label>${submit.replace('type="button"', 'type="submit"')}</form>`;
+  `<form><label>GitHub pull request URL <input type="url" required></label>${submit.replace('type="button"', 'type="submit"')}</form>`;
+// A Settings → Notifications channel (web/src/components/settings/NotificationChannelCard.tsx): an optional URL.
+const channel = `<form novalidate><label>URL <input type="url"></label>${tooltip("Save", "Saves the channel.")}</form>`;
 
 const cases: [string, string, RegExp | null][] = [
   ["a clean screen", page(tooltip("Ticks", "Steps you marked reviewed."), "<p>3 of 7 steps</p>"), null],
@@ -70,6 +72,7 @@ const cases: [string, string, RegExp | null][] = [
     page("", home(tooltip("Open", "Opens the pull request."))),
     /required control missing: Check \(0 of 1 rendered\)/,
   ],
+  ["a notification channel's URL form (not Home: no Check)", page("", channel), null],
   [
     "a trigger without keyboard focus",
     page(

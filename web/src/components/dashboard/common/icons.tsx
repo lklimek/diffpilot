@@ -59,6 +59,10 @@ export const CopyIcon = () =>
     "h-[0.8em] w-[0.8em]",
   );
 
+/** Slack (a hash of rounded bars), for Copy for Slack. */
+export const SlackIcon = () =>
+  svg(<path d="M9 3.5v17M15 3.5v17M3.5 9h17M3.5 15h17" strokeWidth={2.6} />, "h-[0.8em] w-[0.8em]");
+
 /** Refresh arrow. */
 export const RefreshIcon = () => svg(<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" />, "h-[15px] w-[15px]");
 

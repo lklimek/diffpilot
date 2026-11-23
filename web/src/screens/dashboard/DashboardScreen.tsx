@@ -36,7 +36,7 @@ import {
 } from "./history";
 import { REVIEW_START_PATH, SETTINGS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
-import { railText, reviewHref } from "./state";
+import { commentsHref, railText, reviewHref, watchErrorText } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
 const errorText = (error: unknown) =>
@@ -206,6 +206,16 @@ export function DashboardScreen() {
           </Tooltip>
         </StatusMessage>
       )}
+      {page.watch.isError && (
+        <StatusMessage kind="error">
+          {watchErrorText(page.watch.error)}{" "}
+          <Tooltip tip="Dismiss this error message">
+            <button type="button" className="underline" onClick={page.watch.dismissError}>
+              Dismiss
+            </button>
+          </Tooltip>
+        </StatusMessage>
+      )}
       {page.wake.isError && (
         <StatusMessage kind="error">
           Could not wake this item. Try again. {errorText(page.wake.error)}{" "}
@@ -242,6 +252,14 @@ export function DashboardScreen() {
           sizes={page.sizes}
           onSizesChange={page.setSizes}
           reviewHref={reviewHref}
+          commentsHref={commentsHref}
+          onWatch={(item) =>
+            item.repo &&
+            item.number !== null &&
+            page.watch.mutate({ key: item.key, pr: { repo: item.repo, number: item.number } })
+          }
+          watchingKeys={page.watch.pendingKeys}
+          watchedKeys={page.watch.watchedKeys}
           onNavigate={go}
           onHelp={() => setHelpOpen(true)}
           keysEnabled={!helpOpen}
@@ -284,7 +302,7 @@ export function DashboardScreen() {
       {main &&
         (snapshot && charts ? (
           <SidePanel main={main} railText={railText(snapshot)}>
-            <WaitingOnOthers items={snapshot.awaiting} now={now} />
+            <WaitingOnOthers items={snapshot.awaiting} now={now} slackNames={page.slackNames} />
             <ReadyToMerge
               items={snapshot.ready_to_merge}
               pending={snapshot.merge_state_pending}

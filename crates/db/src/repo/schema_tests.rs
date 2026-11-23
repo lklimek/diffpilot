@@ -2188,3 +2188,47 @@ async fn snooze_ends_migration_keeps_every_snooze_as_not_ended() {
         "one snooze per item has not ended: {duplicate:?}"
     );
 }
+
+/// 0027 adds the Slack names table to `dashboard_settings` in place: an existing row keeps its settings and gains an
+/// empty table; the column takes only a JSON array.
+#[tokio::test]
+async fn slack_names_migration_gives_existing_settings_an_empty_table() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    let before = MIGRATIONS
+        .iter()
+        .position(|(_, name, _)| *name == "slack_names")
+        .expect("migration 0027");
+    migrate(&pool, before).await.expect("schema before 0027");
+    let db = Db { pool };
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO dashboard_settings (user_id, tenant_id, ready_label, updated_at)
+         VALUES ('u1', 'default', 'ready', 't');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("settings of the old schema");
+    migrate(&db.pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+    let row: (String, String) =
+        sqlx::query_as("SELECT ready_label, slack_names FROM dashboard_settings")
+            .fetch_one(&db.pool)
+            .await
+            .expect("row");
+    assert_eq!(row, ("ready".to_owned(), "[]".to_owned()));
+    let refused = sqlx::query("UPDATE dashboard_settings SET slack_names = '{}'")
+        .execute(&db.pool)
+        .await;
+    assert!(refused.is_err(), "an object is not a Slack names table");
+}

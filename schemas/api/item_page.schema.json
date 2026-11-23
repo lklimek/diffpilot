@@ -298,6 +298,21 @@
             }
           ]
         },
+        "comments": {
+          "description": "Review comments diffpilot read for this pull request (Comments), counted at request time; absent before\ndiffpilot's first successful read of them.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommentTally"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "watched": {
+          "description": "The user watches this pull request (RW1), read at request time; with `comments` absent its comments were\nnot read yet.",
+          "type": "boolean"
+        },
         "plugin_notes": {
           "description": "Current statements of dashboard plug-ins about this pull request (ADR-022); absent when none.",
           "type": "array",
@@ -744,6 +759,28 @@
     "CommitSha": {
       "description": "A full 40-character hexadecimal git commit id.",
       "type": "string"
+    },
+    "CommentTally": {
+      "description": "Counts of a pull request's review comments in Comments (plan docs/review-workflow-plan.md §2.1): threads,\nreview-body and PR-comment items of the last read, without PR-level questions and items the read no longer\nproduces.",
+      "type": "object",
+      "properties": {
+        "total": {
+          "description": "Comments in any state.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "needs_you": {
+          "description": "Those waiting for a decision: the Needs you list of Comments.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "total",
+        "needs_you"
+      ]
     },
     "PluginNote": {
       "description": "An external statement of a dashboard plug-in about a pull request (ADR-022): attributed to its source, plain\ntext, never a diffpilot fact or verdict.",

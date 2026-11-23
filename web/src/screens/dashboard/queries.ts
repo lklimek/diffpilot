@@ -5,7 +5,7 @@ import { useMutationState } from "@tanstack/react-query";
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api } from "../../api/client";
-import type { DashboardSummary, RefreshId, RefreshStatus, WorkItem } from "../../api/generated/types";
+import type { DashboardSummary, PrRef, RefreshId, RefreshStatus, WorkItem } from "../../api/generated/types";
 
 /** Query key of the summary (R1). */
 export const SUMMARY_KEY = ["dashboard"] as const;
@@ -328,6 +328,18 @@ export function useSaveBrowserTimeZone(summary: DashboardSummary | undefined): {
   return { failed };
 }
 
+/**
+ * The user's Slack names (Settings › Dashboard) for Copy for Slack (K19). A cache entry of its own: the Settings form
+ * starts from its own read, never from this one.
+ */
+export const useSlackNames = (enabled: boolean) =>
+  useQuery({
+    queryKey: ["dashboard-slack-names"],
+    queryFn: api.getDashboardSettings,
+    select: (view) => view.settings.slack_names,
+    enabled,
+  });
+
 /** Hide persists server-side; invalidation also refreshes the navigation count. */
 export function useHideMention() {
   const client = useQueryClient();
@@ -360,6 +372,38 @@ function usePendingKeys(key: string): string[] {
     filters: { mutationKey: [key], status: "pending" },
     select: (m) => (m.state.variables as { key: string }).key,
   });
+}
+
+/**
+ * Watch of a pull request row without comment counts (RW1, owner 2026-11-23): the server reads its comments first,
+ * so the items are read again for the counts. `watchedKeys` keeps the rows watched in this visit.
+ */
+export function useWatchItem() {
+  const client = useQueryClient();
+  const [error, setError] = useState<Error | null>(null);
+  const [watchedKeys, setWatchedKeys] = useState<string[]>([]);
+  const pendingKeys = usePendingKeys("watch-item");
+  const mutation = useMutation({
+    mutationKey: ["watch-item"],
+    mutationFn: ({ pr }: { key: string; pr: PrRef }) => api.watchPr(pr),
+    onError: setError,
+    onSuccess: (_, { key }) => {
+      setError(null);
+      setWatchedKeys((keys) => (keys.includes(key) ? keys : [...keys, key]));
+      return Promise.all([
+        client.invalidateQueries({ queryKey: ["dashboard-items"] }),
+        client.invalidateQueries({ queryKey: ["watches"] }),
+      ]);
+    },
+  });
+  return {
+    ...mutation,
+    pendingKeys,
+    watchedKeys,
+    error,
+    isError: error !== null,
+    dismissError: () => setError(null),
+  };
 }
 
 /** Snooze of a ranked item (R12, owner SN1): persists server-side; the summary is read again. */

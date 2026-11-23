@@ -1,6 +1,6 @@
 //! The question queue (plan §2.4): one question at a time in a deterministic order, groups of items with the same
-//! recommendation, and the "Decide the rest per recommendation" selection. Pure. Gate items are never grouped and
-//! never decided in bulk (RQ4, RQ5).
+//! recommendation (resolved review-body items in one group), and the "Decide the rest per recommendation" selection.
+//! Pure. Gate items are never grouped and never decided in bulk (RQ4, RQ5).
 
 use std::collections::BTreeMap;
 
@@ -24,6 +24,8 @@ pub struct QueueItem {
     pub gated: bool,
     /// The reviewer marked it Blocking (its claim).
     pub blocking: bool,
+    /// A review-body item: it has no thread.
+    pub review_body: bool,
     /// Round first seen.
     pub first_round: Option<u32>,
     /// The LLM's recommendation, when assessed.
@@ -76,9 +78,29 @@ fn group_key(recommendation: &Recommendation) -> (String, String) {
     )
 }
 
+/// A review-body item that joins the one group of resolved review-body items (plan §2.4): recommended "Resolve", not
+/// a PR-level question, gate item, repeat asked again, answer or skipped; Blocking or not, it has no thread to resolve.
+fn resolved_body(item: &QueueItem) -> bool {
+    item.review_body
+        && item.question.is_none()
+        && !item.gated
+        && !item.skipped
+        && !matches!(item.state, ItemState::Reopened | ItemState::AskedBack)
+        && item
+            .recommendation
+            .as_ref()
+            .is_some_and(|recommendation| recommendation.kind == DecisionKind::Resolve)
+}
+
 /// The queue in plan §2.4 order; skipped entries last.
 pub fn queue(items: &[QueueItem]) -> Vec<QueueEntry> {
     let waiting = waiting(items);
+    let resolved_bodies: Vec<u32> = waiting
+        .iter()
+        .filter(|item| resolved_body(item))
+        .map(|item| item.no)
+        .collect();
+    let bodies_grouped = resolved_bodies.len() >= 2;
     let mut entries: Vec<(u8, (u32, u32), QueueEntry)> = Vec::new();
     let mut groups: BTreeMap<(String, String), Vec<&QueueItem>> = BTreeMap::new();
     for item in &waiting {
@@ -90,6 +112,8 @@ pub fn queue(items: &[QueueItem]) -> Vec<QueueEntry> {
             (3, QueueReason::Answered)
         } else if item.gated {
             (4, QueueReason::Gate)
+        } else if bodies_grouped && resolved_body(item) {
+            continue;
         } else if item.blocking {
             (5, QueueReason::Blocking)
         } else {
@@ -116,6 +140,17 @@ pub fn queue(items: &[QueueItem]) -> Vec<QueueEntry> {
                 item_nos: vec![item.no],
                 reason,
                 skipped: item.skipped,
+            },
+        ));
+    }
+    if bodies_grouped {
+        entries.push((
+            7,
+            (0, resolved_bodies.iter().copied().min().unwrap_or(0)),
+            QueueEntry {
+                item_nos: resolved_bodies,
+                reason: QueueReason::Group,
+                skipped: false,
             },
         ));
     }
@@ -213,6 +248,7 @@ mod tests {
             revision: 1,
             gated: false,
             blocking: false,
+            review_body: false,
             first_round: Some(1),
             recommendation: None,
             question: None,
@@ -384,6 +420,70 @@ mod tests {
                 1
             ),
             Err(LeftOutReason::Incomplete)
+        );
+    }
+
+    /// Plan §2.4 (owner, 2026-11-23): review-body items recommended "Resolve" have no thread and form one group,
+    /// Blocking ones and any reason class too; gate items, repeats asked again, skipped items and threads do not join.
+    #[test]
+    fn resolved_body_items_form_one_group_even_when_blocking() {
+        let body = |no, blocking, class: &str| QueueItem {
+            review_body: true,
+            blocking,
+            ..recommended(no, DecisionKind::Resolve, class)
+        };
+        let items = vec![
+            body(1, true, "fixed_since"),
+            body(2, true, "fixed_elsewhere"),
+            body(3, false, "fixed_since"),
+            QueueItem {
+                blocking: true,
+                ..recommended(4, DecisionKind::Resolve, "fixed_since")
+            },
+            QueueItem {
+                gated: true,
+                ..body(5, true, "fixed_since")
+            },
+            QueueItem {
+                state: ItemState::Reopened,
+                ..body(6, true, "fixed_since")
+            },
+            QueueItem {
+                skipped: true,
+                ..body(7, false, "fixed_since")
+            },
+            QueueItem {
+                review_body: true,
+                blocking: true,
+                ..recommended(8, DecisionKind::FixHere, "bug")
+            },
+        ];
+        let order: Vec<(Vec<u32>, QueueReason, bool)> = queue(&items)
+            .into_iter()
+            .map(|entry| (entry.item_nos, entry.reason, entry.skipped))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                (vec![6], QueueReason::AskedAgain, false),
+                (vec![5], QueueReason::Gate, false),
+                (vec![4], QueueReason::Blocking, false),
+                (vec![8], QueueReason::Blocking, false),
+                (vec![1, 2, 3], QueueReason::Group, false),
+                (vec![7], QueueReason::Single, true),
+            ]
+        );
+        let alone = vec![body(1, true, "fixed_since"), item(2)];
+        assert_eq!(
+            queue(&alone)
+                .into_iter()
+                .map(|entry| (entry.item_nos, entry.reason))
+                .collect::<Vec<_>>(),
+            vec![
+                (vec![1], QueueReason::Blocking),
+                (vec![2], QueueReason::Single)
+            ],
+            "a single one keeps its Blocking place"
         );
     }
 
