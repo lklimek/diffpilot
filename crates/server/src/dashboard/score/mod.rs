@@ -528,8 +528,9 @@ pub fn ready_label<'a>(rules: &ScoreRules, pr: &'a PrFacts) -> Option<&'a str> {
 }
 
 /// Nothing on the user's PR is the user's move (K15 W1, W2, W4): [`users_pr`], no conflicts, CI green with the
-/// ignored checks left out, no change request (people or bots), no unresolved thread, no comment awaiting the user's
-/// reply, no review requested from a scanned login, and not [`ready_to_merge`] (merging would be the user's move).
+/// ignored checks left out, no change request (people; a bot's until it reviews a newer head), no unresolved thread,
+/// no comment awaiting the user's reply, no review requested from a scanned login, and not [`ready_to_merge`]
+/// (merging would be the user's move).
 pub fn nothing_is_users_move(rules: &ScoreRules, pr: &PrFacts) -> bool {
     users_pr(rules, pr)
         && pr.mergeable != Mergeable::Conflicting
@@ -597,9 +598,9 @@ fn merge_state_clean(pr: &PrFacts) -> bool {
 
 /// The user's PR that is ready to merge now (Ready to merge, K17): [`mergeable_by_user`], into the default branch or
 /// a release branch, no conflicts, the merge state counts as clean, CI is not red, nothing is left to answer (no
-/// unresolved review thread, no change request from people or bots, no comment awaiting the user's reply, every
-/// review read: more than were fetched could hide a change request) and no ready label (it needs a human). Such a
-/// PR is ranked.
+/// unresolved review thread, no change request (people; a bot's until it reviews a newer head), no comment awaiting
+/// the user's reply, every review read: more than were fetched could hide a change request) and no ready label (it
+/// needs a human). Such a PR is ranked.
 pub fn ready_to_merge(rules: &ScoreRules, pr: &PrFacts) -> bool {
     mergeable_by_user(rules, pr)
         && targets_release_line(rules, pr)

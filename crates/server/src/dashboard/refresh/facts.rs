@@ -1,7 +1,7 @@
 //! Scan answers → scoring facts (the skill's `analyze_pr` and issue mapping, plan §A.2). Pure; untrusted text is
 //! capped here, before it is stored.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use contracts::time::Timestamp;
 
@@ -12,7 +12,7 @@ use crate::dashboard::score::{
 use crate::dashboard::snapshot::{StoredIssue, StoredLinkedIssue, StoredPr};
 use crate::github::work::{
     Actor, Blockers, IssueCandidate, IssueRelation, ItemRef, PrCandidate, PrRelation, PullDetail,
-    StatusRollup,
+    ReviewNode, StatusRollup,
 };
 
 /// Characters kept of a title.
@@ -74,6 +74,33 @@ fn rollup(found: Option<&StatusRollup>) -> Option<CheckRollup> {
             })
             .collect(),
     })
+}
+
+/// Bots whose last change request is followed by a review of theirs on another commit, in any state: the request no
+/// longer counts (K15 W2, K17 R5). A request on the current `head` (no newer head exists) or of an unknown commit
+/// keeps counting.
+fn rereviewed_bots(rules: &ScoreRules, reviews: &[ReviewNode], head: &str) -> BTreeSet<String> {
+    let mut requested: BTreeMap<&str, Option<&str>> = BTreeMap::new();
+    let mut moved_on = BTreeSet::new();
+    for review in reviews {
+        let Some(author) = review.author.as_ref().filter(|a| is_bot_actor(rules, a)) else {
+            continue;
+        };
+        let Some(login) = author.login.as_deref() else {
+            continue;
+        };
+        let commit = review.commit.as_ref().map(|c| c.oid.as_str());
+        if review.state == "CHANGES_REQUESTED" {
+            requested.insert(login, commit);
+            moved_on.remove(&name(login));
+        } else if let (Some(Some(at)), Some(commit)) = (requested.get(login), commit)
+            && *at != commit
+            && *at != head
+        {
+            moved_on.insert(name(login));
+        }
+    }
+    moved_on
 }
 
 /// The newest time of `times`.
@@ -293,7 +320,16 @@ pub(super) fn pr(
         review_pending_for_us: pending_for_us,
         review_requested_at,
         review_request_age_is_approx: approx,
-        changes_requested_by: with_state("CHANGES_REQUESTED"),
+        changes_requested_by: {
+            let mut logins = with_state("CHANGES_REQUESTED");
+            // While GitHub's decision still requests changes, GitHub enforces the request: it stays.
+            if detail.review_decision.as_deref() != Some("CHANGES_REQUESTED") {
+                let rereviewed =
+                    rereviewed_bots(rules, &detail.reviews.nodes, &detail.head_ref_oid);
+                logins.retain(|login| !rereviewed.contains(login));
+            }
+            logins
+        },
         changes_requested_by_human: !human_cr.is_empty(),
         changes_requested_human_at,
         reviews_truncated: detail
@@ -418,6 +454,7 @@ mod tests {
     use contracts::common::RepoRef;
 
     use super::*;
+    use crate::dashboard::plugin::Overlay;
 
     fn node() -> serde_json::Value {
         serde_json::json!({
@@ -549,5 +586,149 @@ mod tests {
         );
         let detail: PullDetail = serde_json::from_value(node()).expect("no base repository");
         assert!(!stored(&detail).facts.viewer_can_write);
+    }
+
+    const OLD_HEAD: &str = "0a2e66fcf7525eb47f81eeedefd2591d4827d1e6";
+    const HEAD: &str = "8c8acb6a35253739c2cb54e178ffa230638e9dfc";
+
+    /// `(login, typename, state, commit)` as a review node; `None` leaves the commit out.
+    fn review(login: &str, typename: &str, state: &str, commit: Option<&str>) -> serde_json::Value {
+        let mut node = serde_json::json!({"author": {"__typename": typename, "login": login}, "state": state,
+            "submittedAt": "2026-11-22T17:37:41Z"});
+        if let Some(oid) = commit {
+            node["commit"] = serde_json::json!({"oid": oid});
+        }
+        node
+    }
+
+    /// The user's approved, ready-labelled PR with green CI, mergeable, nothing else to answer (dashpay/platform#5951
+    /// at the 2026-11-23 scan), with `reviews` in order: its change requests and whether it waits on others (K15).
+    fn blocked_by(reviews: Vec<serde_json::Value>) -> (Vec<String>, bool) {
+        blocked_by_with("APPROVED", reviews)
+    }
+
+    /// [`blocked_by`] with GitHub's review decision `decision`.
+    fn blocked_by_with(decision: &str, reviews: Vec<serde_json::Value>) -> (Vec<String>, bool) {
+        let mut node = node();
+        node["labels"] = serde_json::json!({"nodes": [{"name": "ready-for-human"}]});
+        node["reviewDecision"] = decision.into();
+        node["mergeStateStatus"] = "UNSTABLE".into();
+        node["baseRepository"] = serde_json::json!({"nameWithOwner": "acme/platform", "isPrivate": false,
+            "defaultBranchRef": {"name": "main"}, "viewerPermission": "WRITE"});
+        node["commits"] = serde_json::json!({"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS",
+            "contexts": {"pageInfo": {"hasNextPage": false}, "nodes": [{"__typename": "CheckRun", "name": "build",
+            "status": "COMPLETED", "conclusion": "SUCCESS", "startedAt": "2026-11-22T22:00:00Z"}]}}}}]});
+        node["reviews"] = serde_json::json!({"totalCount": reviews.len(), "nodes": reviews});
+        let detail: PullDetail = serde_json::from_value(node).expect("detail");
+        let facts = stored(&detail).facts;
+        let rules = ScoreRules::new("alice", &DashboardSettings::default());
+        let waits =
+            crate::dashboard::snapshot::waiting(&rules, &facts, &Overlay::default()).is_some();
+        (facts.changes_requested_by, waits)
+    }
+
+    /// K15 W2, K17 R5 (owner, 2026-11-23): a bot's change request ends when the same bot reviews another commit, in
+    /// any state; the PR then waits on others (dashpay/platform#5951: thepastaclaw's request on an old head, its
+    /// COMMENTED round on the new one).
+    #[test]
+    fn a_bots_change_request_ends_when_it_reviews_a_newer_head() {
+        let bot = |state, commit| review("thepastaclaw", "User", state, Some(commit));
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", OLD_HEAD),
+                bot("COMMENTED", HEAD),
+                review("alice", "User", "APPROVED", Some(HEAD)),
+            ]),
+            (vec![], true)
+        );
+        assert_eq!(
+            blocked_by(vec![
+                review("review-helper", "Bot", "CHANGES_REQUESTED", Some(OLD_HEAD)),
+                review("review-helper", "Bot", "APPROVED", Some(HEAD)),
+            ]),
+            (vec![], true),
+            "a later approval as before"
+        );
+    }
+
+    /// A bot's change request stands while the bot has not reviewed another commit, while the request is on the
+    /// current head (a later review of an older commit is no newer head), or the request's commit is unknown; a new
+    /// request on the newer head stands; another bot's review clears nothing; a person's request stands until GitHub
+    /// clears it.
+    #[test]
+    fn a_change_request_stands_until_its_bot_reviews_a_newer_head() {
+        let bot = |state, commit| review("thepastaclaw", "User", state, commit);
+        let blocked = |who: &str| (vec![who.to_owned()], false);
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", Some(OLD_HEAD)),
+                bot("COMMENTED", Some(OLD_HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "not re-reviewed"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                bot("COMMENTED", Some(HEAD)),
+                bot("CHANGES_REQUESTED", Some(OLD_HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "a review before the request"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", Some(OLD_HEAD)),
+                bot("COMMENTED", Some(HEAD)),
+                bot("CHANGES_REQUESTED", Some(HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "a new request on the newer head"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", None),
+                bot("COMMENTED", Some(HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "the request's commit unknown"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", Some(HEAD)),
+                bot("COMMENTED", Some(OLD_HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "the request on the current head, a later review of an older commit"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                bot("CHANGES_REQUESTED", Some(OLD_HEAD)),
+                review("DCG-Claude", "User", "COMMENTED", Some(HEAD)),
+            ]),
+            blocked("thepastaclaw"),
+            "another bot's review"
+        );
+        assert_eq!(
+            blocked_by(vec![
+                review("ana", "User", "CHANGES_REQUESTED", Some(OLD_HEAD)),
+                review("ana", "User", "COMMENTED", Some(HEAD)),
+            ]),
+            blocked("ana"),
+            "a person's stale request"
+        );
+    }
+
+    /// While GitHub's review decision still requests changes (a bot whose review counts on GitHub), the bot's request
+    /// stays in the facts, so the row keeps its "changes requested" tag and stays the user's move.
+    #[test]
+    fn a_bots_change_request_stands_while_github_still_requests_changes() {
+        let bot = |state, commit| review("thepastaclaw", "User", state, Some(commit));
+        assert_eq!(
+            blocked_by_with(
+                "CHANGES_REQUESTED",
+                vec![bot("CHANGES_REQUESTED", OLD_HEAD), bot("COMMENTED", HEAD)]
+            ),
+            (vec!["thepastaclaw".to_owned()], false)
+        );
     }
 }

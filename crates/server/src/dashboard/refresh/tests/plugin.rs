@@ -331,8 +331,9 @@ fn plat_1176(summary: &DashboardSummary) -> &contracts::api::dashboard::Awaiting
 }
 
 /// K15 W3b: a current statement that the reviewers or maintainers have the move lists the user's PR under Waiting
-/// on others with the approvers it asks for, also when GitHub's signals alone would rank it; the ready label comes
-/// first (whom: the requested reviewers); a statement of the author's move adds nothing and vetoes nothing.
+/// on others with the approvers it asks for, also when GitHub's signals alone would rank it, and before the ready
+/// label (owner, 2026-11-23; dashpay/platform#5949); the label is the fallback (whom: the requested reviewers); a
+/// statement of the author's move adds nothing and vetoes nothing.
 #[tokio::test]
 async fn a_statement_of_whose_move_decides_waiting_on_others() {
     let mut w = world().await;
@@ -386,12 +387,15 @@ async fn a_statement_of_whose_move_decides_waiting_on_others() {
     assert_eq!(
         (item.reason.clone(), item.waiting_on.as_slice()),
         (
-            AwaitingReason::ReadyLabel {
-                label: "ready-for-human".to_owned()
+            AwaitingReason::Plugin {
+                plugin: "pr-hygiene".to_owned(),
+                source: "PR Hygiene".to_owned(),
+                reason: "Human approval is required".to_owned(),
+                url: format!("{}api/v1/prs/acme/platform/1176", fake.url),
             },
-            ["jun-park".to_owned(), "team:core".to_owned()].as_slice()
+            ["renata-s".to_owned()].as_slice()
         ),
-        "the label first; whom: the requested reviewers"
+        "the statement before the label; whom: its approvers"
     );
 
     let author = record(

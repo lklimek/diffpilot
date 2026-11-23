@@ -653,8 +653,8 @@ fn todo_facts(todo: &StoredTodo) -> Vec<Fact> {
 }
 
 /// Why the user's PR waits on others now (K15 W3), and whom to ping; `None` when it does not. The first that
-/// applies: the ready label, a plug-in's statement that reviewers or maintainers own the stage (those it says owe a
-/// review, else the requested reviewers), a requested review. A statement that the move is the author's adds
+/// applies: a plug-in's statement that reviewers or maintainers own the stage (those it says owe a review, else the
+/// requested reviewers), the ready label, a requested review. A statement that the move is the author's adds
 /// nothing. The one rule of ranked versus Waiting on others: the read path and the judge's input both apply it.
 pub(crate) fn waiting(
     rules: &ScoreRules,
@@ -665,12 +665,6 @@ pub(crate) fn waiting(
         return None;
     }
     let requested = f.review_requested_from_others.clone();
-    if let Some(label) = score::ready_label(rules, f) {
-        let reason = AwaitingReason::ReadyLabel {
-            label: label.to_owned(),
-        };
-        return Some((reason, requested));
-    }
     if let Some(statement) = overlay.whose_move(&f.repo, f.number)
         && let Move::People { owed, reason } = statement.whose
     {
@@ -681,6 +675,12 @@ pub(crate) fn waiting(
             url: statement.url,
         };
         return Some((reason, if owed.is_empty() { requested } else { owed }));
+    }
+    if let Some(label) = score::ready_label(rules, f) {
+        let reason = AwaitingReason::ReadyLabel {
+            label: label.to_owned(),
+        };
+        return Some((reason, requested));
     }
     score::waits_on_requested_review(rules, f)
         .then_some((AwaitingReason::ReviewRequested, requested))

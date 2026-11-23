@@ -358,7 +358,10 @@
             "login": "tobias-w"
           },
           "state": "COMMENTED",
-          "submittedAt": "2026-11-17T18:30:00Z"
+          "submittedAt": "2026-11-17T18:30:00Z",
+          "commit": {
+            "oid": "fd455e08bda61c18cc1db1a025457aa7e96403e5"
+          }
         }
       ]
     },
