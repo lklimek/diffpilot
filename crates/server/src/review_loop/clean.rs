@@ -1,6 +1,6 @@
-//! Agent-facing text of the `verify_comments` input (plan §4.2): bot comments without HTML, collapsed `<details>`
-//! sections (a suggested fix keeps its summary and code) and their prompts for AI agents; the PR description without
-//! the blocks bots write into it. Pure; stored texts and their hashes are not changed.
+//! Agent-facing text of the `verify_comments` input (plan §4.2): bot comments without HTML, prompts for AI agents and
+//! collapsed `<details>` sections other than findings and suggested fixes; the PR description without the blocks bots
+//! write into it. Pure; stored texts and their hashes are not changed.
 
 /// Bot-written regions of a description, by the start of their first and last line: CodeRabbit's summary and the
 /// PR Hygiene status.
@@ -22,6 +22,15 @@ const FIX_SUMMARIES: &[&str] = &[
     "proposed fix",
     "proposed change",
     "proposed refactor",
+];
+/// Summaries of `<details>` sections that hold findings (CodeRabbit's review body), lowercase; the file sections in
+/// them hold findings too.
+const FINDING_SUMMARIES: &[&str] = &[
+    "nitpick comment",
+    "outside diff range comment",
+    "duplicate comment",
+    "actionable comment",
+    "additional comment",
 ];
 /// Fence info strings of a code change.
 const FIX_FENCES: &[&str] = &["diff", "suggestion"];
@@ -79,18 +88,27 @@ pub fn description(text: &str) -> Option<String> {
     Some(collapse_blank_lines(&kept)).filter(|text| !text.is_empty())
 }
 
-/// A bot's comment text without `<details>` sections, prompts for AI agents, HTML comments and tags; code (fenced
-/// or inline) is kept as written. A section that holds a suggested fix keeps its summary and code ([`fix_section`]).
+/// A bot's comment text without prompts for AI agents, HTML comments and tags; code (fenced or inline) is kept as
+/// written; `<details>` sections leave what [`section`] keeps.
 pub fn bot_body(text: &str) -> String {
     let lines = without_regions(text.lines().collect(), AGENT_PROMPT.0, AGENT_PROMPT.1);
+    let (kept, _) = prose(&lines, false);
+    let kept: Vec<&str> = kept.iter().map(String::as_str).collect();
+    collapse_blank_lines(&kept)
+}
+
+/// The visible text of `lines`, code as written and sections by [`section`] (`findings`: `lines` are a findings
+/// section's); also whether a section kept anything.
+fn prose(lines: &[&str], findings: bool) -> (Vec<String>, bool) {
     let mut kept = Vec::new();
+    let mut from_sections = false;
     let mut comment = false;
     let mut prompt_heading = false;
     let mut index = 0;
     while index < lines.len() {
         let trimmed = lines[index].trim();
-        if let Some(open) = fence_of(trimmed) {
-            let end = fence_end(&lines, index, open);
+        if !comment && let Some(fence) = Fence::of(trimmed) {
+            let end = fence.end(lines, index);
             if !prompt_heading {
                 kept.extend(lines[index..=end].iter().map(|line| (*line).to_owned()));
             }
@@ -98,12 +116,15 @@ pub fn bot_body(text: &str) -> String {
             index = end + 1;
             continue;
         }
-        if trimmed.starts_with("<details") {
+        if !comment && trimmed.starts_with("<details") {
+            prompt_heading = false;
             // An unclosed section hides the rest of the comment.
-            let Some(end) = details_end(&lines, index) else {
+            let Some(end) = details_end(lines, index) else {
                 break;
             };
-            kept.extend(fix_section(&lines[index..=end]));
+            let section = section(&lines[index..=end], findings);
+            from_sections |= !section.is_empty();
+            kept.extend(section);
             index = end + 1;
             continue;
         }
@@ -119,8 +140,7 @@ pub fn bot_body(text: &str) -> String {
         }
         kept.push(without_tags(&text));
     }
-    let kept: Vec<&str> = kept.iter().map(String::as_str).collect();
-    collapse_blank_lines(&kept)
+    (kept, from_sections)
 }
 
 /// A line that is only the heading of a prompt for AI agents ("**Prompt for AI Agents**", "## 🤖 Prompt for AI
@@ -143,12 +163,45 @@ fn is_agent_prompt_heading(line: &str) -> bool {
     )
 }
 
-/// The index of the line that closes the fence `lines[start]` opens with `open`; the last line when it is unclosed.
-fn fence_end(lines: &[&str], start: usize, open: &str) -> usize {
-    lines[start + 1..]
-        .iter()
-        .position(|line| line.trim().starts_with(open))
-        .map_or(lines.len() - 1, |close| start + 1 + close)
+/// A fenced code block's opening run: three or more backticks or tildes.
+#[derive(Clone, Copy)]
+struct Fence {
+    mark: char,
+    len: usize,
+}
+
+impl Fence {
+    /// The fence the trimmed line opens, if any.
+    fn of(trimmed: &str) -> Option<Self> {
+        let mark = trimmed.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+        let len = run_len(trimmed, mark);
+        (len >= 3).then_some(Self { mark, len })
+    }
+
+    /// Whether the trimmed line closes it: a run of its mark at least as long, with nothing after.
+    fn closed_by(self, trimmed: &str) -> bool {
+        let len = run_len(trimmed, self.mark);
+        len >= self.len && trimmed[len..].trim().is_empty()
+    }
+
+    /// The index of the line that closes it when `lines[start]` opens it; the last line when it is unclosed.
+    fn end(self, lines: &[&str], start: usize) -> usize {
+        lines[start + 1..]
+            .iter()
+            .position(|line| self.closed_by(line.trim()))
+            .map_or(lines.len() - 1, |close| start + 1 + close)
+    }
+
+    /// Whether its info string (`trimmed` is its opening line) names a code change.
+    fn is_fix(self, trimmed: &str) -> bool {
+        let info = trimmed[self.len..].trim();
+        FIX_FENCES.iter().any(|fence| info.starts_with(fence))
+    }
+}
+
+/// The length of the run of `mark` that `text` starts with.
+fn run_len(text: &str, mark: char) -> usize {
+    text.len() - text.trim_start_matches(mark).len()
 }
 
 /// The index of the line that closes the `<details>` section `lines[start]` opens, nested sections and code
@@ -158,8 +211,8 @@ fn details_end(lines: &[&str], start: usize) -> Option<usize> {
     let mut index = start;
     while index < lines.len() {
         let trimmed = lines[index].trim();
-        if let Some(open) = fence_of(trimmed) {
-            index = fence_end(lines, index, open) + 1;
+        if let Some(fence) = Fence::of(trimmed) {
+            index = fence.end(lines, index) + 1;
             continue;
         }
         if trimmed.starts_with("<details") {
@@ -174,40 +227,85 @@ fn details_end(lines: &[&str], start: usize) -> Option<usize> {
     None
 }
 
-/// What a complete `<details>` section leaves: nothing, unless its summary names a suggested fix or it holds a
-/// `diff` or `suggestion` fence; then its summary without tags and its code blocks as written, nested sections by
-/// the same rule. Other text and HTML are dropped.
-fn fix_section(section: &[&str]) -> Vec<String> {
-    let (summary, body) = summary_of(section);
-    let mut code = Vec::new();
-    let mut fix_fence = false;
+/// What a complete `<details>` section leaves (`findings`: it sits in a findings section), nested sections by the
+/// same rules: nothing for a prompt for AI agents; a suggested fix's summary and code blocks; the summary and text of
+/// findings ([`FINDING_SUMMARIES`], or a file section in findings). Any other section leaves its summary and text
+/// when a nested section left something (the finding a fix belongs to), else its summary and `diff` or `suggestion`
+/// blocks, else nothing (provenance and metadata).
+fn section(lines: &[&str], findings: bool) -> Vec<String> {
+    let (summary, body) = summary_of(lines);
+    let lower = summary.to_lowercase();
+    if lower.contains("prompt for ai agent") {
+        return Vec::new();
+    }
+    if FIX_SUMMARIES.iter().any(|name| lower.contains(name)) {
+        return labelled(summary, code(body, false));
+    }
+    if FINDING_SUMMARIES.iter().any(|name| lower.contains(name))
+        || (findings && is_file_summary(&summary))
+    {
+        return labelled(summary, prose(body, true).0);
+    }
+    let (text, from_sections) = prose(body, false);
+    if from_sections {
+        return labelled(summary, text);
+    }
+    let fixes = code(body, true);
+    if fixes.is_empty() {
+        Vec::new()
+    } else {
+        labelled(summary, fixes)
+    }
+}
+
+/// `lines` after the summary, when it is not empty.
+fn labelled(summary: String, lines: Vec<String>) -> Vec<String> {
+    std::iter::once(summary)
+        .filter(|summary| !summary.is_empty())
+        .chain(lines)
+        .collect()
+}
+
+/// The code blocks of a section's `body` (only `diff` and `suggestion` ones when `only_fixes`) and what its nested
+/// sections leave; its other text is dropped.
+fn code(body: &[&str], only_fixes: bool) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut comment = false;
     let mut index = 0;
     while index < body.len() {
         let trimmed = body[index].trim();
-        if let Some(open) = fence_of(trimmed) {
-            let info = trimmed.trim_start_matches(['`', '~']).trim();
-            fix_fence |= FIX_FENCES.iter().any(|fence| info.starts_with(fence));
-            let end = fence_end(body, index, open);
-            code.extend(body[index..=end].iter().map(|line| (*line).to_owned()));
+        if !comment && let Some(fence) = Fence::of(trimmed) {
+            let end = fence.end(body, index);
+            if !only_fixes || fence.is_fix(trimmed) {
+                kept.extend(body[index..=end].iter().map(|line| (*line).to_owned()));
+            }
             index = end + 1;
-        } else if trimmed.starts_with("<details")
+        } else if !comment
+            && trimmed.starts_with("<details")
             && let Some(end) = details_end(body, index)
         {
-            code.extend(fix_section(&body[index..=end]));
+            kept.extend(section(&body[index..=end], false));
             index = end + 1;
         } else {
+            comment = without_comments(body[index], comment).1;
             index += 1;
         }
     }
-    let lower = summary.to_lowercase();
-    let fix_summary = FIX_SUMMARIES.iter().any(|name| lower.contains(name));
-    if !fix_summary && !fix_fence {
-        return Vec::new();
-    }
-    std::iter::once(summary)
-        .filter(|summary| !summary.is_empty())
-        .chain(code)
-        .collect()
+    kept
+}
+
+/// A summary naming a file, as CodeRabbit's file sections have it ("src/rpc/client.rs (1)").
+fn is_file_summary(summary: &str) -> bool {
+    let name = summary
+        .rsplit_once(" (")
+        .filter(|(_, count)| {
+            count
+                .strip_suffix(')')
+                .is_some_and(|count| count.chars().all(|c| c.is_ascii_digit()))
+        })
+        .map_or(summary, |(name, _)| name)
+        .trim();
+    !name.is_empty() && !name.contains(char::is_whitespace) && name.contains(['/', '.'])
 }
 
 /// The section's summary without tags and the lines between it and the closing line. A summary is looked for only
@@ -219,7 +317,7 @@ fn summary_of<'a, 'b>(section: &'a [&'b str]) -> (String, &'a [&'b str]) {
         .enumerate()
         .take_while(|(index, line)| {
             let trimmed = line.trim();
-            *index == 0 || !(trimmed.starts_with("<details") || fence_of(trimmed).is_some())
+            *index == 0 || !(trimmed.starts_with("<details") || Fence::of(trimmed).is_some())
         })
         .find(|(_, line)| line.contains("</summary>"))
         .map(|(index, _)| index);
@@ -272,17 +370,6 @@ fn is_comment_line(line: &str) -> bool {
     trimmed.starts_with("<!--") && trimmed.ends_with("-->")
 }
 
-/// The fence a line opens (three or more backticks or tildes), if any.
-fn fence_of(trimmed: &str) -> Option<&'static str> {
-    if trimmed.starts_with("```") {
-        Some("```")
-    } else if trimmed.starts_with("~~~") {
-        Some("~~~")
-    } else {
-        None
-    }
-}
-
 /// `line` without HTML comments outside inline code spans; `open` says a comment started on an earlier line. Returns
 /// the text and whether a comment is still open at its end.
 fn without_comments(line: &str, open: bool) -> (String, bool) {
@@ -311,7 +398,7 @@ fn without_comments(line: &str, open: bool) -> (String, bool) {
             rest = after;
         } else {
             // A backtick run opens a code span when a run of the same length closes it; else it is literal.
-            let ticks = rest.len() - rest.trim_start_matches('`').len();
+            let ticks = run_len(rest, '`');
             let span = code_span_len(&rest[ticks..], ticks).map_or(ticks, |len| ticks + len);
             text.push_str(&rest[..span]);
             rest = &rest[span..];
@@ -324,7 +411,7 @@ fn code_span_len(text: &str, ticks: usize) -> Option<usize> {
     let mut offset = 0;
     while let Some(start) = text[offset..].find('`') {
         let start = offset + start;
-        let run = text[start..].len() - text[start..].trim_start_matches('`').len();
+        let run = run_len(&text[start..], '`');
         if run == ticks {
             return Some(start + run);
         }
@@ -333,19 +420,30 @@ fn code_span_len(text: &str, ticks: usize) -> Option<usize> {
     None
 }
 
-/// `line` without the tags of [`TAGS`] outside inline code spans.
+/// `line` without the tags of [`TAGS`] outside inline code spans, found as [`without_comments`] finds them.
 fn without_tags(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
-    for (index, part) in line.split('`').enumerate() {
-        if index > 0 {
-            out.push('`');
-        }
-        if index % 2 == 1 {
-            out.push_str(part);
-        } else {
-            out.push_str(&strip_tags(part));
+    let mut text = String::new();
+    let mut rest = line;
+    while let Some(at) = rest.find('`') {
+        text.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let ticks = run_len(rest, '`');
+        match code_span_len(&rest[ticks..], ticks) {
+            Some(len) => {
+                out.push_str(&strip_tags(&text));
+                text.clear();
+                out.push_str(&rest[..ticks + len]);
+                rest = &rest[ticks + len..];
+            }
+            None => {
+                text.push_str(&rest[..ticks]);
+                rest = &rest[ticks..];
+            }
         }
     }
+    text.push_str(rest);
+    out.push_str(&strip_tags(&text));
     out
 }
 
@@ -466,6 +564,82 @@ Identities with `ECDSA_HASH160` keys cannot publish; `Option<Key>` stays empty."
             bot_body(text),
             "Pin the revision.\n\nSuggested fix\n```diff\n-rev = \"a\"\n+rev = \"b\"\n```\n\n📝 Committable suggestion\n\
 ```suggestion\nrev = \"b\"\n```\n\nDetails\n```diff\n+x\n```"
+        );
+    }
+
+    /// Review finding: tags and comments agree on what a code span is (a backtick run closed by a run of the same
+    /// length, else literal), so tags in double-backtick spans stay and a stray backtick does not flip the rest.
+    #[test]
+    fn bot_body_finds_code_spans_by_backtick_runs() {
+        for text in ["Use ``Vec<b>`` here.", "Type ``a ` b`` then `<b>` stays."] {
+            assert_eq!(bot_body(text), text);
+        }
+        assert_eq!(
+            bot_body("Don't type a lone ` here; the `<span>` lacks a role."),
+            "Don't type a lone ` here; the `` lacks a role.",
+            "as on GitHub, the span is ` here; the `, so <span> is markup and the last backtick literal"
+        );
+    }
+
+    /// claudius check-pr-comments takes each finding of a review body's collapsed sections as an item: CodeRabbit's
+    /// "Nitpick comments" and "Outside diff range comments" keep their file sections' finding text and nested fixes;
+    /// agent prompts and provenance sections are dropped. A section of no known kind that holds a fix keeps the
+    /// finding text the fix belongs to.
+    #[test]
+    fn bot_body_keeps_the_findings_of_review_body_sections() {
+        let body = "**Actionable comments posted: 0**\n\n\
+<details>\n<summary>🧹 Nitpick comments (1)</summary><blockquote>\n\n\
+<details>\n<summary>src/rpc/client.rs (1)</summary><blockquote>\n\n\
+`40-43`: **Bound the retry loop.**\n\nThe loop retries forever on timeouts.\n\n\
+<details>\n<summary>♻️ Suggested refactor</summary>\n\n```diff\n-loop {\n+for _ in 0..3 {\n```\n\n</details>\n\n\
+<details>\n<summary>🤖 Prompt for AI Agents</summary>\n\n```\nVerify each finding.\n```\n\n</details>\n\n\
+</blockquote></details>\n\n</blockquote></details>\n\n\
+<details>\n<summary>⚠️ Outside diff range comments (1)</summary><blockquote>\n\n\
+<details>\n<summary>src/rpc/pool.rs (1)</summary><blockquote>\n\n\
+`12-14`: **Close idle connections.**\n\nIdle connections are never closed.\n\n\
+<details>\n<summary>🧩 Analysis chain</summary>\n\n```shell\nrg idle\n```\n</details>\n\n\
+</blockquote></details>\n\n</blockquote></details>\n\n\
+<details>\n<summary>📜 Review details</summary>\n\n**Configuration used**: CodeRabbit UI\n\n\
+<details>\n<summary>📒 Files selected for processing (2)</summary>\n\n* `src/rpc/client.rs`\n</details>\n\n</details>";
+        assert_eq!(
+            bot_body(body),
+            "**Actionable comments posted: 0**\n\n🧹 Nitpick comments (1)\n\nsrc/rpc/client.rs (1)\n\n\
+`40-43`: **Bound the retry loop.**\n\nThe loop retries forever on timeouts.\n\n♻️ Suggested refactor\n\
+```diff\n-loop {\n+for _ in 0..3 {\n```\n\n⚠️ Outside diff range comments (1)\n\nsrc/rpc/pool.rs (1)\n\n\
+`12-14`: **Close idle connections.**\n\nIdle connections are never closed."
+        );
+        let note = "<details>\n<summary>Note</summary>\n\nUse the pool.\n\n\
+<details>\n<summary>Proposed fix</summary>\n\n```rust\npool.get()\n```\n</details>\n</details>";
+        assert_eq!(
+            bot_body(note),
+            "Note\n\nUse the pool.\n\nProposed fix\n```rust\npool.get()\n```"
+        );
+    }
+
+    /// Review finding: a longer fence holds a shorter one; the heading flag ends at a section; a commented-out
+    /// section stays hidden, as on GitHub; a section that qualifies only by a `diff` fence keeps only that fence.
+    #[test]
+    fn bot_body_handles_nested_fences_comments_and_mixed_sections() {
+        let nested = "````md\n```\n<b>x</b>\n```\nVec<b> inside\n````";
+        assert_eq!(bot_body(nested), nested);
+        assert_eq!(
+            bot_body(
+                "**Prompt for AI Agents**\n<details>\n<summary>Suggested fix</summary>\n\n```diff\n+x\n```\n\
+</details>\n```rust\nlet a = 1;\n```"
+            ),
+            "Suggested fix\n```diff\n+x\n```\n```rust\nlet a = 1;\n```"
+        );
+        assert_eq!(
+            bot_body(
+                "Text.\n<!--\n<details>\n<summary>Suggested fix</summary>\n\n```diff\n+x\n```\n</details>\n-->\nAfter."
+            ),
+            "Text.\n\nAfter."
+        );
+        assert_eq!(
+            bot_body(
+                "<details>\n<summary>🧩 Analysis chain</summary>\n\n```shell\nrg\n```\n\n```diff\n+x\n```\n</details>"
+            ),
+            "🧩 Analysis chain\n```diff\n+x\n```"
         );
     }
 

@@ -406,11 +406,11 @@ demand), served by range (brief §7).
   no MemCan endpoint; same uid, egress and scrubbing rules (plan §5.4 T1–T9). It never writes to GitHub.
 - **Input** (context pack, fenced as data): PR title and description (without CodeRabbit's summary and the PR Hygiene
   block), the PR context of the latest analysis if any, the project profile from the base ref if present, items (comment
-  text, bots' without HTML, agent prompts and `<details>` other than a suggested fix's code; location; author kind; the
-  commit the comment was written on; the bot's own thread status; the latest replies of its open thread, from the Q-L2
-  read), earlier decisions on this PR (in diffpilot, or recorded by a reply such as "per maintainer decision"), and for
-  a question mode the item and the owner's question. The job mounts no claudius skill: the prompt states the gates,
-  categories, necessity rule and checking rules it needs (ADR-002 amendment 2026-11-23).
+  text, bots' without HTML, agent prompts and `<details>` other than findings and suggested fixes; location; author
+  kind; the commit the comment was written on; the bot's own thread status; the latest replies of its open thread, from
+  the Q-L2 read), earlier decisions on this PR (in diffpilot, or recorded by a reply such as "per maintainer decision"),
+  and for a question mode the item and the owner's question. The job mounts no claudius skill: the prompt states the
+  gates, categories, necessity rule and checking rules it needs (ADR-002 amendment 2026-11-23).
 - **Batching and cost:** ≤ 10 items per job **[S-3]**; an item is re-assessed only when its comment text, a person's
   reply in its thread, the bot's status class, its thread's code lines or the PR purpose changed (fingerprint; a new
   prompt version alone re-assesses nothing; otherwise the stored assessment is reused and shown with "code at these
