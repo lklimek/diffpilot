@@ -2,7 +2,7 @@
 import { routes, type RouteName } from "./generated/routes";
 import type {
   AssessmentSettings,
-  AssessmentConfig,
+  AssessmentSettingsUpdate,
   AssessmentComparison,
   CredentialStatus,
   DeviceLink,
@@ -334,7 +334,7 @@ export function createApiClient(baseUrl = "") {
     linkCodex: () => call<DeviceLink>("linkCodex", { body: { mode: "chatgpt_plan" } }),
     unlinkCodex: () => call<void>("deleteCodex"),
     getAssessmentSettings: () => call<AssessmentSettings>("getAssessmentSettings"),
-    setAssessmentSettings: (body: AssessmentConfig) =>
+    setAssessmentSettings: (body: AssessmentSettingsUpdate) =>
       call<AssessmentSettings>("setAssessmentSettings", { body }),
     getAssessmentComparison: async (pr: PrRef) => {
       try {

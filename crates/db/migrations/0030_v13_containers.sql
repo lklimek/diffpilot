@@ -372,6 +372,7 @@ CREATE TABLE assessment_attempt_usage (
     requests INTEGER CHECK (requests>=0),
     duration_ms INTEGER NOT NULL CHECK (duration_ms>=0),
     known INTEGER NOT NULL DEFAULT 1 CHECK (known IN (0,1)),
+    recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY (pass_id,method,attempt),
     FOREIGN KEY (pass_id,method,tenant_id,payer_id) REFERENCES assessment_method_runs(pass_id,method,tenant_id,payer_id)
 ) STRICT;

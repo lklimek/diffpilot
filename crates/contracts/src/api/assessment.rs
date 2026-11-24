@@ -9,13 +9,25 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// GET /settings/comment-assessment; PUT uses AssessmentConfig and never schedules work itself.
+/// GET /settings/comment-assessment; PUT uses AssessmentSettingsUpdate and never schedules work itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AssessmentSettings {
+    /// Opaque content revision required for an atomic conditional write.
+    pub revision: String,
     /// Effective per-user configuration.
     pub config: AssessmentConfig,
     /// Safe remaining/reset status.
     pub quota: AssessmentQuota,
+}
+
+/// Conditional settings write; stale revisions fail with HTTP 409 and never schedule work.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct AssessmentSettingsUpdate {
+    /// Configuration the caller wants to save.
+    pub config: AssessmentConfig,
+    /// Revision obtained with the configuration the caller edited.
+    pub revision: String,
 }
 
 /// GET …/comments/assessment-comparison, scoped to payer and PR.

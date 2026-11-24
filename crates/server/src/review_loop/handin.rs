@@ -31,6 +31,7 @@ fn role(author: &str, pr_author: &str, body: &str, known_bots: &[String]) -> Sou
                 who.ends_with("[bot]") || known_bots.iter().any(|b| b.eq_ignore_ascii_case(who))
             })
             && !text.contains('\n'))
+        || text.starts_with("<!-- platform-pr-review-state-v1 ")
         || markers::gate(text).is_some()
         || markers::is_thread_answer(text)
     {
@@ -125,7 +126,12 @@ pub(super) fn build(
         }
         let who = login(review.author.as_ref());
         let body = cleaned(review.author.as_ref(), &review.body);
-        let mut source_role = role(who, pr_author, &body, known_bots);
+        // Classify protocol markers before HTML cleaning removes them.
+        let mut source_role = if body.is_empty() {
+            SourceRole::Ignored
+        } else {
+            role(who, pr_author, &review.body, known_bots)
+        };
         if source_role != SourceRole::Ignored
             && bot(review.author.as_ref())
             && (review.state == "DISMISSED"
@@ -159,7 +165,11 @@ pub(super) fn build(
     for comment in &read.comments {
         let who = login(comment.author.as_ref());
         let body = cleaned(comment.author.as_ref(), &comment.body);
-        let source_role = role(who, pr_author, &body, known_bots);
+        let source_role = if body.is_empty() {
+            SourceRole::Ignored
+        } else {
+            role(who, pr_author, &comment.body, known_bots)
+        };
         if source_role == SourceRole::Ignored {
             continue;
         }
@@ -206,6 +216,15 @@ mod tests {
     use super::*;
     use crate::github::review_loop::{PrFacts, PrRead};
     use serde_json::json;
+
+    #[test]
+    fn ci_status_comments_are_ignored_instead_of_becoming_assessment_sources() {
+        let body = "<!-- platform-pr-review-state-v1 {\"state\":\"waiting-author\"} -->\nCI is waiting for the author.";
+        assert_eq!(
+            role("github-actions", "alice", body, &[]),
+            SourceRole::Ignored
+        );
+    }
 
     #[test]
     fn handin_only_author_is_context_and_commands_are_omitted() {

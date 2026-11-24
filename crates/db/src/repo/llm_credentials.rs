@@ -129,6 +129,8 @@ impl LlmCredentials<'_> {
         tx.commit().await?;
         row.map(|r| {
             Ok(contracts::gateway::CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
                 mode: contracts::gateway::CredentialMode::ChatgptPlan,
                 state: crate::repo::jobs::parse_wire(
                     &r.try_get::<String, _>("state")?,

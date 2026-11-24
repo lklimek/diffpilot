@@ -89,8 +89,17 @@ struct Device {
 
 impl Gateway {
     pub(super) async fn status(&self, user: &UserId) -> Result<CredentialStatus, Error> {
+        self.status_view(user, false).await
+    }
+
+    pub(super) async fn status_view(
+        &self,
+        user: &UserId,
+        staged: bool,
+    ) -> Result<CredentialStatus, Error> {
         let tx = self.store.lock(user).await?;
         let r = &tx.record;
+        let linking = r.link_attempt.is_some_and(|(_, at)| at > now());
         let b = r.bundle.as_ref();
         let reason = r.reason.or(if b.is_none() {
             Some(RelinkReason::Terminal)
@@ -98,15 +107,24 @@ impl Gateway {
             None
         });
         Ok(CredentialStatus {
+            telemetry: contracts::gateway::CredentialTelemetry {
+                linked_at: r
+                    .linked_at
+                    .and_then(contracts::time::Timestamp::from_second),
+                primary: plan_usage(&r.limits, "primary"),
+                secondary: plan_usage(&r.limits, "secondary"),
+                ..Default::default()
+            },
+            challenge: staged.then(|| r.challenge.clone()).flatten(),
             mode: CredentialMode::ChatgptPlan,
-            state: if b.is_none() && r.link_attempt.is_some_and(|(_, at)| at > now()) {
+            state: if linking && (staged || b.is_none()) {
                 CredentialState::Linking
             } else if reason.is_some() {
                 CredentialState::RelinkNeeded
             } else {
                 CredentialState::Linked
             },
-            relink_reason: if b.is_none() && r.link_attempt.is_some_and(|(_, at)| at > now()) {
+            relink_reason: if linking && (staged || b.is_none()) {
                 None
             } else {
                 reason
@@ -174,6 +192,7 @@ impl Gateway {
         {
             let mut tx = self.store.lock(user).await?;
             tx.record.link_attempt = Some((attempt, deadline));
+            tx.record.challenge = None;
             tx.save()?;
             let mut active = self.links.lock().await;
             if let Some(previous) = active.insert(
@@ -239,12 +258,14 @@ impl Gateway {
                 return Err(error);
             }
         };
-        drop(tx);
         let code = DeviceLink {
             user_code: device.user_code.clone(),
             verification_url: VERIFY_URL.into(),
             expires_at: contracts::time::Timestamp::from_second(deadline).ok_or(Error::Link)?,
         };
+        tx.record.challenge = Some(code.clone());
+        tx.save()?;
+        drop(tx);
         let store = self.store.clone();
         let upstream = self.upstream.clone();
         let user_key = user.clone();
@@ -291,6 +312,10 @@ impl Gateway {
                         || !active.get(&user).is_some_and(|entry| entry.id == attempt) { return Err(Error::Link); }
                     tx.record.link_attempt = None;
                     tx.record.bundle = Some(bundle);
+                    tx.record.linked_at = Some(now());
+                    tx.record.challenge = None;
+                    tx.record.limits.clear();
+                    tx.record.resets_at = None;
                     tx.record.reason = None;
                     tx.record.inflight = false;
                     tx.record.generation = tx.record.generation.checked_add(1).ok_or(Error::Usage)?;
@@ -324,6 +349,9 @@ impl Gateway {
             task.abort();
         }
         tx.record.link_attempt = None;
+        tx.record.challenge = None;
+        tx.record.linked_at = None;
+        tx.record.limits.clear();
         for (id, key) in tx.record.keys.iter_mut().filter(|(_, key)| !key.revoked) {
             key.revoked = true;
             self.store.retire_key(id)?;
@@ -672,4 +700,22 @@ fn expiry(value: &Value, access: &str) -> Option<(i64, Option<i64>)> {
         Some(value) => Some(value.as_i64()?),
     };
     Some((expires_at, earliest_refresh_at))
+}
+
+fn plan_usage(
+    limits: &std::collections::BTreeMap<String, String>,
+    window: &str,
+) -> Option<contracts::gateway::PlanUsage> {
+    let used_percent = limits
+        .get(&format!("x-codex-{window}-used-percent"))
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite() && (0.0..=100.0).contains(v));
+    let resets_at = limits
+        .get(&format!("x-codex-{window}-reset-at"))
+        .and_then(|v| v.parse().ok())
+        .and_then(contracts::time::Timestamp::from_second);
+    (used_percent.is_some() || resets_at.is_some()).then_some(contracts::gateway::PlanUsage {
+        used_percent,
+        resets_at,
+    })
 }

@@ -254,10 +254,11 @@ function SettingsContent({
             <AssessmentSettingsCard
               key={`${assessment.data.config.primary_method}/${assessment.data.config.ab_until}`}
               settings={assessment.data}
+              now={now}
               busy={saveAssessment.isPending}
               saved={saveAssessment.isSuccess}
               error={saveAssessment.isError ? errorText(saveAssessment.error) : undefined}
-              onSave={(config) => saveAssessment.mutate(config)}
+              onSave={(config) => saveAssessment.mutate({ config, revision: assessment.data!.revision })}
             />
           ) : (
             <SettingsCard title="Comment assessment">

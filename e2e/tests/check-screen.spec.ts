@@ -30,6 +30,17 @@ const channel = `<form novalidate><label>URL <input type="url" required></label>
 const cases: [string, string, RegExp | null][] = [
   ["a clean screen", page(tooltip("Ticks", "Steps you marked reviewed."), "<p>3 of 7 steps</p>"), null],
   ["a banned phrase in the page", page("", "<p>No risk here.</p>"), /banned wording on the page/],
+  ["observed Codex plan usage", page("", "<p data-codex-plan-usage>Primary plan usage: 12.5%</p>"), null],
+  [
+    "a banned word in plan usage",
+    page("", "<p data-codex-plan-usage>confidence: 12.5%</p>"),
+    /banned wording on the page/,
+  ],
+  [
+    "plan usage percentage in the top bar",
+    page("<p data-codex-plan-usage>Plan usage: 12.5%</p>", ""),
+    /top bar/,
+  ],
   ["a percentage in the page", page("", "<p>Covered: 80 %</p>"), /banned wording on the page/],
   ["any % in the top bar", page("<span>progress 3/7 (%)</span>", ""), /top bar/],
   ["a banned word in a tooltip", page(tooltip("Fact", "Verified by the LLM."), ""), /banned wording/],

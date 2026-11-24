@@ -95,6 +95,8 @@ async fn fixture_with(head: &str, reachable: bool) -> Fixture {
             DEFAULT_TENANT,
             "u1",
             &contracts::gateway::CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
                 mode: contracts::gateway::CredentialMode::ChatgptPlan,
                 state: contracts::gateway::CredentialState::Linked,
                 relink_reason: None,

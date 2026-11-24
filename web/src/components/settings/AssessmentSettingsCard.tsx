@@ -7,12 +7,14 @@ import { SettingsCard } from "./Card";
 /** User choices apply to new passes; saving never schedules an assessment. */
 export function AssessmentSettingsCard({
   settings,
+  now,
   busy,
   error,
   saved,
   onSave,
 }: {
   settings: AssessmentSettings;
+  now: Date;
   busy: boolean;
   error?: string;
   saved?: boolean;
@@ -73,6 +75,9 @@ export function AssessmentSettingsCard({
         Leave empty for selected PRs only. A deadline enables both methods on all PRs until that time, in
         addition to selected PRs.
       </p>
+      {valid && deadline && parsed <= now.getTime() && (
+        <p>The A/B deadline {deadline} has passed. Only selected PRs use both methods.</p>
+      )}
       {!valid && <p role="alert">Enter a UTC date and time ending in Z, or leave empty.</p>}
       {error && <p role="alert">{error}</p>}
       {saved && <p role="status">Assessment settings saved.</p>}

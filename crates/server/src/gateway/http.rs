@@ -128,20 +128,9 @@ async fn link_status(
     State(g): State<Arc<Gateway>>,
     Path(user): Path<String>,
 ) -> Result<Response, Error> {
-    let user = UserId(user);
-    let mut status = g.status(&user).await?;
-    if g.store
-        .lock(&user)
-        .await?
-        .record
-        .link_attempt
-        .is_some_and(|(_, at)| at > super::now())
-    {
-        status.state = contracts::gateway::CredentialState::Linking;
-        status.relink_reason = None;
-    }
-    Ok(Json(status).into_response())
+    Ok(Json(g.status_view(&UserId(user), true).await?).into_response())
 }
+
 async fn unlink(
     State(g): State<Arc<Gateway>>,
     Path(user): Path<String>,

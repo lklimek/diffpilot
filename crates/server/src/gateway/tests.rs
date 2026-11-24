@@ -808,6 +808,18 @@ async fn staged_device_link_commits_without_refresh_and_keeps_secrets_gateway_on
     let code: serde_json::Value = serde_json::from_slice(&collect(response).await).expect("code");
     assert_eq!(code["user_code"], "ABC-FAKE");
     assert_eq!(code.as_object().expect("object").len(), 3);
+    let restored = call(
+        g.admin_router(),
+        "GET",
+        "/admin/credentials/payer-1/link",
+        &"c".repeat(32),
+        json!(null),
+    )
+    .await;
+    let restored: serde_json::Value = serde_json::from_slice(&collect(restored).await).unwrap();
+    assert_eq!(restored["challenge"], code);
+    assert_eq!(restored["state"], "linking");
+    assert!(g.status(&u).await.unwrap().telemetry.linked_at.is_none());
     assert_eq!(
         g.store
             .lock(&u)
@@ -841,6 +853,9 @@ async fn staged_device_link_commits_without_refresh_and_keeps_secrets_gateway_on
             .expose(),
         "fake-refresh-1"
     );
+    let linked = g.status(&u).await.unwrap();
+    assert!(linked.telemetry.linked_at.is_some());
+    assert!(g.status_view(&u, true).await.unwrap().challenge.is_none());
     let sealed = std::fs::read(g.store.record_path(&u)).expect("sealed");
     assert!(!sealed.windows(12).any(|w| w == b"fake-refresh"));
     assert!(
@@ -2070,5 +2085,50 @@ async fn device_link_failures_record_step_status_and_redacted_request_id() {
         "fake-verifier",
     ] {
         assert!(!logs.contains(secret), "secret in lifecycle log");
+    }
+}
+
+#[tokio::test]
+async fn status_telemetry_uses_only_observed_plan_headers_and_persisted_link_time() {
+    let (_dir, _up, g, u) = fixture().await;
+    seed(&g, &u, bundle(now() + 86400)).await;
+    let before = g.status(&u).await.unwrap();
+    assert!(before.telemetry.primary.is_none());
+    assert!(before.telemetry.linked_at.is_none());
+    let mut tx = g.store.lock(&u).await.unwrap();
+    tx.record.linked_at = Some(1_790_000_000);
+    tx.record
+        .limits
+        .insert("x-codex-primary-used-percent".into(), "12.5".into());
+    tx.record
+        .limits
+        .insert("x-codex-primary-reset-at".into(), "1790003600".into());
+    tx.record
+        .limits
+        .insert("x-codex-secondary-used-percent".into(), "NaN".into());
+    tx.save().unwrap();
+    drop(tx);
+    let status = g.status(&u).await.unwrap();
+    assert_eq!(
+        status.telemetry.primary.as_ref().unwrap().used_percent,
+        Some(12.5)
+    );
+    assert_eq!(
+        status
+            .telemetry
+            .primary
+            .as_ref()
+            .unwrap()
+            .resets_at
+            .unwrap()
+            .as_second(),
+        1_790_003_600
+    );
+    assert!(status.telemetry.secondary.is_none());
+    assert!(status.telemetry.tokens_today.is_none());
+    assert!(status.telemetry.live_containers.is_none());
+    let json = serde_json::to_string(&status).unwrap();
+    for secret in ["fake-access", "fake-refresh", "fake-id", "fake-account"] {
+        assert!(!json.contains(secret));
     }
 }

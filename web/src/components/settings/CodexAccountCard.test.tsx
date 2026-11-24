@@ -2,8 +2,10 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { CredentialStatus } from "../../api/generated/types";
 import { expectTrustWording } from "../../__tests__/wording";
+import { unlinkedCodex } from "../../mocks/assessment";
 import { CodexAccountCard } from "./CodexAccountCard";
 const status: CredentialStatus = {
+  ...unlinkedCodex,
   mode: "chatgpt_plan",
   state: "relink_needed",
   relink_reason: "quarantined",
@@ -105,4 +107,100 @@ it("keeps busy controls focusable while ignoring activation", () => {
   expect(button).not.toBeDisabled();
   fireEvent.click(button);
   expect(onLink).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["none", undefined, false],
+  ["linking", { ...status, state: "linking" as const }, false],
+  ["linked", { ...status, state: "linked" as const, relink_reason: null }, true],
+  ["relink_needed", { ...status, relink_reason: null }, false],
+  ["quarantined", status, false],
+  ["terminal", { ...status, relink_reason: "terminal" as const }, false],
+])("offers unlink only for a linked credential: %s", (_, current, expected) => {
+  render(<CodexAccountCard status={current} now={now} busy={false} onLink={vi.fn()} onUnlink={vi.fn()} />);
+  expect(!!screen.queryByRole("button", { name: "Unlink Codex account" })).toBe(expected);
+});
+it("expired challenge replaces stale waiting text and permits a new explicit link", () => {
+  render(
+    <CodexAccountCard
+      status={{ ...status, state: "linking" }}
+      challenge={{
+        user_code: "OLD",
+        verification_url: "https://example.invalid/device",
+        expires_at: now.toISOString(),
+      }}
+      now={now}
+      busy={false}
+      onLink={vi.fn()}
+      onUnlink={vi.fn()}
+    />,
+  );
+  expect(screen.getByText(/code expired/)).toBeVisible();
+  expect(screen.queryByText(/Waiting for you/)).toBeNull();
+  expect(screen.getByRole("button", { name: "Relink Codex account" })).not.toHaveAttribute("aria-disabled");
+});
+it("moves focus into unlink confirmation and returns it on either close action", () => {
+  render(
+    <CodexAccountCard
+      status={{ ...status, state: "linked" }}
+      now={now}
+      busy={false}
+      onLink={vi.fn()}
+      onUnlink={vi.fn()}
+    />,
+  );
+  const trigger = screen.getByRole("button", { name: "Unlink Codex account" });
+  fireEvent.click(trigger);
+  expect(screen.getByRole("button", { name: "Keep linked" })).toHaveFocus();
+  fireEvent.click(screen.getByRole("button", { name: "Keep linked" }));
+  expect(trigger).toHaveFocus();
+  fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole("button", { name: "Confirm unlink" }));
+  expect(trigger).toHaveFocus();
+});
+it("renders measured account telemetry and explicitly labels absent observations", () => {
+  render(
+    <CodexAccountCard
+      status={{
+        ...status,
+        state: "linked",
+        telemetry: {
+          linked_at: "2026-11-18T09:00:00Z",
+          primary: { used_percent: 12.5, resets_at: "2026-11-18T12:00:00Z" },
+          secondary: null,
+          tokens_today: {
+            input_tokens: 100,
+            cached_input_tokens: 80,
+            output_tokens: 20,
+            reasoning_output_tokens: null,
+            jobs: 1,
+          },
+          tokens_month: null,
+          live_containers: [{ shape: "pr", pull_request_id: 42, payer: "alice" }],
+        },
+      }}
+      now={now}
+      busy={false}
+      onLink={vi.fn()}
+      onUnlink={vi.fn()}
+    />,
+  );
+  expect(screen.getByText(/12.5%/)).toBeVisible();
+  expect(screen.getByText(/Tokens today .*120/)).toBeVisible();
+  expect(screen.getByText(/Tokens this month .*not reported yet/)).toBeVisible();
+  expect(screen.getByText(/Live containers .*1/)).toBeVisible();
+});
+it("explains an unavailable status in the link tooltip", () => {
+  render(
+    <CodexAccountCard
+      now={now}
+      busy={false}
+      error="Gateway unavailable"
+      onLink={vi.fn()}
+      onUnlink={vi.fn()}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Link Codex account" })).toHaveAccessibleDescription(
+    "Account status is unavailable; linking is possible once it loads.",
+  );
 });

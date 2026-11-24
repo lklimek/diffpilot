@@ -21,6 +21,8 @@ async fn seed(db: &Db) {
             "default",
             "u1",
             &CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
                 mode: CredentialMode::ChatgptPlan,
                 state: CredentialState::Linked,
                 relink_reason: None,
@@ -253,6 +255,8 @@ async fn assessment_admission_is_atomic_and_idempotent_across_restart_and_midnig
                 "default",
                 "u1",
                 &CredentialStatus {
+                    telemetry: Default::default(),
+                    challenge: None,
                     mode: CredentialMode::ChatgptPlan,
                     state,
                     relink_reason: reason,
@@ -1568,6 +1572,30 @@ async fn assessment_late_metering_counts_lost_attempts_once_without_overwriting_
         .runs("default", &user(), req.id)
         .await
         .unwrap();
+    let telemetry = db
+        .jobs()
+        .payer_telemetry(&user(), Timestamp::now())
+        .await
+        .unwrap();
+    assert_eq!(telemetry.tokens_today.unwrap().input_tokens, 20);
+    sqlx::query("UPDATE jobs SET finished_at=?,result=? WHERE id=?")
+        .bind(Timestamp::now().to_rfc3339_offset())
+        .bind(serde_json::json!({"usage":usage}).to_string())
+        .bind(job.to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let telemetry = db
+        .jobs()
+        .payer_telemetry(&user(), Timestamp::now())
+        .await
+        .unwrap();
+    assert_eq!(
+        telemetry.tokens_today.unwrap().input_tokens,
+        20,
+        "terminal result is already represented by its attempt meter"
+    );
+    assert_eq!(telemetry.tokens_today.unwrap().jobs, 1);
     assert_eq!(runs[0].usage.input_tokens, 20);
     assert_eq!(runs[0].usage.requests, Some(2));
     assert_eq!(runs[0].duration_ms, 10);
@@ -1755,4 +1783,101 @@ async fn assessment_stale_canonical_leaves_duplicate_missing_without_aborting_va
             .iter()
             .any(|r| r.comparison_key == "valid" && r.primary_item_id == Some(valid.id))
     );
+}
+
+#[tokio::test]
+async fn configuration_revision_rejects_stale_tabs_without_losing_selections() {
+    let db = Db::in_memory().await.unwrap();
+    seed(&db).await;
+    let initial = db.assessments().config_snapshot(&user()).await.unwrap();
+    let mut first = initial.0.clone();
+    first.ab_prs.push("acme/a#1".into());
+    db.assessments()
+        .set_config_if_current("default", &user(), &first, &initial.1)
+        .await
+        .unwrap();
+    let mut second = initial.0;
+    second.ab_prs.push("acme/b#2".into());
+    assert!(matches!(
+        db.assessments()
+            .set_config_if_current("default", &user(), &second, &initial.1)
+            .await,
+        Err(crate::error::DbError::Conflict)
+    ));
+    assert_eq!(db.assessments().config(&user()).await.unwrap(), first);
+}
+
+#[tokio::test]
+async fn payer_telemetry_uses_utc_boundaries_isolates_payers_and_lists_claimed_containers() {
+    let db = Db::in_memory().await.unwrap();
+    seed(&db).await;
+    let now = at("2026-11-24T12:00:00Z");
+    let empty = db.jobs().payer_telemetry(&user(), now).await.unwrap();
+    assert!(empty.tokens_today.is_none());
+    assert_eq!(empty.live_containers, Some(vec![]));
+    use super::jobs::{JobStage, NewJob};
+    use contracts::agent::JobKind;
+    let analysis = analyses::testing::seed_analysis(&db).await.unwrap();
+    for (index, finished, input) in [
+        (1, "2026-11-24T00:00:00Z", Some(100)),
+        (2, "2026-11-23T23:59:59Z", Some(200)),
+        (3, "2026-10-31T23:59:59Z", Some(400)),
+        (4, "2026-11-24T12:00:01Z", Some(800)),
+        (5, "2026-11-24T01:00:00Z", None),
+    ] {
+        let mut spec = analyses::testing::job_spec(analysis, JobKind::Plan);
+        spec.payer = user();
+        let job = db
+            .jobs()
+            .enqueue(
+                NewJob {
+                    spec,
+                    priority: contracts::job::spec::JobPriority::Batch,
+                    stage: JobStage::Plan { batch: index },
+                    generation: 0,
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        let result = input.map(|input| serde_json::json!({"usage":{"input_tokens": input,"cached_input_tokens":input/2,"output_tokens":10}})).unwrap_or(serde_json::json!({"usage":null}));
+        sqlx::query("UPDATE jobs SET state='succeeded',finished_at=?,result=? WHERE id=?")
+            .bind(finished)
+            .bind(result.to_string())
+            .bind(job.id.to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+    let mut spec = analyses::testing::job_spec(analysis, JobKind::Plan);
+    spec.payer = user();
+    let active = db
+        .jobs()
+        .enqueue(
+            NewJob {
+                spec,
+                priority: contracts::job::spec::JobPriority::Batch,
+                stage: JobStage::Plan { batch: 9 },
+                generation: 0,
+            },
+            now,
+        )
+        .await
+        .unwrap();
+    sqlx::query("UPDATE jobs SET state='claimed' WHERE id=?")
+        .bind(active.id.to_string())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let t = db.jobs().payer_telemetry(&user(), now).await.unwrap();
+    assert_eq!(t.tokens_today.unwrap().input_tokens, 100);
+    assert_eq!(t.tokens_month.unwrap().input_tokens, 300);
+    assert_eq!(t.live_containers.unwrap().len(), 1);
+    let other = db
+        .jobs()
+        .payer_telemetry(&UserId("other".into()), now)
+        .await
+        .unwrap();
+    assert!(other.tokens_today.is_none());
+    assert_eq!(other.live_containers, Some(vec![]));
 }

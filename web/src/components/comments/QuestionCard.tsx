@@ -400,10 +400,12 @@ export function QuestionCard(props: QuestionCardProps) {
               {item.point.source_kind === "review_body" ? "review" : "comment"} <ProvenanceTag source="llm" />{" "}
               <OpenExternal href={item.point.source_url} label="Open the point source on GitHub" />
             </p>
-            <FactChip
-              text="Quote found in the review"
-              tip="The server found this exact quote in the supplied source version."
-            />
+            {item.point.source_kind === "review_body" && (
+              <FactChip
+                text="Quote found in the review"
+                tip="The server found this exact quote in the supplied source version."
+              />
+            )}
           </>
         )}
         {item.duplicate_of !== null && item.duplicate_of !== undefined && (

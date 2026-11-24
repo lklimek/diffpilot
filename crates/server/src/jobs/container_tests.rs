@@ -271,6 +271,8 @@ async fn link(db: &Db, user: &str) {
             db::repo::DEFAULT_TENANT,
             user,
             &contracts::gateway::CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
                 mode: contracts::gateway::CredentialMode::ChatgptPlan,
                 state: contracts::gateway::CredentialState::Linked,
                 relink_reason: None,

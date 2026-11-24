@@ -1,9 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AssessmentSettings",
-  "description": "GET /settings/comment-assessment; PUT uses AssessmentConfig and never schedules work itself.",
+  "description": "GET /settings/comment-assessment; PUT uses AssessmentSettingsUpdate and never schedules work itself.",
   "type": "object",
   "properties": {
+    "revision": {
+      "description": "Opaque content revision required for an atomic conditional write.",
+      "type": "string"
+    },
     "config": {
       "description": "Effective per-user configuration.",
       "$ref": "#/$defs/AssessmentConfig"
@@ -14,6 +18,7 @@
     }
   },
   "required": [
+    "revision",
     "config",
     "quota"
   ],

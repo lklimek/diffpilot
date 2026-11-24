@@ -443,3 +443,18 @@ it("keeps model-read body points separate from grounded GitHub quotes and nullab
   expect(screen.getByText("The retry counter has no upper bound.")).toBeVisible();
   expect(screen.getByText("not supplied")).toBeVisible();
 });
+
+it("does not claim a review-quote fact for a PR-comment point", () => {
+  const item = byNo(14);
+  show({
+    ...item,
+    kind: "pr_comment",
+    point: {
+      source_kind: "pr_comment",
+      source_url: "https://github.com/acme/node-client/pull/482#issuecomment-1",
+      quote: "A separate comment quote.",
+    },
+  });
+  expect(screen.getByText(/Point read by diffpilot's LLM/)).toBeVisible();
+  expect(screen.queryByText("Quote found in the review")).toBeNull();
+});

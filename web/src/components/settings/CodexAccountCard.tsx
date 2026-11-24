@@ -1,5 +1,5 @@
 import { Tooltip } from "../tooltip/Tooltip";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CredentialStatus, DeviceLink } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { SettingsCard } from "./Card";
@@ -16,6 +16,10 @@ function deviceUrl(value: string): string | undefined {
   } catch {
     /* An invalid provider URL stays text. */
   }
+}
+
+function planPercent(value: number): string {
+  return `${value}%`; // wording-check: allow provider-observed plan usage (D13)
 }
 
 /** Plan-only account controls; device tokens never enter the page. */
@@ -37,9 +41,26 @@ export function CodexAccountCard({
   onUnlink: () => void;
 }) {
   const [confirm, setConfirm] = useState(false);
+  const unlinkButton = useRef<HTMLButtonElement>(null);
+  const linkButton = useRef<HTMLButtonElement>(null);
+  const restoreAfterUnlink = useRef(false);
+  const keepButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (confirm) keepButton.current?.focus();
+  }, [confirm]);
+  useEffect(() => {
+    if (restoreAfterUnlink.current && status?.state !== "linked" && !busy) {
+      linkButton.current?.focus();
+      restoreAfterUnlink.current = false;
+    }
+  }, [status?.state, busy]);
+  const closeConfirmation = () => {
+    setConfirm(false);
+    (unlinkButton.current ?? linkButton.current)?.focus();
+  };
   const expired = challenge !== undefined && Date.parse(challenge.expires_at) <= now.getTime();
   const href = challenge && !expired ? deviceUrl(challenge.verification_url) : undefined;
-  const linking = status?.state === "linking" || (challenge !== undefined && !expired);
+  const linking = challenge ? !expired : status?.state === "linking";
   const linkBlocked = busy || !status || (linking && !expired);
   return (
     <SettingsCard title="Codex account">
@@ -51,7 +72,7 @@ export function CodexAccountCard({
       {!status && !error && <p role="status">Loading your Codex account…</p>}
       {status?.state === "linked" && (
         <p>
-          Linked: {status.label ?? "Account label unavailable"} · Plan: {status.plan ?? "not supplied"}
+          Linked: {status.label ?? "not reported yet"} · Plan: {status.plan ?? "not reported yet"}
         </p>
       )}
       {status?.state === "relink_needed" && (
@@ -62,7 +83,39 @@ export function CodexAccountCard({
         </p>
       )}
       {status?.paused_until && <p>Plan usage paused until {status.paused_until}.</p>}
-      {/* TODO(W2): expose D13 link date, plan usage/resets, per-user tokens and live containers in the safe status contract. */}
+      {status?.state === "linked" && (
+        <div className="grid gap-1">
+          <p>Linked at: {status.telemetry.linked_at ?? "not reported yet"}.</p>
+          {(["primary", "secondary"] as const).map((window) => {
+            const usage = status.telemetry[window];
+            return (
+              <p key={window} data-codex-plan-usage>
+                {window === "primary" ? "Primary" : "Secondary"} plan usage:{" "}
+                {usage?.used_percent == null ? "not reported yet" : planPercent(usage.used_percent)}; resets
+                at {usage?.resets_at ?? "not reported yet"}.
+              </p>
+            );
+          })}
+          <p>
+            Tokens today (UTC):{" "}
+            {status.telemetry.tokens_today == null
+              ? "not reported yet"
+              : status.telemetry.tokens_today.input_tokens + status.telemetry.tokens_today.output_tokens}
+            .
+          </p>
+          <p>
+            Tokens this month (UTC):{" "}
+            {status.telemetry.tokens_month == null
+              ? "not reported yet"
+              : status.telemetry.tokens_month.input_tokens + status.telemetry.tokens_month.output_tokens}
+            .
+          </p>
+          <p>
+            Live containers (claimed or running):{" "}
+            {status.telemetry.live_containers?.length ?? "not reported yet"}.
+          </p>
+        </div>
+      )}
       {linking && <p role="status">Waiting for you to finish linking…</p>}
       {challenge && (
         <div className="grid gap-1" aria-label="Device linking">
@@ -89,12 +142,15 @@ export function CodexAccountCard({
       <div className="flex flex-wrap gap-2">
         <Tooltip
           tip={
-            linkBlocked
-              ? "Wait for the current operation or device code to finish or expire."
-              : "Starts device linking. Linking may end Codex sessions on other machines."
+            !status
+              ? "Account status is unavailable; linking is possible once it loads."
+              : linkBlocked
+                ? "Wait for the current operation or device code to finish or expire."
+                : "Starts device linking. Linking may end Codex sessions on other machines."
           }
         >
           <button
+            ref={linkButton}
             type="button"
             aria-disabled={linkBlocked || undefined}
             className={buttonClass("plain", true)}
@@ -105,7 +161,7 @@ export function CodexAccountCard({
               : "Link Codex account"}
           </button>
         </Tooltip>
-        {status && (
+        {status?.state === "linked" && (
           <Tooltip
             tip={
               busy
@@ -117,6 +173,7 @@ export function CodexAccountCard({
               type="button"
               aria-disabled={busy || undefined}
               className={buttonClass("plain", true)}
+              ref={unlinkButton}
               onClick={() => !busy && setConfirm(true)}
             >
               Unlink Codex account
@@ -125,7 +182,7 @@ export function CodexAccountCard({
         )}
       </div>
       {confirm && (
-        <div className="grid gap-2">
+        <div className="grid gap-2" role="group" aria-label="Confirm account unlink">
           <p>
             Unlink revokes this account's access and refresh token. Running turns will end with “Codex account
             unlinked”.
@@ -144,7 +201,8 @@ export function CodexAccountCard({
                 className={buttonClass("plain", true)}
                 onClick={() => {
                   if (!busy) {
-                    setConfirm(false);
+                    restoreAfterUnlink.current = true;
+                    closeConfirmation();
                     onUnlink();
                   }
                 }}
@@ -163,7 +221,8 @@ export function CodexAccountCard({
                 type="button"
                 aria-disabled={busy || undefined}
                 className={buttonClass("plain", true)}
-                onClick={() => !busy && setConfirm(false)}
+                ref={keepButton}
+                onClick={() => !busy && closeConfirmation()}
               >
                 Keep linked
               </button>

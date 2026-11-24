@@ -245,3 +245,37 @@ non-retryable codes end the ranking with their fixed cause. This includes `Outpu
 has no special retry exception for it. A successfully completed job whose JSON fails server validation still
 uses the existing bounded judge retry path; invalid strict schemas and credential relinking never trigger
 model repair. Flow tests pin both strict-schema and relink failures to a single unrepaired turn.
+
+## W6 approved account-status and conditional-settings amendments
+
+Coordinator-approved D13 completion (2026-11-24): `CredentialStatus.telemetry` is secret-free. The gateway
+reports `linked_at` only after committing the current link (refresh never changes it), and primary/secondary
+`used_percent` and `resets_at` only from observed `x-codex-{primary,secondary}-{used-percent,reset-at}` headers.
+Missing observations remain null; Settings says “not reported yet”. Relinking clears old plan observations.
+No probe, login, refresh or token export is used to populate telemetry.
+
+The server adds `tokens_today` and `tokens_month` for the signed-in payer across memberships, using UTC calendar
+boundaries through the current instant. These sum retained finished job usage and deduplicated assessment-attempt
+usage, including failed/late attempts; a method's terminal job result is not counted again. Cached input is
+already included in input; displayed total tokens are input + output. No reports means null, not a measured zero.
+Unmerged 0030 adds `assessment_attempt_usage.recorded_at`: the matching attempt's finish time when available,
+otherwise the time its usage was observed. Late reports without a retained finish time belong to their observation
+window. `live_containers` lists distinct server-known PR/payer and Judge/payer identities with claimed/running
+jobs; idle workers are outside this server view. The gateway never imports `db`.
+
+`GET /settings/codex/link` also returns `challenge` for the current staged flow, including its public user code,
+fixed verification URL and expiry. Reads never start a device flow. This allows navigation/reload recovery;
+provider tokens, rotation generations, device-auth IDs and PKCE material remain gateway-only. Failed/cancelled
+relink preserves the previous account. Settings offers Unlink only for a linked account; it does not offer a
+separate first-link cancellation operation.
+
+Coordinator-approved concurrency amendment: `AssessmentSettings` includes an opaque `revision` for its config.
+`PUT /settings/comment-assessment` accepts `AssessmentSettingsUpdate { config, revision }`. The repository compares
+that content revision with the current config inside the same `write_tx` as the update; stale writes return
+HTTP 409 and change nothing. A same-content revision is valid again if all values returned to that content.
+Clients refresh on conflict and ask the owner to retry; there is no blind automatic retry. Configuration writes
+never enqueue assessments. The revision is canonical serialized configuration, without credentials or quota.
+
+D13's provider-observed plan percentages are displayed only in the account card's plan-window paragraphs
+(`data-codex-plan-usage`). The wording guard permits percentages in those paragraphs while still checking all
+banned claims there. Model-assessment percentages and every percent sign in the top bar remain prohibited.
