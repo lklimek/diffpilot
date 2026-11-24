@@ -486,6 +486,7 @@ async fn check_lists_match_contract_enums() {
                             JobFailureKind::UpstreamRejected,
                             JobFailureKind::ReportVersionUnsupported,
                             JobFailureKind::InvalidJsonSchema,
+                            JobFailureKind::AskCompactionUnconfirmed,
                         ]
                         .map(CallFailure::Failed),
                     )

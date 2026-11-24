@@ -304,6 +304,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<crate::gateway::MintKey>();
     collector.visit::<crate::gateway::RevokeKeys>();
     collector.visit::<crate::gateway::UnlinkCredential>();
+    collector.visit::<crate::job::spec::JobTarget>();
     collector.visit::<crate::runtime::AskPreflight>();
     collector.visit::<crate::runtime::LastContext>();
     collector.visit::<crate::runtime::ThreadKind>();

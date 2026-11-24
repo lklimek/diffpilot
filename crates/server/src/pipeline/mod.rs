@@ -176,6 +176,10 @@ impl PipelineError {
                     plain_failure(Some(*failure))
                 )),
             ),
+            Self::Db(DbError::CredentialUnlinked)
+            | Self::Executor(ExecutorError::Db(DbError::CredentialUnlinked)) => {
+                (None, Cow::Borrowed("Link your Codex account in Settings"))
+            }
             Self::Db(_)
             | Self::Diff(_)
             | Self::DiffTask(_)
@@ -426,6 +430,65 @@ mod tests {
 
     use super::*;
     use crate::test_support::logs::LogCapture;
+
+    #[tokio::test]
+    async fn admission_lost_between_stages_stores_the_link_sentence() {
+        use crate::jobs::executor::{JobExecutor, JobRequest};
+        use contracts::job::spec::JobPriority;
+        use db::repo::jobs::JobStage;
+        let state = crate::state::tests::test_state().await;
+        let id = seed_analysis(&state.db).await.unwrap();
+        crate::test_support::link_payer(&state.db, db::repo::DEFAULT_TENANT, "u1").await;
+        let executor =
+            crate::jobs::queue::QueueExecutor::new(state.db.clone(), state.progress.clone());
+        let mut spec = db::repo::analyses::testing::job_spec(id, contracts::agent::JobKind::Plan);
+        spec.payer = contracts::ids::UserId("u1".into());
+        executor
+            .submit(JobRequest {
+                spec: spec.clone(),
+                priority: JobPriority::Batch,
+                stage: JobStage::Plan { batch: 1 },
+                generation: 0,
+                pr_repo: None,
+            })
+            .await
+            .unwrap();
+        state
+            .db
+            .llm_credentials()
+            .remove_status("u1")
+            .await
+            .unwrap();
+        spec.job_id = contracts::ids::JobId::new_random();
+        let error = executor
+            .submit(JobRequest {
+                spec,
+                priority: JobPriority::Batch,
+                stage: JobStage::Plan { batch: 2 },
+                generation: 0,
+                pr_repo: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ExecutorError::Db(DbError::CredentialUnlinked)
+        ));
+        end(&state, id, PipelineError::Executor(error)).await;
+        let summary = state.db.analyses().summary(id).await.unwrap();
+        let AnalysisState::Failed { message, .. } = summary.state else {
+            panic!("analysis must fail")
+        };
+        assert_eq!(message, "Link your Codex account in Settings");
+        assert!(matches!(
+            state
+                .db
+                .analyses()
+                .retry_as(id, "u1", Timestamp::now())
+                .await,
+            Err(DbError::CredentialUnlinked)
+        ));
+    }
 
     /// A state whose repositories are local and missing (the driver's preparation fails at once), and a live
     /// analysis with an accepted plan of two flows and PR context: flow work is admitted.

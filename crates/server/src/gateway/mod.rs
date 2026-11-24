@@ -1,6 +1,7 @@
 //! Plan-only Codex gateway; credentials and refresh coordination never enter the application database.
 
 mod auth;
+pub mod client;
 mod http;
 mod proxy;
 mod store;

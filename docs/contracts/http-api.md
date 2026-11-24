@@ -921,8 +921,21 @@ including zero-point source versions. `CommentItem.point` identifies a grounded 
 
 Common gateway `CredentialStatus` uses singleton `mode: chatgpt_plan`; `LinkCredential` accepts no secrets,
 API keys or base URLs. Routes for `GET`/`DELETE /api/v1/settings/codex` and
-`POST`/`GET /api/v1/settings/codex/link` are implemented by W2/W6;
-W1 registers no credential-mode HTTP route or secret input.
+`POST`/`GET /api/v1/settings/codex/link` use the signed-in user, never a caller-supplied payer.
+GET status and link polling synchronize canonical gateway status to the secret-free credential repository.
+POST requires session + CSRF and returns `DeviceLink`; DELETE requires session + CSRF and returns 204 after
+explicit gateway unlink. Both GET routes require a session; status returns `CredentialStatus`, while link
+polling returns the staged view (an existing usable credential remains usable during replacement).
+Unsupported modes and extra secret/base-URL fields are rejected before contacting the gateway.
+The web Settings controls remain W6.
+
+The server connects through `SR_GATEWAY_ADMIN_URL` and the dedicated credentials scope
+`SR_GATEWAY_CREDENTIALS_TOKEN_FILE` (or `SR_GATEWAY_CREDENTIALS_TOKEN`, mutually exclusive). Missing gateway
+configuration or failed administration returns a redacted 503, preserving stored status. Redirects and implicit
+HTTP retries are disabled. Calls use a 15-second timeout and a 16-KiB response cap. Per-user synchronization
+serializes route operations in one server process. Settings must keep polling to observe async linking and
+quarantine; job results also mark unusable credentials. The dev/e2e stack uses only a loopback fake admin
+service and the same authenticated Settings routes, with no release-build seeding path.
 
 
 The W1 `api::assessment` contracts define `GET`/`PUT /api/v1/settings/comment-assessment` (PUT body:

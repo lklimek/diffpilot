@@ -6,9 +6,11 @@
 //!
 //! One follower task per open question drives it to `answered` or `failed` (also after a server restart:
 //! [`resume_unanswered`]). Ask jobs are claimed before batch jobs and never pre-empt a running job; the queue
-//! runs one job per PR, so a second question of the same analysis waits queued until the first ends.
+//! runs one job per (PR, payer) container; questions from the same payer wait until its current turn ends.
 
 mod job;
+mod private;
+pub(crate) use private::context_pack as private_context_pack;
 #[cfg(test)]
 mod tests;
 
@@ -51,6 +53,9 @@ static FOLLOWING: LazyLock<Mutex<HashSet<QuestionId>>> = LazyLock::new(Mutex::de
 /// A question was not accepted.
 #[derive(Debug, thiserror::Error)]
 pub enum AskError {
+    /// The asker has no usable plan credential.
+    #[error(transparent)]
+    Payer(#[from] crate::jobs::payer::PayerError),
     /// The question is blank.
     #[error("the question is empty")]
     Empty,
@@ -132,6 +137,7 @@ pub async fn ask(
     if superseded(&state.db.analyses().get(analysis.id).await?) {
         return Err(AskError::Superseded);
     }
+    crate::jobs::payer::require_linked(&state.db, user_id).await?;
     let now = Timestamp::now();
     let limits = QuestionLimits {
         per_analysis: MAX_QUESTIONS_PER_ANALYSIS,
@@ -368,11 +374,18 @@ fn superseded(record: &AnalysisRecord) -> bool {
 /// under, so no answer appears after it. `None` when it is not shown.
 async fn publish_provisional(
     state: &AppState,
-    analysis: AnalysisId,
+    analysis: Option<AnalysisId>,
     question: QuestionId,
     job: JobId,
     answer: AskOutput,
 ) -> Result<Option<AskQuestion>, DbError> {
+    let Some(analysis) = analysis else {
+        return state
+            .db
+            .questions()
+            .publish_private_provisional(question, job, &answer, Timestamp::now())
+            .await;
+    };
     let db = &state.db;
     let event = state
         .progress
@@ -415,10 +428,15 @@ async fn publish_provisional(
 /// Stores a state change of `question` and publishes it under the analysis's update lock.
 async fn set(
     state: &AppState,
-    analysis: AnalysisId,
+    analysis: Option<AnalysisId>,
     question: QuestionId,
     update: &QuestionUpdate,
 ) -> Result<AskQuestion, DbError> {
+    let Some(analysis) = analysis else {
+        let now = Timestamp::now();
+        state.db.questions().update(question, update, now).await?;
+        return Ok(state.db.questions().get(question, now).await?.question);
+    };
     let db = &state.db;
     let event = state
         .progress

@@ -612,6 +612,22 @@ mod tests {
             db::repo::analyses::testing::seed_payer(&self.state.db, credential)
                 .await
                 .unwrap();
+            if self
+                .state
+                .db
+                .llm_credentials()
+                .status(credential)
+                .await
+                .unwrap()
+                .is_none()
+            {
+                crate::test_support::link_payer(
+                    &self.state.db,
+                    db::repo::DEFAULT_TENANT,
+                    credential,
+                )
+                .await;
+            }
             let mut spec = job_spec(analysis, JobKind::AnalyseFlow);
             spec.payer.0 = credential.to_owned();
             let job = self
@@ -928,6 +944,7 @@ mod tests {
         let harness = Harness::new().await;
         let db = &harness.state.db;
         let analysis = seed_analysis(db).await.expect("seed");
+        crate::test_support::link_payer(db, db::repo::DEFAULT_TENANT, CREDENTIAL).await;
         let plan: Value =
             serde_json::from_str(include_str!("../../../../fixtures/pr-482/agent/plan.json"))
                 .expect("fixture plan");

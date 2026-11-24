@@ -9,7 +9,13 @@ import { join } from "node:path";
 import type { Stack } from "./stack";
 
 /** The secret values in the launcher's stack.env; the rest (URLs, paths, ids) is not secret. */
-const SECRET_KEYS = ["SR_SECRET_KEY", "SR_RUNNER_SECRET", "SR_GITHUB_CLIENT_SECRET", "SR_MEMCAN_TOKEN"];
+const SECRET_KEYS = [
+  "SR_SECRET_KEY",
+  "SR_RUNNER_SECRET",
+  "SR_GITHUB_CLIENT_SECRET",
+  "SR_MEMCAN_TOKEN",
+  "SR_GATEWAY_CREDENTIALS_TOKEN",
+];
 /** Credentials of the fake GitHub recordings; minted installation tokens extend the recorded one. */
 const FIXTURE_SECRETS: [string, string][] = [
   ["OAuth code", "fixture-oauth-code"],
@@ -17,7 +23,7 @@ const FIXTURE_SECRETS: [string, string][] = [
   ["user refresh token", "fixture-refresh-token-alice"],
   ["installation token", "fixture-installation-token-482"],
 ];
-const LOGS = ["server.log", "runner.log", "fake-github.log", "fake-memcan.log"];
+const LOGS = ["server.log", "runner.log", "fake-github.log", "fake-memcan.log", "fake-gateway.log"];
 /** 43 base64url characters on their own: the shape of a random 32-byte token, whatever characters it drew. */
 const RANDOM_TOKEN = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g;
 /** A whole personal access token: `srp_`, an 8-character base62 id, `_`, a 32-byte secret in base64url. */

@@ -52,7 +52,7 @@ CREATE TABLE llm_credentials (
     last_call_at      TEXT,
     last_call_ok      INTEGER CHECK (last_call_ok IN (0, 1)),
     last_call_message TEXT,
-    last_call_failure TEXT CHECK (last_call_failure IN ('usage_limited', 'provider_failed', 'output_not_json', 'credential_unusable', 'checkout_failed', 'timeout', 'internal', 'configuration', 'worker_unavailable', 'worker_lost', 'credential_missing', 'credential_relink', 'model_unavailable', 'upstream_rejected', 'report_version_unsupported', 'invalid_json_schema')),
+    last_call_failure TEXT CHECK (last_call_failure IN ('usage_limited', 'provider_failed', 'output_not_json', 'credential_unusable', 'checkout_failed', 'timeout', 'internal', 'configuration', 'worker_unavailable', 'worker_lost', 'credential_missing', 'credential_relink', 'model_unavailable', 'upstream_rejected', 'report_version_unsupported', 'invalid_json_schema', 'ask_compaction_unconfirmed')),
     CHECK ((state = 'relink_needed') = (relink_reason IS NOT NULL)),
     CHECK ((last_call_at IS NULL) = (last_call_ok IS NULL)),
     CHECK (last_call_failure IS NULL OR last_call_ok = 0)
@@ -140,12 +140,19 @@ CREATE TABLE comment_assessments (
 ) STRICT;
 CREATE INDEX comment_assessments_by_item ON comment_assessments (item_id, id);
 
+-- Distinguish private Ask recovery from legacy assessment-question continuations.
+ALTER TABLE questions ADD COLUMN private_ask INTEGER NOT NULL DEFAULT 0
+    CHECK (private_ask IN (0,1) AND (private_ask=0 OR
+        (analysis_id IS NULL AND kind='comment_item' AND pull_request_id IS NOT NULL)));
+CREATE UNIQUE INDEX questions_private_owner ON questions(id,pull_request_id,user_id,tenant_id);
+
 CREATE TABLE jobs (
     id                      TEXT NOT NULL PRIMARY KEY,
     tenant_id               TEXT NOT NULL REFERENCES tenants (id),
     analysis_id             TEXT REFERENCES analyses (id) ON DELETE CASCADE,
     refresh_id              TEXT REFERENCES dashboard_refreshes (id) ON DELETE CASCADE,
     pass_id                 TEXT REFERENCES comment_passes (id) ON DELETE CASCADE,
+    private_question_id     TEXT,
     assessment_pass_id      TEXT,
     assessment_method       TEXT CHECK (assessment_method IN ('claudius_host','prompt_v4')),
     kind                    TEXT NOT NULL CHECK (kind IN ('plan', 'pr_context', 'analyse_flow', 'ask', 'judge_work', 'verify_comments')),
@@ -180,8 +187,16 @@ CREATE TABLE jobs (
     UNIQUE (id,assessment_pass_id,assessment_method,tenant_id,payer_id),
     FOREIGN KEY (assessment_pass_id,assessment_method,tenant_id,payer_id)
         REFERENCES assessment_method_runs(pass_id,method,tenant_id,payer_id),
+    FOREIGN KEY (private_question_id,pull_request_id,payer_id,tenant_id)
+        REFERENCES questions(id,pull_request_id,user_id,tenant_id) ON DELETE CASCADE,
+    CHECK (private_question_id IS NULL OR
+        (kind='ask' AND question_id IS private_question_id AND stage='ask:' || private_question_id
+         AND json_extract(spec,'$.target.type') IS 'pull_request_ask'
+         AND json_extract(spec,'$.target.pull_request_id') IS pull_request_id
+         AND json_extract(spec,'$.payer') IS payer_id AND json_type(spec,'$.assessment') IS NULL)),
+    CHECK ((json_extract(spec,'$.target.type') IS 'pull_request_ask') = (private_question_id IS NOT NULL)),
     CHECK ((assessment_pass_id IS NULL) = (assessment_method IS NULL)),
-    CHECK ((analysis_id IS NOT NULL) + (refresh_id IS NOT NULL) + (pass_id IS NOT NULL) + (assessment_pass_id IS NOT NULL) = 1),
+    CHECK ((analysis_id IS NOT NULL) + (refresh_id IS NOT NULL) + (pass_id IS NOT NULL) + (assessment_pass_id IS NOT NULL) + (private_question_id IS NOT NULL) = 1),
     CHECK ((kind = 'judge_work') = (refresh_id IS NOT NULL)),
     CHECK ((kind = 'verify_comments') = (pass_id IS NOT NULL OR assessment_pass_id IS NOT NULL)),
     CHECK ((kind = 'judge_work') = (pull_request_id IS NULL)),
@@ -214,6 +229,8 @@ CREATE INDEX jobs_claim_order ON jobs (state, priority, created_at);
 CREATE UNIQUE INDEX jobs_one_live_per_stage ON jobs (analysis_id, stage, generation, round)
     WHERE state NOT IN ('failed', 'cancelled');
 CREATE INDEX jobs_by_analysis ON jobs (analysis_id, state);
+CREATE UNIQUE INDEX jobs_one_live_per_private_question ON jobs(private_question_id,generation)
+    WHERE private_question_id IS NOT NULL AND state NOT IN ('failed','cancelled');
 -- The same for judge batches: one live or succeeded job per refresh, batch and ranking attempt (Retry ranking).
 CREATE UNIQUE INDEX jobs_one_live_per_judge_stage ON jobs (refresh_id, stage, generation, round)
     WHERE refresh_id IS NOT NULL AND state NOT IN ('failed', 'cancelled');

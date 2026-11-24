@@ -501,6 +501,24 @@ async fn harness_with_app(app: bool) -> Harness {
         )
         .await
         .expect("user");
+    state
+        .db
+        .llm_credentials()
+        .put_status(
+            DEFAULT_TENANT,
+            &user.id,
+            &contracts::gateway::CredentialStatus {
+                mode: contracts::gateway::CredentialMode::ChatgptPlan,
+                state: contracts::gateway::CredentialState::Linked,
+                relink_reason: None,
+                plan: None,
+                label: None,
+                paused_until: None,
+                last_call: None,
+            },
+        )
+        .await
+        .expect("fake linked plan");
     let lock = lock_user(&user.id).await;
     let grant = TokenGrant {
         access_token: SecretString::from(USER_TOKEN),
@@ -4453,7 +4471,7 @@ async fn unusable_credential_in_a_flow_job_stops_the_analysis_with_the_sign_in_s
     };
     assert_eq!(flow.map(|flow| flow.id.0), Some("f2".to_owned()));
     assert!(
-        message.contains("Sign-in to the LLM provider is needed"),
+        message.contains("Link your Codex account in Settings"),
         "{message}"
     );
     assert_eq!(
@@ -4655,4 +4673,35 @@ async fn schema_invalid_plan_output_is_repaired() {
         "{}",
         runs[1].1.prompt
     );
+}
+
+#[tokio::test]
+async fn nonrepairable_schema_and_relink_failures_stop_the_flow() {
+    for (kind, expected) in [
+        (
+            JobFailureKind::InvalidJsonSchema,
+            "The LLM answer was not in the expected format.",
+        ),
+        (
+            JobFailureKind::CredentialRelink,
+            "Link your Codex account in Settings",
+        ),
+    ] {
+        let h = harness().await;
+        h.executor.script("flow:f2", Script::FailKind(kind));
+        let id = h.create_fixture_analysis().await;
+        let failed = h
+            .wait_for_state(&id, |state| matches!(state, AnalysisState::Failed { .. }))
+            .await;
+        let AnalysisState::Failed { flow, message, .. } = failed.state else {
+            unreachable!("waited for failed");
+        };
+        assert_eq!(flow.map(|flow| flow.id.0), Some("f2".to_owned()));
+        assert!(message.contains(expected), "{message}");
+        assert_eq!(
+            h.executor.specs_of("flow:f2").len(),
+            1,
+            "no automatic retry"
+        );
+    }
 }

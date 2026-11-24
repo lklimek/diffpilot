@@ -488,3 +488,166 @@ async fn assessment_storage_defaults_and_invalid_values_are_constrained() {
         );
     }
 }
+
+#[tokio::test]
+async fn container_retry_assigns_the_acting_payer_without_changing_creator() {
+    use contracts::{api::analyses::AnalysisState, gateway::*, time::Timestamp};
+    let db = Db::in_memory().await.unwrap();
+    let analysis = analyses::testing::seed_analysis(&db).await.unwrap();
+    analyses::testing::seed_payer(&db, "u2").await.unwrap();
+    db.analyses()
+        .set_state(
+            analysis,
+            &AnalysisState::Failed {
+                reason: None,
+                flow: None,
+                message: "failed".into(),
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.analyses()
+            .retry_as(analysis, "u2", Timestamp::now())
+            .await,
+        Err(crate::error::DbError::CredentialUnlinked)
+    ));
+    assert_eq!(db.analyses().get(analysis).await.unwrap().payer_id, "u1");
+    db.llm_credentials()
+        .put_status(
+            DEFAULT_TENANT,
+            "u2",
+            &CredentialStatus {
+                mode: CredentialMode::ChatgptPlan,
+                state: CredentialState::Linked,
+                relink_reason: None,
+                plan: None,
+                label: None,
+                paused_until: None,
+                last_call: None,
+            },
+        )
+        .await
+        .unwrap();
+    let previous = super::container_sessions::AnalyticThread {
+        thread_id: "earlier-head".into(),
+        generation: 5,
+        last_context: Some(contracts::runtime::LastContext {
+            tokens: 10_000,
+            generation: 5,
+        }),
+    };
+    db.container_sessions()
+        .save_analytic(1, &contracts::ids::UserId("u2".into()), 0, &previous)
+        .await
+        .unwrap();
+    assert!(
+        db.analyses()
+            .retry_as(analysis, "u2", Timestamp::now())
+            .await
+            .unwrap()
+    );
+    let retried = db
+        .container_sessions()
+        .analytic(1, &contracts::ids::UserId("u2".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        retried.generation > previous.generation,
+        "Retry invalidates a working seed before the next provider turn"
+    );
+    assert_eq!(retried.thread_id, previous.thread_id);
+    assert_eq!(retried.last_context, None);
+    let record = db.analyses().get(analysis).await.unwrap();
+    assert_eq!(record.payer_id, "u2");
+    assert_eq!(record.created_by, "u1");
+    assert!(matches!(
+        db.analyses()
+            .retry_as(analysis, "u1", Timestamp::now())
+            .await,
+        Err(crate::error::DbError::CredentialUnlinked)
+    ));
+    assert_eq!(db.analyses().get(analysis).await.unwrap().payer_id, "u2");
+}
+
+#[tokio::test]
+async fn container_relink_failure_preserves_gateway_quarantine_reason() {
+    use contracts::{
+        agent::JobKind,
+        gateway::*,
+        job::{result::*, spec::JobPriority},
+        time::Timestamp,
+    };
+    let db = Db::in_memory().await.unwrap();
+    let analysis = analyses::testing::seed_analysis(&db).await.unwrap();
+    let spec = analyses::testing::job_spec(analysis, JobKind::Plan);
+    db.jobs()
+        .enqueue(
+            jobs::NewJob {
+                spec: spec.clone(),
+                priority: JobPriority::Batch,
+                stage: jobs::JobStage::Plan { batch: 1 },
+                generation: 0,
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    db.jobs()
+        .claim(jobs::ClaimParams {
+            payer_ids: &["u1".into()],
+            job_token_hash: &[1],
+            lease_until: Timestamp::now() + jiff::SignedDuration::from_mins(1),
+            now: Timestamp::now(),
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    db.llm_credentials()
+        .put_status(
+            DEFAULT_TENANT,
+            "u1",
+            &CredentialStatus {
+                mode: CredentialMode::ChatgptPlan,
+                state: CredentialState::RelinkNeeded,
+                relink_reason: Some(RelinkReason::Quarantined),
+                plan: None,
+                label: None,
+                paused_until: None,
+                last_call: None,
+            },
+        )
+        .await
+        .unwrap();
+    db.jobs()
+        .complete(
+            &JobResult {
+                job_id: spec.job_id,
+                attempt: 1,
+                assessment: None,
+                report: None,
+                outcome: JobOutcome::Failed {
+                    kind: JobFailureKind::CredentialRelink,
+                    message: "Relink required".into(),
+                },
+                session: None,
+                usage: None,
+                skills_commit: None,
+                llm_call: None,
+            },
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        db.llm_credentials()
+            .status("u1")
+            .await
+            .unwrap()
+            .unwrap()
+            .relink_reason,
+        Some(RelinkReason::Quarantined)
+    );
+}

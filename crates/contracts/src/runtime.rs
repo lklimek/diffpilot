@@ -1,5 +1,8 @@
 //! Provider-neutral container, immutable thread and first-Ask routing contracts.
 
+/// Above this parent-context size a fresh Ask fork needs explicit compaction.
+pub const FIRST_ASK_COMPACTION_TOKENS: u64 = 80_000;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

@@ -36,8 +36,7 @@ use crate::state::AppState;
 
 /// Plain sentences of a failed LLM call, by typed cause.
 const USAGE_LIMIT: &str = "The LLM provider's usage limit was reached.";
-const SIGN_IN_NEEDED: &str = "Sign-in to the LLM provider is needed: sign in to Codex again in the runner \
-     container (see the runbook).";
+const SIGN_IN_NEEDED: &str = "Link your Codex account in Settings";
 const PROVIDER_REJECTED: &str = "The LLM provider rejected the request or could not answer it.";
 const ANSWER_FORMAT: &str = "The LLM answer was not in the expected format.";
 const TIMED_OUT: &str = "The LLM call took too long and was stopped.";
@@ -47,6 +46,12 @@ const OTHER_FAILURE: &str =
 /// A settings request failed.
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsApiError {
+    /// The deployment has no credentials administration connection.
+    #[error("the Codex gateway is not configured")]
+    GatewayNotConfigured,
+    /// The gateway did not return a common status or challenge.
+    #[error("the Codex gateway is unavailable")]
+    Gateway(#[from] crate::gateway::client::Error),
     /// Malformed JSON body, or a value outside the allowed list.
     #[error("the request body is not valid")]
     Json(#[from] JsonRejection),
@@ -73,6 +78,7 @@ pub enum SettingsApiError {
 impl ApiErrorSource for SettingsApiError {
     fn code(&self) -> ApiErrorCode {
         match self {
+            Self::GatewayNotConfigured | Self::Gateway(_) => ApiErrorCode::Unavailable,
             Self::Json(rejection) => rejection.code(),
             Self::Path(rejection) => rejection.code(),
             Self::InvalidRepository | Self::InvalidModel | Self::InvalidOwners => {
@@ -85,6 +91,9 @@ impl ApiErrorSource for SettingsApiError {
 
     fn public_message(&self) -> Cow<'static, str> {
         match self {
+            Self::GatewayNotConfigured | Self::Gateway(_) => {
+                Cow::Borrowed("The Codex connection is unavailable. Try again later.")
+            }
             Self::Json(rejection) => rejection.public_message(),
             Self::Path(rejection) => rejection.public_message(),
             Self::Db(error) => error.public_message(),
@@ -398,6 +407,9 @@ pub(crate) fn plain_failure(failure: Option<CallFailure>) -> &'static str {
             JobFailureKind::OutputNotJson => ANSWER_FORMAT,
             JobFailureKind::Timeout => TIMED_OUT,
             JobFailureKind::InvalidJsonSchema => ANSWER_FORMAT,
+            JobFailureKind::AskCompactionUnconfirmed => {
+                "The answer was discarded because the required context shortening was not confirmed."
+            }
             JobFailureKind::WorkerUnavailable
             | JobFailureKind::WorkerLost
             | JobFailureKind::ModelUnavailable
@@ -464,6 +476,8 @@ mod tests {
     use crate::test_support::session_cookie;
 
     use super::*;
+
+    include!("codex_tests.rs");
 
     const ACCESS: &str = "ghu_settings_access_canary";
 
@@ -684,7 +698,10 @@ mod tests {
         assert_eq!(status["at"], json!("2026-11-17T09:00:00Z"));
         assert_eq!(status["status"]["state"], json!("not_working"));
         let message = status["status"]["message"].as_str().expect("message");
-        assert!(message.contains("sign in to Codex again"), "{message}");
+        assert!(
+            message.contains("Link your Codex account in Settings"),
+            "{message}"
+        );
         credentials
             .register(
                 DEFAULT_TENANT,
@@ -732,6 +749,7 @@ mod tests {
             .await
             .unwrap();
         let analysis = seed_analysis(&h.state.db).await.expect("analysis");
+        crate::test_support::link_payer(&h.state.db, DEFAULT_TENANT, id).await;
         let mut spec = job_spec(analysis, JobKind::Plan);
         spec.payer.0 = id.to_owned();
         h.state
@@ -1275,5 +1293,40 @@ mod tests {
             logs.text()
                 .contains("installation dashboard ranking effort changed")
         );
+    }
+}
+
+#[cfg(test)]
+mod codex_route_tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn codex_routes_require_a_signed_in_user() {
+        let state = crate::state::tests::test_state().await;
+        for (method, path) in [
+            ("GET", "/api/v1/settings/codex"),
+            ("DELETE", "/api/v1/settings/codex"),
+            ("POST", "/api/v1/settings/codex/link"),
+            ("GET", "/api/v1/settings/codex/link"),
+        ] {
+            let response = crate::api::router(state.clone())
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {path}"
+            );
+        }
     }
 }

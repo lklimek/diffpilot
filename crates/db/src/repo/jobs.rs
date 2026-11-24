@@ -431,18 +431,21 @@ async fn apply_credential_effects(
     }
     match &result.outcome {
         JobOutcome::UsageLimited { resets_at } => {
-            sqlx::query("UPDATE llm_credentials SET paused_until = ? WHERE user_id = ?")
+            sqlx::query("UPDATE llm_credentials SET paused_until = MAX(COALESCE(paused_until,?1),?1) WHERE user_id = ?2")
                 .bind(ts(resets_at.unwrap_or(now + PAUSE_WITHOUT_RESET)))
                 .bind(credential)
                 .execute(&mut *tx)
                 .await?;
         }
         JobOutcome::Failed {
-            kind: JobFailureKind::CredentialUnusable,
+            kind:
+                JobFailureKind::CredentialUnusable
+                | JobFailureKind::CredentialRelink
+                | JobFailureKind::CredentialMissing,
             ..
         } => {
             sqlx::query(
-                "UPDATE llm_credentials SET state = 'relink_needed', relink_reason = 'terminal', relink_needed_at = COALESCE(relink_needed_at, ?) WHERE user_id = ?",
+                "UPDATE llm_credentials SET state = 'relink_needed', relink_reason = COALESCE(relink_reason,'terminal'), relink_needed_at = COALESCE(relink_needed_at, ?) WHERE user_id = ?",
             )
             .bind(ts(now))
             .bind(credential)
@@ -451,6 +454,112 @@ async fn apply_credential_effects(
         }
         JobOutcome::Succeeded { .. } | JobOutcome::Failed { .. } | JobOutcome::Cancelled => {}
     }
+    Ok(())
+}
+
+fn ask_compaction_unconfirmed(spec: &JobSpec, result: &JobResult) -> bool {
+    use contracts::runtime::{FIRST_ASK_COMPACTION_TOKENS, PreflightState, SessionSeed};
+    let Some(route) = &spec.working_session else {
+        return false;
+    };
+    let Some(expected) = &route.preflight else {
+        return false;
+    };
+    let fresh_fork = result
+        .session
+        .as_ref()
+        .is_some_and(|session| route.thread_id.as_deref() != Some(session.thread_id.as_str()));
+    let required = expected.seed == SessionSeed::Fork
+        && (expected.state == PreflightState::Pending || fresh_fork)
+        && route.parent_context.as_ref().is_some_and(|context| {
+            context.generation == expected.generation
+                && context.tokens > FIRST_ASK_COMPACTION_TOKENS
+        });
+    required
+        && result
+            .session
+            .as_ref()
+            .and_then(|s| s.preflight.as_deref())
+            .is_none_or(|preflight| {
+                preflight.state == PreflightState::Pending
+                    || (preflight.seed == SessionSeed::Fork
+                        && preflight.state != PreflightState::Done)
+            })
+}
+
+async fn save_working_checkpoint(
+    tx: &mut SqliteConnection,
+    row: &SqliteRow,
+    result: &JobResult,
+) -> Result<(), DbError> {
+    use contracts::runtime::{AskPreflight, PreflightState, SessionSeed, ThreadKind};
+    let spec: JobSpec = serde_json::from_str(&row.try_get::<String, _>("spec")?)?;
+    let session = result.session.as_ref().ok_or(DbError::Conflict)?;
+    let route = spec.working_session.as_ref();
+    let kind = route.and_then(|r| r.kind).unwrap_or(ThreadKind::Ask);
+    if matches!(spec.target, JobTarget::PullRequestAsk(_))
+        && route.and_then(|r| r.kind) != Some(ThreadKind::Verify)
+    {
+        tracing::warn!(job = %result.job_id, "private Ask checkpoint has an incompatible thread kind; answer retained");
+        return Ok(());
+    }
+    if !matches!(kind, ThreadKind::Ask | ThreadKind::Verify) {
+        tracing::warn!(job = %result.job_id, "Ask checkpoint has an unsupported thread kind; answer retained");
+        return Ok(());
+    }
+    let generation = super::agent_sessions::generation(tx, row.try_get("pull_request_id")?).await?;
+    let expected = route.and_then(|r| r.preflight.as_ref());
+    let unconfirmed = AskPreflight {
+        seed: SessionSeed::ContextPack,
+        generation,
+        state: PreflightState::Pending,
+    };
+    let preflight = session.preflight.as_deref().unwrap_or(&unconfirmed);
+    if let Some(expected) = expected {
+        let fresh_fork =
+            route.is_some_and(|r| r.thread_id.as_deref() != Some(session.thread_id.as_str()));
+        // Unknown parent usage is recovered by the runner before it acknowledges NotNeeded.
+        let known_large_parent = route
+            .and_then(|r| r.parent_context.as_ref())
+            .is_some_and(|c| {
+                c.generation == expected.generation
+                    && c.tokens > contracts::runtime::FIRST_ASK_COMPACTION_TOKENS
+            });
+        let needs_compaction =
+            known_large_parent && (expected.state == PreflightState::Pending || fresh_fork);
+        if session.preflight.is_none()
+            || preflight.generation != expected.generation
+            || (preflight.seed == SessionSeed::Fork && expected.seed != SessionSeed::Fork)
+            || (preflight.seed == SessionSeed::ContextPack
+                && preflight.state != PreflightState::NotNeeded)
+            || (preflight.seed == SessionSeed::Fork
+                && needs_compaction
+                && preflight.state == PreflightState::NotNeeded)
+            || (preflight.state == PreflightState::Pending
+                && matches!(result.outcome, JobOutcome::Succeeded { .. }))
+            || spec
+                .session
+                .as_ref()
+                .is_some_and(|s| s.thread_id == session.thread_id)
+        {
+            tracing::warn!(job = %result.job_id, "Ask checkpoint preflight does not match its route; answer retained");
+            return Ok(());
+        }
+    }
+    // A generation advanced while another payer's container was running: keep the result, discard its checkpoint.
+    if preflight.generation != generation {
+        return Ok(());
+    }
+    sqlx::query("INSERT INTO working_sessions (tenant_id,pull_request_id,user_id,agent_thread_id,analytic_generation,seed_generation,thread_kind,seed,preflight_state)
+        SELECT j.tenant_id,j.pull_request_id,j.payer_id,?,?,?,?,?,? FROM jobs j
+        WHERE j.id=? AND NOT EXISTS(SELECT 1 FROM analytic_threads t WHERE t.pull_request_id=j.pull_request_id AND t.user_id=j.payer_id AND t.state IN ('drop_requested','dropped'))
+        ON CONFLICT(pull_request_id,user_id,thread_kind) DO UPDATE SET agent_thread_id=excluded.agent_thread_id,
+            analytic_generation=excluded.analytic_generation,seed_generation=excluded.seed_generation,
+            seed=excluded.seed,preflight_state=CASE WHEN working_sessions.agent_thread_id=excluded.agent_thread_id AND working_sessions.seed_generation=excluded.seed_generation AND working_sessions.preflight_state='done' THEN 'done' ELSE excluded.preflight_state END
+        WHERE working_sessions.analytic_generation<=excluded.analytic_generation")
+        .bind(&session.thread_id).bind(preflight.generation).bind(preflight.generation).bind(wire_name(kind)?)
+        .bind(wire_name(preflight.seed)?).bind(wire_name(preflight.state)?).bind(result.job_id.to_string())
+        .execute(&mut *tx).await?;
     Ok(())
 }
 
@@ -463,7 +572,7 @@ struct Current {
 
 async fn current(tx: &mut SqliteConnection, job: JobId) -> Result<(Current, SqliteRow), DbError> {
     let row = sqlx::query(
-        "SELECT kind, state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, payer_id,
+        "SELECT kind, state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, payer_id, spec, pull_request_id,
              json_extract(result, '$.attempt') AS result_attempt
          FROM jobs WHERE id = ?",
     )
@@ -504,13 +613,52 @@ impl Current {
 }
 
 impl Jobs<'_> {
+    /// Freezes only non-secret session routing for this claimed attempt before worker dispatch.
+    pub async fn save_session_route(&self, spec: &JobSpec) -> Result<(), DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
+        let changed = sqlx::query("UPDATE jobs SET spec=json_set(spec,'$.session',json(?),'$.working_session',json(?)) WHERE id=? AND attempt=? AND state='claimed' AND cancel_requested=0")
+            .bind(serde_json::to_string(&spec.session)?).bind(serde_json::to_string(&spec.working_session)?)
+            .bind(spec.job_id.to_string()).bind(spec.attempt).execute(&mut *tx).await?.rows_affected();
+        if changed != 1 {
+            return Err(DbError::Conflict);
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Enqueues a job in state `queued` in the analysis's current round (a dashboard job: the refresh's ranking
     /// attempt); `Conflict` if a live or succeeded job of the same stage, generation and round exists (look it up
     /// with [`Jobs::current_for_stage`], [`Jobs::current_for_judge_stage`] or [`Jobs::current_for_pass`] and reuse
     /// it). `NotFound` when the target's analysis does not exist, its refresh does not exist or no longer ranks, or
     /// its pass does not exist or ended (a job that could never be claimed).
     pub async fn enqueue(&self, job: NewJob, now: Timestamp) -> Result<JobRecord, DbError> {
+        self.enqueue_inner(job, now, false).await
+    }
+
+    /// Atomically admits a container job only while its payer has a linked plan credential.
+    pub async fn enqueue_linked(&self, job: NewJob, now: Timestamp) -> Result<JobRecord, DbError> {
+        self.enqueue_inner(job, now, true).await
+    }
+
+    async fn enqueue_inner(
+        &self,
+        job: NewJob,
+        now: Timestamp,
+        require_linked: bool,
+    ) -> Result<JobRecord, DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
         let mut spec = job.spec;
+        if require_linked {
+            let linked: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM llm_credentials WHERE user_id=? AND state='linked')",
+            )
+            .bind(&spec.payer.0)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !linked {
+                return Err(DbError::CredentialUnlinked);
+            }
+        }
         // The stored spec never holds a credential (threat model T3b); access is filled at claim.
         spec.access = AgentAccess::default();
         spec.attempt = 0;
@@ -528,6 +676,16 @@ impl Jobs<'_> {
                      generation, flow_id, question_id, created_at, round)
                  SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, round FROM analyses WHERE id = ?",
                 target.analysis_id.to_string(),
+            ),
+            JobTarget::PullRequestAsk(target) => (
+                "INSERT INTO jobs (id,tenant_id,private_question_id,kind,priority,state,spec,payer_id,pull_request_id,stage,
+                     generation,flow_id,question_id,created_at,round)
+                 SELECT ?,tenant_id,id,?,?,'queued',?,?,?,?,?,?,?,?,0 FROM questions
+                 WHERE id=? AND analysis_id IS NULL AND private_ask=1 AND kind='comment_item' AND pull_request_id IS NOT NULL",
+                match &job.stage {
+                    JobStage::Ask(question) if spec.kind == JobKind::Ask && target.pull_request_id > 0 => question.to_string(),
+                    _ => return Err(DbError::Conflict),
+                },
             ),
             JobTarget::Dashboard { refresh_id } => (
                 "INSERT INTO jobs (id, tenant_id, refresh_id, kind, priority, state, spec, payer_id, pull_request_id, stage,
@@ -553,6 +711,7 @@ impl Jobs<'_> {
             .bind(match &spec.target {
                 JobTarget::PullRequest(t) => Some(t.pull_request_id),
                 JobTarget::PullRequestComments(t) => Some(t.pull_request_id),
+                JobTarget::PullRequestAsk(t) => Some(t.pull_request_id),
                 JobTarget::Dashboard { .. } => None,
             })
             .bind(job.stage.key())
@@ -561,11 +720,12 @@ impl Jobs<'_> {
             .bind(question_id)
             .bind(ts(now))
             .bind(owner)
-            .execute(self.pool)
+            .execute(&mut *tx)
             .await?;
         if inserted.rows_affected() == 0 {
             return Err(DbError::NotFound);
         }
+        tx.commit().await?;
         self.get(spec.job_id).await
     }
 
@@ -574,9 +734,26 @@ impl Jobs<'_> {
     /// while its pass is live; interactive before batch, Ask first and `verify_comments` second within interactive,
     /// then oldest first. Never pre-empts a claimed or running job. Increments the attempt.
     pub async fn claim(&self, params: ClaimParams<'_>) -> Result<Option<JobRecord>, DbError> {
+        self.claim_inner(params, false).await
+    }
+
+    /// Claims only against current linked status, atomically with taking the container slot.
+    pub async fn claim_linked(
+        &self,
+        params: ClaimParams<'_>,
+    ) -> Result<Option<JobRecord>, DbError> {
+        self.claim_inner(params, true).await
+    }
+
+    async fn claim_inner(
+        &self,
+        params: ClaimParams<'_>,
+        require_linked: bool,
+    ) -> Result<Option<JobRecord>, DbError> {
         if params.payer_ids.is_empty() {
             return Ok(None);
         }
+        let mut tx = super::write_tx(self.pool).await?;
         let mut query = QueryBuilder::<Sqlite>::new(
             "UPDATE jobs SET state = 'claimed', attempt = attempt + 1, spec = json_set(spec, '$.attempt', attempt + 1),
                  ready_output = NULL, ready_output_attempt = NULL, result = NULL, lease_expires_at = ",
@@ -606,11 +783,16 @@ impl Jobs<'_> {
                    AND (c.state <> 'linked' OR c.paused_until > ",
         );
         query.push_bind(ts(params.now));
+        query.push("))");
+        if require_linked {
+            query.push(" AND EXISTS(SELECT 1 FROM llm_credentials c WHERE c.user_id=j.payer_id AND c.state='linked')");
+        }
         query.push(
-            ")) ORDER BY j.priority, j.kind <> 'ask', j.kind <> 'verify_comments', j.created_at, j.rowid LIMIT 1)
+            " ORDER BY j.priority, j.kind <> 'ask', j.kind <> 'verify_comments', j.created_at, j.rowid LIMIT 1)
              RETURNING id",
         );
-        let claimed: Option<String> = query.build_query_scalar().fetch_optional(self.pool).await?;
+        let claimed: Option<String> = query.build_query_scalar().fetch_optional(&mut *tx).await?;
+        tx.commit().await?;
         match claimed {
             Some(id) => self.get(parse_wire(&id, "jobs.id")?).await.map(Some),
             None => Ok(None),
@@ -726,13 +908,29 @@ impl Jobs<'_> {
         current.accepts(result.attempt)?;
         let credential: String = row.try_get("payer_id")?;
         let mut stored = result.clone();
+        let kind: String = row.try_get("kind")?;
+        let compaction_unconfirmed = kind == "ask"
+            && !current.cancel_requested
+            && matches!(stored.outcome, JobOutcome::Succeeded { .. })
+            && ask_compaction_unconfirmed(
+                &serde_json::from_str::<JobSpec>(&row.try_get::<String, _>("spec")?)?,
+                &stored,
+            );
+        if compaction_unconfirmed {
+            stored.outcome = JobOutcome::Failed {
+                kind: JobFailureKind::AskCompactionUnconfirmed,
+                message: "Required context shortening was not confirmed; the answer was discarded."
+                    .into(),
+            };
+            stored.session = None;
+        }
         let mut resumes_at = None;
         // Cancel wins: once requested, any result ends the job cancelled and its output is discarded.
         let transition = if current.cancel_requested {
             stored.outcome = JobOutcome::Cancelled;
             JobTransition::Cancel
         } else {
-            match &result.outcome {
+            match &stored.outcome {
                 JobOutcome::Succeeded { .. } => JobTransition::Succeed,
                 JobOutcome::Failed { .. } => JobTransition::Fail,
                 JobOutcome::Cancelled => JobTransition::Cancel,
@@ -748,8 +946,8 @@ impl Jobs<'_> {
             .map_err(|_| DbError::Conflict)?;
         sqlx::query(
             "UPDATE jobs SET state = ?1, result = ?2, resumes_at = ?3, finished_at = ?4, lease_expires_at = NULL,
-                 ready_output = CASE WHEN ?1 = 'cancelled' THEN NULL ELSE ready_output END,
-                 ready_output_attempt = CASE WHEN ?1 = 'cancelled' THEN NULL ELSE ready_output_attempt END
+                 ready_output = CASE WHEN ?6 THEN NULL ELSE ready_output END,
+                 ready_output_attempt = CASE WHEN ?6 THEN NULL ELSE ready_output_attempt END
              WHERE id = ?5",
         )
         .bind(wire_name(state)?)
@@ -757,15 +955,17 @@ impl Jobs<'_> {
         .bind(resumes_at.map(ts))
         .bind(state.is_terminal().then(|| ts(now)))
         .bind(result.job_id.to_string())
+        .bind(current.cancel_requested || compaction_unconfirmed)
         .execute(&mut *tx)
         .await?;
         apply_credential_effects(&mut tx, &credential, result, now).await?;
-        let kind: String = row.try_get("kind")?;
         // A dashboard or `verify_comments` job has no session: nothing it reports touches one (ADR-018, ADR-023).
         if kind == JobKind::JudgeWork.as_str() || kind == JobKind::VerifyComments.as_str() {
             tx.commit().await?;
             return Ok(Completion::Applied { state });
         }
+        let next_generation: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(generation),0)+1 FROM analytic_threads WHERE pull_request_id=(SELECT pull_request_id FROM jobs WHERE id=?)")
+            .bind(result.job_id.to_string()).fetch_one(&mut *tx).await?;
         // Publish the reported analytic or private working checkpoint only for the first effective,
         // not cancelled result: a repeated or late result never restores an older session. A session already asked
         // to be dropped waits for its deletion acknowledgement before another job can start.
@@ -774,22 +974,20 @@ impl Jobs<'_> {
             matches!(stored.outcome, JobOutcome::Cancelled),
         ) {
             if kind == "ask" {
-                // The PR claim lock keeps the analytic generation unchanged for the entire Ask turn.
-                // Derive the owner from the durable question, never the runner's result.
-                sqlx::query("INSERT INTO working_sessions (tenant_id,pull_request_id,user_id,agent_thread_id,analytic_generation,seed_generation)
-                    SELECT j.tenant_id,j.pull_request_id,j.payer_id,?,COALESCE(t.generation,0),COALESCE(t.generation,0)
-                    FROM jobs j LEFT JOIN analytic_threads t ON t.pull_request_id=j.pull_request_id AND t.user_id=j.payer_id
-                    WHERE j.id=? AND COALESCE(t.state,'none') IN ('none','active')
-                    ON CONFLICT(pull_request_id,user_id,thread_kind) DO UPDATE SET agent_thread_id=excluded.agent_thread_id,
-                        analytic_generation=excluded.analytic_generation,seed_generation=excluded.seed_generation")
-                    .bind(&session.thread_id).bind(result.job_id.to_string()).execute(&mut *tx).await?;
+                save_working_checkpoint(&mut tx, &row, &stored).await?;
             } else {
-                sqlx::query("INSERT INTO analytic_threads (tenant_id,pull_request_id,user_id,thread_id,generation,state)
-                    SELECT tenant_id,pull_request_id,payer_id,?,1,'active' FROM jobs WHERE id=?
-                    ON CONFLICT(pull_request_id,user_id) DO UPDATE SET thread_id=excluded.thread_id,state='active',generation=analytic_threads.generation+1,
-                        last_context_tokens=NULL,last_context_generation=NULL
+                let tokens = session
+                    .last_context
+                    .as_ref()
+                    .map(|c| i64::try_from(c.tokens))
+                    .transpose()
+                    .map_err(|_| DbError::Conflict)?;
+                sqlx::query("INSERT INTO analytic_threads (tenant_id,pull_request_id,user_id,thread_id,generation,state,last_context_tokens,last_context_generation)
+                    SELECT tenant_id,pull_request_id,payer_id,?,?,'active',?,CASE WHEN ? IS NOT NULL THEN ? END FROM jobs WHERE id=?
+                    ON CONFLICT(pull_request_id,user_id) DO UPDATE SET thread_id=excluded.thread_id,state='active',generation=excluded.generation,
+                        last_context_tokens=excluded.last_context_tokens,last_context_generation=excluded.last_context_generation
                     WHERE analytic_threads.state IN ('none','active')")
-                    .bind(&session.thread_id).bind(result.job_id.to_string()).execute(&mut *tx).await?;
+                    .bind(&session.thread_id).bind(next_generation).bind(tokens).bind(tokens).bind(next_generation).bind(result.job_id.to_string()).execute(&mut *tx).await?;
             }
             sqlx::query("UPDATE analyses SET skills_commit = COALESCE(?, skills_commit) WHERE id = (SELECT analysis_id FROM jobs WHERE id = ?)")
                 .bind(stored.skills_commit.as_deref()).bind(result.job_id.to_string()).execute(&mut *tx).await?;
@@ -800,17 +998,19 @@ impl Jobs<'_> {
         {
             // Valid output without a checkpoint means the old archive no longer represents this
             // generation. Neither an old analytic thread nor its private forks may be resumed.
-            sqlx::query("UPDATE analytic_threads SET thread_id=NULL,generation=generation+1,state='none',last_context_tokens=NULL,last_context_generation=NULL
-                WHERE pull_request_id=(SELECT pull_request_id FROM jobs WHERE id=?) AND user_id=(SELECT payer_id FROM jobs WHERE id=?) AND state IN ('none','active')")
-                .bind(result.job_id.to_string()).bind(result.job_id.to_string()).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO analytic_threads(tenant_id,pull_request_id,user_id,generation,state)
+                SELECT tenant_id,pull_request_id,payer_id,?,'none' FROM jobs WHERE id=?
+                ON CONFLICT(pull_request_id,user_id) DO UPDATE SET thread_id=NULL,generation=excluded.generation,state='none',last_context_tokens=NULL,last_context_generation=NULL
+                WHERE analytic_threads.state IN ('none','active')")
+                .bind(next_generation).bind(result.job_id.to_string()).execute(&mut *tx).await?;
         }
         if kind != "ask"
             && stored.session.is_some()
             && matches!(stored.outcome, JobOutcome::Cancelled)
         {
-            sqlx::query("UPDATE analytic_threads SET generation=generation+1,last_context_tokens=NULL,last_context_generation=NULL
+            sqlx::query("UPDATE analytic_threads SET generation=?,last_context_tokens=NULL,last_context_generation=NULL
                 WHERE pull_request_id=(SELECT pull_request_id FROM jobs WHERE id=?) AND user_id=(SELECT payer_id FROM jobs WHERE id=?)")
-                .bind(result.job_id.to_string()).bind(result.job_id.to_string()).execute(&mut *tx).await?;
+                .bind(next_generation).bind(result.job_id.to_string()).bind(result.job_id.to_string()).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(Completion::Applied { state })
@@ -1004,6 +1204,29 @@ impl Jobs<'_> {
         .bind(generation)
         .fetch_optional(self.pool)
         .await?;
+        row.as_ref().map(job_from_row).transpose()
+    }
+
+    /// The private question's live or succeeded job; the caller's payer must own it.
+    pub async fn current_for_private_question(
+        &self,
+        question: QuestionId,
+        payer: &contracts::ids::UserId,
+        generation: u32,
+    ) -> Result<Option<JobRecord>, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            job_columns!(),
+            " FROM jobs WHERE private_question_id=? AND payer_id=? AND generation=?
+             AND state NOT IN ('failed','cancelled') ORDER BY created_at DESC,rowid DESC LIMIT 1"
+        ))
+        .bind(question.to_string())
+        .bind(&payer.0)
+        .bind(generation)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
         row.as_ref().map(job_from_row).transpose()
     }
 

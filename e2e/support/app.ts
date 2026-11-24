@@ -27,6 +27,19 @@ export async function signIn(page: Page, login = "alice"): Promise<void> {
     page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /^My work/ }),
   ).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("banner")).toContainText(login);
+  const me = (await (await page.request.get("/api/v1/me")).json()) as { csrf_token: string };
+  if (!process.env.SR_E2E_BASE_URL) {
+    const linked = await page.request.post("/api/v1/settings/codex/link", {
+      headers: { "X-CSRF-Token": me.csrf_token },
+      data: { mode: "chatgpt_plan" },
+    });
+    expect(linked.ok(), await linked.text()).toBe(true);
+    await expect
+      .poll(async () => (await (await page.request.get("/api/v1/settings/codex/link")).json()).state)
+      .toBe("linked");
+  }
+  const status = await page.request.get("/api/v1/settings/codex");
+  expect((await status.json()).state).toBe("linked");
 }
 
 /**

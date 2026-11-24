@@ -65,8 +65,7 @@ pub enum Asked {
     UserLimit,
 }
 
-/// A question about a review-comment item of a pull request without an analysis (ADR-023), answered by a
-/// `verify_comments` question pass; the tenant is the item's.
+/// A question about a review-comment item without an analysis; the tenant is the item's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewPrQuestion {
     /// Question id.
@@ -431,12 +430,12 @@ impl Questions<'_> {
             .collect()
     }
 
-    /// Analysis questions of every tenant whose end is not stored yet, oldest first: `pending`, `answering`, or
+    /// Analysis and private PR questions whose end is not stored yet, oldest first: `pending`, `answering`, or
     /// answered provisionally (the job's result, possibly already recorded, decides).
     pub async fn unanswered(&self, now: Timestamp) -> Result<Vec<QuestionRecord>, DbError> {
         let rows = sqlx::query(concat!(
             question_select!(),
-            " WHERE q.analysis_id IS NOT NULL AND (q.state IN ('pending', 'answering')
+            " WHERE (q.analysis_id IS NOT NULL OR q.private_ask=1) AND (q.state IN ('pending', 'answering')
                  OR (q.state = 'answered' AND q.answered_at IS NULL))
              ORDER BY q.created_at, q.rowid"
         ))
@@ -498,12 +497,15 @@ impl Questions<'_> {
         question: QuestionId,
     ) -> Result<Vec<(String, AskOutput)>, DbError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT q.text, q.answer FROM questions q JOIN analyses a ON a.id = q.analysis_id,
-                questions asked JOIN analyses current ON current.id = asked.analysis_id
-             WHERE asked.id = ? AND q.user_id = asked.user_id AND a.pull_request_id = current.pull_request_id
+            "SELECT q.text, q.answer FROM questions q, questions asked
+             WHERE asked.id = ? AND q.user_id = asked.user_id AND q.tenant_id = asked.tenant_id
+                AND q.pull_request_id = asked.pull_request_id
                 AND q.state = 'answered' AND q.answered_at IS NOT NULL AND q.answer IS NOT NULL
-                AND q.rowid < asked.rowid ORDER BY q.rowid DESC LIMIT 20")
-            .bind(question.to_string()).fetch_all(self.pool).await?;
+                AND q.rowid < asked.rowid ORDER BY q.rowid DESC LIMIT 20",
+        )
+        .bind(question.to_string())
+        .fetch_all(self.pool)
+        .await?;
         rows.into_iter()
             .rev()
             .map(|(text, answer)| Ok((text, serde_json::from_str(&answer)?)))
@@ -518,10 +520,31 @@ impl Questions<'_> {
         limits: PrQuestionLimits,
         now: Timestamp,
     ) -> Result<Asked, DbError> {
+        self.create_pr_question(question, limits, now, false).await
+    }
+
+    /// Stores a private Verify-kind Ask for a PR without an analysis, outside assessment passes.
+    pub async fn create_private_for_pr(
+        &self,
+        question: NewPrQuestion,
+        limits: PrQuestionLimits,
+        now: Timestamp,
+    ) -> Result<Asked, DbError> {
+        self.create_pr_question(question, limits, now, true).await
+    }
+
+    async fn create_pr_question(
+        &self,
+        question: NewPrQuestion,
+        limits: PrQuestionLimits,
+        now: Timestamp,
+        private: bool,
+    ) -> Result<Asked, DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
         let inserted = sqlx::query(
             "INSERT INTO questions (id, tenant_id, analysis_id, pull_request_id, user_id, text, state, created_at, kind,
-                 parent_id, item_id)
-             SELECT ?1, i.tenant_id, NULL, i.pull_request_id, ?2, ?3, 'pending', ?4, 'comment_item', ?5, i.id
+                 parent_id, item_id, private_ask)
+             SELECT ?1, i.tenant_id, NULL, i.pull_request_id, ?2, ?3, 'pending', ?4, 'comment_item', ?5, i.id, ?11
              FROM comment_items i WHERE i.id = ?6 AND i.pull_request_id = ?7
                  AND (SELECT COUNT(*) FROM questions WHERE pull_request_id = ?7 AND user_id = ?2
                       AND kind = 'comment_item') < ?8
@@ -537,9 +560,11 @@ impl Questions<'_> {
         .bind(limits.per_pull_request)
         .bind(ts(limits.user_window_start))
         .bind(limits.per_user)
-        .execute(self.pool)
+        .bind(private)
+        .execute(&mut *tx)
         .await?;
         if inserted.rows_affected() == 1 {
+            tx.commit().await?;
             return Ok(Asked::Stored(Box::new(self.get(question.id, now).await?)));
         }
         let held: Option<u32> = sqlx::query_scalar(
@@ -550,8 +575,9 @@ impl Questions<'_> {
         .bind(question.item.to_string())
         .bind(question.pull_request_id)
         .bind(&question.user_id)
-        .fetch_optional(self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
+        tx.commit().await?;
         match held {
             None => Err(DbError::NotFound),
             Some(held) if held >= limits.per_pull_request => Ok(Asked::AnalysisLimit),
@@ -594,7 +620,7 @@ impl Questions<'_> {
     ) -> Result<Option<QuestionRecord>, DbError> {
         let row = sqlx::query(concat!(
             question_select!(),
-            " WHERE q.pull_request_id = ?2 AND q.analysis_id IS NULL AND q.state = 'pending' AND q.job_id IS NULL
+            " WHERE q.pull_request_id = ?2 AND q.analysis_id IS NULL AND q.private_ask=0 AND q.state = 'pending' AND q.job_id IS NULL
              ORDER BY q.created_at, q.rowid LIMIT 1"
         ))
         .bind(ts(now))
@@ -608,7 +634,7 @@ impl Questions<'_> {
     pub async fn pull_requests_with_unsent(&self) -> Result<Vec<i64>, DbError> {
         Ok(sqlx::query_scalar(
             "SELECT DISTINCT pull_request_id FROM questions
-             WHERE analysis_id IS NULL AND state = 'pending' AND job_id IS NULL ORDER BY pull_request_id",
+             WHERE analysis_id IS NULL AND private_ask=0 AND state = 'pending' AND job_id IS NULL ORDER BY pull_request_id",
         )
         .fetch_all(self.pool)
         .await?)
@@ -659,6 +685,28 @@ impl Questions<'_> {
             return Err(DbError::NotFound);
         }
         Ok(())
+    }
+
+    /// Publishes a private ready answer only while its owned job has not been cancelled.
+    pub async fn publish_private_provisional(
+        &self,
+        question: QuestionId,
+        job: JobId,
+        answer: &AskOutput,
+        now: Timestamp,
+    ) -> Result<Option<AskQuestion>, DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
+        let changed = sqlx::query("UPDATE questions SET state='answered',answer=?,failure=NULL
+            WHERE id=? AND job_id=? AND private_ask=1 AND state<>'failed' AND answered_at IS NULL
+            AND EXISTS(SELECT 1 FROM jobs j WHERE j.id=questions.job_id AND j.payer_id=questions.user_id
+                AND j.pull_request_id=questions.pull_request_id AND j.cancel_requested=0 AND j.state<>'cancelled')")
+            .bind(serde_json::to_string(answer)?).bind(question.to_string()).bind(job.to_string())
+            .execute(&mut *tx).await?.rows_affected();
+        tx.commit().await?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        Ok(Some(self.get(question, now).await?.question))
     }
 
     /// Stores a state change; an answer replaces the failure and vice versa.

@@ -97,6 +97,8 @@ pub struct Config {
     pub secret_key: SecretBox<[u8; SECRET_KEY_LEN]>,
     /// Secret runners authenticate with.
     pub runner_secret: SecretString,
+    /// Credentials-scoped gateway administration; absent until configured.
+    pub codex_gateway: Option<crate::gateway::client::Admin>,
     /// GitHub App and endpoints.
     pub github: GithubConfig,
     /// MemCan endpoint and token.
@@ -147,6 +149,9 @@ pub struct MemcanConfig {
 /// Invalid or missing configuration. Messages name the variable, never its value.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// The credentials administration client could not be configured.
+    #[error("the gateway administration client is invalid")]
+    Gateway(#[from] crate::gateway::client::Error),
     /// A required variable is unset or empty.
     #[error("required environment variable {key} is not set")]
     Missing {
@@ -366,6 +371,17 @@ impl Config {
             data_dir: PathBuf::from(or_default(DATA_DIR, DEFAULT_DATA_DIR)?),
             secret_key: parse_secret_key(&secret(SECRET_KEY, SECRET_KEY_FILE)?)?,
             runner_secret: SecretString::from(secret(RUNNER_SECRET, RUNNER_SECRET_FILE)?),
+            codex_gateway: get("SR_GATEWAY_ADMIN_URL")?
+                .map(|value| {
+                    let url = parse_http_url("SR_GATEWAY_ADMIN_URL", &value)?;
+                    let token = secret(
+                        "SR_GATEWAY_CREDENTIALS_TOKEN",
+                        "SR_GATEWAY_CREDENTIALS_TOKEN_FILE",
+                    )?;
+                    crate::gateway::client::Admin::new(url, token.into())
+                        .map_err(ConfigError::Gateway)
+                })
+                .transpose()?,
             github: GithubConfig {
                 app_id: require(GITHUB_APP_ID)?.parse().map_err(|source| {
                     ConfigError::InvalidNumber {
@@ -1153,6 +1169,25 @@ pub(crate) mod tests {
             "{logs}"
         );
         assert!(!logs.contains("CANARY"), "contents leaked: {logs}");
+    }
+
+    #[test]
+    fn credentials_gateway_requires_its_own_scope_and_redacts_it() {
+        let mut env = required_env();
+        env.insert("SR_GATEWAY_ADMIN_URL", "http://127.0.0.1:9001".into());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::Missing {
+                key: "SR_GATEWAY_CREDENTIALS_TOKEN"
+            })
+        ));
+        env.insert(
+            "SR_GATEWAY_CREDENTIALS_TOKEN",
+            "fake-gateway-scope-canary".into(),
+        );
+        let config = parse(&env).unwrap();
+        assert!(config.codex_gateway.is_some());
+        assert!(!format!("{config:?}").contains("fake-gateway-scope-canary"));
     }
 
     #[test]

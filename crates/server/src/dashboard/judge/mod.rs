@@ -117,6 +117,8 @@ enum RankError {
     NoSnapshot,
     #[error("the LLM credential is not usable")]
     Unusable,
+    #[error("the judge job failed without an automatic retry")]
+    JobFailed(contracts::job::result::JobFailureKind),
     #[error("a judge job was cancelled outside the ranking")]
     JobCancelled,
     #[error("no runner claimed the judge job in time")]
@@ -127,7 +129,14 @@ impl RankError {
     /// The plain ranking failure message (`RankingStatus.message`).
     fn message(&self) -> &'static str {
         match self {
-            Self::Unusable => "The LLM credential is not usable; sign it in again on the runner",
+            Self::JobFailed(kind) => crate::api::settings::plain_failure(Some(
+                db::repo::settings::CallFailure::Failed(*kind),
+            )),
+            Self::Unusable
+            | Self::Db(db::error::DbError::CredentialUnlinked)
+            | Self::Executor(ExecutorError::Db(db::error::DbError::CredentialUnlinked)) => {
+                "Link your Codex account in Settings"
+            }
             Self::JobCancelled => "A ranking job was cancelled",
             Self::Unclaimed => "No runner picked up the ranking job",
             Self::NoSnapshot => "The scan result could not be read",
@@ -465,6 +474,12 @@ impl<'a> Ranking<'a> {
         generation: u32,
         input: &JudgeWorkInput,
     ) -> Result<JobHandle, RankError> {
+        crate::jobs::payer::require_linked(&self.state.db, &self.run.scope.user_id)
+            .await
+            .map_err(|error| match error {
+                crate::jobs::payer::PayerError::Missing => RankError::Unusable,
+                crate::jobs::payer::PayerError::Db(error) => RankError::Db(error),
+            })?;
         let saved = self.state.db.settings().llm_selection().await?;
         let spec = JobSpec {
             job_id: JobId::new_random(),
@@ -537,9 +552,7 @@ impl<'a> Ranking<'a> {
         }
     }
 
-    /// Reads the job and its credential: `paused` while the usage limit holds, `waiting_for_analysis` while a
-    /// review analysis job holds the credential, else `running`; `Unclaimed` once the job waited
-    /// [`UNCLAIMED_LIMIT`] for a runner in none of those states while no other job (e.g. an Ask) held the credential.
+    /// Reports payer pauses and shared runner-capacity waits without changing container claim eligibility.
     async fn observe(&mut self, job: JobId) -> Result<(), RankError> {
         let db = &self.state.db;
         let record = db.jobs().get(job).await?;
@@ -607,7 +620,11 @@ impl<'a> Ranking<'a> {
             JobOutcome::Succeeded { output } => output,
             JobOutcome::Failed { kind, .. } => {
                 tracing::warn!(refresh = %self.run.refresh_id, %job, ?kind, "dashboard judge job failed");
-                return Ok(pending);
+                return if kind.retryable() {
+                    Ok(pending)
+                } else {
+                    Err(RankError::JobFailed(kind))
+                };
             }
             JobOutcome::UsageLimited { .. } => return Ok(pending),
             JobOutcome::Cancelled => return Err(RankError::JobCancelled),
@@ -908,7 +925,7 @@ async fn retention(db: &Db, now: Timestamp) {
     }
 }
 
-/// A review analysis job holds the LLM credential (claimed or running).
+/// An active pipeline turn can occupy the runner's shared turn capacity.
 async fn analysis_running(db: &Db) -> Result<bool, DbError> {
     for analysis in db.analyses().unfinished().await? {
         let active = db

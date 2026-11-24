@@ -4363,12 +4363,21 @@ kind: CommentItemKind | null, };
 /**
  * Kind of a failed attempt.
  */
-export type JobFailureKind = "configuration" | "provider_failed" | "output_not_json" | "credential_unusable" | "checkout_failed" | "timeout" | "internal" | "worker_unavailable" | "worker_lost" | "credential_missing" | "credential_relink" | "model_unavailable" | "upstream_rejected" | "report_version_unsupported" | "invalid_json_schema";
+export type JobFailureKind = "configuration" | "provider_failed" | "output_not_json" | "credential_unusable" | "checkout_failed" | "timeout" | "internal" | "worker_unavailable" | "worker_lost" | "credential_missing" | "credential_relink" | "model_unavailable" | "upstream_rejected" | "report_version_unsupported" | "invalid_json_schema" | "ask_compaction_unconfirmed";
 
 /**
  * Identifier of a job (one agent run).
  */
 export type JobId = string;
+
+/**
+ * What a job works on (ADR-018); exhaustive matches mark every pull-request-only site.
+ */
+export type JobTarget = { "type": "pull_request" } & PullRequestTarget | { "type": "dashboard",
+/**
+ * The refresh whose items are judged.
+ */
+refresh_id: RefreshId, } | { "type": "pull_request_comments" } & PullRequestCommentsTarget | { "type": "pull_request_ask" } & PullRequestAskTarget;
 
 /**
  * Reasons to revoke a local virtual key; none authorizes upstream revoke.
@@ -5839,6 +5848,54 @@ export type ProposedDecisionKind = "resolve" | "fix_here" | "reject" | "handled_
 export type ProvenanceBadge = "text_identical" | "classified_by_path" | "classified_by_line_rule" | "binary_content";
 
 /**
+ * Private comment Ask, scoped by `JobSpec::payer`; no assessment quota or analytic archive.
+ */
+export type PullRequestAskTarget = {
+/**
+ * Stable database key of the pull request.
+ */
+pull_request_id: number,
+/**
+ * Frozen checkout for the question and its evidence.
+ */
+repo: RepoCheckout, };
+
+/**
+ * What a `verify_comments` job works on (ADR-023, plan §4.2): the head checkout and the read-only PR-scoped token,
+ * no session, no MemCan.
+ */
+export type PullRequestCommentsTarget = {
+/**
+ * Stable database key of the pull request.
+ */
+pull_request_id: number,
+/**
+ * The repository to check out (head).
+ */
+repo: RepoCheckout,
+/**
+ * The assessment pass.
+ */
+pass_id: PassId, };
+
+/**
+ * The pull request an analysis job works on.
+ */
+export type PullRequestTarget = {
+/**
+ * The analysis the job belongs to.
+ */
+analysis_id: AnalysisId,
+/**
+ * Stable database key of the pull request; root of its analytic and private working archives.
+ */
+pull_request_id: number,
+/**
+ * The repository to check out.
+ */
+repo: RepoCheckout, };
+
+/**
  * An agent token's push target; the secret is never returned.
  */
 export type PushTarget = {
@@ -6273,6 +6330,23 @@ export type RelatedWorkTargetKind = "pull_request" | "issue";
  * Safe relink reason; never contains a token, upstream response or account identifier.
  */
 export type RelinkReason = "terminal" | "quarantined";
+
+/**
+ * Where the runner fetches the repository from.
+ */
+export type RepoCheckout = {
+/**
+ * Clone URL (any scheme; `file://` in development).
+ */
+clone_url: string,
+/**
+ * Base commit, fetched for diffs.
+ */
+base_sha: CommitSha,
+/**
+ * Head commit, checked out.
+ */
+head_sha: CommitSha, };
 
 /**
  * A GitHub repository.

@@ -11,9 +11,8 @@ use contracts::job::protocol::{Claim, ClaimRequest, ClaimResponse, LeaseTiming};
 use contracts::job::spec::{JobTarget, SessionRef, WorkingSession};
 use contracts::time::Timestamp;
 use db::error::DbError;
-use db::repo::analyses::SessionState;
+use db::repo::Db;
 use db::repo::jobs::{ClaimParams, JobRecord, JobStage};
-use db::repo::{DEFAULT_TENANT, Db};
 use futures::future::BoxFuture;
 use jiff::SignedDuration;
 use secrecy::ExposeSecret;
@@ -121,7 +120,7 @@ pub trait ContextPacks: Send + Sync {
     ) -> BoxFuture<'a, Result<Option<String>, ContextPackError>>;
 }
 
-/// Serves one runner claim: housekeeping, credential registration, then the next runnable job, if any, with
+/// Serves one runner claim: housekeeping, gateway-observed payer status, then the next runnable job, if any, with
 /// its read-only installation token, the PR's session and the context pack of the results stored now
 /// (`runner-protocol.md` Claim).
 pub async fn claim(
@@ -144,21 +143,13 @@ pub async fn claim(
     db.analyses()
         .ack_session_drops(&request.dropped_sessions)
         .await?;
-    let mut usable = Vec::with_capacity(request.credentials.len());
-    for status in &request.credentials {
-        db.llm_credentials()
-            .register(DEFAULT_TENANT, &status.credential, status.usable, now)
-            .await?;
-        if status.usable {
-            usable.push(status.credential.id.clone());
-        }
-    }
+    let usable = db.llm_credentials().linked_payers().await?;
     let drop_sessions = db.analyses().pending_session_drops().await?;
     let (token, hash) = mint_token()?;
     let lease_expires_at = lease_until(now);
     let claimed = db
         .jobs()
-        .claim(ClaimParams {
+        .claim_linked(ClaimParams {
             payer_ids: &usable,
             job_token_hash: &hash,
             lease_until: lease_expires_at,
@@ -205,6 +196,7 @@ pub async fn claim(
                     return Err(error);
                 }
             };
+            db.jobs().save_session_route(&spec).await?;
             // Spawned, so a token received after the budget (or after the runner hung up) is still stored or
             // revoked; the unanswered attempt's lease then expires and the worker revokes the stored token.
             let access = tokio::spawn(github_access(db.clone(), config.clone(), job.clone(), now));
@@ -227,8 +219,10 @@ pub async fn claim(
                 github,
                 // An Ask sees user-typed text, so it only reads shared memory (ADR-004); a `verify_comments` job
                 // gets no MemCan endpoint at all (ADR-023).
-                memcan: (!verify)
-                    .then(|| memcan_endpoint(config, !matches!(job.stage, JobStage::Ask(_)))),
+                memcan: (!verify
+                    && spec.working_session.as_ref().and_then(|w| w.kind)
+                        != Some(contracts::runtime::ThreadKind::Verify))
+                .then(|| memcan_endpoint(config, !matches!(job.stage, JobStage::Ask(_)))),
             };
             Some(Claim {
                 job_token: token,
@@ -239,7 +233,7 @@ pub async fn claim(
         None => None,
     };
     Ok(ClaimResponse {
-        retire: Vec::new(),
+        retire: drop_sessions.clone(),
         claim,
         drop_sessions,
     })
@@ -292,7 +286,8 @@ async fn prepare_spec(
 ) -> Result<contracts::job::spec::JobSpec, ClaimError> {
     let mut spec = job.spec.clone();
     let (analysis, pull_request_id) = match &spec.target {
-        JobTarget::PullRequest(target) => (target.analysis_id, target.pull_request_id),
+        JobTarget::PullRequest(target) => (Some(target.analysis_id), target.pull_request_id),
+        JobTarget::PullRequestAsk(target) => (None, target.pull_request_id),
         JobTarget::Dashboard { .. } | JobTarget::PullRequestComments(_) => {
             return Err(DbError::NotFound.into());
         }
@@ -307,47 +302,111 @@ async fn prepare_spec(
             return Err(ClaimError::StaleFlowContext { found, current });
         }
     }
-    spec.session = analysis_session(db, analysis).await?;
+    use contracts::runtime::{AskPreflight, PreflightState, SessionSeed, ThreadKind};
+    let owner = match analysis {
+        Some(analysis) => Some(db.analyses().get(analysis).await?),
+        None => None,
+    };
+    let analytic = db
+        .container_sessions()
+        .analytic(pull_request_id, &spec.payer)
+        .await?;
+    spec.session = analytic.as_ref().map(|thread| SessionRef {
+        pull_request_id,
+        thread_id: thread.thread_id.clone(),
+    });
     spec.working_session = if let JobStage::Ask(question) = job.stage {
         let record = db.questions().get(question, Timestamp::now()).await?;
-        if record.analysis_id != Some(analysis) {
-            return Err(DbError::NotFound.into());
+        if record.analysis_id != analysis
+            || record.pull_request_id != Some(pull_request_id)
+            || record.user_id != spec.payer.0
+        {
+            return Err(DbError::Conflict.into());
         }
+        let kind = if matches!(
+            record.question.anchor,
+            contracts::api::questions::AskAnchor::CommentItem { .. }
+        ) {
+            ThreadKind::Verify
+        } else {
+            ThreadKind::Ask
+        };
+        // Forks never cross payer or policy boundaries, even if this user analysed an older head.
+        if owner
+            .as_ref()
+            .is_none_or(|owner| spec.payer.0 != owner.payer_id)
+            || kind == ThreadKind::Verify
+        {
+            spec.session = None;
+        }
+        let generation = db.agent_sessions().generation(pull_request_id).await?;
+        let parent_context = spec
+            .session
+            .as_ref()
+            .and(analytic.as_ref())
+            .and_then(|t| t.last_context.clone())
+            .filter(|c| c.generation == generation);
+        let working = db
+            .container_sessions()
+            .working(pull_request_id, &spec.payer, kind)
+            .await?
+            .filter(|t| t.preflight.generation == generation)
+            .filter(|t| t.preflight.seed == SessionSeed::ContextPack || spec.session.is_some());
+        let preflight = working
+            .as_ref()
+            .map(|t| t.preflight.clone())
+            .unwrap_or_else(|| AskPreflight {
+                seed: if spec.session.is_some() {
+                    SessionSeed::Fork
+                } else {
+                    SessionSeed::ContextPack
+                },
+                generation,
+                state: if spec.session.is_none()
+                    || parent_context.as_ref().is_some_and(|c| {
+                        c.tokens <= contracts::runtime::FIRST_ASK_COMPACTION_TOKENS
+                    }) {
+                    PreflightState::NotNeeded
+                } else {
+                    PreflightState::Pending
+                },
+            });
         Some(WorkingSession {
-            kind: None,
-            preflight: None,
-            parent_context: None,
+            kind: Some(kind),
+            preflight: Some(preflight),
+            parent_context,
             user_key: Sha256::digest(record.user_id.as_bytes())
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect(),
-            analytic_generation: db.agent_sessions().generation(pull_request_id).await?,
-            thread_id: db
-                .agent_sessions()
-                .working(pull_request_id, &record.user_id)
-                .await?,
+            analytic_generation: generation,
+            thread_id: working.map(|t| t.thread_id),
         })
     } else {
         None
     };
-    spec.context_pack = packs
-        .pack(analysis, &job.stage)
-        .await
-        .map_err(ClaimError::ContextPack)?;
+    spec.context_pack = match analysis {
+        Some(analysis) => packs
+            .pack(analysis, &job.stage)
+            .await
+            .map_err(ClaimError::ContextPack)?,
+        None => {
+            let JobStage::Ask(question) = job.stage else {
+                return Err(DbError::Conflict.into());
+            };
+            let mut pr = db.pull_requests().get(pull_request_id).await?.pr;
+            if let Some(repo) = spec.target.checkout() {
+                pr.base_sha = repo.base_sha.clone();
+                pr.head_sha = repo.head_sha.clone();
+            }
+            Some(
+                crate::ask::private_context_pack(db, &pr, question)
+                    .await
+                    .map_err(ClaimError::ContextPack)?,
+            )
+        }
+    };
     Ok(spec)
-}
-
-/// The PR's agent session at claim time (ADR-004): one running job per PR, so the session a job
-/// resumes is the one the previous job of the PR reported; none before the first report or once dropped.
-async fn analysis_session(db: &Db, analysis: AnalysisId) -> Result<Option<SessionRef>, DbError> {
-    let record = db.analyses().get(analysis).await?;
-    Ok(match (record.session_state, record.agent_thread_id) {
-        (SessionState::Active, Some(thread_id)) => Some(SessionRef {
-            pull_request_id: record.pull_request_id,
-            thread_id,
-        }),
-        _ => None,
-    })
 }
 
 /// Mints the claimed attempt's installation token for the PR repository and stores it encrypted for revocation.
@@ -364,6 +423,10 @@ async fn github_access(
     // The PR repository only (ADR-005): an analysis job's, or a `verify_comments` job's pull request.
     let repo = match &job.spec.target {
         JobTarget::PullRequest(target) => db.analyses().summary(target.analysis_id).await?.pr.repo,
+        JobTarget::PullRequestAsk(contracts::job::spec::PullRequestAskTarget {
+            pull_request_id,
+            ..
+        }) => db.pull_requests().get(*pull_request_id).await?.pr.repo,
         JobTarget::PullRequestComments(target) => {
             db.pull_requests()
                 .get(target.pull_request_id)
@@ -459,7 +522,7 @@ mod tests {
     use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
     use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
     use contracts::routes::RUNNER_RESULT;
-    use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
+    use db::repo::analyses::testing::{CREDENTIAL, job_spec};
     use db::repo::jobs::NewJob;
     use serde_json::json;
     use tempfile::TempDir;
@@ -479,7 +542,16 @@ mod tests {
     use crate::pipeline::context::StoredPacks;
     use crate::state::AppState;
     use crate::test_support::logs::LogCapture;
+    use db::repo::DEFAULT_TENANT;
     use db::repo::documents::DocumentKind;
+
+    async fn seed_analysis(db: &Db) -> Result<AnalysisId, DbError> {
+        let analysis = db::repo::analyses::testing::seed_analysis(db).await?;
+        if db.llm_credentials().status(CREDENTIAL).await?.is_none() {
+            crate::test_support::link_payer(db, DEFAULT_TENANT, CREDENTIAL).await;
+        }
+        Ok(analysis)
+    }
 
     struct Setup {
         db: Db,
@@ -773,6 +845,7 @@ mod tests {
         let pass = db::repo::analyses::testing::seed_pass(&s.db)
             .await
             .expect("pass");
+        crate::test_support::link_payer(&s.db, DEFAULT_TENANT, CREDENTIAL).await;
         let mut spec = db::repo::analyses::testing::verify_spec(pass);
         spec.skills = vec![
             "severity".to_owned(),
@@ -1069,8 +1142,8 @@ mod tests {
         );
         let stored = s.db.jobs().get(job).await.expect("job");
         assert_eq!(
-            stored.spec.session, None,
-            "the session is set at claim, not stored"
+            stored.spec.session, claimed.spec.session,
+            "the routing is frozen before dispatch for result fencing"
         );
     }
 
@@ -1374,7 +1447,13 @@ mod tests {
                     assert_eq!(response.status(), StatusCode::NO_CONTENT, "{end:?}");
                 }
                 None => {
-                    // A runner without usable credentials claims nothing, so the job is not re-claimed.
+                    // With no linked payer the expired job cannot be re-claimed.
+                    state
+                        .db
+                        .llm_credentials()
+                        .remove_status(CREDENTIAL)
+                        .await
+                        .unwrap();
                     let idle = ClaimRequest {
                         credentials: Vec::new(),
                         ..request()
@@ -1643,6 +1722,12 @@ mod tests {
             .expect("claim")
             .claim
             .expect("the backlog job");
+        state
+            .db
+            .llm_credentials()
+            .remove_status(CREDENTIAL)
+            .await
+            .unwrap();
         let idle = ClaimRequest {
             credentials: Vec::new(),
             ..request()
@@ -1899,3 +1984,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "container_tests.rs"]
+mod container_tests;
