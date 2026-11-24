@@ -301,14 +301,7 @@ async fn container_claim_uses_gateway_status_without_runner_credentials() {
     );
     let request = ClaimRequest {
         runner_id: "fake".into(),
-        credentials: vec![contracts::job::protocol::CredentialStatus {
-            credential: contracts::job::spec::LlmCredentialRef {
-                id: "default".into(),
-                kind: contracts::job::spec::CredentialKind::CodexChatgpt,
-            },
-            usable: true,
-        }],
-        dropped_sessions: Vec::new(),
+        retired: Vec::new(),
     };
     let config = Arc::new(config);
     let unlinked = claim(&db, &config, &Packs, &request, Timestamp::now())

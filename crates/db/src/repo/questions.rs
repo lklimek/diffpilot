@@ -757,7 +757,7 @@ mod tests {
     use contracts::agent::JobKind;
     use contracts::common::{Evidence, LineSide};
     use contracts::job::result::{JobOutcome, JobResult};
-    use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
+    use contracts::job::spec::JobPriority;
     use jiff::SignedDuration;
 
     use super::*;
@@ -1281,10 +1281,7 @@ mod tests {
             .await
             .expect("enqueue");
         db.questions().set_job(id, job.id).await.expect("link");
-        let credential = LlmCredentialRef {
-            id: CREDENTIAL.to_owned(),
-            kind: CredentialKind::CodexChatgpt,
-        };
+        let credential = contracts::ids::UserId(CREDENTIAL.to_owned());
         db.llm_credentials()
             .register(DEFAULT_TENANT, &credential, true, at(0))
             .await

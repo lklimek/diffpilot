@@ -4,7 +4,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 prefix=v13w3-cs3-test
 work_volume=$prefix-pr-7-3-work
-scratch=$(mktemp -d /data/tmp/v13w3-cs3.XXXXXX)
+scratch=$(mktemp -d "${SR_CS3_TMPDIR:-/data/tmp}/v13w3-cs3.XXXXXX")
 export DOCKER_CONFIG="$scratch/docker"
 mkdir "$DOCKER_CONFIG"
 cleanup() {
@@ -76,7 +76,8 @@ SR_WORKER_IMAGE="worker@sha256:$(printf 'a%.0s' {1..64})"
 export SR_WORKER_IMAGE
 SR_FETCH_IMAGE="fetch@sha256:$(printf 'b%.0s' {1..64})"
 export SR_FETCH_IMAGE
-CLAUDIUS_MAX_PARALLEL_BUILDS=1 timeout 900 /home/ubuntu/.claude/plugins/cache/lklimek/claudius/13.3.0/scripts/cargo-cached.sh \
+cargo_command=${SR_CARGO_COMMAND:-/home/ubuntu/.claude/plugins/cache/lklimek/claudius/13.3.0/scripts/cargo-cached.sh}
+CLAUDIUS_MAX_PARALLEL_BUILDS=1 timeout 900 "$cargo_command" \
   run -p runner --features fake-provider --example cs3-template >"$scratch/template.json"
 # The wrapper writes diagnostics to stdout; the final JSON line is the example output.
 python3 - "$scratch/template.json" "$scratch/create.json" "$(docker image inspect v13w3-fetch:test --format '{{.Id}}')" <<'PY_TEMPLATE'

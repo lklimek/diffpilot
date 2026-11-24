@@ -1,23 +1,5 @@
-# diffpilot production stack (plan §9 WP3-OPS, threat model T1–T4/T7b/T9, ADR-013): server, runner and
-# egress proxy as plain services (Portainer stack). Variables: .env.example; operations: docs/runbook.md.
-#   docker compose --env-file .env -f deploy/compose.yaml up -d
-# Local test variant on http://localhost: add -f deploy/compose.local.yaml (see that file).
-#
-# Networks (pinned subnets, so MemCan's allowlist and the server's bind addresses are fixed):
-#   public  server only: GitHub API, the published HTTP port (reverse proxy in front).
-#   runner  internal and isolated (no route out, and no host address on its bridge, so no host service is
-#           reachable; Docker Engine 28.0 or newer): runner, the server's runner listener, the proxy. The
-#           server's public listener is bound to its public address only, so the runner reaches nothing but
-#           the runner listener and the proxy.
-#   egress  proxy only: its way out; the proxy's address is MemCan's allowlist entry.
-#
-# Limits, sized for one 15 GB, 16-CPU host shared with other work: memory runner 6g (Codex and git) + server 2g +
-# proxy 256m, about 8.3 GB, leaves about 6.5 GB for the host and one build; CPUs runner 2 + server 2 + proxy 0.5.
-#
-# Storage (owner decision: nothing in RAM, no size limit for now): durable volumes server-data and runner-state,
-# and disposable scratch volumes named tmp-* with the label diffpilot.volume=temporary (the job work area, the
-# per-job Codex homes, both /tmp). Their content is safe to delete whenever the stack is stopped and is never
-# backed up; the runner and the server empty them at start (docs/runbook.md, "Temporary volumes").
+# Container runtime: server, runner, launcher, plan gateway and worker-only egress proxy.
+# The launcher alone holds the engine socket. Worker/fetch images must be pinned by digest.
 name: diffpilot
 
 x-temporary-volume: &temporary-volume
@@ -45,6 +27,8 @@ services:
       SR_ALLOWED_LOGINS: ${SR_ALLOWED_LOGINS:?set SR_ALLOWED_LOGINS}
       SR_LISTEN_ADDR: ${SR_SERVER_PUBLIC_ADDR:-172.29.73.2}:3000
       SR_RUNNER_LISTEN_ADDR: ${SR_SERVER_RUNNER_ADDR:-172.29.71.2}:3001
+      SR_GATEWAY_ADMIN_URL: http://${SR_GATEWAY_ADMIN_ADDR:-172.29.71.5}:8091
+      SR_GATEWAY_CREDENTIALS_TOKEN_FILE: /run/secrets/gateway-credentials-token
       SR_TRUSTED_PROXIES: ${SR_TRUSTED_PROXIES:-}
       SR_DATA_DIR: /var/lib/diffpilot
       # Secrets from .env, or empty there and read from files (compose.secrets.yaml); a missing one stops the
@@ -68,6 +52,11 @@ services:
       NO_COLOR: "1"
     volumes:
       - server-data:/var/lib/diffpilot
+      - type: bind
+        source: ${SR_GATEWAY_CREDENTIALS_TOKEN_PATH:-/srv/diffpilot/secrets/gateway-credentials-token}
+        target: /run/secrets/gateway-credentials-token
+        read_only: true
+        bind: { create_host_path: false }
       # The App key stays on the host, read-only (never copied into an image or volume).
       - type: bind
         source: ${SR_GITHUB_APP_PRIVATE_KEY_PATH:?set SR_GITHUB_APP_PRIVATE_KEY_PATH}
@@ -93,66 +82,116 @@ services:
   runner:
     <<: *hardening
     image: ${SR_RUNNER_IMAGE:-diffpilot-runner:local}
-    build:
-      context: runner
-      additional_contexts: { workspace: .. }
-    # ADR-013: root supervisor with exactly these capabilities; runner and agents have none.
-    cap_add: [CHOWN, SETUID, SETGID, KILL]
+    build: { context: .., dockerfile: deploy/containers/runner.Dockerfile }
+    user: "10002:10002"
     ipc: none
-    pids_limit: ${SR_RUNNER_PIDS_LIMIT:-1024}
+    pids_limit: 128
     cpus: ${SR_RUNNER_CPUS:-2}
-    mem_limit: ${SR_RUNNER_MEM_LIMIT:-6g}
-    memswap_limit: ${SR_RUNNER_MEM_LIMIT:-6g}
-    # Exit 70 (sweep failed) and 71 (supervisor setup failed) end the container; it restarts clean.
-    restart: unless-stopped
+    mem_limit: ${SR_RUNNER_MEM_LIMIT:-1g}
     stop_grace_period: 60s
     environment:
       SR_RUNNER_SERVER_URL: http://${SR_SERVER_RUNNER_ADDR:-172.29.71.2}:3001
       SR_RUNNER_SECRET: ${SR_RUNNER_SECRET:-}
       SR_RUNNER_ID: ${SR_RUNNER_ID:-runner}
-      SR_RUNNER_EGRESS_PROXY: http://${SR_PROXY_RUNNER_ADDR:-172.29.71.3}:3128
-      SR_RUNNER_CLAUDIUS_URL: ${SR_RUNNER_CLAUDIUS_URL:-https://github.com/lklimek/claudius.git}
-      SR_RUNNER_CLAUDIUS_REF: ${SR_RUNNER_CLAUDIUS_REF:-main}
-      SR_RUNNER_CLAUDIUS_REFRESH_SECS: ${SR_RUNNER_CLAUDIUS_REFRESH_SECS:-21600}
-      SR_RUNNER_SKILLS: ${SR_RUNNER_SKILLS:-severity}
-      SR_RUNNER_SESSION_RETENTION_DAYS: ${SR_RUNNER_SESSION_RETENTION_DAYS:-14}
+      SR_RUNNER_MIRRORS_DIR: /mirror
       SR_RUNNER_DISK_RESERVE_MIB: ${SR_RUNNER_DISK_RESERVE_MIB:-2048}
-      SR_SUPERVISOR_SWEEP_DEADLINE_MS: ${SR_SUPERVISOR_SWEEP_DEADLINE_MS:-5000}
-      # The runner's own git (claudius checkout, repository mirrors) goes through the proxy too.
+      SR_LAUNCHER_SOCKET: /run/launcher/launcher.sock
+      SR_GATEWAY_ADMIN_URL: http://${SR_GATEWAY_ADMIN_ADDR:-172.29.71.5}:8091
+      SR_GATEWAY_KEYS_TOKEN_FILE: /run/secrets/gateway-keys-token
+      SR_WORKER_SKILLS_COMMIT: ${SR_WORKER_SKILLS_COMMIT:-71096d7d4481977added8761b2cfd63cd84852b4}
       HTTPS_PROXY: http://${SR_PROXY_RUNNER_ADDR:-172.29.71.3}:3128
-      https_proxy: http://${SR_PROXY_RUNNER_ADDR:-172.29.71.3}:3128
       NO_PROXY: localhost,127.0.0.1,${SR_SERVER_RUNNER_ADDR:-172.29.71.2}
-      no_proxy: localhost,127.0.0.1,${SR_SERVER_RUNNER_ADDR:-172.29.71.2}
       RUST_LOG: ${RUST_LOG:-info}
-      NO_COLOR: "1"
     volumes:
-      - runner-state:/var/lib/diffpilot-runner
-      # Disposable (ADR-013): the supervisor gives the roots to the runner, the runner sets their modes and empties
-      # them (after credential recovery from codex-homes) before the first claim.
-      - tmp-runner-codex-homes:/var/lib/diffpilot-runner/codex-homes
-      - tmp-runner-work:/work
-      - tmp-runner:/tmp
+      - runtime-state:/var/lib/diffpilot-runner
+      - c1:/mirror
+      - launcher-socket:/run/launcher
+      - type: bind
+        source: ${SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH:-/srv/diffpilot/secrets/runner-gateway-keys-token}
+        target: /run/secrets/gateway-keys-token
+        read_only: true
+        bind: { create_host_path: false }
+    tmpfs: ["/tmp:uid=10002,gid=10002,mode=0700,size=64m"]
     healthcheck:
-      # The supervisor exits (and the container with it) when the runner stops; healthy = a process whose
-      # argv[0] is the runner binary exists, so the preflight has passed (/proc/<pid>/exe is not readable here),
-      # and the runner's disk-below-reserve marker is absent (SR_RUNNER_DISK_RESERVE_MIB).
-      test:
-        - CMD
-        - /bin/sh
-        - -c
-        - >-
-          [ ! -e /var/lib/diffpilot-runner/disk-below-reserve ] || exit 1;
-          for p in /proc/[0-9]*; do
-          [ "$$(tr '\0' '\n' < $$p/cmdline 2> /dev/null | head -n 1)" = /usr/local/bin/diffpilot-runner ] && exit 0;
-          done; exit 1
+      test: [CMD-SHELL, "test ! -e /var/lib/diffpilot-runner/disk-below-reserve"]
       interval: 30s
       timeout: 5s
-      start_period: 30s
     depends_on:
       server: { condition: service_healthy }
+      launcher: { condition: service_started }
+      codex-gateway: { condition: service_started }
       egress-proxy: { condition: service_healthy }
     networks:
       runner: { ipv4_address: "${SR_RUNNER_ADDR:-172.29.71.4}" }
+
+  launcher:
+    <<: *hardening
+    image: ${SR_RUNNER_IMAGE:-diffpilot-runner:local}
+    command: [--launcher]
+    network_mode: none
+    group_add: ["${SR_DOCKER_GID:-0}"]
+    environment:
+      SR_LAUNCHER_SOCKET: /run/launcher/launcher.sock
+      SR_CONTAINER_PREFIX: ${COMPOSE_PROJECT_NAME:-diffpilot}
+      SR_WORKER_IMAGE: ${SR_WORKER_IMAGE:?set digest-pinned worker image}
+      SR_FETCH_IMAGE: ${SR_FETCH_IMAGE:?set digest-pinned fetch image}
+      SR_WORKER_NETWORK: ${COMPOSE_PROJECT_NAME:-diffpilot}-worker
+      SR_JUDGE_NETWORK: ${COMPOSE_PROJECT_NAME:-diffpilot}-judge
+      SR_WORKER_PROXY: http://egress-proxy:3128
+      SR_WORKER_MEMORY: ${SR_WORKER_MEMORY:-2147483648}
+      SR_WORKER_CPUS: ${SR_WORKER_CPUS:-2}
+      SR_WORKER_PIDS: ${SR_WORKER_PIDS:-1024}
+      SR_WORKER_MAX_RUNNING: ${SR_WORKER_MAX_RUNNING:-3}
+      SR_WORKER_IDLE_STOP: ${SR_WORKER_IDLE_STOP:-1200}
+    volumes:
+      - launcher-socket:/run/launcher
+      - /var/run/docker.sock:/var/run/docker.sock
+    tmpfs: ["/tmp:uid=10002,gid=10002,mode=0700,size=16m"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+
+  codex-gateway:
+    <<: *hardening
+    image: ${SR_SERVER_IMAGE:-diffpilot-server:local}
+    entrypoint: [/usr/local/bin/diffpilot-gateway]
+    user: "10010:10010"
+    healthcheck: { disable: true }
+    stop_grace_period: 55s
+    environment:
+      SR_GATEWAY_MODEL_ADDR: ${SR_GATEWAY_MODEL_ADDR:-172.29.75.2}:8090
+      SR_GATEWAY_JUDGE_ADDR: ${SR_GATEWAY_JUDGE_ADDR:-172.29.76.2}:8090
+      SR_GATEWAY_ADMIN_ADDR: ${SR_GATEWAY_ADMIN_ADDR:-172.29.71.5}:8091
+      SR_GATEWAY_STORE: /var/lib/diffpilot-gateway
+      SR_GATEWAY_SECRET_KEY_FILE: /run/secrets/gateway-secret-key
+      SR_GATEWAY_CREDENTIALS_TOKEN_FILE: /run/secrets/gateway-credentials-token
+      SR_GATEWAY_KEYS_TOKEN_FILE: /run/secrets/gateway-keys-token
+    volumes:
+      - gateway-data:/var/lib/diffpilot-gateway
+      - type: bind
+        source: ${SR_GATEWAY_SECRET_KEY_PATH:-/srv/diffpilot/secrets/gateway-secret-key}
+        target: /run/secrets/gateway-secret-key
+        read_only: true
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${SR_GATEWAY_CREDENTIALS_TOKEN_PATH:-/srv/diffpilot/secrets/gateway-credentials-token}
+        target: /run/secrets/gateway-credentials-token
+        read_only: true
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${SR_GATEWAY_KEYS_TOKEN_PATH:-/srv/diffpilot/secrets/gateway-keys-token}
+        target: /run/secrets/gateway-keys-token
+        read_only: true
+        bind: { create_host_path: false }
+    tmpfs: ["/tmp:uid=10010,gid=10010,mode=0700,size=16m"]
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    networks:
+      runner: { ipv4_address: "${SR_GATEWAY_ADMIN_ADDR:-172.29.71.5}" }
+      worker: { ipv4_address: "${SR_GATEWAY_MODEL_ADDR:-172.29.75.2}" }
+      judge: { ipv4_address: "${SR_GATEWAY_JUDGE_ADDR:-172.29.76.2}" }
+      egress: {}
 
   egress-proxy:
     <<: *hardening
@@ -173,16 +212,17 @@ services:
       options: { max-size: "50m", max-file: "5" }
     networks:
       runner: { ipv4_address: "${SR_PROXY_RUNNER_ADDR:-172.29.71.3}" }
+      worker: {}
       egress: { ipv4_address: "${SR_PROXY_EGRESS_ADDR:-172.29.72.2}" }
 
 volumes:
   server-data: {}
-  runner-state: {}
+  runtime-state: {}
+  launcher-socket: {}
+  gateway-data: {}
+  c1: { name: "${COMPOSE_PROJECT_NAME:-diffpilot}-c1" }
   # Disposable scratch, never backed up (docs/runbook.md, "Temporary volumes").
   tmp-server: *temporary-volume
-  tmp-runner: *temporary-volume
-  tmp-runner-work: *temporary-volume
-  tmp-runner-codex-homes: *temporary-volume
 
 networks:
   public:
@@ -195,3 +235,17 @@ networks:
     ipam: { config: [{ subnet: "${SR_RUNNER_SUBNET:-172.29.71.0/24}" }] }
   egress:
     ipam: { config: [{ subnet: "${SR_EGRESS_SUBNET:-172.29.72.0/24}" }] }
+  worker:
+    name: ${COMPOSE_PROJECT_NAME:-diffpilot}-worker
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+      com.docker.network.bridge.gateway_mode_ipv6: isolated
+    ipam: { config: [{ subnet: "${SR_WORKER_SUBNET:-172.29.75.0/24}" }] }
+  judge:
+    name: ${COMPOSE_PROJECT_NAME:-diffpilot}-judge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+      com.docker.network.bridge.gateway_mode_ipv6: isolated
+    ipam: { config: [{ subnet: "${SR_JUDGE_SUBNET:-172.29.76.0/24}" }] }

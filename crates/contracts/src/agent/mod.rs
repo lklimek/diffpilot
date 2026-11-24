@@ -46,8 +46,8 @@ impl JobKind {
         Self::VerifyComments,
     ];
 
-    /// The claudius skills a job of this kind is given and needs (ADR-002); the runner gives only skills its
-    /// `SR_RUNNER_SKILLS` allows. A `verify_comments` prompt states what it needs itself (ADR-002 amendment
+    /// The claudius skills a job of this kind is given and needs (ADR-002); the runner gives only skills
+    /// the pinned worker image supplies. A `verify_comments` prompt states what it needs itself (ADR-002 amendment
     /// 2026-11-23).
     pub fn required_skills(self) -> &'static [&'static str] {
         match self {

@@ -1087,7 +1087,6 @@ mod ranked {
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use contracts::api::dashboard::{RankingState, RepositoryRule};
     use contracts::common::RepoRef;
-    use contracts::job::spec::{CredentialKind, LlmCredentialRef};
     use db::repo::dashboard::JudgeCounts;
     use reqwest::header::{ACCEPT, LOCATION};
     use serde_json::Value;
@@ -1230,10 +1229,7 @@ mod ranked {
             .llm_credentials()
             .register(
                 DEFAULT_TENANT,
-                &LlmCredentialRef {
-                    id: db::repo::analyses::testing::CREDENTIAL.to_owned(),
-                    kind: CredentialKind::CodexChatgpt,
-                },
+                &contracts::ids::UserId(db::repo::analyses::testing::CREDENTIAL.to_owned()),
                 true,
                 Timestamp::now(),
             )

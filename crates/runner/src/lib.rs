@@ -9,9 +9,6 @@ pub mod phases;
 pub mod provider;
 pub mod scratch;
 pub mod scrub;
-pub mod sessions;
-pub mod skills;
-pub mod supervisor;
 pub mod worker;
 
 #[cfg(test)]

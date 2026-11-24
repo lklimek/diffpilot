@@ -19,6 +19,22 @@ fn secret_file(name: &str) -> Result<String, Error> {
     Ok(std::fs::read_to_string(path)?.trim().to_owned())
 }
 
+fn judge_address(
+    value: Option<&str>,
+    model: SocketAddr,
+    admin: SocketAddr,
+) -> Result<Option<SocketAddr>, Error> {
+    value
+        .map(|value| {
+            let address: SocketAddr = value.parse().map_err(|_| Error::Configuration)?;
+            if address.ip().is_unspecified() || address.ip() == admin.ip() || address == model {
+                return Err(Error::Configuration);
+            }
+            Ok(address)
+        })
+        .transpose()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt()
@@ -34,6 +50,11 @@ async fn main() -> Result<(), Error> {
     if admin.ip().is_unspecified() || admin.ip() == model.ip() || admin.port() == model.port() {
         return Err(Error::Configuration);
     }
+    let judge = judge_address(
+        std::env::var("SR_GATEWAY_JUDGE_ADDR").ok().as_deref(),
+        model,
+        admin,
+    )?;
     let key: [u8; 32] = STANDARD
         .decode(secret_file("SR_GATEWAY_SECRET_KEY_FILE")?)
         .map_err(|_| Error::Configuration)?
@@ -52,13 +73,50 @@ async fn main() -> Result<(), Error> {
     )?);
     let model = tokio::net::TcpListener::bind(model).await?;
     let admin = tokio::net::TcpListener::bind(admin).await?;
+    let judge = match judge {
+        Some(address) => Some(tokio::net::TcpListener::bind(address).await?),
+        None => None,
+    };
+    let judge_model = async {
+        match judge {
+            Some(listener) => axum::serve(listener, gateway.model_router()).await,
+            None => std::future::pending().await,
+        }
+    };
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
         result = axum::serve(model, gateway.model_router()) => result,
         result = axum::serve(admin, gateway.admin_router()) => result,
+        result = judge_model => result,
         result = tokio::signal::ctrl_c() => result,
         _ = terminate.recv() => Ok(()),
     };
     gateway.shutdown().await;
     result.map_err(Error::Io)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn judge_listener_uses_its_own_interface_and_keeps_admin_private() {
+        let model = "172.29.75.2:8090".parse().unwrap();
+        let admin = "172.29.71.5:8091".parse().unwrap();
+        assert_eq!(judge_address(None, model, admin).unwrap(), None);
+        assert_eq!(
+            judge_address(Some("172.29.76.2:8090"), model, admin).unwrap(),
+            Some("172.29.76.2:8090".parse().unwrap())
+        );
+        for address in [
+            "0.0.0.0:8090",
+            "172.29.71.5:8090",
+            "172.29.75.2:8090",
+            "invalid",
+        ] {
+            assert!(
+                judge_address(Some(address), model, admin).is_err(),
+                "{address}"
+            );
+        }
+    }
 }

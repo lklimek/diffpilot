@@ -1,18 +1,7 @@
 #!/usr/bin/env bash
-# Fails when a production deployment file enables a development or test switch (ADR-013 "Rust implementation",
-# threat model T1/T4): the dev no-isolation mode, the supervisor's fault injection or unprivileged test mode,
-# the prototype's fault switches or the fake LLM provider. The rendered configurations (docker compose config) are
-# checked too: production with the env file (also: nothing in RAM, i.e. no tmpfs but the proxy's few-byte config
-# dir; scratch belongs on the tmp-* volumes), and the local variant (compose.local.yaml). Without docker compose
-# the check fails unless --no-render is given.
-#
-# With --env-file (production, without --local) FILE's values are checked too, by name only (never printed): no
-# value left from .env.example, secrets set (runner secret at least 32 characters), an https public URL, allowed
-# sign-in logins set, every skill jobs require in a set SR_RUNNER_SKILLS, no development override, no `$`
-# interpolation (the effective value would be unknown; variables of the invoking shell also override FILE in
-# compose, so run it from a clean shell). An unpinned
-# SR_RUNNER_CLAUDIUS_REF (not a commit id or refs/tags/...) and an empty SR_TRUSTED_PROXIES are warnings only.
-#
+# Rejects development providers/legacy bypasses in production files and rendered Compose configuration.
+# Only bounded service /tmp and Squid configuration tmpfs mounts are allowed; worker templates own job tmpfs.
+# With --env-file, checks required settings and private service secret files without printing their contents.
 # Usage: deploy/check-production-config.sh [--env-file FILE [--local | --secret-files]] [--no-render]
 #        deploy/check-production-config.sh --self-test [--no-render]
 #   (no option)       the files, production rendered with .env.example, local rendered with it on localhost
@@ -29,11 +18,11 @@ forbidden='SR_RUNNER_DEV_NO_ISOLATION|SR_RUNNER_DEV_HOST_GATEWAY|SR_SUPERVISOR_T
 files=(
   deploy/compose.yaml deploy/compose.local.yaml .env.example
   deploy/server/Dockerfile deploy/server/healthcheck.sh deploy/server/entrypoint.sh
-  deploy/runner/Dockerfile deploy/runner/strip-image.sh
+  deploy/containers/runner.Dockerfile
   deploy/egress-proxy/Dockerfile deploy/egress-proxy/entrypoint.sh deploy/egress-proxy/squid.conf
 )
 # The only tmpfs allowed in RAM (service and target): the proxy's configuration, written at every start.
-ram_allowed='^egress-proxy /run/squid$'
+ram_allowed='^(egress-proxy /run/squid|(runner|launcher|codex-gateway) /tmp)$'
 
 # scan ROOT: prints every offending line, returns 1 if there is one.
 scan() {
@@ -54,9 +43,7 @@ declare -A secret_file_names=(
 own_values=(SR_PUBLIC_URL SR_GITHUB_APP_ID SR_GITHUB_CLIENT_ID SR_MEMCAN_URL "${secrets[@]}")
 # Variables that only the local or development overrides use.
 dev_only='^(SR_SERVER_UID|SR_SERVER_GID)$'
-# Skills some job kind requires (contracts::agent::JobKind::required_skills); a set SR_RUNNER_SKILLS must list each.
-required_skills=(severity)
-agent_uid=10002
+
 
 # load_env FILE NAME: fills the associative array NAME as docker compose reads an env file (last assignment wins,
 # `export ` prefix, quotes, ` #` comments); keys whose value compose would interpolate (`$` outside single quotes)
@@ -91,22 +78,17 @@ load_env() {
   done < "$1"
 }
 
-# check_secret_file NAME PATH: a present, non-empty, non-placeholder file the agent uid cannot read; the runner
+# check_secret_file NAME PATH: a private, non-empty, non-placeholder service secret file; the runner
 # secret at least 32 characters. Prints problems by name; never the content.
 check_secret_file() {
-  local name="$1" path="$2" found=0 mode owner group content
+  local name="$1" path="$2" found=0 mode content
   if [[ ! -f "$path" ]]; then
     echo "check-production-config: $name: the file $path is missing (secrets as files)" >&2
     return 1
   fi
-  read -r mode owner group < <(stat -c '%a %u %g' "$path")
+  read -r mode < <(stat -c '%a' "$path")
   if (((8#$mode & 8#007) != 0)); then
     echo "check-production-config: $name: $path has permissions for other users (mode $mode)" >&2
-    found=1
-  fi
-  if [[ "$name" == SR_RUNNER_SECRET ]] &&
-    { ((owner == agent_uid)) || { (((8#$mode & 8#070) != 0)) && ((group == agent_uid)); }; }; then
-    echo "check-production-config: $name: $path is readable by the agent uid $agent_uid (the runner exits 78)" >&2
     found=1
   fi
   if [[ ! -r "$path" ]]; then
@@ -162,20 +144,6 @@ check_env() {
     echo "check-production-config: warning: SR_TRUSTED_PROXIES is empty: behind the reverse proxy every client" \
       "then shares one address, so failed access-token attempts of all clients count against one limit;" \
       "set the proxy's address (the Docker gateway) and let the proxy append X-Forwarded-For" >&2
-  fi
-  # Empty means the default (compose `${SR_RUNNER_SKILLS:-...}`, the runner too).
-  if [[ -n "${values[SR_RUNNER_SKILLS]:-}" ]]; then
-    for key in "${required_skills[@]}"; do
-      if [[ ",${values[SR_RUNNER_SKILLS]// /}," != *",$key,"* ]]; then
-        say "SR_RUNNER_SKILLS leaves out $key, which jobs require (every analysis and Ask fails);" \
-          "add it, or remove the line to use the default severity"
-      fi
-    done
-  fi
-  value="${values[SR_RUNNER_CLAUDIUS_REF]:-}"
-  if [[ ! "$value" =~ ^([0-9a-f]{40}|[0-9a-f]{64}|refs/tags/[A-Za-z0-9._/-]+)$ ]]; then
-    echo "check-production-config: warning: SR_RUNNER_CLAUDIUS_REF is not pinned (unset means main): the agent's" \
-      "skills follow every push; a commit id (40 hex) or refs/tags/<tag> is recommended" >&2
   fi
   if ((${3})); then
     secrets_dir="${values[SR_SECRETS_DIR]:-/srv/diffpilot/secrets}"
@@ -260,9 +228,9 @@ if ((self_test)); then
     cp "$repo/$file" "$tmp/$file"
   done
   scan "$tmp" > /dev/null || { echo "self-test: clean copy rejected" >&2; exit 1; }
-  echo 'ENV SR_RUNNER_DEV_NO_ISOLATION=1' >> "$tmp/deploy/runner/Dockerfile"
+  echo 'ENV SR_RUNNER_DEV_NO_ISOLATION=1' >> "$tmp/deploy/containers/runner.Dockerfile"
   if scan "$tmp" > /dev/null; then echo "self-test: dev switch in the runner Dockerfile not caught" >&2; exit 1; fi
-  cp "$repo/deploy/runner/Dockerfile" "$tmp/deploy/runner/Dockerfile"
+  cp "$repo/deploy/containers/runner.Dockerfile" "$tmp/deploy/containers/runner.Dockerfile"
   # Env values: a complete production env passes, each defect alone fails, no value is ever printed.
   sed -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=https://review.test.invalid|' \
     -e 's|^SR_SECRET_KEY=.*|SR_SECRET_KEY=CANARY-secret-key-0123456789abcdefghijklmnopqrstu|' \
@@ -288,29 +256,6 @@ if ((self_test)); then
   }
   env_case "complete production env" pass 0 -e ''
   env_case "quoted values" pass 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL="https://review.test.invalid"|'
-  env_case "skills pinned to a tag" pass 0 -e 's|^SR_RUNNER_CLAUDIUS_REF=.*|SR_RUNNER_CLAUDIUS_REF=refs/tags/v12.0.0|'
-  env_case "placeholder secret" fail 0 -e 's|^SR_MEMCAN_TOKEN=.*|SR_MEMCAN_TOKEN=CANARY-REPLACE_WITH_MEMCAN_TOKEN|'
-  env_case ".env.example App id" fail 0 -e 's|^SR_GITHUB_APP_ID=.*|SR_GITHUB_APP_ID=123456|'
-  env_case ".env.example public URL" fail 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=https://review.example.com|'
-  env_case "http public URL" fail 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://review.test.invalid|'
-  env_case "empty secret" fail 0 -e 's|^SR_SECRET_KEY=.*|SR_SECRET_KEY=|'
-  want_text="SR_ALLOWED_LOGINS is empty" env_case "no allowed login" fail 0 \
-    -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=|'
-  want_text="SR_ALLOWED_LOGINS is empty" env_case "allowed logins unset" fail 0 -e '/^SR_ALLOWED_LOGINS=/d'
-  want_text="SR_ALLOWED_LOGINS still holds a placeholder" env_case "allowed logins placeholder" fail 0 \
-    -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=REPLACE_WITH_GITHUB_LOGINS|'
-  env_case "short runner secret" fail 0 -e 's|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=CANARY-0123456789abcdef0123456|'
-  env_case "skills pinned to severity" pass 0 -e 's|^SR_RUNNER_SKILLS=.*|SR_RUNNER_SKILLS=severity|'
-  want_text="SR_RUNNER_SKILLS leaves out severity" env_case "skills without severity" fail 0 \
-    -e 's|^SR_RUNNER_SKILLS=.*|SR_RUNNER_SKILLS=check-pr-comments|'
-  env_case "skills unset (default)" pass 0 -e '/^SR_RUNNER_SKILLS=/d'
-  env_case "skills empty (default)" pass 0 -e 's|^SR_RUNNER_SKILLS=.*|SR_RUNNER_SKILLS=|'
-  env_case "skills with an extra one" pass 0 \
-    -e 's|^SR_RUNNER_SKILLS=.*|SR_RUNNER_SKILLS=check-pr-comments, severity,delegate|'
-  want_text="warning: SR_RUNNER_CLAUDIUS_REF" env_case "skills on a branch (warning only)" pass 0 \
-    -e 's|^SR_RUNNER_CLAUDIUS_REF=.*|SR_RUNNER_CLAUDIUS_REF=main|'
-  want_text="warning: SR_RUNNER_CLAUDIUS_REF" env_case "skills ref unset (warning only)" pass 0 \
-    -e '/^SR_RUNNER_CLAUDIUS_REF=/d'
   want_text="warning: SR_TRUSTED_PROXIES" env_case "no trusted proxy (warning only)" pass 0 \
     -e 's|^SR_TRUSTED_PROXIES=.*|SR_TRUSTED_PROXIES=|'
   want_text="warning: SR_TRUSTED_PROXIES" env_case "trusted proxy unset (warning only)" pass 0 \

@@ -10,7 +10,7 @@ use contracts::api::dashboard::{
 use contracts::common::RepoRef;
 use contracts::ids::RefreshId;
 use contracts::job::result::{JobOutcome, JobResult};
-use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
+use contracts::job::spec::JobPriority;
 use contracts::job::state::JobState;
 use db::repo::dashboard::{JudgeCounts, SendCaps, SendReservation, StartOutcome};
 use db::repo::jobs::{ClaimParams, JobRecord, JobStage};
@@ -241,10 +241,7 @@ async fn harness() -> Harness {
     db.llm_credentials()
         .register(
             DEFAULT_TENANT,
-            &LlmCredentialRef {
-                id: CREDENTIAL_ID.to_owned(),
-                kind: CredentialKind::CodexChatgpt,
-            },
+            &contracts::ids::UserId(CREDENTIAL_ID.to_owned()),
             true,
             Timestamp::now(),
         )
@@ -1716,10 +1713,9 @@ async fn unclaimed_judge_job_ends_the_ranking() {
     assert_eq!(error.message(), "No runner picked up the ranking job");
 }
 
-/// An Ask claimed ahead of the judge job (Ask goes first, plan §5.3) holds the credential: that wait is not
-/// "unclaimed"; once the credential is idle again the limit applies as before.
+/// PR Ask and dashboard judging use independent containers for the same payer.
 #[tokio::test]
-async fn ask_holding_the_credential_does_not_count_as_unclaimed() {
+async fn ask_container_does_not_suppress_the_unclaimed_judge_limit() {
     let h = harness().await;
     let snap = snapshot(prs(1), vec![], vec![]);
     let id = h.stored("u1", &snap).await;
@@ -1776,20 +1772,12 @@ async fn ask_holding_the_credential_does_not_count_as_unclaimed() {
     let ask = h.claim().await;
     assert_eq!(ask.kind, JobKind::Ask, "the later Ask is claimed first");
 
-    ranking
-        .observe(job)
-        .await
-        .expect("waiting behind an Ask, not unclaimed");
-    assert_eq!(ranking.live, RankingState::Running);
-    assert_eq!(ranking.unclaimed_since, None);
-
-    h.complete(&ask, JobOutcome::Cancelled).await;
-    ranking.unclaimed_since = Some(long_ago);
     let error = ranking
         .observe(job)
         .await
-        .expect_err("idle credential, unclaimed too long");
+        .expect_err("an active Ask does not occupy the judge container");
     assert!(matches!(error, RankError::Unclaimed));
+    h.complete(&ask, JobOutcome::Cancelled).await;
 }
 
 #[tokio::test]

@@ -140,11 +140,9 @@ pub async fn claim(
             "paused jobs queued again after the usage limit reset"
         );
     }
-    db.analyses()
-        .ack_session_drops(&request.dropped_sessions)
-        .await?;
+    db.analyses().ack_session_drops(&request.retired).await?;
     let usable = db.llm_credentials().linked_payers().await?;
-    let drop_sessions = db.analyses().pending_session_drops().await?;
+    let retire = db.analyses().pending_session_drops().await?;
     let (token, hash) = mint_token()?;
     let lease_expires_at = lease_until(now);
     let claimed = db
@@ -232,11 +230,7 @@ pub async fn claim(
         }
         None => None,
     };
-    Ok(ClaimResponse {
-        retire: drop_sessions.clone(),
-        claim,
-        drop_sessions,
-    })
+    Ok(ClaimResponse { retire, claim })
 }
 
 /// A dashboard job's spec as handed out: it holds nothing beyond its prompt and schema, whatever was stored (no
@@ -518,9 +512,8 @@ mod tests {
     use contracts::agent::JobKind;
     use contracts::common::RepoRef;
     use contracts::ids::{FlowId, JobId};
-    use contracts::job::protocol::CredentialStatus;
     use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
-    use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
+    use contracts::job::spec::JobPriority;
     use contracts::routes::RUNNER_RESULT;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec};
     use db::repo::jobs::NewJob;
@@ -759,14 +752,7 @@ mod tests {
     fn request() -> ClaimRequest {
         ClaimRequest {
             runner_id: "runner-1".to_owned(),
-            credentials: vec![CredentialStatus {
-                credential: LlmCredentialRef {
-                    id: CREDENTIAL.to_owned(),
-                    kind: CredentialKind::CodexChatgpt,
-                },
-                usable: true,
-            }],
-            dropped_sessions: Vec::new(),
+            retired: Vec::new(),
         }
     }
 
@@ -1225,9 +1211,9 @@ mod tests {
             waiting.claim.is_none(),
             "do not start a job before archive deletion is acknowledged"
         );
-        assert_eq!(waiting.drop_sessions, [1]);
+        assert_eq!(waiting.retire, [1]);
         let mut acknowledged = request();
-        acknowledged.dropped_sessions = vec![1];
+        acknowledged.retired = vec![1];
         let response = claim(
             &s.db,
             &s.config,
@@ -1237,7 +1223,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(response.drop_sessions.is_empty());
+        assert!(response.retire.is_empty());
         let claimed = response.claim.unwrap();
         assert_eq!(claimed.spec.session, None);
     }
@@ -1454,10 +1440,7 @@ mod tests {
                         .remove_status(CREDENTIAL)
                         .await
                         .unwrap();
-                    let idle = ClaimRequest {
-                        credentials: Vec::new(),
-                        ..request()
-                    };
+                    let idle = ClaimRequest { ..request() };
                     let after_lease = claimed.lease_expires_at + SignedDuration::from_secs(1);
                     claim(&state.db, &state.config, &no_packs(), &idle, after_lease)
                         .await
@@ -1489,10 +1472,7 @@ mod tests {
             .await
             .expect("output");
         s.db.jobs().request_cancel(job, now).await.expect("cancel");
-        let idle = ClaimRequest {
-            credentials: Vec::new(),
-            ..request()
-        };
+        let idle = ClaimRequest { ..request() };
         claim(
             &s.db,
             &s.config,
@@ -1728,10 +1708,7 @@ mod tests {
             .remove_status(CREDENTIAL)
             .await
             .unwrap();
-        let idle = ClaimRequest {
-            credentials: Vec::new(),
-            ..request()
-        };
+        let idle = ClaimRequest { ..request() };
         let started = std::time::Instant::now();
         claim(
             &state.db,

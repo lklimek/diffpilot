@@ -89,12 +89,12 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
     "LLM assessment",
     "Round",
   ]);
-  // TODO(W5): reconcile legacy 10-item/9-assessment expectations with merged source admission (observed 15/14).
+  // Source placeholders are visible while the bounded assessment pass runs.
   await expect(card.getByRole("definition")).toHaveText([
     /^6 read \d\d:\d\d/,
-    "10",
+    "15",
     "0 decisions",
-    "LLM assessment running: 0 of 9 comments",
+    "LLM assessment running: 0 of 14 comments",
     "3 (thepastaclaw)",
   ]);
   await expect(page.getByRole("region", { name: "Review a PR" })).toContainText("No analysis yet.");

@@ -141,13 +141,30 @@ jobs:
         run: docker build --build-context workspace=. -t diffpilot-egress-proxy:local deploy/egress-proxy
       - name: Egress proxy test (SSRF guard, MemCan exception, no request data in logs)
         run: PROXY_SKIP_BUILD=1 deploy/egress-proxy/test.sh "$RUNNER_TEMP/egress-proxy-test.log"
-      # Builds the runner image (targets base and runner) and the test image; the real-Codex job needs a login and
-      # is skipped (the suite prints the skip).
-      - name: Runner container suite (Rust supervisor, production image checks)
+      - name: Build the runner and test launcher isolation
+        run: |
+          docker build -f deploy/containers/runner.Dockerfile -t v13w3-runner:test .
+          deploy/containers/test-launcher-image.sh
+      - name: Build and test the worker with the approved curated skill tree
+        run: |
+          git clone --no-checkout https://github.com/lklimek/claudius.git "$RUNNER_TEMP/claudius"
+          git -C "$RUNNER_TEMP/claudius" checkout --detach 71096d7d4481977added8761b2cfd63cd84852b4
+          deploy/containers/prepare-claudius.sh "$RUNNER_TEMP/claudius" "$RUNNER_TEMP/worker-claudius"
+          docker build --build-context claudius="$RUNNER_TEMP/worker-claudius" \
+            -f deploy/worker/Dockerfile -t v13w3-worker:test .
+          deploy/containers/test-worker-image.sh
+      - name: Dependency fetch container and worker egress
         env:
-          R1_SUPERVISOR: rust
-          R1_SKIP_CODEX: "1"
-        run: deploy/runner/r1-test/run.sh "$RUNNER_TEMP/r1-test.log"
+          SR_CARGO_COMMAND: cargo
+          SR_CS3_TMPDIR: ${{ runner.temp }}
+          CARGO_BUILD_JOBS: "2"
+        # This job uses hosted runners; the local ledger wrapper is host-specific.
+        # Install the pinned toolchain for the template exporter used by the test.
+        run: |
+          rustup toolchain install --no-self-update
+          deploy/containers/test-cs3-squid.sh
+      - name: Container deployment wiring
+        run: deploy/test-stack.sh "$RUNNER_TEMP/stack-config.log"
       - name: Build the server image
         run: docker build -f deploy/server/Dockerfile -t diffpilot-server:local .
       - name: Server image answers its healthcheck
@@ -170,11 +187,6 @@ jobs:
           docker logs sr-ci-server
           docker exec sr-ci-server id
           [ "$status" = healthy ]
-      # Needs Docker Engine 28.0+ (isolated runner network).
-      - name: Stack test (runner reaches only the proxy and its listener; limits)
-        run: |
-          docker version -f 'Docker Engine {{.Server.Version}}'
-          deploy/test-stack.sh "$RUNNER_TEMP/stack-test.log"
       - name: Remove test containers
         if: always()
         run: docker rm -f -v sr-ci-server || true

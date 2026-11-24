@@ -23,19 +23,8 @@
           "type": "null"
         }
       ]
-    },
-    "drop_sessions": {
-      "description": "Pull-request keys whose session files the runner must delete (explicit removal; ADR-004).",
-      "type": "array",
-      "items": {
-        "type": "integer",
-        "format": "int64"
-      }
     }
   },
-  "required": [
-    "drop_sessions"
-  ],
   "$defs": {
     "Claim": {
       "description": "A claimed job.",

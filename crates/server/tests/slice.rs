@@ -664,7 +664,7 @@ impl Harness {
                 "credential": { "id": self.user_id, "kind": "codex_chatgpt" },
                 "usable": true,
             }],
-            "dropped_sessions": [],
+            "retired": [],
         });
         let (status, body) = self
             .runner(RUNNER_CLAIM.path, "fake-runner-secret", request)

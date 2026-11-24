@@ -1,7 +1,6 @@
 //! The job loop against a wiremock server with a scripted provider. Time runs at 40 ms per `LeaseTiming`
 //! second: lease 2400 ms, heartbeat 600 ms, fence 1400 ms, grace 400 ms, cleanup 200 ms.
 
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -21,7 +20,7 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 use super::*;
 use crate::execute::Executor;
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderOutcome};
-use crate::test_support::{credential, dirs, shared_repo, spec};
+use crate::test_support::{dirs, shared_repo, spec};
 
 const UNIT: Duration = Duration::from_millis(40);
 const RUNNER_SECRET: &str = "runner-secret-WORKER-CANARY";
@@ -41,12 +40,11 @@ struct Scripted {
     cancel_called: AtomicBool,
     cancelled: Notify,
     finished: AtomicBool,
-    job_dir: Mutex<Option<PathBuf>>,
     /// Events the job loop accepted.
     sent: AtomicUsize,
     /// `sent` when the first cancel arrived (the start of the stop; later events are discarded).
     sent_at_cancel: Mutex<Option<usize>>,
-    /// Ignoring the cancel, the call still ends this long after it (a supervisor sweep in production).
+    /// Simulated worker cleanup completes this long after cancellation.
     ends_after_cancel: Option<Duration>,
     cancel_at: Mutex<Option<Instant>>,
 }
@@ -62,20 +60,11 @@ impl Scripted {
             cancel_called: AtomicBool::new(false),
             cancelled: Notify::new(),
             finished: AtomicBool::new(false),
-            job_dir: Mutex::new(None),
             sent: AtomicUsize::new(0),
             sent_at_cancel: Mutex::new(None),
             ends_after_cancel: None,
             cancel_at: Mutex::new(None),
         }
-    }
-
-    fn job_dir(&self) -> PathBuf {
-        self.job_dir
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("the provider ran")
     }
 }
 
@@ -90,12 +79,11 @@ impl Drop for SetOnDrop<'_> {
 impl LlmProvider for Scripted {
     fn run<'a>(
         &'a self,
-        call: &'a ProviderCall,
+        _call: &'a ProviderCall,
         events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
         Box::pin(async move {
             let _finished = SetOnDrop(&self.finished);
-            *self.job_dir.lock().unwrap() = Some(call.job_dir.clone());
             for _ in 0..self.events {
                 if self.step.is_zero() {
                     // A flood: no timer between events.
@@ -185,7 +173,7 @@ async fn setup(provider: Scripted, claim_delay: Duration) -> Setup {
     setup_with(provider, claim_delay, false).await
 }
 
-async fn setup_with(provider: Scripted, claim_delay: Duration, detached: bool) -> Setup {
+async fn setup_with(provider: Scripted, claim_delay: Duration, _detached: bool) -> Setup {
     let server = MockServer::start().await;
     let root = TempDir::new().unwrap();
     let spec = spec(JobKind::Plan, shared_repo());
@@ -196,7 +184,6 @@ async fn setup_with(provider: Scripted, claim_delay: Duration, detached: bool) -
             lease_expires_at: Timestamp::now(),
             spec: spec.clone(),
         }),
-        drop_sessions: Vec::new(),
     };
     Mock::given(method("POST"))
         .and(path("/runner/v1/claim"))
@@ -213,12 +200,8 @@ async fn setup_with(provider: Scripted, claim_delay: Duration, detached: bool) -
         .mount(&server)
         .await;
     let provider = Arc::new(provider);
-    let executor = Executor::new(provider.clone(), dirs(root.path()), credential());
-    let executor = Arc::new(if detached {
-        executor.with_detached_attempts()
-    } else {
-        executor
-    });
+    let executor = Executor::new(provider.clone(), dirs(root.path()));
+    let executor = Arc::new(executor);
     let client = ServerClient::new(
         &server.uri(),
         Secret::new(RUNNER_SECRET),
@@ -231,7 +214,6 @@ async fn setup_with(provider: Scripted, claim_delay: Duration, detached: bool) -
         "runner-test".to_owned(),
         Secret::new(RUNNER_SECRET),
         timing(),
-        Arc::new(|| true),
     );
     Setup {
         server,
@@ -290,13 +272,7 @@ async fn claim_events_output_and_result_in_order() {
     );
     let claim: ClaimRequest = body(&setup.server.received_requests().await.unwrap()[0]);
     assert_eq!(claim.runner_id, "runner-test");
-    assert_eq!(
-        claim.credentials,
-        [CredentialStatus {
-            credential: credential(),
-            usable: true
-        }]
-    );
+    assert!(claim.retired.is_empty());
 
     let all = setup.server.received_requests().await.unwrap();
     let position = |kind: &str| {
@@ -332,7 +308,7 @@ async fn claim_events_output_and_result_in_order() {
     assert_eq!(output.output, json!({"answer": 42}));
     let result: JobResult = body(&requests(&setup, "result").await[0]);
     assert_eq!(result.job_id, setup.spec.job_id);
-    assert!(!setup.provider.job_dir().exists(), "work dir removed");
+    assert!(setup.provider.finished.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
@@ -396,7 +372,7 @@ async fn stale_attempt_409_stops_the_agent_without_a_result() {
         setup.provider.finished.load(Ordering::SeqCst),
         "agent call ended"
     );
-    assert!(!setup.provider.job_dir().exists(), "work dir removed");
+    assert!(setup.provider.finished.load(Ordering::SeqCst));
     assert!(
         requests(&setup, "result").await.is_empty(),
         "no result for a stale attempt"
@@ -411,7 +387,7 @@ async fn cancel_flag_cancels_the_provider_and_posts_cancelled() {
     let end = setup.worker.poll_once().await.unwrap();
     assert_eq!(end, Some(JobEnd::ResultPosted(JobOutcome::Cancelled)));
     assert!(setup.provider.cancel_called.load(Ordering::SeqCst));
-    assert!(!setup.provider.job_dir().exists(), "work dir removed");
+    assert!(setup.provider.finished.load(Ordering::SeqCst));
 }
 
 #[tokio::test]
@@ -432,7 +408,7 @@ async fn provider_ignoring_cancel_is_killed_after_the_grace() {
         setup.provider.finished.load(Ordering::SeqCst),
         "agent call dropped"
     );
-    assert!(!setup.provider.job_dir().exists(), "work dir removed");
+    assert!(setup.provider.finished.load(Ordering::SeqCst));
 }
 
 /// A detached attempt keeps producing events after the cancel grace (its agent ignores SIGTERM) while the job
@@ -457,8 +433,7 @@ async fn cancel_with_full_event_channels_settles_a_detached_attempt() {
     );
 }
 
-/// A stop signal while a job runs: the attempt is cancelled and the worker returns only after it has ended
-/// (under the supervisor: stop, sweep and credential copy-back), not while it is still finishing.
+/// A stop signal cancels the attempt; the worker returns after its cleanup settles.
 #[tokio::test]
 async fn shutdown_cancels_the_running_attempt_and_waits_for_it_to_end() {
     let mut provider = Scripted::new(usize::MAX, UNIT / 4);
@@ -546,7 +521,7 @@ async fn self_fence_completes_before_lease() {
     );
     assert!(setup.provider.cancel_called.load(Ordering::SeqCst));
     assert!(setup.provider.finished.load(Ordering::SeqCst), "agent gone");
-    assert!(!setup.provider.job_dir().exists(), "cleanup done");
+    assert!(setup.provider.finished.load(Ordering::SeqCst));
     assert!(
         requests(&setup, "result").await.is_empty(),
         "no result after fencing"
@@ -609,16 +584,15 @@ async fn runner_secrets_never_leave_in_bodies() {
 }
 
 #[tokio::test]
-async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
+async fn retired_are_acknowledged_with_the_next_claim() {
     let server = MockServer::start().await;
     let root = TempDir::new().unwrap();
     let analysis = 1;
     Mock::given(method("POST"))
         .and(path("/runner/v1/claim"))
         .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
-            retire: Vec::new(),
+            retire: vec![analysis],
             claim: None,
-            drop_sessions: vec![analysis],
         }))
         .up_to_n_times(1)
         .mount(&server)
@@ -628,18 +602,13 @@ async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
         .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
             retire: Vec::new(),
             claim: None,
-            drop_sessions: Vec::new(),
         }))
         .mount(&server)
         .await;
     let executor = Arc::new(Executor::new(
         Arc::new(Scripted::new(0, UNIT)),
         dirs(root.path()),
-        credential(),
     ));
-    let stored = executor.sessions().dir(analysis);
-    std::fs::create_dir_all(stored.join("2026/11/16")).unwrap();
-    std::fs::write(stored.join("2026/11/16/rollout-x.jsonl"), "{}\n").unwrap();
     let client = ServerClient::new(
         &server.uri(),
         Secret::new(RUNNER_SECRET),
@@ -652,100 +621,23 @@ async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
         "r".to_owned(),
         Secret::new(RUNNER_SECRET),
         timing(),
-        Arc::new(|| true),
     );
     assert_eq!(worker.poll_once().await.unwrap(), None);
-    assert!(!stored.exists(), "the dropped session's files are deleted");
     assert_eq!(worker.poll_once().await.unwrap(), None);
     let claims = server.received_requests().await.unwrap();
-    assert!(body::<ClaimRequest>(&claims[0]).dropped_sessions.is_empty());
-    assert_eq!(
-        body::<ClaimRequest>(&claims[1]).dropped_sessions,
-        [analysis]
-    );
+    assert!(body::<ClaimRequest>(&claims[0]).retired.is_empty());
+    assert_eq!(body::<ClaimRequest>(&claims[1]).retired, [analysis]);
 }
 
 #[tokio::test]
-async fn below_the_reserve_the_runner_takes_no_job_but_still_drops_sessions() {
-    let server = MockServer::start().await;
-    let root = TempDir::new().unwrap();
-    let analysis = 1;
-    Mock::given(method("POST"))
-        .and(path("/runner/v1/claim"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
-            retire: Vec::new(),
-            claim: None,
-            drop_sessions: vec![analysis],
-        }))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/runner/v1/claim"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
-            retire: Vec::new(),
-            claim: None,
-            drop_sessions: Vec::new(),
-        }))
-        .mount(&server)
-        .await;
-    let executor = Arc::new(Executor::new(
-        Arc::new(Scripted::new(0, UNIT)),
-        dirs(root.path()),
-        credential(),
+async fn below_the_reserve_the_runner_takes_no_job() {
+    let mut setup = setup(Scripted::new(0, UNIT), Duration::ZERO).await;
+    setup.worker.disk_reserve = Some(crate::scratch::Reserve::new(
+        setup._root.path().to_owned(),
+        u64::MAX,
     ));
-    let stored = executor.sessions().dir(analysis);
-    std::fs::create_dir_all(&stored).unwrap();
-    let worker = |executor: Arc<Executor>, reserve: u64| {
-        let client = ServerClient::new(
-            &server.uri(),
-            Secret::new(RUNNER_SECRET),
-            Duration::from_secs(2),
-        )
-        .unwrap();
-        Worker::new(
-            client,
-            executor,
-            "r".to_owned(),
-            Secret::new(RUNNER_SECRET),
-            timing(),
-            Arc::new(|| true),
-        )
-        .with_disk_reserve(crate::scratch::Reserve::new(
-            root.path().to_owned(),
-            reserve,
-        ))
-    };
-
-    let mut full = worker(Arc::clone(&executor), u64::MAX);
-    assert_eq!(full.poll_once().await.unwrap(), None);
-    assert!(!stored.exists(), "a session drop is still carried out");
-    assert_eq!(full.poll_once().await.unwrap(), None);
-    let mut roomy = worker(executor, 1);
-    assert_eq!(roomy.poll_once().await.unwrap(), None);
-
-    let claims: Vec<ClaimRequest> = server
-        .received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .map(body)
-        .collect();
-    assert_eq!(claims.len(), 3, "polling goes on below the reserve");
-    assert!(
-        claims[0].credentials.is_empty() && claims[1].credentials.is_empty(),
-        "no credential offered, so the server hands out no job"
-    );
-    assert_eq!(
-        claims[1].dropped_sessions,
-        [analysis],
-        "the drop is acknowledged"
-    );
-    assert_eq!(
-        claims[2].credentials.len(),
-        1,
-        "jobs again once enough is free"
-    );
+    assert_eq!(setup.worker.poll_once().await.unwrap(), None);
+    assert!(setup.server.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -760,7 +652,6 @@ async fn wrong_runner_secret_is_a_rejected_claim() {
     let executor = Arc::new(Executor::new(
         Arc::new(Scripted::new(0, UNIT)),
         dirs(root.path()),
-        credential(),
     ));
     let client =
         ServerClient::new(&server.uri(), Secret::new("wrong"), Duration::from_secs(2)).unwrap();
@@ -770,7 +661,6 @@ async fn wrong_runner_secret_is_a_rejected_claim() {
         "r".to_owned(),
         Secret::new("wrong"),
         timing(),
-        Arc::new(|| true),
     );
     assert!(matches!(
         worker.poll_once().await,
@@ -843,7 +733,7 @@ async fn pending_events_are_bounded_while_posts_fail() {
         sent <= MAX_PENDING_EVENTS + 16 + EVENT_BUFFER + 4,
         "the agent was not held back: {sent}"
     );
-    assert!(!setup.provider.job_dir().exists(), "work dir removed");
+    assert!(setup.provider.finished.load(Ordering::SeqCst));
 }
 
 /// Event batches carrying events (heartbeats carry none).
@@ -904,48 +794,6 @@ async fn stale_attempt_on_the_final_flush_suppresses_the_result() {
         requests(&setup, "result").await.is_empty(),
         "no result after a 409"
     );
-}
-
-#[tokio::test]
-async fn claim_reports_a_blocked_credential_as_unusable() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/runner/v1/claim"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
-            retire: Vec::new(),
-            claim: None,
-            drop_sessions: Vec::new(),
-        }))
-        .mount(&server)
-        .await;
-    let root = TempDir::new().unwrap();
-    let executor = Arc::new(Executor::new(
-        Arc::new(Scripted::new(0, UNIT)),
-        dirs(root.path()),
-        credential(),
-    ));
-    let client = ServerClient::new(
-        &server.uri(),
-        Secret::new(RUNNER_SECRET),
-        Duration::from_secs(2),
-    )
-    .unwrap();
-    let usable = Arc::new(AtomicBool::new(true));
-    let check = Arc::clone(&usable);
-    let mut worker = Worker::new(
-        client,
-        executor,
-        "r".to_owned(),
-        Secret::new(RUNNER_SECRET),
-        timing(),
-        Arc::new(move || check.load(Ordering::SeqCst)),
-    );
-    worker.poll_once().await.unwrap();
-    usable.store(false, Ordering::SeqCst);
-    worker.poll_once().await.unwrap();
-    let claims = server.received_requests().await.unwrap();
-    assert!(body::<ClaimRequest>(&claims[0]).credentials[0].usable);
-    assert!(!body::<ClaimRequest>(&claims[1]).credentials[0].usable);
 }
 
 #[tokio::test]

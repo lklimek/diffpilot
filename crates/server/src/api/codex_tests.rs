@@ -1,4 +1,12 @@
-// Included in settings::tests to reuse its authenticated HTTP harness.
+//! Codex settings routes with the authenticated HTTP harness.
+use super::tests::*;
+use super::*;
+use axum::http::StatusCode;
+use contracts::job::result::JobOutcome;
+use db::repo::DEFAULT_TENANT;
+use serde_json::{Value, json};
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
 async fn codex_linking_syncs_only_the_signed_in_payers_safe_status_and_unlinks() {
@@ -309,7 +317,7 @@ async fn codex_status_refresh_preserves_server_pause_and_typed_failure() {
                 h.state
                     .db
                     .settings()
-                    .last_call(DEFAULT_TENANT)
+                    .last_call(DEFAULT_TENANT, "u1")
                     .await
                     .unwrap()
                     .unwrap()
@@ -341,7 +349,7 @@ async fn codex_status_refresh_preserves_server_pause_and_typed_failure() {
         .state
         .db
         .settings()
-        .last_call(DEFAULT_TENANT)
+        .last_call(DEFAULT_TENANT, "u1")
         .await
         .unwrap()
         .unwrap();

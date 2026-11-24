@@ -9,8 +9,7 @@ use contracts::agent::{JobKind, output_schema};
 use contracts::ids::{AnalysisId, CommitSha, JobId, RefreshId};
 use contracts::job::access::AgentAccess;
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobSpec, JobTarget, LlmCredentialRef, ModelChoice,
-    PullRequestTarget, ReasoningEffort, RepoCheckout,
+    JobLimits, JobSpec, JobTarget, ModelChoice, PullRequestTarget, ReasoningEffort, RepoCheckout,
 };
 use serde::Deserialize;
 use tempfile::TempDir;
@@ -56,13 +55,6 @@ pub(crate) fn shared_repo() -> &'static Path {
     })
 }
 
-pub(crate) fn credential() -> LlmCredentialRef {
-    LlmCredentialRef {
-        id: "default".to_owned(),
-        kind: CredentialKind::CodexChatgpt,
-    }
-}
-
 /// A job of `kind` on the fixture repository at `repo`.
 pub(crate) fn spec(kind: JobKind, repo: &Path) -> JobSpec {
     let commits = commits();
@@ -89,7 +81,7 @@ pub(crate) fn spec(kind: JobKind, repo: &Path) -> JobSpec {
             reasoning_effort: ReasoningEffort::High,
         },
         limits: JobLimits::default(),
-        payer: contracts::ids::UserId(credential().id),
+        payer: contracts::ids::UserId("default".into()),
         session: None,
         working_session: (kind == JobKind::Ask).then(|| contracts::job::spec::WorkingSession {
             kind: None,
@@ -127,7 +119,7 @@ pub(crate) fn judge_spec(input: &contracts::agent::judge_work::JudgeWorkInput) -
             reasoning_effort: ReasoningEffort::Low,
         },
         limits: JobLimits::default(),
-        payer: contracts::ids::UserId(credential().id),
+        payer: contracts::ids::UserId("default".into()),
         session: None,
         working_session: None,
         context_pack: None,
@@ -236,9 +228,6 @@ pub(crate) fn judge_input() -> contracts::agent::judge_work::JudgeWorkInput {
 /// Runner directories below `root`.
 pub(crate) fn dirs(root: &Path) -> RunnerDirs {
     RunnerDirs {
-        work: root.join("work"),
-        codex_homes: root.join("state/codex-homes"),
         mirrors: root.join("state/mirrors"),
-        sessions: root.join("state/sessions"),
     }
 }

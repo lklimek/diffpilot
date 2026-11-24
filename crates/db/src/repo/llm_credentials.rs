@@ -1,8 +1,7 @@
-//! Repository for `llm_credentials`: credentials runners hold, their pause and usability, and the last LLM
-//! call outcome shown in Settings. Frozen signatures (cross-WP).
+//! Per-user gateway-observed connection status, usage pauses and last-call outcomes; no provider secrets.
 
+use contracts::ids::UserId;
 use contracts::job::result::{LlmCallOutcome, LlmCallStatus};
-use contracts::job::spec::LlmCredentialRef;
 use contracts::time::Timestamp;
 use sqlx::sqlite::{SqliteQueryResult, SqliteRow};
 use sqlx::{Row, SqlitePool};
@@ -20,7 +19,7 @@ pub struct LlmCredentials<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CredentialRecord {
     /// The credential.
-    pub credential: LlmCredentialRef,
+    pub payer: UserId,
     /// Paused by a usage limit until then.
     pub paused_until: Option<Timestamp>,
     /// Unusable since then (refresh failed; the owner must sign in again).
@@ -147,14 +146,16 @@ impl LlmCredentials<'_> {
         .transpose()
     }
 
-    /// Registers a credential reported by a runner claim, or updates its usability.
+    /// Seeds safe payer status in isolated test databases.
+    #[cfg(any(test, feature = "test-util"))]
     pub async fn register(
         &self,
         tenant_id: &str,
-        credential: &LlmCredentialRef,
+        credential: &UserId,
         usable: bool,
         now: Timestamp,
     ) -> Result<(), DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
         sqlx::query(
             "INSERT INTO llm_credentials (user_id, tenant_id, state, relink_reason, relink_needed_at)
              VALUES (?1, ?2, CASE WHEN ?3 THEN 'linked' ELSE 'relink_needed' END,
@@ -162,29 +163,29 @@ impl LlmCredentials<'_> {
              ON CONFLICT (user_id) DO UPDATE SET state = excluded.state, relink_reason = excluded.relink_reason,
                  relink_needed_at = CASE WHEN ?4 IS NULL THEN NULL ELSE COALESCE(relink_needed_at, ?4) END",
         )
-        .bind(&credential.id)
+        .bind(&credential.0)
         .bind(tenant_id)
         .bind(usable)
         .bind((!usable).then(|| ts(now)))
-        .execute(self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// A credential.
     pub async fn get(&self, id: &str) -> Result<CredentialRecord, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
         let row = sqlx::query(
             "SELECT user_id AS id, paused_until, relink_needed_at AS unusable_since, last_call_at, last_call_ok, last_call_message
              FROM llm_credentials WHERE user_id = ?",
         )
         .bind(id)
-        .fetch_one(self.pool)
+        .fetch_one(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(CredentialRecord {
-            credential: LlmCredentialRef {
-                id: row.try_get("id")?,
-                kind: contracts::job::spec::CredentialKind::CodexChatgpt,
-            },
+            payer: contracts::ids::UserId(row.try_get("id")?),
             paused_until: optional_ts(&row, "paused_until")?,
             unusable_since: optional_ts(&row, "unusable_since")?,
             last_call: last_call_from_row(&row)?,
@@ -193,6 +194,7 @@ impl LlmCredentials<'_> {
 
     /// Records the outcome of a call made with the credential.
     pub async fn record_call(&self, id: &str, outcome: &LlmCallOutcome) -> Result<(), DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
         let (ok, message) = match &outcome.status {
             LlmCallStatus::Working => (true, None),
             LlmCallStatus::NotWorking { message } => (false, Some(message.as_str())),
@@ -206,54 +208,46 @@ impl LlmCredentials<'_> {
             .bind(ok)
             .bind(message)
             .bind(id)
-            .execute(self.pool)
+            .execute(&mut *tx)
             .await?,
-        )
-    }
-
-    /// The most recent call outcome of the tenant over all credentials.
-    pub async fn last_call(&self, tenant_id: &str) -> Result<Option<LlmCallOutcome>, DbError> {
-        let row = sqlx::query(
-            "SELECT last_call_at, last_call_ok, last_call_message FROM llm_credentials
-             WHERE tenant_id = ? AND last_call_at IS NOT NULL ORDER BY last_call_at DESC LIMIT 1",
-        )
-        .bind(tenant_id)
-        .fetch_optional(self.pool)
-        .await?;
-        match row {
-            Some(row) => last_call_from_row(&row),
-            None => Ok(None),
-        }
+        )?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Pauses the credential until the usage limit resets.
     pub async fn pause(&self, id: &str, until: Timestamp) -> Result<(), DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
         updated(
             sqlx::query("UPDATE llm_credentials SET paused_until = ? WHERE user_id = ?")
                 .bind(ts(until))
                 .bind(id)
-                .execute(self.pool)
+                .execute(&mut *tx)
                 .await?,
-        )
+        )?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Marks the credential unusable.
     pub async fn mark_unusable(&self, id: &str, now: Timestamp) -> Result<(), DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
         updated(
             sqlx::query(
                 "UPDATE llm_credentials SET state = 'relink_needed', relink_reason = 'terminal', relink_needed_at = COALESCE(relink_needed_at, ?) WHERE user_id = ?",
             )
             .bind(ts(now))
             .bind(id)
-            .execute(self.pool)
+            .execute(&mut *tx)
             .await?,
-        )
+        )?;
+        tx.commit().await?;
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use contracts::job::spec::CredentialKind;
 
     use super::*;
     use crate::repo::Db;
@@ -270,11 +264,8 @@ mod tests {
         db
     }
 
-    fn credential(id: &str) -> LlmCredentialRef {
-        LlmCredentialRef {
-            id: id.to_owned(),
-            kind: CredentialKind::CodexChatgpt,
-        }
+    fn credential(id: &str) -> UserId {
+        contracts::ids::UserId(id.to_owned())
     }
 
     #[tokio::test]
@@ -286,7 +277,7 @@ mod tests {
             .await
             .expect("register");
         let record = credentials.get("c1").await.expect("get");
-        assert_eq!(record.credential, credential("c1"));
+        assert_eq!(record.payer, credential("c1"));
         assert_eq!(record.unusable_since, None);
         assert_eq!(record.last_call, None);
         credentials
@@ -321,10 +312,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn last_call_is_the_newest_outcome_over_all_credentials() {
+    async fn last_call_is_private_to_the_payer() {
         let db = fixture().await;
         let credentials = db.llm_credentials();
-        assert_eq!(credentials.last_call("default").await.expect("none"), None);
+        assert_eq!(credentials.status("c1").await.unwrap(), None);
         for id in ["c1", "c2"] {
             credentials
                 .register("default", &credential(id), true, at(0))
@@ -352,13 +343,23 @@ mod tests {
             .await
             .expect("record");
         assert_eq!(
-            credentials.last_call("default").await.expect("last"),
+            credentials.get("c2").await.expect("last").last_call,
             Some(failed.clone())
         );
         assert_eq!(
             credentials.get("c2").await.expect("get").last_call,
             Some(failed)
         );
+        assert!(matches!(
+            credentials
+                .get("c1")
+                .await
+                .unwrap()
+                .last_call
+                .unwrap()
+                .status,
+            LlmCallStatus::Working
+        ));
         assert!(matches!(
             credentials
                 .record_call(
