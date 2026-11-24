@@ -1,8 +1,20 @@
 # ADR-002: Codex runtime — model, per-job configuration, sandbox, repository isolation, sub-agents, skills
 
+## v1.3 container amendment (2026-11-24)
+
+App-server over the launcher's attach relay replaces `codex exec`. CS1 uses `/work` as cwd, persistent
+`/work/codex` thread state and tmpfs-only job keys. Both `/work` and `/work/repo` stay untrusted; full fixed
+kind configuration is sent on start/fork/resume. The curated claudius tree is image-owned and read-only,
+including sibling skills and `CLAUDE_PLUGIN_ROOT`. The integrated pin is 13.7.0 `71096d7`, replacing design
+v3.3's 13.5.0 pin (W5 handoff). Server and worker checker format v3 are rebuilt together. Sub-agents and hosted
+web search remain disabled. CS2 uses filesystem RPCs only; any judge model tool item fails the job.
+
+This amendment and [ADR-025](ADR-025-container-runtime.md) take precedence over the historical text below.
+
+
 > Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
 > gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
-> KL1 gates credential mode; older master-credential/no-paid-API rules do not decide that open question.
+> KL1-A is closed: per-user ChatGPT-plan linking only; no API-key mode.
 
 
 - Status: accepted (coordinator, 2026-11-16, after spikes S1a, S1b, S2, S7; amended 2026-11-22, 2026-11-23)

@@ -1,5 +1,6 @@
 """Deployment regressions use fake Docker and synthetic secret-file metadata only."""
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -127,7 +128,12 @@ fi
         ("SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH", "runner-gateway-keys-token"),
     ]:
         path = tmp_path / name
-        path.write_text("CANARY-keys" if "keys-token" in name else "CANARY-" + name)
+        if name == "gateway-secret-key":
+            value = base64.b64encode(b"CANARY" + b"x" * 26).decode()
+        else:
+            value = "CANARY-keys" if "keys-token" in name else "CANARY-credentials"
+            value += "-synthetic-token-0123456789abcdef"
+        path.write_text(value)
         path.chmod(0o400)
         values[key] = str(path)
     secret_dir = tmp_path / "secrets"
@@ -145,7 +151,7 @@ fi
     return tmp_path, commands, values
 
 
-def guard(production, *, as_files=False, wrong_owner=None):
+def guard(production, *, as_files=False, wrong_owner=None, overlays=()):
     tmp_path, commands, values = production
     values = dict(values)
     if as_files:
@@ -165,6 +171,7 @@ def guard(production, *, as_files=False, wrong_owner=None):
             "--no-render",
             "--env-file",
             str(env_file),
+            *(part for overlay in overlays for part in ("--env-file", str(overlay))),
             *(["--secret-files"] if as_files else []),
         ],
         cwd=ROOT,
@@ -184,6 +191,10 @@ def guard(production, *, as_files=False, wrong_owner=None):
 def test_guard_accepts_consumer_files(production):
     assert guard(production).returncode == 0
     assert guard(production, as_files=True).returncode == 0
+
+
+def test_guard_rejects_missing_overlay_without_rendering(production):
+    assert guard(production, overlays=[production[0] / "missing.env"]).returncode != 0
 
 
 @pytest.mark.parametrize(

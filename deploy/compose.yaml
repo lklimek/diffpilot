@@ -191,7 +191,7 @@ services:
       runner: { ipv4_address: "${SR_GATEWAY_ADMIN_ADDR:-172.29.71.5}" }
       worker: { ipv4_address: "${SR_GATEWAY_MODEL_ADDR:-172.29.75.2}" }
       judge: { ipv4_address: "${SR_GATEWAY_JUDGE_ADDR:-172.29.76.2}" }
-      egress: {}
+      egress: { ipv4_address: "${SR_GATEWAY_EGRESS_ADDR:-172.29.72.3}" }
 
   egress-proxy:
     <<: *hardening
@@ -212,7 +212,7 @@ services:
       options: { max-size: "50m", max-file: "5" }
     networks:
       runner: { ipv4_address: "${SR_PROXY_RUNNER_ADDR:-172.29.71.3}" }
-      worker: {}
+      worker: { ipv4_address: "${SR_PROXY_WORKER_ADDR:-172.29.75.3}" }
       egress: { ipv4_address: "${SR_PROXY_EGRESS_ADDR:-172.29.72.2}" }
 
 volumes:

@@ -1,5 +1,9 @@
 # diffpilot — implementation plan (v1)
 
+Current runtime: [ADR-025](decisions/ADR-025-container-runtime.md), §5.4 below and the
+[runbook](runbook.md) override historical v1 runtime/spike tasks. No real-account auth experiments;
+acceptance uses fakes only. W10 is dropped; 0030 carries settings in place.
+
 Status: implementation plan, 2026-11-16. Authoritative design: `docs/design-brief.md` (cited as "brief §N").
 This plan says HOW v1 is built and by whom; it does not change the design. The owner's decisions are in §16
 and are reflected in the brief. The owner is away during implementation (§1 Owner session, Authority).
@@ -268,24 +272,46 @@ MemCan credentials) + job token; `POST /runner/v1/jobs/{id}/events` (job token; 
 for the LLM status). An expired lease is the liveness signal. Job states `queued → claimed → running →
 succeeded | failed | cancelled | paused{resumes_at}`; expired lease → `queued`, attempt + 1, bounded.
 
-### 5.4 Security design (WP1-T, reviewed with the contracts; audited again in stage 4)
+### 5.4 Security design (v1.3, ADR-025)
 
-Current session/privacy policy: ADR-004 and `docs/contracts/threat-model.md`, “Private Ask isolation”
-(owner decision 2026-11-17), supersede the original shared-session assumptions below; agents keep MemCan, Ask search-only.
-Analytic PR sessions never receive local user text; Ask uses private PR/user archive forks.
-The process model behind T1 (supervisor, uids, private socket) is decided in ADR-013.
+Containers are the boundary. The launcher alone holds Docker access and has no network; runner has no DB or
+GitHub API client. Only `runner::provider` and `server::gateway` know Codex; gateway may use config/secrets/
+contracts, never db. Database access remains through `db::repo::{write_tx,read_tx}`. JobSpec, select_model,
+fake provider and configured MemCan remain the existing seams. Server and worker checker format v3 are rebuilt
+together. The [container contracts](contracts/containers.md) define CCR1–CCR13; the
+[threat model](contracts/threat-model.md) carries acceptance evidence and residual risks.
 
-| # | Requirement | Tested in |
-|---|---|---|
-| T1 | Two uids in the runner image: `runner` owns runner secret, job token, mirror cache, claudius checkout, master `CODEX_HOME`, session store; Codex, `github-mcp-server` and every agent command run as `agent` with a fresh work dir, a per-job `CODEX_HOME` (generated config + copy of `auth.json` + this analysis's session files), read-only skills. `runner` copies `auth.json` and the session files back after the job (one job per credential and per session, so no race). | WP3-RUN, WP3-OPS |
-| T2 | Agent environment scrubbed: only home, PATH and proxy variables (research `egress-proxy.md` §3; no CA variables in v1) and the variables the per-job config needs (installation token for `github-mcp-server`, MemCan token). | WP3-RUN |
-| T3 | GitHub credentials: user tokens and the App private key never leave the server (key file mounted read-only, 0400). Per job the server mints an installation token with read-only permissions (pull requests, issues, contents, metadata), restricted to the PR repository only (ADR-005; related repositories are read as public data), lifetime 1 h — the only GitHub credential the agent holds; `github-mcp-server` runs in read-only mode. The job token never reaches the agent. | WP3-APPTOKEN, WP3-RUN |
-| T4 | Container: non-root, `cap_drop: ALL`, `no-new-privileges`, read-only root fs except work dir and per-job `CODEX_HOME`, no Docker socket; runner on an internal network whose only egress is the Squid proxy (explicit proxy, no transparent mode); private LAN ranges denied except MemCan (SSRF guard, research §3); no TLS interception in v1 (no own CA anywhere); proxy log (host names) with restricted access and retention. If S1b disables Codex's own sandbox, T1–T4 are the compensating controls (ADR, "For the owner"). | WP3-OPS |
-| T5 | Repository-provided agent config (AGENTS.md, `.codex/`, hooks, MCP config) never loaded (S1b mechanism). | WP3-RUN |
-| T6 | MemCan: reached at its Traefik entrypoint (IP allowlist + bearer token). **Accepted risk** (owner): the agent has full MemCan MCP (read and write) with the single shared `MEMCAN_API_KEY`; an injected PR may write misleading memories. Per-client tokens and agent-written-memory separation are future MemCan work. Feedback and calibration examples are written by the server. | WP3-RUN, WP3-MEMCAN |
-| T7 | Server: cookie session (Secure, HttpOnly, SameSite) behind the trusted reverse proxy, CSRF, tokens encrypted with AES-GCM, sign-in only for logins the tenant allows, nothing secret in logs, errors or the browser. | WP2-AUTH, WP3-AUTH |
-| T8 | Agent-session files are agent-writable: analytic archives are keyed by PR, private working archives by PR/user. Only the selected archive enters per-job `CODEX_HOME`; `auth.json` is excluded. Cancel/Re-analyze retain archives; explicit PR removal and retention delete them (ADR-004). Private Ask never writes the analytic archive. | WP3-RUN |
-| T9 | **Accepted risk** (owner): v1 egress policy is allow-all with logging, so agent commands have open network access through the proxy; an injected PR could exfiltrate MemCan content, the shared MemCan token, the per-job Codex credential or the 1-hour read-only installation token. Mitigation in v1: Codex's hosted web search (run by the provider, around the proxy) is disabled for every job, so all agent network traffic goes through the proxy, which logs every destination host (CONNECT host:port, bytes); TLS interception with full-URL logs and a host allowlist come later as configuration of the same Squid. | WP3-OPS (logging tests) |
+| ID | Rule |
+|---|---|
+| SG1 | User GitHub tokens and App key stay server-only. |
+| SG2 | PR-repository read-only installation token, per job, ≤1 h, tmpfs file. |
+| SG3 | Real provider credentials stay gateway-only; virtual keys ≤90 min, worker networks only. |
+| SG4 | Workers have no engine socket, host paths, privileged mode or added capabilities. |
+| SG5 | CS1/CS3 egress only through Squid; deny LAN except configured MemCan. CS2 reaches model gateway only. |
+| SG6 | Full MemCan bearer in CS1 is accepted MC1/AR-16. |
+| SG7 | Gateway admin, runner listener and launcher socket are unreachable from workers. |
+| SG8 | The container replaces the uid/supervisor boundary. |
+| SG9 | No exec credential-copy/environment/MCP-GitHub/recovery contract survives. |
+| SG10 | Keep secret scrub, lease/attempt fencing, turn cap, payer usage pause and disk reserve. |
+| SG11 | Sub-agents disabled. |
+| SG12 | Render untrusted text as text; build links server-side. |
+| SG13 | Parse reports with scope, quote, identity and duplicate checks. |
+| SG14 | Lean config, hosted web search off, no worker toolchain/builds, strict schemas; judge tools fail. |
+| SG15 | Gateway requires store:false, stream:true, no previous_response_id and recursively allowed tools. |
+| SG16 | CS1 cwd /work; /work and /work/repo untrusted in both layers; critical overrides and full fixed kind config on start/fork/resume; no repo-skill discovery. |
+
+Gateway lifecycle: dedicated per-user ChatGPT-plan chain, one refresh owner, durable in-flight marker,
+near-expiry-only refresh and persist-before-use; unknown outcomes quarantine for relink. Only explicit unlink
+permits upstream revoke. Settings discloses possible logout of other CLI sessions. Auth tests use fakes only.
+
+Migration 0030 cleans runtime/analysis data in place and preserves settings, identity and GitHub auth; its
+[table inventory](contracts/containers.md#persistence-and-cut-over) is authoritative. W10 export/import is dropped.
+Fresh empty databases remain supported. Only unmerged 0030 may change; other migrations are append-only.
+
+W1–W6/W8/W9 supply contracts, gateway, launcher/app-server, both assessment adapters, per-payer routing, UI and
+legacy deletion. W7 supplies portable CI/image checks, local preparation, fake-only live isolation/e2e and
+operator docs. Independent security review of SG1–SG16 belongs to the coordinator. Deployment commands are in
+the [runbook](runbook.md); no automated job logs in to a real account.
 
 ## 6. Stage 0 — spikes (time-boxed, throwaway code)
 
@@ -783,10 +809,8 @@ states, wording, Playwright and axe.
 | m8 | Spike Dockerfile, compose, JSONL and scripts archived with the evidence. |
 | Missing questions 1–8 | Answered by the owner (§16). |
 
-### v1.3 amendment to §5.4 (common W1)
+### v1.3 implementation status
 
-[ADR-025](decisions/ADR-025-container-runtime.md) and [container contracts](contracts/containers.md) replace
-§5.4's process/credential boundary with SG1–SG16. Containers, per-payer threads, gateway-only real credentials,
-read-only gh token files, fixed untrusted cwd/config and fake-only auth tests are mandatory for downstream
-implementation. KL1 remains open; common contracts do not select credential mode. W7 completes threat-model
-and deployment acceptance after W3/W4/W5/W8 integrate the runtime and W9 deletes the legacy path.
+See §5.4 and ADR-025. KL1-A is closed (plan-only); both assessment methods ship, with primary-only effects and
+80 logical passes/payer/UTC day. W10 is dropped: settings carry over through in-place 0030. Historical v1
+work packages and spike commands above are archival; their exec/credential-copy procedures are superseded.

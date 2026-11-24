@@ -1,8 +1,8 @@
 # ADR-025: Per-payer containers and gateway boundary
 
-- Status: accepted common contracts; KL1-A selects ChatGPT-plan linking only.
+- Status: accepted, implemented container runtime; KL1-A selects ChatGPT-plan linking only.
 - Source: [design v3.3](http://agentic/diffpilot/2026-11-23/v13-containers/design-v3.md),
-  S14-1/2/3/4/5, 2026-11-23; corrected claudius 13.5.0 source pin `460e5fd`.
+  S14-1/2/3/4/5, 2026-11-23; integrated claudius 13.7.0 source pin `71096d7` (W5-authorized update from 13.5.0 `460e5fd`).
 
 Every PR job uses a persistent container per (PR,payer), with one turn at a time. JudgeWork uses a separate
 answer-only user container. Long-lived app-server replaces exec; the launcher alone owns the Docker socket.
@@ -47,5 +47,18 @@ This supersedes ADR-013 and the unmerged ADR-024 design. It amends ADR-002/003/0
 Runner gains launcher mode and gateway admin access, with no DB or GitHub API client. JobSpec remains
 self-contained, model selection and fake provider remain, and server/worker checker format v3 is rebuilt together.
 
-See [container contracts](../contracts/containers.md) for W1 types and persistence. W3/W4/W5/W8 enforce the
-runtime/ingest behavior; W9 removes the old runtime, and W7 completes deployment/security/runbook acceptance.
+See [container contracts](../contracts/containers.md) for types and persistence, the
+[threat model](../contracts/threat-model.md) for SG1–SG16 and accepted risks, and the
+[runbook](../runbook.md) for fresh start, in-place 0030 upgrade, backup and Settings linking.
+
+Deployment has five images: server (including gateway binary), runner/launcher, worker, fetch and Squid.
+Only launcher holds the Docker socket, with no network. Separate internal worker and judge networks expose
+only model listeners; admin is bound to the runner interface. Worker/fetch references are digest-pinned.
+A loopback registry supplies real digests for local builds. `deploy/dev/local-containers.sh` prepares images,
+new runtime keys and non-secret configuration; it never deploys the live application stack. The credentials
+scope file may be `10010:<host-gid> 0440` locally so the host-uid server can read it; other gateway secrets
+stay `10010:10010 0400`, and the runner's keys copy is `10002:10002 0400`.
+
+Validation: offline image tests, CS3 through Squid, live SG5/SG7 probes with fake listeners, MSW Playwright and
+full-stack fake-provider journeys. Security review is a separate coordinator gate. No real-account auth probe
+is part of acceptance. The worker/launcher/gateway are trusted infrastructure; Docker operators remain trusted.

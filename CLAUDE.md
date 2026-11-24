@@ -55,7 +55,28 @@ walked step by step, with LLM analysis (container app-server) clearly separated 
 - Containers are the agent boundary (SG1–SG16). Only launcher mode holds the Docker socket; no real provider
   credential enters a worker. Never mount the host `~/.codex`. Workers use Squid with LAN denied except MemCan;
   CS2 reaches only the gateway. Hosted web search stays disabled. MemCan URL/token remain pure configuration.
+- Gateway uses secrets/config/contracts, never `db`; its binary shares the server image.
 - Keep it simple: no abstraction beyond the seams the brief names.
+
+| ID | Rule |
+|---|---|
+| SG1 | User GitHub tokens and App key stay server-only. |
+| SG2 | PR-repository read-only installation token, per job, ≤1 h, tmpfs file. |
+| SG3 | Real provider credentials stay gateway-only; virtual keys ≤90 min, worker networks only. |
+| SG4 | Workers have no engine socket, host paths, privileged mode or added capabilities. |
+| SG5 | CS1/CS3 egress only through Squid; deny LAN except configured MemCan. CS2 reaches model gateway only. |
+| SG6 | Full MemCan bearer in CS1 is accepted MC1/AR-16. |
+| SG7 | Gateway admin, runner listener and launcher socket are unreachable from workers. |
+| SG8 | The container replaces the uid/supervisor boundary. |
+| SG9 | No exec credential-copy/environment/MCP-GitHub/recovery contract survives. |
+| SG10 | Keep secret scrub, lease/attempt fencing, turn cap, payer usage pause and disk reserve. |
+| SG11 | Sub-agents disabled. |
+| SG12 | Render untrusted text as text; build links server-side. |
+| SG13 | Parse reports with scope, quote, identity and duplicate checks. |
+| SG14 | Lean config, hosted web search off, no worker toolchain/builds, strict schemas; judge tools fail. |
+| SG15 | Gateway requires store:false, stream:true, no previous_response_id and recursively allowed tools. |
+| SG16 | CS1 cwd /work; /work and /work/repo untrusted in both layers; critical overrides and full fixed kind config on start/fork/resume; no repo-skill discovery. |
+
 
 ## Build and test
 `W` = claudius `scripts/cargo-cached.sh` with `CLAUDIUS_MAX_PARALLEL_BUILDS=1`; narrowest `-p`. CI
@@ -74,7 +95,9 @@ walked step by step, with LLM analysis (container app-server) clearly separated 
   `npm ci` in `web/`; all take `--self-test`), `shellcheck` on `scripts/*.sh tools/**/*.sh deploy/**/*.sh` (globstar), `python3 -m pytest -q scripts/tests`.
 - Containers (one heavy job at a time, Docker): `deploy/containers/test-launcher-image.sh`,
   `deploy/containers/test-worker-image.sh`;
-  `deploy/egress-proxy/test.sh`; `deploy/test-stack.sh`; `deploy/check-production-config.sh --self-test`.
+  `deploy/egress-proxy/test.sh`; `deploy/test-stack.sh`; `deploy/check-production-config.sh --self-test`;
+  `deploy/containers/test-cs3-squid.sh` (`SR_CARGO_COMMAND=$W` on this host),
+  `deploy/dev/test-local-containers.sh` (fake gateway, live SG5/SG7; never the live local stack).
 - db: transactions only through `db::repo::{write_tx, read_tx}` (write = `BEGIN IMMEDIATE`; never a deferred read-then-write).
 - Offline schema/assessment smoke: `scripts/schema-smoke.sh`, `scripts/verify-comments-smoke.sh`; no real auth.
 

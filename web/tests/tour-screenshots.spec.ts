@@ -192,15 +192,12 @@ const EXTRA: Record<string, [string, (page: Page) => Promise<void>]> = {
       for (let i = 0; i < 4; i += 1) await page.keyboard.press("Tab");
     },
   ],
-  "label-tooltip": [
+  "remark-popover": [
     "default",
     async (page) => {
       await openStep(page, 1, 5);
-      await page
-        .getByRole("main")
-        .getByRole("button", { name: /HIGH · LLM remark/ })
-        .hover();
-      await page.getByRole("tooltip").first().waitFor();
+      await page.locator('[data-mark="remark"]').first().hover();
+      await page.getByRole("dialog", { name: /^LLM remarks? at line/ }).waitFor();
     },
   ],
 };
