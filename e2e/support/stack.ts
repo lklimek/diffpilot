@@ -148,6 +148,7 @@ export async function startStack(
   const env = {
     ...process.env,
     SR_DEV_REVIEW_LOOP_RECORDINGS: options.reviewLoop ? REVIEW_LOOP_RECORDINGS : "",
+    SR_DEV_ASSESSMENT_METHOD: "prompt_v4",
   };
   // Own process group: the launcher stops its components (each in a group of its own) on SIGTERM.
   const launcher = spawn(LAUNCHER, args, { detached: true, env, stdio: ["ignore", "pipe", "inherit"] });

@@ -776,10 +776,7 @@ mod tests {
             .submit(request(analysis, "f1"))
             .await
             .expect("submit");
-        let credential = contracts::job::spec::LlmCredentialRef {
-            id: CREDENTIAL.to_owned(),
-            kind: contracts::job::spec::CredentialKind::CodexChatgpt,
-        };
+        let credential = contracts::ids::UserId(CREDENTIAL.to_owned());
         db.llm_credentials()
             .register(
                 db::repo::DEFAULT_TENANT,

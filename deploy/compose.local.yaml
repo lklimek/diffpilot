@@ -1,7 +1,7 @@
 # Local test variant of deploy/compose.yaml on http://localhost (never on the production host):
 #   docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml up -d
 # with SR_PUBLIC_URL=http://localhost:<SR_HTTP_PORT> in that .env. The only difference: published on loopback only.
-# Everything else, the runner's isolation and the disposable tmp-* volumes included, is the production configuration.
+# Container isolation, runtime state and caches use the production configuration.
 services:
   server:
     ports: !override

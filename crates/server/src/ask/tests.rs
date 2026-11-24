@@ -517,16 +517,9 @@ impl Fixture {
 
     /// One runner claim for the pipeline credential.
     async fn claim(&self) -> Option<Claim> {
-        let mut credentials =
-            vec![json!({"credential":{"id":CREDENTIAL_ID,"kind":"codex_chatgpt"},"usable":true})];
-        if self.state.db.users().get("u2").await.is_ok() {
-            credentials
-                .push(json!({"credential":{"id":"u2","kind":"codex_chatgpt"},"usable":true}));
-        }
         let request = json!({
             "runner_id": "runner-1",
-            "credentials": credentials,
-            "dropped_sessions": [],
+            "retired": [],
         });
         let secret = self.state.config.runner_secret.expose_secret().to_owned();
         let (status, body) = self.runner(RUNNER_CLAIM.path, &secret, request).await;

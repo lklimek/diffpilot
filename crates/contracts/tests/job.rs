@@ -7,16 +7,15 @@ use contracts::ids::{AnalysisId, CommitSha, JobId, PassId, RefreshId};
 use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::event::{ActivityKind, JobEvent};
 use contracts::job::protocol::{
-    Claim, ClaimRequest, ClaimResponse, CredentialStatus, EventBatch, EventsAck, LeaseTiming,
-    OutputReady,
+    Claim, ClaimRequest, ClaimResponse, EventBatch, EventsAck, LeaseTiming, OutputReady,
 };
 use contracts::job::result::{
     JobFailureKind, JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus, SessionOutcome,
     SessionReport, Usage,
 };
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobSpec, JobTarget, LlmCredentialRef, ModelChoice,
-    PullRequestCommentsTarget, PullRequestTarget, ReasoningEffort, RepoCheckout, SessionRef,
+    JobLimits, JobSpec, JobTarget, ModelChoice, PullRequestCommentsTarget, PullRequestTarget,
+    ReasoningEffort, RepoCheckout, SessionRef,
 };
 use contracts::job::state::{JobState, JobTransition};
 use contracts::time::Timestamp;
@@ -85,13 +84,12 @@ fn spec() -> JobSpec {
 
 fn claim_response() -> ClaimResponse {
     ClaimResponse {
-        retire: Vec::new(),
         claim: Some(Claim {
             job_token: Secret::new(JOB_TOKEN),
             lease_expires_at: Timestamp::now(),
             spec: spec(),
         }),
-        drop_sessions: vec![1],
+        retire: vec![1],
     }
 }
 
@@ -137,15 +135,9 @@ fn job_messages_round_trip() {
     round_trip(&claim_response());
     round_trip(&result());
     round_trip(&ClaimRequest {
+        accept_job: true,
         runner_id: "runner-1".to_owned(),
-        credentials: vec![CredentialStatus {
-            credential: LlmCredentialRef {
-                id: "codex-default".to_owned(),
-                kind: CredentialKind::CodexChatgpt,
-            },
-            usable: true,
-        }],
-        dropped_sessions: vec![],
+        retired: vec![],
     });
     round_trip(&EventBatch {
         attempt: 1,
@@ -508,4 +500,22 @@ fn job_target_typescript_numbers_match_json_numbers() {
     ] {
         assert!(!declaration.contains("bigint"), "{declaration}");
     }
+}
+
+#[test]
+fn container_claim_requires_no_host_credentials_or_archive_acknowledgements() {
+    let request: ClaimRequest =
+        serde_json::from_value(json!({"runner_id": "container-runner"})).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        json!({"runner_id": "container-runner", "accept_job": true})
+    );
+}
+
+#[test]
+fn claim_defaults_to_work_and_can_explicitly_request_cleanup_only() {
+    let mut request: ClaimRequest = serde_json::from_value(json!({"runner_id":"r"})).unwrap();
+    assert!(request.accept_job);
+    request.accept_job = false;
+    round_trip(&request);
 }

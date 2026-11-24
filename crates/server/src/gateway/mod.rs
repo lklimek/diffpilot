@@ -69,6 +69,18 @@ pub enum Error {
     /// Startup configuration is invalid.
     #[error("gateway configuration is invalid")]
     Configuration,
+    /// An invalid startup setting, identified without its value.
+    #[error("gateway configuration is invalid: check {0}")]
+    ConfigurationSetting(&'static str),
+    /// A startup secret file could not be read.
+    #[error("cannot read gateway secret file configured by {setting}")]
+    SecretFile {
+        /// Environment setting identifying the file.
+        setting: &'static str,
+        /// Filesystem failure, without secret contents.
+        #[source]
+        source: std::io::Error,
+    },
     /// Model concurrency or retained accounting capacity is exhausted.
     #[error("gateway capacity is temporarily exhausted")]
     Busy,
@@ -171,13 +183,25 @@ impl Gateway {
         keys_scope: Secret,
         key_ttl: Duration,
     ) -> Result<Self, Error> {
-        if key_ttl.is_zero()
-            || key_ttl > Duration::from_secs(5400)
-            || credentials_scope.expose().len() < 32
-            || keys_scope.expose().len() < 32
-            || crate::secrets::secrets_equal(credentials_scope.expose(), keys_scope.expose())
-        {
-            return Err(Error::Configuration);
+        if key_ttl.is_zero() || key_ttl > Duration::from_secs(5400) {
+            return Err(Error::ConfigurationSetting(
+                "SR_GATEWAY_KEY_TTL (1..=5400 seconds)",
+            ));
+        }
+        if credentials_scope.expose().len() < 32 {
+            return Err(Error::ConfigurationSetting(
+                "SR_GATEWAY_CREDENTIALS_TOKEN_FILE (at least 32 bytes)",
+            ));
+        }
+        if keys_scope.expose().len() < 32 {
+            return Err(Error::ConfigurationSetting(
+                "SR_GATEWAY_KEYS_TOKEN_FILE (at least 32 bytes)",
+            ));
+        }
+        if crate::secrets::secrets_equal(credentials_scope.expose(), keys_scope.expose()) {
+            return Err(Error::ConfigurationSetting(
+                "SR_GATEWAY_CREDENTIALS_TOKEN_FILE and SR_GATEWAY_KEYS_TOKEN_FILE (different tokens required)",
+            ));
         }
         Ok(Self {
             store: Store::new(root, TokenCipher::new(key))?,

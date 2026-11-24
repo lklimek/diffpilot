@@ -807,37 +807,42 @@ impl Analyses<'_> {
         Ok(())
     }
 
-    /// Asks the runner to delete the PR session files on explicit removal.
+    /// Requests retirement of every payer container of the explicitly removed PR.
     pub async fn request_session_drop(&self, id: i64) -> Result<(), DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
         let updated = sqlx::query(
             "INSERT INTO analytic_threads(tenant_id,pull_request_id,user_id,generation,state)
              SELECT tenant_id,pull_request_id,COALESCE(payer_id,created_by),0,'drop_requested' FROM analyses WHERE pull_request_id=? GROUP BY COALESCE(payer_id,created_by)
              ON CONFLICT(pull_request_id,user_id) DO UPDATE SET state=CASE WHEN state='dropped' THEN state ELSE 'drop_requested' END",
         )
         .bind(id.to_string())
-        .execute(self.pool)
+        .execute(&mut *tx)
         .await?;
         if updated.rows_affected() == 0 {
             return Err(DbError::NotFound);
         }
+        tx.commit().await?;
         Ok(())
     }
 
-    /// Pull-request keys whose session files the runner must delete.
+    /// PRs ready for container retirement, with no attempt still running.
     pub async fn pending_session_drops(&self) -> Result<Vec<i64>, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
         let ids: Vec<i64> = sqlx::query_scalar(
             "SELECT DISTINCT t.pull_request_id FROM analytic_threads t WHERE t.state='drop_requested' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.pull_request_id=t.pull_request_id AND j.state IN ('claimed','running')) ORDER BY t.pull_request_id",
         )
-        .fetch_all(self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(ids)
     }
 
-    /// Marks session files as deleted, as acknowledged by a runner.
+    /// Acknowledges completed container/key retirement.
     pub async fn ack_session_drops(&self, ids: &[i64]) -> Result<(), DbError> {
         if ids.is_empty() {
             return Ok(());
         }
+        let mut tx = super::write_tx(self.pool).await?;
         let mut query = QueryBuilder::<Sqlite>::new(
             "UPDATE analytic_threads SET state = 'dropped' WHERE state = 'drop_requested' AND pull_request_id IN (",
         );
@@ -846,7 +851,8 @@ impl Analyses<'_> {
             list.push_bind(id.to_string());
         }
         query.push(")");
-        query.build().execute(self.pool).await?;
+        query.build().execute(&mut *tx).await?;
+        tx.commit().await?;
         Ok(())
     }
 }
@@ -1780,10 +1786,7 @@ mod tests {
         db.llm_credentials()
             .register(
                 "default",
-                &contracts::job::spec::LlmCredentialRef {
-                    id: testing::job_spec(id, JobKind::Plan).payer.0,
-                    kind: contracts::job::spec::CredentialKind::CodexChatgpt,
-                },
+                &contracts::ids::UserId(testing::job_spec(id, JobKind::Plan).payer.0),
                 true,
                 at(0),
             )

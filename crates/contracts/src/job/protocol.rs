@@ -7,26 +7,23 @@ use serde_json::Value;
 
 use crate::job::access::Secret;
 use crate::job::event::JobEvent;
-use crate::job::spec::{JobSpec, LlmCredentialRef};
+use crate::job::spec::JobSpec;
 
 /// Body of `POST /runner/v1/claim`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClaimRequest {
     /// Stable name of the runner instance, for logs.
     pub runner_id: String,
-    /// The LLM credentials the runner holds and whether each is usable.
-    pub credentials: Vec<CredentialStatus>,
-    /// Pull-request keys whose session files the runner deleted since its last claim.
-    pub dropped_sessions: Vec<i64>,
+    /// False requests housekeeping and retirement only, without leasing a new job.
+    #[serde(default = "accept_job_default")]
+    pub accept_job: bool,
+    /// PR containers and local keys successfully retired after the preceding claim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired: Vec<i64>,
 }
 
-/// A credential held by the runner.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct CredentialStatus {
-    /// The credential.
-    pub credential: LlmCredentialRef,
-    /// False once a refresh failed; the owner must sign in again.
-    pub usable: bool,
+fn accept_job_default() -> bool {
+    true
 }
 
 /// Reply to a claim.
@@ -37,8 +34,6 @@ pub struct ClaimResponse {
     pub retire: Vec<i64>,
     /// The claimed job, or none when nothing is runnable.
     pub claim: Option<Claim>,
-    /// Pull-request keys whose session files the runner must delete (explicit removal; ADR-004).
-    pub drop_sessions: Vec<i64>,
 }
 
 /// A claimed job.
@@ -84,8 +79,8 @@ pub struct OutputReady {
 ///
 /// The server grants `lease_secs` from when it receives an accepted request. The runner measures its own
 /// deadline from when it SENT the last request that was acked (send ≤ receive, so a delayed ack never extends
-/// it): at `fence_after_send_secs` it sends SIGTERM, after `term_grace_secs` SIGKILL, then copies the
-/// credential back within `kill_and_cleanup_secs`, leaving `margin_secs` before the lease can end.
+/// it): at `fence_after_send_secs` it cancels the turn, then stops the worker within
+/// `term_grace_secs` + `kill_and_cleanup_secs`, leaving `margin_secs` before the lease can end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LeaseTiming {
     /// Lease granted per accepted events or output request.
@@ -94,9 +89,9 @@ pub struct LeaseTiming {
     pub heartbeat_secs: u32,
     /// Local deadline after the send time of the last acked request.
     pub fence_after_send_secs: u32,
-    /// SIGTERM to SIGKILL.
+    /// Turn cancellation grace before stopping the worker.
     pub term_grace_secs: u32,
-    /// SIGKILL, reaping and credential copy-back.
+    /// Worker stop and per-job cleanup budget.
     pub kill_and_cleanup_secs: u32,
     /// Slack left before the lease ends.
     pub margin_secs: u32,

@@ -183,23 +183,6 @@ impl Default for JobLimits {
     }
 }
 
-/// Reference to an LLM credential held by the runner; never the credential itself.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-pub struct LlmCredentialRef {
-    /// Credential id in the runner's store.
-    pub id: String,
-    /// Credential kind.
-    pub kind: CredentialKind,
-}
-
-/// Kind of LLM credential. v1: the owner's subscription only, no paid API (ADR-003).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialKind {
-    /// Codex CLI signed in with a ChatGPT subscription.
-    CodexChatgpt,
-}
-
 /// The agent session of a pull request (ADR-004).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionRef {

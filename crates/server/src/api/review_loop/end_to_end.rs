@@ -162,7 +162,7 @@ impl World {
                 "credential": { "id": db::repo::analyses::testing::CREDENTIAL, "kind": "codex_chatgpt" },
                 "usable": true,
             }],
-            "dropped_sessions": [],
+            "retired": [],
         });
         let secret = self.state.config.runner_secret.expose_secret().to_owned();
         let (status, body) = self.runner_call(RUNNER_CLAIM.path, &secret, request).await;

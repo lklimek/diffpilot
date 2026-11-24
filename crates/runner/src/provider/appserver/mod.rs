@@ -974,21 +974,7 @@ impl LlmProvider for AppserverProvider {
         call: &'a ProviderCall,
         events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
-        Box::pin(async move {
-            let mut spec = call
-                .job_spec
-                .as_deref()
-                .ok_or_else(|| {
-                    fault(
-                        JobFailureKind::Configuration,
-                        "execute_job",
-                        "trait call lacks JobSpec",
-                    )
-                })?
-                .clone();
-            spec.prompt = call.prompt.clone();
-            self.execute_job(&spec, events).await
-        })
+        Box::pin(self.execute_job(&call.job_spec, events))
     }
     fn resume<'a>(
         &'a self,
@@ -996,20 +982,39 @@ impl LlmProvider for AppserverProvider {
         call: &'a ProviderCall,
         events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
+        Box::pin(self.execute_job(&call.job_spec, events))
+    }
+    fn retire<'a>(&'a self, pull_requests: &'a [i64]) -> BoxFuture<'a, Result<(), ProviderError>> {
         Box::pin(async move {
-            let mut spec = call
-                .job_spec
-                .as_deref()
-                .ok_or_else(|| {
-                    fault(
-                        JobFailureKind::Configuration,
-                        "execute_job",
-                        "trait call lacks JobSpec",
-                    )
-                })?
-                .clone();
-            spec.prompt = call.prompt.clone();
-            self.execute_job(&spec, events).await
+            if pull_requests.is_empty() {
+                return Ok(());
+            }
+            let _guard = self.gate.lock().await;
+            let response = self
+                .launcher
+                .call(LauncherRequest {
+                    id: "retire-list".into(),
+                    action: LauncherAction::List,
+                })
+                .await
+                .map_err(|e| launcher_failure(e, "retirement list"))?;
+            for worker in response.workers {
+                if !matches!(worker.container, ContainerId::Pr { pull_request_id, .. } if pull_requests.contains(&pull_request_id))
+                {
+                    continue;
+                }
+                self.gateway.revoke(&worker.container).await?;
+                self.launcher
+                    .call(LauncherRequest {
+                        id: "retire-remove".into(),
+                        action: LauncherAction::Remove {
+                            container: worker.container,
+                        },
+                    })
+                    .await
+                    .map_err(|e| launcher_failure(e, "retirement remove"))?;
+            }
+            Ok(())
         })
     }
     fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {

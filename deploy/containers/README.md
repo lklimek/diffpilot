@@ -1,8 +1,8 @@
 # v1.3 container foundation (W3)
 
 The approved runtime is [ADR-025](../../docs/decisions/ADR-025-container-runtime.md).
-`compose.containers.yaml` is independent of the existing deployments. Its integration profile requires
-W2's gateway and W4/W8's runner startup; it is not the deployment entry point yet.
+`compose.containers.yaml` includes `compose.yaml`, the single container deployment entry point.
+The runner uses app-server by default; fake-provider builds are reserved for isolated development/e2e.
 
 1. Prepare the curated claudius context from the approved read-only checkout:
 

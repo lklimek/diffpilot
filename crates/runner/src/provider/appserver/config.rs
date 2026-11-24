@@ -1,3 +1,18 @@
+/// Fixed MemCan tools for private Ask threads.
+const MEMCAN_READ_TOOLS: [&str; 4] = [
+    "search",
+    "search_memories",
+    "search_code",
+    "search_standards",
+];
+/// Analytic threads may also record durable findings.
+const MEMCAN_TOOLS: [&str; 5] = [
+    "search",
+    "search_memories",
+    "search_code",
+    "search_standards",
+    "add_memory",
+];
 use super::*;
 use contracts::job::spec::{ModelChoice, WorkingSession};
 use serde_json::json;
@@ -23,7 +38,6 @@ pub(super) fn thread_params(
         config["mcp_servers"] = json!({"memcan": {"enabled":kind.memcan_read(),"url":endpoint.url,"http_headers":{"Authorization":format!("Bearer {}",endpoint.token.expose())}}});
     }
     if let Some(endpoint) = memcan {
-        use crate::provider::codex::config::{MEMCAN_READ_TOOLS, MEMCAN_TOOLS};
         config["mcp_servers"]["memcan"]["enabled_tools"] =
             if kind.memcan_write() && endpoint.allow_write {
                 json!(MEMCAN_TOOLS)

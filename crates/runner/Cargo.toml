@@ -10,10 +10,6 @@ license.workspace = true
 name = "diffpilot-runner"
 path = "src/main.rs"
 
-[[bin]]
-name = "diffpilot-supervisor"
-path = "src/supervisor_main.rs"
-
 [features]
 # Scripted LLM provider for tests and development; never enabled in release builds.
 fake-provider = []
@@ -25,7 +21,7 @@ contracts.workspace = true
 jiff.workspace = true
 futures.workspace = true
 reqwest.workspace = true
-rustix = { workspace = true, features = ["net"] }
+rustix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

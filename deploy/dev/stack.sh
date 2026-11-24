@@ -20,6 +20,7 @@
 #   SR_DEV_DASHBOARD_WORLD    dashboard world fake GitHub serves (default: fixtures/dashboard/github)
 #   SR_DEV_DASHBOARD_WORLD_AT the instant that world was written for; fake GitHub moves its dates so that this
 #                             instant is the start-up time (default: 2026-11-18T19:30:00Z; empty: dates as written)
+#   SR_DEV_ASSESSMENT_METHOD optional fake fixture method: claudius_host or prompt_v4; default retains Settings
 #   SR_DEV_REVIEW_LOOP_RECORDINGS review-loop reads fake GitHub serves for PR 482: threads, reviews and comments of
 #                             Comments and the PR page (absolute path, e.g. <repo>/fixtures/review-loop/github;
 #                             default: none). A read that finds new comments queues a verify_comments job.
@@ -66,13 +67,8 @@
 #                SR_RUNNER_ID              dev-runner
 #                SR_RUNNER_STATE_DIR       <state>/runner
 #                SR_RUNNER_PROVIDER        fake (fixture replay)
-#                SR_RUNNER_CREDENTIAL_ID   user id of alice, created through fake GitHub sign-in
 #                SR_RUNNER_FAKE_SCRIPT     <state>/fake-provider-script.json (absent: plain replay; format in
 #                                          crates/runner/src/provider/fake.rs)
-#                SR_RUNNER_DEV_NO_ISOLATION 1 (no supervisor in the dev stack; never in the image)
-# A runner under the supervisor, in the production image behind the egress proxy: deploy/dev/real-codex-smoke.sh
-# with SR_SMOKE_ISOLATION=supervisor (this stack with --without runner), or the whole stack in containers with
-# deploy/compose.yaml plus deploy/compose.local.yaml (docs/runbook.md, "Local stack").
 #
 # The sign-in allowlist is the fake user `alice` (SR_ALLOWED_LOGINS). Output: one line `SR_DEV_URL=<url>` when the
 # stack is ready, then `SR_DEV_STATE_DIR=<dir>`; the generated values are in <state>/stack.env (mode 600) for the
@@ -212,7 +208,6 @@ runner_env=(
   SR_RUNNER_ID=dev-runner
   SR_RUNNER_STATE_DIR="$state/runner"
   SR_RUNNER_PROVIDER=fake
-  SR_RUNNER_DEV_NO_ISOLATION=1
   SR_RUNNER_FAKE_SCRIPT="$state/fake-provider-script.json"
 )
 (umask 077 && printf '%s\n' "${server_env[@]}" "${runner_env[@]}" > "$state/stack.env")
@@ -256,10 +251,9 @@ start server "$state" "${server_env[@]}" "$server_bin"
 wait_for server "$url/api/v1/me"
 if ! skipped runner; then
   # Link the synthetic payer through the authenticated Settings route and fake gateway.
-  payer="$(python3 - "$url" "$state/server/diffpilot.sqlite" "$login" <<'PY'
+  python3 - "$url" "${SR_DEV_ASSESSMENT_METHOD:-}" <<'PY'
 import http.cookiejar
 import json
-import sqlite3
 import sys
 import urllib.request
 
@@ -275,15 +269,17 @@ client.open(sys.argv[1] + "/api/v1/settings/codex/link", timeout=20).close()
 with client.open(sys.argv[1] + "/api/v1/settings/codex", timeout=20) as response:
     if json.load(response)["state"] != "linked":
         raise SystemExit("fake gateway did not link the payer")
-with sqlite3.connect("file:" + sys.argv[2] + "?mode=ro", uri=True) as db:
-    user = db.execute("SELECT id FROM users WHERE login = ?", (sys.argv[3],)).fetchone()
-    if user is None:
-        raise SystemExit("fake GitHub sign-in did not create the runner's payer")
-    print(user[0])
+# An isolated fixture can explicitly select either assessment adapter.
+if sys.argv[2]:
+    route = sys.argv[1] + "/api/v1/settings/comment-assessment"
+    with client.open(route, timeout=20) as response:
+        settings = json.load(response)
+    settings["config"]["primary_method"] = sys.argv[2]
+    request = urllib.request.Request(route,
+        method="PUT", data=json.dumps({"revision":settings["revision"], "config":settings["config"]}).encode(),
+        headers={"Content-Type":"application/json", "X-CSRF-Token":me["csrf_token"], "Origin":sys.argv[1]})
+    client.open(request, timeout=20).close()
 PY
-  )"
-  runner_env+=(SR_RUNNER_CREDENTIAL_ID="$payer")
-  (umask 077 && printf '%s\n' "SR_RUNNER_CREDENTIAL_ID=$payer" >> "$state/stack.env")
   start runner "$state" "${runner_env[@]}" "$runner_bin"
 fi
 

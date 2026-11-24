@@ -1100,22 +1100,7 @@ async fn dependency_source_facts_are_command_activity() {
 
 fn provider_call(spec: &JobSpec) -> ProviderCall {
     ProviderCall {
-        job_spec: Some(Box::new(spec.clone())),
-        job_id: spec.job_id,
-        job_dir: "/unused".into(),
-        codex_home: "/unused".into(),
-        session_dir: "/unused".into(),
-        restore_dir: "/unused".into(),
-        prompt: spec.prompt.clone(),
-        output_schema: spec.output_schema.clone(),
-        flow_file: None,
-        model: spec.model.clone(),
-        limits: spec.limits,
-        access: spec.access.clone(),
-        skills: Vec::new(),
-        answer_only: false,
-        compact_on_start: false,
-        phases: Default::default(),
+        job_spec: Box::new(spec.clone()),
     }
 }
 
@@ -1356,4 +1341,46 @@ async fn protocol_failure_logs_identify_method_and_step_without_payloads() {
         }
         assert!(!log.contains("model-key-canary") && !log.contains("github-token-canary"));
     }
+}
+
+#[tokio::test]
+async fn retirement_removes_only_selected_pr_workers_and_revokes_local_keys() {
+    let harness = Harness::new(Mode::StartupRecovery).await;
+    harness.provider.retire(&[2]).await.unwrap();
+    assert!(
+        !harness
+            .seen
+            .lock()
+            .await
+            .iter()
+            .any(|r| r["action"]["operation"] == "remove")
+    );
+    harness.provider.retire(&[1]).await.unwrap();
+    let requests = harness.gateway.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|r| r.url.path() == "/admin/keys/revoke")
+    );
+    let seen = harness.finish().await;
+    let removed: Vec<_> = seen
+        .iter()
+        .filter(|r| r["action"]["operation"] == "remove")
+        .collect();
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0]["action"]["container"]["pull_request_id"], 1);
+}
+
+#[tokio::test]
+async fn failed_key_retirement_keeps_the_worker_for_a_retry() {
+    use wiremock::{Mock, ResponseTemplate, matchers::path};
+    let harness = Harness::new(Mode::StartupRecovery).await;
+    Mock::given(path("/admin/keys/revoke"))
+        .respond_with(ResponseTemplate::new(503))
+        .with_priority(1)
+        .mount(&harness.gateway)
+        .await;
+    assert!(harness.provider.retire(&[1]).await.is_err());
+    let seen = harness.finish().await;
+    assert!(!seen.iter().any(|r| r["action"]["operation"] == "remove"));
 }

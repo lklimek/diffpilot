@@ -302,15 +302,9 @@ async fn container_claim_uses_gateway_status_without_runner_credentials() {
         crate::github::app_token::tests::write_key(dir.path()),
     );
     let request = ClaimRequest {
+        accept_job: true,
         runner_id: "fake".into(),
-        credentials: vec![contracts::job::protocol::CredentialStatus {
-            credential: contracts::job::spec::LlmCredentialRef {
-                id: "default".into(),
-                kind: contracts::job::spec::CredentialKind::CodexChatgpt,
-            },
-            usable: true,
-        }],
-        dropped_sessions: Vec::new(),
+        retired: Vec::new(),
     };
     let config = Arc::new(config);
     let unlinked = claim(&db, &config, &Packs, &request, Timestamp::now())
@@ -331,6 +325,34 @@ async fn container_claim_uses_gateway_status_without_runner_credentials() {
     let claimed = reply.claim.unwrap();
     assert_eq!(claimed.spec.job_id, job.id);
     assert_eq!(claimed.spec.payer.0, "u1");
+}
+
+#[tokio::test]
+async fn cleanup_only_claim_does_housekeeping_without_leasing_a_job() {
+    let db = Db::in_memory().await.unwrap();
+    let job = ask_job(&db, "u1").await;
+    link(&db, "u1").await;
+    let config = Arc::new(crate::config::tests::test_config());
+    analytic(&db, None).await;
+    db.analyses().request_session_drop(1).await.unwrap();
+    let mut request: ClaimRequest = serde_json::from_value(serde_json::json!({
+        "runner_id": "low-disk", "accept_job": false, "retired": []
+    }))
+    .unwrap();
+    let reply = claim(&db, &config, &Packs, &request, Timestamp::now())
+        .await
+        .unwrap();
+    assert!(reply.claim.is_none());
+    assert_eq!(reply.retire, [1]);
+    request.retired = vec![1];
+    let acknowledged = claim(&db, &config, &Packs, &request, Timestamp::now())
+        .await
+        .unwrap();
+    assert!(acknowledged.claim.is_none());
+    assert!(acknowledged.retire.is_empty());
+    let queued = db.jobs().get(job.id).await.unwrap();
+    assert_eq!(queued.state, contracts::job::state::JobState::Queued);
+    assert_eq!(queued.attempt, 0);
 }
 
 #[tokio::test]

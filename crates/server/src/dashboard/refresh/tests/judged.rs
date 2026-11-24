@@ -6,7 +6,6 @@ use std::sync::Mutex;
 use contracts::agent::judge_work::{JudgeItem, JudgeWorkInput, part_values};
 use contracts::api::dashboard::{ItemKey, PartStatus, ScoreComponent};
 use contracts::job::result::{JobOutcome, JobResult};
-use contracts::job::spec::{CredentialKind, LlmCredentialRef};
 use contracts::time::Timestamp;
 use db::repo::jobs::ClaimParams;
 use jiff::SignedDuration;
@@ -139,10 +138,7 @@ async fn judged_world() -> World {
         .llm_credentials()
         .register(
             DEFAULT_TENANT,
-            &LlmCredentialRef {
-                id: CREDENTIAL_ID.to_owned(),
-                kind: CredentialKind::CodexChatgpt,
-            },
+            &contracts::ids::UserId(CREDENTIAL_ID.to_owned()),
             true,
             Timestamp::now(),
         )

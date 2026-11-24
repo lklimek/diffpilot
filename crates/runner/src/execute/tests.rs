@@ -1,95 +1,26 @@
-//! `execute` against the fixture repository (`fixtures/pr-482/repo`, built with `build-repo.sh`) with a stub
-//! provider, and with the fake provider when the feature is on.
-
-use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::Mutex;
-
-use contracts::agent::JobKind;
-use contracts::common::RepoRef;
-use contracts::job::access::{InstallationToken, Secret};
-use contracts::job::event::{ActivityKind, JobEvent};
-use contracts::job::result::Usage;
-use contracts::job::spec::SessionRef;
-use contracts::time::Timestamp;
-use futures::future::BoxFuture;
-use serde_json::{Value, json};
-use tempfile::TempDir;
-
+//! Container execution boundary: mirrors only, scrubbed output, routing and cancellation.
 use super::*;
 use crate::test_support::{
-    build_repo, commits, credential, dirs, judge_input, judge_spec, shared_repo, spec,
-    verify_input, verify_spec,
+    dirs, judge_input, judge_spec, shared_repo, spec, verify_input, verify_spec,
 };
+use contracts::agent::JobKind;
+use contracts::job::event::{ActivityKind, JobEvent};
+use contracts::job::result::Usage;
+use contracts::job::spec::FlowFile;
+use futures::future::BoxFuture;
+use serde_json::json;
+use std::path::Path;
+use std::sync::Mutex;
 
-const TOKEN_CANARY: &str = "ghs_EXECUTE_CANARY_000000000000001";
+const SINK_SECRET: &str = "sink-secret-canary";
 
-fn pr_id(spec: &JobSpec) -> i64 {
-    spec.target.pull_request().unwrap().pull_request_id
-}
-/// A secret only the receiver of the sink knows (job token, runner secret).
-const SINK_SECRET: &str = "sink-SECRET-job-token-000000000002";
-
-/// What the stub saw while it ran.
-#[derive(Debug, Default, Clone)]
-struct Seen {
-    job_dir: PathBuf,
-    codex_home: PathBuf,
-    head: String,
-    base_present: bool,
-    prompt: String,
-    session_dir: PathBuf,
-    access: AgentAccess,
-    answer_only: bool,
-}
-
-enum Behaviour {
-    Succeed,
-    Fail(fn() -> ProviderError),
-    Hang,
-    Leak,
-    Straddle,
-    /// Succeeds and leaves a session file holding the sink's secret.
-    WriteSession,
-    /// Runs until cancelled, then needs a while to stop (sweep, copy-back) before it ends as cancelled.
-    StopsOnCancel,
-}
-
+#[derive(Default)]
 struct Stub {
-    behaviour: Behaviour,
-    seen: Mutex<Option<Seen>>,
-    /// Whether `resume` succeeds; the (thread, prompt) of every resume.
-    resumable: bool,
-    resumed: Mutex<Vec<(String, String)>>,
-    cancelled: tokio::sync::Notify,
-    stopped: std::sync::atomic::AtomicBool,
+    seen: Mutex<Option<JobSpec>>,
+    hang: bool,
+    stopped: tokio::sync::Notify,
+    cancelled: std::sync::atomic::AtomicBool,
 }
-
-impl Stub {
-    fn new(behaviour: Behaviour) -> Arc<Self> {
-        Arc::new(Self {
-            behaviour,
-            seen: Mutex::new(None),
-            resumable: false,
-            resumed: Mutex::new(Vec::new()),
-            cancelled: tokio::sync::Notify::new(),
-            stopped: std::sync::atomic::AtomicBool::new(false),
-        })
-    }
-
-    fn resumable() -> Arc<Self> {
-        Arc::new(Self {
-            resumable: true,
-            ..Arc::into_inner(Self::new(Behaviour::Succeed)).unwrap()
-        })
-    }
-
-    fn seen(&self) -> Seen {
-        self.seen.lock().unwrap().clone().expect("the provider ran")
-    }
-}
-
 impl LlmProvider for Stub {
     fn run<'a>(
         &'a self,
@@ -97,1410 +28,186 @@ impl LlmProvider for Stub {
         events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
         Box::pin(async move {
-            let repo = call.job_dir.join("repo");
-            let base = commits().base;
-            let base_present = Command::new("git")
-                .arg("-C")
-                .arg(&repo)
-                .args(["cat-file", "-e", &format!("{base}^{{commit}}")])
-                .status()
-                .is_ok_and(|s| s.success());
-            *self.seen.lock().unwrap() = Some(Seen {
-                job_dir: call.job_dir.clone(),
-                codex_home: call.codex_home.clone(),
-                head: fs::read_to_string(repo.join(".git/HEAD")).unwrap_or_default(),
-                base_present,
-                prompt: call.prompt.clone(),
-                session_dir: call.session_dir.clone(),
-                access: call.access.clone(),
-                answer_only: call.answer_only,
-            });
-            let activity = |summary: String| {
-                ProviderEvent::Activity(JobEvent {
-                    seq: 0,
+            *self.seen.lock().unwrap() = Some((*call.job_spec).clone());
+            if self.hang {
+                self.stopped.notified().await;
+                return Err(ProviderError::Checkpoint {
+                    error: Box::new(ProviderError::Metered {
+                        error: Box::new(ProviderError::Cancelled),
+                        usage: Usage {
+                            input_tokens: 7,
+                            ..Usage::default()
+                        },
+                    }),
+                    session: Box::new(SessionReport {
+                        thread_id: "worker-checkpoint".into(),
+                        outcome: SessionOutcome::Started,
+                        last_context: None,
+                        preflight: None,
+                    }),
+                });
+            }
+            events
+                .send(ProviderEvent::Activity(JobEvent {
+                    seq: 99,
                     at: Timestamp::now(),
                     activity: ActivityKind::Command,
-                    summary,
-                })
-            };
-            match &self.behaviour {
-                Behaviour::Succeed => {
-                    events
-                        .send(activity("$ ls (exit 0)".to_owned()))
-                        .await
-                        .unwrap();
-                    events
-                        .send(ProviderEvent::OutputReady(json!({"ok": true})))
-                        .await
-                        .unwrap();
-                    Ok(outcome(json!({"ok": true})))
-                }
-                Behaviour::Fail(error) => Err(error()),
-                Behaviour::WriteSession => {
-                    fs::create_dir_all(&call.session_dir).unwrap();
-                    fs::write(
-                        call.session_dir.join("rollout.jsonl"),
-                        format!("{{\"leak\":\"{SINK_SECRET}\"}}\n"),
-                    )
-                    .unwrap();
-                    Ok(outcome(json!({"ok": true})))
-                }
-                Behaviour::Hang => std::future::pending().await,
-                Behaviour::StopsOnCancel => {
-                    self.cancelled.notified().await;
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                    self.stopped
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    Err(ProviderError::Cancelled)
-                }
-                Behaviour::Straddle => {
-                    for secret in [TOKEN_CANARY, SINK_SECRET] {
-                        events
-                            .send(activity(format!("{}{secret}", "x".repeat(185))))
-                            .await
-                            .unwrap();
-                    }
-                    Err(ProviderError::Failed {
-                        message: format!("{}{TOKEN_CANARY} {SINK_SECRET}", "x".repeat(270)),
-                    })
-                }
-                Behaviour::Leak => {
-                    events
-                        .send(activity(format!("$ echo {TOKEN_CANARY}")))
-                        .await
-                        .unwrap();
-                    events.send(activity("x".repeat(500))).await.unwrap();
-                    let leaked = json!({"text": format!("token {TOKEN_CANARY}")});
-                    events
-                        .send(ProviderEvent::OutputReady(leaked.clone()))
-                        .await
-                        .unwrap();
-                    events
-                        .send(ProviderEvent::OutputReady(json!({"second": 1})))
-                        .await
-                        .unwrap();
-                    Ok(outcome(leaked))
-                }
-            }
+                    summary: format!("{}{}", "x".repeat(195), SINK_SECRET),
+                }))
+                .await
+                .unwrap();
+            let output = json!({"secret": SINK_SECRET});
+            events
+                .send(ProviderEvent::OutputReady(output.clone()))
+                .await
+                .unwrap();
+            Ok(ProviderOutcome {
+                runtime_session: None,
+                output,
+                session_id: None,
+                session_turns: None,
+                usage: Usage::default(),
+                skills_commit: None,
+            })
         })
     }
-
     fn resume<'a>(
         &'a self,
-        session_id: &'a str,
+        _: &'a str,
         call: &'a ProviderCall,
-        _events: mpsc::Sender<ProviderEvent>,
+        events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
-        Box::pin(async move {
-            self.resumed
-                .lock()
-                .unwrap()
-                .push((session_id.to_owned(), call.prompt.clone()));
-            if self.resumable {
-                Ok(outcome(json!({"resumed": true})))
-            } else {
-                Err(ProviderError::SessionUnavailable)
-            }
-        })
+        self.run(call, events)
     }
-
-    fn cancel(&self, _job: contracts::ids::JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
-        self.cancelled.notify_one();
+    fn cancel(&self, _: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stopped.notify_one();
         Box::pin(async { Ok(()) })
     }
 }
-
-fn outcome(output: Value) -> ProviderOutcome {
-    ProviderOutcome {
-        runtime_session: None,
-        session_turns: None,
-        output,
-        session_id: Some("thread-1".to_owned()),
-        usage: Usage {
-            input_tokens: 10,
-            cached_input_tokens: 5,
-            output_tokens: 2,
-            requests: None,
-        },
-        skills_commit: None,
-    }
-}
-
-async fn execute_collect(executor: &Executor, spec: JobSpec) -> (JobResult, Vec<ProviderEvent>) {
-    let (tx, mut rx) = mpsc::channel(1024);
+async fn collect(executor: &Executor, spec: JobSpec) -> (JobResult, Vec<ProviderEvent>) {
+    let (send, mut receive) = mpsc::channel(64);
     let result = executor
-        .execute(spec, EventSink::new(tx, Scrubber::new([SINK_SECRET])))
+        .execute(spec, EventSink::new(send, Scrubber::new([SINK_SECRET])))
         .await;
-    let mut events = Vec::new();
-    while let Some(event) = rx.recv().await {
+    let mut events = vec![];
+    while let Some(event) = receive.recv().await {
         events.push(event);
     }
     (result, events)
 }
 
-fn assert_removed(seen: &Seen) {
-    assert!(!seen.job_dir.exists(), "job dir left behind");
-    assert!(!seen.codex_home.exists(), "per-job CODEX_HOME left behind");
+#[tokio::test]
+async fn container_execution_does_not_create_a_host_checkout() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = Arc::new(Stub::default());
+    let executor = Executor::new(provider.clone(), dirs(root.path()));
+    let mut job = spec(JobKind::Plan, shared_repo());
+    job.payer = contracts::ids::UserId("any-linked-payer".into());
+    let (result, _) = collect(&executor, job.clone()).await;
+    assert!(matches!(result.outcome, JobOutcome::Succeeded { .. }));
+    assert_eq!(*provider.seen.lock().unwrap(), Some(job));
+    assert!(!root.path().join("work").exists());
+    assert!(!root.path().join("state/codex-homes").exists());
+    assert!(!root.path().join("state/sessions").exists());
+    assert!(root.path().join("state/mirrors").exists());
 }
 
 #[tokio::test]
-async fn work_dir_removed_on_success() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Succeed);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let (result, _) = execute_collect(&executor, spec(JobKind::Plan, shared_repo())).await;
-    assert!(
-        matches!(result.outcome, JobOutcome::Succeeded { .. }),
-        "{result:?}"
-    );
-    let seen = stub.seen();
+async fn events_and_output_are_numbered_scrubbed_and_clipped() {
+    let root = tempfile::tempdir().unwrap();
+    let executor = Executor::new(Arc::new(Stub::default()), dirs(root.path()));
+    let (result, events) = collect(&executor, spec(JobKind::Plan, shared_repo())).await;
     assert_eq!(
-        seen.head.trim(),
-        commits().head,
-        "head checked out at job_dir/repo"
-    );
-    assert!(seen.base_present, "base commit fetched for diffs");
-    assert!(!seen.answer_only, "pull request jobs keep their tools");
-    assert!(
-        seen.codex_home
-            .starts_with(root.path().join("state/codex-homes"))
-    );
-    assert_removed(&seen);
-}
-
-#[tokio::test]
-async fn work_dir_removed_on_failure() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Fail(|| ProviderError::Failed {
-        message: "boom".to_owned(),
-    }));
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let (result, _) = execute_collect(&executor, spec(JobKind::Plan, shared_repo())).await;
-    assert!(
-        matches!(
-            result.outcome,
-            JobOutcome::Failed {
-                kind: JobFailureKind::ProviderFailed,
-                ..
-            }
-        ),
-        "{result:?}"
-    );
-    assert!(matches!(
-        result.llm_call,
-        Some(LlmCallOutcome {
-            status: LlmCallStatus::NotWorking { .. },
-            ..
-        })
-    ));
-    assert_removed(&stub.seen());
-}
-
-#[tokio::test]
-async fn work_dir_removed_when_the_job_is_dropped() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Hang);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let (tx, _rx) = mpsc::channel(16);
-    let running = executor.execute(
-        spec(JobKind::Plan, shared_repo()),
-        EventSink::new(tx, Scrubber::default()),
-    );
-    let dropped = tokio::time::timeout(Duration::from_secs(5), async {
-        tokio::pin!(running);
-        loop {
-            tokio::select! {
-                _ = &mut running => panic!("a hanging provider cannot finish"),
-                () = tokio::time::sleep(Duration::from_millis(20)) => {
-                    if stub.seen.lock().unwrap().is_some() { break; }
-                }
-            }
+        result.outcome,
+        JobOutcome::Succeeded {
+            output: json!({"secret":"[redacted]"})
         }
-    })
-    .await;
-    assert!(dropped.is_ok(), "the provider never started");
-    assert_removed(&stub.seen());
-}
-
-#[tokio::test]
-async fn empty_cache_works() {
-    let root = TempDir::new().unwrap();
-    let source = TempDir::new().unwrap();
-    let repo = source.path().join("node-client");
-    build_repo(&repo);
-    assert!(
-        !root.path().join("state").exists(),
-        "no cache, no session store"
     );
-    let stub = Stub::new(Behaviour::Succeed);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let (result, _) = execute_collect(&executor, spec(JobKind::Plan, &repo)).await;
     assert!(
-        matches!(result.outcome, JobOutcome::Succeeded { .. }),
-        "{result:?}"
+        matches!(&events[0], ProviderEvent::Activity(event) if event.seq == 1 && event.summary.chars().count() <= SUMMARY_MAX_CHARS)
     );
-    // The mirror now serves the commits even without the source.
-    fs::remove_dir_all(&repo).unwrap();
-    let (again, _) = execute_collect(&executor, spec(JobKind::Plan, &repo)).await;
-    assert!(
-        matches!(again.outcome, JobOutcome::Succeeded { .. }),
-        "cached mirror: {again:?}"
-    );
-}
-
-#[tokio::test]
-async fn checkout_failure_is_reported_and_cleaned_up() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Succeed);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let spec = spec(JobKind::Plan, &root.path().join("missing-repo"));
-    let key = format!("{}-{}", spec.job_id, spec.attempt);
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert!(
-        matches!(
-            result.outcome,
-            JobOutcome::Failed {
-                kind: JobFailureKind::CheckoutFailed,
-                ..
-            }
-        ),
-        "{result:?}"
-    );
-    assert!(result.llm_call.is_none(), "no LLM call was made");
-    assert!(stub.seen.lock().unwrap().is_none());
-    assert!(!root.path().join("work").join(&key).exists());
-    assert!(!root.path().join("state/codex-homes").join(&key).exists());
-}
-
-#[tokio::test]
-async fn events_are_numbered_scrubbed_and_clipped() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Leak);
-    let executor = Executor::new(stub, dirs(root.path()), credential());
-    let mut spec = spec(JobKind::Plan, shared_repo());
-    spec.access.github = Some(InstallationToken {
-        token: Secret::new(TOKEN_CANARY),
-        expires_at: Timestamp::now(),
-        repository: RepoRef {
-            owner: "acme".to_owned(),
-            name: "node-client".to_owned(),
-        },
-    });
-    let (result, events) = execute_collect(&executor, spec).await;
-    let mut seqs = Vec::new();
-    let mut outputs = Vec::new();
-    for event in &events {
-        match event {
-            ProviderEvent::Activity(event) => {
-                seqs.push(event.seq);
-                assert!(event.summary.chars().count() <= SUMMARY_MAX_CHARS);
-            }
-            ProviderEvent::OutputReady(output) => outputs.push(output.clone()),
-        }
+    for event in events {
+        assert!(!format!("{event:?}").contains(SINK_SECRET));
     }
-    assert_eq!(seqs, [1, 2]);
-    assert_eq!(
-        outputs,
-        [json!({"text": "token [redacted]"})],
-        "one ready output, scrubbed"
-    );
-    let all = format!("{events:?} {result:?}");
-    assert!(!all.contains(TOKEN_CANARY), "{all}");
 }
 
 #[tokio::test]
-async fn runtime_cap_ends_with_timeout() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Hang);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let mut spec = spec(JobKind::Plan, shared_repo());
-    spec.limits.max_runtime_secs = 1;
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert!(
-        matches!(
-            result.outcome,
-            JobOutcome::Failed {
-                kind: JobFailureKind::Timeout,
-                ..
-            }
-        ),
-        "{result:?}"
-    );
-    assert_removed(&stub.seen());
-}
-
-#[tokio::test]
-async fn requested_session_counts_as_lost_and_the_context_pack_seeds_the_new_one() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Succeed);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let mut spec = spec(JobKind::Plan, shared_repo());
-    spec.session = Some(SessionRef {
-        pull_request_id: pr_id(&spec),
-        thread_id: "old-thread".to_owned(),
+async fn runtime_cap_cancels_and_settles_the_provider() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = Arc::new(Stub {
+        hang: true,
+        ..Stub::default()
     });
-    spec.context_pack = Some("CONTEXT PACK".to_owned());
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert!(stub.seen().prompt.starts_with("CONTEXT PACK\n\n"));
-    assert_eq!(
-        result.session,
-        Some(SessionReport {
-            last_context: None,
-            preflight: None,
-            thread_id: "thread-1".to_owned(),
-            outcome: SessionOutcome::StartedAfterLoss
-        })
-    );
-}
-
-#[tokio::test]
-async fn own_session_is_resumed_without_the_context_pack() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::resumable();
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let mut spec = spec(JobKind::Plan, shared_repo());
-    spec.session = Some(SessionRef {
-        pull_request_id: pr_id(&spec),
-        thread_id: "thread-1".to_owned(),
-    });
-    spec.context_pack = Some("CONTEXT PACK".to_owned());
-    let prompt = spec.prompt.clone();
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert_eq!(
-        *stub.resumed.lock().unwrap(),
-        [("thread-1".to_owned(), prompt)]
-    );
-    assert!(stub.seen.lock().unwrap().is_none(), "no new session");
-    assert_eq!(
-        result.session,
-        Some(SessionReport {
-            last_context: None,
-            preflight: None,
-            thread_id: "thread-1".to_owned(),
-            outcome: SessionOutcome::Resumed
-        })
-    );
-}
-
-#[tokio::test]
-async fn session_of_another_pull_request_is_never_resumed() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::resumable();
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let mut spec = spec(JobKind::Plan, shared_repo());
-    spec.session = Some(SessionRef {
-        pull_request_id: pr_id(&spec) + 1,
-        thread_id: "thread-of-another-pr".to_owned(),
-    });
-    spec.context_pack = Some("CONTEXT PACK".to_owned());
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert!(stub.resumed.lock().unwrap().is_empty());
-    assert!(stub.seen().prompt.starts_with("CONTEXT PACK\n\n"));
-    assert_eq!(
-        result.session.map(|s| s.outcome),
-        Some(SessionOutcome::StartedAfterLoss)
-    );
-}
-
-#[tokio::test]
-async fn stored_session_is_scrubbed_of_the_sink_secrets() {
-    let root = TempDir::new().unwrap();
-    let executor = Executor::new(
-        Stub::new(Behaviour::WriteSession),
-        dirs(root.path()),
-        credential(),
-    );
-    let spec = spec(JobKind::Plan, shared_repo());
-    let stored = executor.sessions().dir(pr_id(&spec)).join("rollout.jsonl");
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert!(result.session.is_some());
-    assert_eq!(
-        fs::read_to_string(stored).unwrap(),
-        "{\"leak\":\"[redacted]\"}\n"
-    );
-}
-
-#[tokio::test]
-async fn first_job_reports_a_started_session_and_usage() {
-    let root = TempDir::new().unwrap();
-    let executor = Executor::new(
-        Stub::new(Behaviour::Succeed),
-        dirs(root.path()),
-        credential(),
-    );
-    let (result, _) = execute_collect(&executor, spec(JobKind::Plan, shared_repo())).await;
-    assert_eq!(
-        result.session,
-        Some(SessionReport {
-            last_context: None,
-            preflight: None,
-            thread_id: "thread-1".to_owned(),
-            outcome: SessionOutcome::Started
-        })
-    );
-    assert_eq!(result.usage.map(|u| u.input_tokens), Some(10));
+    let executor = Executor::new(provider.clone(), dirs(root.path()));
+    let mut job = spec(JobKind::Plan, shared_repo());
+    job.limits.max_runtime_secs = 1;
+    let (result, _) = collect(&executor, job).await;
+    executor.settled().await;
     assert!(matches!(
-        result.llm_call,
-        Some(LlmCallOutcome {
-            status: LlmCallStatus::Working,
+        result.outcome,
+        JobOutcome::Failed {
+            kind: JobFailureKind::Timeout,
             ..
-        })
+        }
     ));
+    assert!(provider.cancelled.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(
+        result.usage.unwrap().input_tokens,
+        7,
+        "settled timeout usage is retained"
+    );
+    assert_eq!(result.session.unwrap().thread_id, "worker-checkpoint");
 }
 
 #[tokio::test]
-async fn foreign_credential_is_rejected_before_any_work() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Succeed);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let mut spec = spec(JobKind::Plan, shared_repo());
-    spec.payer.0 = "someone-else".to_owned();
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert!(
-        matches!(
+async fn dashboard_and_verify_jobs_enforce_their_capabilities() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = Arc::new(Stub::default());
+    let executor = Executor::new(provider.clone(), dirs(root.path()));
+    let mut dashboard = judge_spec(&judge_input());
+    dashboard.skills.push("severity".into());
+    let mut verify = verify_spec(shared_repo(), &verify_input(None));
+    verify.flow_file = Some(FlowFile {
+        context: json!({}),
+        previous: None,
+    });
+    for job in [dashboard, verify] {
+        let (result, _) = collect(&executor, job).await;
+        assert!(matches!(
             result.outcome,
             JobOutcome::Failed {
                 kind: JobFailureKind::Internal,
                 ..
             }
-        ),
-        "{result:?}"
-    );
-    assert!(stub.seen.lock().unwrap().is_none());
-}
-
-type ResultCheck = fn(&JobResult) -> bool;
-
-#[tokio::test]
-async fn provider_errors_map_to_typed_outcomes() {
-    let cases: [(fn() -> ProviderError, ResultCheck); 4] = [
-        (
-            || ProviderError::UsageLimit { resets_at: None },
-            |r| matches!(r.outcome, JobOutcome::UsageLimited { resets_at: None }),
-        ),
-        (
-            || ProviderError::Cancelled,
-            |r| matches!(r.outcome, JobOutcome::Cancelled) && r.llm_call.is_none(),
-        ),
-        (
-            || ProviderError::CredentialUnusable,
-            |r| {
-                matches!(
-                    r.outcome,
-                    JobOutcome::Failed {
-                        kind: JobFailureKind::CredentialUnusable,
-                        ..
-                    }
-                )
-            },
-        ),
-        (
-            || ProviderError::OutputNotJson,
-            |r| {
-                matches!(
-                    r.outcome,
-                    JobOutcome::Failed {
-                        kind: JobFailureKind::OutputNotJson,
-                        ..
-                    }
-                )
-            },
-        ),
-    ];
-    for (error, check) in cases {
-        let root = TempDir::new().unwrap();
-        let executor = Executor::new(
-            Stub::new(Behaviour::Fail(error)),
-            dirs(root.path()),
-            credential(),
-        );
-        let (result, _) = execute_collect(&executor, spec(JobKind::Plan, shared_repo())).await;
-        assert!(check(&result), "{result:?}");
+        ));
     }
+    assert!(provider.seen.lock().unwrap().is_none());
 }
 
 #[cfg(feature = "fake-provider")]
-mod fake {
-    use std::time::Duration;
-
-    use super::*;
-    use crate::provider::fake::FakeProvider;
-    use crate::test_support::fixture;
-
-    /// Activities the recording yields through the Codex stream parser.
-    fn recorded_activities(file: &str) -> usize {
-        let text = fs::read_to_string(fixture(&format!("codex/{file}"))).unwrap();
-        let mut stream = crate::provider::codex::CodexStream::default();
-        text.lines()
-            .filter(|line| stream.line(line).is_some())
-            .count()
-    }
-
-    #[tokio::test]
-    async fn fake_provider_reproduces_fixture_events_and_result() {
-        let mut cases = vec![
-            (
-                JobKind::Plan,
-                "Job: plan.".to_owned(),
-                "plan.jsonl".to_owned(),
-                "agent/plan.json".to_owned(),
-            ),
-            (
-                JobKind::PrContext,
-                "Job: pr_context.".to_owned(),
-                "pr-context.jsonl".to_owned(),
-                "agent/pr_context.json".to_owned(),
-            ),
-        ];
-        for flow in 1..=5 {
-            cases.push((
-                JobKind::AnalyseFlow,
-                format!("Job: analyse_flow f{flow}. Plan: f1 f2 f3 f4 f5"),
-                format!("analyse-flow-{flow}.jsonl"),
-                format!("agent/flow-{flow}.json"),
-            ));
-        }
-        for (kind, prompt, recording, output) in cases {
-            let root = TempDir::new().unwrap();
-            let executor = Executor::new(
-                Arc::new(FakeProvider::new(Duration::ZERO)),
-                dirs(root.path()),
-                credential(),
-            );
-            let mut spec = spec(kind, shared_repo());
-            spec.prompt = prompt;
-            let (result, events) = execute_collect(&executor, spec).await;
-            let expected: Value =
-                serde_json::from_str(&fs::read_to_string(fixture(&output)).unwrap()).unwrap();
-            assert_eq!(
-                result.outcome,
-                JobOutcome::Succeeded {
-                    output: expected.clone()
-                },
-                "{recording}"
-            );
-            assert_eq!(
-                result.session.as_ref().map(|s| s.thread_id.as_str()),
-                Some("019a8f2c-4820-7000-8000-000000000482")
-            );
-            assert!(
-                result.usage.is_some_and(|u| u.input_tokens > 0),
-                "{recording}"
-            );
-            let activities = recorded_activities(&recording);
-            assert!(activities > 0);
-            let seqs: Vec<u32> = events
-                .iter()
-                .filter_map(|e| match e {
-                    ProviderEvent::Activity(event) => Some(event.seq),
-                    ProviderEvent::OutputReady(_) => None,
-                })
-                .collect();
-            assert_eq!(
-                seqs,
-                (1..=u32::try_from(activities).unwrap()).collect::<Vec<_>>(),
-                "{recording}"
-            );
-            assert_eq!(
-                events.last(),
-                Some(&ProviderEvent::OutputReady(expected)),
-                "{recording}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn job_logs_session_origin_and_usage() {
-        #[derive(Clone)]
-        struct Capture(Arc<Mutex<Vec<u8>>>);
-        impl std::io::Write for Capture {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&log);
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_max_level(tracing::Level::INFO)
-            .with_writer(move || Capture(Arc::clone(&captured)))
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
-        let root = TempDir::new().unwrap();
-        let executor = Executor::new(
-            Arc::new(FakeProvider::new(Duration::ZERO)),
-            dirs(root.path()),
-            credential(),
-        );
-        for (session, origin) in [
-            (None, "new session"),
-            (Some(1), "resumed session"),
-            (Some(2), "context pack after a lost session"),
-        ] {
-            log.lock().unwrap().clear();
-            let mut spec = spec(JobKind::Plan, shared_repo());
-            spec.prompt = "Job: plan.".to_owned();
-            spec.session = session.map(|pull_request_id| SessionRef {
-                pull_request_id,
-                thread_id: "thread-1".to_owned(),
+#[tokio::test]
+async fn fake_provider_replays_json_and_tagged_flows() {
+    let root = tempfile::tempdir().unwrap();
+    let executor = Executor::new(
+        Arc::new(crate::provider::fake::FakeProvider::default()),
+        dirs(root.path()),
+    );
+    for kind in [JobKind::Plan, JobKind::PrContext, JobKind::AnalyseFlow] {
+        let mut job = spec(kind, shared_repo());
+        if kind == JobKind::AnalyseFlow {
+            job.flow_file = Some(FlowFile {
+                context: json!({}),
+                previous: None,
             });
-            let job = spec.job_id;
-            let (result, _) = execute_collect(&executor, spec).await;
-            let usage = result.usage.unwrap();
-            let logged = String::from_utf8(log.lock().unwrap().clone()).unwrap();
-            let line = logged
-                .lines()
-                .find(|line| line.contains("job agent session summary"))
-                .expect("session summary");
-            for expected in [
-                origin.to_owned(),
-                job.to_string(),
-                "kind=Plan".to_owned(),
-                format!("input_tokens={}", usage.input_tokens),
-                format!("cached_input_tokens={}", usage.cached_input_tokens),
-                format!("output_tokens={}", usage.output_tokens),
-                "session_turns=".to_owned(),
-                "model=".to_owned(),
-                "effort=".to_owned(),
-            ] {
-                assert!(line.contains(&expected), "{expected}: {line}");
-            }
-            let phases = logged
-                .lines()
-                .find(|line| line.contains("job phase timings"))
-                .expect("phase timings");
-            for expected in [
-                "job_dirs=",
-                "mirror=",
-                "objects_copied=",
-                "checkout=",
-                "cleanup=",
-                "total=",
-            ] {
-                assert!(phases.contains(expected), "{expected}: {phases}");
-            }
-            let root_path = root.path().display().to_string();
-            assert!(!phases.contains(&root_path), "no paths: {phases}");
         }
-    }
-
-    #[tokio::test]
-    async fn fake_provider_has_no_ask_recording() {
-        let root = TempDir::new().unwrap();
-        let executor = Executor::new(
-            Arc::new(FakeProvider::new(Duration::ZERO)),
-            dirs(root.path()),
-            credential(),
-        );
-        let (result, _) = execute_collect(&executor, spec(JobKind::Ask, shared_repo())).await;
+        let (result, _) = collect(&executor, job).await;
         assert!(
-            matches!(
-                result.outcome,
-                JobOutcome::Failed {
-                    kind: JobFailureKind::ProviderFailed,
-                    ..
-                }
-            ),
+            matches!(result.outcome, JobOutcome::Succeeded { .. }),
             "{result:?}"
         );
-    }
-}
-
-#[tokio::test]
-async fn secrets_straddling_the_clip_limits_are_scrubbed_whole() {
-    let root = TempDir::new().unwrap();
-    let executor = Executor::new(
-        Stub::new(Behaviour::Straddle),
-        dirs(root.path()),
-        credential(),
-    );
-    let mut spec = spec(JobKind::Plan, shared_repo());
-    spec.access.github = Some(InstallationToken {
-        token: Secret::new(TOKEN_CANARY),
-        expires_at: Timestamp::now(),
-        repository: RepoRef {
-            owner: "acme".to_owned(),
-            name: "node-client".to_owned(),
-        },
-    });
-    let (result, events) = execute_collect(&executor, spec).await;
-    let all = format!("{events:?} {result:?}");
-    for secret in [TOKEN_CANARY, SINK_SECRET] {
-        assert!(
-            !all.contains(&secret[..8]),
-            "a fragment of {secret} survived: {all}"
-        );
-    }
-    assert!(all.contains("[redacted]"), "{all}");
-}
-
-#[tokio::test]
-async fn context_pack_seeds_a_new_session_without_a_requested_session() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Succeed);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let mut spec = spec(JobKind::Plan, shared_repo());
-    spec.context_pack = Some("CONTEXT PACK".to_owned());
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert!(
-        stub.seen().prompt.starts_with("CONTEXT PACK\n\n"),
-        "{}",
-        stub.seen().prompt
-    );
-    assert_eq!(
-        result.session.map(|s| s.outcome),
-        Some(SessionOutcome::Started)
-    );
-}
-
-/// An HTTP remote that accepts the fetch and never answers. Reports whether the connection was closed (every
-/// process of the fetch gone) within `closed_within` of the request.
-fn hanging_http_remote(closed_within: Duration) -> (String, std::sync::mpsc::Receiver<bool>) {
-    use std::io::{ErrorKind, Read};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/repo.git", listener.local_addr().unwrap());
-    let (report, closed) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        let mut request = [0_u8; 4096];
-        let _ = socket.read(&mut request);
-        socket.set_read_timeout(Some(closed_within)).unwrap();
-        let was_closed = match socket.read(&mut request) {
-            Ok(0) => true,
-            Ok(_) => false,
-            Err(error) => !matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
-        };
-        let _ = report.send(was_closed);
-        // Never answers or closes: only the fetch going away ends the connection.
-        std::thread::sleep(Duration::from_secs(60));
-        drop(socket);
-    });
-    (url, closed)
-}
-
-#[tokio::test]
-async fn hanging_fetch_ends_with_timeout_and_kills_the_whole_git_group() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Succeed);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let (url, closed) = hanging_http_remote(Duration::from_secs(5));
-    let mut spec = spec(JobKind::Plan, shared_repo());
-    if let JobTarget::PullRequest(target) = &mut spec.target {
-        target.repo.clone_url = url;
-    }
-    spec.limits.max_runtime_secs = 1;
-    let key = format!("{}-{}", spec.job_id, spec.attempt);
-    let (result, _) =
-        tokio::time::timeout(Duration::from_secs(20), execute_collect(&executor, spec))
-            .await
-            .expect("the runtime limit covers the fetch");
-    assert!(
-        matches!(
-            result.outcome,
-            JobOutcome::Failed {
-                kind: JobFailureKind::Timeout,
-                ..
-            }
-        ),
-        "{result:?}"
-    );
-    assert!(
-        stub.seen.lock().unwrap().is_none(),
-        "the provider never ran"
-    );
-    assert!(
-        !root.path().join("work").join(&key).exists(),
-        "the job dir is removed"
-    );
-    assert!(
-        tokio::task::spawn_blocking(move || closed.recv().unwrap())
-            .await
-            .unwrap(),
-        "git-remote-http (in git's process group) still holds the connection"
-    );
-}
-
-#[tokio::test]
-async fn runtime_cap_stops_a_detached_attempt_through_the_provider_and_awaits_it() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::StopsOnCancel);
-    let executor =
-        Executor::new(stub.clone(), dirs(root.path()), credential()).with_detached_attempts();
-    let mut spec = spec(JobKind::Plan, shared_repo());
-    spec.limits.max_runtime_secs = 1;
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert!(
-        matches!(
-            result.outcome,
-            JobOutcome::Failed {
-                kind: JobFailureKind::Timeout,
-                ..
-            }
-        ),
-        "{result:?}"
-    );
-    assert!(
-        stub.stopped.load(std::sync::atomic::Ordering::SeqCst),
-        "the result waited for the provider's stop sequence"
-    );
-    assert_removed(&stub.seen());
-}
-
-#[tokio::test]
-async fn dropped_detached_attempt_holds_settled_until_it_has_stopped() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::StopsOnCancel);
-    let executor =
-        Executor::new(stub.clone(), dirs(root.path()), credential()).with_detached_attempts();
-    let spec = spec(JobKind::Plan, shared_repo());
-    let (tx, _rx) = mpsc::channel(64);
-    let running = executor.execute(spec, EventSink::new(tx, Scrubber::default()));
-    tokio::select! {
-        _ = running => panic!("the attempt ended without a cancel"),
-        () = async {
-            while stub.seen.lock().unwrap().is_none() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        } => {}
-    }
-    // `execute` was dropped: the attempt is cancelled, and the runner may go on only once it stopped.
-    executor.settled().await;
-    assert!(stub.stopped.load(std::sync::atomic::Ordering::SeqCst));
-    assert_removed(&stub.seen());
-}
-
-/// The failure names the skill and the setting to change.
-#[tokio::test]
-async fn missing_required_skill_reports_configuration() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Fail(|| {
-        ProviderError::Configuration(crate::skills::SkillError::NotAllowed("severity".to_owned()))
-    }));
-    let executor = Executor::new(stub, dirs(root.path()), credential());
-    let (result, _) = execute_collect(&executor, spec(JobKind::Plan, shared_repo())).await;
-    let wire = serde_json::to_value(&result).unwrap();
-    assert_eq!(wire["outcome"]["kind"], "configuration");
-    let message = wire["outcome"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("severity") && message.contains("SR_RUNNER_SKILLS"),
-        "{message}"
-    );
-}
-
-#[tokio::test]
-async fn ask_never_saves_into_the_analytic_archive() {
-    let root = TempDir::new().unwrap();
-    let executor = Executor::new(
-        Stub::new(Behaviour::WriteSession),
-        dirs(root.path()),
-        credential(),
-    );
-    let mut wire = serde_json::to_value(spec(JobKind::Ask, shared_repo())).unwrap();
-    wire["working_session"] = json!({"user_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "analytic_generation": 1, "thread_id": null});
-    let spec: JobSpec = serde_json::from_value(wire).unwrap();
-    let analytic = executor.sessions().dir(pr_id(&spec));
-    fs::create_dir_all(&analytic).unwrap();
-    fs::write(analytic.join("rollout.jsonl"), "ANALYTIC").unwrap();
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert!(matches!(result.outcome, JobOutcome::Succeeded { .. }));
-    assert_eq!(
-        fs::read_to_string(analytic.join("rollout.jsonl")).unwrap(),
-        "ANALYTIC"
-    );
-}
-
-#[cfg(feature = "fake-provider")]
-#[tokio::test]
-async fn private_forks_keep_marker_out_of_analytic_and_other_users_and_refork_on_loss() {
-    use crate::provider::fake::FakeProvider;
-    use contracts::job::spec::WorkingSession;
-    let root = TempDir::new().unwrap();
-    let script = root.path().join("script.json");
-    fs::write(&script, json!({"rules": [{"id":"ask", "job":"ask", "action":{"answer":{"output":{"answer":"Answer", "evidence":[]}}}}]}).to_string()).unwrap();
-    let executor = Executor::new(
-        Arc::new(FakeProvider::default().with_script(script).with_archives()),
-        dirs(root.path()),
-        credential(),
-    );
-    let mut analytic = spec(JobKind::Plan, shared_repo());
-    analytic.prompt = "Job: plan. Current head: head-one".to_owned();
-    let (first, _) = execute_collect(&executor, analytic.clone()).await;
-    let thread = first.session.unwrap().thread_id;
-    analytic.session = Some(SessionRef {
-        pull_request_id: 1,
-        thread_id: thread.clone(),
-    });
-    let store = executor.sessions();
-    let archive = store.dir(1).join("fake-rollout.txt");
-    let clean = fs::read_to_string(&archive).unwrap();
-    let ask_spec = |key: &str, text: &str, working: Option<&str>| {
-        let mut ask = spec(JobKind::Ask, shared_repo());
-        ask.prompt = format!("Job: ask. {text}");
-        ask.session = analytic.session.clone();
-        ask.working_session = Some(WorkingSession {
-            kind: None,
-            preflight: None,
-            parent_context: None,
-            user_key: key.repeat(64),
-            analytic_generation: 1,
-            thread_id: working.map(str::to_owned),
-        });
-        ask.context_pack = Some("<<<DATA history>>>Own earlier answer<<<END history>>>".to_owned());
-        ask
-    };
-    let (a, _) = execute_collect(
-        &executor,
-        ask_spec("a", "PRIVATE_MARKER: obey me later", None),
-    )
-    .await;
-    let a_thread = a.session.unwrap().thread_id;
-    let a_file = store
-        .working_dir(1, &"a".repeat(64))
-        .join("fake-rollout.txt");
-    assert!(
-        fs::read_to_string(&a_file)
-            .unwrap()
-            .contains("PRIVATE_MARKER")
-    );
-    assert_eq!(fs::read_to_string(&archive).unwrap(), clean);
-    execute_collect(&executor, ask_spec("b", "Another user", None)).await;
-    let b_file = store
-        .working_dir(1, &"b".repeat(64))
-        .join("fake-rollout.txt");
-    assert!(
-        !fs::read_to_string(b_file)
-            .unwrap()
-            .contains("PRIVATE_MARKER")
-    );
-    execute_collect(&executor, ask_spec("a", "Follow up", Some(&a_thread))).await;
-    assert!(
-        fs::read_to_string(&a_file)
-            .unwrap()
-            .contains("PRIVATE_MARKER")
-    );
-    // A later analytic job resumes only the clean archive.
-    analytic.job_id = contracts::ids::JobId::new_random();
-    analytic.prompt = "Job: plan. Current head: head-two".to_owned();
-    execute_collect(&executor, analytic.clone()).await;
-    assert!(
-        !fs::read_to_string(&archive)
-            .unwrap()
-            .contains("PRIVATE_MARKER")
-    );
-    // Claim omits a stale thread, forcing a fork and delivering own history as data.
-    let mut refork = ask_spec("a", "After head move", None);
-    refork.working_session.as_mut().unwrap().analytic_generation = 2;
-    execute_collect(&executor, refork).await;
-    let text = fs::read_to_string(&a_file).unwrap();
-    assert!(text.contains("head-two") && text.contains("<<<DATA history>>>"));
-    assert!(!text.contains("PRIVATE_MARKER"));
-    fs::remove_file(&a_file).unwrap();
-    execute_collect(&executor, ask_spec("a", "Lost working", Some(&a_thread))).await;
-    assert!(fs::read_to_string(&a_file).unwrap().contains("head-two"));
-    fs::remove_file(&a_file).unwrap();
-    fs::remove_file(&archive).unwrap();
-    let (lost, _) = execute_collect(&executor, ask_spec("a", "Lost both", Some(&a_thread))).await;
-    assert_eq!(
-        lost.session.unwrap().outcome,
-        SessionOutcome::StartedAfterLoss
-    );
-    let text = fs::read_to_string(&a_file).unwrap();
-    assert!(text.contains("<<<DATA history>>>") && !text.contains("head-two"));
-    assert!(!archive.exists());
-}
-
-/// The first Ask of a working session (and every re-fork) compacts the forked analytic session once, said in an
-/// activity line; follow-ups and analytic jobs never compact; a failed compacting turn is answered again from
-/// the uncompacted fork (ADR-004 addendum 2026-11-18).
-#[cfg(feature = "fake-provider")]
-#[tokio::test]
-async fn a_fork_compacts_once_and_falls_back_when_the_compacting_turn_fails() {
-    use crate::provider::fake::{COMPACTED_MARK, FakeProvider};
-    use contracts::job::spec::WorkingSession;
-    let root = TempDir::new().unwrap();
-    let script = root.path().join("script.json");
-    fs::write(
-        &script,
-        json!({"rules": [
-            {"id":"broken", "job":"ask", "prompt_contains":"BROKEN", "times":1,
-             "action":{"fail":{"message":"compaction failed"}}},
-            {"id":"ask", "job":"ask", "action":{"answer":{"output":{"answer":"Answer", "evidence":[]}}}}
-        ]})
-        .to_string(),
-    )
-    .unwrap();
-    let executor = Executor::new(
-        Arc::new(FakeProvider::default().with_script(script).with_archives()),
-        dirs(root.path()),
-        credential(),
-    );
-    let mut analytic = spec(JobKind::Plan, shared_repo());
-    analytic.prompt = "Job: plan.".to_owned();
-    let (first, events) = execute_collect(&executor, analytic.clone()).await;
-    assert!(!preparing(&events), "an analytic job never compacts");
-    analytic.session = Some(SessionRef {
-        pull_request_id: 1,
-        thread_id: first.session.unwrap().thread_id,
-    });
-    let ask = |text: &str, generation: i64, thread: Option<&str>| {
-        let mut ask = spec(JobKind::Ask, shared_repo());
-        ask.prompt = format!("Job: ask. {text}");
-        ask.session = analytic.session.clone();
-        ask.working_session = Some(WorkingSession {
-            kind: None,
-            preflight: None,
-            parent_context: None,
-            user_key: "a".repeat(64),
-            analytic_generation: generation,
-            thread_id: thread.map(str::to_owned),
-        });
-        ask
-    };
-    let working = executor
-        .sessions()
-        .working_dir(1, &"a".repeat(64))
-        .join("fake-rollout.txt");
-    let marks = || {
-        fs::read_to_string(&working)
-            .unwrap()
-            .matches(COMPACTED_MARK)
-            .count()
-    };
-
-    let (first_ask, events) = execute_collect(&executor, ask("First", 1, None)).await;
-    assert!(
-        matches!(first_ask.outcome, JobOutcome::Succeeded { .. }),
-        "{first_ask:?}"
-    );
-    assert!(
-        preparing(&events),
-        "the first question says it prepares the conversation"
-    );
-    assert_eq!(marks(), 1, "the fork is compacted once");
-    let thread = first_ask.session.unwrap().thread_id;
-
-    let (follow_up, events) = execute_collect(&executor, ask("Follow up", 1, Some(&thread))).await;
-    assert!(matches!(follow_up.outcome, JobOutcome::Succeeded { .. }));
-    assert!(!preparing(&events));
-    assert_eq!(
-        marks(),
-        1,
-        "a follow-up only relies on automatic compaction"
-    );
-
-    execute_collect(&executor, ask("After a new analytic generation", 2, None)).await;
-    assert_eq!(
-        marks(),
-        1,
-        "a re-fork starts from the analytic archive and compacts again"
-    );
-    assert!(
-        fs::read_to_string(&working)
-            .unwrap()
-            .contains("After a new analytic generation")
-    );
-
-    let (fallback, events) = execute_collect(&executor, ask("BROKEN", 3, None)).await;
-    assert!(
-        matches!(fallback.outcome, JobOutcome::Succeeded { .. }),
-        "answered from the uncompacted fork: {fallback:?}"
-    );
-    assert!(preparing(&events));
-    assert_eq!(marks(), 0, "the fallback turn keeps the uncompacted fork");
-}
-
-#[cfg(feature = "fake-provider")]
-fn preparing(events: &[ProviderEvent]) -> bool {
-    events.iter().any(|event| {
-        matches!(event, ProviderEvent::Activity(activity)
-            if activity.summary == "Preparing the conversation (first question after an analysis)")
-    })
-}
-
-/// A dashboard job runs fresh in an empty job directory: no checkout, no resume, its session files stay in the job
-/// directory and go with it, nothing reaches the session store and no session is reported (ADR-018).
-#[tokio::test]
-async fn judge_job_runs_without_checkout_or_session() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::WriteSession);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let mut spec = judge_spec(&judge_input());
-    spec.context_pack = Some("never used".to_owned());
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert!(
-        matches!(result.outcome, JobOutcome::Succeeded { .. }),
-        "{:?}",
-        result.outcome
-    );
-    assert_eq!(result.session, None, "nothing to resume later");
-    let seen = stub.seen();
-    assert!(!seen.job_dir.join("repo").exists() && seen.head.is_empty() && !seen.base_present);
-    assert!(seen.session_dir.starts_with(&seen.job_dir), "{seen:?}");
-    assert_eq!(seen.access, AgentAccess::default());
-    assert!(seen.answer_only, "no command, web or image tool");
-    assert!(!seen.prompt.contains("never used"));
-    assert!(stub.resumed.lock().unwrap().is_empty());
-    assert_removed(&seen);
-    let stored = fs::read_dir(root.path().join("state/sessions"))
-        .map(|entries| entries.count())
-        .unwrap_or(0);
-    assert_eq!(stored, 0, "the session store is untouched");
-}
-
-/// A dashboard job that carries access, skills or a session, or a kind that does not match its target, is refused
-/// before anything runs (threat model T17).
-#[tokio::test]
-async fn misfit_dashboard_jobs_are_refused_before_the_provider_runs() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Succeed);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let with_memcan = {
-        let mut spec = judge_spec(&judge_input());
-        spec.access.memcan = Some(contracts::job::access::McpHttpEndpoint {
-            url: "https://memcan.example/mcp".to_owned(),
-            token: Secret::new("memcan-token"),
-            allow_write: false,
-        });
-        spec
-    };
-    let with_skills = JobSpec {
-        skills: vec!["severity".to_owned()],
-        ..judge_spec(&judge_input())
-    };
-    let with_session = JobSpec {
-        session: Some(SessionRef {
-            pull_request_id: 1,
-            thread_id: "thread-1".to_owned(),
-        }),
-        ..judge_spec(&judge_input())
-    };
-    let plan_on_dashboard = JobSpec {
-        kind: JobKind::Plan,
-        ..judge_spec(&judge_input())
-    };
-    let judge_on_pr = JobSpec {
-        kind: JobKind::JudgeWork,
-        ..spec(JobKind::Plan, shared_repo())
-    };
-    for spec in [
-        with_memcan,
-        with_skills,
-        with_session,
-        plan_on_dashboard,
-        judge_on_pr,
-    ] {
-        let (result, _) = execute_collect(&executor, spec).await;
-        assert!(
-            matches!(
-                result.outcome,
-                JobOutcome::Failed {
-                    kind: JobFailureKind::Internal,
-                    ..
-                }
-            ),
-            "{:?}",
-            result.outcome
-        );
-    }
-    assert!(
-        stub.seen.lock().unwrap().is_none(),
-        "the provider never ran"
-    );
-}
-
-#[cfg(feature = "fake-provider")]
-#[tokio::test]
-async fn fake_provider_answers_judge_jobs_with_valid_judgements() {
-    use contracts::agent::judge_work::JudgeWorkOutput;
-
-    use crate::provider::fake::FakeProvider;
-    let root = TempDir::new().unwrap();
-    let executor = Executor::new(
-        Arc::new(FakeProvider::default()),
-        dirs(root.path()),
-        credential(),
-    );
-    let input = judge_input();
-    let (result, _) = execute_collect(&executor, judge_spec(&input)).await;
-    let JobOutcome::Succeeded { output } = result.outcome else {
-        panic!("{:?}", result.outcome);
-    };
-    assert_eq!(result.session, None);
-    let answer: JudgeWorkOutput = serde_json::from_value(output).unwrap();
-    let validated = answer.validate(&input);
-    assert_eq!(validated.unknown_answers, 0);
-    for (key, outcome) in &validated.items {
-        assert!(outcome.is_ok(), "{key}: {outcome:?}");
-    }
-    let script = root.path().join("script.json");
-    fs::write(
-        &script,
-        json!({"rules": [{"id": "judge-fails", "job": "judge_work", "times": 1,
-            "action": {"fail": {"message": "scripted judge failure"}}}]})
-        .to_string(),
-    )
-    .unwrap();
-    let scripted = Executor::new(
-        Arc::new(FakeProvider::default().with_script(script)),
-        dirs(root.path()),
-        credential(),
-    );
-    let (failed, _) = execute_collect(&scripted, judge_spec(&input)).await;
-    assert!(
-        matches!(failed.outcome, JobOutcome::Failed { .. }),
-        "{:?}",
-        failed.outcome
-    );
-    let (again, _) = execute_collect(&scripted, judge_spec(&input)).await;
-    assert!(matches!(again.outcome, JobOutcome::Succeeded { .. }));
-}
-
-fn github_token() -> InstallationToken {
-    InstallationToken {
-        token: Secret::new(TOKEN_CANARY),
-        expires_at: Timestamp::now(),
-        repository: RepoRef {
-            owner: "acme".to_owned(),
-            name: "node-client".to_owned(),
-        },
-    }
-}
-
-/// A `verify_comments` job runs on the head checkout with its read-only GitHub token and its tools, in a fresh
-/// session kept in the job directory: nothing is resumed, stored or reported, and the token never leaves the run
-/// (ADR-023, threat model T23).
-#[tokio::test]
-async fn verify_job_runs_on_the_checkout_with_the_token_and_without_session() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::WriteSession);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let mut spec = verify_spec(shared_repo(), &verify_input(None));
-    spec.access.github = Some(github_token());
-    spec.context_pack = Some("never used".to_owned());
-    let (result, _) = execute_collect(&executor, spec).await;
-    assert!(
-        matches!(result.outcome, JobOutcome::Succeeded { .. }),
-        "{:?}",
-        result.outcome
-    );
-    assert_eq!(result.session, None, "no session is kept");
-    let seen = stub.seen();
-    assert_eq!(seen.head.trim(), commits().head, "head checked out");
-    assert!(seen.session_dir.starts_with(&seen.job_dir), "{seen:?}");
-    assert!(seen.access.github.is_some() && seen.access.memcan.is_none());
-    assert!(!seen.answer_only, "the agent reads the checkout");
-    assert!(!seen.prompt.contains("never used"));
-    assert!(stub.resumed.lock().unwrap().is_empty());
-    assert_removed(&seen);
-    let stored = fs::read_dir(root.path().join("state/sessions"))
-        .map(|entries| entries.count())
-        .unwrap_or(0);
-    assert_eq!(stored, 0, "the session store is untouched");
-}
-
-/// The job's GitHub token never appears in its events, ready output or result.
-#[tokio::test]
-async fn verify_job_secrets_are_absent_from_events_and_result() {
-    let root = TempDir::new().unwrap();
-    let executor = Executor::new(Stub::new(Behaviour::Leak), dirs(root.path()), credential());
-    let mut spec = verify_spec(shared_repo(), &verify_input(None));
-    spec.access.github = Some(github_token());
-    let (result, events) = execute_collect(&executor, spec).await;
-    let all = format!("{events:?} {result:?}");
-    assert!(!all.contains(TOKEN_CANARY), "{all}");
-    assert!(all.contains("[redacted]"), "{all}");
-}
-
-/// A `verify_comments` job holding MemCan access, a session or any skill (ADR-002 amendment 2026-11-23), or a kind
-/// that does not match its target, is refused before anything runs (threat model T23).
-#[tokio::test]
-async fn misfit_verify_jobs_are_refused_before_the_provider_runs() {
-    let root = TempDir::new().unwrap();
-    let stub = Stub::new(Behaviour::Succeed);
-    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
-    let verify = || verify_spec(shared_repo(), &verify_input(None));
-    let with_memcan = {
-        let mut spec = verify();
-        spec.access.memcan = Some(contracts::job::access::McpHttpEndpoint {
-            url: "https://memcan.example/mcp".to_owned(),
-            token: Secret::new("memcan-token"),
-            allow_write: false,
-        });
-        spec
-    };
-    let with_skill = JobSpec {
-        skills: vec!["severity".to_owned()],
-        ..verify()
-    };
-    let with_session = JobSpec {
-        session: Some(SessionRef {
-            pull_request_id: 1,
-            thread_id: "thread-1".to_owned(),
-        }),
-        ..verify()
-    };
-    let plan_on_comments = JobSpec {
-        kind: JobKind::Plan,
-        ..verify()
-    };
-    let verify_on_pr = JobSpec {
-        kind: JobKind::VerifyComments,
-        ..spec(JobKind::Plan, shared_repo())
-    };
-    for spec in [
-        with_memcan,
-        with_skill,
-        with_session,
-        plan_on_comments,
-        verify_on_pr,
-    ] {
-        let (result, _) = execute_collect(&executor, spec).await;
-        assert!(
-            matches!(
-                result.outcome,
-                JobOutcome::Failed {
-                    kind: JobFailureKind::Internal,
-                    ..
-                }
-            ),
-            "{:?}",
-            result.outcome
-        );
-    }
-    assert!(
-        stub.seen.lock().unwrap().is_none(),
-        "the provider never ran"
-    );
-}
-
-/// The fake provider answers every item of the input with an assessment of the output type, and the question of a
-/// question pass with an answer.
-#[cfg(feature = "fake-provider")]
-#[tokio::test]
-async fn fake_provider_answers_verify_jobs_for_every_item() {
-    use contracts::agent::verify_comments::VerifyCommentsOutput;
-
-    use crate::provider::fake::FakeProvider;
-    let root = TempDir::new().unwrap();
-    let executor = Executor::new(
-        Arc::new(FakeProvider::default()),
-        dirs(root.path()),
-        credential(),
-    );
-    for question in [None, Some("Is this still true?")] {
-        let input = verify_input(question);
-        let (result, _) = execute_collect(&executor, verify_spec(shared_repo(), &input)).await;
-        let JobOutcome::Succeeded { output } = result.outcome else {
-            panic!("{:?}", result.outcome);
-        };
-        let answer: VerifyCommentsOutput = serde_json::from_value(output).unwrap();
-        let ids: Vec<&str> = answer.items.iter().map(|item| item.item.as_str()).collect();
-        assert_eq!(ids, ["C1", "C2"]);
-        assert_eq!(answer.answer.is_some(), question.is_some());
+        assert!(result.usage.is_some());
     }
 }
 
@@ -1575,4 +282,39 @@ fn failed_answer_checkpoint_reaches_job_result_with_its_usage_and_failure() {
             ..
         }
     ));
+}
+
+#[tokio::test]
+async fn host_assessment_skill_is_allowed_and_the_frozen_method_is_returned() {
+    let root = tempfile::tempdir().unwrap();
+    let provider = Arc::new(Stub::default());
+    let executor = Executor::new(provider, dirs(root.path()));
+    let mut job = verify_spec(shared_repo(), &verify_input(None));
+    let run = contracts::assessment::AssessmentRunRef {
+        pass_id: contracts::ids::PassId::new_random(),
+        method: contracts::assessment::AssessmentMethod::ClaudiusHost,
+    };
+    job.assessment = Some(run.clone());
+    job.skills = vec!["check-pr-comments".into()];
+    let (result, _) = collect(&executor, job).await;
+    assert!(
+        matches!(result.outcome, JobOutcome::Succeeded { .. }),
+        "{result:?}"
+    );
+    assert_eq!(result.assessment.as_deref(), Some(&run));
+}
+
+#[tokio::test]
+async fn native_assessment_returns_its_frozen_method_without_host_skills() {
+    let root = tempfile::tempdir().unwrap();
+    let executor = Executor::new(Arc::new(Stub::default()), dirs(root.path()));
+    let mut job = verify_spec(shared_repo(), &verify_input(None));
+    let run = contracts::assessment::AssessmentRunRef {
+        pass_id: contracts::ids::PassId::new_random(),
+        method: contracts::assessment::AssessmentMethod::PromptV4,
+    };
+    job.assessment = Some(run.clone());
+    let (result, _) = collect(&executor, job).await;
+    assert!(matches!(result.outcome, JobOutcome::Succeeded { .. }));
+    assert_eq!(result.assessment.as_deref(), Some(&run));
 }

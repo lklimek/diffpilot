@@ -8,15 +8,13 @@
       "description": "Stable name of the runner instance, for logs.",
       "type": "string"
     },
-    "credentials": {
-      "description": "The LLM credentials the runner holds and whether each is usable.",
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/CredentialStatus"
-      }
+    "accept_job": {
+      "description": "False requests housekeeping and retirement only, without leasing a new job.",
+      "type": "boolean",
+      "default": true
     },
-    "dropped_sessions": {
-      "description": "Pull-request keys whose session files the runner deleted since its last claim.",
+    "retired": {
+      "description": "PR containers and local keys successfully retired after the preceding claim.",
       "type": "array",
       "items": {
         "type": "integer",
@@ -25,56 +23,6 @@
     }
   },
   "required": [
-    "runner_id",
-    "credentials",
-    "dropped_sessions"
-  ],
-  "$defs": {
-    "CredentialStatus": {
-      "description": "A credential held by the runner.",
-      "type": "object",
-      "properties": {
-        "credential": {
-          "description": "The credential.",
-          "$ref": "#/$defs/LlmCredentialRef"
-        },
-        "usable": {
-          "description": "False once a refresh failed; the owner must sign in again.",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "credential",
-        "usable"
-      ]
-    },
-    "LlmCredentialRef": {
-      "description": "Reference to an LLM credential held by the runner; never the credential itself.",
-      "type": "object",
-      "properties": {
-        "id": {
-          "description": "Credential id in the runner's store.",
-          "type": "string"
-        },
-        "kind": {
-          "description": "Credential kind.",
-          "$ref": "#/$defs/CredentialKind"
-        }
-      },
-      "required": [
-        "id",
-        "kind"
-      ]
-    },
-    "CredentialKind": {
-      "description": "Kind of LLM credential. v1: the owner's subscription only, no paid API (ADR-003).",
-      "oneOf": [
-        {
-          "description": "Codex CLI signed in with a ChatGPT subscription.",
-          "type": "string",
-          "const": "codex_chatgpt"
-        }
-      ]
-    }
-  }
+    "runner_id"
+  ]
 }

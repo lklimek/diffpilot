@@ -1,7 +1,7 @@
 # CLAUDE.md — diffpilot
 
 Self-hosted web tool that helps a human review a GitHub PR: final code with changed regions grouped into flows,
-walked step by step, with LLM analysis (Codex CLI) clearly separated from deterministic facts.
+walked step by step, with LLM analysis (container app-server) clearly separated from deterministic facts.
 
 ## Read first
 - `docs/design-brief.md` — the approved design; authoritative. Mockups: `docs/mockups/` (brief wins).
@@ -12,7 +12,7 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 
 ## v1.3 common contract amendment
 - [ADR-025](docs/decisions/ADR-025-container-runtime.md) and [container contracts](docs/contracts/containers.md)
-  govern W1 CCR1–CCR13; downstream W3/W4/W5/W8 implement runtime behavior and W9 removes the old runtime.
+  govern W1 CCR1–CCR13; W3/W4/W5/W8 implement runtime behavior; app-server and the fake provider are the only runtimes.
 - Containers replace the uid/supervisor boundary (SG1–SG16); no real provider credential enters a worker.
   Agent GitHub access uses `gh` and a per-job read-only tmpfs token file; hosted web search stays disabled.
 - Workers egress via Squid, with LAN denied except MemCan. Gateway reaches fixed upstreams directly.
@@ -34,14 +34,14 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - All database code (sqlx, migrations, row types) lives in `crates/db` behind its repository API; nothing else uses sqlx.
 - Pipeline and Ask use only the `JobExecutor` trait; `JobSpec` is self-contained; runner core is
   `execute(JobSpec, EventSink) -> JobResult`.
-- `LlmProvider` is `run` + `resume` + `cancel`: one analytic session per pull request (analysis and repairs
-  only), plus one private working session per (PR, user) for Ask. Re-fork when the analytic generation advances.
-  Codex compacts by itself at 400k tokens; a new Ask fork's first turn uses 80k (one pre-turn compaction, ADR-004 addendum). Each successful useful turn is archived; a lost working session forks the analytic archive, then falls back to a private context pack.
+- `LlmProvider` is `run` + `resume` + `cancel`, with container retirement acknowledged after local key and volume
+  removal. One analytic thread per (PR, payer); Ask forks only its payer's thread, otherwise uses a private context
+  pack. Worker volumes retain threads. First-Ask compaction above 80k requires explicit acknowledgement (ADR-025).
   Model and effort come from `select_model`, a plain Rust function in the server using the stored
   installation-wide Settings choice (default Sol, high; Ask: stored Ask effort, default medium). Each new job reads the current choice.
 - Flow jobs write tagged `out/flow.md` and run `sr-check`; server and checker share `analysis::tagged` (ADR-014).
   Format version 3 (incidental changes): server and runner images are rebuilt together. Plan, PR context and Ask keep JSON.
-- Only `runner::provider` knows Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
+- Only `runner::provider` and `server::gateway` know Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
   (`generic` returns `None` in v1).
 - Every UI block is a self-contained component in `web/src/components/`: props in, callbacks out, no fetching,
   no router; screens only arrange.
@@ -50,13 +50,11 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - Trust and wording rules of brief §1 are tested on rendered text and on agent output: badges only for
   deterministic facts, no numeric confidence, no "no risk"/"verified"/"noise", facts carry evidence, flags and questions
   not verdicts, assessment collapsed.
-- GitHub credentials: user tokens and the App private key never leave the server. The agent holds only a
-  short-lived read-only installation token (minted per job by the server, PR repository only (ADR-005), 1 h) for the
-  official `github-mcp-server` in read-only mode.
-- Runner security design (plan §5.4): agent runs as a separate uid without access to runner secrets, job
-  token, cache or master `CODEX_HOME`; never mount the host `~/.codex`. Egress only through the Squid explicit
-  proxy (v1: allow-all, host-name log, no TLS interception); Codex's hosted web search is disabled for every job;
-  MemCan URL and token are pure configuration.
+- GitHub credentials: user tokens and the App private key stay server-only. Workers receive a short-lived,
+  read-only installation token for the PR repository in a per-job tmpfs file, used by `gh` (ADR-025).
+- Containers are the agent boundary (SG1–SG16). Only launcher mode holds the Docker socket; no real provider
+  credential enters a worker. Never mount the host `~/.codex`. Workers use Squid with LAN denied except MemCan;
+  CS2 reaches only the gateway. Hosted web search stays disabled. MemCan URL/token remain pure configuration.
 - Keep it simple: no abstraction beyond the seams the brief names.
 
 ## Build and test
@@ -74,10 +72,11 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   `npx playwright install --with-deps chromium`, then `npm run test:e2e`.
 - Checks: `scripts/check-architecture.sh`, `scripts/check-migrations.sh`, `scripts/check-wording.sh` (after
   `npm ci` in `web/`; all take `--self-test`), `shellcheck` on `scripts/*.sh tools/**/*.sh deploy/**/*.sh` (globstar), `python3 -m pytest -q scripts/tests`.
-- Containers (one heavy job at a time, Docker): `R1_SUPERVISOR=rust R1_SKIP_CODEX=1 deploy/runner/r1-test/run.sh`;
+- Containers (one heavy job at a time, Docker): `deploy/containers/test-launcher-image.sh`,
+  `deploy/containers/test-worker-image.sh`;
   `deploy/egress-proxy/test.sh`; `deploy/test-stack.sh`; `deploy/check-production-config.sh --self-test`.
 - db: transactions only through `db::repo::{write_tx, read_tx}` (write = `BEGIN IMMEDIATE`; never a deferred read-then-write).
-- Schema smoke (manual, real Codex, Docker image and login volume of spike S1a): `scripts/schema-smoke.sh [kind ...]`.
+- Offline schema/assessment smoke: `scripts/schema-smoke.sh`, `scripts/verify-comments-smoke.sh`; no real auth.
 
 ## Conventions
 - Rust: `thiserror` typed enums for all errors (no anyhow/eyre/`Box<dyn Error>`/String errors); no `unwrap`/`expect`

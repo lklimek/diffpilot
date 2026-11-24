@@ -10,7 +10,7 @@ use contracts::ids::JobId;
 use contracts::job::access::Secret;
 use contracts::job::event::JobEvent;
 use contracts::job::protocol::{
-    Claim, ClaimRequest, CredentialStatus, EventBatch, EventsAck, LeaseTiming, OutputReady,
+    Claim, ClaimRequest, EventBatch, EventsAck, LeaseTiming, OutputReady,
 };
 use contracts::job::result::{JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus};
 use reqwest::StatusCode;
@@ -23,7 +23,6 @@ use crate::client::{ClientError, ServerClient};
 use crate::execute::{EventSink, Executor};
 use crate::provider::ProviderEvent;
 use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
-use crate::skills::Skills;
 
 /// Events buffered between `execute` and the loop.
 const EVENT_BUFFER: usize = 256;
@@ -33,8 +32,6 @@ const MAX_BATCH: usize = 100;
 const MAX_PENDING_EVENTS: usize = 1000;
 /// Most summary bytes held while requests fail.
 const MAX_PENDING_BYTES: usize = 256 * 1024;
-/// How often expired agent sessions are looked for.
-const SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 /// Idle claim interval in [`LeaseTiming`] seconds: the longest an Ask waits for an idle runner.
 const IDLE_POLL_SECS: u32 = 1;
 /// Claim interval after a failed claim, in [`LeaseTiming`] seconds.
@@ -155,10 +152,6 @@ impl From<Result<(), Stop>> for Step {
     }
 }
 
-/// Whether the runner's LLM credential may be used (false after a refresh failure or a rejected write-back
-/// until the owner signs in again); reported with every claim.
-pub type CredentialCheck = Arc<dyn Fn() -> bool + Send + Sync>;
-
 /// Claims and runs jobs, one at a time.
 pub struct Worker {
     client: ServerClient,
@@ -166,14 +159,8 @@ pub struct Worker {
     runner_id: String,
     runner_secret: Secret,
     timing: Timing,
-    credential_usable: CredentialCheck,
-    /// Sessions the server asked to drop, acknowledged with the next claim.
-    dropped_sessions: Vec<i64>,
-    /// How long an unused agent session is kept; `None` keeps them.
-    session_retention: Option<Duration>,
-    last_sweep: Option<Instant>,
-    /// The claudius skills, refreshed between jobs.
-    skills: Option<Arc<Skills>>,
+    /// Completed PR retirements, acknowledged with the next claim.
+    retired: Vec<i64>,
     /// Free space the scratch filesystem must keep for a claim.
     disk_reserve: Option<crate::scratch::Reserve>,
 }
@@ -195,7 +182,6 @@ impl Worker {
         runner_id: String,
         runner_secret: Secret,
         timing: Timing,
-        credential_usable: CredentialCheck,
     ) -> Self {
         Self {
             client,
@@ -203,11 +189,7 @@ impl Worker {
             runner_id,
             runner_secret,
             timing,
-            credential_usable,
-            dropped_sessions: Vec::new(),
-            session_retention: None,
-            last_sweep: None,
-            skills: None,
+            retired: Vec::new(),
             disk_reserve: None,
         }
     }
@@ -218,45 +200,31 @@ impl Worker {
         self
     }
 
-    /// Refreshes the claudius skills between jobs at their interval.
-    pub fn with_skills(mut self, skills: Arc<Skills>) -> Self {
-        self.skills = Some(skills);
-        self
-    }
-
-    /// Deletes agent sessions not used for `retention` (checked between jobs).
-    pub fn with_session_retention(mut self, retention: Duration) -> Self {
-        self.session_retention = Some(retention);
-        self
-    }
-
-    /// Claims and runs jobs until `shutdown` completes; a running job is then cancelled, and its stop, sweep and
-    /// credential copy-back end before this returns (waited for at most three stop sequences, which stays below
+    /// Claims and runs jobs until `shutdown` completes; a running job is then cancelled, and its stop and
+    /// worker cleanup end before this returns (waited for at most three stop sequences, which stays below
     /// the container's stop grace of 60 s).
     pub async fn run(mut self, shutdown: impl Future<Output = ()>) {
         tokio::select! {
             () = shutdown => {}
             () = self.serve() => {}
         }
-        // Dropping the loop cancelled its attempt; a detached one (process isolation) is still finishing.
+        // Dropping the loop cancelled its attempt; the retained provider future is still finishing.
         let wait = (self.timing.term_grace + self.timing.kill_and_cleanup) * 3;
         if tokio::time::timeout(wait, self.executor.settled())
             .await
             .is_err()
         {
             tracing::error!(
-                "the running job did not finish stopping before the runner exits; a Codex credential it refreshed is recovered at the next start"
+                "the running job did not finish stopping before the runner exits; managed workers are stopped by startup reconciliation"
             );
+            self.executor.abort_attempt();
+            self.executor.settled().await;
         }
     }
 
     /// Claims and runs jobs, forever.
     async fn serve(&mut self) {
         loop {
-            self.remove_expired_sessions();
-            if let Some(skills) = &self.skills {
-                skills.refresh_if_due().await;
-            }
             let polled = self.poll_once().await;
             let pause = match polled {
                 Ok(Some(end)) => {
@@ -280,73 +248,31 @@ impl Worker {
     }
 
     /// One claim; runs the claimed job to its end. `None` when nothing was runnable. Below the scratch
-    /// filesystem's reserve the claim offers no credential, so the server hands out no job but still sends its
-    /// session drops.
+    /// filesystem's reserve it requests housekeeping and retirement without taking new work.
     pub async fn poll_once(&mut self) -> Result<Option<JobEnd>, ClientError> {
-        // The previous attempt (and its credential copy-back) is over before the next claim.
+        // The previous attempt (and its worker cleanup) is over before the next claim.
         self.executor.settled().await;
-        let takes_jobs = self
+        let accept_job = self
             .disk_reserve
             .as_mut()
             .is_none_or(crate::scratch::Reserve::allows_claim);
-        let credentials = if takes_jobs {
-            vec![CredentialStatus {
-                credential: self.executor.credential().clone(),
-                usable: (self.credential_usable)(),
-            }]
-        } else {
-            Vec::new()
-        };
         let request = ClaimRequest {
+            accept_job,
             runner_id: self.runner_id.clone(),
-            credentials,
-            dropped_sessions: self.dropped_sessions.clone(),
+            retired: self.retired.clone(),
         };
         let sent = Instant::now();
         let response = self.client.claim(&request).await?;
-        self.dropped_sessions = self.drop_sessions(response.drop_sessions);
+        self.retired.clear();
+        if let Err(error) = self.executor.provider().retire(&response.retire).await {
+            tracing::warn!(%error, "cannot retire PR workers; retrying on the next claim");
+        } else {
+            self.retired = response.retire;
+        }
         let Some(claim) = response.claim else {
             return Ok(None);
         };
         Ok(Some(self.run_job(claim, sent).await))
-    }
-
-    /// Deletes the sessions the server dropped; returns those to acknowledge (a failed one is asked again).
-    fn drop_sessions(&self, analyses: Vec<i64>) -> Vec<i64> {
-        let sessions = self.executor.sessions();
-        analyses
-            .into_iter()
-            .filter(|analysis| match sessions.remove(*analysis) {
-                Ok(()) => true,
-                Err(error) => {
-                    tracing::warn!(%analysis, %error, "cannot delete a dropped agent session; retrying with the next claim");
-                    false
-                }
-            })
-            .collect()
-    }
-
-    /// Deletes agent sessions past `retention`, at most once per [`SWEEP_INTERVAL`].
-    fn remove_expired_sessions(&mut self) {
-        let Some(retention) = self.session_retention else {
-            return;
-        };
-        if self
-            .last_sweep
-            .is_some_and(|last| last.elapsed() < SWEEP_INTERVAL)
-        {
-            return;
-        }
-        self.last_sweep = Some(Instant::now());
-        match self.executor.sessions().remove_expired(retention) {
-            Ok(0) => {}
-            Ok(removed) => {
-                tracing::info!(removed, "deleted agent sessions past the retention period")
-            }
-            Err(error) => {
-                tracing::warn!(%error, "cannot delete expired agent sessions; retrying later")
-            }
-        }
     }
 
     async fn run_job(&self, claim: Claim, claim_sent: Instant) -> JobEnd {
@@ -412,6 +338,7 @@ impl Worker {
                 Step::KillAfterCancel => {
                     tracing::warn!(%job, "the provider did not stop after the cancel request; killing the agent call");
                     task.0.abort();
+                    self.executor.abort_attempt();
                     break None;
                 }
             }
@@ -425,7 +352,7 @@ impl Worker {
         };
 
         // From here on the attempt's events are not read: closing the channel makes its sends fail at once,
-        // so back-pressure never holds up a detached attempt's signal, sweep and clean-up.
+        // so back-pressure never holds up an attempt's stop and clean-up.
         events.close();
         if let Some(stop) = stopped {
             self.stop_agent(job, &mut task).await;
@@ -440,7 +367,7 @@ impl Worker {
                 internal_result(job, attempt)
             }
         };
-        // A detached attempt finishes its stop, copy-back and cleanup before anything terminal is posted.
+        // A detached attempt finishes its stop and cleanup before anything terminal is posted.
         self.executor.settled().await;
         while let Ok(event) = events.try_recv() {
             if let ProviderEvent::Activity(event) = event
@@ -466,7 +393,8 @@ impl Worker {
             .is_err()
         {
             task.0.abort();
-            // Dropping the call kills Codex (`kill_on_drop`) and removes the job directories.
+            self.executor.abort_attempt();
+            // The provider fences a worker whose asynchronous cleanup was interrupted before reuse.
             let _ = tokio::time::timeout(self.timing.kill_and_cleanup, &mut task.0).await;
         }
     }

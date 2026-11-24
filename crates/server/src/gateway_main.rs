@@ -6,17 +6,42 @@ use secrecy::SecretBox;
 use server::gateway::{Error, Gateway};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
-fn setting(name: &str) -> Result<String, Error> {
-    std::env::var(name).map_err(|_| Error::Configuration)
+fn setting(name: &'static str) -> Result<String, Error> {
+    std::env::var(name).map_err(|_| Error::ConfigurationSetting(name))
 }
-fn secret_file(name: &str) -> Result<String, Error> {
+fn secret_file(name: &'static str) -> Result<String, Error> {
     let path = PathBuf::from(setting(name)?);
     use std::os::unix::fs::PermissionsExt;
-    let metadata = std::fs::symlink_metadata(&path)?;
+    let metadata = std::fs::symlink_metadata(&path).map_err(|source| Error::SecretFile {
+        setting: name,
+        source,
+    })?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
-        return Err(Error::Configuration);
+        return Err(Error::ConfigurationSetting(name));
     }
-    Ok(std::fs::read_to_string(path)?.trim().to_owned())
+    Ok(std::fs::read_to_string(path)
+        .map_err(|source| Error::SecretFile {
+            setting: name,
+            source,
+        })?
+        .trim()
+        .to_owned())
+}
+
+fn judge_address(
+    value: Option<&str>,
+    model: SocketAddr,
+    admin: SocketAddr,
+) -> Result<Option<SocketAddr>, Error> {
+    value
+        .map(|value| {
+            let address: SocketAddr = value.parse().map_err(|_| Error::Configuration)?;
+            if address.ip().is_unspecified() || address.ip() == admin.ip() || address == model {
+                return Err(Error::Configuration);
+            }
+            Ok(address)
+        })
+        .transpose()
 }
 
 #[tokio::main]
@@ -34,11 +59,22 @@ async fn main() -> Result<(), Error> {
     if admin.ip().is_unspecified() || admin.ip() == model.ip() || admin.port() == model.port() {
         return Err(Error::Configuration);
     }
+    let judge = judge_address(
+        std::env::var("SR_GATEWAY_JUDGE_ADDR").ok().as_deref(),
+        model,
+        admin,
+    )?;
     let key: [u8; 32] = STANDARD
         .decode(secret_file("SR_GATEWAY_SECRET_KEY_FILE")?)
-        .map_err(|_| Error::Configuration)?
+        .map_err(|_| {
+            Error::ConfigurationSetting("SR_GATEWAY_SECRET_KEY_FILE (canonical base64 required)")
+        })?
         .try_into()
-        .map_err(|_| Error::Configuration)?;
+        .map_err(|_| {
+            Error::ConfigurationSetting(
+                "SR_GATEWAY_SECRET_KEY_FILE (exactly 32 decoded bytes required)",
+            )
+        })?;
     let ttl = std::env::var("SR_GATEWAY_KEY_TTL")
         .unwrap_or_else(|_| "5400".into())
         .parse()
@@ -52,13 +88,50 @@ async fn main() -> Result<(), Error> {
     )?);
     let model = tokio::net::TcpListener::bind(model).await?;
     let admin = tokio::net::TcpListener::bind(admin).await?;
+    let judge = match judge {
+        Some(address) => Some(tokio::net::TcpListener::bind(address).await?),
+        None => None,
+    };
+    let judge_model = async {
+        match judge {
+            Some(listener) => axum::serve(listener, gateway.model_router()).await,
+            None => std::future::pending().await,
+        }
+    };
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let result = tokio::select! {
         result = axum::serve(model, gateway.model_router()) => result,
         result = axum::serve(admin, gateway.admin_router()) => result,
+        result = judge_model => result,
         result = tokio::signal::ctrl_c() => result,
         _ = terminate.recv() => Ok(()),
     };
     gateway.shutdown().await;
     result.map_err(Error::Io)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn judge_listener_uses_its_own_interface_and_keeps_admin_private() {
+        let model = "172.29.75.2:8090".parse().unwrap();
+        let admin = "172.29.71.5:8091".parse().unwrap();
+        assert_eq!(judge_address(None, model, admin).unwrap(), None);
+        assert_eq!(
+            judge_address(Some("172.29.76.2:8090"), model, admin).unwrap(),
+            Some("172.29.76.2:8090".parse().unwrap())
+        );
+        for address in [
+            "0.0.0.0:8090",
+            "172.29.71.5:8090",
+            "172.29.75.2:8090",
+            "invalid",
+        ] {
+            assert!(
+                judge_address(Some(address), model, admin).is_err(),
+                "{address}"
+            );
+        }
+    }
 }

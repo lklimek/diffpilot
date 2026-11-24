@@ -2161,3 +2161,43 @@ async fn expired_device_challenges_are_not_returned_by_staged_status() {
     }
     g.shutdown().await;
 }
+
+#[test]
+fn startup_errors_name_invalid_scope_settings_without_secret_contents() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = SecretBox::new(Box::new([0_u8; 32]));
+    for (credentials, keys, setting) in [
+        (
+            "CANARY-short".to_owned(),
+            "k".repeat(32),
+            "SR_GATEWAY_CREDENTIALS_TOKEN_FILE",
+        ),
+        (
+            "c".repeat(32),
+            "CANARY-short".to_owned(),
+            "SR_GATEWAY_KEYS_TOKEN_FILE",
+        ),
+        (
+            "CANARY-identical-scope-token-00000".to_owned(),
+            "CANARY-identical-scope-token-00000".to_owned(),
+            "SR_GATEWAY_CREDENTIALS_TOKEN_FILE",
+        ),
+    ] {
+        let error = Gateway::open(
+            dir.path(),
+            &key,
+            Secret::new(credentials.clone()),
+            Secret::new(keys.clone()),
+            Duration::from_secs(5400),
+        )
+        .err()
+        .expect("invalid scopes must fail before any upstream access");
+        for message in [error.to_string(), format!("{error:?}")] {
+            assert!(message.contains(setting), "{message}");
+            assert!(!message.contains(&credentials));
+            assert!(!message.contains(&keys));
+            assert!(!message.contains("CANARY"));
+        }
+    }
+    assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+}

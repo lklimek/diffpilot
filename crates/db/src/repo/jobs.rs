@@ -1313,14 +1313,17 @@ impl Jobs<'_> {
         job_from_row(&row)
     }
 
-    /// Whether a claimed or running job holds `credential`.
-    pub async fn credential_busy(&self, credential: &str) -> Result<bool, DbError> {
-        Ok(sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM jobs WHERE payer_id = ? AND state IN ('claimed', 'running'))",
+    /// Whether the payer's answer-only container is occupied.
+    pub async fn judge_busy(&self, payer: &str) -> Result<bool, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
+        let busy = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE payer_id = ? AND kind = 'judge_work' AND state IN ('claimed', 'running'))",
         )
-        .bind(credential)
-        .fetch_one(self.pool)
-        .await?)
+        .bind(payer)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(busy)
     }
 
     /// Jobs of an analysis, oldest first; only those in `states` unless `states` is empty.
@@ -1569,7 +1572,6 @@ mod tests {
     use contracts::job::access::{McpHttpEndpoint, Secret};
     use contracts::job::event::ActivityKind;
     use contracts::job::result::LlmCallOutcome;
-    use contracts::job::spec::{CredentialKind, LlmCredentialRef};
     use serde_json::json;
 
     use super::*;
@@ -2371,10 +2373,7 @@ mod tests {
         db.llm_credentials()
             .register(
                 "default",
-                &LlmCredentialRef {
-                    id: CREDENTIAL.to_owned(),
-                    kind: CredentialKind::CodexChatgpt,
-                },
+                &contracts::ids::UserId(CREDENTIAL.to_owned()),
                 true,
                 at(0),
             )
@@ -2906,6 +2905,7 @@ mod tests {
             .expect("enqueue");
         let first = claim(&db, 2).await.expect("interactive judge job first");
         assert_eq!(first.kind, JobKind::JudgeWork);
+        assert!(db.jobs().judge_busy(CREDENTIAL).await.unwrap());
         assert_eq!(
             claim(&db, 3).await.unwrap().kind,
             JobKind::AnalyseFlow,
@@ -2990,36 +2990,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credential_busy_only_while_a_job_is_claimed_or_running() {
+    async fn pr_jobs_do_not_occupy_the_judge_container() {
         let db = db().await;
         let analysis = seed_analysis(&db).await.expect("seed");
         let jobs = db.jobs();
         let ask = enqueue_new(&db, ask_job(analysis), 0).await;
         assert!(
-            !jobs.credential_busy(CREDENTIAL).await.expect("busy"),
+            !jobs.judge_busy(CREDENTIAL).await.expect("busy"),
             "queued only"
         );
         assert_eq!(claim(&db, 1).await.map(|job| job.id), Some(ask));
+        assert!(!jobs.judge_busy(CREDENTIAL).await.expect("busy"), "claimed");
         assert!(
-            jobs.credential_busy(CREDENTIAL).await.expect("busy"),
-            "claimed"
-        );
-        assert!(
-            !jobs.credential_busy("other").await.expect("busy"),
+            !jobs.judge_busy("other").await.expect("busy"),
             "per credential"
         );
         jobs.record_events(ask, 1, &[event(1)], at(61))
             .await
             .expect("running");
-        assert!(
-            jobs.credential_busy(CREDENTIAL).await.expect("busy"),
-            "running"
-        );
+        assert!(!jobs.judge_busy(CREDENTIAL).await.expect("busy"), "running");
         jobs.complete(&succeeded(ask, 1), at(2))
             .await
             .expect("complete");
         assert!(
-            !jobs.credential_busy(CREDENTIAL).await.expect("busy"),
+            !jobs.judge_busy(CREDENTIAL).await.expect("busy"),
             "finished"
         );
     }

@@ -562,9 +562,9 @@ mod tests {
     use contracts::ids::{AnalysisId, FlowId};
     use contracts::job::access::AgentAccess;
     use contracts::job::event::ActivityKind;
-    use contracts::job::protocol::{CredentialStatus, LeaseTiming};
+    use contracts::job::protocol::LeaseTiming;
     use contracts::job::result::{JobFailureKind, SessionOutcome, SessionReport};
-    use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
+    use contracts::job::spec::JobPriority;
     use db::repo::analyses::SessionState;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
     use db::repo::documents::DocumentKind;
@@ -707,17 +707,11 @@ mod tests {
         }
     }
 
-    fn claim_request(credential: &str) -> ClaimRequest {
+    fn claim_request(_credential: &str) -> ClaimRequest {
         ClaimRequest {
+            accept_job: true,
             runner_id: "runner-1".to_owned(),
-            credentials: vec![CredentialStatus {
-                credential: LlmCredentialRef {
-                    id: credential.to_owned(),
-                    kind: CredentialKind::CodexChatgpt,
-                },
-                usable: true,
-            }],
-            dropped_sessions: Vec::new(),
+            retired: Vec::new(),
         }
     }
 
@@ -1259,7 +1253,11 @@ mod tests {
             .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let credentials = harness.state.db.llm_credentials();
-        let last = credentials.last_call("default").await.expect("last call");
+        let last = credentials
+            .get(CREDENTIAL)
+            .await
+            .expect("last call")
+            .last_call;
         assert_eq!(last.map(|outcome| outcome.status), Some(call.status));
         let credential = credentials.get(CREDENTIAL).await.expect("credential");
         assert!(

@@ -586,7 +586,7 @@ impl<'a> Ranking<'a> {
         };
         let unclaimed = record.state == JobState::Queued
             && live == RankingState::Running
-            && !db.jobs().credential_busy(&record.spec.payer.0).await?;
+            && !db.jobs().judge_busy(&record.spec.payer.0).await?;
         self.unclaimed_since = unclaimed.then(|| {
             self.unclaimed_since
                 .unwrap_or_else(tokio::time::Instant::now)
