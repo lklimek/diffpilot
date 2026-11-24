@@ -129,7 +129,7 @@ services:
     image: ${SR_RUNNER_IMAGE:-diffpilot-runner:local}
     command: [--launcher]
     network_mode: none
-    group_add: ["${SR_DOCKER_GID:-0}"]
+    group_add: ["${SR_DOCKER_GID:?set Docker socket group id}"]
     environment:
       SR_LAUNCHER_SOCKET: /run/launcher/launcher.sock
       SR_CONTAINER_PREFIX: ${COMPOSE_PROJECT_NAME:-diffpilot}

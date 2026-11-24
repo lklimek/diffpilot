@@ -14,9 +14,16 @@ use crate::job::spec::JobSpec;
 pub struct ClaimRequest {
     /// Stable name of the runner instance, for logs.
     pub runner_id: String,
+    /// False requests housekeeping and retirement only, without leasing a new job.
+    #[serde(default = "accept_job_default")]
+    pub accept_job: bool,
     /// PR containers and local keys successfully retired after the preceding claim.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retired: Vec<i64>,
+}
+
+fn accept_job_default() -> bool {
+    true
 }
 
 /// Reply to a claim.

@@ -40,7 +40,14 @@ declare -A secret_file_names=(
   [SR_GITHUB_CLIENT_SECRET]=sr-github-client-secret [SR_MEMCAN_TOKEN]=sr-memcan-token
 )
 # Values that must differ from .env.example's.
-own_values=(SR_PUBLIC_URL SR_GITHUB_APP_ID SR_GITHUB_CLIENT_ID SR_MEMCAN_URL "${secrets[@]}")
+own_values=(SR_PUBLIC_URL SR_GITHUB_APP_ID SR_GITHUB_CLIENT_ID SR_MEMCAN_URL
+  SR_DOCKER_GID SR_WORKER_IMAGE SR_FETCH_IMAGE "${secrets[@]}")
+declare -A gateway_files=(
+  [SR_GATEWAY_SECRET_KEY_PATH]=gateway-secret-key
+  [SR_GATEWAY_CREDENTIALS_TOKEN_PATH]=gateway-credentials-token
+  [SR_GATEWAY_KEYS_TOKEN_PATH]=gateway-keys-token
+  [SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH]=runner-gateway-keys-token
+)
 # Variables that only the local or development overrides use.
 dev_only='^(SR_SERVER_UID|SR_SERVER_GID)$'
 
@@ -79,16 +86,19 @@ load_env() {
 }
 
 # check_secret_file NAME PATH: a private, non-empty, non-placeholder service secret file; the runner
-# secret at least 32 characters. Prints problems by name; never the content.
+# secret at least 32 characters. Optional uid/gid/mode describe the consumer. Prints problems by name; never the content.
 check_secret_file() {
-  local name="$1" path="$2" found=0 mode content
+  local name="$1" path="$2" uid="${3:-10010}" gid="${4:-}" mode="${5:-400}" found=0 actual_uid actual_gid actual_mode content
   if [[ ! -f "$path" ]]; then
     echo "check-production-config: $name: the file $path is missing (secrets as files)" >&2
     return 1
   fi
-  read -r mode < <(stat -c '%a' "$path")
-  if (((8#$mode & 8#007) != 0)); then
-    echo "check-production-config: $name: $path has permissions for other users (mode $mode)" >&2
+  if ! read -r actual_uid actual_gid actual_mode < <(stat -c '%u %g %a' "$path"); then
+    echo "check-production-config: $name: cannot stat $path" >&2
+    return 1
+  fi
+  if [[ "$actual_uid" != "$uid" || "$actual_mode" != "$mode" || (-n "$gid" && "$actual_gid" != "$gid") ]]; then
+    echo "check-production-config: $name: $path requires owner $uid${gid:+:$gid} mode $mode for its consumers" >&2
     found=1
   fi
   if [[ ! -r "$path" ]]; then
@@ -112,7 +122,7 @@ check_secret_file() {
 # check_env FILE EXAMPLE SECRET_FILES(0|1): the production values of FILE; prints problems by variable name only.
 check_env() {
   local -A values=() example=()
-  local found=0 key value secrets_dir
+  local found=0 key value secrets_dir path gateway_keys runner_keys digest nibble
   say() { echo "check-production-config: $*" >&2; found=1; }
   load_env "$1" values
   for key in "${!interpolated[@]}"; do
@@ -145,11 +155,41 @@ check_env() {
       "then shares one address, so failed access-token attempts of all clients count against one limit;" \
       "set the proxy's address (the Docker gateway) and let the proxy append X-Forwarded-For" >&2
   fi
+  if [[ ! "${values[SR_DOCKER_GID]:-}" =~ ^[0-9]+$ ]]; then
+    say "SR_DOCKER_GID must be the Docker socket's numeric group id"
+  fi
+  for key in SR_WORKER_IMAGE SR_FETCH_IMAGE; do
+    value="${values[$key]:-}"
+    if [[ ! "$value" =~ ^[^[:space:]@]+@sha256:[a-fA-F0-9]{64}$ ]]; then
+      say "$key must pin a repository@sha256 digest"
+    else
+      digest="${value##*@sha256:}"
+      nibble="${digest:0:1}"
+      if [[ -z "${digest//"$nibble"/}" ]]; then say "$key holds a placeholder digest"; fi
+    fi
+  done
+  for key in "${!gateway_files[@]}"; do
+    path="${values[$key]:-/srv/diffpilot/secrets/${gateway_files[$key]}}"
+    if [[ "$key" == SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH ]]; then
+      check_secret_file "$key" "$path" 10002 || found=1
+    else
+      check_secret_file "$key" "$path" 10010 || found=1
+    fi
+  done
+  gateway_keys="${values[SR_GATEWAY_KEYS_TOKEN_PATH]:-/srv/diffpilot/secrets/gateway-keys-token}"
+  runner_keys="${values[SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH]:-/srv/diffpilot/secrets/runner-gateway-keys-token}"
+  if ! cmp -s -- "$gateway_keys" "$runner_keys"; then
+    say "gateway and runner keys-scope files must contain identical bytes (run as root)"
+  fi
   if ((${3})); then
     secrets_dir="${values[SR_SECRETS_DIR]:-/srv/diffpilot/secrets}"
     for key in "${secrets[@]}"; do
       if [[ -n "${values[$key]:-}" ]]; then say "$key must be empty with secrets as files (the file is used)"; fi
-      check_secret_file "$key" "$secrets_dir/${secret_file_names[$key]}" || found=1
+      if [[ "$key" == SR_RUNNER_SECRET ]]; then
+        check_secret_file "$key" "$secrets_dir/${secret_file_names[$key]}" 10002 10010 440 || found=1
+      else
+        check_secret_file "$key" "$secrets_dir/${secret_file_names[$key]}" || found=1
+      fi
     done
   else
     for key in "${secrets[@]}"; do
@@ -240,7 +280,27 @@ if ((self_test)); then
     -e 's|^SR_MEMCAN_URL=.*|SR_MEMCAN_URL=http://memcan.test.invalid:8190/mcp|' \
     -e 's|^SR_MEMCAN_TOKEN=.*|SR_MEMCAN_TOKEN=CANARY-memcan-token|' \
     -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=octocat,hubot|' \
-    -e "s|^SR_RUNNER_CLAUDIUS_REF=.*|SR_RUNNER_CLAUDIUS_REF=$(printf '%040d' 7)|" "$repo/.env.example" > "$tmp/good.env"
+    -e 's|^SR_DOCKER_GID=.*|SR_DOCKER_GID=997|' \
+    -e 's|^SR_WORKER_IMAGE=.*|SR_WORKER_IMAGE=worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef|' \
+    -e 's|^SR_FETCH_IMAGE=.*|SR_FETCH_IMAGE=fetch@sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210|' \
+    -e "s|^SR_GATEWAY_SECRET_KEY_PATH=.*|SR_GATEWAY_SECRET_KEY_PATH=$tmp/gateway-secret-key|" \
+    -e "s|^SR_GATEWAY_CREDENTIALS_TOKEN_PATH=.*|SR_GATEWAY_CREDENTIALS_TOKEN_PATH=$tmp/gateway-credentials-token|" \
+    -e "s|^SR_GATEWAY_KEYS_TOKEN_PATH=.*|SR_GATEWAY_KEYS_TOKEN_PATH=$tmp/gateway-keys-token|" \
+    -e "s|^SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH=.*|SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH=$tmp/runner-gateway-keys-token|" "$repo/.env.example" > "$tmp/good.env"
+  # Synthetic ownership keeps self-tests unprivileged; file modes and contents use real temp files.
+  declare -A fixture_uids=() fixture_gids=()
+  stat() {
+    if [[ "${2:-}" == '%u %g %a' && "$3" == "$tmp/"* ]]; then
+      printf '%s %s %s\n' "${fixture_uids[$3]:-10010}" "${fixture_gids[$3]:-10010}" "$(command stat -c '%a' "$3")"
+    else
+      command stat "$@"
+    fi
+  }
+  for name in gateway-secret-key gateway-credentials-token gateway-keys-token runner-gateway-keys-token; do
+    echo 'CANARY-gateway-key' > "$tmp/$name"
+    chmod 0400 "$tmp/$name"
+  done
+  fixture_uids["$tmp/runner-gateway-keys-token"]=10002
   # env_case NAME pass|fail SECRET_FILES SED_ARGS...: check_env of the good env edited by sed.
   env_case() {
     local name="$1" want="$2" as_files="$3" got=pass out
@@ -254,6 +314,54 @@ if ((self_test)); then
       exit 1
     fi
   }
+  env_case "placeholder secret" fail 0 -e 's|^SR_SECRET_KEY=.*|SR_SECRET_KEY=REPLACE_WITH_SECRET|'
+  env_case "example App id" fail 0 -e 's|^SR_GITHUB_APP_ID=.*|SR_GITHUB_APP_ID=123456|'
+  env_case "example public URL" fail 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=https://review.example.com|'
+  env_case "http public URL" fail 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://review.test.invalid|'
+  env_case "empty secret" fail 0 -e 's|^SR_SECRET_KEY=.*|SR_SECRET_KEY=|'
+  env_case "no allowed login" fail 0 -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=|'
+  env_case "allowed logins unset" fail 0 -e '/^SR_ALLOWED_LOGINS=/d'
+  env_case "allowed logins placeholder" fail 0 -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=REPLACE_WITH_LOGINS|'
+  env_case "short runner secret" fail 0 -e 's|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=short|'
+  for key in SR_DOCKER_GID SR_WORKER_IMAGE SR_FETCH_IMAGE; do
+    env_case "$key unset" fail 0 -e "/^$key=/d"
+    env_case "$key empty" fail 0 -e "s|^$key=.*|$key=|"
+    env_case "$key placeholder" fail 0 -e "s|^$key=.*|$key=REPLACE_WITH_VALUE|"
+  done
+  env_case "invalid socket group" fail 0 -e 's|^SR_DOCKER_GID=.*|SR_DOCKER_GID=root|'
+  for key in SR_WORKER_IMAGE SR_FETCH_IMAGE; do
+    env_case "$key unpinned" fail 0 -e "s|^$key=.*|$key=image:latest|"
+    env_case "$key fake digest" fail 0 -e "s|^$key=.*|$key=image@sha256:$(printf '%064d' 0)|"
+  done
+  for name in gateway-secret-key gateway-credentials-token gateway-keys-token runner-gateway-keys-token; do
+    mv "$tmp/$name" "$tmp/saved-key"
+    env_case "$name missing" fail 0 -e ''
+    mv "$tmp/saved-key" "$tmp/$name"
+    fixture_uids["$tmp/$name"]=10001
+    env_case "$name wrong owner" fail 0 -e ''
+    if [[ "$name" == runner-gateway-keys-token ]]; then fixture_uids["$tmp/$name"]=10002
+    else fixture_uids["$tmp/$name"]=10010; fi
+    chmod 0444 "$tmp/$name"
+    env_case "$name public mode" fail 0 -e ''
+    chmod 0600 "$tmp/$name"
+    : > "$tmp/$name"
+    chmod 0400 "$tmp/$name"
+    env_case "$name empty" fail 0 -e ''
+    chmod 0600 "$tmp/$name"
+    echo 'REPLACE_CANARY' > "$tmp/$name"
+    chmod 0400 "$tmp/$name"
+    env_case "$name placeholder" fail 0 -e ''
+    chmod 0600 "$tmp/$name"
+    echo 'CANARY-gateway-key' > "$tmp/$name"
+    chmod 0400 "$tmp/$name"
+  done
+  chmod 0600 "$tmp/runner-gateway-keys-token"
+  echo 'CANARY-different' > "$tmp/runner-gateway-keys-token"
+  chmod 0400 "$tmp/runner-gateway-keys-token"
+  env_case "keys-scope mismatch" fail 0 -e ''
+  chmod 0600 "$tmp/runner-gateway-keys-token"
+  echo 'CANARY-gateway-key' > "$tmp/runner-gateway-keys-token"
+  chmod 0400 "$tmp/runner-gateway-keys-token"
   env_case "complete production env" pass 0 -e ''
   env_case "quoted values" pass 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL="https://review.test.invalid"|'
   want_text="warning: SR_TRUSTED_PROXIES" env_case "no trusted proxy (warning only)" pass 0 \
@@ -270,7 +378,11 @@ if ((self_test)); then
   env_case "host-uid override variable" fail 0 -e "\$a SR_SERVER_UID=1000"
   env_case "dev switch" fail 0 -e "\$a SR_RUNNER_DEV_NO_ISOLATION=1"
   env_case "local override in COMPOSE_FILE" fail 0 -e "\$a COMPOSE_FILE=deploy/compose.yaml:deploy/compose.local.yaml"
-  if check_env "$repo/.env.example" "$repo/.env.example" 0 > /dev/null 2>&1; then
+  cp "$repo/.env.example" "$tmp/example.env"
+  for key in "${!gateway_files[@]}"; do
+    printf '%s=%s/%s\n' "$key" "$tmp" "${gateway_files[$key]}" >> "$tmp/example.env"
+  done
+  if check_env "$tmp/example.env" "$repo/.env.example" 0 > /dev/null 2>&1; then
     echo "self-test: .env.example accepted as a production env" >&2
     exit 1
   fi
@@ -279,15 +391,27 @@ if ((self_test)); then
   for name in sr-secret-key sr-github-client-secret sr-memcan-token; do echo "CANARY-$name" > "$tmp/secrets/$name"; done
   echo "CANARY-runner-secret-0123456789abcdef0123456789" > "$tmp/secrets/sr-runner-secret"
   chmod 0400 "$tmp/secrets"/*
+  chmod 0440 "$tmp/secrets/sr-runner-secret"
+  fixture_uids["$tmp/secrets/sr-runner-secret"]=10002
   files_env=(-e 's/^\(SR_SECRET_KEY\|SR_RUNNER_SECRET\|SR_GITHUB_CLIENT_SECRET\|SR_MEMCAN_TOKEN\)=.*/\1=/'
     -e "\$a SR_SECRETS_DIR=$tmp/secrets")
   env_case "secrets as files" pass 1 "${files_env[@]}"
+  for name in "${secret_file_names[@]}"; do
+    fixture_uids["$tmp/secrets/$name"]=10001
+    env_case "$name wrong consumer" fail 1 "${files_env[@]}"
+    if [[ "$name" == sr-runner-secret ]]; then fixture_uids["$tmp/secrets/$name"]=10002
+    else fixture_uids["$tmp/secrets/$name"]=10010; fi
+  done
+  fixture_gids["$tmp/secrets/sr-runner-secret"]=10002
+  env_case "runner secret wrong server group" fail 1 "${files_env[@]}"
+  fixture_gids["$tmp/secrets/sr-runner-secret"]=10010
   env_case "secret both in env and file" fail 1 -e "\$a SR_SECRETS_DIR=$tmp/secrets"
   chmod 0444 "$tmp/secrets/sr-memcan-token"
   env_case "secret file readable by everyone" fail 1 "${files_env[@]}"
   chmod 0400 "$tmp/secrets/sr-memcan-token"
   chmod 0600 "$tmp/secrets/sr-runner-secret"
   echo "CANARY-short" > "$tmp/secrets/sr-runner-secret"
+  chmod 0440 "$tmp/secrets/sr-runner-secret"
   env_case "short runner secret file" fail 1 "${files_env[@]}"
   rm "$tmp/secrets/sr-runner-secret"
   env_case "missing secret file" fail 1 "${files_env[@]}"
@@ -301,13 +425,13 @@ if ((self_test)); then
       exit 1
     fi
     rendered "$repo" "$tmp/files.env" compose.secrets.yaml > /dev/null || { echo "self-test: secrets variant rejected" >&2; exit 1; }
-    sed 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' "$repo/.env.example" > "$tmp/local.env"
+    sed 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' "$tmp/good.env" > "$tmp/local.env"
     rendered_local "$repo" "$tmp/local.env" > /dev/null 2>&1 || { echo "self-test: localhost local variant rejected" >&2; exit 1; }
-    rendered "$repo" "$repo/.env.example" > /dev/null 2>&1 || { echo "self-test: production stack rejected" >&2; exit 1; }
+    rendered "$repo" "$tmp/good.env" > /dev/null 2>&1 || { echo "self-test: production stack rejected" >&2; exit 1; }
     # Nothing in RAM: a tmpfs scratch area (short or long syntax) is refused; the proxy's config dir is the exception.
     for ram in 'runner: {tmpfs: ["/scratch:size=1g"]}' 'server: {volumes: [{type: tmpfs, target: /scratch}]}'; do
       printf 'services:\n  %s\n' "$ram" > "$tmp/deploy/ram.yaml"
-      out="$(rendered "$repo" "$repo/.env.example" "$tmp/deploy/ram.yaml" 2>&1)" || true
+      out="$(rendered "$repo" "$tmp/good.env" "$tmp/deploy/ram.yaml" 2>&1)" || true
       if ! grep -q 'keeps scratch in RAM' <<< "$out"; then
         echo "self-test: a tmpfs scratch area ($ram) not caught" >&2
         exit 1
@@ -320,7 +444,7 @@ if ((self_test)); then
       echo "self-test: a missing jq not refused: $out" >&2
       exit 1
     fi
-    if out="$(jq() { return 2; }; rendered "$repo" "$repo/.env.example" 2>&1)" || ! grep -q 'jq failed' <<< "$out"; then
+    if out="$(jq() { return 2; }; rendered "$repo" "$tmp/good.env" 2>&1)" || ! grep -q 'jq failed' <<< "$out"; then
       echo "self-test: a failing jq passed the RAM check: $out" >&2
       exit 1
     fi

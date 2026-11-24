@@ -135,6 +135,7 @@ fn job_messages_round_trip() {
     round_trip(&claim_response());
     round_trip(&result());
     round_trip(&ClaimRequest {
+        accept_job: true,
         runner_id: "runner-1".to_owned(),
         retired: vec![],
     });
@@ -507,6 +508,14 @@ fn container_claim_requires_no_host_credentials_or_archive_acknowledgements() {
         serde_json::from_value(json!({"runner_id": "container-runner"})).unwrap();
     assert_eq!(
         serde_json::to_value(request).unwrap(),
-        json!({"runner_id": "container-runner"})
+        json!({"runner_id": "container-runner", "accept_job": true})
     );
+}
+
+#[test]
+fn claim_defaults_to_work_and_can_explicitly_request_cleanup_only() {
+    let mut request: ClaimRequest = serde_json::from_value(json!({"runner_id":"r"})).unwrap();
+    assert!(request.accept_job);
+    request.accept_job = false;
+    round_trip(&request);
 }

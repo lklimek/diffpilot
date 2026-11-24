@@ -8,6 +8,11 @@
       "description": "Stable name of the runner instance, for logs.",
       "type": "string"
     },
+    "accept_job": {
+      "description": "False requests housekeeping and retirement only, without leasing a new job.",
+      "type": "boolean",
+      "default": true
+    },
     "retired": {
       "description": "PR containers and local keys successfully retired after the preceding claim.",
       "type": "array",

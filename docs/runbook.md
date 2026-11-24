@@ -122,7 +122,7 @@ disk for images and build cache, plus the scratch volumes. Check: `docker versio
 `SR_MEMCAN_TOKEN` read-only from files in `SR_SECRETS_DIR` (default `/srv/diffpilot/secrets`) and passes
 `VAR_FILE` instead of `VAR`, so they do not show in `docker inspect` or Portainer (threat model AR-7). Instead of the
 secret lines of First deploy step 4 (root; the runner secret is read by the server's uid 10010 and the runner's
-10001, never by the agent's 10002, else the runner exits 78):
+10002; the worker never mounts these service-secret files):
 
 ```sh
 cd /srv/diffpilot/secrets
@@ -131,7 +131,7 @@ sudo sh -c 'umask 077; cat > sr-github-client-secret'   # paste the value, Enter
 sudo sh -c 'umask 077; cat > sr-memcan-token'           # paste the value, Enter, Ctrl-D
 sudo chown 10010:10010 sr-secret-key sr-github-client-secret sr-memcan-token
 sudo chmod 0400 sr-secret-key sr-github-client-secret sr-memcan-token
-sudo chown 10001:10010 sr-runner-secret && sudo chmod 0440 sr-runner-secret
+sudo chown 10002:10010 sr-runner-secret && sudo chmod 0440 sr-runner-secret
 sudo sed -i -E 's/^(SR_SECRET_KEY|SR_RUNNER_SECRET|SR_GITHUB_CLIENT_SECRET|SR_MEMCAN_TOKEN)=.*/\1=/' /srv/diffpilot/.env
 ```
 
@@ -142,6 +142,33 @@ sr() { docker compose --env-file /srv/diffpilot/.env -f /srv/diffpilot/app/deplo
   -f /srv/diffpilot/app/deploy/compose.secrets.yaml "$@"; }
 sudo /srv/diffpilot/app/deploy/check-production-config.sh --env-file /srv/diffpilot/.env --secret-files
 ```
+
+## Container runtime keys and legacy-volume cleanup
+
+Before starting v1.3, create `gateway-secret-key` (32 random bytes, base64) and
+`gateway-credentials-token` / `gateway-keys-token` (random bearer tokens). Keep the encryption key with
+its gateway state. Set their `SR_GATEWAY_*_PATH` variables; all three files require uid 10010, mode 0400.
+Copy only the keys-scope token into `runner-gateway-keys-token`, uid 10002, mode 0400, and set
+`SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH`. The two keys-scope files must contain exactly the same bytes.
+The runner receives no credentials-scope token. Run the production guard as root so it can compare the files
+without printing their contents. It checks these four files even when the other secrets come from `.env`.
+For an existing secrets-as-files installation, re-own `sr-runner-secret` to `10002:10010`, mode 0440,
+before restarting; the server reads through group 10010 and the runner through owner 10002.
+Set `SR_DOCKER_GID` to the host Docker socket's numeric group and pin both worker/fetch image digests.
+
+After the owner has confirmed a successful deployment, stop/remove legacy containers that still reference
+the old volumes, then run the following explicitly (replace `diffpilot` for a different Compose project):
+
+```sh
+sudo deploy/cleanup-legacy-volumes.sh diffpilot --after-successful-deploy
+```
+
+The command is idempotent and prints removed volume names only. It refuses the entire cleanup if any target
+is attached to a running or stopped container. It removes only `<project>_runner-state`,
+`<project>_tmp-runner-codex-homes`, `<project>_tmp-runner-work` and `<project>_tmp-runner`, never mounts or reads
+them, and never revokes upstream credentials. Do not run against another installation or a live local stack.
+TODO(W7): replace the remaining legacy login, backup and temporary-volume procedures below with the gateway
+lifecycle and v1.3 runtime volumes; legacy CLI login/copy instructions do not apply to v1.3.
 
 ## LLM credential (Codex sign-in, "unusable" recovery)
 
@@ -569,7 +596,7 @@ diffpilot-runner-1` show the last exit.
 |---|---|---|---|
 | 70 | runner | The supervisor's job-end sweep could not prove every agent process gone within `SR_SUPERVISOR_SWEEP_DEADLINE_MS`; it ended the container (fail closed, ADR-013). The restart starts clean. | Repeated exits (`docker inspect -f '{{.RestartCount}}'`): read the runner log before the exit; an agent may be resisting the sweep. Stop the runner (`sr stop runner`) if it loops. |
 | 71 | runner | The supervisor could not set itself up (capabilities, uids, control socket). | Check that the compose file's `cap_add`, `init` and `ipc` are unchanged and the image is the production image. |
-| 78 | runner | Preflight or the runner's own start-up check refused: the runner network is not isolated (a default route, or a gateway address answers), or `SR_RUNNER_SECRET_FILE` is readable by the agent uid 10002 (owned by it, any `other` bit, or a group bit with group 10002). The log line says which. | Network: upgrade Docker Engine to 28.0 or newer, keep the runner network's `gateway_mode_*: isolated` options, then `sr down && sr up -d` (networks are created anew). Secret file: section "Secrets as files". |
+| 78 | runner | Required runtime configuration or a service secret file could not be read. The log names the missing or invalid setting. | Check the runtime key paths and the uid/mode requirements in "Secrets as files" and "Container runtime keys and legacy-volume cleanup"; run the production guard before restarting. |
 | 64 | egress-proxy | `SR_MEMCAN_URL` is not `http(s)://host[:port][/path]`. | Fix `.env`, `sr up -d`. |
 | 65 | egress-proxy | The MemCan host name of `SR_MEMCAN_URL` does not resolve (the proxy pins its address at start). | Check DNS from the host (`getent hosts HOST`); the proxy retries with every restart. |
 | 1 | server, runner | Configuration or start-up error; the log's last line names the variable. `could not empty ...` (runner) or `cannot empty /tmp` (server): a leftover in a temporary volume could not be removed. | Fix `.env`, `sr up -d`. A leftover: section "Temporary volumes". |

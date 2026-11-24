@@ -21,8 +21,8 @@ job; 409 `conflict` for a stale attempt, a job that is no longer claimed or runn
 the same attempt; 400 malformed body.
 
 ## Claim
-- The runner polls `claim` every 1 s while idle (5 s after a failed claim), reporting the credentials it holds (`usable` false after a
-  failed refresh, ADR-003) and the sessions it deleted (`dropped_sessions`).
+- The runner polls `claim` every 1 s while idle (5 s after a failed claim), reporting successfully retired PRs
+  in `retired`. `accept_job` defaults to true; false requests housekeeping and retirement only.
 - The server picks the next runnable job: `queued`, credential usable, not paused and idle, no running job of
   the same PR (claim exclusion and triggers), analysis or credential (partial unique indexes), interactive (`priority` 0) before batch (1), Ask before dashboard ranking within interactive, then oldest; a claimed or running job is never pre-empted. It increments
   `attempt` (every claim, including after a pause or a lease expiry), mints a random job token (stored hashed),
@@ -38,10 +38,12 @@ the same attempt; 400 malformed body.
     is stored encrypted like any other and revoked;
   - `memcan`: URL and token from configuration, plus `allow_write` (default false). The runner offers search tools;
     `add_memory` only when `allow_write` is true, which the server sets for analytic jobs and never for Ask.
-- `drop_sessions`: PR database keys whose session files the runner deletes on explicit removal (ADR-004); it
-  acknowledges in the next claim's `dropped_sessions` (at least once; idempotent).
-- A claim with an empty `credentials` list gets no job but still its `drop_sessions`; the runner polls this way
-  while its scratch disk is below the free-space reserve (ADR-013 "Scratch volumes").
+- `retire`: PR database keys whose worker containers/volumes and local gateway keys the runner removes;
+  it acknowledges successful retirement in the next claim's `retired` (at least once; idempotent).
+  Retirement failure is retried without acknowledgement; an unrelated job from the same claim still executes.
+- A claim with `accept_job: false` gets no job and mints no job or installation token, but still expires leases,
+  resumes paused jobs, acknowledges `retired` and returns pending `retire` entries. The runner polls this way
+  below its disk reserve, so removing retired worker volumes can restore free space.
 - The job token is for the runner only: never placed in the agent's environment, config, logs or events.
 - **Dashboard jobs** (`JobSpec.target` = `{"type":"dashboard","refresh_id":…}`, kind `judge_work`, ADR-018) get
   nothing at claim: `access` stays empty (no installation token is minted, no MemCan endpoint), and `session`,

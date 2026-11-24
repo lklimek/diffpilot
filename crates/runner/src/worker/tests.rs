@@ -32,6 +32,8 @@ fn timing() -> Timing {
 
 /// Emits `events` activities `step` apart, then the output; honours cancel unless told otherwise.
 struct Scripted {
+    retire_fails: bool,
+    retire_calls: AtomicUsize,
     events: usize,
     step: Duration,
     summary: String,
@@ -52,6 +54,8 @@ struct Scripted {
 impl Scripted {
     fn new(events: usize, step: Duration) -> Self {
         Self {
+            retire_fails: false,
+            retire_calls: AtomicUsize::new(0),
             events,
             step,
             summary: "$ ls (exit 0)".to_owned(),
@@ -77,6 +81,19 @@ impl Drop for SetOnDrop<'_> {
 }
 
 impl LlmProvider for Scripted {
+    fn retire<'a>(&'a self, _prs: &'a [i64]) -> BoxFuture<'a, Result<(), ProviderError>> {
+        self.retire_calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            if self.retire_fails {
+                Err(ProviderError::Failed {
+                    message: "fake retirement failure".into(),
+                })
+            } else {
+                Ok(())
+            }
+        })
+    }
+
     fn run<'a>(
         &'a self,
         _call: &'a ProviderCall,
@@ -174,11 +191,15 @@ async fn setup(provider: Scripted, claim_delay: Duration) -> Setup {
 }
 
 async fn setup_with(provider: Scripted, claim_delay: Duration, _detached: bool) -> Setup {
+    setup_retire(provider, claim_delay, Vec::new()).await
+}
+
+async fn setup_retire(provider: Scripted, claim_delay: Duration, retire: Vec<i64>) -> Setup {
     let server = MockServer::start().await;
     let root = TempDir::new().unwrap();
     let spec = spec(JobKind::Plan, shared_repo());
     let claim = ClaimResponse {
-        retire: Vec::new(),
+        retire,
         claim: Some(Claim {
             job_token: Secret::new(JOB_TOKEN),
             lease_expires_at: Timestamp::now(),
@@ -630,14 +651,62 @@ async fn retired_are_acknowledged_with_the_next_claim() {
 }
 
 #[tokio::test]
-async fn below_the_reserve_the_runner_takes_no_job() {
+async fn below_the_reserve_the_runner_claims_cleanup_without_taking_a_job() {
     let mut setup = setup(Scripted::new(0, UNIT), Duration::ZERO).await;
     setup.worker.disk_reserve = Some(crate::scratch::Reserve::new(
         setup._root.path().to_owned(),
         u64::MAX,
     ));
+    setup.server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/runner/v1/claim"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            retire: vec![1],
+            claim: None,
+        }))
+        .mount(&setup.server)
+        .await;
     assert_eq!(setup.worker.poll_once().await.unwrap(), None);
-    assert!(setup.server.received_requests().await.unwrap().is_empty());
+    assert_eq!(setup.worker.poll_once().await.unwrap(), None);
+    let claims = setup.server.received_requests().await.unwrap();
+    assert_eq!(claims.len(), 2);
+    assert_eq!(body::<Value>(&claims[0])["accept_job"], false);
+    assert_eq!(body::<Value>(&claims[1])["retired"], json!([1]));
+    assert!(!setup.provider.finished.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn failed_retirement_still_runs_the_unrelated_claim_without_acknowledging() {
+    let mut provider = Scripted::new(0, Duration::ZERO);
+    provider.retire_fails = true;
+    let mut setup = setup_retire(provider, Duration::ZERO, vec![1]).await;
+    mount(&setup, "events", ack(false)).await;
+    mount(&setup, "output", ack(false)).await;
+    mount(&setup, "result", ResponseTemplate::new(204)).await;
+    Mock::given(method("POST"))
+        .and(path("/runner/v1/claim"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            retire: vec![1],
+            claim: None,
+        }))
+        .mount(&setup.server)
+        .await;
+    assert!(matches!(
+        setup.worker.poll_once().await.unwrap(),
+        Some(JobEnd::ResultPosted(JobOutcome::Succeeded { .. }))
+    ));
+    assert_eq!(setup.worker.poll_once().await.unwrap(), None);
+    let claims: Vec<_> = setup
+        .server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() == "/runner/v1/claim")
+        .collect();
+    assert_eq!(claims.len(), 2);
+    assert!(body::<ClaimRequest>(&claims[1]).retired.is_empty());
+    assert_eq!(setup.provider.retire_calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

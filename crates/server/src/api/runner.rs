@@ -709,6 +709,7 @@ mod tests {
 
     fn claim_request(_credential: &str) -> ClaimRequest {
         ClaimRequest {
+            accept_job: true,
             runner_id: "runner-1".to_owned(),
             retired: Vec::new(),
         }

@@ -783,6 +783,7 @@ pub(super) mod tests {
             api::runner_router(h.state.clone()).oneshot(request)
         };
         let claim = ClaimRequest {
+            accept_job: true,
             runner_id: "runner-1".to_owned(),
             retired: Vec::new(),
         };

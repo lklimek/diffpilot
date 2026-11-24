@@ -3,7 +3,7 @@
 set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 log="${1:-/dev/null}"
-tmp="$(mktemp -d /data/tmp/diffpilot-stack-config.XXXXXX)"
+tmp="$(mktemp -d "${SR_STACK_TMPDIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}}/diffpilot-stack-config.XXXXXX")"
 project="w9-stack-config-$$"
 trap 'rm -rf "$tmp"' EXIT
 sed -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' \
@@ -11,6 +11,9 @@ sed -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' \
   -e 's|^SR_GITHUB_APP_ID=.*|SR_GITHUB_APP_ID=1|' \
   -e 's|^SR_GITHUB_CLIENT_ID=.*|SR_GITHUB_CLIENT_ID=fake|' \
   -e 's|^SR_GITHUB_APP_PRIVATE_KEY_PATH=.*|SR_GITHUB_APP_PRIVATE_KEY_PATH=/nonexistent/fake.pem|' \
+  -e 's|^SR_DOCKER_GID=.*|SR_DOCKER_GID=997|' \
+  -e "s|^SR_WORKER_IMAGE=.*|SR_WORKER_IMAGE=worker@sha256:$(printf '%064d' 1)|" \
+  -e "s|^SR_FETCH_IMAGE=.*|SR_FETCH_IMAGE=fetch@sha256:$(printf '%064d' 2)|" \
   -e 's|^SR_MEMCAN_URL=.*|SR_MEMCAN_URL=http://memcan.invalid/mcp|' \
   "$repo/.env.example" > "$tmp/stack.env"
 docker compose -p "$project" --env-file "$tmp/stack.env" -f "$repo/deploy/compose.yaml" \
@@ -39,3 +42,5 @@ jq -e --arg project "$project" '
   ($s["egress-proxy"].networks | has("judge") | not)
 ' "$tmp/config.json" > /dev/null
 printf '%s\n' 'CHECK container_runtime_config PASS launcher-only socket, private networks, pinned workers, no host login/checkout volumes' | tee -a "$log"
+# TODO(W7): add live fake-stack probes proving CS1 cannot reach gateway admin :8091, server runner
+# listener or launcher, and CS2 can reach only gateway model :8090 (SG5/SG7). Rendering cannot prove reachability.

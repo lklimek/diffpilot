@@ -27,7 +27,34 @@ test("the fake container runtime returns accepted results for both frozen assess
     sql(
       stack,
       `SELECT COUNT(*) FROM assessment_method_runs r JOIN jobs j ON j.id = r.job_id
-       WHERE r.status = 'succeeded' AND json_extract(j.result, '$.assessment.method') != r.method`,
+    WHERE r.status = 'succeeded'`,
+    ),
+  ).toEqual(["2"]);
+  expect(
+    sql(
+      stack,
+      `SELECT COUNT(*) FROM assessment_method_runs r JOIN jobs j ON j.id = r.job_id
+       WHERE r.status = 'succeeded' AND json_extract(j.result, '$.assessment.method') IS NOT r.method`,
     ),
   ).toEqual(["0"]);
+  expect(
+    sql(
+      stack,
+      `SELECT COUNT(DISTINCT json_extract(source, '$.source_kind'))
+    FROM assessment_comparison_items WHERE method = 'claudius_host'
+    AND json_extract(source, '$.source_kind') IN ('review_body', 'pr_comment')
+    AND length(json_extract(source, '$.quote')) >= 12`,
+    ),
+  ).toEqual(["2"]);
+  expect(
+    sql(
+      stack,
+      `SELECT COUNT(*) FROM assessment_comparison_items d
+    JOIN assessment_comparison_items c ON c.pass_id = d.pass_id AND c.method = d.method
+      AND c.comparison_key = d.duplicate_of
+    WHERE d.method = 'claudius_host' AND d.status = 'duplicate'
+      AND json_extract(d.source, '$.source_kind') = 'pr_comment'
+      AND json_extract(c.source, '$.source_kind') = 'review_body'`,
+    ),
+  ).toEqual(["1"]);
 });

@@ -32,6 +32,7 @@ async fn claimed_job_token(state: &AppState) -> String {
         state.config.runner_secret.expose_secret().to_owned()
     };
     let body = serde_json::to_string(&ClaimRequest {
+        accept_job: true,
         runner_id: "runner-sec".to_owned(),
         retired: Vec::new(),
     })

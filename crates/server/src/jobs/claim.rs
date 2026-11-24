@@ -141,8 +141,14 @@ pub async fn claim(
         );
     }
     db.analyses().ack_session_drops(&request.retired).await?;
-    let usable = db.llm_credentials().linked_payers().await?;
     let retire = db.analyses().pending_session_drops().await?;
+    if !request.accept_job {
+        return Ok(ClaimResponse {
+            retire,
+            claim: None,
+        });
+    }
+    let usable = db.llm_credentials().linked_payers().await?;
     let (token, hash) = mint_token()?;
     let lease_expires_at = lease_until(now);
     let claimed = db
@@ -751,6 +757,7 @@ mod tests {
 
     fn request() -> ClaimRequest {
         ClaimRequest {
+            accept_job: true,
             runner_id: "runner-1".to_owned(),
             retired: Vec::new(),
         }

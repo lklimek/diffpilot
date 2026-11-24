@@ -248,18 +248,16 @@ impl Worker {
     }
 
     /// One claim; runs the claimed job to its end. `None` when nothing was runnable. Below the scratch
-    /// filesystem's reserve the runner waits before requesting more work.
+    /// filesystem's reserve it requests housekeeping and retirement without taking new work.
     pub async fn poll_once(&mut self) -> Result<Option<JobEnd>, ClientError> {
         // The previous attempt (and its worker cleanup) is over before the next claim.
         self.executor.settled().await;
-        if !self
+        let accept_job = self
             .disk_reserve
             .as_mut()
-            .is_none_or(crate::scratch::Reserve::allows_claim)
-        {
-            return Ok(None);
-        }
+            .is_none_or(crate::scratch::Reserve::allows_claim);
         let request = ClaimRequest {
+            accept_job,
             runner_id: self.runner_id.clone(),
             retired: self.retired.clone(),
         };
@@ -268,10 +266,9 @@ impl Worker {
         self.retired.clear();
         if let Err(error) = self.executor.provider().retire(&response.retire).await {
             tracing::warn!(%error, "cannot retire PR workers; retrying on the next claim");
-            // A claim may already be leased; it expires without executing a new turn.
-            return Ok(None);
+        } else {
+            self.retired = response.retire;
         }
-        self.retired = response.retire;
         let Some(claim) = response.claim else {
             return Ok(None);
         };
