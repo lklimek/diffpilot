@@ -54,7 +54,9 @@ See [container contracts](../contracts/containers.md) for types and persistence,
 Deployment has five images: server (including gateway binary), runner/launcher, worker, fetch and Squid.
 Only launcher holds the Docker socket, with no network. Separate internal worker and judge networks expose
 only model listeners; admin is bound to the runner interface. Worker/fetch references are digest-pinned.
-A loopback registry supplies real digests for local builds. `deploy/dev/local-containers.sh` prepares images,
+A registry with its host port published on 127.0.0.1 supplies real digests for local builds. New instances use
+a dedicated NAT bridge with inter-container communication disabled and a digest-pinned image; running legacy
+instances are preserved with a notice until owner-scheduled replacement. `deploy/dev/local-containers.sh` prepares images,
 new runtime keys and non-secret configuration; it never deploys the live application stack. The credentials
 scope file may be `10010:<host-gid> 0440` locally so the host-uid server can read it; other gateway secrets
 stay `10010:10010 0400`, and the runner's keys copy is `10002:10002 0400`.

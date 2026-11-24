@@ -7,7 +7,7 @@ state=${SR_LOCAL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/diffpilot-cont
 prefix=${SR_LOCAL_IMAGE_PREFIX:-diffpilot-local}
 registry=${SR_LOCAL_REGISTRY_NAME:-$prefix-registry}
 port=${SR_LOCAL_REGISTRY_PORT:-15000}
-registry_image=${SR_LOCAL_REGISTRY_IMAGE:-registry:2.8.3}
+registry_image=${SR_LOCAL_REGISTRY_IMAGE:-registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373}
 die() { echo "local-containers: $*" >&2; exit 1; }
 [[ "$prefix" =~ ^[a-z0-9][a-z0-9-]*$ && "$registry" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die 'invalid resource prefix'
 if [[ ! "$port" =~ ^[0-9]+$ ]] || ((port <= 1024 || port >= 65536)); then die 'invalid registry port'; fi
@@ -19,6 +19,7 @@ flock 8
 
 case "${1:-}" in
   prepare)
+    [[ "$registry_image" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] || die 'registry image requires a sha256 digest'
     scratch=$(mktemp -d "${SR_LOCAL_TMPDIR:-${RUNNER_TEMP:-/data/tmp}}/diffpilot-images.XXXXXX")
     trap 'rm -rf "$scratch"' EXIT
     if [[ -n "${SR_LOCAL_CLAUDIUS_SOURCE:-}" ]]; then
@@ -35,13 +36,44 @@ case "${1:-}" in
     docker build --build-context "claudius=$scratch/curated" -f "$root/deploy/worker/Dockerfile" -t "$prefix-worker:local" "$root"
     docker build -f "$root/deploy/fetch/Dockerfile" -t "$prefix-fetch:local" "$root"
     if docker container inspect "$registry" >"$scratch/registry.json" 2>/dev/null; then
-      jq -e --arg port "$port" --arg image "$registry_image" '
-        .[0] | .Config.Labels["diffpilot.local-registry"] == "1" and .Config.Image == $image and
+      jq -e --arg port "$port" '
+        .[0] | .Config.Labels["diffpilot.local-registry"] == "1" and
         .HostConfig.PortBindings == {"5000/tcp": [{"HostIp":"127.0.0.1","HostPort":$port}]}
-      ' "$scratch/registry.json" >/dev/null || die 'existing registry does not match the loopback-only template'
-      docker start "$registry" >/dev/null
+      ' "$scratch/registry.json" >/dev/null || die 'existing registry must have the local label and host port published on 127.0.0.1'
+      if jq -e '.[0] | .State.Running == true and .Config.Image == "registry:2.8.3" and
+        (.NetworkSettings.Networks | keys) == ["bridge"]' "$scratch/registry.json" >/dev/null; then
+        echo 'local-containers: keeping running registry with legacy bridge/tag configuration; hardening requires an owner-scheduled replacement' >&2
+      else
+        jq -e --arg image "$registry_image" --arg network "$registry" '
+          .[0] | .Config.Image == $image and .HostConfig.ReadonlyRootfs == true and
+          .HostConfig.CapDrop == ["ALL"] and
+          (.HostConfig.SecurityOpt | index("no-new-privileges:true")) != null and
+          (.NetworkSettings.Networks | keys) == [$network]
+        ' "$scratch/registry.json" >/dev/null || die 'existing registry does not match the hardened template'
+        registry_id=$(jq -er '.[0].Id' "$scratch/registry.json")
+        docker network inspect "$registry" >"$scratch/network.json"
+        jq -e --arg id "$registry_id" '.[0] | .Driver == "bridge" and .Internal == false and
+          .Options["com.docker.network.bridge.gateway_mode_ipv4"] == "nat" and
+          .Options["com.docker.network.bridge.enable_icc"] == "false" and
+          .EnableIPv6 == false and ([.Containers // {} | keys[] | select(. != $id)] | length) == 0
+        ' "$scratch/network.json" >/dev/null || die 'registry network must be a dedicated NAT bridge with ICC disabled and no other containers'
+        if ! jq -e '.[0].State.Running == true' "$scratch/registry.json" >/dev/null; then
+          docker start "$registry" >/dev/null
+        fi
+      fi
     else
+      if docker network inspect "$registry" >"$scratch/network.json" 2>/dev/null; then
+        jq -e '.[0] | .Driver == "bridge" and .Internal == false and
+          .Options["com.docker.network.bridge.gateway_mode_ipv4"] == "nat" and
+          .Options["com.docker.network.bridge.enable_icc"] == "false" and .EnableIPv6 == false and
+          (.Containers // {} | length) == 0' "$scratch/network.json" >/dev/null || die 'registry network must be an empty NAT bridge with ICC disabled'
+      else
+        docker network create --driver bridge --opt com.docker.network.bridge.gateway_mode_ipv4=nat \
+          --opt com.docker.network.bridge.enable_icc=false "$registry" >/dev/null
+      fi
       docker run -d --name "$registry" --label diffpilot.local-registry=1 --restart unless-stopped \
+        --network "$registry" --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+        --mount "type=volume,source=$registry-data,target=/var/lib/registry" \
         -p "127.0.0.1:$port:5000" "$registry_image" >/dev/null
     fi
     for attempt in {1..30}; do

@@ -207,6 +207,7 @@ pub(super) async fn housekeeping(shared: Arc<Mutex<Launcher>>, period: Duration)
 pub async fn serve(path: &Path, settings: Settings) -> Result<(), Error> {
     settings.validate()?;
     let docker = Docker::connect_with_socket_defaults()?;
+    super::validate_runtime(&docker, &settings).await?;
     let mut launcher = Launcher {
         docker,
         settings,

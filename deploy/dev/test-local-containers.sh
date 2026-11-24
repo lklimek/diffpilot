@@ -33,6 +33,8 @@ cleanup() {
     done
   fi
   docker rm -f -v "$project-registry" >/dev/null 2>&1 || true
+  docker volume rm "$project-registry-data" >/dev/null 2>&1 || true
+  docker network rm "$project-registry" >/dev/null 2>&1 || true
   # New runtime secrets have foreign owners: remove only this throwaway directory via a root container.
   docker run --rm --network none --user 0:0 --entrypoint rm \
     --mount "type=bind,source=$scratch,target=/scratch" "$project-worker:local" -rf /scratch/runtime-secrets >/dev/null 2>&1 || true
