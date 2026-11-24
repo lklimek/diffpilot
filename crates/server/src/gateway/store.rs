@@ -25,6 +25,10 @@ pub(super) struct Record {
     pub last_auth: Option<AuthOutcome>,
     #[serde(default)]
     pub archived_usage: Usage,
+    #[serde(default)]
+    pub linked_at: Option<i64>,
+    #[serde(default)]
+    pub challenge: Option<contracts::gateway::DeviceLink>,
     pub link_attempt: Option<(uuid::Uuid, i64)>,
     pub last_call: Option<contracts::job::result::LlmCallOutcome>,
     pub keys: BTreeMap<String, Key>,

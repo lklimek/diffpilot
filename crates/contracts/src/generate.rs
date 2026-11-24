@@ -87,6 +87,10 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
         &[routes::GET_ASSESSMENT_COMPARISON],
     ),
     api_schema::<crate::assessment::AssessmentConfig>("assessment_config", &[]),
+    api_schema::<crate::api::assessment::AssessmentSettingsUpdate>(
+        "assessment_settings_update",
+        &[],
+    ),
     api_schema::<Vec<crate::api::review_loop::CommentSource>>(
         "comment_sources",
         &[routes::GET_COMMENT_SOURCES],
@@ -309,6 +313,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<crate::gateway::LinkCredential>();
     collector.visit::<crate::gateway::DeviceLink>();
     collector.visit::<crate::api::assessment::AssessmentSettings>();
+    collector.visit::<crate::api::assessment::AssessmentSettingsUpdate>();
     collector.visit::<crate::api::assessment::AssessmentComparison>();
     collector.visit::<crate::assessment::AssessmentAdmissionFailure>();
     collector.visit::<crate::gateway::MintKey>();

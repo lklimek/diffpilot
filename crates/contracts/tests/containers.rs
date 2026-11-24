@@ -47,6 +47,8 @@ fn preflight_is_bound_to_seed_and_generation() {
 fn terminal_and_quarantined_credentials_are_safe_and_distinct() {
     for reason in [RelinkReason::Terminal, RelinkReason::Quarantined] {
         let status = CredentialStatus {
+            telemetry: Default::default(),
+            challenge: None,
             mode: contracts::gateway::CredentialMode::ChatgptPlan,
             state: CredentialState::RelinkNeeded,
             relink_reason: Some(reason),

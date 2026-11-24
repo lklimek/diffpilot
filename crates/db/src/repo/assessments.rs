@@ -95,7 +95,44 @@ impl Assessments<'_> {
         user: &UserId,
         config: &AssessmentConfig,
     ) -> Result<(), DbError> {
+        self.save_config(tenant, user, config, None).await
+    }
+
+    /// Effective configuration and its opaque content revision from one snapshot.
+    pub async fn config_snapshot(
+        &self,
+        user: &UserId,
+    ) -> Result<(AssessmentConfig, String), DbError> {
+        let config = self.config(user).await?;
+        let revision = serde_json::to_string(&config)?;
+        Ok((config, revision))
+    }
+
+    /// Compare and save under the same write lock, preventing lost updates between tabs.
+    pub async fn set_config_if_current(
+        &self,
+        tenant: &str,
+        user: &UserId,
+        config: &AssessmentConfig,
+        revision: &str,
+    ) -> Result<(), DbError> {
+        self.save_config(tenant, user, config, Some(revision)).await
+    }
+
+    async fn save_config(
+        &self,
+        tenant: &str,
+        user: &UserId,
+        config: &AssessmentConfig,
+        revision: Option<&str>,
+    ) -> Result<(), DbError> {
         let mut tx = write_tx(self.pool).await?;
+        if let Some(revision) = revision {
+            let current = config_in(&mut tx, user).await?;
+            if serde_json::to_string(&current)? != revision {
+                return Err(DbError::Conflict);
+            }
+        }
         let inserted=sqlx::query("INSERT INTO assessment_config(user_id,primary_method,ab_prs,ab_until) SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM memberships WHERE tenant_id=? AND user_id=?) ON CONFLICT(user_id) DO UPDATE SET primary_method=excluded.primary_method,ab_prs=excluded.ab_prs,ab_until=excluded.ab_until")
             .bind(&user.0).bind(wire_name(config.primary_method)?).bind(serde_json::to_string(&config.ab_prs)?).bind(config.ab_until.map(ts)).bind(tenant).bind(&user.0).execute(&mut *tx).await?;
         if inserted.rows_affected() != 1 {
@@ -927,8 +964,8 @@ async fn meter_in(
             .bind(values.0).bind(values.1).bind(values.2).bind(values.3).bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(attempt).execute(&mut *tx).await?;
         0
     } else {
-        sqlx::query("INSERT INTO assessment_attempt_usage(pass_id,method,tenant_id,payer_id,attempt,input_tokens,cached_input_tokens,output_tokens,requests,duration_ms,known) SELECT pass_id,method,tenant_id,payer_id,?,?,?,?,?,?,? FROM assessment_method_runs WHERE pass_id=? AND method=?")
-            .bind(attempt).bind(values.0).bind(values.1).bind(values.2).bind(values.3).bind(values.4).bind(known).bind(run.pass_id.to_string()).bind(wire_name(run.method)?).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO assessment_attempt_usage(pass_id,method,tenant_id,payer_id,attempt,input_tokens,cached_input_tokens,output_tokens,requests,duration_ms,known,recorded_at) SELECT pass_id,method,tenant_id,payer_id,?,?,?,?,?,?,?,COALESCE((SELECT finished_at FROM jobs WHERE id=r.job_id AND attempt=?),?) FROM assessment_method_runs r WHERE pass_id=? AND method=?")
+            .bind(attempt).bind(values.0).bind(values.1).bind(values.2).bind(values.3).bind(values.4).bind(known).bind(attempt).bind(ts(Timestamp::now())).bind(run.pass_id.to_string()).bind(wire_name(run.method)?).execute(&mut *tx).await?;
         duration_ms
     };
     let total = if known {

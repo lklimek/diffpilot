@@ -72,6 +72,16 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   // Slow enough to see the assessment running (4 recorded lines of the fake provider's neutral answer).
   stack.script?.([{ id: "verify", job: "verify_comments", action: { replay: { step_delay_ms: 3000 } } }]);
   await signIn(page);
+  // TODO(W4): the legacy fake executor must echo JobSpec.assessment to satisfy the frozen-method fence.
+  // This journey uses the retained prompt-v4 recording of the scripted fake provider.
+  const settingsRoute = "/api/v1/settings/comment-assessment";
+  const settings = await (await page.request.get(settingsRoute)).json();
+  const me = await (await page.request.get("/api/v1/me")).json();
+  const configured = await page.request.put(settingsRoute, {
+    headers: { "X-CSRF-Token": me.csrf_token },
+    data: { revision: settings.revision, config: { ...settings.config, primary_method: "prompt_v4" } },
+  });
+  expect(configured.ok(), await configured.text()).toBe(true);
   // The effects the card previews (RC16), as the server planned them.
   const previews: Promise<{ item_no: number; effects: PlannedEffect[] }[]>[] = [];
   page.on("response", (response) => {
@@ -89,11 +99,12 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
     "LLM assessment",
     "Round",
   ]);
+  // D3 includes three extra prose sources; gate and CI status comments are ignored.
   await expect(card.getByRole("definition")).toHaveText([
     /^6 read \d\d:\d\d/,
-    "10",
+    "13",
     "0 decisions",
-    "LLM assessment running: 0 of 9 comments",
+    "LLM assessment running: 0 of 12 comments",
     "3 (thepastaclaw)",
   ]);
   await expect(page.getByRole("region", { name: "Review a PR" })).toContainText("No analysis yet.");
@@ -107,6 +118,7 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   await checkScreen(page);
 
   // The assessment lands on the open question: the recommendation and the queue's mark.
+  await question.getByRole("button", { name: "LLM assessment", exact: true }).click();
   await expect(question).toContainText("Recommendation: Fix here — Fake recommendation for tests.", {
     timeout: 60_000,
   });

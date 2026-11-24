@@ -7,7 +7,7 @@ async fn assessment_settings_default_and_changes_never_schedule_work() {
     assert_eq!(settings["config"]["primary_method"], "claudius_host");
     assert_eq!(settings["config"]["ab_prs"], json!([]));
     assert_eq!(settings["quota"]["remaining"], 80);
-    let (status,updated)=w.call("PUT","/api/v1/settings/comment-assessment",Some(json!({"primary_method":"prompt_v4","ab_prs":["acme/node-client#482"],"ab_until":null}))).await;
+    let (status,updated)=w.call("PUT","/api/v1/settings/comment-assessment",Some(json!({"revision":settings["revision"],"config":{"primary_method":"prompt_v4","ab_prs":["acme/node-client#482"],"ab_until":null}}))).await;
     assert_eq!(status, StatusCode::OK, "{updated}");
     assert_eq!(updated["config"]["primary_method"], "prompt_v4");
     assert_eq!(updated["quota"]["remaining"], 80);
@@ -400,5 +400,106 @@ async fn assess_again_snapshot_failure_returns_an_error_without_charging_quota()
             .await
             .unwrap(),
         quota
+    );
+}
+
+#[tokio::test]
+async fn assessment_settings_stale_tab_returns_conflict_and_preserves_the_first_write() {
+    let w = world().await;
+    let initial = w.get("/api/v1/settings/comment-assessment").await;
+    let update = json!({"revision":initial["revision"],"config":{"primary_method":"claudius_host","ab_prs":["acme/a#1"],"ab_until":null}});
+    assert_eq!(
+        w.call("PUT", "/api/v1/settings/comment-assessment", Some(update))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let stale = json!({"revision":initial["revision"],"config":{"primary_method":"prompt_v4","ab_prs":["acme/b#2"],"ab_until":null}});
+    assert_eq!(
+        w.call("PUT", "/api/v1/settings/comment-assessment", Some(stale))
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        w.get("/api/v1/settings/comment-assessment").await["config"]["ab_prs"],
+        json!(["acme/a#1"])
+    );
+}
+
+#[tokio::test]
+async fn codex_status_enriches_gateway_observations_without_credentials_or_auth_posts() {
+    let gateway = MockServer::start().await;
+    let observed = json!({"mode":"chatgpt_plan","state":"linked","relink_reason":null,"label":"payer@example.invalid","plan":"plus","paused_until":null,"last_call":null,
+        "telemetry":{"linked_at":"2026-11-24T00:00:00Z","primary":{"used_percent":12.5,"resets_at":"2026-11-25T00:00:00Z"},"secondary":null,"tokens_today":null,"tokens_month":null,"live_containers":null}});
+    Mock::given(method("GET"))
+        .and(path("/admin/credentials/u1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&observed))
+        .mount(&gateway)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/admin/credentials/u1/link"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(observed))
+        .mount(&gateway)
+        .await;
+    let w = world_with(|state| {
+        std::sync::Arc::get_mut(&mut state.config)
+            .unwrap()
+            .codex_gateway = Some(
+            crate::gateway::client::Admin::new(
+                Url::parse(&gateway.uri()).unwrap(),
+                SecretString::from("fake-admin-scope"),
+            )
+            .unwrap(),
+        );
+    })
+    .await;
+    for route in ["/api/v1/settings/codex", "/api/v1/settings/codex/link"] {
+        let status = w.get(route).await;
+        assert_eq!(status["telemetry"]["primary"]["used_percent"], 12.5);
+        assert_eq!(status["telemetry"]["live_containers"], json!([]));
+        assert_eq!(status["telemetry"]["tokens_today"], Value::Null);
+        assert_eq!(status["telemetry"]["tokens_month"], Value::Null);
+        assert!(!status.to_string().contains("fake-admin-scope"));
+        for key in ["access_token", "refresh_token", "id_token", "api_key"] {
+            assert!(!status.to_string().contains(key));
+        }
+    }
+    assert!(
+        gateway
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.method == "GET")
+    );
+}
+
+#[tokio::test]
+async fn fixture_status_sources_are_omitted_and_new_prose_sources_explain_review_counts() {
+    let w = world().await;
+    let page = w.get(PR).await;
+    let sources = w.get(&format!("{PR}/comments/sources")).await;
+    for source in sources.as_array().unwrap() {
+        assert!(
+            !["#issuecomment-5000000101", "#issuecomment-5000000102"]
+                .iter()
+                .any(|suffix| source["url"].as_str().unwrap().ends_with(suffix)),
+            "{source}"
+        );
+    }
+    let items = w.items().await;
+    assert_eq!(
+        items.len(),
+        15,
+        "8 threads, legacy body findings, three newly eligible prose sources and merge question"
+    );
+    assert_eq!(page["comments"]["counts"]["undecided"], 13);
+    let pending = w.state.db.review_loop().live_passes().await.unwrap();
+    assert_eq!(page["comments"]["assessment"]["total"], 12);
+    assert_eq!(
+        pending[0].sent.len(),
+        crate::review_loop::assess::MAX_ITEMS_PER_PASS,
+        "the first batch obeys the item cap; progress counts all pending comments"
     );
 }

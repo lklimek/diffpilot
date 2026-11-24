@@ -178,19 +178,19 @@ export function wordingViolations(text: string, patterns: RegExp[] = [WORDS, PER
   });
 }
 
-/** The analysis waiting screen's progress section: the one place a percentage may show (brief §1, §4.2). */
-const PROGRESS_SECTION = 'section[aria-label="Analysis progress"]';
+/** Measured analysis progress and provider-observed plan usage (D13), never model assessments. */
+const PERCENT_SECTIONS = 'section[aria-label="Analysis progress"], p[data-codex-plan-usage]';
 
 /**
  * Brief §1 / plan §12.4 on the rendered page: no banned phrase and no percentage in the page text (hidden tooltip
- * text included; the progress section of the analysis waiting screen may show its percentage), and no `%` at all
+ * text included; measured progress and provider plan usage may show percentages), and no `%` at all
  * in the top bar. My work (route `/`, ADR-016, v1.1 plan §F.5) is outside these rules and not checked.
  */
 export async function expectTrustWording(page: Page): Promise<void> {
   if (new URL(page.url()).pathname === "/") return;
   // Text nodes joined by spaces (hidden text too; block boundaries keep word boundaries) and the rendered text
-  // (inline markup inside a word); the second pair leaves the progress section out.
-  const [text, withoutProgress] = await page.locator("body").evaluate((body: HTMLElement, progress) => {
+  // (inline markup inside a word); the second pair leaves the measured-percentage sections out.
+  const [text, withoutPercent] = await page.locator("body").evaluate((body: HTMLElement, progress) => {
     const collect = (root: HTMLElement, skip: boolean) => {
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (node) =>
         node.parentElement?.closest("script, style") || (skip && node.parentElement?.closest(progress))
@@ -205,9 +205,9 @@ export async function expectTrustWording(page: Page): Promise<void> {
     rest.querySelectorAll(progress).forEach((section) => section.remove());
     const rendered = (body as HTMLElement).innerText;
     return [`${collect(body, false)}\n${rendered}`, `${collect(body, true)}\n${rest.textContent ?? ""}`];
-  }, PROGRESS_SECTION);
+  }, PERCENT_SECTIONS);
   expect(
-    [...wordingViolations(text, [WORDS]), ...wordingViolations(withoutProgress, [PERCENT])],
+    [...wordingViolations(text, [WORDS]), ...wordingViolations(withoutPercent, [PERCENT])],
     "banned wording on the page",
   ).toEqual([]);
   const banner = page.getByRole("banner");

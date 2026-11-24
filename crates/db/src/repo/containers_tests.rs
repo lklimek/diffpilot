@@ -177,6 +177,8 @@ async fn container_credential_status_contains_no_auth_material() {
     let db = Db::in_memory().await.unwrap();
     analyses::testing::seed_analysis(&db).await.unwrap();
     let status = CredentialStatus {
+        telemetry: Default::default(),
+        challenge: None,
         mode: contracts::gateway::CredentialMode::ChatgptPlan,
         state: CredentialState::RelinkNeeded,
         relink_reason: Some(RelinkReason::Quarantined),
@@ -519,6 +521,8 @@ async fn container_retry_assigns_the_acting_payer_without_changing_creator() {
             DEFAULT_TENANT,
             "u2",
             &CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
                 mode: CredentialMode::ChatgptPlan,
                 state: CredentialState::Linked,
                 relink_reason: None,
@@ -610,6 +614,8 @@ async fn container_relink_failure_preserves_gateway_quarantine_reason() {
             DEFAULT_TENANT,
             "u1",
             &CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
                 mode: CredentialMode::ChatgptPlan,
                 state: CredentialState::RelinkNeeded,
                 relink_reason: Some(RelinkReason::Quarantined),

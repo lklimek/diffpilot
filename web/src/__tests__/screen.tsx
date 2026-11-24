@@ -1,3 +1,4 @@
+import { resetAssessmentSettings } from "../mocks/handlers/assessment-settings";
 import { RouterProvider } from "react-router/dom";
 // Renders the app's routes in memory against the msw handlers of src/mocks (screen tests).
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -23,6 +24,7 @@ export function startMockServer() {
   beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
   afterEach(() => {
     server.resetHandlers();
+    resetAssessmentSettings();
     setFixtureState("default");
     setScenario(null);
     setMockLanguage(null);

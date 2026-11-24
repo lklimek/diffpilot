@@ -28,6 +28,58 @@ fn totals(row: &SqliteRow) -> Result<Option<UsageTotals>, DbError> {
 }
 
 impl Jobs<'_> {
+    /// Payer-scoped UTC calendar totals and server-known active containers from one read transaction.
+    pub async fn payer_telemetry(
+        &self,
+        user: &contracts::ids::UserId,
+        now: Timestamp,
+    ) -> Result<contracts::gateway::CredentialTelemetry, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
+        let rows = sqlx::query("WITH windows(label,since) AS (
+                VALUES ('today',datetime(?2,'start of day')),('month',datetime(?2,'start of month'))),
+            reported AS (
+                SELECT j.id,j.finished_at AS at,json_extract(j.result,'$.usage.input_tokens') AS input,
+                    json_extract(j.result,'$.usage.cached_input_tokens') AS cached,json_extract(j.result,'$.usage.output_tokens') AS output
+                FROM jobs j WHERE j.payer_id=?1 AND j.finished_at IS NOT NULL AND json_type(j.result,'$.usage')='object'
+                    AND NOT EXISTS(SELECT 1 FROM assessment_attempt_usage u JOIN assessment_method_runs r ON r.pass_id=u.pass_id AND r.method=u.method WHERE r.job_id=j.id AND u.attempt=j.attempt AND u.known=1)
+                UNION ALL
+                SELECT r.job_id,u.recorded_at,u.input_tokens,u.cached_input_tokens,u.output_tokens
+                FROM assessment_attempt_usage u JOIN assessment_method_runs r ON r.pass_id=u.pass_id AND r.method=u.method WHERE u.payer_id=?1 AND u.known=1)
+            SELECT w.label,COUNT(DISTINCT r.id) AS jobs,COALESCE(SUM(r.input),0) AS input,COALESCE(SUM(r.cached),0) AS cached,COALESCE(SUM(r.output),0) AS output
+            FROM windows w LEFT JOIN reported r ON julianday(r.at)>=julianday(w.since) AND julianday(r.at)<=julianday(?2) GROUP BY w.label")
+            .bind(&user.0).bind(now.to_rfc3339_offset()).fetch_all(&mut *tx).await?;
+        let mut telemetry = contracts::gateway::CredentialTelemetry::default();
+        for row in rows {
+            match row.try_get::<String, _>("label")?.as_str() {
+                "today" => telemetry.tokens_today = totals(&row)?,
+                "month" => telemetry.tokens_month = totals(&row)?,
+                _ => {
+                    return Err(DbError::Corrupt {
+                        column: "payer usage window",
+                    });
+                }
+            }
+        }
+        let active: Vec<Option<i64>> = sqlx::query_scalar("SELECT DISTINCT pull_request_id FROM jobs WHERE payer_id=? AND state IN ('claimed','running') ORDER BY pull_request_id")
+            .bind(&user.0).fetch_all(&mut *tx).await?;
+        telemetry.live_containers = Some(
+            active
+                .into_iter()
+                .map(|pr| match pr {
+                    Some(pull_request_id) => contracts::runtime::ContainerId::Pr {
+                        pull_request_id,
+                        payer: user.clone(),
+                    },
+                    None => contracts::runtime::ContainerId::Judge {
+                        payer: user.clone(),
+                    },
+                })
+                .collect(),
+        );
+        tx.commit().await?;
+        Ok(telemetry)
+    }
+
     /// Model choices from immutable specs of claimed jobs, in first-use order, across all rounds.
     pub async fn models_used(
         &self,

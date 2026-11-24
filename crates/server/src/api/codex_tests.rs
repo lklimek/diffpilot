@@ -108,7 +108,14 @@ async fn codex_linking_syncs_only_the_signed_in_payers_safe_status_and_unlinks()
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(serde_json::to_value(saved).unwrap(), response);
+            let mut public: contracts::gateway::CredentialStatus =
+                serde_json::from_value(response).unwrap();
+            assert_eq!(public.telemetry.live_containers, Some(vec![]));
+            public.telemetry.live_containers = None;
+            assert_eq!(
+                saved, public,
+                "credential persistence excludes the live server view"
+            );
         }
         gateway.reset().await;
     }

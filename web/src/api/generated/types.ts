@@ -910,9 +910,13 @@ method: AssessmentMethod, };
 export type AssessmentRunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 /**
- * GET /settings/comment-assessment; PUT uses AssessmentConfig and never schedules work itself.
+ * GET /settings/comment-assessment; PUT uses AssessmentSettingsUpdate and never schedules work itself.
  */
 export type AssessmentSettings = {
+/**
+ * Opaque content revision required for an atomic conditional write.
+ */
+revision: string,
 /**
  * Effective per-user configuration.
  */
@@ -921,6 +925,19 @@ config: AssessmentConfig,
  * Safe remaining/reset status.
  */
 quota: AssessmentQuota, };
+
+/**
+ * Conditional settings write; stale revisions fail with HTTP 409 and never schedule work.
+ */
+export type AssessmentSettingsUpdate = {
+/**
+ * Configuration the caller wants to save.
+ */
+config: AssessmentConfig,
+/**
+ * Revision obtained with the configuration the caller edited.
+ */
+revision: string, };
 
 /**
  * Frozen source identity; quote and version are required for body-point alignment.
@@ -2277,6 +2294,14 @@ export type CredentialState = "linking" | "linked" | "relink_needed";
  */
 export type CredentialStatus = {
 /**
+ * Safe observations, without tokens, key IDs or upstream response bodies.
+ */
+telemetry: CredentialTelemetry,
+/**
+ * Current device challenge on the staged-link GET only; reading never starts a flow.
+ */
+challenge: DeviceLink | null,
+/**
  * Only ChatGPT-plan linking is supported.
  */
 mode: CredentialMode,
@@ -2304,6 +2329,35 @@ paused_until: string | null,
  * Most recent model call.
  */
 last_call: LlmCallOutcome | null, };
+
+/**
+ * Safe account observations; gateway fills plan data and server fills payer job data.
+ */
+export type CredentialTelemetry = {
+/**
+ * Gateway commit time of the current account link; refresh does not change it.
+ */
+linked_at: string | null,
+/**
+ * Last observed primary plan window.
+ */
+primary: PlanUsage | null,
+/**
+ * Last observed secondary plan window.
+ */
+secondary: PlanUsage | null,
+/**
+ * Retained provider reports finished today in UTC, null without reports.
+ */
+tokens_today: UsageTotals | null,
+/**
+ * Retained provider reports finished this calendar month in UTC, null without reports.
+ */
+tokens_month: UsageTotals | null,
+/**
+ * Server-known containers with claimed/running jobs; null until read from server state.
+ */
+live_containers: Array<ContainerId> | null, };
 
 /**
  * Server-sent event of `GET /api/v1/dashboard/refreshes/{id}/events`; the SSE `event` field is the tag.
@@ -5399,6 +5453,19 @@ index: number,
  * Total parts, fixed before the first plan job is submitted.
  */
 total: number, };
+
+/**
+ * Observed usage of one plan window; absent fields have not been reported upstream.
+ */
+export type PlanUsage = {
+/**
+ * Percentage supplied by x-codex-*-used-percent; never estimated from tokens.
+ */
+used_percent: number | null,
+/**
+ * Absolute reset time supplied by the backend.
+ */
+resets_at: string | null, };
 
 /**
  * An effect a decision would get ("What happens next", the confirmation list); not stored.

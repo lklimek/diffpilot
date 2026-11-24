@@ -850,7 +850,7 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
 | RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202; 409 `conflict` while a pass is live; 429 `AssessmentAdmissionFailure::AssessmentDailyLimit { resets_at }` at 80 admitted UTC daily passes; 409 `credential_missing` without a usable linked plan |
 | CA1 | GET | `/api/v1/settings/comment-assessment` | read | – | `AssessmentSettings`: primary/A-B configuration and remaining/reset quota |
-| CA2 | PUT | `/api/v1/settings/comment-assessment` | session_csrf | `AssessmentConfig` | `AssessmentSettings`; never schedules assessment; at most 100 distinct `owner/repo#number` selections |
+| CA2 | PUT | `/api/v1/settings/comment-assessment` | session_csrf | `AssessmentSettingsUpdate` | `AssessmentSettings`; stale revision → 409; never schedules assessment; at most 100 distinct `owner/repo#number` selections |
 | CA3 | GET | `…/comments/assessment-comparison` | read | optional `cutoff` (UTC timestamp) | Latest `AssessmentComparison` for this PR and payer, including exact-count summary, nullable verdict/proposal, owner revisions and method usage; 404 without a payer-owned pass; no GitHub fetch |
 | CA4 | GET | `…/comments/sources` | read | – | `CommentSource[]`, including cleaned context and zero-point versions; no GitHub fetch |
 | RC8 | POST | `…/comments/items/{item}/decisions` | session_csrf | `DecideRequest` | 201 `Decision`; 409 `item_changed`; 409 `conflict` when its `plan_digest` no longer matches the plan |
@@ -931,7 +931,10 @@ POST requires session + CSRF and returns `DeviceLink`; DELETE requires session +
 explicit gateway unlink. Both GET routes require a session; status returns `CredentialStatus`, while link
 polling returns the staged view (an existing usable credential remains usable during replacement).
 Unsupported modes and extra secret/base-URL fields are rejected before contacting the gateway.
-The web Settings controls remain W6.
+Both views include safe D13 telemetry: gateway link time and observed primary/secondary plan percentage/reset
+windows, plus server-computed payer UTC today/month usage and claimed/running container identities. Missing
+observations remain null. Link polling also returns the current public `challenge` for reload/navigation recovery;
+a read never starts a device flow. See [the approved W6 amendments](containers.md#w6-approved-account-status-and-conditional-settings-amendments).
 
 The server connects through `SR_GATEWAY_ADMIN_URL` and the dedicated credentials scope
 `SR_GATEWAY_CREDENTIALS_TOKEN_FILE` (or `SR_GATEWAY_CREDENTIALS_TOKEN`, mutually exclusive). Missing gateway
@@ -943,8 +946,10 @@ service and the same authenticated Settings routes, with no release-build seedin
 
 
 The W1 `api::assessment` contracts define `GET`/`PUT /api/v1/settings/comment-assessment` (PUT body:
-`AssessmentConfig`, GET: `AssessmentSettings`) and `GET …/comments/assessment-comparison`
+`AssessmentSettingsUpdate { config, revision }`, GET: `AssessmentSettings` with its opaque config revision) and `GET …/comments/assessment-comparison`
 (`AssessmentComparison`, payer/PR scoped). They carry frozen method references, actual owner revisions and
 safe remaining/reset quota. `AssessmentAdmissionFailure` distinguishes daily limit (with `resets_at`) from
 missing usable credentials. W5/W6 implement route access checks and orchestration; changing configuration
-alone never schedules work. Cards show only the frozen primary; secondary results are comparison-only.
+alone never schedules work. Conditional writes compare the opaque config revision inside `write_tx`; a stale
+request returns 409 without replacing another tab's selections. Clients refresh and require an explicit retry.
+Cards show only the frozen primary; secondary results are comparison-only.

@@ -1,3 +1,11 @@
+import { useNow } from "../../app/now";
+import {
+  useCodexAccount,
+  useAssessmentSettings,
+  useSetAssessmentSettings,
+} from "../../api/assessment-settings";
+import { CodexAccountCard } from "../../components/settings/CodexAccountCard";
+import { AssessmentSettingsCard } from "../../components/settings/AssessmentSettingsCard";
 import { MemcanStatusLine } from "../../components/section/MemcanStatusLine";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -183,6 +191,12 @@ function SettingsContent({
   userId: string;
   onDirtyChange: (dirty: boolean) => void;
 }) {
+  const now = new Date(useNow());
+  const codex = useCodexAccount(now.getTime());
+  const assessment = useAssessmentSettings();
+  const saveAssessment = useSetAssessmentSettings();
+  const [assessmentSaveCount, setAssessmentSaveCount] = useState(0);
+  const codexError = codex.link.error ?? codex.unlink.error ?? codex.status.error;
   const setLlm = useSetLlm();
   const setJudgeEffort = useSetJudgeEffort();
   const setAskEffort = useSetAskEffort();
@@ -224,6 +238,46 @@ function SettingsContent({
                 onChange={(effort) => setJudgeEffort.mutate(effort)}
               />
             </LlmSelectionCard>
+          )}
+          <CodexAccountCard
+            status={codex.status.data}
+            challenge={codex.challenge}
+            now={now}
+            busy={codex.link.isPending || codex.unlink.isPending}
+            error={codexError ? errorText(codexError) : undefined}
+            onLink={() => {
+              codex.unlink.reset();
+              codex.link.mutate();
+            }}
+            onUnlink={() => codex.unlink.mutate()}
+          />
+          {assessment.data ? (
+            <AssessmentSettingsCard
+              key={assessmentSaveCount}
+              settings={assessment.data}
+              now={now}
+              busy={saveAssessment.isPending}
+              saved={saveAssessment.isSuccess}
+              error={
+                saveAssessment.isError
+                  ? saveAssessment.error instanceof ApiError && saveAssessment.error.code === "conflict"
+                    ? "Settings changed elsewhere. Your edits are kept. Check the changed values and save again."
+                    : errorText(saveAssessment.error)
+                  : undefined
+              }
+              onSave={(config) =>
+                saveAssessment.mutate(
+                  { config, revision: assessment.data!.revision },
+                  { onSuccess: () => setAssessmentSaveCount((count) => count + 1) },
+                )
+              }
+            />
+          ) : (
+            <SettingsCard title="Comment assessment">
+              <StatusMessage kind={assessment.isError ? "error" : "loading"}>
+                {assessment.isError ? errorText(assessment.error) : "Loading assessment settings…"}
+              </StatusMessage>
+            </SettingsCard>
           )}
           <LlmStatusCard status={llm_status} usage={settings.data.llm_usage} />
           <SettingsCard title="Memory" help={<HelpTip topic="memcan_status" />}>

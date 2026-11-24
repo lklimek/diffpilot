@@ -1,4 +1,11 @@
-import { useCallback, useMemo, type ReactNode } from "react";
+import {
+  useAssessmentSettings,
+  useSetAssessmentSettings,
+  useAssessmentComparison,
+} from "../../api/assessment-settings";
+import { AssessmentControls } from "../../components/comments/AssessmentControls";
+import { AssessmentComparisonPanel } from "../../components/comments/AssessmentComparisonReport";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Outlet, useLocation, useNavigate, useOutletContext, useParams } from "react-router";
 import { ApiError } from "../../api/client";
 import type { CommentItem, CommentsOverview, PrPage, PrRef } from "../../api/generated/types";
@@ -87,6 +94,10 @@ export function CommentsRoute() {
   const items = useCommentItems(pr);
   const page = usePrPage(pr);
   const read = useReadComments(pr);
+  const assessmentSettings = useAssessmentSettings();
+  const saveAssessment = useSetAssessmentSettings();
+  const [showComparison, setShowComparison] = useState(false);
+  const comparison = useAssessmentComparison(pr, showComparison);
   const now = new Date(useNow());
   useUserEventNotifications();
   usePrTabSubject(pr);
@@ -213,6 +224,32 @@ export function CommentsRoute() {
           </div>
         )}
         {read.isError && <StatusMessage kind="error">{errorText(read.error)}</StatusMessage>}
+        {o && (
+          <>
+            {assessmentSettings.data && (
+              <AssessmentControls
+                settings={assessmentSettings.data}
+                now={now}
+                prKey={`${pr.repo.owner}/${pr.repo.name}#${pr.number}`}
+                busy={saveAssessment.isPending}
+                error={saveAssessment.isError ? errorText(saveAssessment.error) : undefined}
+                onSave={(config) =>
+                  saveAssessment.mutate({ config, revision: assessmentSettings.data!.revision })
+                }
+              />
+            )}
+            {assessmentSettings.isError && (
+              <StatusMessage kind="error">{errorText(assessmentSettings.error)}</StatusMessage>
+            )}
+            <AssessmentComparisonPanel
+              expanded={showComparison}
+              report={comparison.data}
+              loading={comparison.isPending}
+              error={comparison.isError ? errorText(comparison.error) : undefined}
+              onOpenChange={setShowComparison}
+            />
+          </>
+        )}
         {o && <CommentsTabs current={current} hrefs={hrefs} questions={o.counts.undecided} onNavigate={go} />}
         <WithAsk pr={pr} items={items.data}>
           {body}
