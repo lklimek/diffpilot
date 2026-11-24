@@ -1,3 +1,4 @@
+import { ProposalText } from "./ProposalText";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Fragment, useEffect, useRef, type ReactNode } from "react";
 import type {
@@ -190,6 +191,11 @@ function Assessment({ item, prHead }: { item: CommentItem; prHead: string }) {
   const earlier = item.decisions.slice(0, -1);
   return (
     <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[13px]">
+      {a.evidence_text && (
+        <Row term="LLM evidence">
+          <CodeText text={a.evidence_text} />
+        </Row>
+      )}
       <Row term="The LLM says">
         {validityAt(a.validity, a.head, prHead)}
         <span className="block text-xs text-muted">
@@ -204,7 +210,9 @@ function Assessment({ item, prHead }: { item: CommentItem; prHead: string }) {
           </span>
         ))}
       </Row>
-      <Row term="Pre-existing on base">{a.pre_existing ? "yes" : "no, introduced by this PR"}</Row>
+      <Row term="Pre-existing on base">
+        {a.pre_existing === null ? "not supplied" : a.pre_existing ? "yes" : "no, introduced by this PR"}
+      </Row>
       <Row term="Necessity">
         {a.necessity.verdict === "in" ? "in" : "out"}: <CodeText text={a.necessity.reason} />
         {a.necessity.better_pr && ` (better fit: ${a.necessity.better_pr})`}
@@ -385,11 +393,29 @@ export function QuestionCard(props: QuestionCardProps) {
         storageKey={key("comment")}
         aside={<ProvenanceTag source="github" />}
       >
+        {item.point && (
+          <>
+            <p>
+              Point read by diffpilot's LLM from {item.author}'s{" "}
+              {item.point.source_kind === "review_body" ? "review" : "comment"} <ProvenanceTag source="llm" />{" "}
+              <OpenExternal href={item.point.source_url} label="Open the point source on GitHub" />
+            </p>
+            <FactChip
+              text="Quote found in the review"
+              tip="The server found this exact quote in the supplied source version."
+            />
+          </>
+        )}
+        {item.duplicate_of !== null && item.duplicate_of !== undefined && (
+          <p>
+            Same problem as C{item.duplicate_of} <ProvenanceTag source="llm" />
+          </p>
+        )}
         <blockquote
           data-comment-text
           className="m-0 rounded border-l-4 border-border bg-surface-2 px-2.5 py-1.5 whitespace-pre-wrap"
         >
-          <GithubCommentText text={item.body} />
+          <GithubCommentText text={item.point?.quote ?? item.body} />
         </blockquote>
       </CollapsibleSection>
 
@@ -458,6 +484,7 @@ export function QuestionCard(props: QuestionCardProps) {
 
       <CollapsibleSection
         title="LLM assessment"
+        defaultOpen={false}
         storageKey={key("assessment")}
         aside={
           <>
@@ -479,8 +506,13 @@ export function QuestionCard(props: QuestionCardProps) {
         </div>
         {rec && (
           <p className="mt-2 mb-0 text-[13px]">
-            <b>Recommendation:</b> {CHOICE_LABEL[rec.kind] ?? rec.kind} — <CodeText text={rec.reason} />{" "}
-            <ProvenanceTag source="llm" />
+            <b>Recommendation:</b>{" "}
+            {item.assessment?.proposed_decision ? (
+              <ProposalText proposal={item.assessment.proposed_decision} />
+            ) : (
+              (CHOICE_LABEL[rec.kind] ?? rec.kind)
+            )}{" "}
+            — <CodeText text={rec.reason} /> <ProvenanceTag source="llm" />
           </p>
         )}
         {(props.onAssessAgain || props.onMarkGate) && (

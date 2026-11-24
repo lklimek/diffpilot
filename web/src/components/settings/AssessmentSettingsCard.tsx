@@ -1,0 +1,107 @@
+import { Tooltip } from "../tooltip/Tooltip";
+import { useId, useState } from "react";
+import type { AssessmentConfig, AssessmentMethod, AssessmentSettings } from "../../api/generated/types";
+import { buttonClass } from "../button/button";
+import { SettingsCard } from "./Card";
+
+/** User choices apply to new passes; saving never schedules an assessment. */
+export function AssessmentSettingsCard({
+  settings,
+  busy,
+  error,
+  saved,
+  onSave,
+}: {
+  settings: AssessmentSettings;
+  busy: boolean;
+  error?: string;
+  saved?: boolean;
+  onSave: (config: AssessmentConfig) => void;
+}) {
+  const id = useId();
+  const [primary, setPrimary] = useState(settings.config.primary_method);
+  const [deadline, setDeadline] = useState(settings.config.ab_until ?? "");
+  const parsed = Date.parse(deadline);
+  const valid =
+    !deadline ||
+    (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(deadline) &&
+      Number.isFinite(parsed) &&
+      new Date(parsed).toISOString().slice(0, 19) === deadline.slice(0, 19));
+  return (
+    <SettingsCard title="Comment assessment">
+      <label htmlFor={`${id}-primary`}>Primary assessment method</label>
+      <select
+        id={`${id}-primary`}
+        disabled={busy}
+        value={primary}
+        onChange={(e) => setPrimary(e.target.value as AssessmentMethod)}
+        className="rounded border border-border bg-surface px-2 py-1"
+      >
+        <option value="claudius_host">claudius_host (default)</option>
+        <option value="prompt_v4">prompt_v4</option>
+      </select>
+      <p>
+        Comment cards show only the primary assessment. Changes apply to new passes and do not start an
+        assessment.
+      </p>
+      <p>A/B runs both methods and costs roughly 2× in tokens and time. A pair uses one daily pass.</p>
+      <p>
+        {settings.quota.remaining} of 80 daily passes remaining. Resets at {settings.quota.resets_at} (UTC).
+      </p>
+      <p>Toggle A/B for each PR on its Comments page. Selected PRs:</p>
+      {settings.config.ab_prs.length ? (
+        <ul className="list-disc pl-5">
+          {settings.config.ab_prs.map((pr) => (
+            <li key={pr}>{pr}</li>
+          ))}
+        </ul>
+      ) : (
+        <p>No PRs selected.</p>
+      )}
+      <label htmlFor={`${id}-deadline`}>Optional A/B deadline (UTC)</label>
+      <input
+        id={`${id}-deadline`}
+        type="text"
+        placeholder="2026-11-30T00:00:00Z"
+        value={deadline}
+        disabled={busy}
+        aria-invalid={!valid || undefined}
+        onChange={(e) => setDeadline(e.target.value)}
+        className="rounded border border-border bg-surface px-2 py-1"
+      />
+      <p>
+        Leave empty for selected PRs only. A deadline enables both methods on all PRs until that time, in
+        addition to selected PRs.
+      </p>
+      {!valid && <p role="alert">Enter a UTC date and time ending in Z, or leave empty.</p>}
+      {error && <p role="alert">{error}</p>}
+      {saved && <p role="status">Assessment settings saved.</p>}
+      <Tooltip
+        tip={
+          busy
+            ? "Saving assessment settings. Wait for it to finish."
+            : !valid
+              ? "Enter a UTC date and time ending in Z, or leave empty."
+              : "Saves choices for new passes without starting an assessment."
+        }
+      >
+        <button
+          type="button"
+          aria-disabled={busy || !valid || undefined}
+          className={buttonClass("plain", true)}
+          onClick={() =>
+            !busy &&
+            valid &&
+            onSave({
+              ...settings.config,
+              primary_method: primary,
+              ab_until: deadline ? new Date(deadline).toISOString() : null,
+            })
+          }
+        >
+          Save assessment settings
+        </button>
+      </Tooltip>
+    </SettingsCard>
+  );
+}

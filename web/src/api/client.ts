@@ -1,6 +1,11 @@
 // The only fetch layer of the web app: typed calls to the routes of crates/contracts.
 import { routes, type RouteName } from "./generated/routes";
 import type {
+  AssessmentSettings,
+  AssessmentConfig,
+  AssessmentComparison,
+  CredentialStatus,
+  DeviceLink,
   AccessToken,
   AnalysisEvent,
   CarryOverPage,
@@ -324,6 +329,21 @@ export function createApiClient(baseUrl = "") {
       call<void>("deleteComment", { params: { id, comment_id: commentId } }),
     cancelAnalysis: (id: AnalysisId) => call<AnalysisSummary>("cancelAnalysis", { params: { id } }),
     retryAnalysis: (id: AnalysisId) => call<AnalysisSummary>("retryAnalysis", { params: { id } }),
+    getCodex: () => call<CredentialStatus>("getCodex"),
+    getCodexLink: () => call<CredentialStatus>("getCodexLink"),
+    linkCodex: () => call<DeviceLink>("linkCodex", { body: { mode: "chatgpt_plan" } }),
+    unlinkCodex: () => call<void>("deleteCodex"),
+    getAssessmentSettings: () => call<AssessmentSettings>("getAssessmentSettings"),
+    setAssessmentSettings: (body: AssessmentConfig) =>
+      call<AssessmentSettings>("setAssessmentSettings", { body }),
+    getAssessmentComparison: async (pr: PrRef) => {
+      try {
+        return await call<AssessmentComparison>("getAssessmentComparison", { params: prParams(pr) });
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }
+    },
     getSettings: () => call<Settings>("getSettings"),
     setLlm: (body: import("./generated/types").ModelChoice) =>
       call<import("./generated/types").LlmSelection>("setLlm", { body }),

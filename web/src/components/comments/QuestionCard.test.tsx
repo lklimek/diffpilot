@@ -86,8 +86,8 @@ describe("QuestionCard (plan §3.2)", () => {
     expect(options[0]).toHaveAccessibleName("Fix here (Recommended)");
     expect(options.at(-1)).toHaveAccessibleName(/^Accept despite the gate/);
     expect(options[0]).toBeChecked();
-    expect(screen.getByText("The LLM says")).toBeVisible();
-    expect(screen.getByRole("button", { name: "LLM assessment" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "LLM assessment" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("The LLM says")).not.toBeVisible();
     expect(screen.getByText(COMMENT_HINT)).toBeVisible();
     expectTrustWording(document.body.textContent ?? "");
   });
@@ -118,6 +118,7 @@ describe("QuestionCard (plan §3.2)", () => {
 
   it("says validity is judged at the PR head, so a comment fixed since is not read as a mistaken reviewer", () => {
     show(byNo(14));
+    fireEvent.click(screen.getByRole("button", { name: "LLM assessment" }));
     expect(screen.getByText("partly valid at the PR head")).toBeVisible();
     expect(
       screen.getByText("Judged on the code at the PR head, not on the code the comment was written on."),
@@ -128,6 +129,7 @@ describe("QuestionCard (plan §3.2)", () => {
   it("an assessment of an earlier head names that commit, not the PR head", () => {
     const c14 = byNo(14);
     show(c14, { prHead: "9f3c2e1d00000000000000000000000000000000" });
+    fireEvent.click(screen.getByRole("button", { name: "LLM assessment" }));
     const at = c14.assessment!.head.slice(0, 7);
     expect(screen.getByText(`partly valid at ${at}, an earlier head`)).toBeVisible();
     expect(
@@ -395,4 +397,49 @@ describe("Decide sends only what the server planned for the current input (RC16)
     await userEvent.click(decide);
     expect(onDecide).toHaveBeenCalledWith(expect.objectContaining({ kind: "reject" }));
   });
+});
+
+it("shows one collapsed primary proposal with its original external target", () => {
+  const item = byNo(14);
+  show({
+    ...item,
+    assessment: {
+      ...item.assessment!,
+      proposed_decision: {
+        kind: "handled_in_pr",
+        target_pr: null,
+        target_url: "https://github.com/other/repo/pull/99",
+        title: null,
+        fixed_in: null,
+      },
+    },
+  });
+  expect(screen.getAllByRole("button", { name: "LLM assessment" })).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "LLM assessment" }));
+  expect(screen.getByText(/https:\/\/github.com\/other\/repo\/pull\/99/)).toBeVisible();
+});
+
+it("keeps model-read body points separate from grounded GitHub quotes and nullable evidence", () => {
+  const item = byNo(14);
+  show({
+    ...item,
+    kind: "review_body",
+    point: {
+      source_kind: "review_body",
+      source_url: item.url ?? "https://github.com/acme/node-client/pull/482#review-1",
+      quote: "Bound the retry loop to avoid repeated requests.",
+    },
+    duplicate_of: 12,
+    assessment: {
+      ...item.assessment!,
+      pre_existing: null,
+      evidence_text: "The retry counter has no upper bound.",
+    },
+  });
+  expect(screen.getByText(/Point read by diffpilot's LLM/)).toBeVisible();
+  expect(screen.getByText("Quote found in the review")).toBeVisible();
+  expect(screen.getByText("Bound the retry loop to avoid repeated requests.")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "LLM assessment" }));
+  expect(screen.getByText("The retry counter has no upper bound.")).toBeVisible();
+  expect(screen.getByText("not supplied")).toBeVisible();
 });

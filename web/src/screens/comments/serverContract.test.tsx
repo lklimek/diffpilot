@@ -383,6 +383,7 @@ describe("202 Accepted without a body (RC3 read again, RC6 assess again; review_
   it("Assess again says it was asked", async () => {
     renderRoute(`${PR}/comments?item=C14`);
     await screen.findByRole("heading", { name: /C14 · Retry may resend/ });
+    await userEvent.click(screen.getByRole("button", { name: "LLM assessment" }));
     await userEvent.click(screen.getByRole("button", { name: "Assess again" }));
     expect(
       await screen.findByText(/^Asked: diffpilot's LLM assesses this comment again\.$|Something went wrong/),

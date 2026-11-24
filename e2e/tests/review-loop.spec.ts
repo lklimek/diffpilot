@@ -89,6 +89,7 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
     "LLM assessment",
     "Round",
   ]);
+  // TODO(W5): reconcile legacy 10-item/9-assessment expectations with merged source admission (observed 15/14).
   await expect(card.getByRole("definition")).toHaveText([
     /^6 read \d\d:\d\d/,
     "10",
@@ -107,6 +108,7 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   await checkScreen(page);
 
   // The assessment lands on the open question: the recommendation and the queue's mark.
+  await question.getByRole("button", { name: "LLM assessment", exact: true }).click();
   await expect(question).toContainText("Recommendation: Fix here — Fake recommendation for tests.", {
     timeout: 60_000,
   });

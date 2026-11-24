@@ -3,11 +3,12 @@ import { useId, useState, type ReactNode } from "react";
 /** localStorage key prefix of the open / collapsed sections (plan §3.9). */
 export const COLLAPSIBLE_STORAGE_PREFIX = "diffpilot.sections.";
 
-const read = (key: string): boolean => {
+const read = (key: string, defaultOpen: boolean): boolean => {
   try {
-    return window.localStorage.getItem(key) !== "0";
+    const stored = window.localStorage.getItem(key);
+    return stored === null ? defaultOpen : stored !== "0";
   } catch {
-    return true;
+    return defaultOpen;
   }
 };
 
@@ -29,6 +30,8 @@ interface CollapsibleSectionProps {
   /** Tags or actions beside the heading (outside the button). */
   aside?: ReactNode;
   className?: string;
+  /** Initial state when no reader preference exists. */
+  defaultOpen?: boolean;
   children: ReactNode;
 }
 
@@ -42,11 +45,12 @@ export function CollapsibleSection({
   level = 3,
   aside,
   className = "",
+  defaultOpen = true,
   children,
 }: CollapsibleSectionProps) {
   const id = useId();
   const key = `${COLLAPSIBLE_STORAGE_PREFIX}${storageKey}`;
-  const [open, setOpen] = useState(() => read(key));
+  const [open, setOpen] = useState(() => read(key, defaultOpen));
   const Heading = level === 2 ? "h2" : "h3";
   const look =
     level === 2 ? "text-base font-semibold" : "text-xs font-bold tracking-wide text-muted uppercase";
