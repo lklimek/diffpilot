@@ -6,7 +6,7 @@
 #        deploy/check-production-config.sh --self-test [--no-render]
 #   (no option)       the files, production rendered with .env.example, local rendered with it on localhost
 #   --env-file FILE   production rendered with FILE (for example the deployment's .env), and FILE's values
-#   --local           also the local variant rendered with FILE
+#   --local           also render the local variant; check runtime files/settings, allow HTTP and host uid/gid
 #   --secret-files    secrets as files (compose.secrets.yaml): rendered with it; the four secret variables must be
 #                     empty and their files in SR_SECRETS_DIR present (run as root to read them)
 #   --no-render       no rendering (the files and FILE's values only)
@@ -85,10 +85,18 @@ load_env() {
   done < "$1"
 }
 
+# Match the gateway's whitespace trimming without printing values outside command substitutions.
+secret_file_value() {
+  local content
+  content="$(cat -- "$1")"
+  content="${content#"${content%%[![:space:]]*}"}"
+  printf '%s' "${content%"${content##*[![:space:]]}"}"
+}
+
 # check_secret_file NAME PATH: a private, non-empty, non-placeholder service secret file; the runner
 # secret at least 32 characters. Optional uid/gid/mode describe the consumer. Prints problems by name; never the content.
 check_secret_file() {
-  local name="$1" path="$2" uid="${3:-10010}" gid="${4:-}" mode="${5:-400}" found=0 actual_uid actual_gid actual_mode content
+  local name="$1" path="$2" uid="${3:-10010}" gid="${4:-}" mode="${5:-400}" found=0 actual_uid actual_gid actual_mode content decoded_bytes canonical
   if [[ ! -f "$path" ]]; then
     echo "check-production-config: $name: the file $path is missing (secrets as files)" >&2
     return 1
@@ -105,7 +113,7 @@ check_secret_file() {
     echo "check-production-config: $name: cannot read $path to check it; run as root" >&2
     return 1
   fi
-  content="$(cat -- "$path")"
+  content="$(secret_file_value "$path")"
   if [[ -z "$content" ]]; then
     echo "check-production-config: $name: $path is empty" >&2
     found=1
@@ -116,13 +124,34 @@ check_secret_file() {
     echo "check-production-config: $name: $path holds fewer than 32 characters (openssl rand -hex 32)" >&2
     found=1
   fi
+  if [[ "$name" == SR_GATEWAY_SECRET_KEY_PATH ]]; then
+    if ! decoded_bytes="$(printf '%s' "$content" | base64 --decode 2>/dev/null | wc -c)" || [[ "$decoded_bytes" != 32 ]]; then
+      echo "check-production-config: $name: $path must be base64 encoding of exactly 32 bytes (openssl rand -base64 32)" >&2
+      found=1
+    else
+      canonical="$(printf '%s' "$content" | base64 --decode | base64 -w0)"
+      if [[ "$canonical" != "$content" ]]; then
+        echo "check-production-config: $name: $path must use canonical base64 encoding" >&2
+        found=1
+      fi
+    fi
+  elif [[ "$name" == SR_GATEWAY_*_TOKEN_PATH || "$name" == SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH ]]; then
+    if (($(printf '%s' "$content" | wc -c) < 32)); then
+      echo "check-production-config: $name: $path holds fewer than 32 bytes (openssl rand -hex 32)" >&2
+      found=1
+    fi
+  fi
   return "$found"
 }
 
-# check_env FILE EXAMPLE SECRET_FILES(0|1): the production values of FILE; prints problems by variable name only.
+# check_env FILE EXAMPLE SECRET_FILES(0|1) LOCAL(0|1): the production values of FILE; prints problems by variable name only.
 check_env() {
   local -A values=() example=()
-  local found=0 key value secrets_dir path gateway_keys runner_keys digest nibble
+  local found=0 key value secrets_dir path gateway_keys runner_keys credentials digest nibble local_mode="${4:-0}"
+  if [[ ! -f "$1" ]]; then
+    echo "check-production-config: env file $1 is missing" >&2
+    return 1
+  fi
   say() { echo "check-production-config: $*" >&2; found=1; }
   load_env "$1" values
   for key in "${!interpolated[@]}"; do
@@ -131,7 +160,7 @@ check_env() {
   load_env "$2" example
   for key in "${!values[@]}"; do
     if [[ "${values[$key]}" == *REPLACE* ]]; then say "$key still holds a placeholder (REPLACE...)"; fi
-    if [[ "$key" =~ $dev_only || "$key" =~ ^($forbidden)$ ]]; then
+    if [[ "$key" =~ ^($forbidden)$ || ($local_mode == 0 && "$key" =~ $dev_only) ]]; then
       say "$key is a local or development setting; remove it from a production env file"
     fi
   done
@@ -141,10 +170,10 @@ check_env() {
       say "$key still holds the .env.example value"
     fi
   done
-  if [[ "${values[COMPOSE_FILE]:-}" =~ compose\.local|/dev/ ]]; then
+  if [[ "$local_mode" == 0 && "${values[COMPOSE_FILE]:-}" =~ compose\.local|/dev/ ]]; then
     say "COMPOSE_FILE names the local or a development override"
   fi
-  if [[ ! "${values[SR_PUBLIC_URL]:-}" =~ ^https://[^/?#]+ ]]; then
+  if [[ "$local_mode" == 0 && ! "${values[SR_PUBLIC_URL]:-}" =~ ^https://[^/?#]+ ]]; then
     say "SR_PUBLIC_URL must be an https:// URL (the reverse proxy's public name; Secure cookies)"
   fi
   if [[ -z "${values[SR_ALLOWED_LOGINS]:-}" ]]; then
@@ -178,6 +207,11 @@ check_env() {
   done
   gateway_keys="${values[SR_GATEWAY_KEYS_TOKEN_PATH]:-/srv/diffpilot/secrets/gateway-keys-token}"
   runner_keys="${values[SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH]:-/srv/diffpilot/secrets/runner-gateway-keys-token}"
+  credentials="${values[SR_GATEWAY_CREDENTIALS_TOKEN_PATH]:-/srv/diffpilot/secrets/gateway-credentials-token}"
+  if [[ -f "$credentials" && -r "$credentials" && -f "$gateway_keys" && -r "$gateway_keys" ]] &&
+      [[ "$(secret_file_value "$credentials")" == "$(secret_file_value "$gateway_keys")" ]]; then
+    say "SR_GATEWAY_CREDENTIALS_TOKEN_PATH and SR_GATEWAY_KEYS_TOKEN_PATH must contain different scope tokens"
+  fi
   if ! cmp -s -- "$gateway_keys" "$runner_keys"; then
     say "gateway and runner keys-scope files must contain identical bytes (run as root)"
   fi
@@ -296,23 +330,39 @@ if ((self_test)); then
       command stat "$@"
     fi
   }
-  for name in gateway-secret-key gateway-credentials-token gateway-keys-token runner-gateway-keys-token; do
-    echo 'CANARY-gateway-key' > "$tmp/$name"
+  declare -A fixture_values=(
+    [gateway-secret-key]="$(printf '%032d' 0 | base64 -w0)"
+    [gateway-credentials-token]=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    [gateway-keys-token]=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+    [runner-gateway-keys-token]=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+  )
+  for name in "${!fixture_values[@]}"; do
+    printf '%s\n' "${fixture_values[$name]}" > "$tmp/$name"
     chmod 0400 "$tmp/$name"
   done
   fixture_uids["$tmp/runner-gateway-keys-token"]=10002
   # env_case NAME pass|fail SECRET_FILES SED_ARGS...: check_env of the good env edited by sed.
   env_case() {
-    local name="$1" want="$2" as_files="$3" got=pass out
+    local name="$1" want="$2" as_files="$3" got=pass out secret
     shift 3
     sed "$@" "$tmp/good.env" > "$tmp/case.env"
-    out="$(check_env "$tmp/case.env" "$repo/.env.example" "$as_files" 2>&1)" || got=fail
+    out="$(check_env "$tmp/case.env" "$repo/.env.example" "$as_files" "${env_local:-0}" 2>&1)" || got=fail
     [[ "$got" == "$want" ]] || { echo "self-test: env case '$name': expected $want, got $got: $out" >&2; exit 1; }
     if grep -q CANARY <<< "$out"; then echo "self-test: env case '$name' printed a secret value" >&2; exit 1; fi
+    for secret in "${fixture_values[@]}"; do
+      if grep -qF -- "$secret" <<< "$out"; then
+        echo "self-test: env case '$name' printed a runtime key" >&2
+        exit 1
+      fi
+    done
     if [[ -n "${want_text:-}" ]] && ! grep -qF -- "$want_text" <<< "$out"; then
       echo "self-test: env case '$name' did not say '$want_text': $out" >&2
       exit 1
     fi
+  }
+  runtime_env_case() {
+    env_case "$@"
+    env_local=1 env_case "local $1" "${@:2}"
   }
   env_case "placeholder secret" fail 0 -e 's|^SR_SECRET_KEY=.*|SR_SECRET_KEY=REPLACE_WITH_SECRET|'
   env_case "example App id" fail 0 -e 's|^SR_GITHUB_APP_ID=.*|SR_GITHUB_APP_ID=123456|'
@@ -324,44 +374,87 @@ if ((self_test)); then
   env_case "allowed logins placeholder" fail 0 -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=REPLACE_WITH_LOGINS|'
   env_case "short runner secret" fail 0 -e 's|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=short|'
   for key in SR_DOCKER_GID SR_WORKER_IMAGE SR_FETCH_IMAGE; do
-    env_case "$key unset" fail 0 -e "/^$key=/d"
-    env_case "$key empty" fail 0 -e "s|^$key=.*|$key=|"
-    env_case "$key placeholder" fail 0 -e "s|^$key=.*|$key=REPLACE_WITH_VALUE|"
+    runtime_env_case "$key unset" fail 0 -e "/^$key=/d"
+    runtime_env_case "$key empty" fail 0 -e "s|^$key=.*|$key=|"
+    runtime_env_case "$key placeholder" fail 0 -e "s|^$key=.*|$key=REPLACE_WITH_VALUE|"
   done
-  env_case "invalid socket group" fail 0 -e 's|^SR_DOCKER_GID=.*|SR_DOCKER_GID=root|'
+  runtime_env_case "invalid socket group" fail 0 -e 's|^SR_DOCKER_GID=.*|SR_DOCKER_GID=root|'
   for key in SR_WORKER_IMAGE SR_FETCH_IMAGE; do
-    env_case "$key unpinned" fail 0 -e "s|^$key=.*|$key=image:latest|"
-    env_case "$key fake digest" fail 0 -e "s|^$key=.*|$key=image@sha256:$(printf '%064d' 0)|"
+    runtime_env_case "$key unpinned" fail 0 -e "s|^$key=.*|$key=image:latest|"
+    runtime_env_case "$key fake digest" fail 0 -e "s|^$key=.*|$key=image@sha256:$(printf '%064d' 0)|"
   done
   for name in gateway-secret-key gateway-credentials-token gateway-keys-token runner-gateway-keys-token; do
     mv "$tmp/$name" "$tmp/saved-key"
-    env_case "$name missing" fail 0 -e ''
+    runtime_env_case "$name missing" fail 0 -e ''
     mv "$tmp/saved-key" "$tmp/$name"
     fixture_uids["$tmp/$name"]=10001
-    env_case "$name wrong owner" fail 0 -e ''
+    runtime_env_case "$name wrong owner" fail 0 -e ''
     if [[ "$name" == runner-gateway-keys-token ]]; then fixture_uids["$tmp/$name"]=10002
     else fixture_uids["$tmp/$name"]=10010; fi
     chmod 0444 "$tmp/$name"
-    env_case "$name public mode" fail 0 -e ''
+    runtime_env_case "$name public mode" fail 0 -e ''
     chmod 0600 "$tmp/$name"
     : > "$tmp/$name"
     chmod 0400 "$tmp/$name"
-    env_case "$name empty" fail 0 -e ''
+    runtime_env_case "$name empty" fail 0 -e ''
     chmod 0600 "$tmp/$name"
     echo 'REPLACE_CANARY' > "$tmp/$name"
     chmod 0400 "$tmp/$name"
-    env_case "$name placeholder" fail 0 -e ''
+    runtime_env_case "$name placeholder" fail 0 -e ''
     chmod 0600 "$tmp/$name"
-    echo 'CANARY-gateway-key' > "$tmp/$name"
+    printf '%s\n' "${fixture_values[$name]}" > "$tmp/$name"
     chmod 0400 "$tmp/$name"
   done
   chmod 0600 "$tmp/runner-gateway-keys-token"
   echo 'CANARY-different' > "$tmp/runner-gateway-keys-token"
   chmod 0400 "$tmp/runner-gateway-keys-token"
-  env_case "keys-scope mismatch" fail 0 -e ''
+  runtime_env_case "keys-scope mismatch" fail 0 -e ''
   chmod 0600 "$tmp/runner-gateway-keys-token"
-  echo 'CANARY-gateway-key' > "$tmp/runner-gateway-keys-token"
+  printf '%s\n' "${fixture_values[runner-gateway-keys-token]}" > "$tmp/runner-gateway-keys-token"
   chmod 0400 "$tmp/runner-gateway-keys-token"
+  for name in gateway-credentials-token gateway-keys-token; do
+    chmod 0600 "$tmp/$name"
+    echo 'CANARY-short' > "$tmp/$name"
+    chmod 0400 "$tmp/$name"
+    if [[ "$name" == gateway-keys-token ]]; then
+      chmod 0600 "$tmp/runner-gateway-keys-token"
+      cp "$tmp/$name" "$tmp/runner-gateway-keys-token"
+      chmod 0400 "$tmp/runner-gateway-keys-token"
+    fi
+    want_text="fewer than 32 bytes" runtime_env_case "$name short" fail 0 -e ''
+    chmod 0600 "$tmp/$name" "$tmp/runner-gateway-keys-token"
+    printf '%s\n' "${fixture_values[$name]}" > "$tmp/$name"
+    printf '%s\n' "${fixture_values[runner-gateway-keys-token]}" > "$tmp/runner-gateway-keys-token"
+    chmod 0400 "$tmp/$name" "$tmp/runner-gateway-keys-token"
+  done
+  chmod 0600 "$tmp/gateway-credentials-token"
+  printf ' \t%s \n' "${fixture_values[gateway-keys-token]}" > "$tmp/gateway-credentials-token"
+  chmod 0400 "$tmp/gateway-credentials-token"
+  runtime_env_case "identical trimmed admin scopes" fail 0 -e ''
+  chmod 0600 "$tmp/gateway-credentials-token"
+  cp "$tmp/gateway-keys-token" "$tmp/gateway-credentials-token"
+  chmod 0400 "$tmp/gateway-credentials-token"
+  runtime_env_case "identical admin scopes" fail 0 -e ''
+  chmod 0600 "$tmp/gateway-credentials-token"
+  printf '%s\n' "${fixture_values[gateway-credentials-token]}" > "$tmp/gateway-credentials-token"
+  chmod 0400 "$tmp/gateway-credentials-token"
+  for key_value in 'CANARY-not-base64' "$(printf '%031d' 0 | base64 -w0)" "$(printf '%033d' 0 | base64 -w0)"; do
+    chmod 0600 "$tmp/gateway-secret-key"
+    printf '%s\n' "$key_value" > "$tmp/gateway-secret-key"
+    chmod 0400 "$tmp/gateway-secret-key"
+    want_text=SR_GATEWAY_SECRET_KEY_PATH runtime_env_case "invalid encryption key" fail 0 -e ''
+  done
+  chmod 0600 "$tmp/gateway-secret-key"
+  printf '%s\n' "${fixture_values[gateway-secret-key]}" > "$tmp/gateway-secret-key"
+  chmod 0400 "$tmp/gateway-secret-key"
+  env_local=1 env_case "complete local env" pass 0 \
+    -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' \
+    -e "\$a COMPOSE_FILE=deploy/compose.yaml:deploy/compose.local.yaml" \
+    -e "\$a SR_SERVER_UID=1000" -e "\$a SR_SERVER_GID=1000"
+  if "$repo/deploy/check-production-config.sh" --env-file "$tmp/missing.env" --local --no-render > "$tmp/local-check.log" 2>&1; then
+    echo "self-test: --local skipped env-file validation" >&2
+    exit 1
+  fi
   env_case "complete production env" pass 0 -e ''
   env_case "quoted values" pass 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL="https://review.test.invalid"|'
   want_text="warning: SR_TRUSTED_PROXIES" env_case "no trusted proxy (warning only)" pass 0 \
@@ -459,7 +552,7 @@ if ((local && secret_files)); then
 fi
 status=0
 scan "$repo" || status=1
-if [[ -n "$env_file" ]] && ((!local)); then check_env "$env_file" "$repo/.env.example" "$secret_files" || status=1; fi
+if [[ -n "$env_file" ]]; then check_env "$env_file" "$repo/.env.example" "$secret_files" "$local" || status=1; fi
 if can_render; then
   if [[ -n "$env_file" ]]; then
     if ((secret_files)); then

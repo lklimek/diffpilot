@@ -6,17 +6,26 @@ use secrecy::SecretBox;
 use server::gateway::{Error, Gateway};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
-fn setting(name: &str) -> Result<String, Error> {
-    std::env::var(name).map_err(|_| Error::Configuration)
+fn setting(name: &'static str) -> Result<String, Error> {
+    std::env::var(name).map_err(|_| Error::ConfigurationSetting(name))
 }
-fn secret_file(name: &str) -> Result<String, Error> {
+fn secret_file(name: &'static str) -> Result<String, Error> {
     let path = PathBuf::from(setting(name)?);
     use std::os::unix::fs::PermissionsExt;
-    let metadata = std::fs::symlink_metadata(&path)?;
+    let metadata = std::fs::symlink_metadata(&path).map_err(|source| Error::SecretFile {
+        setting: name,
+        source,
+    })?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
-        return Err(Error::Configuration);
+        return Err(Error::ConfigurationSetting(name));
     }
-    Ok(std::fs::read_to_string(path)?.trim().to_owned())
+    Ok(std::fs::read_to_string(path)
+        .map_err(|source| Error::SecretFile {
+            setting: name,
+            source,
+        })?
+        .trim()
+        .to_owned())
 }
 
 fn judge_address(
@@ -57,9 +66,15 @@ async fn main() -> Result<(), Error> {
     )?;
     let key: [u8; 32] = STANDARD
         .decode(secret_file("SR_GATEWAY_SECRET_KEY_FILE")?)
-        .map_err(|_| Error::Configuration)?
+        .map_err(|_| {
+            Error::ConfigurationSetting("SR_GATEWAY_SECRET_KEY_FILE (canonical base64 required)")
+        })?
         .try_into()
-        .map_err(|_| Error::Configuration)?;
+        .map_err(|_| {
+            Error::ConfigurationSetting(
+                "SR_GATEWAY_SECRET_KEY_FILE (exactly 32 decoded bytes required)",
+            )
+        })?;
     let ttl = std::env::var("SR_GATEWAY_KEY_TTL")
         .unwrap_or_else(|_| "5400".into())
         .parse()

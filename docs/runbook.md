@@ -145,9 +145,11 @@ sudo /srv/diffpilot/app/deploy/check-production-config.sh --env-file /srv/diffpi
 
 ## Container runtime keys and legacy-volume cleanup
 
-Before starting v1.3, create `gateway-secret-key` (32 random bytes, base64) and
-`gateway-credentials-token` / `gateway-keys-token` (random bearer tokens). Keep the encryption key with
-its gateway state. Set their `SR_GATEWAY_*_PATH` variables; all three files require uid 10010, mode 0400.
+Before starting v1.3, create `gateway-secret-key` with `openssl rand -base64 32` (canonical base64
+encoding of exactly 32 bytes). Generate `gateway-credentials-token` and `gateway-keys-token` separately
+with `openssl rand -hex 32`: each bearer token must contain at least 32 bytes after whitespace trimming,
+and the two scope tokens must differ. Keep the encryption key with its gateway state. Set their
+`SR_GATEWAY_*_PATH` variables; all three files require uid 10010, mode 0400.
 Copy only the keys-scope token into `runner-gateway-keys-token`, uid 10002, mode 0400, and set
 `SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH`. The two keys-scope files must contain exactly the same bytes.
 The runner receives no credentials-scope token. Run the production guard as root so it can compare the files
@@ -671,7 +673,11 @@ full-URL logs and a host allow-list (`dstdomain` / `ssl::server_name` ACL files)
 ## Local stack (http://localhost)
 
 The same images and volumes on one machine, published on loopback only (`deploy/compose.local.yaml`). Its env file
-sets `SR_PUBLIC_URL=http://localhost:3000`; `deploy/check-production-config.sh --env-file FILE --local` checks it.
+sets `SR_PUBLIC_URL=http://localhost:3000`; run
+`sudo deploy/check-production-config.sh --env-file FILE --local` before starting it. This checks the same
+runtime key files, scope separation, `SR_DOCKER_GID`, worker/fetch image digests, allowed logins and required
+secret values as production. Local mode permits HTTP, a local `COMPOSE_FILE`, and host uid/gid overrides;
+it still rejects development runtime switches. Rendering alone does not prove that bind sources exist.
 Sign-in needs the GitHub App callback `http://localhost:3000/auth/github/callback` registered on the App.
 
 The development host's instance (compose project `diffpilot-local`) takes its generated secrets from
