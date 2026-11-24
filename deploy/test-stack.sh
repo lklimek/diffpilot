@@ -42,5 +42,4 @@ jq -e --arg project "$project" '
   ($s["egress-proxy"].networks | has("judge") | not)
 ' "$tmp/config.json" > /dev/null
 printf '%s\n' 'CHECK container_runtime_config PASS launcher-only socket, private networks, pinned workers, no host login/checkout volumes' | tee -a "$log"
-# TODO(W7): add live fake-stack probes proving CS1 cannot reach gateway admin :8091, server runner
-# listener or launcher, and CS2 can reach only gateway model :8090 (SG5/SG7). Rendering cannot prove reachability.
+# Live SG5/SG7 (QA-404): deploy/dev/test-local-containers.sh uses real launcher shapes and fake listeners.

@@ -43,7 +43,7 @@ async function shoot(page: Page, name: string) {
 /** Expands the first ranked item and opens the side panel with all its sections. */
 async function expandAll(page: Page) {
   await page.locator("li[data-item] button[aria-expanded]").first().click();
-  const rail = page.getByRole("button", { name: /^More/ });
+  const rail = page.getByRole("button", { name: /More · waiting/ });
   if (await rail.isVisible()) await rail.click();
   const closed = page.locator("aside details:not([open]) > summary");
   while ((await closed.count()) > 0) await closed.first().click();

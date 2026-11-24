@@ -1,8 +1,21 @@
 # ADR-023: Processing PR comments — PR page, Comments view, Codex assessment, Watch, decision feed for external agents
 
+## v1.3 container amendment (2026-11-24)
+
+Every assessment uses a per-(PR,payer) CS1 worker. Both host-supplied claudius/report 4.2 and native prompt
+v4 ship. Freeze head/base, scope, source versions, model and settings once per logical pass; paired methods run
+sequentially in independent ephemeral threads. Only the frozen primary changes cards, IDs and effects; the
+secondary is comparison-only and is never promoted on primary failure. A pair consumes one of 80 UTC daily
+slots; retries retain the pass/day. Actual owner decision revisions are append-only comparison truth. The PR
+A/B toggle discloses roughly 2× cost. Convention files come from base; source quotes and IDs are grounded by
+server checks. Public replies never describe the assessor. FR-9 forbids automatic reassessment from config changes.
+
+This amendment and [ADR-025](ADR-025-container-runtime.md) take precedence over the historical text below.
+
+
 > Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
 > gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
-> KL1 gates credential mode; older master-credential/no-paid-API rules do not decide that open question.
+> KL1-A is closed: per-user ChatGPT-plan linking only; no API-key mode.
 
 
 - Status: accepted (2026-11-22; the owner reviewed the mockup and started development). Owner model and answers

@@ -2,7 +2,7 @@
 # Online backup of a diffpilot deployment (docs/runbook.md, "Backup and restore"); the services keep running.
 # Parts: the SQLite database as a consistent snapshot (`VACUUM INTO`; the server keeps it in WAL mode, so readers
 # never block its writes), the deployment's .env and secrets directory. Runtime caches are excluded.
-# TODO(W7): document separate offline backup/restore of gateway state, worker volumes and assessment snapshots.
+# Gateway state, worker volumes and assessment snapshot files need the separate stopped backup in the runbook.
 # Prints names and sizes only; encrypt backups before moving them off the host.
 #
 # Usage (root):

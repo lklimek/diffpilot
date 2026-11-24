@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [feat/v1]
+    branches: [feat/v1, feat/v1.3]
   pull_request:
 
 permissions:
@@ -14,6 +14,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: "2"
 
 jobs:
   rust:
@@ -119,12 +120,13 @@ jobs:
       - name: Wording check
         run: scripts/check-wording.sh
 
-  # Images are built, never pushed. Plain `docker build` (BuildKit, docker driver): the runner and server builds
+  # No external image publication; installer tests push only to their disposable loopback registry.
+  # Plain `docker build` (BuildKit, docker driver): the runner and server builds
   # share the cargo cache mounts within the job; apt, Codex and node layers come from the runner's layer cache.
   images:
-    name: Images (server, runner, egress proxy) and container tests
+    name: Images (server/gateway, runner, worker, fetch, proxy) and live isolation
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 120
     permissions:
       contents: read
     env:
@@ -187,6 +189,13 @@ jobs:
           docker logs sr-ci-server
           docker exec sr-ci-server id
           [ "$status" = healthy ]
+      - name: Local installer and live SG5/SG7 isolation (QA-404, fake gateway only)
+        env:
+          SR_LOCAL_TMPDIR: ${{ runner.temp }}
+          SR_LOCAL_CLAUDIUS_SOURCE: ${{ runner.temp }}/claudius
+        run: |
+          export SR_DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+          flock "$RUNNER_TEMP/diffpilot-heavy.lock" deploy/dev/test-local-containers.sh
       - name: Remove test containers
         if: always()
         run: docker rm -f -v sr-ci-server || true

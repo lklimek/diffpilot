@@ -72,7 +72,6 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   // Slow enough to see the assessment running (4 recorded lines of the fake provider's neutral answer).
   stack.script?.([{ id: "verify", job: "verify_comments", action: { replay: { step_delay_ms: 3000 } } }]);
   await signIn(page);
-  // TODO(W4): the legacy fake executor must echo JobSpec.assessment to satisfy the frozen-method fence.
   // This journey uses the retained prompt-v4 recording of the scripted fake provider.
   const settingsRoute = "/api/v1/settings/comment-assessment";
   const settings = await (await page.request.get(settingsRoute)).json();

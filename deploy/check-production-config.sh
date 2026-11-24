@@ -2,7 +2,7 @@
 # Rejects development providers/legacy bypasses in production files and rendered Compose configuration.
 # Only bounded service /tmp and Squid configuration tmpfs mounts are allowed; worker templates own job tmpfs.
 # With --env-file, checks required settings and private service secret files without printing their contents.
-# Usage: deploy/check-production-config.sh [--env-file FILE [--local | --secret-files]] [--no-render]
+# Usage: deploy/check-production-config.sh [--env-file FILE ... [--local | --secret-files]] [--no-render]
 #        deploy/check-production-config.sh --self-test [--no-render]
 #   (no option)       the files, production rendered with .env.example, local rendered with it on localhost
 #   --env-file FILE   production rendered with FILE (for example the deployment's .env), and FILE's values
@@ -59,14 +59,14 @@ declare -A interpolated=()
 load_env() {
   local -n into="$2"
   local line key value
-  into=()
-  interpolated=()
+  if [[ "${3:-0}" == 0 ]]; then into=(); interpolated=(); fi
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line#"${line%%[![:space:]]*}"}"
     [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
     line="${line#export }"
     key="${line%%=*}"
     key="${key%"${key##*[![:space:]]}"}"
+    unset 'interpolated[$key]'
     value="${line#*=}"
     value="${value#"${value%%[![:space:]]*}"}"
     if [[ "$value" =~ ^\'(.*)\'[[:space:]]*(#.*)?$ ]]; then
@@ -147,17 +147,24 @@ check_secret_file() {
 # check_env FILE EXAMPLE SECRET_FILES(0|1) LOCAL(0|1): the production values of FILE; prints problems by variable name only.
 check_env() {
   local -A values=() example=()
-  local found=0 key value secrets_dir path gateway_keys runner_keys credentials digest nibble local_mode="${4:-0}"
+  local found=0 key value secrets_dir path gateway_keys runner_keys credentials digest nibble overlay local_mode="${4:-0}"
   if [[ ! -f "$1" ]]; then
     echo "check-production-config: env file $1 is missing" >&2
     return 1
   fi
   say() { echo "check-production-config: $*" >&2; found=1; }
-  load_env "$1" values
+  load_env "$2" example
+  load_env "$1" values || return 1
+  for overlay in "${env_files[@]:1}"; do
+    if [[ ! -f "$overlay" ]]; then
+      echo "check-production-config: env file $overlay is missing" >&2
+      return 1
+    fi
+    load_env "$overlay" values 1 || return 1
+  done
   for key in "${!interpolated[@]}"; do
     say "$key uses \$ interpolation, so this check cannot see the value compose uses; write it literally (single quotes keep a \$)"
   done
-  load_env "$2" example
   for key in "${!values[@]}"; do
     if [[ "${values[$key]}" == *REPLACE* ]]; then say "$key still holds a placeholder (REPLACE...)"; fi
     if [[ "$key" =~ ^($forbidden)$ || ($local_mode == 0 && "$key" =~ $dev_only) ]]; then
@@ -201,6 +208,12 @@ check_env() {
     path="${values[$key]:-/srv/diffpilot/secrets/${gateway_files[$key]}}"
     if [[ "$key" == SR_RUNNER_GATEWAY_KEYS_TOKEN_PATH ]]; then
       check_secret_file "$key" "$path" 10002 || found=1
+    elif [[ "$key" == SR_GATEWAY_CREDENTIALS_TOKEN_PATH && "$local_mode" == 1 && -n "${values[SR_SERVER_UID]:-}" ]]; then
+      if [[ ! "${values[SR_SERVER_UID]}" =~ ^[0-9]+$ || ! "${values[SR_SERVER_GID]:-}" =~ ^[0-9]+$ ]]; then
+        say 'local server uid/gid must be numeric'
+      else
+        check_secret_file "$key" "$path" 10010 "${values[SR_SERVER_GID]}" 440 || found=1
+      fi
     else
       check_secret_file "$key" "$path" 10010 || found=1
     fi
@@ -238,9 +251,13 @@ check_env() {
 }
 
 env_file="" local=0 render=1 self_test=0 secret_files=0
+env_files=()
 while (($#)); do
   case "$1" in
-    --env-file) env_file="${2:?--env-file needs a file}"; shift 2 ;;
+    --env-file)
+      env_files+=("${2:?--env-file needs a file}")
+      env_file=${env_files[0]}
+      shift 2 ;;
     --local) local=1; shift ;;
     --secret-files) secret_files=1; shift ;;
     --no-render) render=0; shift ;;
@@ -265,15 +282,23 @@ can_render() {
 # rendered ROOT ENV_FILE [OVERRIDE]: `docker compose config` of the production stack has no switch and keeps
 # nothing in RAM (OVERRIDE: a file in ROOT/deploy, or an absolute path).
 rendered() {
-  local out mounts ram files=(-f "$1/deploy/compose.yaml")
+  local out mounts ram overlay files=(-f "$1/deploy/compose.yaml") env_args=(--env-file "$2")
+  for overlay in "${env_files[@]:1}"; do env_args+=(--env-file "$overlay"); done
   case "${3:-}" in
     "") ;;
     /*) files+=(-f "$3") ;;
     *) files+=(-f "$1/deploy/$3") ;;
   esac
+  if [[ -n "${4:-}" ]]; then files+=(-f "$4"); fi
   # Bind mount sources only have to exist for `up`; `config` does not check them.
-  out="$(docker compose --env-file "$2" "${files[@]}" config --format json 2>&1)" || { echo "$out" >&2; return 1; }
-  if grep -nE "$forbidden" <<< "$out"; then return 1; fi
+  out="$(docker compose "${env_args[@]}" "${files[@]}" config --format json 2>&1)" || {
+    echo 'check-production-config: Compose rendering failed; check file syntax and required variables' >&2
+    return 1
+  }
+  if grep -qE "$forbidden" <<< "$out"; then
+    echo 'check-production-config: rendered configuration contains a development/test switch' >&2
+    return 1
+  fi
   # shellcheck disable=SC2016 # jq program
   mounts="$(jq -r '.services | to_entries[] | .key as $s
     | ((.value.tmpfs // [])[] | "\($s) \(split(":")[0])"),
@@ -291,7 +316,15 @@ rendered() {
 
 # rendered_local ROOT ENV_FILE: the local variant has no switch either and keeps nothing in RAM.
 rendered_local() {
-  rendered "$1" "$2" compose.local.yaml
+  local overlay
+  local -A values=()
+  load_env "$2" values
+  for overlay in "${env_files[@]:1}"; do load_env "$overlay" values 1; done
+  if [[ -n "${values[SR_SERVER_UID]:-}" ]]; then
+    rendered "$1" "$2" compose.local.yaml "$1/deploy/dev/compose.host-uid.yaml"
+  else
+    rendered "$1" "$2" compose.local.yaml
+  fi
 }
 
 if ((self_test)); then
@@ -364,6 +397,13 @@ if ((self_test)); then
     env_case "$@"
     env_local=1 env_case "local $1" "${@:2}"
   }
+  chmod 0440 "$tmp/gateway-credentials-token"
+  fixture_gids["$tmp/gateway-credentials-token"]=1000
+  env_local=1 env_case 'host uid credentials reader' pass 0 -e "\$a SR_SERVER_UID=1000" -e "\$a SR_SERVER_GID=1000"
+  env_local=1 env_case 'host uid wrong credentials group' fail 0 -e "\$a SR_SERVER_UID=1000" -e "\$a SR_SERVER_GID=1001"
+  env_case 'production rejects local credentials permissions' fail 0 -e ''
+  chmod 0400 "$tmp/gateway-credentials-token"
+  fixture_gids["$tmp/gateway-credentials-token"]=10010
   env_case "placeholder secret" fail 0 -e 's|^SR_SECRET_KEY=.*|SR_SECRET_KEY=REPLACE_WITH_SECRET|'
   env_case "example App id" fail 0 -e 's|^SR_GITHUB_APP_ID=.*|SR_GITHUB_APP_ID=123456|'
   env_case "example public URL" fail 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=https://review.example.com|'
@@ -447,15 +487,25 @@ if ((self_test)); then
   chmod 0600 "$tmp/gateway-secret-key"
   printf '%s\n' "${fixture_values[gateway-secret-key]}" > "$tmp/gateway-secret-key"
   chmod 0400 "$tmp/gateway-secret-key"
+  chmod 0440 "$tmp/gateway-credentials-token"
+  fixture_gids["$tmp/gateway-credentials-token"]=1000
   env_local=1 env_case "complete local env" pass 0 \
     -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' \
     -e "\$a COMPOSE_FILE=deploy/compose.yaml:deploy/compose.local.yaml" \
     -e "\$a SR_SERVER_UID=1000" -e "\$a SR_SERVER_GID=1000"
+  chmod 0400 "$tmp/gateway-credentials-token"
+  fixture_gids["$tmp/gateway-credentials-token"]=10010
   if "$repo/deploy/check-production-config.sh" --env-file "$tmp/missing.env" --local --no-render > "$tmp/local-check.log" 2>&1; then
     echo "self-test: --local skipped env-file validation" >&2
     exit 1
   fi
   env_case "complete production env" pass 0 -e ''
+  # Last env file wins for validation exactly as it does for Compose, including literal replacements.
+  printf 'SR_PUBLIC_URL=https://overlay.test.invalid\n' > "$tmp/overlay.env"
+  env_files=("$tmp/case.env" "$tmp/overlay.env")
+  # shellcheck disable=SC2016 # An intentionally unresolved interpolation, overwritten by the overlay.
+  env_case 'last env file overrides interpolation' pass 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=${UNSET_HOST}|'
+  env_files=()
   env_case "quoted values" pass 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL="https://review.test.invalid"|'
   want_text="warning: SR_TRUSTED_PROXIES" env_case "no trusted proxy (warning only)" pass 0 \
     -e 's|^SR_TRUSTED_PROXIES=.*|SR_TRUSTED_PROXIES=|'

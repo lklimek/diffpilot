@@ -1,8 +1,20 @@
 # ADR-005: GitHub access for the agent — per-job installation token
 
+## v1.3 container amendment (2026-11-24)
+
+Workers use the image's read-only `gh` wrapper, with the PR-repository read-only installation token in a
+per-job tmpfs file. Real user tokens and the App key remain server-only. No `github-mcp-server` or token in
+the worker environment. Minting, response validation, one-hour expiry and revocation remain unchanged.
+Related public searches use `gh`; the token's repository scope does not expand. The worker can read its job
+token file, an accepted bounded risk under SG2/AR-13. Analytic MemCan permits search/write, Ask search only,
+verify/judge none; the full bearer remains the accepted MC1 risk.
+
+This amendment and [ADR-025](ADR-025-container-runtime.md) take precedence over the historical text below.
+
+
 > Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
 > gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
-> KL1 gates credential mode; older master-credential/no-paid-API rules do not decide that open question.
+> KL1-A is closed: per-user ChatGPT-plan linking only; no API-key mode.
 
 
 - Status: accepted (coordinator, 2026-11-16, after spikes S4, S5 and the threat model WP1-T)

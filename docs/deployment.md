@@ -1,5 +1,10 @@
 # Deploying diffpilot
 
+> The v1.3 container deployment and in-place 0030 procedure are in the [runbook](runbook.md).
+> This historical release guide predates ADR-025; its runner login, uid/supervisor and credential-volume
+> commands are superseded and must not be used for v1.3.
+
+
 How to run diffpilot with Docker Compose or as a Portainer stack, from the published images or built from source.
 The guide is independent of any particular host: every value in angle brackets (`<...>`) or in the shell variables
 below is a placeholder for your environment. Day-to-day operation (backup schedule, logs, exit codes, credential

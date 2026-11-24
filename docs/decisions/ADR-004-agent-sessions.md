@@ -1,8 +1,20 @@
 # ADR-004: Agent sessions — archive, resume, compaction, loss, deletion
 
+## v1.3 container amendment (2026-11-24)
+
+One analytic thread and persistent worker volume belong to (PR,payer), with one job at a time. Same-payer
+Ask forks its analytic thread with immutable read-only MemCan policy; other users and lost-volume recovery
+use a private context pack. Before first forked Ask above 80k context, explicit compaction must complete and
+its seed/generation-bound preflight must be persisted. Attach/resume precedes every operation on an existing
+thread. The volume is the archive; no session copying. Verify methods use separate ephemeral threads;
+JudgeWork uses ephemeral CS2. Generation and attempt fencing prevent stale results from publishing.
+
+This amendment and [ADR-025](ADR-025-container-runtime.md) take precedence over the historical text below.
+
+
 > Amended for v1.3 by [ADR-025](ADR-025-container-runtime.md): per-payer containers, app-server,
 > gateway-only real credentials, file-based read-only GitHub tokens and host report 4.2.
-> KL1 gates credential mode; older master-credential/no-paid-API rules do not decide that open question.
+> KL1-A is closed: per-user ChatGPT-plan linking only; no API-key mode.
 
 
 - Status: accepted (coordinator, 2026-11-16, after spikes S1b, S7; amended 2026-11-16 after the WP1-A contract

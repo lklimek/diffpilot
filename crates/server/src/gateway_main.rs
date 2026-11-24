@@ -9,6 +9,10 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 fn setting(name: &'static str) -> Result<String, Error> {
     std::env::var(name).map_err(|_| Error::ConfigurationSetting(name))
 }
+fn secret_mode_allowed(name: &str, mode: u32) -> bool {
+    let mode = mode & 0o777;
+    mode == 0o400 || name == "SR_GATEWAY_CREDENTIALS_TOKEN_FILE" && mode == 0o440
+}
 fn secret_file(name: &'static str) -> Result<String, Error> {
     let path = PathBuf::from(setting(name)?);
     use std::os::unix::fs::PermissionsExt;
@@ -16,7 +20,7 @@ fn secret_file(name: &'static str) -> Result<String, Error> {
         setting: name,
         source,
     })?;
-    if !metadata.is_file() || metadata.permissions().mode() & 0o077 != 0 {
+    if !metadata.is_file() || !secret_mode_allowed(name, metadata.permissions().mode()) {
         return Err(Error::ConfigurationSetting(name));
     }
     Ok(std::fs::read_to_string(path)
@@ -113,6 +117,27 @@ async fn main() -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn credentials_scope_can_be_shared_read_only_with_the_local_server_group() {
+        assert!(secret_mode_allowed(
+            "SR_GATEWAY_CREDENTIALS_TOKEN_FILE",
+            0o440
+        ));
+        assert!(secret_mode_allowed(
+            "SR_GATEWAY_CREDENTIALS_TOKEN_FILE",
+            0o400
+        ));
+        for mode in [0o444, 0o460, 0o441, 0o640] {
+            assert!(!secret_mode_allowed(
+                "SR_GATEWAY_CREDENTIALS_TOKEN_FILE",
+                mode
+            ));
+        }
+        for setting in ["SR_GATEWAY_SECRET_KEY_FILE", "SR_GATEWAY_KEYS_TOKEN_FILE"] {
+            assert!(secret_mode_allowed(setting, 0o400));
+            assert!(!secret_mode_allowed(setting, 0o440));
+        }
+    }
     #[test]
     fn judge_listener_uses_its_own_interface_and_keeps_admin_private() {
         let model = "172.29.75.2:8090".parse().unwrap();
