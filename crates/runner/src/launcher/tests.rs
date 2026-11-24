@@ -34,7 +34,7 @@ async fn runtime_requires_engine_28_and_isolated_worker_and_judge_bridges() {
         "Options": {"com.docker.network.bridge.gateway_mode_ipv4": "isolated"}
     });
     let mut cases = Vec::new();
-    for version in ["28.0.0", "29.10.0", "28.0.1-ce"] {
+    for version in ["28.0.0", "29.10.0", "28.0.1-ce", "28.5.2+dfsg3"] {
         cases.push((version, isolated.clone(), isolated.clone(), true));
     }
     for version in ["27.5.1", "", "unknown", "28", "28.broken.0"] {

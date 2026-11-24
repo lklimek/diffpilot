@@ -89,7 +89,7 @@ async fn validate_runtime(docker: &Docker, settings: &Settings) -> Result<(), Er
     let minor = parts.next().and_then(|v| v.parse::<u32>().ok());
     let patch = parts
         .next()
-        .and_then(|v| v.split('-').next()?.parse::<u32>().ok());
+        .and_then(|v| v.split(['-', '+']).next()?.parse::<u32>().ok());
     if !matches!(major, Some(28..)) || minor.is_none() || patch.is_none() {
         return Err(Error::Configuration(
             "Docker Engine 28.0 or newer is required for isolated worker bridges".into(),
