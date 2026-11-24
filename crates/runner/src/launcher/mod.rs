@@ -36,6 +36,17 @@ pub enum Error {
     /// The engine rejected a control operation.
     #[error("container engine operation failed")]
     Docker(#[from] bollard::errors::Error),
+    /// Runtime isolation cannot be established without inspecting the engine and networks.
+    #[error(
+        "cannot inspect {resource}; Docker Engine 28.0+ and existing isolated worker/judge bridges are required"
+    )]
+    RuntimeInspection {
+        /// Engine version or configured network being inspected.
+        resource: String,
+        /// Underlying engine failure, retained for operator diagnostics.
+        #[source]
+        source: bollard::errors::Error,
+    },
     /// Private socket transport failure.
     #[error("launcher socket operation failed")]
     Io(#[from] std::io::Error),
@@ -61,6 +72,58 @@ struct Launcher {
     used: HashMap<String, Instant>,
     attached: HashSet<String>,
     fetching: HashSet<String>,
+}
+
+async fn validate_runtime(docker: &Docker, settings: &Settings) -> Result<(), Error> {
+    let version = docker
+        .version()
+        .await
+        .map_err(|source| Error::RuntimeInspection {
+            resource: "Docker Engine version".into(),
+            source,
+        })?
+        .version
+        .unwrap_or_default();
+    let mut parts = version.splitn(3, '.');
+    let major = parts.next().and_then(|v| v.parse::<u32>().ok());
+    let minor = parts.next().and_then(|v| v.parse::<u32>().ok());
+    let patch = parts
+        .next()
+        .and_then(|v| v.split(['-', '+']).next()?.parse::<u32>().ok());
+    if !matches!(major, Some(28..)) || minor.is_none() || patch.is_none() {
+        return Err(Error::Configuration(
+            "Docker Engine 28.0 or newer is required for isolated worker bridges".into(),
+        ));
+    }
+    for name in [&settings.worker_network, &settings.judge_network] {
+        let network = docker
+            .inspect_network(name, None::<q::InspectNetworkOptions>)
+            .await
+            .map_err(|source| Error::RuntimeInspection {
+                resource: format!("network {name}"),
+                source,
+            })?;
+        let options = network.options.unwrap_or_default();
+        let isolated = |family| {
+            options
+                .get(&format!(
+                    "com.docker.network.bridge.gateway_mode_ipv{family}"
+                ))
+                .map(String::as_str)
+                == Some("isolated")
+        };
+        if network.driver.as_deref() != Some("bridge")
+            || network.internal != Some(true)
+            || !isolated(4)
+            || !(network.enable_ipv6 == Some(false)
+                || (network.enable_ipv6 == Some(true) && isolated(6)))
+        {
+            return Err(Error::Configuration(format!(
+                "network {name} must be an internal bridge with isolated IPv4 and IPv6 disabled or isolated; recreate it before starting the launcher"
+            )));
+        }
+    }
+    Ok(())
 }
 
 impl Launcher {

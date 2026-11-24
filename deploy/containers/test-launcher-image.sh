@@ -10,11 +10,21 @@ for resource in "$name" "$name-stat" "$volume"; do
         exit 1
     fi
 done
+for network in v13w3-smoke-worker v13w3-smoke-judge; do
+    if docker network inspect "$network" >/dev/null 2>&1; then
+        echo 'test network already exists' >&2
+        exit 1
+    fi
+done
 cleanup() {
     docker rm -f "$name" "$name-stat" >/dev/null 2>&1 || true
     docker volume rm "$volume" >/dev/null 2>&1 || true
+    docker network rm v13w3-smoke-worker v13w3-smoke-judge >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+for network in v13w3-smoke-worker v13w3-smoke-judge; do
+    docker network create --internal --opt com.docker.network.bridge.gateway_mode_ipv4=isolated "$network" >/dev/null
+done
 # Inspect the daemon host's gid, not the sandbox's remapped nobody group.
 socket_gid=$(docker run --rm --name "$name-stat" --network none --read-only --cap-drop ALL \
     --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock,readonly \

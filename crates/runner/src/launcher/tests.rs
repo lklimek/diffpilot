@@ -23,6 +23,99 @@ fn pr() -> ContainerId {
     }
 }
 
+#[tokio::test]
+async fn runtime_requires_engine_28_and_isolated_worker_and_judge_bridges() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    let isolated = serde_json::json!({
+        "Driver": "bridge", "Internal": true, "EnableIPv6": false,
+        "Options": {"com.docker.network.bridge.gateway_mode_ipv4": "isolated"}
+    });
+    let mut cases = Vec::new();
+    for version in ["28.0.0", "29.10.0", "28.0.1-ce", "28.5.2+dfsg3"] {
+        cases.push((version, isolated.clone(), isolated.clone(), true));
+    }
+    for version in ["27.5.1", "", "unknown", "28", "28.broken.0"] {
+        cases.push((version, isolated.clone(), isolated.clone(), false));
+    }
+    for bad in [
+        serde_json::json!({}),
+        serde_json::json!({"Driver": "overlay", "Internal": true, "Options": isolated["Options"]}),
+        serde_json::json!({"Driver": "bridge", "Internal": false, "Options": isolated["Options"]}),
+        serde_json::json!({"Driver": "bridge", "Internal": true}),
+        serde_json::json!({"Driver": "bridge", "Internal": true, "Options": isolated["Options"]}),
+        serde_json::json!({"Driver": "bridge", "Internal": true, "EnableIPv6": false, "Options": {"com.docker.network.bridge.gateway_mode_ipv4": "nat"}}),
+        serde_json::json!({"Driver": "bridge", "Internal": true, "EnableIPv6": true, "Options": isolated["Options"]}),
+    ] {
+        cases.push(("29.10.0", bad.clone(), isolated.clone(), false));
+        cases.push(("29.10.0", isolated.clone(), bad, false));
+    }
+    let mut dual = isolated.clone();
+    dual["EnableIPv6"] = true.into();
+    dual["Options"]["com.docker.network.bridge.gateway_mode_ipv6"] = "isolated".into();
+    cases.push(("28.0.0", dual.clone(), dual, true));
+    for (version, worker, judge, accepted) in cases {
+        let (server, launcher) = fake_launcher().await;
+        for (route, body) in [
+            (r"/version$", serde_json::json!({"Version": version})),
+            (r"/networks/v13w3-test-worker$", worker),
+            (r"/networks/v13w3-test-judge$", judge),
+        ] {
+            Mock::given(method("GET"))
+                .and(path_regex(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&server)
+                .await;
+        }
+        let result = validate_runtime(&launcher.docker, &launcher.settings).await;
+        assert_eq!(result.is_ok(), accepted, "{version}: {result:?}");
+        if let Err(error) = result {
+            assert!(
+                error.to_string().contains("Docker Engine 28")
+                    || error.to_string().contains("isolated")
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn runtime_fails_closed_when_engine_or_network_inspection_fails() {
+    use wiremock::{
+        Mock, ResponseTemplate,
+        matchers::{method, path_regex},
+    };
+    for network_count in 0..=2 {
+        let (server, launcher) = fake_launcher().await;
+        if network_count > 0 {
+            Mock::given(method("GET"))
+                .and(path_regex(r"/version$"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"Version": "29.10.0"})),
+                )
+                .mount(&server)
+                .await;
+        }
+        if network_count > 1 {
+            Mock::given(method("GET"))
+                .and(path_regex(r"/networks/v13w3-test-worker$"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "Driver": "bridge", "Internal": true, "EnableIPv6": false,
+                    "Options": {"com.docker.network.bridge.gateway_mode_ipv4": "isolated"}
+                })))
+                .mount(&server)
+                .await;
+        }
+        assert!(
+            validate_runtime(&launcher.docker, &launcher.settings)
+                .await
+                .is_err()
+        );
+    }
+}
+
 #[test]
 fn worker_template_has_no_host_access_or_real_credentials() {
     let s = settings();

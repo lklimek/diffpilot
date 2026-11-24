@@ -4,9 +4,16 @@ Operating `deploy/compose.yaml`: server, runner, networkless launcher, plan gate
 creates per-payer workers and one-shot dependency fetchers from digest-pinned images. Containers, gateway-only
 provider credentials and SG1–SG16 replace the old supervisor/login-volume runtime (ADR-025).
 
-Requirements: Linux Docker Engine with isolated internal bridges, Compose with `!override`/`!reset`, Git, curl,
-jq, Python 3 and flock. Builds use at most two Cargo jobs. On the shared development host, wrap Docker/Cargo
+Requirements: Linux Docker Engine 28.0 or newer with isolated internal bridges, Compose with `!override`/`!reset`,
+Git, curl, jq, Python 3 and flock. Builds use at most two Cargo jobs. On the shared development host, wrap Docker/Cargo
 operations in `flock /data/tmp/diffpilot-heavy.lock` and use the prescribed Cargo wrapper.
+
+Before opening its socket, the launcher checks the Engine version and inspects `SR_WORKER_NETWORK` and
+`SR_JUDGE_NETWORK`. Both must exist, use the bridge driver, be internal and set
+`com.docker.network.bridge.gateway_mode_ipv4=isolated`. IPv6 must be disabled or set
+`com.docker.network.bridge.gateway_mode_ipv6=isolated`. Inspection failures stop startup. If a network has
+the wrong mode, stop its jobs and recreate that network from the Compose configuration during maintenance;
+changing the YAML alone does not alter an existing network. See [Docker's gateway modes](https://docs.docker.com/engine/network/port-publishing/#gateway-modes).
 
 Production examples use this helper; the Local stack section defines its separate `srl` command:
 
@@ -24,7 +31,8 @@ sr() { docker compose --env-file /srv/diffpilot/.env -f /srv/diffpilot/app/deplo
    Keep `.env` private. Preserve `SR_SECRET_KEY` with backups: changing it invalidates encrypted app data.
 3. Build server/runner/Squid/worker/fetch together; prepare the curated claudius context with
    `deploy/containers/prepare-claudius.sh`. Pin worker/fetch by repository digest. The local helper below performs
-   these builds and obtains actual digests from a loopback registry; production should use its release registry.
+   these builds and obtains actual digests from a registry with its host port published on 127.0.0.1;
+   production should use its release registry.
 4. Create the four runtime files described below; run `deploy/check-production-config.sh --env-file FILE`
    as a user able to read those files, or its container-based local helper. Production requires HTTPS.
 5. Start `docker compose --env-file FILE -f deploy/compose.yaml up -d --no-build --wait`. No preloaded Codex
@@ -439,13 +447,22 @@ The helper prepares files/images without starting or stopping the application. I
 
 | ID | Command | Result |
 |---|---|---|
-| L1 | `prepare` | Build server (with gateway), runner/launcher, Squid, worker and fetch; start/reuse a verified loopback-only registry; save actual worker/fetch digest refs. |
+| L1 | `prepare` | Build server (with gateway), runner/launcher, Squid, worker and fetch; start/reuse a local registry; save actual worker/fetch digest refs. |
 | L2 | `secrets DIR` | Create only absent NEW runtime secrets using a root container; no sudo or existing-secret read/copy/rotation. |
 | L3 | `env FILE` | Exclusively create a non-secret env file containing image refs, Docker GID, host uid/gid and runtime secret paths. |
 | L4 | `check ENV... RUNTIME_ENV` | Run the production guard in `--local` mode, same env order as Compose, inside a networkless root container. It validates explicit files without printing secret values; no engine socket mounted. |
 
 `SR_LOCAL_STATE_DIR` defaults to `~/.local/state/diffpilot-containers`. The helper uses a state lock; the caller
-also holds the host heavy lock. `SR_LOCAL_REGISTRY_PORT` defaults to 15000; registry listens only on 127.0.0.1.
+also holds the host heavy lock. `SR_LOCAL_REGISTRY_PORT` defaults to 15000; the registry host port is published
+on 127.0.0.1. New registries use a dedicated NAT bridge with inter-container communication disabled and no
+other containers, a digest-pinned image, a read-only root, dropped capabilities and no-new-privileges; data
+is in the `<registry-name>-data` volume.
+The host can push via `localhost:PORT`; this is unauthenticated host access, not a registry authentication policy.
+`prepare` validates the network and hardening on reuse. A running legacy `registry:2.8.3` on the default bridge
+with the expected local label and loopback host binding is kept with a one-line notice; its bridge exposure
+and tag pin remain until the owner schedules replacement. The helper never stops or replaces it automatically.
+`SR_LOCAL_REGISTRY_IMAGE` overrides must include a SHA-256 digest. This registry bridge is not Docker
+`--internal`: Docker does not publish host ports for a container attached only to an internal network.
 Use a directory dedicated to the four new gateway files, separate from existing App/server secrets. The server
 runs under host uid/gid via `compose.host-uid.yaml`; this host's Docker socket GID is 1000.
 
