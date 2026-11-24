@@ -259,6 +259,7 @@ async fn request(
     let mut sent = Vec::new();
     let mut sent_items = Vec::new();
     let mut selected_sources = HashSet::new();
+    let sources = db.comment_sources().list(&record.tenant_id, pr).await?;
     for item in &items {
         let wanted = match asked {
             Some(asked) => item.id == asked && item.kind != CommentItemKind::PrQuestion,
@@ -267,24 +268,18 @@ async fn request(
         if !wanted {
             continue;
         }
-        if matches!(
-            item.kind,
-            CommentItemKind::ReviewBody | CommentItemKind::PrComment
-        ) {
-            if let Some(data) = snapshot.as_ref().and_then(|s| s.pr_data.as_ref())
-                && item
-                    .url
-                    .as_ref()
-                    .is_none_or(|url| !data.scope.sources.contains(url))
-            {
-                continue;
-            }
-            if let Some(url) = &item.url {
-                if selected_sources.len() >= 5 && !selected_sources.contains(url) {
-                    continue;
-                }
-                selected_sources.insert(url.clone());
-            }
+        if reason != PassReason::Ask
+            && matches!(
+                item.kind,
+                CommentItemKind::ReviewBody | CommentItemKind::PrComment
+            )
+            && let Some(data) = snapshot.as_ref().and_then(|s| s.pr_data.as_ref())
+            && item
+                .url
+                .as_ref()
+                .is_none_or(|url| !data.scope.sources.contains(url))
+        {
+            continue;
         }
         let fingerprint = fingerprint(
             item,
@@ -294,11 +289,30 @@ async fn request(
             contexts.get(&item.stable_key),
         );
         if asked.is_none()
+            && db
+                .review_loop()
+                .duplicate_is_current(item.id, &fingerprint)
+                .await?
+        {
+            continue;
+        }
+        if asked.is_none()
             && let Some(stored) = db.review_loop().latest_assessment(item.id).await?
             && stored.fingerprint == fingerprint
         {
             reuse(state, &record.tenant_id, item, stored, head).await?;
             continue;
+        }
+        if let Some(url) = item.url.as_ref().filter(|_| {
+            matches!(
+                item.kind,
+                CommentItemKind::ReviewBody | CommentItemKind::PrComment
+            )
+        }) {
+            if selected_sources.len() >= 5 && !selected_sources.contains(url) {
+                continue;
+            }
+            selected_sources.insert(url.clone());
         }
         if sent.len() < MAX_ITEMS_PER_PASS {
             sent.push(SentItem {
@@ -312,8 +326,18 @@ async fn request(
     let source_pending = snapshot
         .as_ref()
         .and_then(|s| s.pr_data.as_ref())
-        .is_some_and(|data| !data.scope.sources.is_empty());
-    if sent.is_empty() && !source_pending {
+        .is_some_and(|data| {
+            sources.iter().any(|s| {
+                s.source.read_at.is_none()
+                    && data.scope.sources.contains(&s.source.url)
+                    && data.reviews.iter().chain(&data.comments).any(|raw| {
+                        host::url(raw) == s.source.url
+                            && crate::review_loop::handin::hash(host::body(raw))
+                                == s.source.body_hash
+                    })
+            })
+        });
+    if sent.is_empty() && (reason == PassReason::Ask || !source_pending) {
         if let Some(question) = &question {
             ask::fail(state, question.question.id, ask::ITEM_GONE).await?;
         }
@@ -484,6 +508,32 @@ fn fingerprint(
     purpose: &str,
     context: Option<&ItemContext>,
 ) -> String {
+    fingerprint_fields(
+        FingerprintPoint {
+            body_hash: &item.body_hash,
+            location: item.location.as_ref(),
+            bot_status: item.github.bot_status,
+        },
+        head,
+        code,
+        purpose,
+        context,
+    )
+}
+
+struct FingerprintPoint<'a> {
+    body_hash: &'a str,
+    location: Option<&'a contracts::api::review_loop::ItemLocation>,
+    bot_status: Option<contracts::api::review_loop::BotThreadStatus>,
+}
+
+fn fingerprint_fields(
+    item: FingerprintPoint<'_>,
+    head: &CommitSha,
+    code: Option<&str>,
+    purpose: &str,
+    context: Option<&ItemContext>,
+) -> String {
     let mut hash = Sha256::new();
     hash.update(format!("fingerprint 2\n{purpose}\n{}\n", item.body_hash));
     let replies = context.iter().flat_map(|context| {
@@ -500,17 +550,20 @@ fn fingerprint(
         .filter(|reply| context::concedes(reply))
         .map(|reply| reply.author.to_ascii_lowercase())
         .collect();
-    hash.update(
-        serde_json::to_vec(&(item.github.bot_status, people, conceded)).unwrap_or_default(),
-    );
+    hash.update(serde_json::to_vec(&(item.bot_status, people, conceded)).unwrap_or_default());
     hash.update("\n");
-    hash_lines(&mut hash, item, head, code);
+    hash_lines(&mut hash, item.location, head, code);
     hex(hash)
 }
 
 /// Hashes the item's path, lines and the code at them.
-fn hash_lines(hash: &mut Sha256, item: &ItemRecord, head: &CommitSha, code: Option<&str>) {
-    if let Some(location) = &item.location {
+fn hash_lines(
+    hash: &mut Sha256,
+    location: Option<&contracts::api::review_loop::ItemLocation>,
+    head: &CommitSha,
+    code: Option<&str>,
+) {
+    if let Some(location) = location {
         hash.update(format!("{}\n", location.path));
         if let Some(lines) = location.lines {
             hash.update(format!("{}-{}\n", lines.start_line, lines.end_line));
@@ -576,7 +629,14 @@ impl<'a> CodeReader<'a> {
 
     /// The text of the item's lines at the head; `None` without lines or when it cannot be read.
     async fn lines(&mut self, item: &ItemRecord) -> Option<String> {
-        let location = item.location.as_ref()?;
+        self.at(item.location.as_ref()).await
+    }
+
+    async fn at(
+        &mut self,
+        location: Option<&contracts::api::review_loop::ItemLocation>,
+    ) -> Option<String> {
+        let location = location?;
         let lines = location.lines?;
         if self.mirror.is_none() {
             let fetched =
@@ -923,7 +983,7 @@ async fn run(state: &AppState, pass: PassId, known: Option<JobId>) -> Result<(),
             .finish_pass(pass, false, Timestamp::now())
             .await?;
         unanswerable(state, &record).await?;
-        next(state, &record, false).await;
+        next(state, &record, false, false).await;
         return Ok(());
     };
     if record.job_id.is_none() {
@@ -942,7 +1002,7 @@ async fn run(state: &AppState, pass: PassId, known: Option<JobId>) -> Result<(),
             JobUpdate::OutputReady(_) => {}
             JobUpdate::Finished { result, .. } => {
                 let complete = ingest::result(state, &record, result).await?;
-                next(state, &record, complete).await;
+                next(state, &record, complete, false).await;
                 return Ok(());
             }
         }
@@ -1016,10 +1076,9 @@ async fn end_failed(state: &AppState, pass: PassId) -> Result<(), AssessError> {
     ask::fail_pass_question(state, &record, ask::SERVER_ERROR).await
 }
 
-/// After a pass: the next question pass, else, when `complete` (every sent item assessed) and the pass was full,
-/// the rest of the same detection. A pass with an unassessed item ends the chain, so failing items are never sent
-/// again and again; they wait for the next trigger.
-async fn next(state: &AppState, record: &PassRecord, complete: bool) {
+/// Questions take priority; a complete pass at either cap continues the same detection.
+/// An incomplete pass waits for the next trigger, avoiding repeated failures.
+async fn next(state: &AppState, record: &PassRecord, complete: bool, source_capped: bool) {
     let pr = record.pull_request_id;
     if let Err(error) = super::watch::pass_ended(state, record).await {
         tracing::warn!(pr, error = ?error, "the end of an automatic assessment pass could not be recorded on its watches");
@@ -1030,7 +1089,7 @@ async fn next(state: &AppState, record: &PassRecord, complete: bool) {
         PassCause::Read => Some(PassReason::NewComments),
         PassCause::Question => None,
     }
-    .filter(|_| complete && record.sent.len() == MAX_ITEMS_PER_PASS);
+    .filter(|_| complete && (record.sent.len() == MAX_ITEMS_PER_PASS || source_capped));
     let outcome = match request(state, pr, PassReason::Ask, true, None).await {
         Ok(PassQueued::Skipped) => match rest {
             Some(reason) => request(state, pr, reason, true, record.user_id.as_deref()).await,
