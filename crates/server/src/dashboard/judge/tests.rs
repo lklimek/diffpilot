@@ -2484,6 +2484,10 @@ async fn nonretryable_failures_end_ranking_with_their_plain_cause() {
         (UpstreamRejected, other),
         (ReportVersionUnsupported, other),
         (InvalidJsonSchema, format),
+        (
+            AskCompactionUnconfirmed,
+            "The answer was discarded because the required context shortening was not confirmed.",
+        ),
     ] {
         let h = harness().await;
         let id = h.rank("u1", &snapshot(prs(1), vec![], vec![])).await;

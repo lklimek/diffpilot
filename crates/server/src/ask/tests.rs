@@ -3068,3 +3068,61 @@ async fn private_ask_admission_loss_records_the_link_sentence() {
         Some("Link your Codex account in Settings")
     );
 }
+
+#[tokio::test]
+async fn required_first_ask_compaction_failure_discards_answer_and_shows_plain_cause() {
+    let f = fixture(true).await;
+    let previous = f.state.db.agent_sessions().generation(1).await.unwrap();
+    let generation = previous + 1;
+    f.state
+        .db
+        .container_sessions()
+        .save_analytic(
+            1,
+            &contracts::ids::UserId("u1".into()),
+            previous,
+            &db::repo::container_sessions::AnalyticThread {
+                thread_id: "analytic".into(),
+                generation,
+                last_context: Some(contracts::runtime::LastContext {
+                    tokens: 90_000,
+                    generation,
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let id = f.asked("f1.5", QUESTION).await;
+    f.queued_job(id).await;
+    let claim = f.claim().await.unwrap();
+    assert_eq!(
+        claim
+            .spec
+            .working_session
+            .as_ref()
+            .unwrap()
+            .preflight
+            .as_ref()
+            .unwrap()
+            .state,
+        contracts::runtime::PreflightState::Pending
+    );
+    f.post_result(
+        &claim,
+        JobOutcome::Succeeded {
+            output: good_answer(),
+        },
+    )
+    .await;
+    let question = f.wait_for(id, |q| q.state == AskState::Failed).await;
+    assert!(question.answer.is_none());
+    assert_eq!(
+        question.failure.as_deref(),
+        Some(
+            "The answer was discarded because the required context shortening was not confirmed. Ask again."
+        )
+    );
+    let stored = f.state.db.jobs().get(claim.spec.job_id).await.unwrap();
+    assert_eq!(stored.state, JobState::Failed);
+    assert_eq!(stored.attempt, 1);
+}

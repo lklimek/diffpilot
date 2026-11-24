@@ -459,6 +459,11 @@
           "description": "The provider rejected the strict output schema; no model repair or retry.",
           "type": "string",
           "const": "invalid_json_schema"
+        },
+        {
+          "description": "Required first-Ask compaction was skipped or not confirmed; the answer is discarded.",
+          "type": "string",
+          "const": "ask_compaction_unconfirmed"
         }
       ]
     },

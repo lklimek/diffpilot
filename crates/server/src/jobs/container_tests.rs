@@ -362,7 +362,12 @@ async fn container_nonpayer_context_pack_is_invalidated_by_shared_analysis_progr
 
 #[tokio::test]
 async fn container_result_requires_first_ask_acknowledgement_bound_to_seed() {
-    for state in [PreflightState::Pending, PreflightState::Done] {
+    for (seed, state) in [
+        (SessionSeed::Fork, PreflightState::Pending),
+        (SessionSeed::Fork, PreflightState::NotNeeded),
+        (SessionSeed::Fork, PreflightState::Done),
+        (SessionSeed::ContextPack, PreflightState::NotNeeded),
+    ] {
         let db = Db::in_memory().await.unwrap();
         let job = ask_job(&db, "u1").await;
         analytic(&db, Some(90_000)).await;
@@ -380,7 +385,7 @@ async fn container_result_requires_first_ask_acknowledgement_bound_to_seed() {
             .unwrap();
         db.jobs().save_session_route(&spec).await.unwrap();
         let preflight = AskPreflight {
-            seed: SessionSeed::Fork,
+            seed,
             generation: 7,
             state,
         };
@@ -399,9 +404,29 @@ async fn container_result_requires_first_ask_acknowledgement_bound_to_seed() {
                 Timestamp::now(),
             )
             .await;
-        if state == PreflightState::Pending {
+        if seed == SessionSeed::Fork && state != PreflightState::Done {
             outcome.unwrap();
-            assert!(db.jobs().get(spec.job_id).await.unwrap().result.is_some());
+            let stored = db.jobs().get(spec.job_id).await.unwrap();
+            assert_eq!(
+                stored.state,
+                contracts::job::state::JobState::Failed,
+                "{state:?}"
+            );
+            let failure = stored.result.unwrap().outcome;
+            assert_eq!(
+                serde_json::to_value(&failure).unwrap()["kind"],
+                "ask_compaction_unconfirmed"
+            );
+            let JobOutcome::Failed { kind, .. } = failure else {
+                panic!("failure expected")
+            };
+            assert!(!kind.retryable());
+            assert_eq!(
+                crate::api::settings::plain_failure(Some(db::repo::settings::CallFailure::Failed(
+                    kind
+                ))),
+                "The answer was discarded because the required context shortening was not confirmed."
+            );
             assert!(
                 db.container_sessions()
                     .working(1, &spec.payer, ThreadKind::Ask)
@@ -592,6 +617,108 @@ async fn container_missing_preflight_stores_answer_without_checkpoint() {
     };
     db.jobs().complete(&answer, Timestamp::now()).await.unwrap();
     let stored = db.jobs().get(spec.job_id).await.unwrap();
+    assert_eq!(stored.result.unwrap().outcome, answer.outcome);
+    assert!(
+        db.container_sessions()
+            .working(1, &spec.payer, ThreadKind::Ask)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn container_required_compaction_without_acknowledgement_cannot_store_answer() {
+    for checkpoint in [false, true] {
+        let db = Db::in_memory().await.unwrap();
+        let job = ask_job(&db, "u1").await;
+        analytic(&db, Some(90_000)).await;
+        let mut spec = prepare_spec(&db, &Packs, &job).await.unwrap();
+        spec.attempt = 1;
+        db.jobs()
+            .claim(ClaimParams {
+                payer_ids: &["u1".into()],
+                job_token_hash: &[1],
+                lease_until: lease_until(Timestamp::now()),
+                now: Timestamp::now(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        db.jobs().save_session_route(&spec).await.unwrap();
+        let mut answer = result(
+            &spec,
+            SessionReport {
+                thread_id: "fork".into(),
+                outcome: SessionOutcome::Started,
+                last_context: None,
+                preflight: None,
+            },
+        );
+        if !checkpoint {
+            answer.session = None;
+        }
+        db.jobs()
+            .record_output(
+                spec.job_id,
+                1,
+                &serde_json::json!({"answer":"must be discarded"}),
+                lease_until(Timestamp::now()),
+            )
+            .await
+            .unwrap();
+        db.jobs().complete(&answer, Timestamp::now()).await.unwrap();
+        let stored = db.jobs().get(spec.job_id).await.unwrap();
+        assert_eq!(stored.state, contracts::job::state::JobState::Failed);
+        assert_eq!(
+            serde_json::to_value(stored.result.unwrap().outcome).unwrap()["kind"],
+            "ask_compaction_unconfirmed"
+        );
+        assert!(stored.ready_output.is_none());
+        assert!(
+            db.container_sessions()
+                .working(1, &spec.payer, ThreadKind::Ask)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn container_checkpoint_metadata_mismatch_keeps_compacted_answer() {
+    let db = Db::in_memory().await.unwrap();
+    let job = ask_job(&db, "u1").await;
+    analytic(&db, Some(90_000)).await;
+    let mut spec = prepare_spec(&db, &Packs, &job).await.unwrap();
+    spec.attempt = 1;
+    db.jobs()
+        .claim(ClaimParams {
+            payer_ids: &["u1".into()],
+            job_token_hash: &[1],
+            lease_until: lease_until(Timestamp::now()),
+            now: Timestamp::now(),
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    db.jobs().save_session_route(&spec).await.unwrap();
+    let answer = result(
+        &spec,
+        SessionReport {
+            thread_id: "fork".into(),
+            outcome: SessionOutcome::Started,
+            last_context: None,
+            preflight: Some(Box::new(AskPreflight {
+                seed: SessionSeed::Fork,
+                generation: 6,
+                state: PreflightState::Done,
+            })),
+        },
+    );
+    db.jobs().complete(&answer, Timestamp::now()).await.unwrap();
+    let stored = db.jobs().get(spec.job_id).await.unwrap();
+    assert_eq!(stored.state, contracts::job::state::JobState::Succeeded);
     assert_eq!(stored.result.unwrap().outcome, answer.outcome);
     assert!(
         db.container_sessions()

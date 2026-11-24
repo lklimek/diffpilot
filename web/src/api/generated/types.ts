@@ -4363,7 +4363,7 @@ kind: CommentItemKind | null, };
 /**
  * Kind of a failed attempt.
  */
-export type JobFailureKind = "configuration" | "provider_failed" | "output_not_json" | "credential_unusable" | "checkout_failed" | "timeout" | "internal" | "worker_unavailable" | "worker_lost" | "credential_missing" | "credential_relink" | "model_unavailable" | "upstream_rejected" | "report_version_unsupported" | "invalid_json_schema";
+export type JobFailureKind = "configuration" | "provider_failed" | "output_not_json" | "credential_unusable" | "checkout_failed" | "timeout" | "internal" | "worker_unavailable" | "worker_lost" | "credential_missing" | "credential_relink" | "model_unavailable" | "upstream_rejected" | "report_version_unsupported" | "invalid_json_schema" | "ask_compaction_unconfirmed";
 
 /**
  * Identifier of a job (one agent run).

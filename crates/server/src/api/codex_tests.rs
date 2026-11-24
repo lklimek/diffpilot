@@ -238,3 +238,113 @@ async fn codex_unlink_requires_gateway_acknowledgement() {
         gateway.reset().await;
     }
 }
+
+#[tokio::test]
+async fn codex_status_refresh_preserves_server_pause_and_typed_failure() {
+    let gateway = MockServer::start().await;
+    let mut h = harness().await;
+    std::sync::Arc::get_mut(&mut h.state.config)
+        .unwrap()
+        .codex_gateway = Some(
+        crate::gateway::client::Admin::new(gateway.uri().parse().unwrap(), "fake-scope".into())
+            .unwrap(),
+    );
+    fail_one_job(
+        &h,
+        "u1",
+        JobOutcome::UsageLimited { resets_at: None },
+        "server-call-canary",
+    )
+    .await;
+    let before = h
+        .state
+        .db
+        .llm_credentials()
+        .status("u1")
+        .await
+        .unwrap()
+        .unwrap();
+    let until = before.paused_until.unwrap();
+    assert!(until > Timestamp::now() + jiff::SignedDuration::from_mins(29));
+    let last = before.last_call.as_ref().unwrap();
+    for gateway_call in [
+        None,
+        Some(last.clone()),
+        Some(LlmCallOutcome {
+            at: last.at - jiff::SignedDuration::from_secs(1),
+            status: LlmCallStatus::Working,
+        }),
+    ] {
+        let mut remote = before.clone();
+        remote.paused_until = gateway_call
+            .as_ref()
+            .map(|_| until - jiff::SignedDuration::from_secs(1));
+        remote.last_call = gateway_call;
+        if let Some(LlmCallOutcome {
+            status: LlmCallStatus::NotWorking { message },
+            ..
+        }) = &mut remote.last_call
+        {
+            *message = "Model request returned HTTP 429".into();
+        }
+        Mock::given(method("GET"))
+            .and(path("/admin/credentials/u1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&remote))
+            .mount(&gateway)
+            .await;
+        for endpoint in ["/api/v1/settings/codex", "/api/v1/settings/codex/link"] {
+            Mock::given(method("GET"))
+                .and(path("/admin/credentials/u1/link"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&remote))
+                .mount(&gateway)
+                .await;
+            let (status, _) = h.get(endpoint).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                h.state.db.llm_credentials().status("u1").await.unwrap(),
+                Some(before.clone())
+            );
+            assert_eq!(h.llm_status().await["status"]["message"], USAGE_LIMIT);
+            assert_eq!(
+                h.state
+                    .db
+                    .settings()
+                    .last_call(DEFAULT_TENANT)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .failure,
+                Some(CallFailure::UsageLimited)
+            );
+        }
+        gateway.reset().await;
+    }
+    let mut newer = before.clone();
+    newer.last_call = Some(LlmCallOutcome {
+        at: last.at + jiff::SignedDuration::from_secs(1),
+        status: LlmCallStatus::Working,
+    });
+    newer.paused_until = Some(until + jiff::SignedDuration::from_secs(1));
+    newer.label = Some("Updated fake label".into());
+    Mock::given(method("GET"))
+        .and(path("/admin/credentials/u1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&newer))
+        .mount(&gateway)
+        .await;
+    let (status, _) = h.get("/api/v1/settings/codex").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        h.state.db.llm_credentials().status("u1").await.unwrap(),
+        Some(newer)
+    );
+    let call = h
+        .state
+        .db
+        .settings()
+        .last_call(DEFAULT_TENANT)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(call.failure, None);
+    assert_eq!(call.outcome.status, LlmCallStatus::Working);
+}

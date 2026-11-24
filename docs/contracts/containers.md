@@ -195,7 +195,11 @@ and linked-plan admission still apply. Only unapplied 0030 is amended, with its 
 Atomic linked-plan admission returns a distinct missing-connection error, including a link lost between
 analysis stages or before Ask submission. Analysis and Ask retain the Settings linking sentence.
 Checkpoint metadata disagreement discards only the checkpoint and logs a warning; a current attempt's answer
-is still stored. Attempt/lease fencing continues to reject stale results. The first-Ask threshold is shared
+is still stored. A required first-Ask compaction that is skipped or unconfirmed instead records the non-retryable
+`ask_compaction_unconfirmed` failure and discards the answer (ADR-004, D15). A context-pack fallback needs no
+compaction. Gateway status refreshes retain the longer usage pause and keep the server's last call and typed
+failure unless the gateway reports a newer call. Attempt/lease fencing continues to reject stale results.
+The first-Ask threshold is shared
 as `contracts::runtime::FIRST_ASK_COMPACTION_TOKENS` (80,000 parent-context tokens).
 
 The judge follows `JobFailureKind::retryable()` for failed jobs: schema/credential/configuration and other

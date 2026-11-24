@@ -407,6 +407,9 @@ pub(crate) fn plain_failure(failure: Option<CallFailure>) -> &'static str {
             JobFailureKind::OutputNotJson => ANSWER_FORMAT,
             JobFailureKind::Timeout => TIMED_OUT,
             JobFailureKind::InvalidJsonSchema => ANSWER_FORMAT,
+            JobFailureKind::AskCompactionUnconfirmed => {
+                "The answer was discarded because the required context shortening was not confirmed."
+            }
             JobFailureKind::WorkerUnavailable
             | JobFailureKind::WorkerLost
             | JobFailureKind::ModelUnavailable
