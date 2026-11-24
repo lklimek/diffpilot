@@ -46,6 +46,12 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+on_error() {
+  local rc=$?
+  echo "test-local-containers: line $1 failed (exit $rc): $BASH_COMMAND" >&2
+  exit "$rc"
+}
+trap 'on_error $LINENO' ERR
 "$root/deploy/dev/local-containers.sh" prepare
 # The second pass must reuse the same verified loopback registry and produce usable digest refs.
 "$root/deploy/dev/local-containers.sh" prepare
@@ -111,7 +117,7 @@ docker run --rm --network none --user 0:0 --entrypoint chown \
   --mount "type=volume,source=${project}_server-data,target=/data,volume-nocopy" \
   "$project-server:local" "$(id -u):$(id -g)" /data
 "${compose[@]}" up -d --no-build --wait --wait-timeout 120
-test "$(curl --noproxy '*' --fail --silent -o /dev/null -w '%{http_code}' "http://127.0.0.1:$http_port/healthz")" = 204
+test "$(curl --noproxy '*' --fail --silent --show-error -o /dev/null -w '%{http_code}' "http://127.0.0.1:$http_port/healthz")" = 204
 # Positive controls on the trusted runner network prove admin/runner ports are actually listening.
 # shellcheck disable=SC2016 # Perl variables, not shell interpolation.
 "${compose[@]}" exec -T runner perl -MIO::Socket::INET -e '
