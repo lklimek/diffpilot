@@ -204,3 +204,27 @@ it("explains an unavailable status in the link tooltip", () => {
     "Account status is unavailable; linking is possible once it loads.",
   );
 });
+
+it("hides an observed plan percentage when its reset arrives without a newer observation", () => {
+  const current = {
+    ...status,
+    state: "linked" as const,
+    telemetry: {
+      ...status.telemetry,
+      primary: { used_percent: 80, resets_at: "2026-11-18T09:28:00Z" },
+      secondary: { used_percent: 90, resets_at: "2026-11-18T09:26:00Z" },
+    },
+  };
+  const props = { status: current, busy: false, onLink: vi.fn(), onUnlink: vi.fn() };
+  const { rerender } = render(<CodexAccountCard {...props} now={now} />);
+  expect(screen.getByText(/Primary plan usage:/)).toHaveTextContent("80%");
+  expect(screen.getByText(/Secondary plan usage:/)).toHaveTextContent(
+    "reset at 2026-11-18T09:26:00Z; no newer observation",
+  );
+  expect(screen.getByText(/Secondary plan usage:/)).not.toHaveTextContent("90%");
+  rerender(<CodexAccountCard {...props} now={new Date("2026-11-18T09:28:00Z")} />);
+  expect(screen.getByText(/Primary plan usage:/)).toHaveTextContent(
+    "reset at 2026-11-18T09:28:00Z; no newer observation",
+  );
+  expect(screen.getByText(/Primary plan usage:/)).not.toHaveTextContent("80%");
+});

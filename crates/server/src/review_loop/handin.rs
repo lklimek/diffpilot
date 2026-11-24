@@ -19,18 +19,29 @@ fn login(author: Option<&crate::github::review_loop::Author>) -> &str {
     author.map_or("ghost", |a| a.login.as_str())
 }
 
-fn role(author: &str, pr_author: &str, body: &str, known_bots: &[String]) -> SourceRole {
-    let text = body.trim();
+fn role(author: &str, pr_author: &str, raw: &str, body: &str, known_bots: &[String]) -> SourceRole {
+    let text = raw.trim();
+    let command = body
+        .lines()
+        .scan(false, |open, line| {
+            let (text, next) = clean::without_comments(line, *open);
+            *open = next;
+            Some(text)
+        })
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let command = command.trim();
     if text.is_empty()
-        || text.starts_with('/')
-        || (text
+        || command.starts_with('/')
+        || (command
             .split_whitespace()
             .next()
             .and_then(|word| word.strip_prefix('@'))
             .is_some_and(|who| {
                 who.ends_with("[bot]") || known_bots.iter().any(|b| b.eq_ignore_ascii_case(who))
             })
-            && !text.contains('\n'))
+            && !command.contains('\n'))
         || text.starts_with("<!-- platform-pr-review-state-v1 ")
         || markers::gate(text).is_some()
         || markers::is_thread_answer(text)
@@ -130,7 +141,7 @@ pub(super) fn build(
         let mut source_role = if body.is_empty() {
             SourceRole::Ignored
         } else {
-            role(who, pr_author, &review.body, known_bots)
+            role(who, pr_author, &review.body, &body, known_bots)
         };
         if source_role != SourceRole::Ignored
             && bot(review.author.as_ref())
@@ -168,7 +179,7 @@ pub(super) fn build(
         let source_role = if body.is_empty() {
             SourceRole::Ignored
         } else {
-            role(who, pr_author, &comment.body, known_bots)
+            role(who, pr_author, &comment.body, &body, known_bots)
         };
         if source_role == SourceRole::Ignored {
             continue;
@@ -221,7 +232,7 @@ mod tests {
     fn ci_status_comments_are_ignored_instead_of_becoming_assessment_sources() {
         let body = "<!-- platform-pr-review-state-v1 {\"state\":\"waiting-author\"} -->\nCI is waiting for the author.";
         assert_eq!(
-            role("github-actions", "alice", body, &[]),
+            role("github-actions", "alice", body, body, &[]),
             SourceRole::Ignored
         );
     }
@@ -271,6 +282,41 @@ mod tests {
         assert_eq!(data.manifest.maintainers, vec!["owner"]);
         assert!(data.manifest.delegates.is_empty());
     }
+    #[test]
+    fn handin_omits_protocol_statuses_and_commands_with_hidden_comments() {
+        for body in [
+            "<!-- thepastaclaw-gate v1 -->\nReview in progress",
+            "<!-- thepastaclaw-thread-answer v1 sha=9f3c -->\nDeferred",
+            "<!-- platform-pr-review-state-v1 {} -->\nCI waiting",
+            "@bot review\n<!-- hidden metadata -->",
+            "<!-- hidden metadata -->\n/review",
+            "/review\n<!-- hidden metadata -->",
+        ] {
+            let read = PrRead {
+                repo_github_id: 1, private: false, complete: true,
+                pr: serde_json::from_value(json!({"title":"Review", "body":"", "url":"https://github.com/o/r/pull/12", "state":"OPEN", "isDraft":false,"author":{"login":"alice"},"baseRefName":"main","baseRefOid":"base","headRefOid":"head","reviewDecision":null})).unwrap(),
+                threads: vec![],
+                comments: vec![serde_json::from_value(json!({"id":"IC1","databaseId":1,"author":{"login":"owner"},"body":body,"createdAt":"2026-11-23T00:00:00Z","lastEditedAt":null,"url":"https://github.com/o/r/pull/12#issuecomment-1"})).unwrap()],
+                reviews: vec![serde_json::from_value(json!({"id":"PRR1", "databaseId":2,"author":{"login":"bot"},"state":"COMMENTED","submittedAt":"2026-11-23T00:00:00Z","lastEditedAt":null,"commit":{"oid":"head"},"body":body, "url":"https://github.com/o/r/pull/12#pullrequestreview-2"})).unwrap()],
+            };
+            let (data, sources) = build(&read, "o/r", &["bot".into()], vec![]);
+            assert!(sources.is_empty(), "{body}");
+            assert!(data.scope.sources.is_empty(), "{body}");
+            assert!(data.comments.is_empty(), "{body}");
+            assert!(data.reviews.is_empty(), "{body}");
+        }
+    }
+
+    #[test]
+    fn human_requests_in_details_are_not_reduced_to_bot_commands() {
+        let body =
+            "@bot review\n<details>\n<summary>Request</summary>\nBound the retry loop\n</details>";
+        assert_eq!(
+            role("owner", "alice", body, body, &["bot".into()]),
+            SourceRole::Source
+        );
+    }
+
     #[test]
     fn handin_reviews_use_rest_ids_for_inline_review_links() {
         let read = PrRead {

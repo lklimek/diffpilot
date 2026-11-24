@@ -88,11 +88,19 @@ export function CodexAccountCard({
           <p>Linked at: {status.telemetry.linked_at ?? "not reported yet"}.</p>
           {(["primary", "secondary"] as const).map((window) => {
             const usage = status.telemetry[window];
+            const resetPassed = usage?.resets_at != null && Date.parse(usage.resets_at) <= now.getTime();
             return (
               <p key={window} data-codex-plan-usage>
                 {window === "primary" ? "Primary" : "Secondary"} plan usage:{" "}
-                {usage?.used_percent == null ? "not reported yet" : planPercent(usage.used_percent)}; resets
-                at {usage?.resets_at ?? "not reported yet"}.
+                {resetPassed ? (
+                  <>reset at {usage.resets_at}; no newer observation</>
+                ) : (
+                  <>
+                    {usage?.used_percent == null ? "not reported yet" : planPercent(usage.used_percent)};
+                    resets at {usage?.resets_at ?? "not reported yet"}
+                  </>
+                )}
+                .
               </p>
             );
           })}

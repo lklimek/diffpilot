@@ -115,7 +115,7 @@ impl Gateway {
                 secondary: plan_usage(&r.limits, "secondary"),
                 ..Default::default()
             },
-            challenge: staged.then(|| r.challenge.clone()).flatten(),
+            challenge: (staged && linking).then(|| r.challenge.clone()).flatten(),
             mode: CredentialMode::ChatgptPlan,
             state: if linking && (staged || b.is_none()) {
                 CredentialState::Linking
@@ -252,6 +252,7 @@ impl Gateway {
             Ok(start) => start,
             Err(error) => {
                 tx.record.link_attempt = None;
+                tx.record.challenge = None;
                 tx.outcome("link", "start_failed", status, None, id);
                 tx.save()?;
                 active.remove(user);
@@ -328,6 +329,7 @@ impl Gateway {
             if let Ok(mut tx) = store.lock(&user).await
                 && tx.record.link_attempt == Some((attempt, deadline)) {
                 tx.record.link_attempt = None;
+                tx.record.challenge = None;
                 if result.is_err() { tx.outcome("link", step, status, None, id); }
                 let _ = tx.save();
             }

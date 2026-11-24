@@ -2050,6 +2050,14 @@ async fn device_link_failures_record_step_status_and_redacted_request_id() {
         .await
         .expect("link settled");
         g.shutdown().await;
+        assert!(
+            g.status_view(&u, true).await.unwrap().challenge.is_none(),
+            "{step}"
+        );
+        assert!(
+            g.store.lock(&u).await.unwrap().record.challenge.is_none(),
+            "{step}"
+        );
         assert_eq!(
             g.status(&u).await.expect("stored credential").state,
             CredentialState::Linked
@@ -2131,4 +2139,25 @@ async fn status_telemetry_uses_only_observed_plan_headers_and_persisted_link_tim
     for secret in ["fake-access", "fake-refresh", "fake-id", "fake-account"] {
         assert!(!json.contains(secret));
     }
+}
+
+#[tokio::test]
+async fn expired_device_challenges_are_not_returned_by_staged_status() {
+    let (_dir, _up, g, u) = fixture().await;
+    for linked in [false, true] {
+        let mut tx = g.store.lock(&u).await.unwrap();
+        tx.record.bundle = linked.then(|| bundle(now() + 3600));
+        tx.record.link_attempt = Some((uuid::Uuid::new_v4(), now() - 1));
+        tx.record.challenge = Some(contracts::gateway::DeviceLink {
+            user_code: "EXPIRED-FAKE".into(),
+            verification_url: "https://example.invalid/device".into(),
+            expires_at: contracts::time::Timestamp::from_second(now() - 1).unwrap(),
+        });
+        tx.save().unwrap();
+        drop(tx);
+        let status = g.status_view(&u, true).await.unwrap();
+        assert_ne!(status.state, CredentialState::Linking);
+        assert!(status.challenge.is_none());
+    }
+    g.shutdown().await;
 }

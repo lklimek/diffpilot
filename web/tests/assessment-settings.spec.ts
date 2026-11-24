@@ -85,3 +85,47 @@ test("PR A/B opt-in preserves primary, quota and visible comments; report is rea
   await expect(report.getByRole("button")).toHaveCount(0);
   await expectTrustWording(page);
 });
+
+test("Settings keeps a draft after a concurrent primary and deadline update", async ({ page }) => {
+  await page.goto("/settings");
+  const card = page.getByRole("region", { name: "Comment assessment" });
+  await expect(card.getByLabel("Primary assessment method")).toHaveValue("claudius_host");
+  await card.getByLabel("Primary assessment method").selectOption("prompt_v4");
+  await card.getByLabel("Optional A/B deadline (UTC)").fill("2026-11-30T00:00:00Z");
+  const changed = await page.evaluate(async () => {
+    const { csrf_token } = await (await fetch("/api/v1/me")).json();
+    const settings = await (await fetch("/api/v1/settings/comment-assessment")).json();
+    const response = await fetch("/api/v1/settings/comment-assessment", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf_token },
+      body: JSON.stringify({
+        revision: settings.revision,
+        config: { primary_method: "prompt_v4", ab_until: "2026-12-01T00:00:00Z", ab_prs: ["acme/other#10"] },
+      }),
+    });
+    return response.status;
+  });
+  expect(changed).toBe(200);
+  await card.getByRole("button", { name: "Save assessment settings" }).click();
+  await expect(card.getByRole("alert")).toContainText("Your edits are kept.");
+  await expect(card).toContainText("A/B deadline changed elsewhere: none → 2026-12-01T00:00:00Z");
+  await expect(card).toContainText("Primary method changed elsewhere: claudius_host → prompt_v4");
+  await expect(card).toContainText("Selected PRs changed elsewhere: none → acme/other#10");
+  await expect(card.getByLabel("Primary assessment method")).toHaveValue("prompt_v4");
+  await expect(card.getByLabel("Optional A/B deadline (UTC)")).toHaveValue("2026-11-30T00:00:00Z");
+  const saved = page.waitForRequest(
+    (request) => request.method() === "PUT" && request.url().endsWith("/settings/comment-assessment"),
+  );
+  await card.getByRole("button", { name: "Save assessment settings" }).click();
+  expect((await saved).postDataJSON()).toEqual({
+    revision: JSON.stringify({
+      primary_method: "prompt_v4",
+      ab_until: "2026-12-01T00:00:00Z",
+      ab_prs: ["acme/other#10"],
+    }),
+    config: { primary_method: "prompt_v4", ab_prs: ["acme/other#10"], ab_until: "2026-11-30T00:00:00.000Z" },
+  });
+  await expect(card.getByText("Assessment settings saved.")).toBeVisible();
+  await expect(card.getByText(/changed elsewhere/)).toHaveCount(0);
+  await expectTrustWording(page);
+});

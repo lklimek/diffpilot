@@ -195,6 +195,7 @@ function SettingsContent({
   const codex = useCodexAccount(now.getTime());
   const assessment = useAssessmentSettings();
   const saveAssessment = useSetAssessmentSettings();
+  const [assessmentSaveCount, setAssessmentSaveCount] = useState(0);
   const codexError = codex.link.error ?? codex.unlink.error ?? codex.status.error;
   const setLlm = useSetLlm();
   const setJudgeEffort = useSetJudgeEffort();
@@ -252,13 +253,24 @@ function SettingsContent({
           />
           {assessment.data ? (
             <AssessmentSettingsCard
-              key={`${assessment.data.config.primary_method}/${assessment.data.config.ab_until}`}
+              key={assessmentSaveCount}
               settings={assessment.data}
               now={now}
               busy={saveAssessment.isPending}
               saved={saveAssessment.isSuccess}
-              error={saveAssessment.isError ? errorText(saveAssessment.error) : undefined}
-              onSave={(config) => saveAssessment.mutate({ config, revision: assessment.data!.revision })}
+              error={
+                saveAssessment.isError
+                  ? saveAssessment.error instanceof ApiError && saveAssessment.error.code === "conflict"
+                    ? "Settings changed elsewhere. Your edits are kept. Check the changed values and save again."
+                    : errorText(saveAssessment.error)
+                  : undefined
+              }
+              onSave={(config) =>
+                saveAssessment.mutate(
+                  { config, revision: assessment.data!.revision },
+                  { onSuccess: () => setAssessmentSaveCount((count) => count + 1) },
+                )
+              }
             />
           ) : (
             <SettingsCard title="Comment assessment">
