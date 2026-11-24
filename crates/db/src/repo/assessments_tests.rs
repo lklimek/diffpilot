@@ -1754,3 +1754,42 @@ async fn assessment_stale_canonical_leaves_duplicate_missing_without_aborting_va
             .any(|r| r.comparison_key == "valid" && r.primary_item_id == Some(valid.id))
     );
 }
+
+#[tokio::test]
+async fn assessment_primary_preserves_items_gone_during_the_pass() {
+    use super::assessment_primary::PrimaryPoint;
+    for gone_at in ["2026-11-23T12:00:00Z", "2026-11-23T12:01:00Z"] {
+        let (db, job, run, result) = started_assessment().await;
+        let id = seed_item(&db).await;
+        db.review_loop()
+            .mark_gone(1, &[], at(gone_at))
+            .await
+            .unwrap();
+        let point = PrimaryPoint {
+            carry: None,
+            key: "current".into(),
+            existing: Some((id, "a".repeat(64))),
+            observed: None,
+            preferred_no: 1,
+            source: None,
+            duplicate: None,
+            assessment: None,
+            fingerprint: "fp".into(),
+        };
+        assert!(
+            db.assessments()
+                .finish_with_primary("default", &user(), &run, job.attempt, &result, &[point])
+                .await
+                .unwrap()
+        );
+        let mut tx = read_tx(&db.pool).await.unwrap();
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT gone_at FROM comment_items WHERE id=?")
+                .bind(id.to_string())
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(stored.map(|value| at(&value)), Some(at(gone_at)));
+    }
+}

@@ -86,7 +86,7 @@ async fn complete_host(state: &AppState, rows: Vec<Value>) -> PassRecord {
     let job = claim_method(state).await;
     let mut result = succeeded(job.id, Value::Null);
     result.assessment = job.spec.assessment.map(Box::new);
-    result.report = Some(Box::new(serde_json::from_value(json!({"schema_version":"4.2.0","metadata":{"report_type":"comment_check","input_mode":"host_supplied","pr_number":482,"commit":HEAD},"comment_assessments":rows})).unwrap()));
+    result.report = Some(Box::new(serde_json::from_value(json!({"schema_version":"4.2.0","metadata":{"report_type":"comment_check","input_mode":"host_supplied","pr_number":482,"commit":pass.head},"comment_assessments":rows})).unwrap()));
     state
         .db
         .jobs()
@@ -123,7 +123,7 @@ async fn choose(
                 recommendation: None,
                 via: DecisionVia::Question,
                 carried_from: None,
-                head: CommitSha(HEAD.into()),
+                head: state.db.pull_requests().get(PR).await.unwrap().pr.head_sha,
                 effects,
             }],
             Timestamp::now(),
@@ -134,6 +134,26 @@ async fn choose(
 
 #[tokio::test]
 async fn host_incomplete_standing_targets_do_not_block_admission() {
+    #[derive(Clone)]
+    struct Log(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let log = Log(Default::default());
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_writer(move || writer.clone())
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
     for (kind, target) in [
         (
             DecisionKind::UpstreamIssue,
@@ -151,6 +171,21 @@ async fn host_incomplete_standing_targets_do_not_block_admission() {
                 .await
                 .unwrap(),
             PassQueued::Queued
+        );
+        let captured = String::from_utf8(std::mem::take(&mut *log.0.lock().unwrap())).unwrap();
+        let omitted: Vec<_> = captured
+            .lines()
+            .filter(|line| {
+                line.contains(
+                    "standing decision omitted from assessment ids: required target missing",
+                )
+            })
+            .collect();
+        assert_eq!(omitted.len(), 1, "{captured}");
+        assert!(
+            omitted[0].ends_with(&format!("item_no=1 kind={kind:?}")),
+            "{}",
+            omitted[0]
         );
         let job = claim_method(&f.state).await;
         let data = job.spec.pr_data.unwrap();
@@ -234,8 +269,20 @@ async fn host_ask_outside_source_scope_is_terminal_or_answered() {
 
 #[tokio::test]
 async fn host_new_point_fingerprint_carries_owner_effects_at_unchanged_code() {
+    host_point_owner_effects(false).await;
+}
+
+#[tokio::test]
+async fn host_new_point_fingerprint_reasks_and_cancels_owner_effects_at_changed_code() {
+    host_point_owner_effects(true).await;
+}
+
+async fn host_point_owner_effects(changed: bool) {
     use contracts::api::review_loop::{EffectKind, EffectParams, EffectState, Executor};
     let (f, items) = host_fixture(2).await;
+    if changed {
+        move_head(&f.state, BASE).await;
+    }
     request_pass(&f.state, PR, PassReason::Opened)
         .await
         .unwrap();
@@ -270,6 +317,7 @@ async fn host_new_point_fingerprint_carries_owner_effects_at_unchanged_code() {
         }],
     )
     .await;
+    move_head(&f.state, HEAD).await;
     assert_eq!(
         request_pass(&f.state, PR, PassReason::AssessAgain(items[1].id))
             .await
@@ -290,15 +338,45 @@ async fn host_new_point_fingerprint_carries_owner_effects_at_unchanged_code() {
         .await
         .unwrap();
     let frozen = frozen::Frozen::read(&f.state, &frozen_pass).await.unwrap();
-    assert!(
-        !frozen.standing[&point.id.to_string()].changed,
-        "the same point and code must keep the fingerprint"
-    );
+    assert_eq!(frozen.standing[&point.id.to_string()].changed, changed);
+    let head_summary = summary(HEAD);
+    let mut code = super::super::CodeReader::new(&f.state, &head_summary);
+    let current_code = code.lines(&point).await.unwrap();
+    let base_summary = summary(BASE);
+    let mut base_code = super::super::CodeReader::new(&f.state, &base_summary);
+    assert_ne!(current_code, base_code.lines(&point).await.unwrap());
     let mut row = host_row(&items[1], 100, quote);
     row["location"] = json!("src/rpc/client.rs:40-43");
     complete_host(&f.state, vec![row]).await;
     let current = f.state.db.review_loop().item(point.id).await.unwrap();
-    assert_eq!(current.state, ItemState::Executing);
+    assert_eq!(
+        current.state,
+        if changed {
+            ItemState::Reopened
+        } else {
+            ItemState::Executing
+        }
+    );
+    let events = f
+        .state
+        .db
+        .review_loop()
+        .carry_events(DEFAULT_TENANT, Some(PR), None, 10)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0].kind,
+        if changed {
+            contracts::api::review_loop::CarryKind::AskedAgain
+        } else {
+            contracts::api::review_loop::CarryKind::Carried
+        }
+    );
+    assert_eq!(
+        events[0].reason,
+        changed.then_some(contracts::api::review_loop::ReaskReason::CodeChanged)
+    );
     let log = f
         .state
         .db
@@ -308,7 +386,12 @@ async fn host_new_point_fingerprint_carries_owner_effects_at_unchanged_code() {
         .unwrap();
     let effects: Vec<_> = log.iter().flat_map(|d| &d.decision.effects).collect();
     assert_eq!(effects.len(), 1);
-    assert!(effects.iter().all(|e| e.state == EffectState::Open));
+    assert!(effects.iter().all(|e| e.state
+        == if changed {
+            EffectState::Cancelled
+        } else {
+            EffectState::Open
+        }));
 }
 
 #[tokio::test]
