@@ -117,6 +117,6 @@ docker run --name "$prefix-seed" --network none --user 10002:10002 --read-only -
 docker rm "$prefix-seed" >/dev/null
 run_fetch
 docker logs "$prefix-proxy" 2>&1 | tee "$scratch/proxy.log"
-rg 'index.crates.io:443' "$scratch/proxy.log"
-rg 'static.crates.io:443' "$scratch/proxy.log"
+grep -F 'index.crates.io:443' "$scratch/proxy.log"
+grep -F 'static.crates.io:443' "$scratch/proxy.log"
 printf '%s\n' 'CS3 through Squid: locked and lock-free fetch PASS; direct egress and metadata denied; no PR build executed'
