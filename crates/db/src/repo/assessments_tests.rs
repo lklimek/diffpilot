@@ -1633,3 +1633,124 @@ async fn assessment_user_configuration_and_quota_are_shared_across_tenant_member
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn assessment_stale_canonical_leaves_duplicate_missing_without_aborting_valid_rows() {
+    use super::assessment_primary::PrimaryPoint;
+    let (db, job, run, mut result) = started_assessment().await;
+    let canonical = seed_item(&db).await;
+    let mut tx = write_tx(&db.pool).await.unwrap();
+    sqlx::query("UPDATE comment_prs SET next_item_no=2 WHERE pull_request_id=1")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut seen = super::review_loop::ObservedItem {
+        kind: contracts::api::review_loop::CommentItemKind::Thread,
+        stable_key: "T2".into(),
+        author: "reviewer".into(),
+        author_kind: contracts::api::review_loop::AuthorKind::Human,
+        url: None,
+        location: None,
+        title: "Duplicate".into(),
+        body: "Duplicate concern".into(),
+        body_hash: "d".repeat(64),
+        head: contracts::ids::CommitSha("head".into()),
+        round: None,
+        bot_severity: None,
+        github: contracts::api::review_loop::ItemGithubFacts {
+            resolved: Some(false),
+            resolved_by: None,
+            outdated: Some(false),
+            bot_status: None,
+            edited_after_decision: false,
+            replies: 0,
+            marker: None,
+        },
+        outside: None,
+    };
+    let duplicate = match db
+        .review_loop()
+        .upsert_item(
+            "default",
+            1,
+            &seen,
+            contracts::api::review_loop::ItemState::Undecided,
+            at("2026-11-23T12:00:00Z"),
+        )
+        .await
+        .unwrap()
+    {
+        super::review_loop::UpsertOutcome::New(i) => i,
+        _ => panic!("new"),
+    };
+    seen.stable_key = "T3".into();
+    let valid = match db
+        .review_loop()
+        .upsert_item(
+            "default",
+            1,
+            &seen,
+            contracts::api::review_loop::ItemState::Undecided,
+            at("2026-11-23T12:00:00Z"),
+        )
+        .await
+        .unwrap()
+    {
+        super::review_loop::UpsertOutcome::New(i) => i,
+        _ => panic!("new"),
+    };
+    let point = |key: &str, id, hash: String, duplicate| PrimaryPoint {
+        carry: None,
+        key: key.into(),
+        existing: Some((id, hash)),
+        observed: None,
+        preferred_no: 1,
+        source: None,
+        duplicate,
+        assessment: None,
+        fingerprint: "fp".into(),
+    };
+    let writes = vec![
+        point("canonical", canonical, "changed".into(), None),
+        point("valid", valid.id, valid.body_hash, None),
+        point(
+            "duplicate",
+            duplicate.id,
+            duplicate.body_hash,
+            Some("canonical".into()),
+        ),
+    ];
+    result.items = vec![
+        item(run.clone(), "canonical"),
+        item(run.clone(), "valid"),
+        item(run.clone(), "duplicate"),
+    ];
+    result.items[2].status = ComparisonItemStatus::Duplicate;
+    result.items[2].duplicate_of = Some("canonical".into());
+    result.items[2].verdict = None;
+    assert!(
+        db.assessments()
+            .finish_with_primary("default", &user(), &run, job.attempt, &result, &writes)
+            .await
+            .unwrap()
+    );
+    let report = db
+        .assessments()
+        .comparison("default", &user(), run.pass_id, at("2026-11-23T12:00:00Z"))
+        .await
+        .unwrap();
+    let row = report
+        .items
+        .iter()
+        .find(|r| r.comparison_key == "duplicate")
+        .unwrap();
+    assert_eq!(row.status, ComparisonItemStatus::MissingRow);
+    assert!(row.duplicate_of.is_none());
+    assert!(
+        report
+            .items
+            .iter()
+            .any(|r| r.comparison_key == "valid" && r.primary_item_id == Some(valid.id))
+    );
+}

@@ -20,6 +20,8 @@ pub(super) struct Frozen {
     pub native: VerifyCommentsInput,
     #[serde(default)]
     pub standing: std::collections::BTreeMap<String, FrozenDecision>,
+    #[serde(default)]
+    pub fingerprints: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -80,7 +82,7 @@ impl Frozen {
         let mut code = super::CodeReader::new(state, summary);
         let purpose = super::purpose_hash(&self.native.title, self.native.description.as_deref());
         for item in &self.items {
-            if item.kind == CommentItemKind::PrQuestion {
+            if item.kind == CommentItemKind::PrQuestion || item.gone_at.is_some() {
                 continue;
             }
             let decision = standing.get(&item.id.to_string()).and_then(|d| {
@@ -93,6 +95,16 @@ impl Frozen {
                     Some(DecisionTarget::Todo { title }) => (None, None, Some(title.clone())),
                     None => (None, None, None),
                 };
+                let proposal = contracts::agent::comment_report::ProposedDecision {
+                    kind,
+                    target_pr,
+                    target_url: target_url.clone(),
+                    title: title.clone(),
+                    fixed_in: None,
+                };
+                if !host::valid_proposal(&proposal) {
+                    return None;
+                }
                 Some(StandingDecision {
                     kind: RecordedDecisionKind::Decision(kind),
                     target_pr,
@@ -100,14 +112,16 @@ impl Frozen {
                     title,
                 })
             });
+            let current = super::fingerprint(
+                item,
+                &summary.head_sha,
+                code.lines(item).await.as_deref(),
+                &purpose,
+                snapshot.and_then(|s| s.item_context.get(&item.stable_key)),
+            );
+            self.fingerprints
+                .insert(item.id.to_string(), current.clone());
             if let Some(stored) = standing.get(&item.id.to_string()) {
-                let current = super::fingerprint(
-                    item,
-                    &summary.head_sha,
-                    code.lines(item).await.as_deref(),
-                    &purpose,
-                    snapshot.and_then(|s| s.item_context.get(&item.stable_key)),
-                );
                 let previous = state.db.review_loop().latest_assessment(item.id).await?;
                 self.standing.insert(
                     item.id.to_string(),
@@ -146,7 +160,8 @@ impl Frozen {
                     }
                     _ => contracts::agent::comment_report::SourceKind::PrComment,
                 }),
-                quote: item.quote.clone().or_else(|| Some(item.body.clone())),
+                quote: (super::assessable(item) || standing.contains_key(&item.id.to_string()))
+                    .then(|| item.quote.clone().unwrap_or_else(|| item.body.clone())),
                 decision,
             });
         }

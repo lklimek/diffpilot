@@ -199,7 +199,7 @@ fn complete_rows(report: &mut AssessmentComparison) {
     let original = report.items.clone();
     for run in &report.runs {
         for row in &original {
-            if row.status == ComparisonItemStatus::Context {
+            if row.status != ComparisonItemStatus::Matched || row.primary_item_id.is_none() {
                 continue;
             }
             if report

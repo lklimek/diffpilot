@@ -190,11 +190,9 @@ fn host_rows(
                     None
                 },
                 fingerprint: existing
-                    .and_then(|i| frozen.sent.iter().find(|s| s.item == i.id))
-                    .map_or_else(
-                        || handin::hash(row.source_quote.as_deref().unwrap_or(&row.description)),
-                        |s| s.fingerprint.clone(),
-                    ),
+                    .and_then(|i| frozen.fingerprints.get(&i.id.to_string()))
+                    .cloned()
+                    .unwrap_or_default(),
             });
         }
         rows.push(common);
@@ -362,10 +360,12 @@ fn host_rows(
         let mut absent = common(run, key.clone(), key, source, None);
         absent.status = if report.head != pass.input.head.0 {
             ComparisonItemStatus::HeadMismatch
-        } else if report.rows.iter().any(|r| r.merged_urls.contains(url)) {
-            ComparisonItemStatus::MissingRow
-        } else {
+        } else if report.rows.iter().any(|r| {
+            r.comment_url == *url && matches!(r.source_kind, SourceKind::Status | SourceKind::Reply)
+        }) {
             ComparisonItemStatus::Unmatched
+        } else {
+            ComparisonItemStatus::MissingRow
         };
         rows.push(absent);
     }
@@ -428,7 +428,35 @@ fn host_rows(
         rows.push(context);
     }
     dedup_keys(&mut rows, &mut writes);
+    let read_sources: HashSet<_> = rows
+        .iter()
+        .filter_map(|r| {
+            if matches!(
+                r.status,
+                ComparisonItemStatus::MissingRow
+                    | ComparisonItemStatus::HeadMismatch
+                    | ComparisonItemStatus::Context
+            ) {
+                return None;
+            }
+            match &r.source {
+                AssessmentSource::Body { url, .. } => Some(url.clone()),
+                _ => None,
+            }
+        })
+        .collect();
     missing(frozen, run, &mut rows);
+    rows.retain(|row| {
+        row.status != ComparisonItemStatus::MissingRow
+            || !frozen.items.iter().any(|item| {
+                Some(item.id) == row.primary_item_id
+                    && item.source_id.is_none()
+                    && item
+                        .url
+                        .as_ref()
+                        .is_some_and(|url| read_sources.contains(url))
+            })
+    });
     Ok((rows, writes))
 }
 
@@ -475,7 +503,10 @@ fn source(frozen: &Frozen, row: &ReportRow) -> Option<AssessmentSource> {
 
 fn existing<'a>(frozen: &'a Frozen, row: &ReportRow) -> Option<&'a ItemRecord> {
     let no = row.id.strip_prefix("CMT-")?.parse::<u32>().ok()?;
-    let item = frozen.items.iter().find(|i| i.no == no)?;
+    let item = frozen
+        .items
+        .iter()
+        .find(|i| i.no == no && i.gone_at.is_none())?;
     if !item.author.eq_ignore_ascii_case(&row.reviewer) {
         return None;
     }
@@ -578,7 +609,7 @@ fn host_card(
         .title
         .as_deref()
         .map(|t| ingest::public(t, &row.id, "title"))
-        .filter(|t| !t.is_empty());
+        .filter(|t| !t.is_empty() && ingest::fit_text(t, 600).is_ok());
     let target = match kind {
         DecisionKind::HandledInPr => {
             local_pr(proposal, repo).map(|number| DecisionTarget::ExistingPr { number })
@@ -587,17 +618,21 @@ fn host_card(
             if proposal.target_pr.is_some() || proposal.target_url.is_some() {
                 None
             } else {
-                Some(DecisionTarget::FollowUpPr { title })
+                Some(DecisionTarget::FollowUpPr {
+                    title: title.clone(),
+                })
             }
         }
         DecisionKind::UpstreamIssue => Some(DecisionTarget::UpstreamIssue {
             url: proposal.target_url.clone(),
         }),
-        DecisionKind::Todo => title.map(|title| DecisionTarget::Todo { title }),
+        DecisionKind::Todo => title.clone().map(|title| DecisionTarget::Todo { title }),
         _ => None,
     };
+    let mut guarded_proposal = proposal.clone();
+    guarded_proposal.title = title;
     let mut card = CommentAssessment {
-        proposed_decision: Some(proposal.clone()),
+        proposed_decision: Some(guarded_proposal),
         job: result.job_id,
         head: CommitSha(head.into()),
         assessed_at: Timestamp::now(),

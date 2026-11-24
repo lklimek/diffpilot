@@ -58,6 +58,7 @@ pub(super) async fn apply(
             let current: Option<String> = sqlx::query_scalar("SELECT body_hash FROM comment_items WHERE id=? AND tenant_id=? AND pull_request_id=?")
                 .bind(id.to_string()).bind(tenant).bind(pass.input.pull_request_id).fetch_optional(&mut **tx).await?;
             if current.as_ref() != Some(hash) {
+                mark_missing(rows, &point.key);
                 continue;
             }
             *id
@@ -84,6 +85,7 @@ pub(super) async fn apply(
                 | review_loop::UpsertOutcome::Unchanged(i) => i.id,
             }
         } else {
+            mark_missing(rows, &point.key);
             continue;
         };
         if point.existing.is_none() {
@@ -96,25 +98,23 @@ pub(super) async fn apply(
             .and_then(|key| applied.get(key))
             .copied();
         if point.duplicate.is_some() && duplicate.is_none() {
-            return Err(DbError::Conflict);
+            mark_missing(rows, &point.key);
+            continue;
         }
         if let Some((url, version, quote)) = &point.source {
             let source: i64 = sqlx::query_scalar("SELECT id FROM comment_sources WHERE tenant_id=? AND pull_request_id=? AND url=? AND body_hash=?")
                 .bind(tenant).bind(pass.input.pull_request_id).bind(url).bind(version).fetch_one(&mut **tx).await?;
-            sqlx::query("UPDATE comment_items SET source_id=?,quote=?,duplicate_of=? WHERE id=?")
+            sqlx::query("UPDATE comment_items SET source_id=?,quote=? WHERE id=?")
                 .bind(source)
                 .bind(quote)
-                .bind(duplicate.map(|id: CommentItemId| id.to_string()))
-                .bind(id.to_string())
-                .execute(&mut **tx)
-                .await?;
-        } else if duplicate.is_some() {
-            sqlx::query("UPDATE comment_items SET duplicate_of=? WHERE id=?")
-                .bind(duplicate.map(|id| id.to_string()))
                 .bind(id.to_string())
                 .execute(&mut **tx)
                 .await?;
         }
+        sqlx::query("UPDATE comment_items SET gone_at=NULL,duplicate_of=?,duplicate_fingerprint=? WHERE id=?")
+            .bind(duplicate.map(|id: CommentItemId| id.to_string()))
+            .bind(duplicate.map(|_| point.fingerprint.as_str()))
+            .bind(id.to_string()).execute(&mut **tx).await?;
         if let Some(assessment) = &point.assessment {
             if assessment.head != pass.input.head {
                 return Err(DbError::Conflict);
@@ -155,6 +155,16 @@ pub(super) async fn apply(
         }
     }
     Ok(())
+}
+
+fn mark_missing(rows: &mut [AssessmentComparisonItem], key: &str) {
+    if let Some(row) = rows.iter_mut().find(|row| row.comparison_key == key) {
+        row.status = contracts::assessment::ComparisonItemStatus::MissingRow;
+        row.duplicate_of = None;
+        row.verdict = None;
+        row.native_verdict = None;
+        row.proposal = None;
+    }
 }
 
 /// Capture every actual revision without coupling model evidence to owner truth.

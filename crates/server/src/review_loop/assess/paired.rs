@@ -3,7 +3,7 @@
 use super::{
     AssessError,
     frozen::{self, Frozen},
-    host, prompt,
+    prompt,
 };
 use crate::jobs::executor::{JobHandle, JobUpdate};
 use crate::review_loop::{handin, observe::Snapshot};
@@ -94,37 +94,11 @@ pub(super) async fn admit(
         sent: review.sent.clone(),
         native: native.clone(),
         standing: Default::default(),
+        fingerprints: Default::default(),
     };
     frozen
         .ids(state, review.pull_request_id, pr, snapshot)
         .await?;
-    // Invalid standing targets fail host input before any slot/job is admitted.
-    if config.primary_method == AssessmentMethod::ClaudiusHost
-        || config.paired(&native.pull_request, now)
-    {
-        for item in &frozen.data.ids.items {
-            if let Some(decision) = &item.decision {
-                let kind = match decision.kind {
-                    agent::comment_report::RecordedDecisionKind::Decision(kind) => kind,
-                    agent::comment_report::RecordedDecisionKind::Deferred => {
-                        agent::comment_report::ProposedDecisionKind::Todo
-                    }
-                    agent::comment_report::RecordedDecisionKind::Withdrawn => {
-                        agent::comment_report::ProposedDecisionKind::Reject
-                    }
-                };
-                if !host::valid_proposal(&agent::comment_report::ProposedDecision {
-                    kind,
-                    target_pr: decision.target_pr,
-                    target_url: decision.target_url.clone(),
-                    title: decision.title.clone(),
-                    fixed_in: None,
-                }) {
-                    return Err(AssessError::Snapshot);
-                }
-            }
-        }
-    }
     let id = PassId::new_random();
     let hash = frozen.write(state, id).await?;
     let model = crate::model::select_model(
@@ -342,7 +316,7 @@ pub(super) async fn run(
                 failure: None,
                 items: vec![],
             };
-            let (items, writes) = match &result.outcome {
+            let (items, mut writes) = match &result.outcome {
                 JobOutcome::Succeeded { output } => {
                     match super::adapter::normalize(&frozen, &pass, &run, &result, output.clone()) {
                         Ok(value) => value,
@@ -368,6 +342,34 @@ pub(super) async fn run(
                     (vec![], vec![])
                 }
             };
+            if run.reference.method == AssessmentMethod::ClaudiusHost {
+                let mut summary = state
+                    .db
+                    .pull_requests()
+                    .get(record.pull_request_id)
+                    .await?
+                    .pr;
+                summary.head_sha = pass.input.head.clone();
+                summary.base_sha = pass.input.base.clone();
+                let mut code = super::CodeReader::new(state, &summary);
+                let purpose =
+                    super::purpose_hash(&frozen.native.title, frozen.native.description.as_deref());
+                for write in &mut writes {
+                    if let Some(observed) = &write.observed {
+                        write.fingerprint = super::fingerprint_fields(
+                            super::FingerprintPoint {
+                                body_hash: &observed.body_hash,
+                                location: observed.location.as_ref(),
+                                bot_status: observed.github.bot_status,
+                            },
+                            &pass.input.head,
+                            code.at(observed.location.as_ref()).await.as_deref(),
+                            &purpose,
+                            None,
+                        );
+                    }
+                }
+            }
             normalized.items = items;
             let primary = run.reference.method == pass.config.primary_method;
             let accepted = state
@@ -431,6 +433,12 @@ pub(super) async fn run(
         .review_loop()
         .finish_pass(pass.id, primary_succeeded, Timestamp::now())
         .await?;
-    super::next(state, record, primary_complete).await;
+    super::next(
+        state,
+        record,
+        primary_complete,
+        frozen.data.scope.sources.len() >= 5,
+    )
+    .await;
     Ok(())
 }

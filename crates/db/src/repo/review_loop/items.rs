@@ -370,6 +370,19 @@ fn lines_of(location: Option<&ItemLocation>) -> (Option<&str>, Option<u32>, Opti
 }
 
 impl ReviewLoop<'_> {
+    /// Whether a primary duplicate link already covers this exact point/code version.
+    pub async fn duplicate_is_current(
+        &self,
+        item: CommentItemId,
+        fingerprint: &str,
+    ) -> Result<bool, DbError> {
+        let mut tx = read_tx(self.pool).await?;
+        let current = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM comment_items WHERE id=? AND duplicate_of IS NOT NULL AND duplicate_fingerprint=?)")
+            .bind(item.to_string()).bind(fingerprint).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(current)
+    }
+
     /// Binds a grounded point to its source version; SQL enforces PR/tenant and duplicate ownership.
     pub async fn bind_source(
         &self,
