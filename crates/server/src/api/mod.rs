@@ -11,6 +11,7 @@ use crate::frontend::SECURITY_HEADERS;
 use crate::state::AppState;
 
 pub mod analyses;
+pub mod assessment;
 pub mod auth;
 pub mod comments;
 pub mod dashboard;
@@ -47,6 +48,7 @@ const API_HEADERS: [(&str, &str); 2] = [
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(analyses::routes())
+        .merge(assessment::routes())
         .merge(flow_work::routes())
         .merge(auth::routes())
         .merge(comments::routes())

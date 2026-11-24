@@ -636,7 +636,7 @@
           "description": "Standing maintainer decision.",
           "anyOf": [
             {
-              "$ref": "#/$defs/RecordedDecision"
+              "$ref": "#/$defs/StandingDecision"
             },
             {
               "type": "null"
@@ -679,35 +679,16 @@
         }
       ]
     },
-    "RecordedDecision": {
-      "description": "Attributed prior decision; server verifies authority and grounding before treating it as a fact.",
+    "StandingDecision": {
+      "description": "Standing choice offered to the skill, without invented reply-chain provenance.",
       "type": "object",
       "properties": {
         "kind": {
-          "description": "Recorded decision.",
+          "description": "Stored decision kind.",
           "$ref": "#/$defs/RecordedDecisionKind"
         },
-        "by": {
-          "description": "GitHub author login.",
-          "type": "string"
-        },
-        "on_behalf_of": {
-          "description": "Named maintainer for an explicit trusted relay; never inferred.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "comment_url": {
-          "description": "Link to the decision's comment.",
-          "type": "string"
-        },
-        "quote": {
-          "description": "Verbatim decision quote, at most 600 characters.",
-          "type": "string"
-        },
         "target_pr": {
-          "description": "PR target, when supplied.",
+          "description": "Existing PR target.",
           "type": [
             "integer",
             "null"
@@ -716,7 +697,14 @@
           "minimum": 0
         },
         "target_url": {
-          "description": "URL target, when supplied.",
+          "description": "Existing issue or PR target.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Follow-up or TODO title.",
           "type": [
             "string",
             "null"
@@ -724,10 +712,7 @@
         }
       },
       "required": [
-        "kind",
-        "by",
-        "comment_url",
-        "quote"
+        "kind"
       ]
     },
     "RecordedDecisionKind": {

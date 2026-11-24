@@ -155,6 +155,8 @@ mod tests {
 
     fn comment(login: &str, typename: &str, body: &str) -> ThreadComment {
         ThreadComment {
+            commit: None,
+            original_commit: None,
             database_id: Some(1),
             state: None,
             author: Some(Author {

@@ -42,6 +42,8 @@ pub const GITHUB_API_URL: &str = "SR_GITHUB_API_URL";
 pub const GITHUB_OAUTH_URL: &str = "SR_GITHUB_OAUTH_URL";
 /// Base URL repositories are cloned from (`<base>/<owner>/<name>.git`); `file://` allowed for development.
 pub const GITHUB_CLONE_URL: &str = "SR_GITHUB_CLONE_URL";
+/// Optional comma-separated trusted maintainer relay logins; empty by default.
+pub const MAINTAINER_DELEGATES: &str = "SR_MAINTAINER_DELEGATES";
 /// MemCan MCP endpoint URL.
 pub const MEMCAN_URL: &str = "SR_MEMCAN_URL";
 /// MemCan bearer token.
@@ -89,6 +91,8 @@ pub struct Config {
     pub runner_listen_addr: SocketAddr,
     /// GitHub logins allowed to sign in to the default tenant; at least one, unique ignoring ASCII case.
     pub allowed_logins: Vec<String>,
+    /// Explicit trusted relays, independent of tenant membership or bot status.
+    pub maintainer_delegates: Vec<String>,
     /// Reverse proxies whose forwarding headers are trusted (default: none).
     pub trusted_proxies: Vec<IpNet>,
     /// Directory for the database and the bare mirrors (default `data`).
@@ -360,6 +364,10 @@ impl Config {
         Ok(Self {
             public_url: parse_http_url(PUBLIC_URL, &require(PUBLIC_URL)?)?,
             allowed_logins: parse_allowed_logins(&require(ALLOWED_LOGINS)?)?,
+            maintainer_delegates: get(MAINTAINER_DELEGATES)?
+                .map(|value| parse_logins(MAINTAINER_DELEGATES, &value))
+                .transpose()?
+                .unwrap_or_default(),
             listen_addr,
             runner_listen_addr,
             trusted_proxies,
@@ -497,6 +505,10 @@ fn is_github_login(entry: &str) -> bool {
 }
 
 fn parse_allowed_logins(value: &str) -> Result<Vec<String>, ConfigError> {
+    parse_logins(ALLOWED_LOGINS, value)
+}
+
+fn parse_logins(key: &'static str, value: &str) -> Result<Vec<String>, ConfigError> {
     let mut logins: Vec<String> = Vec::new();
     for entry in value
         .split(',')
@@ -506,28 +518,26 @@ fn parse_allowed_logins(value: &str) -> Result<Vec<String>, ConfigError> {
         // Checked as check-production-config.sh does: a start with the example value would drop every bound entry.
         if entry.contains("REPLACE") {
             return Err(ConfigError::PlaceholderLogin {
-                key: ALLOWED_LOGINS,
+                key,
                 entry: entry.to_owned(),
             });
         }
         if !is_github_login(entry) {
             return Err(ConfigError::InvalidLogin {
-                key: ALLOWED_LOGINS,
+                key,
                 entry: entry.to_owned(),
             });
         }
         if logins.iter().any(|login| login.eq_ignore_ascii_case(entry)) {
             return Err(ConfigError::DuplicateLogin {
-                key: ALLOWED_LOGINS,
+                key,
                 entry: entry.to_owned(),
             });
         }
         logins.push(entry.to_owned());
     }
     if logins.is_empty() {
-        return Err(ConfigError::NoAllowedLogins {
-            key: ALLOWED_LOGINS,
-        });
+        return Err(ConfigError::NoAllowedLogins { key });
     }
     Ok(logins)
 }
@@ -604,6 +614,25 @@ pub(crate) mod tests {
     /// A valid configuration for tests of other modules.
     pub(crate) fn test_config() -> Config {
         parse(&required_env()).expect("required test environment is valid")
+    }
+
+    #[test]
+    fn maintainer_relays_require_explicit_valid_configuration() {
+        let mut env = required_env();
+        assert!(parse(&env).unwrap().maintainer_delegates.is_empty());
+        env.insert(MAINTAINER_DELEGATES, "Relay-Bot, relay_user".into());
+        assert_eq!(
+            parse(&env).unwrap().maintainer_delegates,
+            vec!["Relay-Bot", "relay_user"]
+        );
+        env.insert(MAINTAINER_DELEGATES, "bad/login".into());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidLogin {
+                key: MAINTAINER_DELEGATES,
+                ..
+            })
+        ));
     }
 
     #[test]

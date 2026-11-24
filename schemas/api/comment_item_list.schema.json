@@ -678,6 +678,17 @@
       "description": "The LLM assessment of one item at one head (`verify_comments`).",
       "type": "object",
       "properties": {
+        "proposed_decision": {
+          "description": "Original host proposal, preserving targets beyond the legacy action form.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProposedDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "evidence_text": {
           "description": "Evidence from the report, labelled LLM text.",
           "type": [
@@ -832,6 +843,89 @@
         "prompt_version"
       ]
     },
+    "ProposedDecision": {
+      "description": "Machine-readable proposed action; target semantics are validated by the server.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Decision kind.",
+          "$ref": "#/$defs/ProposedDecisionKind"
+        },
+        "fixed_in": {
+          "description": "Fix commit, if supplied.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_pr": {
+          "description": "Target PR number.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "target_url": {
+          "description": "Target issue or PR URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Follow-up title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "ProposedDecisionKind": {
+      "description": "Proposed decision kind; independent of PR-level decisions.",
+      "oneOf": [
+        {
+          "description": "Resolve as fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "Fix in this PR.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "Reject with a reason.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "Existing PR handles it.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "Follow-up PR handles it.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "Upstream issue handles it.",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "Record a TODO.",
+          "type": "string",
+          "const": "todo"
+        }
+      ]
+    },
     "RecordedDecision": {
       "description": "Attributed prior decision; server verifies authority and grounding before treating it as a fact.",
       "type": "object",
@@ -899,46 +993,6 @@
         {
           "description": "Ordinary item decision.",
           "$ref": "#/$defs/ProposedDecisionKind"
-        }
-      ]
-    },
-    "ProposedDecisionKind": {
-      "description": "Proposed decision kind; independent of PR-level decisions.",
-      "oneOf": [
-        {
-          "description": "Resolve as fixed.",
-          "type": "string",
-          "const": "resolve"
-        },
-        {
-          "description": "Fix in this PR.",
-          "type": "string",
-          "const": "fix_here"
-        },
-        {
-          "description": "Reject with a reason.",
-          "type": "string",
-          "const": "reject"
-        },
-        {
-          "description": "Existing PR handles it.",
-          "type": "string",
-          "const": "handled_in_pr"
-        },
-        {
-          "description": "Follow-up PR handles it.",
-          "type": "string",
-          "const": "follow_up_pr"
-        },
-        {
-          "description": "Upstream issue handles it.",
-          "type": "string",
-          "const": "upstream_issue"
-        },
-        {
-          "description": "Record a TODO.",
-          "type": "string",
-          "const": "todo"
         }
       ]
     },

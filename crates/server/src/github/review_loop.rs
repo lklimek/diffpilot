@@ -23,7 +23,7 @@ reviewDecision updatedAt}}}";
 pub const REVIEW_THREADS: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){\
 pullRequest(number:$pr){reviewThreads(first:100,after:$after){totalCount pageInfo{hasNextPage endCursor} \
 nodes{id isResolved isOutdated path line startLine diffSide resolvedBy{login} comments(first:50){totalCount \
-nodes{databaseId state author{login __typename} body createdAt lastEditedAt url pullRequestReview{id}}}}}}}}";
+nodes{databaseId state author{login __typename} body createdAt lastEditedAt url commit{oid} originalCommit{oid} pullRequestReview{id}}}}}}}}";
 
 /// Q-L3: reviews.
 pub const REVIEWS: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String){repository(owner:$o,name:$n){\
@@ -76,6 +76,12 @@ pub struct PrFacts {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadComment {
+    /// Commit where GitHub places this inline comment.
+    #[serde(default)]
+    pub commit: Option<CommitRef>,
+    /// Original commit when GitHub remapped the comment.
+    #[serde(default)]
+    pub original_commit: Option<CommitRef>,
     /// REST id.
     pub database_id: Option<i64>,
     /// `PENDING` for the viewer's unsubmitted comment.
@@ -154,6 +160,9 @@ pub struct CommitRef {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Review {
+    /// REST review ID, preserved for inline reply-chain metadata.
+    #[serde(default)]
+    pub database_id: Option<i64>,
     /// Node id.
     pub id: String,
     /// Author.

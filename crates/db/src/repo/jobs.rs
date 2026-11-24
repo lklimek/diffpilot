@@ -756,6 +756,10 @@ impl Jobs<'_> {
              RETURNING id",
         );
         let claimed: Option<String> = query.build_query_scalar().fetch_optional(&mut *tx).await?;
+        if let Some(id) = &claimed {
+            sqlx::query("UPDATE assessment_method_runs SET attempt=(SELECT attempt FROM jobs WHERE id=?),status='running',failure=NULL WHERE job_id=? AND accepted_attempt IS NULL")
+                .bind(id).bind(id).execute(&mut *tx).await?;
+        }
         tx.commit().await?;
         match claimed {
             Some(id) => self.get(parse_wire(&id, "jobs.id")?).await.map(Some),

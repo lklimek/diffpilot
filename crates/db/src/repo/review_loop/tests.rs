@@ -306,6 +306,7 @@ async fn assessments_keep_their_fingerprint_and_newest_wins() {
     let rl = db.review_loop();
     let item = new_item(&db, "dedupe-a").await;
     let assessment = |reason: &str| CommentAssessment {
+        proposed_decision: None,
         evidence_text: None,
         recorded_decision: None,
         job: JobId::new_random(),
@@ -1074,6 +1075,7 @@ async fn carry_events_are_logged_and_counted() {
     let repeat = new_item(&db, "dedupe-b").await;
     let decision = decide_one(&db, fix_decision(&source), at(10)).await;
     let evidence = CarryEvidence {
+        quote: None,
         url: repeat.url.clone(),
         body_hash_before: None,
         body_hash_after: None,
@@ -1099,6 +1101,7 @@ async fn carry_events_are_logged_and_counted() {
         kind: CarryKind::AskedAgain,
         reason: Some(ReaskReason::BotEdited),
         evidence: CarryEvidence {
+            quote: None,
             body_hash_before: Some("hash:body".into()),
             body_hash_after: Some("hash:edited".into()),
             ..evidence

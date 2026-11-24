@@ -4,6 +4,16 @@
   "description": "GET …/comments/assessment-comparison, scoped to payer and PR.",
   "type": "object",
   "properties": {
+    "summary": {
+      "description": "Exact comparison counts with explicit denominators.",
+      "$ref": "#/$defs/ComparisonSummary",
+      "default": {
+        "verdict_compared": 0,
+        "verdict_disagreements": 0,
+        "pending_owner": 0,
+        "methods": []
+      }
+    },
     "pass": {
       "description": "Frozen logical pass.",
       "$ref": "#/$defs/AssessmentPass"
@@ -35,6 +45,125 @@
     "items"
   ],
   "$defs": {
+    "ComparisonSummary": {
+      "description": "Counts exclude duplicates, mismatched heads and unaligned secondary points from scoring.",
+      "type": "object",
+      "properties": {
+        "verdict_compared": {
+          "description": "Rows whose two available normalized verdicts can be compared.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "verdict_disagreements": {
+          "description": "Different normalized verdicts among verdict_compared.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "pending_owner": {
+          "description": "Primary points waiting for an actual owner choice.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "methods": {
+          "description": "Per-method coverage and exact proposal-kind/target agreement.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MethodComparisonScore"
+          }
+        }
+      },
+      "required": [
+        "verdict_compared",
+        "verdict_disagreements",
+        "pending_owner",
+        "methods"
+      ]
+    },
+    "MethodComparisonScore": {
+      "description": "Explicit per-method denominators; native verdict and proposal remain separately nullable.",
+      "type": "object",
+      "properties": {
+        "method": {
+          "description": "Assessment adapter.",
+          "$ref": "#/$defs/AssessmentMethod"
+        },
+        "assessed": {
+          "description": "Method rows with an available normalized verdict.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unmatched": {
+          "description": "Unaligned points retained in the report.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "missing": {
+          "description": "Expected but absent rows, including failed methods.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "missing_verdict": {
+          "description": "Available rows without a normalized verdict.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "missing_proposal": {
+          "description": "Available rows without a machine proposal.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "owner_decided": {
+          "description": "Eligible actual owner choices, whether a proposal is present or not.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "owner_agreed": {
+          "description": "Exact kind and target matches among owner_decided.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "failed": {
+          "description": "Whether this method failed or was cancelled.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "method",
+        "assessed",
+        "unmatched",
+        "missing",
+        "missing_verdict",
+        "missing_proposal",
+        "owner_decided",
+        "owner_agreed",
+        "failed"
+      ]
+    },
+    "AssessmentMethod": {
+      "description": "An assessment adapter; native outputs retain their own validation contracts.",
+      "oneOf": [
+        {
+          "description": "Host-supplied claudius 4.2 report.",
+          "type": "string",
+          "const": "claudius_host"
+        },
+        {
+          "description": "Existing strict prompt v4 output.",
+          "type": "string",
+          "const": "prompt_v4"
+        }
+      ]
+    },
     "AssessmentPass": {
       "description": "One admitted logical pass; retries keep its original day and configuration.",
       "type": "object",
@@ -208,25 +337,25 @@
       },
       "additionalProperties": false
     },
-    "AssessmentMethod": {
-      "description": "An assessment adapter; native outputs retain their own validation contracts.",
-      "oneOf": [
-        {
-          "description": "Host-supplied claudius 4.2 report.",
-          "type": "string",
-          "const": "claudius_host"
-        },
-        {
-          "description": "Existing strict prompt v4 output.",
-          "type": "string",
-          "const": "prompt_v4"
-        }
-      ]
-    },
     "AssessmentMethodRun": {
       "description": "Persisted method summary; usage and duration include failed attempts once each.",
       "type": "object",
       "properties": {
+        "usage_complete": {
+          "description": "False when any started attempt has unavailable metering; usage then reports only known totals.",
+          "type": "boolean"
+        },
+        "reported_head": {
+          "description": "Commit actually reported by the adapter; a mismatch stays comparison-only.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitSha"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "reference": {
           "description": "Frozen method identity.",
           "$ref": "#/$defs/AssessmentRunRef"
@@ -281,6 +410,7 @@
         }
       },
       "required": [
+        "usage_complete",
         "reference",
         "job_id",
         "version",
@@ -466,6 +596,17 @@
       "description": "Common method-local comparison row; secondary IDs never allocate primary items.",
       "type": "object",
       "properties": {
+        "recorded_decision": {
+          "description": "Model-reported reply-chain evidence, separate from actual diffpilot owner truth.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RecordedDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "comparison_key": {
           "description": "Stable comparison identity inside this pass.",
           "type": "string"
@@ -565,6 +706,116 @@
         "status"
       ]
     },
+    "RecordedDecision": {
+      "description": "Attributed prior decision; server verifies authority and grounding before treating it as a fact.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Recorded decision.",
+          "$ref": "#/$defs/RecordedDecisionKind"
+        },
+        "by": {
+          "description": "GitHub author login.",
+          "type": "string"
+        },
+        "on_behalf_of": {
+          "description": "Named maintainer for an explicit trusted relay; never inferred.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "comment_url": {
+          "description": "Link to the decision's comment.",
+          "type": "string"
+        },
+        "quote": {
+          "description": "Verbatim decision quote, at most 600 characters.",
+          "type": "string"
+        },
+        "target_pr": {
+          "description": "PR target, when supplied.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "target_url": {
+          "description": "URL target, when supplied.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "by",
+        "comment_url",
+        "quote"
+      ]
+    },
+    "RecordedDecisionKind": {
+      "description": "Recorded decision kind, including deferral and withdrawal.",
+      "anyOf": [
+        {
+          "description": "Maintainer deferred this point.",
+          "type": "string",
+          "const": "deferred"
+        },
+        {
+          "description": "Source author withdrew this point.",
+          "type": "string",
+          "const": "withdrawn"
+        },
+        {
+          "description": "Ordinary item decision.",
+          "$ref": "#/$defs/ProposedDecisionKind"
+        }
+      ]
+    },
+    "ProposedDecisionKind": {
+      "description": "Proposed decision kind; independent of PR-level decisions.",
+      "oneOf": [
+        {
+          "description": "Resolve as fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "Fix in this PR.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "Reject with a reason.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "Existing PR handles it.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "Follow-up PR handles it.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "Upstream issue handles it.",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "Record a TODO.",
+          "type": "string",
+          "const": "todo"
+        }
+      ]
+    },
     "AssessmentSource": {
       "description": "Frozen source identity; quote and version are required for body-point alignment.",
       "oneOf": [
@@ -649,6 +900,11 @@
     "ComparisonItemStatus": {
       "description": "Distinct completeness/alignment states; null verdict and proposal remain independent.",
       "oneOf": [
+        {
+          "description": "Attributed reply/status evidence; never a scored point or a source-consumption marker.",
+          "type": "string",
+          "const": "context"
+        },
         {
           "description": "Row aligned to a common identity.",
           "type": "string",
@@ -747,46 +1003,6 @@
       },
       "required": [
         "kind"
-      ]
-    },
-    "ProposedDecisionKind": {
-      "description": "Proposed decision kind; independent of PR-level decisions.",
-      "oneOf": [
-        {
-          "description": "Resolve as fixed.",
-          "type": "string",
-          "const": "resolve"
-        },
-        {
-          "description": "Fix in this PR.",
-          "type": "string",
-          "const": "fix_here"
-        },
-        {
-          "description": "Reject with a reason.",
-          "type": "string",
-          "const": "reject"
-        },
-        {
-          "description": "Existing PR handles it.",
-          "type": "string",
-          "const": "handled_in_pr"
-        },
-        {
-          "description": "Follow-up PR handles it.",
-          "type": "string",
-          "const": "follow_up_pr"
-        },
-        {
-          "description": "Upstream issue handles it.",
-          "type": "string",
-          "const": "upstream_issue"
-        },
-        {
-          "description": "Record a TODO.",
-          "type": "string",
-          "const": "todo"
-        }
       ]
     },
     "AssessmentOwnerDecision": {

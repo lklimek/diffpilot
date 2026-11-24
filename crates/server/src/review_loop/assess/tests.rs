@@ -88,6 +88,53 @@ async fn fixture_with(head: &str, reachable: bool) -> Fixture {
     let db = Db::in_memory().await.expect("db");
     seed_analysis(&db).await.expect("seed");
     let state = AppState::with_queue(config, db);
+    state
+        .db
+        .llm_credentials()
+        .put_status(
+            DEFAULT_TENANT,
+            "u1",
+            &contracts::gateway::CredentialStatus {
+                mode: contracts::gateway::CredentialMode::ChatgptPlan,
+                state: contracts::gateway::CredentialState::Linked,
+                relink_reason: None,
+                label: None,
+                plan: None,
+                paused_until: None,
+                last_call: None,
+            },
+        )
+        .await
+        .expect("fake linked plan");
+    state
+        .db
+        .users()
+        .upsert_member(
+            DEFAULT_TENANT,
+            "u1",
+            &db::repo::users::GithubProfile {
+                github_id: 1,
+                login: "lklimek".into(),
+                name: None,
+                avatar_url: None,
+            },
+            Timestamp::now(),
+        )
+        .await
+        .expect("member");
+    state
+        .db
+        .assessments()
+        .set_config(
+            DEFAULT_TENANT,
+            &contracts::ids::UserId("u1".into()),
+            &contracts::assessment::AssessmentConfig {
+                primary_method: contracts::assessment::AssessmentMethod::PromptV4,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("native adapter fixture");
     move_head(&state, head).await;
     state
         .db
@@ -124,7 +171,9 @@ fn observed(key: &str) -> ObservedItem {
         }),
         title: format!("Comment {key}"),
         body: format!("The code has a problem ({key})."),
-        body_hash: format!("hash:{key}"),
+        body_hash: crate::review_loop::markers::body_hash(&format!(
+            "The code has a problem ({key})."
+        )),
         head: CommitSha(HEAD.to_owned()),
         round: Some(1),
         bot_severity: None,
@@ -210,6 +259,754 @@ fn succeeded(job: JobId, output: Value) -> JobResult {
     }
 }
 
+#[tokio::test]
+async fn paired_pass_freezes_head_config_and_primary_effects() {
+    use contracts::assessment::{AssessmentConfig, AssessmentMethod, AssessmentRunStatus};
+    let f = fixture(HEAD).await;
+    let item = item(&f.state, "T1", "src/rpc/client.rs", (40, 43)).await;
+    let payer = contracts::ids::UserId("u1".into());
+    f.state
+        .db
+        .assessments()
+        .set_config(
+            DEFAULT_TENANT,
+            &payer,
+            &AssessmentConfig {
+                ab_prs: vec!["acme/node-client#482".into()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Opened)
+            .await
+            .unwrap(),
+        PassQueued::Queued
+    );
+    let pass = live_pass(&f.state).await;
+    let frozen = f
+        .state
+        .db
+        .assessments()
+        .pass(DEFAULT_TENANT, &payer, pass.id)
+        .await
+        .unwrap();
+    assert!(frozen.paired);
+    assert_eq!(frozen.config.primary_method, AssessmentMethod::ClaudiusHost);
+    assert_eq!(
+        f.state
+            .db
+            .assessments()
+            .quota(&payer, Timestamp::now())
+            .await
+            .unwrap()
+            .remaining,
+        79
+    );
+    move_head(&f.state, BASE).await;
+    f.state
+        .db
+        .assessments()
+        .set_config(
+            DEFAULT_TENANT,
+            &payer,
+            &AssessmentConfig {
+                primary_method: AssessmentMethod::PromptV4,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let runs = f
+        .state
+        .db
+        .assessments()
+        .runs(DEFAULT_TENANT, &payer, pass.id)
+        .await
+        .unwrap();
+    assert_eq!(runs.len(), 2);
+    let jobs = f.state.db.jobs();
+    let specs: Vec<_> = futures::future::join_all(runs.iter().map(|r| jobs.get(r.job_id)))
+        .await
+        .into_iter()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(specs[0].spec.pr_data, specs[1].spec.pr_data);
+    for spec in &specs {
+        let JobTarget::PullRequestComments(target) = &spec.spec.target else {
+            panic!("target")
+        };
+        assert_eq!(target.repo.head_sha.0, HEAD);
+        assert_eq!(spec.spec.model, frozen.input.model);
+    }
+    let now = Timestamp::now();
+    let first = f
+        .state
+        .db
+        .jobs()
+        .claim(db::repo::jobs::ClaimParams {
+            payer_ids: &["u1".into()],
+            job_token_hash: b"fake-host",
+            lease_until: now + SignedDuration::from_mins(5),
+            now,
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        first.spec.assessment.as_ref().unwrap().method,
+        AssessmentMethod::ClaudiusHost
+    );
+    let envelope = json!({"schema_version":"4.2.0","metadata":{"report_type":"comment_check","input_mode":"host_supplied","pr_number":482,"commit":HEAD},"comment_assessments":[{"id":format!("CMT-{:03}",item.no),"reviewer":"thepastaclaw","source_kind":"inline","thread_id":"T1","comment_url":"","description":"Bound retries","reasoning":"The loop has no upper bound.","assessment":"valid","proposed_action":"Fix here","proposed_decision":{"kind":"fix_here"}}]});
+    let mut result = succeeded(first.id, Value::Null);
+    result.assessment = first.spec.assessment.clone().map(Box::new);
+    result.report = Some(Box::new(serde_json::from_value(envelope).unwrap()));
+    f.state
+        .db
+        .jobs()
+        .complete(&result, Timestamp::now())
+        .await
+        .unwrap();
+    let second = f
+        .state
+        .db
+        .jobs()
+        .claim(db::repo::jobs::ClaimParams {
+            payer_ids: &["u1".into()],
+            job_token_hash: b"fake-v4",
+            lease_until: now + SignedDuration::from_mins(5),
+            now,
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        second.spec.assessment.as_ref().unwrap().method,
+        AssessmentMethod::PromptV4
+    );
+    let mut point = entry(&format!("C{}", item.no));
+    point["validity"] = json!("invalid");
+    point["recommendation"]["kind"] = json!("reject");
+    let mut result = succeeded(
+        second.id,
+        json!({"purpose":"Retry calls","items":[point],"answer":null}),
+    );
+    result.assessment = second.spec.assessment.clone().map(Box::new);
+    f.state
+        .db
+        .jobs()
+        .complete(&result, Timestamp::now())
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if f.state
+                .db
+                .review_loop()
+                .pass(pass.id)
+                .await
+                .unwrap()
+                .finished_at
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let report = f
+        .state
+        .db
+        .assessments()
+        .comparison(DEFAULT_TENANT, &payer, pass.id, Timestamp::now())
+        .await
+        .unwrap();
+    assert!(
+        report
+            .runs
+            .iter()
+            .all(|r| r.status == AssessmentRunStatus::Succeeded),
+        "{:?}",
+        report.runs
+    );
+    assert_eq!(report.items.len(), 2);
+    let stored = f
+        .state
+        .db
+        .review_loop()
+        .latest_assessment(item.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .assessment;
+    assert_eq!(stored.head.0, HEAD);
+    assert_eq!(
+        stored.recommendation.kind,
+        contracts::api::review_loop::DecisionKind::FixHere
+    );
+    assert_eq!(f.state.db.review_loop().items(PR).await.unwrap().len(), 1);
+    assert_eq!(
+        f.state
+            .db
+            .assessments()
+            .quota(&payer, Timestamp::now())
+            .await
+            .unwrap()
+            .remaining,
+        79
+    );
+}
+
+async fn claim_method(state: &AppState) -> db::repo::jobs::JobRecord {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let now = Timestamp::now();
+            if let Some(job) = state
+                .db
+                .jobs()
+                .claim(db::repo::jobs::ClaimParams {
+                    payer_ids: &["u1".into()],
+                    job_token_hash: b"fake-method",
+                    lease_until: now + SignedDuration::from_mins(5),
+                    now,
+                })
+                .await
+                .unwrap()
+            {
+                break job;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn wait_pass(state: &AppState, id: PassId) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if state
+                .db
+                .review_loop()
+                .pass(id)
+                .await
+                .unwrap()
+                .finished_at
+                .is_some()
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn paired_failed_method_retry_keeps_primary_snapshot_and_one_slot() {
+    use contracts::assessment::*;
+    use contracts::job::result::{JobFailureKind, Usage};
+    let f = fixture(HEAD).await;
+    let item = item(&f.state, "T1", "src/rpc/client.rs", (40, 43)).await;
+    let payer = contracts::ids::UserId("u1".into());
+    f.state
+        .db
+        .assessments()
+        .set_config(
+            DEFAULT_TENANT,
+            &payer,
+            &AssessmentConfig {
+                primary_method: AssessmentMethod::PromptV4,
+                ab_prs: vec!["acme/node-client#482".into()],
+                ab_until: None,
+            },
+        )
+        .await
+        .unwrap();
+    request_pass(&f.state, PR, PassReason::Opened)
+        .await
+        .unwrap();
+    let pass = live_pass(&f.state).await;
+    let primary = claim_method(&f.state).await;
+    assert_eq!(
+        primary.spec.assessment.as_ref().unwrap().method,
+        AssessmentMethod::PromptV4
+    );
+    let mut success = succeeded(
+        primary.id,
+        json!({"purpose":"Retry calls","items":[entry(&format!("C{}",item.no))],"answer":null}),
+    );
+    success.assessment = primary.spec.assessment.clone().map(Box::new);
+    f.state
+        .db
+        .jobs()
+        .complete(&success, Timestamp::now())
+        .await
+        .unwrap();
+    let secondary = claim_method(&f.state).await;
+    let mut failure = succeeded(secondary.id, Value::Null);
+    failure.assessment = secondary.spec.assessment.clone().map(Box::new);
+    failure.outcome = JobOutcome::Failed {
+        kind: JobFailureKind::WorkerLost,
+        message: "fake relay loss".into(),
+    };
+    failure.usage = Some(Usage {
+        input_tokens: 10,
+        ..Default::default()
+    });
+    f.state
+        .db
+        .jobs()
+        .complete(&failure, Timestamp::now())
+        .await
+        .unwrap();
+    let retry = claim_method(&f.state).await;
+    assert_eq!(retry.id, secondary.id);
+    assert_eq!(retry.attempt, 2);
+    assert_eq!(retry.spec.pr_data, secondary.spec.pr_data);
+    assert_eq!(retry.spec.assessment, secondary.spec.assessment);
+    let mut failure = failure.clone();
+    failure.attempt = retry.attempt;
+    failure.outcome = JobOutcome::Failed {
+        kind: JobFailureKind::ReportVersionUnsupported,
+        message: "fake old report".into(),
+    };
+    failure.usage = Some(Usage {
+        input_tokens: 20,
+        ..Default::default()
+    });
+    f.state
+        .db
+        .jobs()
+        .complete(&failure, Timestamp::now())
+        .await
+        .unwrap();
+    wait_pass(&f.state, pass.id).await;
+    let runs = f
+        .state
+        .db
+        .assessments()
+        .runs(DEFAULT_TENANT, &payer, pass.id)
+        .await
+        .unwrap();
+    let failed = runs
+        .iter()
+        .find(|r| r.reference.method == AssessmentMethod::ClaudiusHost)
+        .unwrap();
+    assert_eq!(failed.status, AssessmentRunStatus::Failed);
+    assert_eq!(failed.usage.input_tokens, 30);
+    assert_eq!(
+        f.state
+            .db
+            .review_loop()
+            .latest_assessment(item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .assessment
+            .job,
+        primary.id
+    );
+    assert_eq!(
+        f.state
+            .db
+            .assessments()
+            .quota(&payer, Timestamp::now())
+            .await
+            .unwrap()
+            .remaining,
+        79
+    );
+}
+
+#[tokio::test]
+async fn paired_primary_failure_never_promotes_the_secondary() {
+    use contracts::assessment::*;
+    let f = fixture(HEAD).await;
+    let item = item(&f.state, "T1", "src/rpc/client.rs", (40, 43)).await;
+    let payer = contracts::ids::UserId("u1".into());
+    f.state
+        .db
+        .assessments()
+        .set_config(
+            DEFAULT_TENANT,
+            &payer,
+            &AssessmentConfig {
+                ab_prs: vec!["acme/node-client#482".into()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    request_pass(&f.state, PR, PassReason::Opened)
+        .await
+        .unwrap();
+    let pass = live_pass(&f.state).await;
+    let first = claim_method(&f.state).await;
+    let mut failure = succeeded(first.id, Value::Null);
+    failure.assessment = first.spec.assessment.clone().map(Box::new);
+    failure.outcome = JobOutcome::Failed {
+        kind: contracts::job::result::JobFailureKind::Configuration,
+        message: "fake missing skill".into(),
+    };
+    f.state
+        .db
+        .jobs()
+        .complete(&failure, Timestamp::now())
+        .await
+        .unwrap();
+    let secondary = claim_method(&f.state).await;
+    let mut success = succeeded(
+        secondary.id,
+        json!({"purpose":"Retry calls","items":[entry(&format!("C{}",item.no))],"answer":null}),
+    );
+    success.assessment = secondary.spec.assessment.clone().map(Box::new);
+    f.state
+        .db
+        .jobs()
+        .complete(&success, Timestamp::now())
+        .await
+        .unwrap();
+    wait_pass(&f.state, pass.id).await;
+    assert!(
+        f.state
+            .db
+            .review_loop()
+            .latest_assessment(item.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        f.state.db.review_loop().pass(pass.id).await.unwrap().state,
+        PassState::Failed
+    );
+    assert_eq!(
+        f.state
+            .db
+            .assessments()
+            .runs(DEFAULT_TENANT, &payer, pass.id)
+            .await
+            .unwrap()
+            .iter()
+            .find(|r| r.reference.method == AssessmentMethod::PromptV4)
+            .unwrap()
+            .status,
+        AssessmentRunStatus::Succeeded
+    );
+}
+
+#[tokio::test]
+async fn paired_body_points_allocate_ids_only_for_the_primary_and_keep_direct_duplicates() {
+    use contracts::api::review_loop::{CommentSource, CommentSourceKind, SourceRole};
+    use contracts::assessment::*;
+    for primary in [AssessmentMethod::ClaudiusHost, AssessmentMethod::PromptV4] {
+        let f = fixture(HEAD).await;
+        let payer = contracts::ids::UserId("u1".into());
+        f.state
+            .db
+            .assessments()
+            .set_config(
+                DEFAULT_TENANT,
+                &payer,
+                &AssessmentConfig {
+                    primary_method: primary,
+                    ab_prs: vec!["acme/node-client#482".into()],
+                    ab_until: None,
+                },
+            )
+            .await
+            .unwrap();
+        let quote_a = "Bound the retry loop.";
+        let quote_b = "Release the lock before waiting.";
+        let body = format!("{quote_a} {quote_b}");
+        let comment = "https://github.com/acme/node-client/pull/482#issuecomment-42";
+        let review = "https://github.com/acme/node-client/pull/482#pullrequestreview-43";
+        for (key, url, text, kind) in [
+            (
+                "comment:42:1",
+                comment,
+                body.as_str(),
+                CommentItemKind::PrComment,
+            ),
+            ("review:R2:1", review, quote_a, CommentItemKind::ReviewBody),
+        ] {
+            let observed = ObservedItem {
+                kind,
+                author: "owner".into(),
+                author_kind: AuthorKind::Human,
+                url: Some(url.into()),
+                location: None,
+                body: text.into(),
+                body_hash: crate::review_loop::markers::body_hash(text),
+                ..observed(key)
+            };
+            f.state
+                .db
+                .review_loop()
+                .upsert_item(
+                    DEFAULT_TENANT,
+                    PR,
+                    &observed,
+                    ItemState::Undecided,
+                    Timestamp::now(),
+                )
+                .await
+                .unwrap();
+            f.state
+                .db
+                .comment_sources()
+                .put(
+                    DEFAULT_TENANT,
+                    PR,
+                    &CommentSource {
+                        url: url.into(),
+                        kind: if kind == CommentItemKind::PrComment {
+                            CommentSourceKind::PrComment
+                        } else {
+                            CommentSourceKind::ReviewBody
+                        },
+                        author: "owner".into(),
+                        body: text.into(),
+                        body_hash: crate::review_loop::handin::hash(text),
+                        role: SourceRole::Source,
+                        read_at: None,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let data = json!({"manifest":{"repo":"acme/node-client","pr":482,"head":HEAD,"base_sha":BASE,"base_ref":"main","title":"Retry calls","body":"Bound retries","pr_author":"alice","maintainers":["owner"],"bots":[]},"threads":[],"review_comments":[],"reviews":[{"id":"R2","html_url":review,"user":{"login":"owner"},"body":quote_a}],"comments":[{"id":42,"url":comment,"author":{"login":"owner"},"body":body}],"conventions":{},"ids":{"next_id":3,"items":[]},"scope":{"threads":[],"sources":[comment,review]}});
+        store_read(&f.state, "Bound retries", json!({"pr_data":data})).await;
+        request_pass(&f.state, PR, PassReason::Opened)
+            .await
+            .unwrap();
+        let pass = live_pass(&f.state).await;
+        let mut report = json!({"schema_version":"4.2.0","metadata":{"report_type":"comment_check","input_mode":"host_supplied","pr_number":482,"commit":HEAD},"comment_assessments":[
+            {"id":"CMT-001","source_kind":"pr_comment","reviewer":"owner","comment_url":comment,"source_quote":quote_a,"description":"Bound retries","reasoning":"The loop has no upper bound.","assessment":"valid","proposed_action":"Fix here","proposed_decision":{"kind":"fix_here"}},
+            {"id":"CMT-008","source_kind":"pr_comment","reviewer":"owner","comment_url":comment,"source_quote":quote_b,"description":"Release the lock","reasoning":"The lock is held across the wait.","assessment":"valid","proposed_action":"Fix here","proposed_decision":{"kind":"fix_here"}},
+            {"id":"CMT-002","source_kind":"review_body","reviewer":"owner","comment_url":review,"source_quote":quote_a,"description":"Bound retries again","reasoning":"The review repeats the same concern.","merged_into":"CMT-001","proposed_action":"Fix here","proposed_decision":{"kind":"fix_here"}}
+        ]});
+        report["comment_assessments"].as_array_mut().unwrap().push(json!({"id":"CMT-009","source_kind":"reply","reviewer":"owner","comment_url":review,"description":"Earlier reply","reasoning":"The source records a proposed fix.","proposed_action":"Keep context","recorded_decision":{"kind":"fix_here","by":"owner","comment_url":review,"quote":quote_a}}));
+        for _ in 0..2 {
+            let job = claim_method(&f.state).await;
+            let host =
+                job.spec.assessment.as_ref().unwrap().method == AssessmentMethod::ClaudiusHost;
+            let mut result = succeeded(
+                job.id,
+                if host {
+                    Value::Null
+                } else {
+                    json!({"purpose":"Retry calls","items":[entry("C1"),entry("C2")],"answer":null})
+                },
+            );
+            result.assessment = job.spec.assessment.map(Box::new);
+            if host {
+                result.report = Some(Box::new(serde_json::from_value(report.clone()).unwrap()));
+            }
+            f.state
+                .db
+                .jobs()
+                .complete(&result, Timestamp::now())
+                .await
+                .unwrap();
+        }
+        wait_pass(&f.state, pass.id).await;
+        let items = f.state.db.review_loop().items(PR).await.unwrap();
+        let comparisons = f
+            .state
+            .db
+            .assessments()
+            .comparison(DEFAULT_TENANT, &payer, pass.id, Timestamp::now())
+            .await
+            .unwrap();
+        assert!(
+            comparisons
+                .runs
+                .iter()
+                .all(|r| r.status == AssessmentRunStatus::Succeeded),
+            "{:?}",
+            comparisons.runs
+        );
+        assert!(comparisons.items.iter().any(|r| r.local_id == "CMT-008"));
+        let context = comparisons
+            .items
+            .iter()
+            .find(|r| r.status == ComparisonItemStatus::Context)
+            .unwrap();
+        assert_eq!(context.recorded_decision.as_ref().unwrap().by, "owner");
+        assert!(context.owner_decision.is_none());
+        if primary == AssessmentMethod::ClaudiusHost {
+            assert_eq!(
+                items.iter().map(|i| i.no).collect::<Vec<_>>(),
+                vec![1, 2, 8]
+            );
+            assert_eq!(items[1].duplicate_of, Some(items[0].id));
+            assert_eq!(items[2].quote.as_deref(), Some(quote_b));
+        } else {
+            assert_eq!(items.len(), 2);
+            assert!(items.iter().all(|i| i.duplicate_of.is_none()));
+        }
+        assert_eq!(
+            f.state
+                .db
+                .assessments()
+                .quota(&payer, Timestamp::now())
+                .await
+                .unwrap()
+                .remaining,
+            79
+        );
+        let first_at = Timestamp::now();
+        let choice = db::repo::review_loop::NewDecision {
+            item: items[0].id,
+            item_revision: items[0].revision,
+            user_id: "u1".into(),
+            kind: contracts::api::review_loop::DecisionKind::FixHere,
+            reason: None,
+            target: None,
+            r#override: None,
+            resolve_ticked: false,
+            reply_text: None,
+            comment: None,
+            recommendation: None,
+            via: contracts::api::review_loop::DecisionVia::Question,
+            carried_from: None,
+            head: CommitSha(HEAD.into()),
+            effects: vec![],
+        };
+        f.state
+            .db
+            .review_loop()
+            .decide(DEFAULT_TENANT, std::slice::from_ref(&choice), first_at)
+            .await
+            .unwrap();
+        let second_at = first_at + SignedDuration::from_secs(1);
+        let revised = db::repo::review_loop::NewDecision {
+            item_revision: f
+                .state
+                .db
+                .review_loop()
+                .item(items[0].id)
+                .await
+                .unwrap()
+                .revision,
+            kind: contracts::api::review_loop::DecisionKind::Reject,
+            reason: Some("The caller already bounds it.".into()),
+            ..choice
+        };
+        f.state
+            .db
+            .review_loop()
+            .decide(DEFAULT_TENANT, &[revised], second_at)
+            .await
+            .unwrap();
+        let before = f
+            .state
+            .db
+            .assessments()
+            .comparison(DEFAULT_TENANT, &payer, pass.id, first_at)
+            .await
+            .unwrap();
+        let mut after = f
+            .state
+            .db
+            .assessments()
+            .comparison(DEFAULT_TENANT, &payer, pass.id, second_at)
+            .await
+            .unwrap();
+        let owner_before = before
+            .items
+            .iter()
+            .find(|r| r.run.method == primary && r.primary_item_id == Some(items[0].id))
+            .unwrap()
+            .owner_decision
+            .as_ref()
+            .unwrap();
+        let owner_after = after
+            .items
+            .iter()
+            .find(|r| r.run.method == primary && r.primary_item_id == Some(items[0].id))
+            .unwrap()
+            .owner_decision
+            .as_ref()
+            .unwrap();
+        assert_eq!(owner_before.revision, 1);
+        assert_eq!(owner_after.revision, 2);
+        assert_eq!(
+            owner_before.kind,
+            contracts::api::review_loop::DecisionKind::FixHere
+        );
+        assert_eq!(
+            owner_after.kind,
+            contracts::api::review_loop::DecisionKind::Reject
+        );
+        after.summarize();
+        assert!(
+            after
+                .summary
+                .methods
+                .iter()
+                .all(|score| score.owner_agreed == 0)
+        );
+    }
+}
+
+/// Deliver a fake result through the real queue and attempt fence for admitted methods.
+async fn ingest_result(
+    state: &AppState,
+    pass: &PassRecord,
+    mut result: JobResult,
+) -> Result<bool, AssessError> {
+    let spec = state.db.jobs().get(result.job_id).await?.spec;
+    if spec.assessment.is_none() {
+        return ingest::result(state, pass, result).await;
+    }
+    let now = Timestamp::now();
+    let claimed = state
+        .db
+        .jobs()
+        .claim(db::repo::jobs::ClaimParams {
+            payer_ids: std::slice::from_ref(&spec.payer.0),
+            job_token_hash: b"fake-token",
+            lease_until: now + SignedDuration::from_mins(5),
+            now,
+        })
+        .await?
+        .expect("claim");
+    assert_eq!(claimed.id, result.job_id);
+    result.assessment = spec.assessment.map(Box::new);
+    result.attempt = claimed.attempt;
+    state.db.jobs().complete(&result, Timestamp::now()).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let current = state.db.review_loop().pass(pass.id).await.expect("pass");
+            if matches!(current.state, PassState::Finished | PassState::Failed) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("follower");
+    for sent in &pass.sent {
+        if state
+            .db
+            .review_loop()
+            .latest_assessment(sent.item)
+            .await?
+            .is_none_or(|a| a.assessment.job != result.job_id)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(matches!(result.outcome, JobOutcome::Succeeded { .. }))
+}
+
 /// Ingests a successful result of `pass` with an entry for each of its items.
 async fn ingest_all(state: &AppState, pass: &PassRecord, answer: Option<&str>) -> bool {
     let items: Vec<Value> = pass
@@ -219,7 +1016,7 @@ async fn ingest_all(state: &AppState, pass: &PassRecord, answer: Option<&str>) -
         .collect();
     let output = json!({"purpose": "Retry RPC calls with backoff on timeout.", "items": items, "answer": answer});
     let job = pass.job_id.expect("the pass's job");
-    ingest::result(state, pass, succeeded(job, output))
+    ingest_result(state, pass, succeeded(job, output))
         .await
         .expect("ingest")
 }
@@ -301,7 +1098,9 @@ async fn item_by(
         author_kind: author.1,
         title: format!("Comment {key}"),
         body: body.to_owned(),
-        body_hash: format!("hash:{key}"),
+        body_hash: crate::review_loop::markers::body_hash(&format!(
+            "The code has a problem ({key})."
+        )),
         ..observed(key)
     };
     observed.github.bot_status = Some(BotThreadStatus::Deferred);
@@ -742,7 +1541,7 @@ async fn skills_commit_is_provenance_and_never_reassesses() {
         ..succeeded(job, output)
     };
     assert!(
-        ingest::result(&f.state, &first, result)
+        ingest_result(&f.state, &first, result)
             .await
             .expect("ingest")
     );
@@ -876,10 +1675,9 @@ async fn one_assessment_job_per_pr() {
         .state
         .db
         .jobs()
-        .current_for_pass(pass.id, 0)
+        .get(pass.job_id.expect("the pass's job"))
         .await
-        .expect("read")
-        .expect("the pass's job");
+        .expect("read");
     assert_eq!(Some(job.id), pass.job_id);
     assert_eq!(job.spec.kind, JobKind::VerifyComments);
     assert_eq!(job.stage, JobStage::Verify(pass.id));
@@ -912,6 +1710,14 @@ async fn pass_sends_at_most_ten_items() {
 /// Ends `count` passes charged to `u1`, a minute apart (all inside the cap's 24 hours), the last one `ended` ago.
 async fn seed_passes(state: &AppState, count: u32, ended: SignedDuration) {
     let now = Timestamp::now();
+    db::repo::assessments::testing::usage(
+        &state.db,
+        &contracts::ids::UserId("u1".into()),
+        now,
+        count,
+    )
+    .await
+    .expect("quota");
     for n in 0..count {
         let pass = NewPass {
             pull_request_id: PR,
@@ -950,7 +1756,7 @@ async fn watch(state: &AppState) {
         .expect("watch");
 }
 
-/// At [`DAILY_PASSES_PER_USER`] passes in 24 hours, automatic passes stop; an on-demand pass still runs.
+/// At 80 admitted passes in the UTC day, automatic and on-demand passes both stop.
 #[tokio::test]
 async fn daily_cap_stops_automatic_passes() {
     let f = fixture(HEAD).await;
@@ -981,7 +1787,7 @@ async fn daily_cap_stops_automatic_passes() {
         request_pass(&f.state, PR, PassReason::Opened)
             .await
             .expect("pass"),
-        PassQueued::Queued
+        PassQueued::DailyLimit
     );
 }
 
@@ -1174,7 +1980,7 @@ async fn failed_job_fails_the_pass_and_its_question() {
         ..succeeded(pass.job_id.expect("job"), Value::Null)
     };
     assert!(
-        !ingest::result(&f.state, &pass, result)
+        !ingest_result(&f.state, &pass, result)
             .await
             .expect("ingest")
     );
@@ -1283,7 +2089,7 @@ async fn a_reason_that_was_only_a_note_is_not_sent_again() {
     let output = json!({"purpose": "Retry RPC calls with backoff on timeout.", "items": [only_note], "answer": null});
     let job = pass.job_id.expect("the pass's job");
     assert!(
-        ingest::result(&f.state, &pass, succeeded(job, output))
+        ingest_result(&f.state, &pass, succeeded(job, output))
             .await
             .expect("ingest")
     );
@@ -1394,7 +2200,7 @@ async fn verify_output_outside_closed_sets_is_rejected() {
     unfit["category"] = json!("style");
     let output = json!({"purpose": "Retry RPC calls.", "items": [
         entry(&format!("C{}", first.no)), unfit, entry("C99")], "answer": null});
-    let complete = ingest::result(
+    let complete = ingest_result(
         &f.state,
         &pass,
         succeeded(pass.job_id.expect("job"), output),
@@ -1428,7 +2234,7 @@ async fn verify_output_outside_closed_sets_is_rejected() {
     let mut confidence = entry(&format!("C{}", only.no));
     confidence["confidence"] = json!(0.9);
     let output = json!({"purpose": "Retry RPC calls.", "items": [confidence], "answer": null});
-    let complete = ingest::result(
+    let complete = ingest_result(
         &f.state,
         &pass,
         succeeded(pass.job_id.expect("job"), output),

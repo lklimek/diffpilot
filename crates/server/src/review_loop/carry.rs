@@ -128,6 +128,7 @@ pub fn verdict(
     mapping: Option<Mapping>,
 ) -> Verdict {
     let mut evidence = CarryEvidence {
+        quote: None,
         url: observed.url.clone(),
         body_hash_before: Some(decided.body_hash.to_owned()),
         body_hash_after: Some(observed.body_hash.clone()),
@@ -296,6 +297,7 @@ mod tests {
                 Some(Mapping::Unchanged(range(100, 103)))
             ),
             Verdict::Carry(CarryEvidence {
+                quote: None,
                 lines: Some(LineRange {
                     start_line: 100,
                     ..

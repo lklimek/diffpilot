@@ -78,9 +78,19 @@ const fn api_schema<T: JsonSchema>(stem: &'static str, responses: &'static [Rout
 /// Every schema of [`API_SCHEMA_DIR`]: each route a token may read (`read` and `GET /api/v1/me`) names its
 /// response here (contract test).
 pub const API_SCHEMAS: &[ApiSchema] = &[
-    api_schema::<crate::api::assessment::AssessmentSettings>("assessment_settings", &[]),
-    api_schema::<crate::api::assessment::AssessmentComparison>("assessment_comparison", &[]),
+    api_schema::<crate::api::assessment::AssessmentSettings>(
+        "assessment_settings",
+        &[routes::GET_ASSESSMENT_SETTINGS],
+    ),
+    api_schema::<crate::api::assessment::AssessmentComparison>(
+        "assessment_comparison",
+        &[routes::GET_ASSESSMENT_COMPARISON],
+    ),
     api_schema::<crate::assessment::AssessmentConfig>("assessment_config", &[]),
+    api_schema::<Vec<crate::api::review_loop::CommentSource>>(
+        "comment_sources",
+        &[routes::GET_COMMENT_SOURCES],
+    ),
     api_schema::<ApiError>("api_error", &[]),
     api_schema::<MeResponse>("me_response", &[routes::GET_ME]),
     api_schema::<DashboardSummary>("dashboard_summary", &[routes::GET_DASHBOARD]),

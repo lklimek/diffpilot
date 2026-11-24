@@ -27,6 +27,7 @@ use contracts::routes::{
     MARK_COMMENT_GATE, PREVIEW_COMMENT_EFFECTS, READ_COMMENTS, REOPEN_COMMENT_ITEM,
     SKIP_COMMENT_ITEM, UNDO_COMMENT_DECISION,
 };
+use contracts::time::Timestamp;
 
 use crate::api::dashboard::refresh::mark_present;
 use crate::api::error::{ApiErrorSource, ApiFailure};
@@ -298,7 +299,7 @@ async fn assess_again(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
     path: ItemPath,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Response> {
     let (handle, no) = item_of(&state, &session, path).await?;
     let item = state
         .db
@@ -316,9 +317,42 @@ async fn assess_again(
     .await
     {
         Ok(assess::PassQueued::AlreadyRunning) => Err(LoopError::AssessmentRunning.into()),
+        Ok(assess::PassQueued::DailyLimit) => {
+            let quota = state
+                .db
+                .assessments()
+                .quota(
+                    &contracts::ids::UserId(session.user_id.clone()),
+                    Timestamp::now(),
+                )
+                .await
+                .map_err(LoopError::from)?;
+            Ok((
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(
+                    contracts::assessment::AssessmentAdmissionFailure::AssessmentDailyLimit {
+                        resets_at: quota.resets_at,
+                    },
+                ),
+            )
+                .into_response())
+        }
+        Err(assess::AssessError::Admission(db::repo::assessments::AssessmentError::Admission(
+            failure,
+        ))) => {
+            let status = if matches!(
+                failure,
+                contracts::assessment::AssessmentAdmissionFailure::AssessmentDailyLimit { .. }
+            ) {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::CONFLICT
+            };
+            Ok((status, Json(failure)).into_response())
+        }
         Ok(queued) => {
             tracing::debug!(pr = handle.id, item = no, ?queued, "assess again requested");
-            Ok(StatusCode::ACCEPTED)
+            Ok(StatusCode::ACCEPTED.into_response())
         }
         Err(error) => {
             tracing::warn!(
@@ -327,7 +361,7 @@ async fn assess_again(
                 item = no,
                 "assess again could not be requested"
             );
-            Ok(StatusCode::ACCEPTED)
+            Ok(StatusCode::ACCEPTED.into_response())
         }
     }
 }

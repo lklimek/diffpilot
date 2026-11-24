@@ -1,12 +1,16 @@
 //! Assessment passes over a pull request's review-comment items (ADR-023, plan §2.2, §2.8, §4.2): one live
 //! `verify_comments` pass per pull request, unchanged items reuse their assessment (same normalised comment text and
-//! the same code at its lines), at most [`MAX_ITEMS_PER_PASS`] items per job, spacing and a daily cap for automatic
-//! (Watch) passes. A follower per pass ingests the job's output into `comment_assessments`, also after a server
+//! the same code at its lines), at most [`MAX_ITEMS_PER_PASS`] items per job, automatic spacing and a shared UTC
+//! daily admission cap. A follower per pass ingests the job's output into `comment_assessments`, also after a server
 //! restart ([`resume`]). Ask about an item without an analysis of the head is answered by a question pass
 //! ([`ask_about_item`]).
 
+mod adapter;
 mod ask;
+mod frozen;
+mod host;
 mod ingest;
+mod paired;
 mod prompt;
 #[cfg(test)]
 mod tests;
@@ -60,12 +64,11 @@ pub const MAX_ITEMS_PER_PASS: usize = agent::verify_comments::MAX_ITEMS;
 /// Least time between the end of a pass and an automatic (Watch) pass of the same pull request (plan §2.8); about
 /// twice a full pass at high effort (spike S13-3).
 pub const PASS_SPACING: SignedDuration = SignedDuration::from_mins(10);
-/// Passes charged to one user per 24 hours before automatic (Watch) passes stop (plan §2.8); the owner's busiest
-/// recorded day needed about 55 automatic passes, plus on-demand ones (spike S13-3).
+/// Logical passes per payer per UTC day; manual and automatic passes share the cap, and an A/B pair counts once.
 pub const DAILY_PASSES_PER_USER: u32 = 80;
 /// Version of `prompts/verify_comments.md` with the output schema, stored with every assessment.
 pub const VERIFY_PROMPT_VERSION: u32 = 4;
-/// The window of the daily cap.
+/// Legacy history window used to read the previous pass end for automatic spacing.
 const DAY: SignedDuration = SignedDuration::from_hours(24);
 
 /// First wait before a failed link of a pass to its submitted job is tried again; it doubles each time.
@@ -119,6 +122,18 @@ enum Charge {
 /// A pass could not be requested or ingested.
 #[derive(Debug, thiserror::Error)]
 pub enum AssessError {
+    /// Frozen input could not be archived or recovered.
+    #[error("the frozen assessment snapshot is unavailable")]
+    Io(#[from] std::io::Error),
+    /// The host-owned snapshot is malformed.
+    #[error("the assessment snapshot is not valid")]
+    Json(#[from] serde_json::Error),
+    /// Snapshot identity or digest changed.
+    #[error("the assessment snapshot identity changed")]
+    Snapshot,
+    /// Admission consumed no quota slot.
+    #[error(transparent)]
+    Admission(#[from] db::repo::assessments::AssessmentError),
     /// The database failed.
     #[error("the review-loop state could not be read or stored")]
     Db(#[from] DbError),
@@ -155,7 +170,7 @@ pub async fn request_pass(
 }
 
 /// [`request_pass`] of an on-demand pass caused by `user`, who is charged with it: on-demand passes count toward
-/// the daily cap that stops automatic passes (plan §2.8) and still run when it is reached.
+/// the shared UTC daily admission cap and stop when it is reached.
 pub async fn request_pass_for(
     state: &AppState,
     pr: i64,
@@ -243,6 +258,7 @@ async fn request(
     let mut code = CodeReader::new(state, &record.pr);
     let mut sent = Vec::new();
     let mut sent_items = Vec::new();
+    let mut selected_sources = HashSet::new();
     for item in &items {
         let wanted = match asked {
             Some(asked) => item.id == asked && item.kind != CommentItemKind::PrQuestion,
@@ -250,6 +266,25 @@ async fn request(
         };
         if !wanted {
             continue;
+        }
+        if matches!(
+            item.kind,
+            CommentItemKind::ReviewBody | CommentItemKind::PrComment
+        ) {
+            if let Some(data) = snapshot.as_ref().and_then(|s| s.pr_data.as_ref())
+                && item
+                    .url
+                    .as_ref()
+                    .is_none_or(|url| !data.scope.sources.contains(url))
+            {
+                continue;
+            }
+            if let Some(url) = &item.url {
+                if selected_sources.len() >= 5 && !selected_sources.contains(url) {
+                    continue;
+                }
+                selected_sources.insert(url.clone());
+            }
         }
         let fingerprint = fingerprint(
             item,
@@ -274,7 +309,11 @@ async fn request(
             sent_items.push(item);
         }
     }
-    if sent.is_empty() {
+    let source_pending = snapshot
+        .as_ref()
+        .and_then(|s| s.pr_data.as_ref())
+        .is_some_and(|data| !data.scope.sources.is_empty());
+    if sent.is_empty() && !source_pending {
         if let Some(question) = &question {
             ask::fail(state, question.question.id, ask::ITEM_GONE).await?;
         }
@@ -324,6 +363,18 @@ async fn request(
         sent,
         question: question.as_ref().map(|question| question.question.id),
     };
+    if reason != PassReason::Ask {
+        return paired::admit(
+            state,
+            &record.pr,
+            &pass,
+            &input,
+            &items,
+            snapshot.as_ref(),
+            language,
+        )
+        .await;
+    }
     let id = match db
         .review_loop()
         .start_pass(&record.tenant_id, &pass, now)
@@ -370,7 +421,7 @@ async fn charged_watcher(
     }
     watchers.sort_by_key(|watch| watch.since);
     for watch in watchers {
-        let (passes, last_end) = state
+        let (_, last_end) = state
             .db
             .review_loop()
             .pass_usage(&watch.user_id, now - DAY, pr)
@@ -379,7 +430,14 @@ async fn charged_watcher(
             tracing::debug!(pr, "automatic assessment pass held back by the spacing");
             return Ok(Charge::Spaced);
         }
-        if passes < DAILY_PASSES_PER_USER {
+        if state
+            .db
+            .assessments()
+            .quota(&contracts::ids::UserId(watch.user_id.clone()), now)
+            .await?
+            .remaining
+            > 0
+        {
             return Ok(Charge::To(watch.user_id.clone()));
         }
     }
@@ -830,6 +888,24 @@ fn follow(state: &AppState, pass: PassId, known: Option<JobId>) {
 /// linked first; the job is followed even while the link keeps failing, so its result is never abandoned.
 async fn run(state: &AppState, pass: PassId, known: Option<JobId>) -> Result<(), AssessError> {
     let record = state.db.review_loop().pass(pass).await?;
+    if let Some(user) = &record.user_id {
+        let tenant = state
+            .db
+            .pull_requests()
+            .get(record.pull_request_id)
+            .await?
+            .tenant_id;
+        match state
+            .db
+            .assessments()
+            .pass(&tenant, &contracts::ids::UserId(user.clone()), pass)
+            .await
+        {
+            Ok(frozen) => return paired::run(state, &record, frozen).await,
+            Err(DbError::NotFound) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     let job = match record.job_id.or(known) {
         Some(job) => Some(job),
         None => state

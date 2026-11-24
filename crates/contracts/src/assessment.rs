@@ -50,7 +50,9 @@ pub struct AssessmentConfig {
 impl AssessmentConfig {
     /// Freeze the pair selection at admission, with an exclusive deadline.
     pub fn paired(&self, pr: &str, now: Timestamp) -> bool {
-        self.ab_prs.iter().any(|selected| selected == pr)
+        self.ab_prs
+            .iter()
+            .any(|selected| selected.eq_ignore_ascii_case(pr))
             || self.ab_until.is_some_and(|until| now < until)
     }
 }
@@ -148,6 +150,10 @@ pub enum AssessmentRunStatus {
 /// Persisted method summary; usage and duration include failed attempts once each.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AssessmentMethodRun {
+    /// False when any started attempt has unavailable metering; usage then reports only known totals.
+    pub usage_complete: bool,
+    /// Commit actually reported by the adapter; a mismatch stays comparison-only.
+    pub reported_head: Option<CommitSha>,
     /// Frozen method identity.
     pub reference: AssessmentRunRef,
     /// One job whose attempts execute this method.
@@ -187,6 +193,8 @@ pub enum AssessmentVerdict {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ComparisonItemStatus {
+    /// Attributed reply/status evidence; never a scored point or a source-consumption marker.
+    Context,
     /// Row aligned to a common identity.
     Matched,
     /// Expected row absent.
@@ -225,9 +233,44 @@ pub enum AssessmentSource {
     },
 }
 
+/// Pair only the same frozen source, with a known point identity or an exact body quote.
+pub fn sources_align(left: &AssessmentSource, right: &AssessmentSource, known_item: bool) -> bool {
+    match (left, right) {
+        (
+            AssessmentSource::Inline {
+                thread_id: a,
+                version: av,
+            },
+            AssessmentSource::Inline {
+                thread_id: b,
+                version: bv,
+            },
+        ) => a == b && av == bv,
+        (
+            AssessmentSource::Body {
+                source_kind: a,
+                url: au,
+                version: av,
+                quote: aq,
+            },
+            AssessmentSource::Body {
+                source_kind: b,
+                url: bu,
+                version: bv,
+                quote: bq,
+            },
+        ) => a == b && au == bu && av == bv && (known_item || aq == bq),
+        _ => false,
+    }
+}
+
 /// Common method-local comparison row; secondary IDs never allocate primary items.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AssessmentComparisonItem {
+    /// Model-reported reply-chain evidence, separate from actual diffpilot owner truth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub recorded_decision: Option<crate::agent::comment_report::RecordedDecision>,
     /// Stable comparison identity inside this pass.
     pub comparison_key: String,
     /// Adapter-local ID, distinct from a primary item ID.

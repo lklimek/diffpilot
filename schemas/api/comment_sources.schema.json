@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Array_of_CommentSource",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/CommentSource"
+  },
+  "$defs": {
+    "CommentSource": {
+      "description": "Read-only source version, including sources from which no points were read.",
+      "type": "object",
+      "properties": {
+        "url": {
+          "description": "Source URL.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Source kind.",
+          "$ref": "#/$defs/CommentSourceKind"
+        },
+        "author": {
+          "description": "GitHub author login.",
+          "type": "string"
+        },
+        "body": {
+          "description": "Cleaned source text, retaining details content.",
+          "type": "string"
+        },
+        "body_hash": {
+          "description": "SHA-256 of the cleaned text identifies this version.",
+          "type": "string"
+        },
+        "role": {
+          "description": "Host-assigned source role.",
+          "$ref": "#/$defs/SourceRole"
+        },
+        "read_at": {
+          "description": "First successful assessment read of this source version.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "url",
+        "kind",
+        "author",
+        "body",
+        "body_hash",
+        "role"
+      ]
+    },
+    "CommentSourceKind": {
+      "description": "Stored source kind; inline threads remain independent items.",
+      "oneOf": [
+        {
+          "description": "Submitted, non-empty review body.",
+          "type": "string",
+          "const": "review_body"
+        },
+        {
+          "description": "Non-empty PR comment.",
+          "type": "string",
+          "const": "pr_comment"
+        }
+      ]
+    },
+    "SourceRole": {
+      "description": "Host-assigned source role, independent of author membership.",
+      "oneOf": [
+        {
+          "description": "PR author's own text, or an earlier round of a round bot.",
+          "type": "string",
+          "const": "context"
+        },
+        {
+          "description": "Commands, pending reviews, gate or status comments; omitted from the hand-in.",
+          "type": "string",
+          "const": "ignored"
+        },
+        {
+          "description": "Everything else, including tenant members' comments.",
+          "type": "string",
+          "const": "source"
+        }
+      ]
+    }
+  }
+}

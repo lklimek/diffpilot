@@ -139,6 +139,44 @@ the common PR-container retirement instruction. Existing attempt tokens and self
 
 ## Frozen assessments and UTC admission (CCR11–CCR13)
 
+W5 uses claudius 13.7.0 (`71096d7d4481977added8761b2cfd63cd84852b4`), including the corrected
+`validate_report.py --ids` contract. `PrDataItem.decision` is a standing choice with kind/target/title,
+without reply-chain attribution. A missing required target rejects host input before admission.
+`SR_MAINTAINER_DELEGATES` explicitly configures comma-separated trusted relay logins (default empty).
+Neither bot status nor tenant membership implicitly grants relay authority.
+
+The server archives non-secret inputs under `data_dir/assessment-snapshots/<pass>.json` with mode 0600.
+The immutable reference and SHA-256 are stored in the pass; recovery checks both before reading the archive.
+The archive contains cleaned source versions, scope, offered IDs, standing decisions, item fingerprints and
+the native v4 input. Both method jobs carry identical `pr_data`, head/base and model/effort. The host brief
+is `prompts/check_pr_comments.md`; the native v4 prompt and strict schema remain separate.
+
+`admit_review` reserves quota, creates the visible review pass and enqueues its selected method jobs in one
+write transaction. Claiming advances the method attempt in that same queue transaction. `finish_with_primary`
+accepts normalized rows and primary projections atomically: secondary runs cannot allocate IDs, consume
+sources, supersede points, carry decisions or create visible assessments. Failed retryable methods retain
+their job, snapshot and admission day; their attempt usage is summed once. A primary failure never promotes
+the secondary. Source versions with only `merged_urls` coverage remain unread.
+`usage_complete` is false while any started attempt lacks metering. Totals include only known usage; a late
+metering record can complete an unknown attempt once without charging its duration again.
+
+`AssessmentMethodRun.reported_head` preserves a report's actual commit. A mismatched head is retained in
+comparison rows as `head_mismatch`, excluded from scoring and primary projections. The frozen-head DB
+constraint remains intact. Malformed or ungrounded rows are dropped independently; scoped missing body
+rows remain explicit in comparisons. `CarryEvidence.quote` preserves grounded restatement provenance.
+`CommentAssessment.proposed_decision` also preserves the host's complete target. An external PR URL is
+never reduced to a same-repository PR number; an existing follow-up target is never converted into a
+new follow-up title. Those targets remain available to W6 through the original proposal and comparison.
+
+The comparison HTTP response contains exact-count `summary` denominators, per-method coverage, missing
+fields, failures and proposal-kind/target agreement with actual owner decisions. The method runs carry
+usage and duration. Duplicate and mismatched-head rows are not scored; absent verdicts/proposals stay null.
+Owner revisions are captured from real diffpilot decisions, including decisions already present when a
+primary result is accepted; report `cutoff` selects the latest recorded revision at that instant.
+Additional attributed reply/status decisions remain separate `context` comparison rows, with their native
+IDs and `recorded_decision` evidence. They allocate no visible items, consume no source and never score as
+owner truth. The singular decision on a primary card remains the controlling model-reported evidence.
+
 `assessment::AssessmentConfig` defaults to `claudius_host`, no selected PRs and no deadline. Pairing is frozen
 when the PR is in `ab_prs` or admission precedes `ab_until`; settings alone never schedule work. JobSpec and
 JobResult carry `AssessmentRunRef` (logical pass/method), with the enclosing job attempt as the fence.

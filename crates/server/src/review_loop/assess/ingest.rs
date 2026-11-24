@@ -126,7 +126,7 @@ pub(super) async fn result(
 }
 
 /// The output if it fits the schema.
-fn parse(output: Value) -> Result<Option<VerifyCommentsOutput>, AssessError> {
+pub(super) fn parse(output: Value) -> Result<Option<VerifyCommentsOutput>, AssessError> {
     let schema = agent::output_schema(JobKind::VerifyComments)?;
     let fits =
         jsonschema::validator_for(&schema).is_ok_and(|validator| validator.is_valid(&output));
@@ -225,7 +225,7 @@ fn answer(text: &str) -> Option<AskOutput> {
 }
 
 /// Plain, non-blank text within `max` characters and the wording rules.
-fn fit_text(text: &str, max: usize) -> Result<(), Unfit> {
+pub(super) fn fit_text(text: &str, max: usize) -> Result<(), Unfit> {
     let output = AskOutput {
         answer: text.to_owned(),
         evidence: Vec::new(),
@@ -242,7 +242,7 @@ fn fit_text(text: &str, max: usize) -> Result<(), Unfit> {
 /// The text of a field that can be posted on GitHub as the maintainer's words (`recommendation.reason` and `title`,
 /// `reply_drafts`), without its sentences about the assessor itself (`wording::ASSESSOR_NOTES`); dropped sentences
 /// are logged by rule only (the output is untrusted text). [`guard_posted`] applies the same rule when read.
-fn public(text: &str, item: &str, field: &'static str) -> String {
+pub(super) fn public(text: &str, item: &str, field: &'static str) -> String {
     let (kept, dropped) = wording::without_assessor_notes(text);
     if !dropped.is_empty() {
         tracing::warn!(item, field, rules = ?dropped,
@@ -400,6 +400,7 @@ pub(super) fn assessment(
         }
     };
     Ok(CommentAssessment {
+        proposed_decision: None,
         evidence_text: None,
         recorded_decision: None,
         job: made.job,

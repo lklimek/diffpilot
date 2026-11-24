@@ -14,9 +14,11 @@ use super::jobs::{parse_ts, parse_wire, wire_name};
 use crate::error::DbError;
 
 mod actions;
+pub(crate) use actions::cancel_unclaimed as cancel_unclaimed_in;
 mod carry;
 mod decisions;
 mod items;
+pub(crate) use items::{add_assessment_in, upsert_item_in};
 mod notify;
 mod watches;
 

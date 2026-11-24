@@ -77,6 +77,19 @@ async fn world() -> World {
         )
         .await
         .expect("user");
+    state
+        .db
+        .assessments()
+        .set_config(
+            DEFAULT_TENANT,
+            &contracts::ids::UserId("u1".into()),
+            &contracts::assessment::AssessmentConfig {
+                primary_method: contracts::assessment::AssessmentMethod::PromptV4,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("native assessment fixture");
     let lock = lock_user("u1").await;
     let grant = TokenGrant {
         access_token: SecretString::from(fake_github_sign_in(&base).await),
@@ -162,7 +175,7 @@ impl World {
     /// Posts the attempt's result as the runner does.
     async fn complete(&self, claim: &Claim, output: Value) {
         let result = JobResult {
-            assessment: None,
+            assessment: claim.spec.assessment.clone().map(Box::new),
             report: None,
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,

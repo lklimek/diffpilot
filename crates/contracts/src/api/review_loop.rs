@@ -399,6 +399,10 @@ pub struct CodeSummary {
 /// The LLM assessment of one item at one head (`verify_comments`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentAssessment {
+    /// Original host proposal, preserving targets beyond the legacy action form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub proposed_decision: Option<crate::agent::comment_report::ProposedDecision>,
     /// Evidence from the report, labelled LLM text.
     #[serde(default)]
     #[ts(optional)]
@@ -927,6 +931,10 @@ pub enum ReaskReason {
 /// Evidence of a carry-over event, read by the server.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CarryEvidence {
+    /// Verbatim grounded quote of a restated point, when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub quote: Option<String>,
     /// GitHub link of the repeat.
     pub url: Option<String>,
     /// Normalised text hash at decision time (hex).

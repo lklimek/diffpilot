@@ -38,9 +38,6 @@ pub const PROBE_INTERVAL: SignedDuration = SignedDuration::from_mins(5);
 pub const PROBE_BATCH: usize = 10;
 /// Longest wait of a due automatic pass for the bot's round to end.
 pub const BOT_ROUND_WAIT: SignedDuration = SignedDuration::from_mins(90);
-/// The window of the daily cap.
-const DAY: SignedDuration = SignedDuration::from_hours(24);
-
 /// Users whose probes wait for GitHub's rate limit, and until when (kept after it passes, so a repeated limit is
 /// logged quietly; removed by the next successful probe).
 static RATE_LIMITED: LazyLock<Mutex<HashMap<String, Timestamp>>> = LazyLock::new(Mutex::default);
@@ -222,9 +219,16 @@ pub async fn list(state: &AppState, session: &Session) -> Result<WatchList, Loop
     Ok(WatchList {
         watches,
         limit: WATCH_LIMIT,
-        passes_today: rl
-            .charged_passes(&session.user_id, Timestamp::now() - DAY)
-            .await?,
+        passes_today: assess::DAILY_PASSES_PER_USER
+            - state
+                .db
+                .assessments()
+                .quota(
+                    &contracts::ids::UserId(session.user_id.clone()),
+                    Timestamp::now(),
+                )
+                .await?
+                .remaining,
         daily_limit: assess::DAILY_PASSES_PER_USER,
     })
 }

@@ -27,6 +27,8 @@ pub enum PrQuestion {
 /// The item a decision is about, as the effect function needs it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EffectItem {
+    /// First-line introduction of a grounded body point, under the F2 review heading.
+    pub quote: Option<String>,
     /// `C<no>`.
     pub no: u32,
     /// Source.
@@ -61,7 +63,14 @@ impl EffectItem {
                 format!("Re [{}'s review]({url}):", self.author)
             }
         };
-        format!("{line}\n{text}")
+        match self
+            .quote
+            .as_deref()
+            .and_then(|quote| quote.lines().find(|line| !line.trim().is_empty()))
+        {
+            Some(quote) => format!("{line}\n> {quote}\n{text}"),
+            None => format!("{line}\n{text}"),
+        }
     }
 }
 
