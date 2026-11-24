@@ -54,6 +54,9 @@ pub enum ReviewLoopApiError {
     /// The work failed.
     #[error(transparent)]
     Loop(#[from] LoopError),
+    /// Assessment admission or snapshot preparation failed.
+    #[error(transparent)]
+    Assess(Box<assess::AssessError>),
 }
 
 fn item_list(nos: &[u32]) -> String {
@@ -66,6 +69,7 @@ fn item_list(nos: &[u32]) -> String {
 impl ApiErrorSource for ReviewLoopApiError {
     fn code(&self) -> ApiErrorCode {
         match self {
+            Self::Assess(_) => ApiErrorCode::Internal,
             Self::Path(_) | Self::Query(_) | Self::Json(_) => ApiErrorCode::InvalidRequest,
             Self::Loop(error) => match error {
                 LoopError::NotFound => ApiErrorCode::NotFound,
@@ -94,6 +98,9 @@ impl ApiErrorSource for ReviewLoopApiError {
 
     fn public_message(&self) -> Cow<'static, str> {
         match self {
+            Self::Assess(_) => {
+                Cow::Borrowed("The assessment could not be started. Try again later.")
+            }
             Self::Path(rejection) => rejection.public_message(),
             Self::Query(rejection) => rejection.public_message(),
             Self::Json(rejection) => rejection.public_message(),
@@ -361,7 +368,7 @@ async fn assess_again(
                 item = no,
                 "assess again could not be requested"
             );
-            Ok(StatusCode::ACCEPTED.into_response())
+            Err(ReviewLoopApiError::Assess(Box::new(error)))
         }
     }
 }

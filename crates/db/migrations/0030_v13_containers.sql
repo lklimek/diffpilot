@@ -110,6 +110,7 @@ CREATE INDEX comment_sources_by_pr ON comment_sources (pull_request_id, role, re
 ALTER TABLE comment_items ADD COLUMN source_id INTEGER REFERENCES comment_sources (id);
 ALTER TABLE comment_items ADD COLUMN quote TEXT CHECK (quote IS NULL OR length(quote) BETWEEN 1 AND 600);
 ALTER TABLE comment_items ADD COLUMN duplicate_of TEXT REFERENCES comment_items (id) CHECK (duplicate_of <> id);
+ALTER TABLE comment_items ADD COLUMN duplicate_fingerprint TEXT;
 CREATE INDEX comment_items_by_source ON comment_items (source_id);
 
 CREATE TABLE comment_assessments (
