@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
-import type { PrRef } from "./generated/types";
+import type { AssessmentConfig, PrRef } from "./generated/types";
 
 /** Safe plan status; a read never initiates a device challenge. */
 export function useCodexAccount(now: number) {
@@ -19,24 +19,24 @@ export function useCodexAccount(now: number) {
   });
   const status = useQuery({
     queryKey: ["codex", link.submittedAt, link.isSuccess],
-    queryFn: async () => {
-      if (link.isSuccess) return api.getCodexLink();
-      const current = await api.getCodex();
-      return current.state === "linking" ? api.getCodexLink() : current;
-    },
+    queryFn: api.getCodexLink,
     enabled: !link.isPending && !unlink.isPending,
     refetchInterval: (query) =>
       (!query.state.data || query.state.data.state === "linking") &&
-      (!link.data || Date.parse(link.data.expires_at) > now)
+      (!query.state.data?.challenge || Date.parse(query.state.data.challenge.expires_at) > now)
         ? 2000
-        : false,
+        : query.state.data?.state === "linked"
+          ? 30_000
+          : false,
     retry: false,
   });
   useEffect(() => {
     if (status.data?.state === "linked") void client.invalidateQueries({ queryKey: ["settings"] });
   }, [client, status.data]);
   const challenge =
-    status.data?.state === "linked" || status.data?.state === "relink_needed" ? undefined : link.data;
+    status.data?.state === "linked" || status.data?.state === "relink_needed"
+      ? undefined
+      : (status.data?.challenge ?? link.data);
   return { status, challenge, link, unlink };
 }
 
@@ -52,7 +52,9 @@ export const useAssessmentSettings = () =>
 export function useSetAssessmentSettings() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: api.setAssessmentSettings,
+    mutationFn: ({ config, revision }: { config: AssessmentConfig; revision: string }) =>
+      api.setAssessmentSettings({ config, revision }),
+    onError: () => client.invalidateQueries({ queryKey: ["assessment-settings"] }),
     onSuccess: (data) => client.setQueryData(["assessment-settings"], data),
   });
 }

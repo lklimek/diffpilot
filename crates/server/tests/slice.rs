@@ -508,6 +508,8 @@ async fn harness_with_app(app: bool) -> Harness {
             DEFAULT_TENANT,
             &user.id,
             &contracts::gateway::CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
                 mode: contracts::gateway::CredentialMode::ChatgptPlan,
                 state: contracts::gateway::CredentialState::Linked,
                 relink_reason: None,

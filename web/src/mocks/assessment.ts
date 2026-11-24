@@ -6,10 +6,20 @@ import type {
 } from "../api/generated/types";
 
 export const assessmentSettings: AssessmentSettings = {
+  revision: JSON.stringify({ primary_method: "claudius_host", ab_prs: [], ab_until: null }),
   config: { primary_method: "claudius_host", ab_prs: [], ab_until: null },
   quota: { remaining: 79, resets_at: "2026-11-19T00:00:00Z" },
 };
 export const unlinkedCodex: CredentialStatus = {
+  challenge: null,
+  telemetry: {
+    linked_at: null,
+    primary: null,
+    secondary: null,
+    tokens_today: null,
+    tokens_month: null,
+    live_containers: null,
+  },
   mode: "chatgpt_plan",
   state: "relink_needed",
   relink_reason: "terminal",

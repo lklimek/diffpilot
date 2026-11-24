@@ -103,6 +103,11 @@ impl Frozen {
                     fixed_in: None,
                 };
                 if !host::valid_proposal(&proposal) {
+                    tracing::debug!(
+                        item_no = item.no,
+                        kind = ?d.decision.kind,
+                        "standing decision omitted from assessment ids: required target missing"
+                    );
                     return None;
                 }
                 Some(StandingDecision {

@@ -229,10 +229,13 @@ export function CommentsRoute() {
             {assessmentSettings.data && (
               <AssessmentControls
                 settings={assessmentSettings.data}
+                now={now}
                 prKey={`${pr.repo.owner}/${pr.repo.name}#${pr.number}`}
                 busy={saveAssessment.isPending}
                 error={saveAssessment.isError ? errorText(saveAssessment.error) : undefined}
-                onSave={(config) => saveAssessment.mutate(config)}
+                onSave={(config) =>
+                  saveAssessment.mutate({ config, revision: assessmentSettings.data!.revision })
+                }
               />
             )}
             {assessmentSettings.isError && (

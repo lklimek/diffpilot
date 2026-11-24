@@ -271,8 +271,12 @@ with client.open(sys.argv[1] + "/api/v1/settings/codex", timeout=20) as response
         raise SystemExit("fake gateway did not link the payer")
 # An isolated fixture can explicitly select either assessment adapter.
 if sys.argv[2]:
-    request = urllib.request.Request(sys.argv[1] + "/api/v1/settings/comment-assessment",
-        method="PUT", data=json.dumps({"primary_method":sys.argv[2], "ab_prs":[], "ab_until":None}).encode(),
+    route = sys.argv[1] + "/api/v1/settings/comment-assessment"
+    with client.open(route, timeout=20) as response:
+        settings = json.load(response)
+    settings["config"]["primary_method"] = sys.argv[2]
+    request = urllib.request.Request(route,
+        method="PUT", data=json.dumps({"revision":settings["revision"], "config":settings["config"]}).encode(),
         headers={"Content-Type":"application/json", "X-CSRF-Token":me["csrf_token"], "Origin":sys.argv[1]})
     client.open(request, timeout=20).close()
 PY

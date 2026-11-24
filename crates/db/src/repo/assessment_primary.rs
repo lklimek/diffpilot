@@ -111,10 +111,12 @@ pub(super) async fn apply(
                 .execute(&mut **tx)
                 .await?;
         }
-        sqlx::query("UPDATE comment_items SET gone_at=NULL,duplicate_of=?,duplicate_fingerprint=? WHERE id=?")
+        sqlx::query("UPDATE comment_items SET duplicate_of=?,duplicate_fingerprint=? WHERE id=?")
             .bind(duplicate.map(|id: CommentItemId| id.to_string()))
             .bind(duplicate.map(|_| point.fingerprint.as_str()))
-            .bind(id.to_string()).execute(&mut **tx).await?;
+            .bind(id.to_string())
+            .execute(&mut **tx)
+            .await?;
         if let Some(assessment) = &point.assessment {
             if assessment.head != pass.input.head {
                 return Err(DbError::Conflict);

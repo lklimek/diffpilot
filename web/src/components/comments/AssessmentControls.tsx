@@ -3,12 +3,14 @@ import type { AssessmentConfig, AssessmentSettings } from "../../api/generated/t
 /** Explicit selection affects future passes only. */
 export function AssessmentControls({
   settings,
+  now,
   prKey,
   busy,
   error,
   onSave,
 }: {
   settings: AssessmentSettings;
+  now: Date;
   prKey: string;
   busy: boolean;
   error?: string;
@@ -39,12 +41,15 @@ export function AssessmentControls({
       <p>
         {settings.quota.remaining} of 80 daily passes remaining; resets at {settings.quota.resets_at} (UTC).
       </p>
-      {settings.config.ab_until && (
-        <p>
-          The configured deadline also enables A/B on all PRs until {settings.config.ab_until}, even if this
-          PR is not selected.
-        </p>
-      )}
+      {settings.config.ab_until &&
+        (Date.parse(settings.config.ab_until) <= now.getTime() ? (
+          <p>The A/B deadline {settings.config.ab_until} has passed.</p>
+        ) : (
+          <p>
+            The configured deadline also enables A/B on all PRs until {settings.config.ab_until}, even if this
+            PR is not selected.
+          </p>
+        ))}
       {error && <p role="alert">{error}</p>}
     </div>
   );

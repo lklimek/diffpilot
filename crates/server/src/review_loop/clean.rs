@@ -376,7 +376,7 @@ fn is_comment_line(line: &str) -> bool {
 
 /// `line` without HTML comments outside inline code spans; `open` says a comment started on an earlier line. Returns
 /// the text and whether a comment is still open at its end.
-fn without_comments(line: &str, open: bool) -> (String, bool) {
+pub(super) fn without_comments(line: &str, open: bool) -> (String, bool) {
     let mut text = String::with_capacity(line.len());
     let mut rest = line;
     let mut in_comment = open;

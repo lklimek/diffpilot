@@ -7,18 +7,21 @@ import { SettingsCard } from "./Card";
 /** User choices apply to new passes; saving never schedules an assessment. */
 export function AssessmentSettingsCard({
   settings,
+  now,
   busy,
   error,
   saved,
   onSave,
 }: {
   settings: AssessmentSettings;
+  now: Date;
   busy: boolean;
   error?: string;
   saved?: boolean;
   onSave: (config: AssessmentConfig) => void;
 }) {
   const id = useId();
+  const [original] = useState(settings.config);
   const [primary, setPrimary] = useState(settings.config.primary_method);
   const [deadline, setDeadline] = useState(settings.config.ab_until ?? "");
   const parsed = Date.parse(deadline);
@@ -73,7 +76,27 @@ export function AssessmentSettingsCard({
         Leave empty for selected PRs only. A deadline enables both methods on all PRs until that time, in
         addition to selected PRs.
       </p>
+      {valid && deadline && parsed <= now.getTime() && (
+        <p>The A/B deadline {deadline} has passed. Only selected PRs use both methods.</p>
+      )}
       {!valid && <p role="alert">Enter a UTC date and time ending in Z, or leave empty.</p>}
+      {original.primary_method !== settings.config.primary_method && (
+        <p>
+          Primary method changed elsewhere: {original.primary_method} → {settings.config.primary_method}.
+        </p>
+      )}
+      {original.ab_until !== settings.config.ab_until && (
+        <p>
+          A/B deadline changed elsewhere: {original.ab_until ?? "none"} → {settings.config.ab_until ?? "none"}
+          .
+        </p>
+      )}
+      {original.ab_prs.join(", ") !== settings.config.ab_prs.join(", ") && (
+        <p>
+          Selected PRs changed elsewhere: {original.ab_prs.join(", ") || "none"} →{" "}
+          {settings.config.ab_prs.join(", ") || "none"}.
+        </p>
+      )}
       {error && <p role="alert">{error}</p>}
       {saved && <p role="status">Assessment settings saved.</p>}
       <Tooltip

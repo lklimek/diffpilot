@@ -7,9 +7,11 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use contracts::api::assessment::{AssessmentComparison, AssessmentSettings};
+use contracts::api::assessment::{
+    AssessmentComparison, AssessmentSettings, AssessmentSettingsUpdate,
+};
 use contracts::api::error::ApiErrorCode;
-use contracts::assessment::{AssessmentConfig, AssessmentRunStatus, ComparisonItemStatus};
+use contracts::assessment::{AssessmentRunStatus, ComparisonItemStatus};
 use contracts::common::{PrRef, RepoRef};
 use contracts::ids::UserId;
 use contracts::routes::*;
@@ -85,8 +87,15 @@ pub fn routes() -> Router<AppState> {
 
 async fn read_settings(state: &AppState, session: &Session) -> Result<AssessmentSettings> {
     let user = UserId(session.user_id.clone());
+    let (config, revision) = state
+        .db
+        .assessments()
+        .config_snapshot(&user)
+        .await
+        .map_err(fail)?;
     Ok(AssessmentSettings {
-        config: state.db.assessments().config(&user).await.map_err(fail)?,
+        config,
+        revision,
         quota: state
             .db
             .assessments()
@@ -106,9 +115,10 @@ async fn settings(
 async fn set_settings(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
-    body: std::result::Result<Json<AssessmentConfig>, JsonRejection>,
+    body: std::result::Result<Json<AssessmentSettingsUpdate>, JsonRejection>,
 ) -> Result<Json<AssessmentSettings>> {
-    let Json(config) = body.map_err(fail)?;
+    let Json(update) = body.map_err(fail)?;
+    let config = update.config;
     let mut seen = std::collections::HashSet::new();
     if config.ab_prs.len() > 100
         || config.ab_prs.iter().any(|pr| {
@@ -130,10 +140,11 @@ async fn set_settings(
     state
         .db
         .assessments()
-        .set_config(
+        .set_config_if_current(
             &session.tenant_id,
             &UserId(session.user_id.clone()),
             &config,
+            &update.revision,
         )
         .await
         .map_err(fail)?;

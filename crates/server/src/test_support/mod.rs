@@ -107,6 +107,8 @@ pub(crate) async fn link_payer(db: &db::repo::Db, tenant: &str, user: &str) {
             tenant,
             user,
             &contracts::gateway::CredentialStatus {
+                telemetry: Default::default(),
+                challenge: None,
                 mode: contracts::gateway::CredentialMode::ChatgptPlan,
                 state: contracts::gateway::CredentialState::Linked,
                 relink_reason: None,

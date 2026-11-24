@@ -63,9 +63,41 @@ pub struct DeviceLink {
     pub expires_at: Timestamp,
 }
 
+/// Observed usage of one plan window; absent fields have not been reported upstream.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PlanUsage {
+    /// Percentage supplied by x-codex-*-used-percent; never estimated from tokens.
+    pub used_percent: Option<f64>,
+    /// Absolute reset time supplied by the backend.
+    pub resets_at: Option<Timestamp>,
+}
+
+/// Safe account observations; gateway fills plan data and server fills payer job data.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CredentialTelemetry {
+    /// Gateway commit time of the current account link; refresh does not change it.
+    pub linked_at: Option<Timestamp>,
+    /// Last observed primary plan window.
+    pub primary: Option<PlanUsage>,
+    /// Last observed secondary plan window.
+    pub secondary: Option<PlanUsage>,
+    /// Retained provider reports finished today in UTC, null without reports.
+    pub tokens_today: Option<crate::api::usage::UsageTotals>,
+    /// Retained provider reports finished this calendar month in UTC, null without reports.
+    pub tokens_month: Option<crate::api::usage::UsageTotals>,
+    /// Server-known containers with claimed/running jobs; null until read from server state.
+    pub live_containers: Option<Vec<ContainerId>>,
+}
+
 /// Non-secret status shared by gateway, server and Settings.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CredentialStatus {
+    /// Safe observations, without tokens, key IDs or upstream response bodies.
+    #[serde(default)]
+    pub telemetry: CredentialTelemetry,
+    /// Current device challenge on the staged-link GET only; reading never starts a flow.
+    #[serde(default)]
+    pub challenge: Option<DeviceLink>,
     /// Only ChatGPT-plan linking is supported.
     pub mode: CredentialMode,
     /// Common connection state.

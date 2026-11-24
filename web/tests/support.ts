@@ -17,12 +17,17 @@ const BANNED = [
   /\bverified\b/i,
   /\bwas\s+wrong\b/i,
   /\bconfidence\b/i,
-  /\d\s?%/,
 ];
 
 /** Asserts the wording rules of brief §1 / plan §12.4 on the page text, tooltips included. */
 export async function expectTrustWording(page: Page): Promise<void> {
   const text = await page.locator("body").evaluate((body) => body.textContent ?? "");
   for (const pattern of BANNED) expect(text, `banned wording ${pattern}`).not.toMatch(pattern);
+  const withoutPlanUsage = await page.locator("body").evaluate((body) => {
+    const copy = body.cloneNode(true) as HTMLElement;
+    copy.querySelectorAll("p[data-codex-plan-usage]").forEach((node) => node.remove());
+    return copy.textContent ?? "";
+  });
+  expect(withoutPlanUsage, "percentage outside observed plan usage").not.toMatch(/\d\s?%/);
   expect(await page.getByRole("banner").innerText()).not.toContain("%");
 }

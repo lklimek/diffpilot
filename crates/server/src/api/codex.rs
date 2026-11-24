@@ -69,9 +69,27 @@ async fn sync(state: &AppState, session: &Session) -> Result<CredentialStatus> {
     Ok(status)
 }
 
+async fn enrich(state: &AppState, session: &Session, status: &mut CredentialStatus) -> Result<()> {
+    let jobs = state
+        .db
+        .jobs()
+        .payer_telemetry(
+            &UserId(session.user_id.clone()),
+            contracts::time::Timestamp::now(),
+        )
+        .await
+        .map_err(failure)?;
+    status.telemetry.tokens_today = jobs.tokens_today;
+    status.telemetry.tokens_month = jobs.tokens_month;
+    status.telemetry.live_containers = jobs.live_containers;
+    Ok(())
+}
+
 async fn status(State(state): State<AppState>, session: Session) -> Result<Json<CredentialStatus>> {
     let _guard = lock(&UserId(session.user_id.clone())).await;
-    Ok(Json(sync(&state, &session).await?))
+    let mut status = sync(&state, &session).await?;
+    enrich(&state, &session, &mut status).await?;
+    Ok(Json(status))
 }
 
 async fn link_status(
@@ -80,11 +98,12 @@ async fn link_status(
 ) -> Result<Json<CredentialStatus>> {
     let _guard = lock(&UserId(session.user_id.clone())).await;
     // Admission follows usable credentials even while an old usable link is being replaced.
-    let staged = admin(&state)?
+    let mut staged = admin(&state)?
         .status(&UserId(session.user_id.clone()), true)
         .await
         .map_err(failure)?;
     sync(&state, &session).await?;
+    enrich(&state, &session, &mut staged).await?;
     Ok(Json(staged))
 }
 

@@ -10,11 +10,16 @@ test("the fake container runtime returns accepted results for both frozen assess
   test.skip(!stack.stateDir, "needs an isolated fake stack");
   await signIn(page);
   const me = await (await page.request.get("/api/v1/me")).json();
-  const response = await page.request.put("/api/v1/settings/comment-assessment", {
+  const settingsRoute = "/api/v1/settings/comment-assessment";
+  const settings = await (await page.request.get(settingsRoute)).json();
+  const response = await page.request.put(settingsRoute, {
     headers: { "X-CSRF-Token": me.csrf_token, Origin: new URL(page.url()).origin },
-    data: { primary_method: "claudius_host", ab_prs: ["acme/node-client#482"], ab_until: null },
+    data: {
+      revision: settings.revision,
+      config: { ...settings.config, primary_method: "claudius_host", ab_prs: ["acme/node-client#482"] },
+    },
   });
-  expect(response.ok()).toBeTruthy();
+  expect(response.ok(), await response.text()).toBeTruthy();
   await page.goto(PR_PAGE_PATH);
   await expect
     .poll(

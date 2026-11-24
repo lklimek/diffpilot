@@ -311,7 +311,7 @@ async fn comments_work_without_analysis() {
     let items = w.items().await;
     assert_eq!(
         items.len(),
-        17,
+        15,
         "8 inline threads, legacy body findings, newly eligible prose sources and the merge question"
     );
     // Opening Comments starts one `verify_comments` pass; its items show the assessment as running.
@@ -442,7 +442,7 @@ async fn stale_review_dismissal_question_after_round() {
             row
         })
         .collect();
-    assert_eq!(rows.len(), 7);
+    assert_eq!(rows.len(), 6, "gate status is not an actionable source");
     let (status, body) = w
         .post(
             &format!("{PR}/comments/decision-batches"),
@@ -934,7 +934,7 @@ async fn effects_preview_and_github_failure_keeps_the_last_read() {
         overview["read"]["read_at"].is_string(),
         "the last good read stays"
     );
-    assert_eq!(w.items().await.len(), 17);
+    assert_eq!(w.items().await.len(), 15);
 }
 
 /// T22: decisions, gate marks, re-reads and item actions refuse access tokens.
