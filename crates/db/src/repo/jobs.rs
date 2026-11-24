@@ -457,6 +457,36 @@ async fn apply_credential_effects(
     Ok(())
 }
 
+fn ask_compaction_unconfirmed(spec: &JobSpec, result: &JobResult) -> bool {
+    use contracts::runtime::{FIRST_ASK_COMPACTION_TOKENS, PreflightState, SessionSeed};
+    let Some(route) = &spec.working_session else {
+        return false;
+    };
+    let Some(expected) = &route.preflight else {
+        return false;
+    };
+    let fresh_fork = result
+        .session
+        .as_ref()
+        .is_some_and(|session| route.thread_id.as_deref() != Some(session.thread_id.as_str()));
+    let required = expected.seed == SessionSeed::Fork
+        && (expected.state == PreflightState::Pending || fresh_fork)
+        && route.parent_context.as_ref().is_some_and(|context| {
+            context.generation == expected.generation
+                && context.tokens > FIRST_ASK_COMPACTION_TOKENS
+        });
+    required
+        && result
+            .session
+            .as_ref()
+            .and_then(|s| s.preflight.as_deref())
+            .is_none_or(|preflight| {
+                preflight.state == PreflightState::Pending
+                    || (preflight.seed == SessionSeed::Fork
+                        && preflight.state != PreflightState::Done)
+            })
+}
+
 async fn save_working_checkpoint(
     tx: &mut SqliteConnection,
     row: &SqliteRow,
@@ -470,10 +500,12 @@ async fn save_working_checkpoint(
     if matches!(spec.target, JobTarget::PullRequestAsk(_))
         && route.and_then(|r| r.kind) != Some(ThreadKind::Verify)
     {
-        return Err(DbError::Conflict);
+        tracing::warn!(job = %result.job_id, "private Ask checkpoint has an incompatible thread kind; answer retained");
+        return Ok(());
     }
     if !matches!(kind, ThreadKind::Ask | ThreadKind::Verify) {
-        return Err(DbError::Conflict);
+        tracing::warn!(job = %result.job_id, "Ask checkpoint has an unsupported thread kind; answer retained");
+        return Ok(());
     }
     let generation = super::agent_sessions::generation(tx, row.try_get("pull_request_id")?).await?;
     let expected = route.and_then(|r| r.preflight.as_ref());
@@ -489,7 +521,10 @@ async fn save_working_checkpoint(
         // Unknown parent usage is recovered by the runner before it acknowledges NotNeeded.
         let known_large_parent = route
             .and_then(|r| r.parent_context.as_ref())
-            .is_some_and(|c| c.generation == expected.generation && c.tokens > 80_000);
+            .is_some_and(|c| {
+                c.generation == expected.generation
+                    && c.tokens > contracts::runtime::FIRST_ASK_COMPACTION_TOKENS
+            });
         let needs_compaction =
             known_large_parent && (expected.state == PreflightState::Pending || fresh_fork);
         if session.preflight.is_none()
@@ -507,7 +542,8 @@ async fn save_working_checkpoint(
                 .as_ref()
                 .is_some_and(|s| s.thread_id == session.thread_id)
         {
-            return Err(DbError::Conflict);
+            tracing::warn!(job = %result.job_id, "Ask checkpoint preflight does not match its route; answer retained");
+            return Ok(());
         }
     }
     // A generation advanced while another payer's container was running: keep the result, discard its checkpoint.
@@ -620,7 +656,7 @@ impl Jobs<'_> {
             .fetch_one(&mut *tx)
             .await?;
             if !linked {
-                return Err(DbError::Conflict);
+                return Err(DbError::CredentialUnlinked);
             }
         }
         // The stored spec never holds a credential (threat model T3b); access is filled at claim.
@@ -876,13 +912,29 @@ impl Jobs<'_> {
         current.accepts(result.attempt)?;
         let credential: String = row.try_get("payer_id")?;
         let mut stored = result.clone();
+        let kind: String = row.try_get("kind")?;
+        let compaction_unconfirmed = kind == "ask"
+            && !current.cancel_requested
+            && matches!(stored.outcome, JobOutcome::Succeeded { .. })
+            && ask_compaction_unconfirmed(
+                &serde_json::from_str::<JobSpec>(&row.try_get::<String, _>("spec")?)?,
+                &stored,
+            );
+        if compaction_unconfirmed {
+            stored.outcome = JobOutcome::Failed {
+                kind: JobFailureKind::AskCompactionUnconfirmed,
+                message: "Required context shortening was not confirmed; the answer was discarded."
+                    .into(),
+            };
+            stored.session = None;
+        }
         let mut resumes_at = None;
         // Cancel wins: once requested, any result ends the job cancelled and its output is discarded.
         let transition = if current.cancel_requested {
             stored.outcome = JobOutcome::Cancelled;
             JobTransition::Cancel
         } else {
-            match &result.outcome {
+            match &stored.outcome {
                 JobOutcome::Succeeded { .. } => JobTransition::Succeed,
                 JobOutcome::Failed { .. } => JobTransition::Fail,
                 JobOutcome::Cancelled => JobTransition::Cancel,
@@ -898,8 +950,8 @@ impl Jobs<'_> {
             .map_err(|_| DbError::Conflict)?;
         sqlx::query(
             "UPDATE jobs SET state = ?1, result = ?2, resumes_at = ?3, finished_at = ?4, lease_expires_at = NULL,
-                 ready_output = CASE WHEN ?1 = 'cancelled' THEN NULL ELSE ready_output END,
-                 ready_output_attempt = CASE WHEN ?1 = 'cancelled' THEN NULL ELSE ready_output_attempt END
+                 ready_output = CASE WHEN ?6 THEN NULL ELSE ready_output END,
+                 ready_output_attempt = CASE WHEN ?6 THEN NULL ELSE ready_output_attempt END
              WHERE id = ?5",
         )
         .bind(wire_name(state)?)
@@ -907,10 +959,10 @@ impl Jobs<'_> {
         .bind(resumes_at.map(ts))
         .bind(state.is_terminal().then(|| ts(now)))
         .bind(result.job_id.to_string())
+        .bind(current.cancel_requested || compaction_unconfirmed)
         .execute(&mut *tx)
         .await?;
         apply_credential_effects(&mut tx, &credential, result, now).await?;
-        let kind: String = row.try_get("kind")?;
         // A dashboard or `verify_comments` job has no session: nothing it reports touches one (ADR-018, ADR-023).
         if kind == JobKind::JudgeWork.as_str() || kind == JobKind::VerifyComments.as_str() {
             tx.commit().await?;

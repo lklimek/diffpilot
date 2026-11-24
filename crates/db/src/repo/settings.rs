@@ -74,6 +74,7 @@ impl CallFailure {
             Self::Failed(JobFailureKind::UpstreamRejected) => "upstream_rejected",
             Self::Failed(JobFailureKind::ReportVersionUnsupported) => "report_version_unsupported",
             Self::Failed(JobFailureKind::InvalidJsonSchema) => "invalid_json_schema",
+            Self::Failed(JobFailureKind::AskCompactionUnconfirmed) => "ask_compaction_unconfirmed",
         }
     }
 

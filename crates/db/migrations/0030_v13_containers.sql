@@ -52,7 +52,7 @@ CREATE TABLE llm_credentials (
     last_call_at      TEXT,
     last_call_ok      INTEGER CHECK (last_call_ok IN (0, 1)),
     last_call_message TEXT,
-    last_call_failure TEXT CHECK (last_call_failure IN ('usage_limited', 'provider_failed', 'output_not_json', 'credential_unusable', 'checkout_failed', 'timeout', 'internal', 'configuration', 'worker_unavailable', 'worker_lost', 'credential_missing', 'credential_relink', 'model_unavailable', 'upstream_rejected', 'report_version_unsupported', 'invalid_json_schema')),
+    last_call_failure TEXT CHECK (last_call_failure IN ('usage_limited', 'provider_failed', 'output_not_json', 'credential_unusable', 'checkout_failed', 'timeout', 'internal', 'configuration', 'worker_unavailable', 'worker_lost', 'credential_missing', 'credential_relink', 'model_unavailable', 'upstream_rejected', 'report_version_unsupported', 'invalid_json_schema', 'ask_compaction_unconfirmed')),
     CHECK ((state = 'relink_needed') = (relink_reason IS NOT NULL)),
     CHECK ((last_call_at IS NULL) = (last_call_ok IS NULL)),
     CHECK (last_call_failure IS NULL OR last_call_ok = 0)

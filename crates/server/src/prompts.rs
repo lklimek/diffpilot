@@ -809,11 +809,15 @@ pub fn comment_context(
     item: &VerifyItem,
     earlier: &[(String, contracts::agent::ask::AskOutput)],
 ) -> Result<String, PromptError> {
-    let mut pack = clipped_data(
+    let mut pack = format!(
+        "Context pack for {}/{}#{} at head {}\n",
+        pr.repo.owner, pr.repo.name, pr.number, pr.head_sha.0
+    );
+    pack.push_str(&clipped_data(
         "pull request",
         &serde_json::to_string(pr)?,
         MAX_ASK_CONTEXT_BYTES,
-    )?;
+    )?);
     pack.push_str(&subject_block(Some(item))?);
     pack.push_str(&json_block(
         "your earlier answers",

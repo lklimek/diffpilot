@@ -132,7 +132,11 @@ impl RankError {
             Self::JobFailed(kind) => crate::api::settings::plain_failure(Some(
                 db::repo::settings::CallFailure::Failed(*kind),
             )),
-            Self::Unusable => "Link your Codex account in Settings",
+            Self::Unusable
+            | Self::Db(db::error::DbError::CredentialUnlinked)
+            | Self::Executor(ExecutorError::Db(db::error::DbError::CredentialUnlinked)) => {
+                "Link your Codex account in Settings"
+            }
             Self::JobCancelled => "A ranking job was cancelled",
             Self::Unclaimed => "No runner picked up the ranking job",
             Self::NoSnapshot => "The scan result could not be read",

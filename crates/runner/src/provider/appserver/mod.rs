@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::{Mutex, mpsc, watch};
 
-/// App-server provider; clones share the single-turn gate and cancellation state.
+/// App-server provider; trait calls use the self-contained JobSpec routing, including Ask recovery.
 #[derive(Clone)]
 pub struct AppserverProvider {
     launcher: crate::launcher::Client,
@@ -32,24 +32,68 @@ pub struct AppserverProvider {
     reconciled: Arc<std::sync::atomic::AtomicBool>,
     gate: Arc<Mutex<()>>,
     active: Arc<Mutex<HashMap<JobId, Active>>>,
+    cancellations: Arc<std::sync::Mutex<HashMap<JobId, watch::Sender<bool>>>>,
 }
 
 struct Active {
     container: ContainerId,
-    cancel: watch::Sender<bool>,
     done: watch::Receiver<bool>,
+}
+
+struct CancellationRegistration<'a> {
+    registry: &'a std::sync::Mutex<HashMap<JobId, watch::Sender<bool>>>,
+    job: JobId,
+}
+
+impl Drop for CancellationRegistration<'_> {
+    fn drop(&mut self) {
+        self.registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.job);
+    }
+}
+
+fn launcher_failure(error: crate::launcher::Error, step: &'static str) -> ProviderError {
+    let kind = match error {
+        crate::launcher::Error::InvalidTemplate
+        | crate::launcher::Error::Remote(contracts::launcher::LauncherFailure::InvalidTemplate) => {
+            JobFailureKind::Configuration
+        }
+        _ => JobFailureKind::WorkerUnavailable,
+    };
+    tracing::warn!(
+        method = "launcher",
+        step,
+        ?kind,
+        "launcher control operation failed"
+    );
+    runtime(kind)
 }
 
 fn runtime(kind: JobFailureKind) -> ProviderError {
     ProviderError::Runtime { kind }
 }
 
+fn fault(kind: JobFailureKind, method: &str, step: &str) -> ProviderError {
+    tracing::warn!(method, step, ?kind, "app-server operation failed");
+    runtime(kind)
+}
+
 fn container(spec: &JobSpec) -> Result<ContainerId, ProviderError> {
     if (spec.kind == JobKind::Ask) != spec.working_session.is_some() {
-        return Err(runtime(JobFailureKind::Configuration));
+        return Err(fault(
+            JobFailureKind::Configuration,
+            "execute_job",
+            "working session routing",
+        ));
     }
     if spec.payer.0.trim().is_empty() {
-        return Err(runtime(JobFailureKind::CredentialMissing));
+        return Err(fault(
+            JobFailureKind::CredentialMissing,
+            "execute_job",
+            "missing payer",
+        ));
     }
     Ok(match (&spec.target, spec.kind) {
         (JobTarget::Dashboard { .. }, JobKind::JudgeWork) => ContainerId::Judge {
@@ -65,7 +109,13 @@ fn container(spec: &JobSpec) -> Result<ContainerId, ProviderError> {
                 payer: spec.payer.clone(),
             }
         }
-        _ => return Err(runtime(JobFailureKind::Configuration)),
+        _ => {
+            return Err(fault(
+                JobFailureKind::Configuration,
+                "execute_job",
+                "container target",
+            ));
+        }
     })
 }
 
@@ -83,6 +133,7 @@ impl AppserverProvider {
             reconciled: Arc::default(),
             gate: Arc::default(),
             active: Arc::default(),
+            cancellations: Arc::default(),
         }
     }
 
@@ -97,7 +148,7 @@ impl AppserverProvider {
             .launcher
             .reconcile(retired_prs)
             .await
-            .map_err(|_| runtime(JobFailureKind::WorkerUnavailable))?;
+            .map_err(|error| launcher_failure(error, "startup reconciliation"))?;
         for worker in workers {
             self.gateway.revoke(&worker).await?;
         }
@@ -107,13 +158,18 @@ impl AppserverProvider {
     }
 
     async fn control(&self, spec: &JobSpec, action: LauncherAction) -> Result<(), ProviderError> {
+        let step = match &action {
+            LauncherAction::Ensure { .. } => "ensure",
+            LauncherAction::Stop { .. } => "stop",
+            _ => "control",
+        };
         self.launcher
             .call(LauncherRequest {
                 id: format!("{}-{}", spec.job_id.0, spec.attempt),
                 action,
             })
             .await
-            .map_err(|_| runtime(JobFailureKind::WorkerUnavailable))?;
+            .map_err(|error| launcher_failure(error, step))?;
         Ok(())
     }
 
@@ -138,7 +194,7 @@ impl AppserverProvider {
             Err(crate::launcher::Error::Remote(LauncherFailure::FetchUnavailable)) => {
                 Some(DependencySources::Unavailable)
             }
-            Err(_) => return Err(runtime(JobFailureKind::WorkerUnavailable)),
+            Err(error) => return Err(launcher_failure(error, "fetch")),
         };
         let summary = match outcome {
             Some(DependencySources::ResolvedWithoutLock) => {
@@ -153,7 +209,7 @@ impl AppserverProvider {
             let _ = events.try_send(ProviderEvent::Activity(contracts::job::event::JobEvent {
                 seq: 0,
                 at: contracts::time::Timestamp::now(),
-                activity: contracts::job::event::ActivityKind::AgentMessage,
+                activity: contracts::job::event::ActivityKind::Command,
                 summary: summary.into(),
             }));
         }
@@ -177,11 +233,42 @@ impl AppserverProvider {
         spec: &JobSpec,
         events: mpsc::Sender<ProviderEvent>,
     ) -> Result<ProviderOutcome, ProviderError> {
-        let session = spec
-            .working_session
-            .as_ref()
-            .and_then(|w| w.thread_id.as_deref())
-            .or_else(|| spec.session.as_ref().map(|s| s.thread_id.as_str()));
+        let (cancel, mut cancelled) = watch::channel(false);
+        {
+            let mut registry = self
+                .cancellations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if registry.contains_key(&spec.job_id) {
+                return Err(fault(
+                    JobFailureKind::Configuration,
+                    "execute_job",
+                    "duplicate job registration",
+                ));
+            }
+            registry.insert(spec.job_id, cancel);
+        }
+        let _registration = CancellationRegistration {
+            registry: &self.cancellations,
+            job: spec.job_id,
+        };
+        self.execute_attempts(spec, events, &mut cancelled).await
+    }
+
+    async fn execute_attempts(
+        &self,
+        spec: &JobSpec,
+        events: mpsc::Sender<ProviderEvent>,
+        cancelled: &mut watch::Receiver<bool>,
+    ) -> Result<ProviderOutcome, ProviderError> {
+        let session = match spec.kind {
+            JobKind::VerifyComments | JobKind::JudgeWork => None,
+            _ => spec
+                .working_session
+                .as_ref()
+                .and_then(|w| w.thread_id.as_deref())
+                .or_else(|| spec.session.as_ref().map(|s| s.thread_id.as_str())),
+        };
         let mut effective = spec.clone();
         if (session.is_none()
             || spec
@@ -192,7 +279,10 @@ impl AppserverProvider {
         {
             effective.prompt = format!("{pack}\n\n{}", spec.prompt);
         }
-        match self.perform(&effective, session, events.clone()).await {
+        match self
+            .perform(&effective, session, events.clone(), cancelled)
+            .await
+        {
             Err(ProviderError::SessionUnavailable) => {
                 let mut fresh = spec.clone();
                 if let Some(working) = &mut fresh.working_session {
@@ -209,7 +299,7 @@ impl AppserverProvider {
                     && let Some(parent) = &spec.session
                 {
                     match self
-                        .perform(&fresh, Some(&parent.thread_id), events.clone())
+                        .perform(&fresh, Some(&parent.thread_id), events.clone(), cancelled)
                         .await
                     {
                         Err(ProviderError::SessionUnavailable) => {}
@@ -217,7 +307,7 @@ impl AppserverProvider {
                     }
                 }
                 fresh.session = None;
-                let mut outcome = self.perform(&fresh, None, events).await?;
+                let mut outcome = self.perform(&fresh, None, events, cancelled).await?;
                 if let Some(session) = &mut outcome.runtime_session {
                     session.outcome = SessionOutcome::StartedAfterLoss;
                 }
@@ -232,8 +322,12 @@ impl AppserverProvider {
         spec: &JobSpec,
         session: Option<&str>,
         events: mpsc::Sender<ProviderEvent>,
+        cancelled: &mut watch::Receiver<bool>,
     ) -> Result<ProviderOutcome, ProviderError> {
         let _guard = self.gate.lock().await;
+        if *cancelled.borrow() {
+            return Err(ProviderError::Cancelled);
+        }
         if !self.reconciled.load(std::sync::atomic::Ordering::Acquire) {
             self.reconcile_locked(&[]).await?;
         }
@@ -251,18 +345,17 @@ impl AppserverProvider {
             self.active.lock().await.remove(&job);
         }
         let worker = container(spec)?;
-        let (cancel, mut cancelled) = watch::channel(false);
         let (finished, done) = watch::channel(false);
         self.active.lock().await.insert(
             spec.job_id,
             Active {
                 container: worker.clone(),
-                cancel,
                 done,
             },
         );
         let mut rpc = None;
         let mut key = None;
+        let mut checkpoint = None;
         let cap = spec
             .limits
             .max_runtime_secs
@@ -294,14 +387,22 @@ impl AppserverProvider {
                 .launcher
                 .attach(format!("attach-{}", spec.job_id.0), worker.clone())
                 .await
-                .map_err(|_| runtime(JobFailureKind::WorkerUnavailable))?;
+                .map_err(|error| launcher_failure(error, "attach"))?;
             rpc = Some(rpc::Rpc::connect(socket, events.clone(), scrubber).await?);
-            let rpc = rpc
-                .as_mut()
-                .ok_or_else(|| runtime(JobFailureKind::WorkerLost))?;
-            let minted = key
-                .as_ref()
-                .ok_or_else(|| runtime(JobFailureKind::WorkerLost))?;
+            let rpc = rpc.as_mut().ok_or_else(|| {
+                fault(
+                    JobFailureKind::WorkerLost,
+                    "execute_job",
+                    "missing attached RPC",
+                )
+            })?;
+            let minted = key.as_ref().ok_or_else(|| {
+                fault(
+                    JobFailureKind::WorkerLost,
+                    "execute_job",
+                    "missing minted key",
+                )
+            })?;
             rpc.mkdir("/run/dp").await?;
             rpc.secret("/run/dp/model-key", minted.key.expose().as_bytes())
                 .await?;
@@ -321,11 +422,18 @@ impl AppserverProvider {
                 // The first Ensure runs before a checkout exists; fetch again against the frozen tree.
                 self.fetch(spec, &worker, &events).await?;
             }
-            self.run_attached(rpc, spec, session, &minted.id, &mut cancelled)
+            self.run_attached(rpc, spec, session, &minted.id, cancelled, &mut checkpoint)
                 .await
         })
         .await
-        .unwrap_or(Err(ProviderError::Timeout));
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                method = "execute_job",
+                step = "runtime cap",
+                "container job exceeded runtime limit"
+            );
+            Err(ProviderError::Timeout)
+        });
         if *cancelled.borrow() {
             result = Err(ProviderError::Cancelled);
         }
@@ -348,7 +456,13 @@ impl AppserverProvider {
                 Ok::<(), ProviderError>(())
             })
             .await
-            .unwrap_or(Err(runtime(JobFailureKind::WorkerLost)));
+            .unwrap_or_else(|_| {
+                Err(fault(
+                    JobFailureKind::WorkerLost,
+                    "cleanup",
+                    "15 second token scrub timeout",
+                ))
+            });
             if let Err(error) = scrubbed
                 && cleanup.is_ok()
             {
@@ -356,7 +470,18 @@ impl AppserverProvider {
             }
         }
         if cleanup.is_err() {
-            let _ = self.stop(spec, &worker).await;
+            tracing::warn!(
+                method = "cleanup",
+                step = "retire job access",
+                "worker cleanup failed"
+            );
+            if self.stop(spec, &worker).await.is_err() {
+                tracing::error!(
+                    method = "launcher/stop",
+                    step = "best effort cleanup",
+                    "worker may still be running after cleanup stop failed"
+                );
+            }
         }
         drop(rpc);
         if cleanup.is_ok() {
@@ -373,6 +498,14 @@ impl AppserverProvider {
                 Ok(outcome)
             }
             Err(error) => {
+                tracing::warn!(method = "execute_job", step = "attempt result", error = %error, "container job attempt failed");
+                let error = match checkpoint {
+                    Some(session) => ProviderError::Checkpoint {
+                        error: Box::new(error),
+                        session: Box::new(session),
+                    },
+                    None => error,
+                };
                 if let Some(key) = key
                     && let Ok(metered) = self.gateway.usage(&key.id).await
                     && metered.user == spec.payer
@@ -416,7 +549,7 @@ impl AppserverProvider {
         let result = rpc.request(method, params).await?;
         let thread = result["thread"]["id"]
             .as_str()
-            .ok_or_else(|| runtime(JobFailureKind::WorkerLost))?
+            .ok_or_else(|| fault(JobFailureKind::WorkerLost, method, "missing thread.id"))?
             .to_owned();
         let history = result["thread"]["turns"]
             .as_array()
@@ -432,6 +565,7 @@ impl AppserverProvider {
         session: Option<&str>,
         key_id: &str,
         cancelled: &mut watch::Receiver<bool>,
+        checkpoint: &mut Option<SessionReport>,
     ) -> Result<ProviderOutcome, ProviderError> {
         let kind = spec
             .working_session
@@ -453,7 +587,11 @@ impl AppserverProvider {
             .as_array()
             .is_some_and(|models| models.iter().any(|m| m["model"] == spec.model.model))
         {
-            return Err(runtime(JobFailureKind::ModelUnavailable));
+            return Err(fault(
+                JobFailureKind::ModelUnavailable,
+                "model/list",
+                "selected model absent",
+            ));
         }
         let mut preflight = None;
         let fork = spec.kind == JobKind::Ask
@@ -463,11 +601,7 @@ impl AppserverProvider {
                 .is_some_and(|w| w.thread_id.is_none())
             && session.is_some();
         let thread = if fork {
-            let source_kind = if kind == ThreadKind::Verify {
-                kind
-            } else {
-                ThreadKind::Analytic
-            };
+            let source_kind = ThreadKind::Analytic;
             let parent = self
                 .thread(rpc, spec, source_kind, "thread/resume", session)
                 .await?;
@@ -487,7 +621,14 @@ impl AppserverProvider {
                 working
                     .preflight
                     .as_ref()
-                    .ok_or_else(|| runtime(JobFailureKind::WorkerLost))?
+                    .ok_or_else(|| {
+                        tracing::warn!(
+                            method = "thread/resume",
+                            step = "working preflight",
+                            "working thread has no bound preflight"
+                        );
+                        runtime(JobFailureKind::Configuration)
+                    })?
                     .seed
             } else {
                 SessionSeed::ContextPack
@@ -497,7 +638,14 @@ impl AppserverProvider {
                 let parent = session
                     .and_then(|parent| rpc.last.get(parent))
                     .copied()
-                    .ok_or_else(|| runtime(JobFailureKind::WorkerLost))?;
+                    .ok_or_else(|| {
+                        tracing::warn!(
+                            method = "thread/fork",
+                            step = "parent context",
+                            "analytic parent has no restored context"
+                        );
+                        runtime(JobFailureKind::Configuration)
+                    })?;
                 recovered.parent_context = Some(LastContext {
                     tokens: parent,
                     generation: working.analytic_generation,
@@ -505,13 +653,57 @@ impl AppserverProvider {
                 recovered.preflight = None;
             }
             let compact = config::needs_compaction(&recovered, seed)?;
+            *checkpoint = Some(SessionReport {
+                thread_id: thread.clone(),
+                outcome: if session.is_some() {
+                    SessionOutcome::Resumed
+                } else {
+                    SessionOutcome::Started
+                },
+                last_context: rpc.last.get(&thread).map(|tokens| {
+                    Box::new(LastContext {
+                        tokens: *tokens,
+                        generation: working.analytic_generation,
+                    })
+                }),
+                preflight: Some(Box::new(AskPreflight {
+                    seed,
+                    generation: working.analytic_generation,
+                    state: if compact {
+                        PreflightState::Pending
+                    } else {
+                        recovered
+                            .preflight
+                            .as_ref()
+                            .map_or(PreflightState::NotNeeded, |p| p.state)
+                    },
+                })),
+            });
             let state = if compact {
+                // Fork initialization materializes inherited history (0.171 core/src/session/mod.rs:1883-1954).
                 self.thread(rpc, spec, kind, "thread/resume", Some(&thread))
                     .await?;
                 let (delta, _) = self.turn(rpc, spec, &thread, true, cancelled).await?;
-                usage = usage
-                    .checked_add(delta)
-                    .map_err(|_| runtime(JobFailureKind::ProviderFailed))?;
+                usage = usage.checked_add(delta).map_err(|_| {
+                    fault(
+                        JobFailureKind::ProviderFailed,
+                        "execute_job",
+                        "usage sum overflow",
+                    )
+                })?;
+                if let Some(report) = checkpoint {
+                    if let Some(preflight) = &mut report.preflight {
+                        preflight.state = PreflightState::Done;
+                    }
+                    report.last_context = rpc.last.get(&thread).map(|tokens| {
+                        Box::new(LastContext {
+                            tokens: *tokens,
+                            generation: working.analytic_generation,
+                        })
+                    });
+                }
+                self.thread(rpc, spec, kind, "thread/resume", Some(&thread))
+                    .await?;
                 PreflightState::Done
             } else if recovered
                 .preflight
@@ -528,11 +720,8 @@ impl AppserverProvider {
                 state,
             }));
         }
-        // Resume again after preflight: fixed policy and attachment precede every operation.
-        if kind != ThreadKind::Judge {
-            self.thread(rpc, spec, kind, "thread/resume", Some(&thread))
-                .await?;
-        }
+        // New starts have no rollout before their first turn; ephemeral threads never have one.
+        // 0.171 app-server/tests/suite/v2/thread_resume.rs:516-566.
         let mut answer = spec.clone();
         if session.is_none() && !spec.skills.is_empty() {
             let mut files = Vec::new();
@@ -546,7 +735,11 @@ impl AppserverProvider {
                         | "git-and-github"
                         | "check-pr-comments"
                 ) {
-                    return Err(runtime(JobFailureKind::Configuration));
+                    return Err(fault(
+                        JobFailureKind::Configuration,
+                        "turn/start",
+                        "unknown required skill",
+                    ));
                 }
                 files.push(format!("/etc/codex/skills/{skill}/SKILL.md"));
             }
@@ -557,9 +750,13 @@ impl AppserverProvider {
             );
         }
         let (delta, message) = self.turn(rpc, &answer, &thread, false, cancelled).await?;
-        usage = usage
-            .checked_add(delta)
-            .map_err(|_| runtime(JobFailureKind::ProviderFailed))?;
+        usage = usage.checked_add(delta).map_err(|_| {
+            fault(
+                JobFailureKind::ProviderFailed,
+                "execute_job",
+                "usage sum overflow",
+            )
+        })?;
         let key_usage = self.reconcile_usage(spec, key_id, usage).await?;
         usage.requests = key_usage.requests;
         let output = if spec.flow_file.is_some() {
@@ -572,10 +769,31 @@ impl AppserverProvider {
             let text = rpc
                 .read_output("/work/out/report.json", 4 * 1024 * 1024)
                 .await?;
-            serde_json::from_str(&text).map_err(|_| ProviderError::OutputNotJson)?
+            serde_json::from_str(&text).map_err(|_| {
+                tracing::warn!(
+                    method = "fs/readFile",
+                    step = "report JSON",
+                    "report output is not JSON"
+                );
+                ProviderError::OutputNotJson
+            })?
         } else {
-            serde_json::from_str(message.as_deref().ok_or(ProviderError::OutputNotJson)?)
-                .map_err(|_| ProviderError::OutputNotJson)?
+            serde_json::from_str(message.as_deref().ok_or_else(|| {
+                tracing::warn!(
+                    method = "turn/completed",
+                    step = "final message",
+                    "completed turn has no final message"
+                );
+                ProviderError::OutputNotJson
+            })?)
+            .map_err(|_| {
+                tracing::warn!(
+                    method = "turn/completed",
+                    step = "answer JSON",
+                    "final answer is not JSON"
+                );
+                ProviderError::OutputNotJson
+            })?
         };
         let generation = spec
             .working_session
@@ -598,6 +816,7 @@ impl AppserverProvider {
             }),
             preflight,
         });
+        *checkpoint = runtime_session.clone();
         Ok(ProviderOutcome {
             runtime_session,
             output: rpc.scrubber.value(output),
@@ -614,12 +833,18 @@ impl AppserverProvider {
         key_id: &str,
         delta: Usage,
     ) -> Result<Usage, ProviderError> {
+        let mut observed = Usage::default();
         for attempt in 0..20 {
             let metered = self.gateway.usage(key_id).await?;
             if metered.user != spec.payer {
-                return Err(runtime(JobFailureKind::ProviderFailed));
+                return Err(fault(
+                    JobFailureKind::ProviderFailed,
+                    "gateway/usage",
+                    "payer mismatch",
+                ));
             }
             let usage = metered.usage;
+            observed = usage;
             if (
                 usage.input_tokens,
                 usage.cached_input_tokens,
@@ -635,6 +860,7 @@ impl AppserverProvider {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
+        tracing::warn!(method = "gateway/usage", step = "reconcile", expected = ?delta, actual = ?observed, "usage reconciliation mismatch");
         Err(runtime(JobFailureKind::ProviderFailed))
     }
 
@@ -649,10 +875,13 @@ impl AppserverProvider {
         if *cancelled.borrow() {
             return Err(ProviderError::Cancelled);
         }
-        let baseline = *rpc
-            .totals
-            .get(thread)
-            .ok_or_else(|| runtime(JobFailureKind::WorkerLost))?;
+        let baseline = *rpc.totals.get(thread).ok_or_else(|| {
+            fault(
+                JobFailureKind::WorkerLost,
+                "turn/start",
+                "missing baseline usage",
+            )
+        })?;
         rpc.turn = rpc::TurnLog {
             thread: thread.into(),
             ..Default::default()
@@ -688,30 +917,50 @@ impl AppserverProvider {
                     .as_ref()
                     .is_some_and(|id| completed["id"].as_str() != Some(id))
                 {
-                    return Err(runtime(JobFailureKind::WorkerLost));
+                    return Err(fault(
+                        JobFailureKind::WorkerLost,
+                        method,
+                        "completed turn id mismatch",
+                    ));
                 }
                 match completed["status"].as_str() {
                     Some("completed") => {}
                     Some("interrupted") => return Err(ProviderError::Cancelled),
-                    _ => return Err(rpc::failure(&completed["error"])),
+                    _ => {
+                        tracing::warn!(method, step = "turn/completed", "app-server turn failed");
+                        return Err(rpc::failure(&completed["error"]));
+                    }
                 }
                 if !rpc.turn.updated {
-                    return Err(runtime(JobFailureKind::ProviderFailed));
+                    return Err(fault(
+                        JobFailureKind::ProviderFailed,
+                        method,
+                        "completed without token usage update",
+                    ));
                 }
-                let end = *rpc
-                    .totals
-                    .get(thread)
-                    .ok_or_else(|| runtime(JobFailureKind::WorkerLost))?;
-                let delta = end
-                    .delta_from(baseline)
-                    .map_err(|_| runtime(JobFailureKind::ProviderFailed))?;
+                let end = *rpc.totals.get(thread).ok_or_else(|| {
+                    fault(
+                        JobFailureKind::WorkerLost,
+                        method,
+                        "missing final total usage",
+                    )
+                })?;
+                let delta = end.delta_from(baseline).map_err(|_| {
+                    fault(
+                        JobFailureKind::ProviderFailed,
+                        method,
+                        "invalid turn usage delta",
+                    )
+                })?;
                 return Ok((delta, rpc.turn.output.take()));
             }
             tokio::select! {
                 result = rpc.next_notification() => result?,
                 _ = cancelled.changed() => {
                     // Interrupt on the same subscribed connection; the enclosing failure path stops the worker.
-                    let _ = tokio::time::timeout(Duration::from_secs(5), rpc.request("turn/interrupt", json!({"threadId":thread,"turnId":turn_id}))).await;
+                    if !matches!(tokio::time::timeout(Duration::from_secs(5), rpc.request("turn/interrupt", json!({"threadId":thread,"turnId":turn_id}))).await, Ok(Ok(_))) {
+                        tracing::warn!(method = "turn/interrupt", step = "cancel", "turn interrupt was not acknowledged; stopping worker");
+                    }
                     return Err(ProviderError::Cancelled);
                 }
             }
@@ -729,15 +978,21 @@ impl LlmProvider for AppserverProvider {
             let mut spec = call
                 .job_spec
                 .as_deref()
-                .ok_or_else(|| runtime(JobFailureKind::Configuration))?
+                .ok_or_else(|| {
+                    fault(
+                        JobFailureKind::Configuration,
+                        "execute_job",
+                        "trait call lacks JobSpec",
+                    )
+                })?
                 .clone();
             spec.prompt = call.prompt.clone();
-            self.perform(&spec, None, events).await
+            self.execute_job(&spec, events).await
         })
     }
     fn resume<'a>(
         &'a self,
-        session_id: &'a str,
+        _session_id: &'a str,
         call: &'a ProviderCall,
         events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
@@ -745,20 +1000,33 @@ impl LlmProvider for AppserverProvider {
             let mut spec = call
                 .job_spec
                 .as_deref()
-                .ok_or_else(|| runtime(JobFailureKind::Configuration))?
+                .ok_or_else(|| {
+                    fault(
+                        JobFailureKind::Configuration,
+                        "execute_job",
+                        "trait call lacks JobSpec",
+                    )
+                })?
                 .clone();
             spec.prompt = call.prompt.clone();
-            self.perform(&spec, Some(session_id), events).await
+            self.execute_job(&spec, events).await
         })
     }
     fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
         Box::pin(async move {
+            if let Some(cancel) = self
+                .cancellations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&job)
+            {
+                cancel.send_replace(true);
+            }
             let (mut done, container) = {
                 let registry = self.active.lock().await;
                 let Some(active) = registry.get(&job) else {
                     return Ok(());
                 };
-                let _ = active.cancel.send(true);
                 (active.done.clone(), active.container.clone())
             };
             // Copy the state before waiting; never hold the registry lock through cleanup.
@@ -781,7 +1049,7 @@ impl LlmProvider for AppserverProvider {
                         },
                     })
                     .await
-                    .map_err(|_| runtime(JobFailureKind::WorkerUnavailable))?;
+                    .map_err(|error| launcher_failure(error, "cancel stop"))?;
                 self.gateway.revoke(&container).await?;
             }
             Ok(())

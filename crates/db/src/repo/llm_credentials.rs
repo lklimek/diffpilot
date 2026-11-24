@@ -85,7 +85,7 @@ impl LlmCredentials<'_> {
         Ok(removed)
     }
 
-    /// Stores gateway-observed common status; no credential-mode or secret material enters the database.
+    /// Merges gateway status, retaining longer pauses and calls without a newer gateway observation.
     pub async fn put_status(
         &self,
         tenant: &str,
@@ -95,8 +95,17 @@ impl LlmCredentials<'_> {
         let mut tx = super::write_tx(self.pool).await?;
         sqlx::query("INSERT INTO llm_credentials(user_id,tenant_id,state,relink_reason,plan,label,paused_until,last_call_at,last_call_ok,last_call_message)
             VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET state=excluded.state,relink_reason=excluded.relink_reason,
-            plan=excluded.plan,label=excluded.label,paused_until=excluded.paused_until,last_call_at=excluded.last_call_at,
-            last_call_ok=excluded.last_call_ok,last_call_message=excluded.last_call_message,last_call_failure=NULL")
+            plan=excluded.plan,label=excluded.label,
+            paused_until=CASE WHEN excluded.paused_until IS NULL THEN llm_credentials.paused_until
+                ELSE MAX(COALESCE(llm_credentials.paused_until,excluded.paused_until),excluded.paused_until) END,
+            last_call_at=CASE WHEN excluded.last_call_at>COALESCE(llm_credentials.last_call_at,'')
+                THEN excluded.last_call_at ELSE llm_credentials.last_call_at END,
+            last_call_ok=CASE WHEN excluded.last_call_at>COALESCE(llm_credentials.last_call_at,'')
+                THEN excluded.last_call_ok ELSE llm_credentials.last_call_ok END,
+            last_call_message=CASE WHEN excluded.last_call_at>COALESCE(llm_credentials.last_call_at,'')
+                THEN excluded.last_call_message ELSE llm_credentials.last_call_message END,
+            last_call_failure=CASE WHEN excluded.last_call_at>COALESCE(llm_credentials.last_call_at,'')
+                THEN NULL ELSE llm_credentials.last_call_failure END")
             .bind(user).bind(tenant).bind(crate::repo::jobs::wire_name(status.state)?)
             .bind(status.relink_reason.map(crate::repo::jobs::wire_name).transpose()?).bind(&status.plan).bind(&status.label)
             .bind(status.paused_until.map(ts)).bind(status.last_call.as_ref().map(|c|ts(c.at)))
@@ -112,10 +121,12 @@ impl LlmCredentials<'_> {
         &self,
         user: &str,
     ) -> Result<Option<contracts::gateway::CredentialStatus>, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
         let row = sqlx::query("SELECT * FROM llm_credentials WHERE user_id=?")
             .bind(user)
-            .fetch_optional(self.pool)
+            .fetch_optional(&mut *tx)
             .await?;
+        tx.commit().await?;
         row.map(|r| {
             Ok(contracts::gateway::CredentialStatus {
                 mode: contracts::gateway::CredentialMode::ChatgptPlan,

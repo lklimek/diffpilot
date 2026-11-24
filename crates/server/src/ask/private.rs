@@ -1,5 +1,4 @@
 //! Standalone comment Ask: payer-owned Verify session, private recovery pack, no assessment admission.
-// TODO(coordinator): commit with writable worktree Git metadata, then remove this marker.
 use contracts::agent::{self, JobKind};
 use contracts::api::pr::PrSummary;
 use contracts::api::questions::AskAnchor;

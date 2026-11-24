@@ -92,6 +92,8 @@ pub enum JobFailureKind {
     ReportVersionUnsupported,
     /// The provider rejected the strict output schema; no model repair or retry.
     InvalidJsonSchema,
+    /// Required first-Ask compaction was skipped or not confirmed; the answer is discarded.
+    AskCompactionUnconfirmed,
 }
 
 impl JobFailureKind {

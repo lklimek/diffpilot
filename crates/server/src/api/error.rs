@@ -72,7 +72,7 @@ impl ApiErrorSource for DbError {
         }
         match self {
             Self::NotFound => ApiErrorCode::NotFound,
-            Self::Conflict => ApiErrorCode::Conflict,
+            Self::Conflict | Self::CredentialUnlinked => ApiErrorCode::Conflict,
             Self::NotImplemented { .. }
             | Self::Corrupt { .. }
             | Self::Json(_)
@@ -86,6 +86,7 @@ impl ApiErrorSource for DbError {
         }
         Cow::Borrowed(match self {
             Self::NotFound => "The requested item was not found.",
+            Self::CredentialUnlinked => "Link your Codex account in Settings",
             Self::Conflict => "The request conflicts with the current state. Reload and try again.",
             Self::NotImplemented { .. }
             | Self::Corrupt { .. }

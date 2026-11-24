@@ -184,107 +184,130 @@ async fn private_ask_checkpoint_preserves_verify_kind_and_payer_across_restart()
     use contracts::job::result::{JobOutcome, JobResult, SessionOutcome, SessionReport};
     use contracts::job::spec::WorkingSession;
     use contracts::runtime::{AskPreflight, PreflightState, SessionSeed, ThreadKind};
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("checkpoint.sqlite");
-    let db = Db::open(&path).await.unwrap();
-    let question = seed(&db).await;
-    assert!(
-        db.questions()
-            .next_unsent_for_pr(1, Timestamp::now())
+    for kind in [ThreadKind::Ask, ThreadKind::Verify] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("checkpoint.sqlite");
+        let db = Db::open(&path).await.unwrap();
+        let question = seed(&db).await;
+        assert!(
+            db.questions()
+                .next_unsent_for_pr(1, Timestamp::now())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.questions()
+                .pull_requests_with_unsent()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        db.jobs()
+            .enqueue(job(question, "u1"), Timestamp::now())
+            .await
+            .unwrap();
+        let claimed = db
+            .jobs()
+            .claim(ClaimParams {
+                payer_ids: &["u1".into()],
+                job_token_hash: b"fake",
+                lease_until: Timestamp::now() + jiff::SignedDuration::from_mins(1),
+                now: Timestamp::now(),
+            })
             .await
             .unwrap()
-            .is_none()
-    );
-    assert!(
-        db.questions()
-            .pull_requests_with_unsent()
+            .unwrap();
+        let preflight = AskPreflight {
+            seed: SessionSeed::ContextPack,
+            generation: 0,
+            state: PreflightState::NotNeeded,
+        };
+        let mut spec = claimed.spec;
+        spec.working_session = Some(WorkingSession {
+            kind: Some(kind),
+            preflight: Some(preflight.clone()),
+            parent_context: None,
+            user_key: "a".repeat(64),
+            analytic_generation: 0,
+            thread_id: None,
+        });
+        db.jobs().save_session_route(&spec).await.unwrap();
+        let result = JobResult {
+            job_id: claimed.id,
+            attempt: claimed.attempt,
+            outcome: JobOutcome::Succeeded {
+                output: serde_json::json!({}),
+            },
+            session: Some(SessionReport {
+                thread_id: "private-durable".into(),
+                outcome: SessionOutcome::Resumed,
+                preflight: Some(Box::new(preflight)),
+                last_context: None,
+            }),
+            assessment: None,
+            report: None,
+            usage: None,
+            llm_call: None,
+            skills_commit: None,
+        };
+        db.jobs().complete(&result, Timestamp::now()).await.unwrap();
+        drop(db);
+        let db = Db::open(&path).await.unwrap();
+        assert!(matches!(
+            db.jobs()
+                .get(result.job_id)
+                .await
+                .unwrap()
+                .result
+                .unwrap()
+                .outcome,
+            JobOutcome::Succeeded { .. }
+        ));
+        if kind == ThreadKind::Ask {
+            assert!(
+                db.container_sessions()
+                    .working(1, &UserId("u1".into()), ThreadKind::Verify)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                db.container_sessions()
+                    .working(1, &UserId("u1".into()), ThreadKind::Ask)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            continue;
+        }
+        let working = db
+            .container_sessions()
+            .working(1, &UserId("u1".into()), ThreadKind::Verify)
             .await
             .unwrap()
-            .is_empty()
-    );
-    db.jobs()
-        .enqueue(job(question, "u1"), Timestamp::now())
-        .await
-        .unwrap();
-    let claimed = db
-        .jobs()
-        .claim(ClaimParams {
-            payer_ids: &["u1".into()],
-            job_token_hash: b"fake",
-            lease_until: Timestamp::now() + jiff::SignedDuration::from_mins(1),
-            now: Timestamp::now(),
-        })
-        .await
-        .unwrap()
-        .unwrap();
-    let preflight = AskPreflight {
-        seed: SessionSeed::ContextPack,
-        generation: 0,
-        state: PreflightState::NotNeeded,
-    };
-    let mut spec = claimed.spec;
-    spec.working_session = Some(WorkingSession {
-        kind: Some(ThreadKind::Ask),
-        preflight: Some(preflight.clone()),
-        parent_context: None,
-        user_key: "a".repeat(64),
-        analytic_generation: 0,
-        thread_id: None,
-    });
-    db.jobs().save_session_route(&spec).await.unwrap();
-    let result = JobResult {
-        job_id: claimed.id,
-        attempt: claimed.attempt,
-        outcome: JobOutcome::Succeeded {
-            output: serde_json::json!({}),
-        },
-        session: Some(SessionReport {
-            thread_id: "private-durable".into(),
-            outcome: SessionOutcome::Resumed,
-            preflight: Some(Box::new(preflight)),
-            last_context: None,
-        }),
-        assessment: None,
-        report: None,
-        usage: None,
-        llm_call: None,
-        skills_commit: None,
-    };
-    assert!(
-        db.jobs().complete(&result, Timestamp::now()).await.is_err(),
-        "private comment Ask cannot change thread kind"
-    );
-    spec.working_session.as_mut().unwrap().kind = Some(ThreadKind::Verify);
-    db.jobs().save_session_route(&spec).await.unwrap();
-    db.jobs().complete(&result, Timestamp::now()).await.unwrap();
-    drop(db);
-    let db = Db::open(&path).await.unwrap();
-    let working = db
-        .container_sessions()
-        .working(1, &UserId("u1".into()), ThreadKind::Verify)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(working.thread_id, "private-durable");
-    assert!(
-        db.container_sessions()
-            .working(1, &UserId("u1".into()), ThreadKind::Ask)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        db.container_sessions()
-            .working(1, &UserId("u2".into()), ThreadKind::Verify)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        db.container_sessions()
-            .analytic(1, &UserId("u1".into()))
-            .await
-            .unwrap()
-            .is_none()
-    );
+            .unwrap();
+        assert_eq!(working.thread_id, "private-durable");
+        assert!(
+            db.container_sessions()
+                .working(1, &UserId("u1".into()), ThreadKind::Ask)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.container_sessions()
+                .working(1, &UserId("u2".into()), ThreadKind::Verify)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.container_sessions()
+                .analytic(1, &UserId("u1".into()))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
 }

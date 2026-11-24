@@ -281,6 +281,8 @@ async fn assessment_admission_is_atomic_and_idempotent_across_restart_and_midnig
             80
         );
     }
+    // Reset the paused credential explicitly; gateway status refreshes retain usage pauses.
+    db.llm_credentials().remove_status("u1").await.unwrap();
     seed(&db).await;
     let mut config = AssessmentConfig::default();
     config.ab_prs.push("o/r#1".into());

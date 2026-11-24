@@ -284,6 +284,35 @@ pub const GET_COMMENT_SOURCES: Route = route(
     "/api/v1/prs/{owner}/{name}/{number}/comments/sources",
     READ,
 );
+/// The signed-in payer's gateway-observed plan status.
+pub const GET_CODEX: Route = route(
+    "getCodex",
+    Get,
+    "/api/v1/settings/codex",
+    RouteAuth::Session,
+);
+/// Explicitly unlink the signed-in payer's plan.
+pub const DELETE_CODEX: Route = route(
+    "deleteCodex",
+    Delete,
+    "/api/v1/settings/codex",
+    RouteAuth::SessionCsrf,
+);
+/// Begin plan-only device linking.
+pub const LINK_CODEX: Route = route(
+    "linkCodex",
+    Post,
+    "/api/v1/settings/codex/link",
+    RouteAuth::SessionCsrf,
+);
+/// Poll the signed-in payer's staged plan link.
+pub const GET_CODEX_LINK: Route = route(
+    "getCodexLink",
+    Get,
+    "/api/v1/settings/codex/link",
+    RouteAuth::Session,
+);
+
 /// Sets the language of LLM texts.
 pub const SET_LANGUAGE: Route = route("setLanguage", Put, "/api/v1/settings/language", SessionCsrf);
 /// Read-only settings of a repository.
@@ -728,6 +757,10 @@ pub const ROUTES: &[Route] = &[
     SET_ASSESSMENT_SETTINGS,
     GET_ASSESSMENT_COMPARISON,
     GET_COMMENT_SOURCES,
+    GET_CODEX,
+    DELETE_CODEX,
+    LINK_CODEX,
+    GET_CODEX_LINK,
     SET_LANGUAGE,
     SET_CONTROLLED_OWNERS,
     SET_LLM,

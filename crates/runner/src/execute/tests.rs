@@ -1533,3 +1533,46 @@ fn metered_runtime_failure_preserves_usage_and_non_retryable_kind() {
         }
     ));
 }
+
+#[test]
+fn failed_answer_checkpoint_reaches_job_result_with_its_usage_and_failure() {
+    let spec = crate::test_support::spec(JobKind::Ask, Path::new("/unused"));
+    let session = contracts::job::result::SessionReport {
+        thread_id: "working-fork".into(),
+        outcome: SessionOutcome::Resumed,
+        last_context: Some(Box::new(contracts::runtime::LastContext {
+            tokens: 30000,
+            generation: 7,
+        })),
+        preflight: Some(Box::new(contracts::runtime::AskPreflight {
+            seed: contracts::runtime::SessionSeed::Fork,
+            generation: 7,
+            state: contracts::runtime::PreflightState::Done,
+        })),
+    };
+    let usage = Usage {
+        requests: Some(2),
+        ..Usage::default()
+    };
+    let result = super::to_result(
+        &spec,
+        Err(ProviderError::Metered {
+            error: Box::new(ProviderError::Checkpoint {
+                error: Box::new(ProviderError::Timeout),
+                session: Box::new(session.clone()),
+            }),
+            usage,
+        }),
+        SessionOutcome::Resumed,
+        &Scrubber::default(),
+    );
+    assert_eq!(result.session, Some(session));
+    assert_eq!(result.usage, Some(usage));
+    assert!(matches!(
+        result.outcome,
+        JobOutcome::Failed {
+            kind: JobFailureKind::Timeout,
+            ..
+        }
+    ));
+}

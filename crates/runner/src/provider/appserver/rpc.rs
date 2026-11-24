@@ -44,7 +44,13 @@ impl Rpc {
         let (socket, _) =
             tokio_tungstenite::client_async_with_config("ws://localhost/", socket, Some(limits))
                 .await
-                .map_err(|_| runtime(JobFailureKind::WorkerLost))?;
+                .map_err(|_| {
+                    fault(
+                        JobFailureKind::WorkerLost,
+                        "initialize",
+                        "WebSocket handshake",
+                    )
+                })?;
         let mut rpc = Self {
             socket,
             next_id: 0,
@@ -64,12 +70,16 @@ impl Rpc {
     async fn send(&mut self, value: Value) -> Result<(), ProviderError> {
         let text = value.to_string();
         if text.len() > MAX_MESSAGE {
-            return Err(runtime(JobFailureKind::WorkerLost));
+            return Err(fault(
+                JobFailureKind::WorkerLost,
+                "websocket/send",
+                "outbound message exceeds cap",
+            ));
         }
         self.socket
             .send(Message::Text(text.into()))
             .await
-            .map_err(|_| runtime(JobFailureKind::WorkerLost))
+            .map_err(|_| fault(JobFailureKind::WorkerLost, "websocket/send", "frame write"))
     }
 
     pub async fn request(&mut self, method: &str, params: Value) -> Result<Value, ProviderError> {
@@ -78,7 +88,14 @@ impl Rpc {
             self.request_inner(method, params),
         )
         .await
-        .map_err(|_| runtime(JobFailureKind::WorkerLost))?
+        .map_err(|_| {
+            fault(
+                JobFailureKind::WorkerLost,
+                method,
+                "65 second request timeout",
+            )
+        })?
+        .inspect_err(|_| tracing::warn!(method, step = "request", "app-server RPC request failed"))
     }
 
     async fn request_inner(&mut self, method: &str, params: Value) -> Result<Value, ProviderError> {
@@ -93,7 +110,11 @@ impl Rpc {
                 continue;
             }
             if value["id"] != id {
-                return Err(runtime(JobFailureKind::WorkerLost));
+                return Err(fault(
+                    JobFailureKind::WorkerLost,
+                    method,
+                    "response id mismatch",
+                ));
             }
             if let Some(error) = value.get("error") {
                 if method == "thread/resume"
@@ -105,10 +126,9 @@ impl Rpc {
                 }
                 return Err(failure(error));
             }
-            return value
-                .get("result")
-                .cloned()
-                .ok_or_else(|| runtime(JobFailureKind::WorkerLost));
+            return value.get("result").cloned().ok_or_else(|| {
+                fault(JobFailureKind::WorkerLost, method, "response has no result")
+            });
         }
     }
 
@@ -116,16 +136,29 @@ impl Rpc {
         loop {
             match self.socket.next().await {
                 Some(Ok(Message::Text(text))) => {
-                    return serde_json::from_str(&text)
-                        .map_err(|_| runtime(JobFailureKind::WorkerLost));
+                    return serde_json::from_str(&text).map_err(|_| {
+                        fault(
+                            JobFailureKind::WorkerLost,
+                            "websocket/receive",
+                            "invalid JSON frame",
+                        )
+                    });
                 }
-                Some(Ok(Message::Ping(_))) => self
-                    .socket
-                    .flush()
-                    .await
-                    .map_err(|_| runtime(JobFailureKind::WorkerLost))?,
+                Some(Ok(Message::Ping(_))) => self.socket.flush().await.map_err(|_| {
+                    fault(
+                        JobFailureKind::WorkerLost,
+                        "websocket/receive",
+                        "ping flush",
+                    )
+                })?,
                 Some(Ok(Message::Pong(_))) => {}
-                _ => return Err(runtime(JobFailureKind::WorkerLost)),
+                _ => {
+                    return Err(fault(
+                        JobFailureKind::WorkerLost,
+                        "websocket/receive",
+                        "closed or invalid frame",
+                    ));
+                }
             }
         }
     }
@@ -133,13 +166,28 @@ impl Rpc {
     pub async fn next_notification(&mut self) -> Result<(), ProviderError> {
         let value = self.receive().await?;
         if value.get("method").is_none() {
-            return Err(runtime(JobFailureKind::WorkerLost));
+            return Err(fault(
+                JobFailureKind::WorkerLost,
+                "websocket/receive",
+                "unexpected response while awaiting notification",
+            ));
         }
         self.observe(value).await
     }
 
     async fn observe(&mut self, value: Value) -> Result<(), ProviderError> {
         if value.get("id").is_some() {
+            let method: String = self
+                .scrubber
+                .text(value["method"].as_str().unwrap_or(""))
+                .chars()
+                .take(128)
+                .collect();
+            tracing::warn!(
+                method,
+                step = "server request",
+                "app-server requested an unsupported runner operation"
+            );
             // Approval, user-input and credential-refresh requests are never granted.
             self.send(json!({"id":value["id"],"error":{"code":-32601,"message":"runner does not provide this operation"}})).await?;
             return Err(runtime(JobFailureKind::UpstreamRejected));
@@ -152,7 +200,13 @@ impl Rpc {
             let last = &p["tokenUsage"]["last"];
             let context = number(last, "inputTokens")?
                 .checked_add(number(last, "outputTokens")?)
-                .ok_or_else(|| runtime(JobFailureKind::ProviderFailed))?;
+                .ok_or_else(|| {
+                    fault(
+                        JobFailureKind::ProviderFailed,
+                        "thread/tokenUsage/updated",
+                        "context usage overflow",
+                    )
+                })?;
             self.totals.insert(thread.to_owned(), total);
             self.last.insert(thread.to_owned(), context);
             if thread == self.turn.thread {
@@ -213,7 +267,11 @@ impl Rpc {
             _ => {}
         }
         if !self.kind.allows_model_tools() && self.turn.tool_used {
-            return Err(runtime(JobFailureKind::UpstreamRejected));
+            return Err(fault(
+                JobFailureKind::UpstreamRejected,
+                method,
+                "judge model tool item",
+            ));
         }
         Ok(())
     }
@@ -234,7 +292,13 @@ impl Rpc {
             Ok(())
         })
         .await
-        .map_err(|_| runtime(JobFailureKind::WorkerLost))?
+        .map_err(|_| {
+            fault(
+                JobFailureKind::WorkerLost,
+                "thread/tokenUsage/updated",
+                "15 second restored usage timeout",
+            )
+        })?
     }
 
     pub async fn secret(&mut self, path: &str, bytes: &[u8]) -> Result<(), ProviderError> {
@@ -266,45 +330,85 @@ impl Rpc {
     pub async fn command(&mut self, command: Value) -> Result<(), ProviderError> {
         let result = self.request("command/exec", command).await?;
         if result["exitCode"] != 0 {
-            return Err(runtime(JobFailureKind::CheckoutFailed));
+            return Err(fault(
+                JobFailureKind::CheckoutFailed,
+                "command/exec",
+                "nonzero exit code",
+            ));
         }
         Ok(())
     }
 
     pub async fn read_output(&mut self, path: &str, limit: usize) -> Result<String, ProviderError> {
         use base64::Engine;
-        let parent = path
-            .rsplit_once('/')
-            .map(|x| x.0)
-            .ok_or_else(|| runtime(JobFailureKind::Configuration))?;
+        let parent = path.rsplit_once('/').map(|x| x.0).ok_or_else(|| {
+            fault(
+                JobFailureKind::Configuration,
+                "fs/readFile",
+                "output path has no parent",
+            )
+        })?;
         for (path, file) in [(parent, false), (path, true)] {
             let metadata = self.request("fs/getMetadata", json!({"path":path})).await?;
             let type_key = if file { "isFile" } else { "isDirectory" };
             if metadata[type_key] != true || metadata["isSymlink"] != false {
-                return Err(runtime(JobFailureKind::ProviderFailed));
+                return Err(fault(
+                    JobFailureKind::ProviderFailed,
+                    "fs/getMetadata",
+                    "output path type or symlink",
+                ));
             }
         }
         let result = self.request("fs/readFile", json!({"path":path})).await?;
-        let encoded = result["dataBase64"]
-            .as_str()
-            .ok_or_else(|| runtime(JobFailureKind::WorkerLost))?;
+        let encoded = result["dataBase64"].as_str().ok_or_else(|| {
+            fault(
+                JobFailureKind::WorkerLost,
+                "fs/readFile",
+                "missing base64 data",
+            )
+        })?;
         if encoded.len() > limit.div_ceil(3) * 4 {
-            return Err(runtime(JobFailureKind::ProviderFailed));
+            return Err(fault(
+                JobFailureKind::ProviderFailed,
+                "fs/readFile",
+                "encoded output exceeds cap",
+            ));
         }
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded)
-            .map_err(|_| runtime(JobFailureKind::WorkerLost))?;
+            .map_err(|_| {
+                fault(
+                    JobFailureKind::WorkerLost,
+                    "fs/readFile",
+                    "invalid base64 output",
+                )
+            })?;
         if bytes.len() > limit {
-            return Err(runtime(JobFailureKind::ProviderFailed));
+            return Err(fault(
+                JobFailureKind::ProviderFailed,
+                "fs/readFile",
+                "decoded output exceeds cap",
+            ));
         }
-        String::from_utf8(bytes).map_err(|_| ProviderError::OutputNotJson)
+        String::from_utf8(bytes).map_err(|_| {
+            tracing::warn!(
+                method = "fs/readFile",
+                step = "decode text",
+                "output is not UTF-8"
+            );
+            ProviderError::OutputNotJson
+        })
     }
 }
 
 fn number(v: &Value, field: &str) -> Result<u64, ProviderError> {
-    v[field]
-        .as_u64()
-        .ok_or_else(|| runtime(JobFailureKind::ProviderFailed))
+    v[field].as_u64().ok_or_else(|| {
+        fault(
+            JobFailureKind::ProviderFailed,
+            "thread/tokenUsage/updated",
+            field,
+        )
+    })
 }
 
 fn usage(value: &Value) -> Result<Usage, ProviderError> {
@@ -314,9 +418,13 @@ fn usage(value: &Value) -> Result<Usage, ProviderError> {
         output_tokens: number(value, "outputTokens")?,
         requests: None,
     };
-    result
-        .delta_from(Usage::default())
-        .map_err(|_| runtime(JobFailureKind::ProviderFailed))
+    result.delta_from(Usage::default()).map_err(|_| {
+        fault(
+            JobFailureKind::ProviderFailed,
+            "thread/tokenUsage/updated",
+            "invalid usage total",
+        )
+    })
 }
 
 pub(super) fn failure(error: &Value) -> ProviderError {
@@ -347,10 +455,10 @@ pub(super) fn failure(error: &Value) -> ProviderError {
                     .any(|word| word == *code)
             })
         })
-        .unwrap_or(if error["codexErrorInfo"] == "usageLimitExceeded" {
-            "usage_limit_reached"
-        } else {
-            ""
+        .unwrap_or(match error["codexErrorInfo"].as_str() {
+            Some("usageLimitExceeded") => "usage_limit_reached",
+            Some("modelNotFound") => "model_not_found",
+            _ => "",
         });
     let kind = match code {
         "invalid_json_schema" => JobFailureKind::InvalidJsonSchema,

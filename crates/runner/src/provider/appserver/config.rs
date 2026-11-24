@@ -22,16 +22,14 @@ pub(super) fn thread_params(
     if let Some(endpoint) = memcan {
         config["mcp_servers"] = json!({"memcan": {"enabled":kind.memcan_read(),"url":endpoint.url,"http_headers":{"Authorization":format!("Bearer {}",endpoint.token.expose())}}});
     }
-    if kind == ThreadKind::Ask && memcan.is_some() {
-        config["mcp_servers"]["memcan"]["enabled_tools"] = json!([
-            "search",
-            "search_memories",
-            "search_code",
-            "search_standards",
-            "get_memories",
-            "count_memories",
-            "list_collections"
-        ]);
+    if let Some(endpoint) = memcan {
+        use crate::provider::codex::config::{MEMCAN_READ_TOOLS, MEMCAN_TOOLS};
+        config["mcp_servers"]["memcan"]["enabled_tools"] =
+            if kind.memcan_write() && endpoint.allow_write {
+                json!(MEMCAN_TOOLS)
+            } else {
+                json!(MEMCAN_READ_TOOLS)
+            };
     }
     if judge {
         config["features.shell_tool"] = json!(false);
@@ -49,7 +47,11 @@ pub(super) fn working_kind(
     match working.kind {
         Some(kind @ (ThreadKind::Ask | ThreadKind::Verify)) => Ok(kind),
         None if working.thread_id.is_none() => Ok(ThreadKind::Ask),
-        _ => Err(runtime(JobFailureKind::Configuration)),
+        _ => Err(fault(
+            JobFailureKind::Configuration,
+            "thread/config",
+            "unknown working thread kind",
+        )),
     }
 }
 
@@ -59,7 +61,11 @@ pub(super) fn needs_compaction(
 ) -> Result<bool, ProviderError> {
     if let Some(preflight) = &working.preflight {
         if preflight.generation != working.analytic_generation || preflight.seed != seed {
-            return Err(runtime(JobFailureKind::Configuration));
+            return Err(fault(
+                JobFailureKind::Configuration,
+                "thread/config",
+                "preflight seed or generation mismatch",
+            ));
         }
         if matches!(
             preflight.state,
@@ -78,7 +84,13 @@ pub(super) fn needs_compaction(
         .parent_context
         .as_ref()
         .filter(|c| c.generation == working.analytic_generation)
-        .ok_or_else(|| runtime(JobFailureKind::WorkerLost))?;
+        .ok_or_else(|| {
+            fault(
+                JobFailureKind::Configuration,
+                "thread/config",
+                "missing or stale parent context",
+            )
+        })?;
     Ok(context.tokens > 80_000)
 }
 
@@ -86,6 +98,10 @@ pub(super) fn model_window(model: &str) -> Result<u64, ProviderError> {
     match model {
         "gpt-6.2-sol" | "gpt-6.1-sol" | "gpt-6.1-terra" => Ok(500_000),
         "gpt-6.2-astra" | "gpt-6-sol" | "gpt-5.6-sol" | "gpt-6-astra" => Ok(272_000),
-        _ => Err(runtime(JobFailureKind::ModelUnavailable)),
+        _ => Err(fault(
+            JobFailureKind::ModelUnavailable,
+            "thread/config",
+            "unknown model context window",
+        )),
     }
 }

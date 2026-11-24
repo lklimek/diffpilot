@@ -605,6 +605,17 @@ impl Analyses<'_> {
         now: Timestamp,
     ) -> Result<bool, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
+        if let Some(payer) = payer {
+            let linked: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM llm_credentials WHERE user_id=? AND state='linked')",
+            )
+            .bind(payer)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !linked {
+                return Err(DbError::CredentialUnlinked);
+            }
+        }
         let updated = sqlx::query(
             "UPDATE analyses SET state = 'planning', flows_total = NULL, flows_done = 0, paused_until = NULL,
                  failure_flow_id = NULL, failure_flow_title = NULL, failure_message = NULL, failure_reason = NULL, finished_at = NULL,
