@@ -581,6 +581,10 @@ resets_at: string, } | { "code": "credential_missing" };
  */
 export type AssessmentComparison = {
 /**
+ * Exact comparison counts with explicit denominators.
+ */
+summary: ComparisonSummary,
+/**
  * Frozen logical pass.
  */
 pass: AssessmentPass,
@@ -601,6 +605,10 @@ items: Array<AssessmentComparisonItem>, };
  * Common method-local comparison row; secondary IDs never allocate primary items.
  */
 export type AssessmentComparisonItem = {
+/**
+ * Model-reported reply-chain evidence, separate from actual diffpilot owner truth.
+ */
+recorded_decision?: RecordedDecision,
 /**
  * Stable comparison identity inside this pass.
  */
@@ -734,6 +742,14 @@ export type AssessmentMethod = "claudius_host" | "prompt_v4";
  * Persisted method summary; usage and duration include failed attempts once each.
  */
 export type AssessmentMethodRun = {
+/**
+ * False when any started attempt has unavailable metering; usage then reports only known totals.
+ */
+usage_complete: boolean,
+/**
+ * Commit actually reported by the adapter; a mismatch stays comparison-only.
+ */
+reported_head: CommitSha | null,
 /**
  * Frozen method identity.
  */
@@ -1203,6 +1219,10 @@ export type CarryEventId = string;
  */
 export type CarryEvidence = {
 /**
+ * Verbatim grounded quote of a restated point, when supplied.
+ */
+quote?: string,
+/**
  * GitHub link of the repeat.
  */
 url: string | null,
@@ -1492,6 +1512,10 @@ description: string, };
  * The LLM assessment of one item at one head (`verify_comments`).
  */
 export type CommentAssessment = {
+/**
+ * Original host proposal, preserving targets beyond the legacy action form.
+ */
+proposed_decision?: ProposedDecision,
 /**
  * Evidence from the report, labelled LLM text.
  */
@@ -1963,7 +1987,28 @@ export type CommitSha = string;
 /**
  * Distinct completeness/alignment states; null verdict and proposal remain independent.
  */
-export type ComparisonItemStatus = "matched" | "missing_row" | "duplicate" | "unmatched" | "method_failed" | "head_mismatch";
+export type ComparisonItemStatus = "context" | "matched" | "missing_row" | "duplicate" | "unmatched" | "method_failed" | "head_mismatch";
+
+/**
+ * Counts exclude duplicates, mismatched heads and unaligned secondary points from scoring.
+ */
+export type ComparisonSummary = {
+/**
+ * Rows whose two available normalized verdicts can be compared.
+ */
+verdict_compared: number,
+/**
+ * Different normalized verdicts among verdict_compared.
+ */
+verdict_disagreements: number,
+/**
+ * Primary points waiting for an actual owner choice.
+ */
+pending_owner: number,
+/**
+ * Per-method coverage and exact proposal-kind/target agreement.
+ */
+methods: Array<MethodComparisonScore>, };
 
 /**
  * A worker's identity; each identity owns at most one running job.
@@ -4807,6 +4852,47 @@ unchecked_logins: Array<string>,
 timed_out_logins: Array<string>, };
 
 /**
+ * Explicit per-method denominators; native verdict and proposal remain separately nullable.
+ */
+export type MethodComparisonScore = {
+/**
+ * Assessment adapter.
+ */
+method: AssessmentMethod,
+/**
+ * Method rows with an available normalized verdict.
+ */
+assessed: number,
+/**
+ * Unaligned points retained in the report.
+ */
+unmatched: number,
+/**
+ * Expected but absent rows, including failed methods.
+ */
+missing: number,
+/**
+ * Available rows without a normalized verdict.
+ */
+missing_verdict: number,
+/**
+ * Available rows without a machine proposal.
+ */
+missing_proposal: number,
+/**
+ * Eligible actual owner choices, whether a proposal is present or not.
+ */
+owner_decided: number,
+/**
+ * Exact kind and target matches among owner_decided.
+ */
+owner_agreed: number,
+/**
+ * Whether this method failed or was cancelled.
+ */
+failed: boolean, };
+
+/**
  * Mint a fresh, expiring key and revoke the previous key for this container.
  */
 export type MintKey = {
@@ -5617,7 +5703,7 @@ quote: string | null,
 /**
  * Standing maintainer decision.
  */
-decision: RecordedDecision | null, };
+decision: StandingDecision | null, };
 
 /**
  * One file of the pull request.
@@ -7122,6 +7208,27 @@ title: string, };
  * Kind of an analysis stage.
  */
 export type StageKind = "plan" | "pr_context" | "flow";
+
+/**
+ * Standing choice offered to the skill, without invented reply-chain provenance.
+ */
+export type StandingDecision = {
+/**
+ * Stored decision kind.
+ */
+kind: RecordedDecisionKind,
+/**
+ * Existing PR target.
+ */
+target_pr: number | null,
+/**
+ * Existing issue or PR target.
+ */
+target_url: string | null,
+/**
+ * Follow-up or TODO title.
+ */
+title: string | null, };
 
 /**
  * One step of a flow.

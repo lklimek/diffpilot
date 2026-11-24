@@ -7,6 +7,7 @@ use super::*;
 
 fn thread(author_kind: AuthorKind) -> EffectItem {
     EffectItem {
+        quote: None,
         no: 14,
         kind: CommentItemKind::Thread,
         author: "octo".into(),
@@ -24,6 +25,7 @@ const H1_URL: &str = "https://github.com/acme/node-client/pull/482#pullrequestre
 
 fn body_item() -> EffectItem {
     EffectItem {
+        quote: None,
         no: 9,
         kind: CommentItemKind::ReviewBody,
         author: "bob".into(),
@@ -34,6 +36,21 @@ fn body_item() -> EffectItem {
         gates: Vec::new(),
         question: None,
     }
+}
+
+#[test]
+fn a_grounded_point_starts_with_its_quote_under_the_review_heading() {
+    let item = EffectItem {
+        quote: Some("Bound the retry loop.\nAdditional context.".into()),
+        ..body_item()
+    };
+    let text = planned_text(&item, &request(DecisionKind::FixHere));
+    assert!(
+        text.starts_with(&format!(
+            "@bob, re [your review]({H1_URL}):\n> Bound the retry loop.\n"
+        )),
+        "{text}"
+    );
 }
 
 fn request(kind: DecisionKind) -> DecideRequest {
@@ -401,6 +418,7 @@ fn owner_comment_never_enters_an_effect() {
 #[test]
 fn pr_level_questions_plan_follow_ups_and_dismissals() {
     let merge = EffectItem {
+        quote: None,
         no: 20,
         kind: CommentItemKind::PrQuestion,
         author: "diffpilot".into(),
@@ -556,6 +574,7 @@ fn only_a_pr_level_comment_answering_a_review_names_it() {
 #[test]
 fn merge_follow_up_comments_name_their_reviews() {
     let merge = EffectItem {
+        quote: None,
         no: 20,
         kind: CommentItemKind::PrQuestion,
         author: "diffpilot".into(),

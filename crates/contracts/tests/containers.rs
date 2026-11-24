@@ -193,6 +193,18 @@ fn host_report_metadata_survives_decoding() {
 }
 
 #[test]
+fn host_standing_decision_has_targets_without_invented_provenance() {
+    use contracts::agent::pr_data::PrDataItem;
+    let item = json!({"id":"CMT-001","key":"review:42:1","source_kind":null,
+        "decision":{"kind":"handled_in_pr","target_pr":17,"target_url":null,"title":null}});
+    let decoded: PrDataItem = serde_json::from_value(item).unwrap();
+    assert_eq!(
+        serde_json::to_value(decoded).unwrap()["decision"]["target_pr"],
+        17
+    );
+}
+
+#[test]
 fn duplicate_targets_and_relay_author_survive_decoding() {
     use contracts::agent::comment_report::ReportRow;
     for (id, canonical) in [("CMT-003", "CMT-001"), ("CMT-004", "CMT-002")] {

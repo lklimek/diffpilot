@@ -89,6 +89,9 @@ pub enum GateFact {
 /// What the server keeps of the last successful read (`comment_prs.github_snapshot`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Cleaned host-owned inputs captured in this same GitHub read.
+    #[serde(default)]
+    pub pr_data: Option<contracts::agent::pr_data::PrData>,
     /// Title.
     pub title: String,
     /// Description as its author wrote it (untrusted); none when empty.
@@ -594,6 +597,7 @@ pub fn observe(read: &PrRead, bots: &BotRule) -> (Vec<Observed>, Snapshot) {
 
     let item_context = context::of(read, bots, &thread_ids);
     let snapshot = Snapshot {
+        pr_data: None,
         title: read.pr.title.clone(),
         description: Some(read.pr.body.trim().to_owned()).filter(|body| !body.is_empty()),
         url: github_web_url(&read.pr.url).unwrap_or_default(),

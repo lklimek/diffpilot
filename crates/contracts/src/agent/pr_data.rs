@@ -1,6 +1,6 @@
 //! Host-supplied review inputs written as separate files under /work/pr-data.
 
-use super::comment_report::{RecordedDecision, SourceKind};
+use super::comment_report::{RecordedDecisionKind, SourceKind};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -84,7 +84,20 @@ pub struct PrDataItem {
     pub quote: Option<String>,
     /// Standing maintainer decision.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub decision: Option<RecordedDecision>,
+    pub decision: Option<StandingDecision>,
+}
+
+/// Standing choice offered to the skill, without invented reply-chain provenance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StandingDecision {
+    /// Stored decision kind.
+    pub kind: RecordedDecisionKind,
+    /// Existing PR target.
+    pub target_pr: Option<u32>,
+    /// Existing issue or PR target.
+    pub target_url: Option<String>,
+    /// Follow-up or TODO title.
+    pub title: Option<String>,
 }
 
 /// What a pass may assess (10 points/threads and 5 new sources, with continuations).

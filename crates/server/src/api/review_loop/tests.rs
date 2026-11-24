@@ -30,6 +30,7 @@ use crate::github::review_loop::tests::recorded;
 use crate::state::AppState;
 use crate::test_support::session_cookie;
 
+mod assessment;
 mod watching;
 
 const PR: &str = "/api/v1/prs/acme/node-client/482";
@@ -225,6 +226,7 @@ impl World {
     async fn assess(&self, key: &str, recommendation: Recommendation, gates: Vec<Gate>) {
         let item = self.item(key).await;
         let assessment = CommentAssessment {
+            proposed_decision: None,
             evidence_text: None,
             recorded_decision: None,
             job: JobId::new_random(),
@@ -309,8 +311,8 @@ async fn comments_work_without_analysis() {
     let items = w.items().await;
     assert_eq!(
         items.len(),
-        12,
-        "11 GitHub items (r5 supersedes r1's body finding) and the round-3 merge question"
+        17,
+        "8 inline threads, legacy body findings, newly eligible prose sources and the merge question"
     );
     // Opening Comments starts one `verify_comments` pass; its items show the assessment as running.
     for item in items.iter().filter(|item| item["kind"] != "pr_question") {
@@ -341,7 +343,7 @@ async fn comments_work_without_analysis() {
     let numbers: Vec<u64> = items.iter().filter_map(|i| i["no"].as_u64()).collect();
     assert_eq!(
         numbers,
-        (1..=12).collect::<Vec<_>>(),
+        (1..=items.len() as u64).collect::<Vec<_>>(),
         "C<no> numbered at first sight"
     );
     let page = w.get(PR).await;
@@ -383,7 +385,7 @@ async fn round_three_asks_merge_question_once() {
     let overview = w.get(&format!("{PR}/comments")).await;
     assert_eq!(
         overview["queue"][0],
-        json!({"item_nos": [12], "reason": "pr_question"})
+        json!({"item_nos": [w.item("pr:3:merge").await["no"]], "reason": "pr_question"})
     );
     let merge = w.item("pr:3:merge").await;
     assert_eq!(merge["author_kind"], "diffpilot");
@@ -419,7 +421,7 @@ async fn round_three_asks_merge_question_once() {
             .as_array()
             .expect("queue")
             .iter()
-            .all(|entry| entry["item_nos"] != json!([12])),
+            .all(|entry| entry["item_nos"] != json!([merge["no"]])),
         "only the latest merge question waits"
     );
 }
@@ -440,7 +442,7 @@ async fn stale_review_dismissal_question_after_round() {
             row
         })
         .collect();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 7);
     let (status, body) = w
         .post(
             &format!("{PR}/comments/decision-batches"),
@@ -932,7 +934,7 @@ async fn effects_preview_and_github_failure_keeps_the_last_read() {
         overview["read"]["read_at"].is_string(),
         "the last good read stays"
     );
-    assert_eq!(w.items().await.len(), 12);
+    assert_eq!(w.items().await.len(), 17);
 }
 
 /// T22: decisions, gate marks, re-reads and item actions refuse access tokens.

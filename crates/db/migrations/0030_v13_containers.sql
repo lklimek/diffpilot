@@ -110,6 +110,7 @@ CREATE INDEX comment_sources_by_pr ON comment_sources (pull_request_id, role, re
 ALTER TABLE comment_items ADD COLUMN source_id INTEGER REFERENCES comment_sources (id);
 ALTER TABLE comment_items ADD COLUMN quote TEXT CHECK (quote IS NULL OR length(quote) BETWEEN 1 AND 600);
 ALTER TABLE comment_items ADD COLUMN duplicate_of TEXT REFERENCES comment_items (id) CHECK (duplicate_of <> id);
+ALTER TABLE comment_items ADD COLUMN duplicate_fingerprint TEXT;
 CREATE INDEX comment_items_by_source ON comment_items (source_id);
 
 CREATE TABLE comment_assessments (
@@ -334,6 +335,7 @@ CREATE TABLE assessment_method_runs (
     payer_id TEXT NOT NULL,
     job_id TEXT NOT NULL UNIQUE,
     version TEXT NOT NULL,
+    reported_head TEXT,
     status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed','cancelled')),
     attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt>=0),
     accepted_attempt INTEGER CHECK (accepted_attempt=attempt AND accepted_attempt>0),
@@ -369,6 +371,7 @@ CREATE TABLE assessment_attempt_usage (
     output_tokens INTEGER NOT NULL CHECK (output_tokens>=0),
     requests INTEGER CHECK (requests>=0),
     duration_ms INTEGER NOT NULL CHECK (duration_ms>=0),
+    known INTEGER NOT NULL DEFAULT 1 CHECK (known IN (0,1)),
     PRIMARY KEY (pass_id,method,attempt),
     FOREIGN KEY (pass_id,method,tenant_id,payer_id) REFERENCES assessment_method_runs(pass_id,method,tenant_id,payer_id)
 ) STRICT;
@@ -385,10 +388,11 @@ CREATE TABLE assessment_comparison_items (
     source TEXT NOT NULL CHECK (json_valid(source) AND json_type(source)='object'),
     primary_item_id TEXT,
     primary_item_hash TEXT CHECK (primary_item_hash IS NULL OR (length(primary_item_hash)=64 AND primary_item_hash NOT GLOB '*[^0-9a-f]*')),
-    status TEXT NOT NULL CHECK (status IN ('matched','missing_row','duplicate','unmatched','method_failed','head_mismatch')),
+    status TEXT NOT NULL CHECK (status IN ('matched','missing_row','duplicate','unmatched','method_failed','head_mismatch','context')),
     duplicate_of TEXT CHECK (duplicate_of<>comparison_key),
     verdict TEXT CHECK (verdict IN ('valid','invalid','already_fixed','out_of_scope')),
     native_verdict TEXT,
+    recorded_decision TEXT CHECK (recorded_decision IS NULL OR (json_valid(recorded_decision) AND json_type(recorded_decision)='object')),
     proposal TEXT CHECK (proposal IS NULL OR (json_valid(proposal) AND json_type(proposal)='object')),
     CHECK ((primary_item_id IS NULL)=(primary_item_hash IS NULL)),
     PRIMARY KEY (pass_id,method,comparison_key),

@@ -1,12 +1,16 @@
 //! Assessment passes over a pull request's review-comment items (ADR-023, plan §2.2, §2.8, §4.2): one live
 //! `verify_comments` pass per pull request, unchanged items reuse their assessment (same normalised comment text and
-//! the same code at its lines), at most [`MAX_ITEMS_PER_PASS`] items per job, spacing and a daily cap for automatic
-//! (Watch) passes. A follower per pass ingests the job's output into `comment_assessments`, also after a server
+//! the same code at its lines), at most [`MAX_ITEMS_PER_PASS`] items per job, automatic spacing and a shared UTC
+//! daily admission cap. A follower per pass ingests the job's output into `comment_assessments`, also after a server
 //! restart ([`resume`]). Ask about an item without an analysis of the head is answered by a question pass
 //! ([`ask_about_item`]).
 
+mod adapter;
 mod ask;
+mod frozen;
+mod host;
 mod ingest;
+mod paired;
 mod prompt;
 #[cfg(test)]
 mod tests;
@@ -60,12 +64,11 @@ pub const MAX_ITEMS_PER_PASS: usize = agent::verify_comments::MAX_ITEMS;
 /// Least time between the end of a pass and an automatic (Watch) pass of the same pull request (plan §2.8); about
 /// twice a full pass at high effort (spike S13-3).
 pub const PASS_SPACING: SignedDuration = SignedDuration::from_mins(10);
-/// Passes charged to one user per 24 hours before automatic (Watch) passes stop (plan §2.8); the owner's busiest
-/// recorded day needed about 55 automatic passes, plus on-demand ones (spike S13-3).
+/// Logical passes per payer per UTC day; manual and automatic passes share the cap, and an A/B pair counts once.
 pub const DAILY_PASSES_PER_USER: u32 = 80;
 /// Version of `prompts/verify_comments.md` with the output schema, stored with every assessment.
 pub const VERIFY_PROMPT_VERSION: u32 = 4;
-/// The window of the daily cap.
+/// Legacy history window used to read the previous pass end for automatic spacing.
 const DAY: SignedDuration = SignedDuration::from_hours(24);
 
 /// First wait before a failed link of a pass to its submitted job is tried again; it doubles each time.
@@ -119,6 +122,18 @@ enum Charge {
 /// A pass could not be requested or ingested.
 #[derive(Debug, thiserror::Error)]
 pub enum AssessError {
+    /// Frozen input could not be archived or recovered.
+    #[error("the frozen assessment snapshot is unavailable")]
+    Io(#[from] std::io::Error),
+    /// The host-owned snapshot is malformed.
+    #[error("the assessment snapshot is not valid")]
+    Json(#[from] serde_json::Error),
+    /// Snapshot identity or digest changed.
+    #[error("the assessment snapshot identity changed")]
+    Snapshot,
+    /// Admission consumed no quota slot.
+    #[error(transparent)]
+    Admission(#[from] db::repo::assessments::AssessmentError),
     /// The database failed.
     #[error("the review-loop state could not be read or stored")]
     Db(#[from] DbError),
@@ -155,7 +170,7 @@ pub async fn request_pass(
 }
 
 /// [`request_pass`] of an on-demand pass caused by `user`, who is charged with it: on-demand passes count toward
-/// the daily cap that stops automatic passes (plan §2.8) and still run when it is reached.
+/// the shared UTC daily admission cap and stop when it is reached.
 pub async fn request_pass_for(
     state: &AppState,
     pr: i64,
@@ -243,12 +258,27 @@ async fn request(
     let mut code = CodeReader::new(state, &record.pr);
     let mut sent = Vec::new();
     let mut sent_items = Vec::new();
+    let mut selected_sources = HashSet::new();
+    let sources = db.comment_sources().list(&record.tenant_id, pr).await?;
     for item in &items {
         let wanted = match asked {
             Some(asked) => item.id == asked && item.kind != CommentItemKind::PrQuestion,
             None => assessable(item),
         };
         if !wanted {
+            continue;
+        }
+        if reason != PassReason::Ask
+            && matches!(
+                item.kind,
+                CommentItemKind::ReviewBody | CommentItemKind::PrComment
+            )
+            && let Some(data) = snapshot.as_ref().and_then(|s| s.pr_data.as_ref())
+            && item
+                .url
+                .as_ref()
+                .is_none_or(|url| !data.scope.sources.contains(url))
+        {
             continue;
         }
         let fingerprint = fingerprint(
@@ -259,11 +289,30 @@ async fn request(
             contexts.get(&item.stable_key),
         );
         if asked.is_none()
+            && db
+                .review_loop()
+                .duplicate_is_current(item.id, &fingerprint)
+                .await?
+        {
+            continue;
+        }
+        if asked.is_none()
             && let Some(stored) = db.review_loop().latest_assessment(item.id).await?
             && stored.fingerprint == fingerprint
         {
             reuse(state, &record.tenant_id, item, stored, head).await?;
             continue;
+        }
+        if let Some(url) = item.url.as_ref().filter(|_| {
+            matches!(
+                item.kind,
+                CommentItemKind::ReviewBody | CommentItemKind::PrComment
+            )
+        }) {
+            if selected_sources.len() >= 5 && !selected_sources.contains(url) {
+                continue;
+            }
+            selected_sources.insert(url.clone());
         }
         if sent.len() < MAX_ITEMS_PER_PASS {
             sent.push(SentItem {
@@ -274,7 +323,21 @@ async fn request(
             sent_items.push(item);
         }
     }
-    if sent.is_empty() {
+    let source_pending = snapshot
+        .as_ref()
+        .and_then(|s| s.pr_data.as_ref())
+        .is_some_and(|data| {
+            sources.iter().any(|s| {
+                s.source.read_at.is_none()
+                    && data.scope.sources.contains(&s.source.url)
+                    && data.reviews.iter().chain(&data.comments).any(|raw| {
+                        host::url(raw) == s.source.url
+                            && crate::review_loop::handin::hash(host::body(raw))
+                                == s.source.body_hash
+                    })
+            })
+        });
+    if sent.is_empty() && (reason == PassReason::Ask || !source_pending) {
         if let Some(question) = &question {
             ask::fail(state, question.question.id, ask::ITEM_GONE).await?;
         }
@@ -324,6 +387,18 @@ async fn request(
         sent,
         question: question.as_ref().map(|question| question.question.id),
     };
+    if reason != PassReason::Ask {
+        return paired::admit(
+            state,
+            &record.pr,
+            &pass,
+            &input,
+            &items,
+            snapshot.as_ref(),
+            language,
+        )
+        .await;
+    }
     let id = match db
         .review_loop()
         .start_pass(&record.tenant_id, &pass, now)
@@ -370,7 +445,7 @@ async fn charged_watcher(
     }
     watchers.sort_by_key(|watch| watch.since);
     for watch in watchers {
-        let (passes, last_end) = state
+        let (_, last_end) = state
             .db
             .review_loop()
             .pass_usage(&watch.user_id, now - DAY, pr)
@@ -379,7 +454,14 @@ async fn charged_watcher(
             tracing::debug!(pr, "automatic assessment pass held back by the spacing");
             return Ok(Charge::Spaced);
         }
-        if passes < DAILY_PASSES_PER_USER {
+        if state
+            .db
+            .assessments()
+            .quota(&contracts::ids::UserId(watch.user_id.clone()), now)
+            .await?
+            .remaining
+            > 0
+        {
             return Ok(Charge::To(watch.user_id.clone()));
         }
     }
@@ -426,6 +508,32 @@ fn fingerprint(
     purpose: &str,
     context: Option<&ItemContext>,
 ) -> String {
+    fingerprint_fields(
+        FingerprintPoint {
+            body_hash: &item.body_hash,
+            location: item.location.as_ref(),
+            bot_status: item.github.bot_status,
+        },
+        head,
+        code,
+        purpose,
+        context,
+    )
+}
+
+struct FingerprintPoint<'a> {
+    body_hash: &'a str,
+    location: Option<&'a contracts::api::review_loop::ItemLocation>,
+    bot_status: Option<contracts::api::review_loop::BotThreadStatus>,
+}
+
+fn fingerprint_fields(
+    item: FingerprintPoint<'_>,
+    head: &CommitSha,
+    code: Option<&str>,
+    purpose: &str,
+    context: Option<&ItemContext>,
+) -> String {
     let mut hash = Sha256::new();
     hash.update(format!("fingerprint 2\n{purpose}\n{}\n", item.body_hash));
     let replies = context.iter().flat_map(|context| {
@@ -442,17 +550,20 @@ fn fingerprint(
         .filter(|reply| context::concedes(reply))
         .map(|reply| reply.author.to_ascii_lowercase())
         .collect();
-    hash.update(
-        serde_json::to_vec(&(item.github.bot_status, people, conceded)).unwrap_or_default(),
-    );
+    hash.update(serde_json::to_vec(&(item.bot_status, people, conceded)).unwrap_or_default());
     hash.update("\n");
-    hash_lines(&mut hash, item, head, code);
+    hash_lines(&mut hash, item.location, head, code);
     hex(hash)
 }
 
 /// Hashes the item's path, lines and the code at them.
-fn hash_lines(hash: &mut Sha256, item: &ItemRecord, head: &CommitSha, code: Option<&str>) {
-    if let Some(location) = &item.location {
+fn hash_lines(
+    hash: &mut Sha256,
+    location: Option<&contracts::api::review_loop::ItemLocation>,
+    head: &CommitSha,
+    code: Option<&str>,
+) {
+    if let Some(location) = location {
         hash.update(format!("{}\n", location.path));
         if let Some(lines) = location.lines {
             hash.update(format!("{}-{}\n", lines.start_line, lines.end_line));
@@ -518,7 +629,14 @@ impl<'a> CodeReader<'a> {
 
     /// The text of the item's lines at the head; `None` without lines or when it cannot be read.
     async fn lines(&mut self, item: &ItemRecord) -> Option<String> {
-        let location = item.location.as_ref()?;
+        self.at(item.location.as_ref()).await
+    }
+
+    async fn at(
+        &mut self,
+        location: Option<&contracts::api::review_loop::ItemLocation>,
+    ) -> Option<String> {
+        let location = location?;
         let lines = location.lines?;
         if self.mirror.is_none() {
             let fetched =
@@ -830,6 +948,24 @@ fn follow(state: &AppState, pass: PassId, known: Option<JobId>) {
 /// linked first; the job is followed even while the link keeps failing, so its result is never abandoned.
 async fn run(state: &AppState, pass: PassId, known: Option<JobId>) -> Result<(), AssessError> {
     let record = state.db.review_loop().pass(pass).await?;
+    if let Some(user) = &record.user_id {
+        let tenant = state
+            .db
+            .pull_requests()
+            .get(record.pull_request_id)
+            .await?
+            .tenant_id;
+        match state
+            .db
+            .assessments()
+            .pass(&tenant, &contracts::ids::UserId(user.clone()), pass)
+            .await
+        {
+            Ok(frozen) => return paired::run(state, &record, frozen).await,
+            Err(DbError::NotFound) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     let job = match record.job_id.or(known) {
         Some(job) => Some(job),
         None => state
@@ -847,7 +983,7 @@ async fn run(state: &AppState, pass: PassId, known: Option<JobId>) -> Result<(),
             .finish_pass(pass, false, Timestamp::now())
             .await?;
         unanswerable(state, &record).await?;
-        next(state, &record, false).await;
+        next(state, &record, false, false).await;
         return Ok(());
     };
     if record.job_id.is_none() {
@@ -866,7 +1002,7 @@ async fn run(state: &AppState, pass: PassId, known: Option<JobId>) -> Result<(),
             JobUpdate::OutputReady(_) => {}
             JobUpdate::Finished { result, .. } => {
                 let complete = ingest::result(state, &record, result).await?;
-                next(state, &record, complete).await;
+                next(state, &record, complete, false).await;
                 return Ok(());
             }
         }
@@ -940,10 +1076,9 @@ async fn end_failed(state: &AppState, pass: PassId) -> Result<(), AssessError> {
     ask::fail_pass_question(state, &record, ask::SERVER_ERROR).await
 }
 
-/// After a pass: the next question pass, else, when `complete` (every sent item assessed) and the pass was full,
-/// the rest of the same detection. A pass with an unassessed item ends the chain, so failing items are never sent
-/// again and again; they wait for the next trigger.
-async fn next(state: &AppState, record: &PassRecord, complete: bool) {
+/// Questions take priority; a complete pass at either cap continues the same detection.
+/// An incomplete pass waits for the next trigger, avoiding repeated failures.
+async fn next(state: &AppState, record: &PassRecord, complete: bool, source_capped: bool) {
     let pr = record.pull_request_id;
     if let Err(error) = super::watch::pass_ended(state, record).await {
         tracing::warn!(pr, error = ?error, "the end of an automatic assessment pass could not be recorded on its watches");
@@ -954,7 +1089,7 @@ async fn next(state: &AppState, record: &PassRecord, complete: bool) {
         PassCause::Read => Some(PassReason::NewComments),
         PassCause::Question => None,
     }
-    .filter(|_| complete && record.sent.len() == MAX_ITEMS_PER_PASS);
+    .filter(|_| complete && (record.sent.len() == MAX_ITEMS_PER_PASS || source_capped));
     let outcome = match request(state, pr, PassReason::Ask, true, None).await {
         Ok(PassQueued::Skipped) => match rest {
             Some(reason) => request(state, pr, reason, true, record.user_id.as_deref()).await,

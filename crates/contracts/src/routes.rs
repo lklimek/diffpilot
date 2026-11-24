@@ -256,6 +256,34 @@ pub const DELETE_COMMENT: Route = route(
 pub const SET_LLM: Route = route("setLlm", Put, "/api/v1/settings/llm", SessionCsrf);
 /// Read settings.
 pub const GET_SETTINGS: Route = route("getSettings", Get, "/api/v1/settings", READ);
+/// Frozen assessment method configuration and UTC quota.
+pub const GET_ASSESSMENT_SETTINGS: Route = route(
+    "getAssessmentSettings",
+    Get,
+    "/api/v1/settings/comment-assessment",
+    READ,
+);
+/// Configure methods without scheduling work.
+pub const SET_ASSESSMENT_SETTINGS: Route = route(
+    "setAssessmentSettings",
+    Put,
+    "/api/v1/settings/comment-assessment",
+    SessionCsrf,
+);
+/// Latest payer-owned paired comparison; never fetches GitHub.
+pub const GET_ASSESSMENT_COMPARISON: Route = route(
+    "getAssessmentComparison",
+    Get,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/assessment-comparison",
+    READ,
+);
+/// All cleaned source versions, including zero-point sources.
+pub const GET_COMMENT_SOURCES: Route = route(
+    "getCommentSources",
+    Get,
+    "/api/v1/prs/{owner}/{name}/{number}/comments/sources",
+    READ,
+);
 /// The signed-in payer's gateway-observed plan status.
 pub const GET_CODEX: Route = route(
     "getCodex",
@@ -725,6 +753,10 @@ pub const ROUTES: &[Route] = &[
     UPDATE_COMMENT,
     DELETE_COMMENT,
     GET_SETTINGS,
+    GET_ASSESSMENT_SETTINGS,
+    SET_ASSESSMENT_SETTINGS,
+    GET_ASSESSMENT_COMPARISON,
+    GET_COMMENT_SOURCES,
     GET_CODEX,
     DELETE_CODEX,
     LINK_CODEX,

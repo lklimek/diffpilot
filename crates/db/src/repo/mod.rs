@@ -17,6 +17,7 @@ pub mod access_tokens;
 pub mod agent_sessions;
 pub mod analyses;
 mod analysis_progress;
+mod assessment_primary;
 pub mod assessments;
 pub mod comment_sources;
 pub mod comments;

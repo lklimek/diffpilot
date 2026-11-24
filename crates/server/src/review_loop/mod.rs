@@ -36,6 +36,7 @@ mod clean;
 mod context;
 mod effects;
 pub mod feed;
+mod handin;
 mod markers;
 pub mod notify;
 mod observe;
@@ -389,7 +390,109 @@ async fn read_now(
         .settings(tenant, user)
         .await?
         .map_or_else(default_known_bots, |stored| stored.settings.known_bots);
-    let (observed, mut snapshot) = observe::observe(&read, &BotRule::new(&known_bots));
+    let (mut observed, mut snapshot) = observe::observe(&read, &BotRule::new(&known_bots));
+    let (mut pr_data, sources) = handin::build(
+        &read,
+        &format!("{}/{}", summary.repo.owner, summary.repo.name),
+        &known_bots,
+        state.db.users().member_logins(tenant).await?,
+    );
+    pr_data.manifest.delegates = state.config.maintainer_delegates.clone();
+    observed.retain(|entry| {
+        entry.item.kind == CommentItemKind::Thread
+            || entry.item.url.as_ref().is_some_and(|url| {
+                sources.iter().any(|s| {
+                    &s.url == url
+                        && (s.role == contracts::api::review_loop::SourceRole::Source
+                            || (s.role == contracts::api::review_loop::SourceRole::Context
+                                && entry.item.author_kind == AuthorKind::Bot))
+                })
+            })
+    });
+    for source in &sources {
+        state.db.comment_sources().put(tenant, id, source).await?;
+        if source.role != contracts::api::review_loop::SourceRole::Source
+            || observed
+                .iter()
+                .any(|entry| entry.item.url.as_ref() == Some(&source.url))
+        {
+            continue;
+        }
+        let raw = pr_data.reviews.iter().chain(&pr_data.comments).find(|raw| {
+            raw.get("html_url")
+                .or_else(|| raw.get("url"))
+                .and_then(serde_json::Value::as_str)
+                == Some(source.url.as_str())
+        });
+        let Some(raw) = raw else {
+            continue;
+        };
+        let raw_id = raw["id"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| raw["id"].to_string());
+        let review = source.kind == contracts::api::review_loop::CommentSourceKind::ReviewBody;
+        observed.push(Observed {
+            thread: None,
+            item: ObservedItem {
+                kind: if review {
+                    CommentItemKind::ReviewBody
+                } else {
+                    CommentItemKind::PrComment
+                },
+                stable_key: format!("{}:{raw_id}:1", if review { "review" } else { "comment" }),
+                author: source.author.clone(),
+                author_kind: if known_bots
+                    .iter()
+                    .any(|b| b.eq_ignore_ascii_case(&source.author))
+                    || source.author.ends_with("[bot]")
+                {
+                    AuthorKind::Bot
+                } else {
+                    AuthorKind::Human
+                },
+                url: Some(source.url.clone()),
+                location: None,
+                title: markers::title_of(&source.body),
+                body: source.body.clone(),
+                body_hash: markers::body_hash(&source.body),
+                head: summary.head_sha.clone(),
+                round: None,
+                bot_severity: None,
+                github: ItemGithubFacts {
+                    resolved: None,
+                    resolved_by: None,
+                    outdated: None,
+                    bot_status: None,
+                    edited_after_decision: false,
+                    replies: 0,
+                    marker: None,
+                },
+                outside: None,
+            },
+        });
+    }
+    let versions = state.db.comment_sources().list(tenant, id).await?;
+    let previous = state.db.review_loop().items(id).await?;
+    let zero_keys: std::collections::HashSet<_> = previous
+        .iter()
+        .filter(|item| {
+            item.gone_at.is_some()
+                && item.source_id.is_none()
+                && item.kind != CommentItemKind::Thread
+                && sources.iter().any(|source| {
+                    item.url.as_ref() == Some(&source.url)
+                        && versions.iter().any(|v| {
+                            v.source.url == source.url
+                                && v.source.body_hash == source.body_hash
+                                && v.source.read_at.is_some()
+                        })
+                })
+        })
+        .map(|item| item.stable_key.as_str())
+        .collect();
+    observed.retain(|entry| !zero_keys.contains(entry.item.stable_key.as_str()));
+    snapshot.pr_data = Some(pr_data);
     snapshot.ci = ci;
     snapshot.pending_checks = pending_checks;
     let new = apply(state, tenant, &handle, &observed, &snapshot).await?;
@@ -851,6 +954,7 @@ pub(crate) fn question_of(record: &ItemRecord) -> Option<(PrQuestion, u32)> {
 
 fn effect_item(record: &ItemRecord, snapshot: &Snapshot, gates: &[Gate]) -> EffectItem {
     EffectItem {
+        quote: record.quote.clone(),
         no: record.no,
         kind: record.kind,
         author: record.author.clone(),
@@ -864,7 +968,21 @@ fn effect_item(record: &ItemRecord, snapshot: &Snapshot, gates: &[Gate]) -> Effe
                 (record.kind == CommentItemKind::Thread && record.stable_key.starts_with("PRRT_"))
                     .then(|| record.stable_key.clone())
             }),
-        review_id: snapshot.review_ids.get(&record.stable_key).cloned(),
+        review_id: snapshot
+            .review_ids
+            .get(&record.stable_key)
+            .cloned()
+            .or_else(|| {
+                snapshot
+                    .pr_data
+                    .as_ref()?
+                    .reviews
+                    .iter()
+                    .find(|raw| raw["html_url"].as_str() == record.url.as_deref())?
+                    .get("node_id")?
+                    .as_str()
+                    .map(str::to_owned)
+            }),
         gates: gates.to_vec(),
         question: question_of(record).map(|(question, _)| question),
     }

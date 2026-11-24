@@ -92,8 +92,33 @@ pub(crate) fn item_view(
             .map(|item| item.no)
     });
     CommentItem {
-        point: None,
-        duplicate_of: None,
+        point: record
+            .quote
+            .as_ref()
+            .zip(record.url.as_ref())
+            .and_then(|(quote, url)| {
+                let source_kind = match record.kind {
+                    contracts::api::review_loop::CommentItemKind::ReviewBody => {
+                        contracts::api::review_loop::CommentSourceKind::ReviewBody
+                    }
+                    contracts::api::review_loop::CommentItemKind::PrComment => {
+                        contracts::api::review_loop::CommentSourceKind::PrComment
+                    }
+                    _ => return None,
+                };
+                Some(contracts::api::review_loop::CommentPoint {
+                    source_url: url.clone(),
+                    source_kind,
+                    quote: quote.clone(),
+                })
+            }),
+        duplicate_of: record.duplicate_of.and_then(|id| {
+            loaded
+                .items
+                .iter()
+                .find(|item| item.id == id)
+                .map(|item| item.no)
+        }),
         id: record.id,
         no: record.no,
         kind: record.kind,

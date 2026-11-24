@@ -41,7 +41,7 @@ async fn standing(
 }
 
 /// Cancels the effects of `decision` that no agent holds.
-pub(super) async fn cancel_unclaimed(
+pub(crate) async fn cancel_unclaimed(
     tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
     decision: &str,
     now: Timestamp,

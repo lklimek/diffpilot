@@ -61,13 +61,15 @@ impl CommentSources<'_> {
 
     /// Lists all versions, including sources from which no points were read.
     pub async fn list(&self, tenant: &str, pr: i64) -> Result<Vec<SourceRecord>, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
         let rows = sqlx::query(
             "SELECT * FROM comment_sources WHERE tenant_id=? AND pull_request_id=? ORDER BY id",
         )
         .bind(tenant)
         .bind(pr)
-        .fetch_all(self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
         rows.into_iter()
             .map(|r| {
                 Ok(SourceRecord {

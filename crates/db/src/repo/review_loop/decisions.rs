@@ -1009,6 +1009,9 @@ async fn store(
         let mut found = decisions_where(tx, "d.id = ?", id.to_string()).await?;
         stored.push(found.pop().ok_or(DbError::NotFound)?.decision);
     }
+    for decision in &stored {
+        super::super::assessment_primary::capture_owner(tx, tenant_id, decision.id).await?;
+    }
     Ok(DecideOutcome::Stored(stored))
 }
 

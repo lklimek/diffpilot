@@ -27,6 +27,7 @@ use contracts::routes::{
     MARK_COMMENT_GATE, PREVIEW_COMMENT_EFFECTS, READ_COMMENTS, REOPEN_COMMENT_ITEM,
     SKIP_COMMENT_ITEM, UNDO_COMMENT_DECISION,
 };
+use contracts::time::Timestamp;
 
 use crate::api::dashboard::refresh::mark_present;
 use crate::api::error::{ApiErrorSource, ApiFailure};
@@ -53,6 +54,9 @@ pub enum ReviewLoopApiError {
     /// The work failed.
     #[error(transparent)]
     Loop(#[from] LoopError),
+    /// Assessment admission or snapshot preparation failed.
+    #[error(transparent)]
+    Assess(Box<assess::AssessError>),
 }
 
 fn item_list(nos: &[u32]) -> String {
@@ -65,6 +69,7 @@ fn item_list(nos: &[u32]) -> String {
 impl ApiErrorSource for ReviewLoopApiError {
     fn code(&self) -> ApiErrorCode {
         match self {
+            Self::Assess(_) => ApiErrorCode::Internal,
             Self::Path(_) | Self::Query(_) | Self::Json(_) => ApiErrorCode::InvalidRequest,
             Self::Loop(error) => match error {
                 LoopError::NotFound => ApiErrorCode::NotFound,
@@ -93,6 +98,9 @@ impl ApiErrorSource for ReviewLoopApiError {
 
     fn public_message(&self) -> Cow<'static, str> {
         match self {
+            Self::Assess(_) => {
+                Cow::Borrowed("The assessment could not be started. Try again later.")
+            }
             Self::Path(rejection) => rejection.public_message(),
             Self::Query(rejection) => rejection.public_message(),
             Self::Json(rejection) => rejection.public_message(),
@@ -298,7 +306,7 @@ async fn assess_again(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
     path: ItemPath,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Response> {
     let (handle, no) = item_of(&state, &session, path).await?;
     let item = state
         .db
@@ -316,9 +324,42 @@ async fn assess_again(
     .await
     {
         Ok(assess::PassQueued::AlreadyRunning) => Err(LoopError::AssessmentRunning.into()),
+        Ok(assess::PassQueued::DailyLimit) => {
+            let quota = state
+                .db
+                .assessments()
+                .quota(
+                    &contracts::ids::UserId(session.user_id.clone()),
+                    Timestamp::now(),
+                )
+                .await
+                .map_err(LoopError::from)?;
+            Ok((
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(
+                    contracts::assessment::AssessmentAdmissionFailure::AssessmentDailyLimit {
+                        resets_at: quota.resets_at,
+                    },
+                ),
+            )
+                .into_response())
+        }
+        Err(assess::AssessError::Admission(db::repo::assessments::AssessmentError::Admission(
+            failure,
+        ))) => {
+            let status = if matches!(
+                failure,
+                contracts::assessment::AssessmentAdmissionFailure::AssessmentDailyLimit { .. }
+            ) {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::CONFLICT
+            };
+            Ok((status, Json(failure)).into_response())
+        }
         Ok(queued) => {
             tracing::debug!(pr = handle.id, item = no, ?queued, "assess again requested");
-            Ok(StatusCode::ACCEPTED)
+            Ok(StatusCode::ACCEPTED.into_response())
         }
         Err(error) => {
             tracing::warn!(
@@ -327,7 +368,7 @@ async fn assess_again(
                 item = no,
                 "assess again could not be requested"
             );
-            Ok(StatusCode::ACCEPTED)
+            Err(ReviewLoopApiError::Assess(Box::new(error)))
         }
     }
 }

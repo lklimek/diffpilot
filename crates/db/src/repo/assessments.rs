@@ -1,5 +1,7 @@
 //! Atomic admission and fenced method results; all model rows are normalized comparison data.
 
+pub use super::assessment_primary::{PrimaryCarry, PrimaryPoint};
+
 use super::jobs::{parse_ts, parse_wire, ts, wire_name};
 use super::{Db, read_tx, write_tx};
 use crate::error::DbError;
@@ -48,6 +50,10 @@ pub struct NewAssessmentPass {
 /// One method attempt's normalized, scrubbed result; no raw report is persisted.
 #[derive(Clone, Debug)]
 pub struct MethodResult {
+    /// False when this attempt's metering is unavailable; never claim a measured zero.
+    pub usage_known: bool,
+    /// Commit actually reported, distinct from the frozen checkout.
+    pub reported_head: Option<contracts::ids::CommitSha>,
     /// Succeeded, failed or cancelled.
     pub status: AssessmentRunStatus,
     /// Usage of this attempt alone, including compaction.
@@ -102,13 +108,15 @@ impl Assessments<'_> {
     /// Safe quota status for the UTC day containing now.
     pub async fn quota(&self, user: &UserId, now: Timestamp) -> Result<AssessmentQuota, DbError> {
         let (day, resets_at) = utc_day(now)?;
+        let mut tx = read_tx(self.pool).await?;
         let count: Option<u32> = sqlx::query_scalar(
             "SELECT passes FROM assessment_daily_usage WHERE user_id=? AND day_utc=?",
         )
         .bind(&user.0)
         .bind(day)
-        .fetch_optional(self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(AssessmentQuota {
             remaining: 80 - count.unwrap_or(0),
             resets_at,
@@ -121,6 +129,30 @@ impl Assessments<'_> {
         tenant: &str,
         user: &UserId,
         request: &NewAssessmentPass,
+        now: Timestamp,
+    ) -> Result<AssessmentPass, AssessmentError> {
+        self.admit_inner(tenant, user, request, None, now).await
+    }
+
+    /// Admit the visible review pass, logical quota slot and all method jobs atomically.
+    pub async fn admit_review(
+        &self,
+        tenant: &str,
+        user: &UserId,
+        request: &NewAssessmentPass,
+        review: &super::review_loop::NewPass,
+        now: Timestamp,
+    ) -> Result<AssessmentPass, AssessmentError> {
+        self.admit_inner(tenant, user, request, Some(review), now)
+            .await
+    }
+
+    async fn admit_inner(
+        &self,
+        tenant: &str,
+        user: &UserId,
+        request: &NewAssessmentPass,
+        review: Option<&super::review_loop::NewPass>,
         now: Timestamp,
     ) -> Result<AssessmentPass, AssessmentError> {
         let mut tx = write_tx(self.pool).await?;
@@ -176,6 +208,25 @@ impl Assessments<'_> {
                 .bind(serde_json::to_string(&spec).map_err(DbError::from)?).bind(&user.0).bind(input.pull_request_id)
                 .bind(format!("verify:{}",request.id)).bind(ts(now)).execute(&mut *tx).await.map_err(DbError::from)?;
         }
+        if let Some(review) = review {
+            if review.pull_request_id != input.pull_request_id
+                || review.head != input.head
+                || review.user_id.as_deref() != Some(user.0.as_str())
+                || review.question.is_some()
+            {
+                return Err(DbError::Conflict.into());
+            }
+            let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM comment_passes WHERE pull_request_id=? AND state IN ('queued','running'))")
+                .bind(input.pull_request_id).fetch_one(&mut *tx).await.map_err(DbError::from)?;
+            if busy {
+                return Err(DbError::Conflict.into());
+            }
+            sqlx::query("INSERT INTO comment_passes(id,tenant_id,pull_request_id,user_id,cause,head,items,state,created_at,sent,job_id) VALUES(?,?,?,?,?,?,?,'running',?,?,?)")
+                .bind(request.id.to_string()).bind(tenant).bind(input.pull_request_id).bind(&user.0)
+                .bind(wire_name(review.cause)?).bind(&input.head.0).bind(review.sent.len() as i64).bind(ts(now))
+                .bind(serde_json::to_string(&review.sent).map_err(DbError::from)?).bind(request.jobs[0].spec.job_id.to_string())
+                .execute(&mut *tx).await.map_err(DbError::from)?;
+        }
         tx.commit().await.map_err(DbError::from)?;
         Ok(AssessmentPass {
             id: request.id,
@@ -218,13 +269,50 @@ impl Assessments<'_> {
         attempt: u32,
         result: &MethodResult,
     ) -> Result<bool, DbError> {
+        self.finish_with_primary(tenant, user, run, attempt, result, &[])
+            .await
+    }
+
+    /// Atomically accept a method and project only its frozen primary's validated cards.
+    pub async fn finish_with_primary(
+        &self,
+        tenant: &str,
+        user: &UserId,
+        run: &AssessmentRunRef,
+        attempt: u32,
+        result: &MethodResult,
+        primary: &[PrimaryPoint],
+    ) -> Result<bool, DbError> {
         let mut tx = write_tx(self.pool).await?;
         let pass = pass_in(&mut tx, tenant, user, run.pass_id).await?;
+        if !primary.is_empty()
+            && (run.method != pass.config.primary_method
+                || result.status != AssessmentRunStatus::Succeeded)
+        {
+            return Err(DbError::Conflict);
+        }
+
         let current = runs_in(&mut tx, tenant, user, run.pass_id)
             .await?
             .into_iter()
             .find(|r| r.reference == *run)
             .ok_or(DbError::NotFound)?;
+        if attempt == 0
+            && current.attempt == 0
+            && result.status == AssessmentRunStatus::Cancelled
+            && result.items.is_empty()
+            && primary.is_empty()
+        {
+            let cancelled:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM jobs WHERE id=? AND attempt=0 AND state='cancelled' AND json_extract(result,'$.attempt')=0)")
+                .bind(current.job_id.to_string()).fetch_one(&mut *tx).await?;
+            if !cancelled {
+                return Err(DbError::Conflict);
+            }
+            let changed=sqlx::query("UPDATE assessment_method_runs SET status='cancelled' WHERE job_id=? AND status='queued' AND attempt=0")
+                .bind(current.job_id.to_string()).execute(&mut *tx).await?.rows_affected()==1;
+            tx.commit().await?;
+            return Ok(changed);
+        }
         // Complete retains the claim token; expiry and release clear it, including on exhausted jobs.
         let live_attempt: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM jobs WHERE id=? AND attempt=? AND cancel_requested=0
@@ -287,25 +375,112 @@ impl Assessments<'_> {
                 return Err(DbError::Conflict);
             }
         }
-        meter_in(&mut tx, &current, attempt, result.usage, result.duration_ms).await?;
+        meter_in(
+            &mut tx,
+            &current,
+            attempt,
+            result.usage,
+            result.duration_ms,
+            result.usage_known,
+        )
+        .await?;
+        let accepted = (result.status == AssessmentRunStatus::Succeeded).then_some(attempt);
+        sqlx::query("UPDATE assessment_method_runs SET status=?,accepted_attempt=?,failure=?,reported_head=? WHERE pass_id=? AND method=? AND tenant_id=? AND payer_id=? AND attempt=? AND status='running'")
+            .bind(wire_name(result.status)?).bind(accepted).bind(result.failure.map(wire_name).transpose()?)
+            .bind(result.reported_head.as_ref().map(|head| &head.0)).bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(tenant).bind(&user.0).bind(attempt).execute(&mut *tx).await?;
+        let mut items = result.items.clone();
+        super::assessment_primary::apply(&mut tx, tenant, &pass, primary, &mut items).await?;
+        if run.method != pass.config.primary_method {
+            for item in &mut items {
+                let aligned: Option<(Option<String>,Option<String>,String)> = sqlx::query_as("SELECT primary_item_id,primary_item_hash,source FROM assessment_comparison_items WHERE pass_id=? AND method=? AND comparison_key=? AND status='matched'")
+                    .bind(run.pass_id.to_string()).bind(wire_name(pass.config.primary_method)?).bind(&item.comparison_key).fetch_optional(&mut *tx).await?;
+                if let Some((id, hash, source)) = aligned.filter(|(id, hash, source)| {
+                    serde_json::from_str::<AssessmentSource>(source)
+                        .ok()
+                        .is_some_and(|source| {
+                            sources_align(
+                                &source,
+                                &item.source,
+                                id.as_ref().is_some_and(|id| {
+                                    item.primary_item_id
+                                        .is_some_and(|other| other.to_string() == *id)
+                                }) && hash == &item.primary_item_hash,
+                            )
+                        })
+                }) {
+                    let _ = source;
+                    item.primary_item_id = id
+                        .map(|id| parse_wire(&id, "primary_item_id"))
+                        .transpose()?;
+                    item.primary_item_hash = hash;
+                } else if item.status == ComparisonItemStatus::Matched {
+                    item.status = ComparisonItemStatus::Unmatched;
+                }
+            }
+        }
         // Canonical rows precede direct duplicate links; no secondary row allocates a comment item.
-        for item in result
-            .items
+        for item in items
             .iter()
             .filter(|i| i.duplicate_of.is_none())
-            .chain(result.items.iter().filter(|i| i.duplicate_of.is_some()))
+            .chain(items.iter().filter(|i| i.duplicate_of.is_some()))
         {
-            sqlx::query("INSERT INTO assessment_comparison_items(pass_id,method,tenant_id,payer_id,pull_request_id,comparison_key,local_id,method_version,source,primary_item_id,primary_item_hash,status,duplicate_of,verdict,native_verdict,proposal) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+            sqlx::query("INSERT INTO assessment_comparison_items(pass_id,method,tenant_id,payer_id,pull_request_id,comparison_key,local_id,method_version,source,primary_item_id,primary_item_hash,status,duplicate_of,verdict,native_verdict,proposal,recorded_decision) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
                 .bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(tenant).bind(&user.0).bind(pass.input.pull_request_id)
                 .bind(&item.comparison_key).bind(&item.local_id).bind(&item.method_version).bind(serde_json::to_string(&item.source)?)
                 .bind(item.primary_item_id.map(|id|id.to_string())).bind(&item.primary_item_hash).bind(wire_name(item.status)?).bind(&item.duplicate_of)
-                .bind(item.verdict.map(wire_name).transpose()?).bind(&item.native_verdict).bind(item.proposal.as_ref().map(serde_json::to_string).transpose()?)
+                .bind(item.verdict.map(wire_name).transpose()?).bind(&item.native_verdict).bind(item.proposal.as_ref().map(serde_json::to_string).transpose()?).bind(item.recorded_decision.as_ref().map(serde_json::to_string).transpose()?)
                 .execute(&mut *tx).await?;
         }
-        let accepted = (result.status == AssessmentRunStatus::Succeeded).then_some(attempt);
-        sqlx::query("UPDATE assessment_method_runs SET status=?,accepted_attempt=?,failure=? WHERE pass_id=? AND method=? AND tenant_id=? AND payer_id=? AND attempt=? AND status='running'")
-            .bind(wire_name(result.status)?).bind(accepted).bind(result.failure.map(wire_name).transpose()?)
-            .bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(tenant).bind(&user.0).bind(attempt).execute(&mut *tx).await?;
+        if run.method == pass.config.primary_method
+            && result.status == AssessmentRunStatus::Succeeded
+        {
+            let owners:Vec<String>=sqlx::query_scalar("SELECT DISTINCT d.id FROM comment_decisions d JOIN assessment_comparison_items c ON c.primary_item_id=d.item_id AND c.tenant_id=d.tenant_id JOIN assessment_passes p ON p.id=c.pass_id AND p.primary_method=c.method WHERE p.id=? AND d.tenant_id=? AND c.status='matched' AND d.head=p.head AND d.body_hash=c.primary_item_hash AND (json_extract(c.source,'$.kind')='inline' OR d.source_version=json_extract(c.source,'$.version'))")
+                .bind(pass.id.to_string()).bind(tenant).fetch_all(&mut *tx).await?;
+            for owner in owners {
+                super::assessment_primary::capture_owner(
+                    &mut tx,
+                    tenant,
+                    parse_wire(&owner, "decision_id")?,
+                )
+                .await?;
+            }
+        }
+        if run.method == pass.config.primary_method
+            && result.status == AssessmentRunStatus::Succeeded
+            && result
+                .reported_head
+                .as_ref()
+                .is_none_or(|head| head == &pass.input.head)
+        {
+            for row in &items {
+                if !matches!(
+                    row.status,
+                    ComparisonItemStatus::MissingRow
+                        | ComparisonItemStatus::HeadMismatch
+                        | ComparisonItemStatus::Context
+                ) && let AssessmentSource::Body { url, version, .. } = &row.source
+                {
+                    sqlx::query("UPDATE comment_sources SET read_at=coalesce(read_at,?) WHERE tenant_id=? AND pull_request_id=? AND url=? AND body_hash=?")
+                        .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).bind(version).execute(&mut *tx).await?;
+                    if run.method == AssessmentMethod::ClaudiusHost {
+                        sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND gone_at IS NULL AND state IN ('assessing','undecided','asked_back','reopened') AND NOT EXISTS(SELECT 1 FROM assessment_comparison_items c WHERE c.pass_id=? AND c.method=? AND c.primary_item_id=comment_items.id AND c.status NOT IN ('missing_row','context','head_mismatch'))")
+                            .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).bind(pass.id.to_string()).bind(wire_name(run.method)?).execute(&mut *tx).await?;
+                    }
+                }
+            }
+            for row in &items {
+                if row.status == ComparisonItemStatus::Unmatched
+                    && let AssessmentSource::Body { url, quote, .. } = &row.source
+                    && quote.is_empty()
+                {
+                    sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND NOT EXISTS(SELECT 1 FROM comment_assessments a WHERE a.item_id=comment_items.id)")
+                        .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).execute(&mut *tx).await?;
+                }
+            }
+            // Source-bound points survive GitHub reads; only the accepted primary supersedes old bot rounds.
+            sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND gone_at IS NULL AND source_id IN (SELECT s.id FROM comment_sources s WHERE s.role='context' AND s.source_kind='review_body' AND EXISTS(SELECT 1 FROM comment_sources n WHERE n.pull_request_id=s.pull_request_id AND n.author=s.author AND n.role='source' AND n.source_kind='review_body' AND n.read_at IS NOT NULL))")
+                .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).execute(&mut *tx).await?;
+        }
         tx.commit().await?;
         Ok(true)
     }
@@ -333,7 +508,7 @@ impl Assessments<'_> {
         if attempt == 0 || attempt > latest {
             return Err(DbError::Conflict);
         }
-        let added = meter_in(&mut tx, &current, attempt, usage, duration_ms).await?;
+        let added = meter_in(&mut tx, &current, attempt, usage, duration_ms, true).await?;
         tx.commit().await?;
         Ok(added)
     }
@@ -368,6 +543,47 @@ impl Assessments<'_> {
             .bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(tenant).bind(&user.0).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Elapsed wall time of the queue attempt, excluding time spent waiting for admission.
+    pub async fn attempt_duration(
+        &self,
+        job: contracts::ids::JobId,
+        attempt: u32,
+    ) -> Result<u64, DbError> {
+        let mut tx = read_tx(self.pool).await?;
+        let duration: i64 = sqlx::query_scalar("SELECT CAST(max(0,round((julianday(finished_at)-julianday(claimed_at))*86400000)) AS INTEGER) FROM jobs WHERE id=? AND attempt=? AND claimed_at IS NOT NULL AND finished_at IS NOT NULL")
+            .bind(job.to_string()).bind(attempt).fetch_optional(&mut *tx).await?.unwrap_or(0);
+        tx.commit().await?;
+        Ok(duration as u64)
+    }
+
+    /// Read the immutable pass under its tenant and payer boundary.
+    pub async fn pass(
+        &self,
+        tenant: &str,
+        user: &UserId,
+        id: PassId,
+    ) -> Result<AssessmentPass, DbError> {
+        let mut tx = read_tx(self.pool).await?;
+        let pass = pass_in(&mut tx, tenant, user, id).await?;
+        tx.commit().await?;
+        Ok(pass)
+    }
+
+    /// Latest admitted pass of this PR for this payer only.
+    pub async fn latest(
+        &self,
+        tenant: &str,
+        user: &UserId,
+        pr: i64,
+    ) -> Result<Option<AssessmentPass>, DbError> {
+        let mut tx = read_tx(self.pool).await?;
+        let row = sqlx::query("SELECT * FROM assessment_passes WHERE tenant_id=? AND payer_id=? AND pull_request_id=? ORDER BY admitted_at DESC,rowid DESC LIMIT 1")
+            .bind(tenant).bind(&user.0).bind(pr).fetch_optional(&mut *tx).await?;
+        let pass = row.as_ref().map(pass_from_row).transpose()?;
+        tx.commit().await?;
+        Ok(pass)
     }
 
     /// Read method summaries for the payer and pass.
@@ -426,6 +642,10 @@ impl Assessments<'_> {
                 })
                 .transpose()?;
             items.push(AssessmentComparisonItem {
+                recorded_decision: r
+                    .try_get::<Option<String>, _>("recorded_decision")?
+                    .map(|raw| serde_json::from_str(&raw))
+                    .transpose()?,
                 comparison_key: key,
                 local_id: r.try_get("local_id")?,
                 run: AssessmentRunRef {
@@ -461,6 +681,7 @@ impl Assessments<'_> {
         }
         tx.commit().await?;
         Ok(AssessmentComparison {
+            summary: Default::default(),
             pass: frozen,
             cutoff,
             runs,
@@ -551,8 +772,9 @@ async fn pass_in(
             .bind(pass.to_string())
             .bind(tenant)
             .bind(&user.0)
-            .fetch_one(&mut *tx)
-            .await?;
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(DbError::NotFound)?;
     pass_from_row(&row)
 }
 
@@ -562,10 +784,14 @@ async fn runs_in(
     user: &UserId,
     pass: PassId,
 ) -> Result<Vec<AssessmentMethodRun>, DbError> {
-    let rows=sqlx::query("SELECT * FROM assessment_method_runs WHERE pass_id=? AND tenant_id=? AND payer_id=? ORDER BY method").bind(pass.to_string()).bind(tenant).bind(&user.0).fetch_all(&mut *tx).await?;
+    let rows=sqlx::query("SELECT r.*,((SELECT count(*) FROM assessment_attempt_usage u WHERE u.pass_id=r.pass_id AND u.method=r.method)=r.attempt AND NOT EXISTS(SELECT 1 FROM assessment_attempt_usage u WHERE u.pass_id=r.pass_id AND u.method=r.method AND u.known=0)) AS usage_complete FROM assessment_method_runs r WHERE pass_id=? AND tenant_id=? AND payer_id=? ORDER BY method").bind(pass.to_string()).bind(tenant).bind(&user.0).fetch_all(&mut *tx).await?;
     rows.into_iter()
         .map(|r| {
             Ok(AssessmentMethodRun {
+                usage_complete: r.try_get("usage_complete")?,
+                reported_head: r
+                    .try_get::<Option<String>, _>("reported_head")?
+                    .map(contracts::ids::CommitSha),
                 reference: AssessmentRunRef {
                     pass_id: pass,
                     method: parse_wire(
@@ -674,9 +900,13 @@ async fn meter_in(
     attempt: u32,
     usage: Usage,
     duration_ms: u64,
+    known: bool,
 ) -> Result<bool, DbError> {
+    if !known && usage != Usage::default() {
+        return Err(DbError::Conflict);
+    }
     let run = &current.reference;
-    let recorded:Option<(i64,i64,i64,Option<i64>,i64)>=sqlx::query_as("SELECT input_tokens,cached_input_tokens,output_tokens,requests,duration_ms FROM assessment_attempt_usage WHERE pass_id=? AND method=? AND attempt=?")
+    let recorded:Option<(i64,i64,i64,Option<i64>,i64,bool)>=sqlx::query_as("SELECT input_tokens,cached_input_tokens,output_tokens,requests,duration_ms,known FROM assessment_attempt_usage WHERE pass_id=? AND method=? AND attempt=?")
         .bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(attempt).fetch_optional(&mut *tx).await?;
     let values = (
         count(usage.input_tokens)?,
@@ -684,26 +914,52 @@ async fn meter_in(
         count(usage.output_tokens)?,
         usage.requests.map(count).transpose()?,
         count(duration_ms)?,
+        known,
     );
-    if let Some(recorded) = recorded {
-        return if recorded == values {
-            Ok(false)
-        } else {
-            Err(DbError::Conflict)
-        };
-    }
-    let total = current
-        .usage
-        .checked_add(usage)
-        .map_err(|_| DbError::Conflict)?;
+    let extra_duration = if let Some(previous) = recorded {
+        if previous == values {
+            return Ok(false);
+        }
+        if previous.5 || !known || previous.4 != values.4 {
+            return Err(DbError::Conflict);
+        }
+        sqlx::query("UPDATE assessment_attempt_usage SET input_tokens=?,cached_input_tokens=?,output_tokens=?,requests=?,known=1 WHERE pass_id=? AND method=? AND attempt=? AND known=0")
+            .bind(values.0).bind(values.1).bind(values.2).bind(values.3).bind(run.pass_id.to_string()).bind(wire_name(run.method)?).bind(attempt).execute(&mut *tx).await?;
+        0
+    } else {
+        sqlx::query("INSERT INTO assessment_attempt_usage(pass_id,method,tenant_id,payer_id,attempt,input_tokens,cached_input_tokens,output_tokens,requests,duration_ms,known) SELECT pass_id,method,tenant_id,payer_id,?,?,?,?,?,?,? FROM assessment_method_runs WHERE pass_id=? AND method=?")
+            .bind(attempt).bind(values.0).bind(values.1).bind(values.2).bind(values.3).bind(values.4).bind(known).bind(run.pass_id.to_string()).bind(wire_name(run.method)?).execute(&mut *tx).await?;
+        duration_ms
+    };
+    let total = if known {
+        current
+            .usage
+            .checked_add(usage)
+            .map_err(|_| DbError::Conflict)?
+    } else {
+        current.usage
+    };
     let duration = current
         .duration_ms
-        .checked_add(duration_ms)
+        .checked_add(extra_duration)
         .ok_or(DbError::Conflict)?;
-    sqlx::query("INSERT INTO assessment_attempt_usage(pass_id,method,tenant_id,payer_id,attempt,input_tokens,cached_input_tokens,output_tokens,requests,duration_ms) SELECT pass_id,method,tenant_id,payer_id,?,?,?,?,?,? FROM assessment_method_runs WHERE pass_id=? AND method=?")
-        .bind(attempt).bind(values.0).bind(values.1).bind(values.2).bind(values.3).bind(values.4).bind(run.pass_id.to_string()).bind(wire_name(run.method)?).execute(&mut *tx).await?;
     sqlx::query("UPDATE assessment_method_runs SET input_tokens=?,cached_input_tokens=?,output_tokens=?,requests=?,duration_ms=? WHERE pass_id=? AND method=?")
         .bind(count(total.input_tokens)?).bind(count(total.cached_input_tokens)?).bind(count(total.output_tokens)?).bind(total.requests.map(count).transpose()?).bind(count(duration)?)
         .bind(run.pass_id.to_string()).bind(wire_name(run.method)?).execute(&mut *tx).await?;
     Ok(true)
+}
+
+/// Synthetic admission state for downstream tests; never built into release binaries.
+#[cfg(feature = "test-util")]
+pub mod testing {
+    use super::*;
+    /// Seed a UTC day's used slots without running any provider.
+    pub async fn usage(db: &Db, user: &UserId, now: Timestamp, passes: u32) -> Result<(), DbError> {
+        let (day, _) = utc_day(now)?;
+        let mut tx = write_tx(&db.pool).await?;
+        sqlx::query("INSERT INTO assessment_daily_usage(user_id,day_utc,passes) VALUES(?,?,?) ON CONFLICT(user_id,day_utc) DO UPDATE SET passes=excluded.passes")
+            .bind(&user.0).bind(day).bind(passes).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }

@@ -33,6 +33,120 @@ async fn seed(db: &Db) {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn assessment_review_admission_rolls_back_pass_jobs_and_quota_together() {
+    let db = Db::in_memory().await.unwrap();
+    seed(&db).await;
+    db.review_loop()
+        .ensure_pr("default", 1, at("2026-11-23T00:00:00Z"))
+        .await
+        .unwrap();
+    let request = request("review", false);
+    let review = review_loop::NewPass {
+        pull_request_id: 1,
+        user_id: Some("u1".into()),
+        cause: review_loop::PassCause::Read,
+        head: request.input.head.clone(),
+        sent: vec![],
+        question: None,
+    };
+    let pass = db
+        .assessments()
+        .admit_review(
+            "default",
+            &user(),
+            &request,
+            &review,
+            at("2026-11-23T00:00:00Z"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        db.review_loop().pass(pass.id).await.unwrap().user_id,
+        Some("u1".into())
+    );
+    let other = request_with_key("busy");
+    assert!(
+        db.assessments()
+            .admit_review(
+                "default",
+                &user(),
+                &other,
+                &review,
+                at("2026-11-23T00:00:00Z")
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        db.assessments()
+            .quota(&user(), at("2026-11-23T00:00:00Z"))
+            .await
+            .unwrap()
+            .remaining,
+        79
+    );
+    assert_eq!(db.review_loop().live_passes().await.unwrap().len(), 1);
+}
+
+fn request_with_key(key: &str) -> NewAssessmentPass {
+    request(key, false)
+}
+
+#[tokio::test]
+async fn assessment_cancelled_before_claim_is_terminal_without_an_attempt() {
+    let db = Db::in_memory().await.unwrap();
+    seed(&db).await;
+    let request = request("cancel-unclaimed", false);
+    let now = at("2026-11-23T12:00:00Z");
+    let pass = db
+        .assessments()
+        .admit("default", &user(), &request, now)
+        .await
+        .unwrap();
+    let run = request.jobs[0].spec.assessment.as_ref().unwrap();
+    db.jobs()
+        .request_cancel(request.jobs[0].spec.job_id, now)
+        .await
+        .unwrap();
+    assert!(
+        db.assessments()
+            .finish_attempt(
+                "default",
+                &user(),
+                run,
+                0,
+                &MethodResult {
+                    usage_known: true,
+                    reported_head: None,
+                    status: AssessmentRunStatus::Cancelled,
+                    usage: Usage::default(),
+                    duration_ms: 0,
+                    failure: None,
+                    items: vec![]
+                }
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        db.assessments()
+            .runs("default", &user(), pass.id)
+            .await
+            .unwrap()[0]
+            .status,
+        AssessmentRunStatus::Cancelled
+    );
+    assert_eq!(
+        db.assessments()
+            .quota(&user(), now)
+            .await
+            .unwrap()
+            .remaining,
+        79
+    );
+}
 fn request(key: &str, paired: bool) -> NewAssessmentPass {
     let id = PassId::new_random();
     let mut input = AssessmentInput {
@@ -285,6 +399,47 @@ async fn assessment_admission_is_atomic_and_idempotent_across_restart_and_midnig
     );
 }
 
+#[tokio::test]
+async fn assessment_latest_orders_utc_instants_across_fractional_second_forms() {
+    let db = Db::in_memory().await.unwrap();
+    seed(&db).await;
+    db.assessments()
+        .admit(
+            "default",
+            &user(),
+            &request("whole-second", false),
+            at("2026-11-23T12:00:00Z"),
+        )
+        .await
+        .unwrap();
+    let newer = db
+        .assessments()
+        .admit(
+            "default",
+            &user(),
+            &request("fractional-second", false),
+            at("2026-11-23T12:00:00.100Z"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        db.assessments()
+            .latest("default", &user(), 1)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        newer.id
+    );
+    assert!(
+        db.assessments()
+            .latest("other", &user(), 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn assessment_quota_race_admits_exactly_eighty_and_deduplicates_keys() {
     let dir = tempfile::tempdir().unwrap();
@@ -346,6 +501,7 @@ async fn assessment_quota_race_admits_exactly_eighty_and_deduplicates_keys() {
 
 fn item(run: AssessmentRunRef, key: &str) -> AssessmentComparisonItem {
     AssessmentComparisonItem {
+        recorded_decision: None,
         comparison_key: key.into(),
         local_id: "local-1".into(),
         run,
@@ -393,6 +549,8 @@ async fn started_assessment() -> (Db, jobs::JobRecord, AssessmentRunRef, MethodR
         .await
         .unwrap();
     let result = MethodResult {
+        usage_known: true,
+        reported_head: None,
         status: AssessmentRunStatus::Succeeded,
         usage: Usage {
             input_tokens: 7,
@@ -403,6 +561,50 @@ async fn started_assessment() -> (Db, jobs::JobRecord, AssessmentRunRef, MethodR
         items: vec![item(run.clone(), "current")],
     };
     (db, job, run, result)
+}
+
+#[tokio::test]
+async fn assessment_unknown_usage_can_be_completed_later_without_double_duration() {
+    let (db, job, run, mut result) = started_assessment().await;
+    result.usage = Usage::default();
+    result.usage_known = false;
+    db.assessments()
+        .finish_attempt("default", &user(), &run, job.attempt, &result)
+        .await
+        .unwrap();
+    assert!(
+        !db.assessments()
+            .runs("default", &user(), run.pass_id)
+            .await
+            .unwrap()[0]
+            .usage_complete
+    );
+    let usage = Usage {
+        input_tokens: 17,
+        requests: Some(2),
+        ..Default::default()
+    };
+    assert!(
+        db.assessments()
+            .record_attempt_usage("default", &user(), &run, job.attempt, usage, 5)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !db.assessments()
+            .record_attempt_usage("default", &user(), &run, job.attempt, usage, 5)
+            .await
+            .unwrap()
+    );
+    let complete = db
+        .assessments()
+        .runs("default", &user(), run.pass_id)
+        .await
+        .unwrap()
+        .remove(0);
+    assert!(complete.usage_complete);
+    assert_eq!(complete.usage, usage);
+    assert_eq!(complete.duration_ms, 5);
 }
 
 async fn assert_late_assessment_rejected(db: &Db, run: &AssessmentRunRef, result: &MethodResult) {
@@ -755,6 +957,8 @@ async fn assessment_results_fence_attempts_and_keep_secondary_comparison_only() 
         .await
         .unwrap();
     let failure = MethodResult {
+        usage_known: true,
+        reported_head: None,
         status: AssessmentRunStatus::Failed,
         usage: Usage {
             input_tokens: 10,
@@ -813,6 +1017,8 @@ async fn assessment_results_fence_attempts_and_keep_secondary_comparison_only() 
     let mut row = item(run.clone(), "key");
     row.method_version = "4".into();
     let success = MethodResult {
+        usage_known: true,
+        reported_head: None,
         status: AssessmentRunStatus::Succeeded,
         items: vec![row],
         failure: None,
@@ -949,6 +1155,8 @@ async fn assessment_owner_history_uses_actual_decisions_at_cutoff_and_rejects_ot
     row.primary_item_id = Some(item_id);
     row.primary_item_hash = Some("a".repeat(64));
     let output = MethodResult {
+        usage_known: true,
+        reported_head: None,
         status: AssessmentRunStatus::Succeeded,
         usage: Usage::default(),
         duration_ms: 0,
@@ -987,6 +1195,8 @@ async fn assessment_owner_history_uses_actual_decisions_at_cutoff_and_rejects_ot
             &unmatched.run,
             1,
             &MethodResult {
+                usage_known: true,
+                reported_head: None,
                 items: vec![unmatched.clone()],
                 ..output.clone()
             },
@@ -1167,6 +1377,8 @@ async fn assessment_body_owner_choice_binds_point_hash_and_source_version_separa
             &run,
             1,
             &MethodResult {
+                usage_known: true,
+                reported_head: None,
                 status: AssessmentRunStatus::Succeeded,
                 usage: Usage::default(),
                 duration_ms: 0,
@@ -1248,6 +1460,8 @@ async fn assessment_repository_attributes_primary_and_refuses_secondary_writes()
             run,
             1,
             &MethodResult {
+                usage_known: true,
+                reported_head: None,
                 status: AssessmentRunStatus::Succeeded,
                 usage: Usage::default(),
                 duration_ms: 0,
@@ -1307,6 +1521,8 @@ async fn assessment_late_metering_counts_lost_attempts_once_without_overwriting_
         requests: Some(1),
     };
     let result = MethodResult {
+        usage_known: true,
+        reported_head: None,
         status: AssessmentRunStatus::Succeeded,
         usage,
         duration_ms: 5,
@@ -1418,4 +1634,164 @@ async fn assessment_user_configuration_and_quota_are_shared_across_tenant_member
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn assessment_stale_canonical_leaves_duplicate_missing_without_aborting_valid_rows() {
+    use super::assessment_primary::PrimaryPoint;
+    let (db, job, run, mut result) = started_assessment().await;
+    let canonical = seed_item(&db).await;
+    let mut tx = write_tx(&db.pool).await.unwrap();
+    sqlx::query("UPDATE comment_prs SET next_item_no=2 WHERE pull_request_id=1")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let mut seen = super::review_loop::ObservedItem {
+        kind: contracts::api::review_loop::CommentItemKind::Thread,
+        stable_key: "T2".into(),
+        author: "reviewer".into(),
+        author_kind: contracts::api::review_loop::AuthorKind::Human,
+        url: None,
+        location: None,
+        title: "Duplicate".into(),
+        body: "Duplicate concern".into(),
+        body_hash: "d".repeat(64),
+        head: contracts::ids::CommitSha("head".into()),
+        round: None,
+        bot_severity: None,
+        github: contracts::api::review_loop::ItemGithubFacts {
+            resolved: Some(false),
+            resolved_by: None,
+            outdated: Some(false),
+            bot_status: None,
+            edited_after_decision: false,
+            replies: 0,
+            marker: None,
+        },
+        outside: None,
+    };
+    let duplicate = match db
+        .review_loop()
+        .upsert_item(
+            "default",
+            1,
+            &seen,
+            contracts::api::review_loop::ItemState::Undecided,
+            at("2026-11-23T12:00:00Z"),
+        )
+        .await
+        .unwrap()
+    {
+        super::review_loop::UpsertOutcome::New(i) => i,
+        _ => panic!("new"),
+    };
+    seen.stable_key = "T3".into();
+    let valid = match db
+        .review_loop()
+        .upsert_item(
+            "default",
+            1,
+            &seen,
+            contracts::api::review_loop::ItemState::Undecided,
+            at("2026-11-23T12:00:00Z"),
+        )
+        .await
+        .unwrap()
+    {
+        super::review_loop::UpsertOutcome::New(i) => i,
+        _ => panic!("new"),
+    };
+    let point = |key: &str, id, hash: String, duplicate| PrimaryPoint {
+        carry: None,
+        key: key.into(),
+        existing: Some((id, hash)),
+        observed: None,
+        preferred_no: 1,
+        source: None,
+        duplicate,
+        assessment: None,
+        fingerprint: "fp".into(),
+    };
+    let writes = vec![
+        point("canonical", canonical, "changed".into(), None),
+        point("valid", valid.id, valid.body_hash, None),
+        point(
+            "duplicate",
+            duplicate.id,
+            duplicate.body_hash,
+            Some("canonical".into()),
+        ),
+    ];
+    result.items = vec![
+        item(run.clone(), "canonical"),
+        item(run.clone(), "valid"),
+        item(run.clone(), "duplicate"),
+    ];
+    result.items[2].status = ComparisonItemStatus::Duplicate;
+    result.items[2].duplicate_of = Some("canonical".into());
+    result.items[2].verdict = None;
+    assert!(
+        db.assessments()
+            .finish_with_primary("default", &user(), &run, job.attempt, &result, &writes)
+            .await
+            .unwrap()
+    );
+    let report = db
+        .assessments()
+        .comparison("default", &user(), run.pass_id, at("2026-11-23T12:00:00Z"))
+        .await
+        .unwrap();
+    let row = report
+        .items
+        .iter()
+        .find(|r| r.comparison_key == "duplicate")
+        .unwrap();
+    assert_eq!(row.status, ComparisonItemStatus::MissingRow);
+    assert!(row.duplicate_of.is_none());
+    assert!(
+        report
+            .items
+            .iter()
+            .any(|r| r.comparison_key == "valid" && r.primary_item_id == Some(valid.id))
+    );
+}
+
+#[tokio::test]
+async fn assessment_primary_preserves_items_gone_during_the_pass() {
+    use super::assessment_primary::PrimaryPoint;
+    for gone_at in ["2026-11-23T12:00:00Z", "2026-11-23T12:01:00Z"] {
+        let (db, job, run, result) = started_assessment().await;
+        let id = seed_item(&db).await;
+        db.review_loop()
+            .mark_gone(1, &[], at(gone_at))
+            .await
+            .unwrap();
+        let point = PrimaryPoint {
+            carry: None,
+            key: "current".into(),
+            existing: Some((id, "a".repeat(64))),
+            observed: None,
+            preferred_no: 1,
+            source: None,
+            duplicate: None,
+            assessment: None,
+            fingerprint: "fp".into(),
+        };
+        assert!(
+            db.assessments()
+                .finish_with_primary("default", &user(), &run, job.attempt, &result, &[point])
+                .await
+                .unwrap()
+        );
+        let mut tx = read_tx(&db.pool).await.unwrap();
+        let stored: Option<String> =
+            sqlx::query_scalar("SELECT gone_at FROM comment_items WHERE id=?")
+                .bind(id.to_string())
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(stored.map(|value| at(&value)), Some(at(gone_at)));
+    }
 }

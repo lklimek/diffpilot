@@ -86,7 +86,7 @@ pub struct ObservedItem {
 }
 
 /// A stored item.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemRecord {
     /// Versioned source for a grounded body/comment point.
     pub source_id: Option<i64>,
@@ -370,6 +370,19 @@ fn lines_of(location: Option<&ItemLocation>) -> (Option<&str>, Option<u32>, Opti
 }
 
 impl ReviewLoop<'_> {
+    /// Whether a primary duplicate link already covers this exact point/code version.
+    pub async fn duplicate_is_current(
+        &self,
+        item: CommentItemId,
+        fingerprint: &str,
+    ) -> Result<bool, DbError> {
+        let mut tx = read_tx(self.pool).await?;
+        let current = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM comment_items WHERE id=? AND duplicate_of IS NOT NULL AND duplicate_fingerprint=?)")
+            .bind(item.to_string()).bind(fingerprint).fetch_one(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(current)
+    }
+
     /// Binds a grounded point to its source version; SQL enforces PR/tenant and duplicate ownership.
     pub async fn bind_source(
         &self,
@@ -500,7 +513,7 @@ impl ReviewLoop<'_> {
     ) -> Result<Vec<u32>, DbError> {
         let rows = sqlx::query(
             "UPDATE comment_items SET gone_at = ?1, revision = revision + 1, updated_at = ?1
-             WHERE pull_request_id = ?2 AND kind <> 'pr_question' AND gone_at IS NULL
+             WHERE pull_request_id = ?2 AND kind <> 'pr_question' AND source_id IS NULL AND gone_at IS NULL
                AND stable_key NOT IN (SELECT value FROM json_each(?3))
              RETURNING item_no",
         )
@@ -605,44 +618,7 @@ impl ReviewLoop<'_> {
         fingerprint: &str,
     ) -> Result<(), DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let latest: Option<CommentAssessment> = sqlx::query(
-            "SELECT body FROM comment_assessments WHERE item_id = ? ORDER BY id DESC LIMIT 1",
-        )
-        .bind(item.to_string())
-        .fetch_optional(&mut *tx)
-        .await?
-        .map(|row| json_col(&row, "body"))
-        .transpose()?;
-        sqlx::query(
-            "INSERT INTO comment_assessments (tenant_id, item_id, job_id, head, fingerprint, body, prompt_version,
-                 assessed_at,pass_id,method,payer_id)
-             SELECT ?, ?, ?, ?, ?, ?, ?, ?,j.assessment_pass_id,j.assessment_method,
-                 CASE WHEN j.assessment_pass_id IS NOT NULL THEN j.payer_id END
-             FROM (SELECT 1) LEFT JOIN jobs j ON j.id=?",
-        )
-        .bind(tenant_id)
-        .bind(item.to_string())
-        .bind(assessment.job.to_string())
-        .bind(&assessment.head.0)
-        .bind(fingerprint)
-        .bind(json(assessment)?)
-        .bind(assessment.prompt_version)
-        .bind(ts(assessment.assessed_at))
-        .bind(assessment.job.to_string())
-        .execute(&mut *tx)
-        .await?;
-        let shown_before = latest.is_some_and(|latest| {
-            latest.recommendation == assessment.recommendation && latest.gates == assessment.gates
-        });
-        if !shown_before {
-            sqlx::query(
-                "UPDATE comment_items SET revision = revision + 1, updated_at = ? WHERE id = ?",
-            )
-            .bind(ts(assessment.assessed_at))
-            .bind(item.to_string())
-            .execute(&mut *tx)
-            .await?;
-        }
+        add_assessment_in(&mut tx, tenant_id, item, assessment, fingerprint).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -666,7 +642,6 @@ impl ReviewLoop<'_> {
         })
         .transpose()
     }
-
     /// Queues a pass unless one of the PR is queued or running.
     pub async fn start_pass(
         &self,
@@ -906,7 +881,7 @@ impl ReviewLoop<'_> {
 }
 
 /// [`ReviewLoop::upsert_item`] inside `tx`.
-pub(super) async fn upsert_item_in(
+pub(crate) async fn upsert_item_in(
     tx: &mut Transaction<'static, Sqlite>,
     tenant_id: &str,
     pull_request_id: i64,
@@ -1121,4 +1096,54 @@ async fn pr_state_with<'e>(
         round_count: u32_col(&row, "round_count")?,
         purpose: row.try_get("purpose")?,
     }))
+}
+
+/// Store a validated primary assessment under the caller's acceptance transaction.
+pub(crate) async fn add_assessment_in(
+    tx: &mut Transaction<'static, Sqlite>,
+    tenant_id: &str,
+    item: CommentItemId,
+    assessment: &CommentAssessment,
+    fingerprint: &str,
+) -> Result<(), DbError> {
+    let latest: Option<CommentAssessment> = sqlx::query(
+        "SELECT body FROM comment_assessments WHERE item_id = ? ORDER BY id DESC LIMIT 1",
+    )
+    .bind(item.to_string())
+    .fetch_optional(&mut **tx)
+    .await?
+    .map(|row| json_col(&row, "body"))
+    .transpose()?;
+    sqlx::query(
+            "INSERT INTO comment_assessments (tenant_id, item_id, job_id, head, fingerprint, body, prompt_version,
+                 assessed_at,pass_id,method,payer_id)
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?,j.assessment_pass_id,j.assessment_method,
+                 CASE WHEN j.assessment_pass_id IS NOT NULL THEN j.payer_id END
+             FROM (SELECT 1) LEFT JOIN jobs j ON j.id=? AND ?=0",
+        )
+        .bind(tenant_id)
+        .bind(item.to_string())
+        .bind(assessment.job.to_string())
+        .bind(&assessment.head.0)
+        .bind(fingerprint)
+        .bind(json(assessment)?)
+        .bind(assessment.prompt_version)
+        .bind(ts(assessment.assessed_at))
+        .bind(assessment.job.to_string())
+        .bind(assessment.reused_since.is_some())
+        .execute(&mut **tx)
+        .await?;
+    let shown_before = latest.is_some_and(|latest| {
+        latest.recommendation == assessment.recommendation && latest.gates == assessment.gates
+    });
+    if !shown_before {
+        sqlx::query(
+            "UPDATE comment_items SET revision = revision + 1, updated_at = ? WHERE id = ?",
+        )
+        .bind(ts(assessment.assessed_at))
+        .bind(item.to_string())
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }

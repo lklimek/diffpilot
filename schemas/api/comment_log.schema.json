@@ -1125,6 +1125,13 @@
       "description": "Evidence of a carry-over event, read by the server.",
       "type": "object",
       "properties": {
+        "quote": {
+          "description": "Verbatim grounded quote of a restated point, when supplied.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "url": {
           "description": "GitHub link of the repeat.",
           "type": [
