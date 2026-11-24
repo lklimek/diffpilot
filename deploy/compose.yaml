@@ -156,7 +156,13 @@ services:
     image: ${SR_SERVER_IMAGE:-diffpilot-server:local}
     entrypoint: [/usr/local/bin/diffpilot-gateway]
     user: "10010:10010"
-    healthcheck: { disable: true }
+    # The image's HEALTHCHECK probes the server port; the gateway is healthy once its admin listener accepts.
+    healthcheck:
+      test: [CMD, bash, -c, 'exec 3<>"/dev/tcp/$${SR_GATEWAY_ADMIN_ADDR%:*}/$${SR_GATEWAY_ADMIN_ADDR##*:}"']
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      start_interval: 1s
     stop_grace_period: 55s
     environment:
       SR_GATEWAY_MODEL_ADDR: ${SR_GATEWAY_MODEL_ADDR:-172.29.75.2}:8090
