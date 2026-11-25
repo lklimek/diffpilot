@@ -821,3 +821,101 @@ async fn prune_installations_keeps_tracked_rows() {
         None
     );
 }
+
+#[tokio::test]
+async fn dashboard_fanout_matches_repository_ids_in_each_tenant() {
+    use crate::repo::users::GithubProfile;
+
+    let db = test_db().await;
+    let now = Timestamp::now();
+    sqlx::query("INSERT INTO tenants (id, name, created_at) VALUES ('other', 'Other', ?)")
+        .bind(ts(now))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    db.users()
+        .upsert_member(
+            "other",
+            "u2",
+            &GithubProfile {
+                github_id: 22,
+                login: "bob".into(),
+                name: None,
+                avatar_url: None,
+            },
+            now,
+        )
+        .await
+        .unwrap();
+    let repository = repo(7, "acme", "node-client");
+    db.repos()
+        .upsert("other", &repository.name, Some(8))
+        .await
+        .unwrap();
+    let item = json!({"facts": {"repo": repository.name, "number": 1}});
+    let snapshot_version = 2;
+    let snapshot = json!({"version": snapshot_version, "pull_requests": [item], "issues": []});
+    for (tenant, user) in [("default", "u1"), ("other", "u2")] {
+        sqlx::query(
+            "INSERT INTO dashboard_refreshes (id, user_id, tenant_id, trigger, state, ranking_state, snapshot, started_at)
+             VALUES (?, ?, ?, 'manual', 'finished', 'finished', ?, ?)",
+        ).bind(tenant).bind(user).bind(tenant).bind(snapshot.to_string()).bind(ts(now))
+            .execute(&db.pool).await.unwrap();
+    }
+    let mut change = WebhookChange {
+        kind: ChangeKind::PullRequest,
+        repository,
+        head_repository: None,
+        number: Some(1),
+        head_sha: None,
+        action: None,
+        installation_id: None,
+        base_repository: None,
+        candidate_login: None,
+    };
+    let github = db.github();
+    assert!(
+        github
+            .dashboard_targets(std::slice::from_ref(&change), 1)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let targets = github
+        .dashboard_targets(std::slice::from_ref(&change), snapshot_version)
+        .await
+        .unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(
+        (&*targets[0].tenant_id, &*targets[0].user_id),
+        ("default", "u1")
+    );
+    change.repository.id = Some(8);
+    let targets = github
+        .dashboard_targets(std::slice::from_ref(&change), snapshot_version)
+        .await
+        .unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(
+        (&*targets[0].tenant_id, &*targets[0].user_id),
+        ("other", "u2")
+    );
+
+    // The same GitHub repository may legitimately be tracked by more than one tenant.
+    db.repos()
+        .upsert("other", &change.repository.name, Some(7))
+        .await
+        .unwrap();
+    change.repository.id = Some(7);
+    let targets = github
+        .dashboard_targets(&[change], snapshot_version)
+        .await
+        .unwrap();
+    assert_eq!(
+        targets
+            .into_iter()
+            .map(|target| target.tenant_id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["default".into(), "other".into()].into()
+    );
+}

@@ -98,7 +98,7 @@ async fn read_locked(
     let now = state.dashboard.now();
     let (record, mut stored) = match read_current(state, scope).await? {
         Ok(snapshot) => snapshot,
-        Err(reason) => return Ok(Reread::Skipped(reason)),
+        Err(reason) => return Ok(Reread::Skipped(reason.description())),
     };
     let item = |pr: &StoredPr| ItemRef {
         repo: pr.facts.repo.clone(),
@@ -141,12 +141,28 @@ async fn read_locked(
     }
 }
 
+pub(super) enum SnapshotUnavailable {
+    Scanning,
+    Skipped(&'static str),
+}
+
+impl SnapshotUnavailable {
+    pub(super) fn description(&self) -> &'static str {
+        match self {
+            Self::Scanning => "a scan runs",
+            Self::Skipped(reason) => reason,
+        }
+    }
+}
+
 /// Reads the current snapshot only when a scan or GitHub backoff does not take precedence.
 pub(super) async fn read_current(
     state: &AppState,
     scope: &Scope,
-) -> Result<Result<(db::repo::dashboard::RefreshRecord, snapshot::Snapshot), &'static str>, DbError>
-{
+) -> Result<
+    Result<(db::repo::dashboard::RefreshRecord, snapshot::Snapshot), SnapshotUnavailable>,
+    DbError,
+> {
     let dashboard = state.db.dashboard();
     let now = state.dashboard.now();
     if let Some(latest) = dashboard
@@ -154,24 +170,24 @@ pub(super) async fn read_current(
         .await?
     {
         if latest.state == RefreshState::Scanning {
-            return Ok(Err("a scan runs"));
+            return Ok(Err(SnapshotUnavailable::Scanning));
         }
         let limited = latest.failure.as_ref().is_some_and(|failure| {
             failure.code == RefreshFailureCode::GithubRateLimited
                 && failure.retry_at.is_some_and(|at| at > now)
         });
         if limited {
-            return Ok(Err("GitHub rate limit"));
+            return Ok(Err(SnapshotUnavailable::Skipped("GitHub rate limit")));
         }
     }
     let Some((record, document)) = dashboard
         .latest_snapshot::<Value>(&scope.tenant_id, &scope.user_id)
         .await?
     else {
-        return Ok(Err("no snapshot"));
+        return Ok(Err(SnapshotUnavailable::Skipped("no snapshot")));
     };
     let Some(stored) = snapshot::readable(document) else {
-        return Ok(Err("unreadable snapshot"));
+        return Ok(Err(SnapshotUnavailable::Skipped("unreadable snapshot")));
     };
     Ok(Ok((record, stored)))
 }

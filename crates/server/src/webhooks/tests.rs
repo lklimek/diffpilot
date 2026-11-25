@@ -1122,7 +1122,7 @@ async fn webhook_worker_dispatch_failure_uses_backoff_and_warns_once() {
     for (attempt, delay) in [10, 60, 600, 0].into_iter().enumerate() {
         let current = github.next_pending(now).await.unwrap().unwrap();
         assert_eq!((current.id, current.attempts), (id, attempt as i64));
-        super::worker::step(&hooks, || now, async |_| Err(DeliveryError::Dispatch))
+        super::worker::complete(&hooks.db, &current, Err(DeliveryError::Dispatch), now)
             .await
             .unwrap();
         assert!(github.next_pending(now).await.unwrap().is_none());

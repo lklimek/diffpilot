@@ -1,4 +1,4 @@
-//! Budget shared by event-driven dashboard reads for a GitHub user.
+//! Budget shared by dashboard reads and watch probes triggered by GitHub events.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -15,6 +15,13 @@ const POINTS: u64 = 1000;
 #[derive(Clone, Default)]
 pub(crate) struct EventBudget(pub(super) Arc<Mutex<Spend>>);
 
+impl EventBudget {
+    /// Earliest retry for a one-point event probe or its follow-up read.
+    pub(crate) async fn blocked_for(&self, now: Instant, wall: Timestamp) -> Duration {
+        self.0.lock().await.delay(now, wall, 1)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Spend {
     reads: VecDeque<(Instant, u64)>,
@@ -23,6 +30,13 @@ pub(super) struct Spend {
 
 impl Spend {
     pub(super) fn permits(&mut self, now: Instant, wall: Timestamp, estimate: u64) -> bool {
+        self.delay(now, wall, estimate).is_zero()
+    }
+
+    fn delay(&mut self, now: Instant, wall: Timestamp, estimate: u64) -> Duration {
+        if estimate > POINTS {
+            return HOUR;
+        }
         while self
             .reads
             .front()
@@ -30,11 +44,21 @@ impl Spend {
         {
             self.reads.pop_front();
         }
-        let spent = self.reads.iter().map(|(_, cost)| *cost).sum::<u64>();
-        spent.saturating_add(estimate) <= POINTS
-            && self
-                .remaining
-                .is_none_or(|(remaining, reset)| wall >= reset || remaining >= POINTS)
+        let mut spent = self.reads.iter().map(|(_, cost)| *cost).sum::<u64>();
+        let mut hour_delay = Duration::ZERO;
+        for (at, cost) in &self.reads {
+            if spent.saturating_add(estimate) <= POINTS {
+                break;
+            }
+            spent -= cost;
+            hour_delay = (*at + HOUR).saturating_duration_since(now);
+        }
+        let floor_delay = self
+            .remaining
+            .filter(|(remaining, reset)| *remaining < POINTS && *reset > wall)
+            .and_then(|(_, reset)| Duration::try_from(reset - wall).ok())
+            .unwrap_or_default();
+        hour_delay.max(floor_delay)
     }
 
     pub(super) fn record(
@@ -49,7 +73,7 @@ impl Spend {
         let cost = rate
             .and_then(|rate| rate["cost"].as_u64())
             .unwrap_or(estimate);
-        self.reads.push_back((now, cost.max(1)));
+        self.reads.push_back((now, cost.clamp(1, POINTS)));
         if let Some(remaining) = remaining.or_else(|| rate.and_then(|r| r["remaining"].as_u64())) {
             let reset = reset
                 .or_else(|| rate.and_then(|r| super::timestamp(&r["resetAt"])))

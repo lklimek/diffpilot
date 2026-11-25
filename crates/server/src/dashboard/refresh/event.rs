@@ -8,12 +8,12 @@ use tokio::time::Instant;
 
 use super::{Scope, facts, owned::Ownership, reread};
 use crate::dashboard::plugin::PrKey;
-use crate::dashboard::score::{OwnedChange, Relation, ScoreRules, pull_eligibility};
+use crate::dashboard::score::{OwnedChange, ScoreRules, pull_eligibility};
 use crate::dashboard::snapshot::Snapshot;
 use crate::dashboard::{judge, settings, snooze, zone};
 use crate::github::work::{
-    EventBudget, IssueCandidate, IssueDetail, IssueRelation, ItemRef, PR_BATCH, PrCandidate,
-    PrRelation, PullDetail, UserTokens, WorkClient, WorkError,
+    EventBudget, IssueCandidate, IssueDetail, ItemRef, PR_BATCH, PrCandidate, PrRelation,
+    PullDetail, UserTokens, WorkClient, WorkError,
 };
 use crate::state::AppState;
 
@@ -34,35 +34,44 @@ pub(crate) enum EventReadError {
     Github(#[from] WorkError),
 }
 
+pub(crate) enum EventRead {
+    Complete,
+    Scanning,
+}
+
 /// Reads the affected snapshot items and ranks newly admitted PRs.
 pub(crate) async fn reread_items(
     state: &AppState,
     scope: &Scope,
-    items: EventItems,
+    items: &EventItems,
     budget: EventBudget,
     instant: Instant,
-) -> Result<(), EventReadError> {
+) -> Result<EventRead, EventReadError> {
     let readers = state.dashboard.readers();
     let writer = readers.writer(scope).await;
     let now = state.dashboard.now();
+    let current = reread::read_current(state, scope).await?;
+    if matches!(current, Err(reread::SnapshotUnavailable::Scanning)) {
+        return Ok(EventRead::Scanning);
+    }
     let current = if readers.limited_until(scope, now).is_some() {
-        Err("GitHub rate limit")
+        Err(reread::SnapshotUnavailable::Skipped("GitHub rate limit"))
     } else {
-        reread::read_current(state, scope).await?
+        current
     };
     let (record, mut stored) = match current {
         Ok(current) => current,
         Err(reason) => {
             log_skipped(
                 scope,
-                reason,
+                reason.description(),
                 items
                     .pulls
                     .values()
                     .chain(items.issues.values())
                     .chain(items.candidates.values()),
             );
-            return Ok(());
+            return Ok(EventRead::Complete);
         }
     };
     let tokens = UserTokens {
@@ -86,8 +95,9 @@ pub(crate) async fn reread_items(
     }
     let candidates: BTreeSet<_> = items
         .candidates
-        .into_iter()
-        .filter_map(|(key, item)| (!existing.contains(&key)).then_some(item))
+        .iter()
+        .filter(|(key, _)| !existing.contains(*key))
+        .map(|(_, item)| item.clone())
         .collect();
     let issues: Vec<_> = stored
         .issues
@@ -194,7 +204,7 @@ pub(crate) async fn reread_items(
             }
         };
         dirty |= !fetched.found.is_empty();
-        apply_issues(&rules, &mut stored, fetched.found);
+        apply_issues(&mut stored, fetched.found);
         if !fetched.notes.is_empty() {
             retry = Some(EventReadError::Github(WorkError::ExecutionFailed));
         }
@@ -203,7 +213,7 @@ pub(crate) async fn reread_items(
         if stored.event_ranking_pending {
             super::rank_pending_locked(state, scope, super::RankMode::Pending).await?;
         }
-        return retry.map_or(Ok(()), Err);
+        return retry.map_or(Ok(EventRead::Complete), Err);
     }
 
     stored.last_event_at = Some(now);
@@ -224,7 +234,7 @@ pub(crate) async fn reread_items(
         Err(DbError::Conflict) => {}
         Err(error) => return Err(error.into()),
     }
-    retry.map_or(Ok(()), Err)
+    retry.map_or(Ok(EventRead::Complete), Err)
 }
 
 fn read_failure(
@@ -348,22 +358,12 @@ fn add_candidate(
     true
 }
 
-fn apply_issues(
-    rules: &ScoreRules,
-    stored: &mut Snapshot,
-    mut detail: BTreeMap<ItemRef, Option<IssueDetail>>,
-) {
+fn apply_issues(stored: &mut Snapshot, mut detail: BTreeMap<ItemRef, Option<IssueDetail>>) {
     let before = stored.issues.len();
     stored.issues.retain_mut(|issue| {
         let item = ItemRef { repo: issue.facts.repo.clone(), number: issue.facts.number };
         let Some(answer) = detail.remove(&item) else { return true; };
         let Some(answer) = answer.filter(|issue| issue.state == "OPEN") else { return false; };
-        let assigned = answer.assignees.nodes.iter().any(|assignee| rules.is_scanned(&assignee.login));
-        let relations = issue.facts.relations.iter().filter_map(|relation| match relation {
-            Relation::RepoOpen => Some(IssueRelation::RepoOpen),
-            Relation::Mentioned => Some(IssueRelation::Mentioned),
-            _ => None,
-        }).chain(assigned.then_some(IssueRelation::Assigned)).collect();
         let same_milestone = answer.milestone.as_ref().is_some_and(|new| {
             matches!(&issue.facts.milestone, crate::dashboard::score::Milestone::Assigned(old) if old == &new.title)
         });
@@ -372,19 +372,22 @@ fn apply_issues(
             title: answer.title,
             url: String::new(),
             author: answer.author.and_then(|author| author.login),
-            assignees: answer.assignees.nodes.into_iter().map(|assignee| assignee.login).collect(),
+            assignees: Vec::new(),
             labels: answer.labels.nodes.into_iter().map(|label| label.name).collect(),
             milestone: answer.milestone,
             body: answer.body,
             created_at: answer.created_at,
             updated_at: answer.updated_at,
             comments: answer.comments.total_count,
-            relations,
+            relations: BTreeSet::new(),
             mention_candidate: false,
             fallback_mention_logins: BTreeSet::new(),
             author_association: None,
         };
-        *issue = facts::issue(&item, &candidate, milestone, answer.private.unwrap_or(issue.private));
+        let mut reread = facts::issue(&item, &candidate, milestone, answer.private.unwrap_or(issue.private));
+        // Snapshot membership and relations come from the scan for both PRs and issues.
+        reread.facts.relations = std::mem::take(&mut issue.facts.relations);
+        *issue = reread;
         true
     });
     stored.checked.issue = stored

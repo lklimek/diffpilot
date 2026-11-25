@@ -5,8 +5,6 @@ use std::time::Duration;
 use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::Db;
-#[cfg(test)]
-use db::repo::github::WebhookChange;
 use db::repo::github::{DeliveryError, PendingDelivery};
 use jiff::SignedDuration;
 use tokio::{sync::watch, time::Instant};
@@ -101,29 +99,6 @@ where
     }
 }
 
-#[cfg(test)]
-pub(super) async fn step<F, Dispatch>(
-    hooks: &Webhooks,
-    clock: impl Fn() -> Timestamp,
-    dispatch: F,
-) -> Result<Option<Duration>, DbError>
-where
-    F: FnOnce(Vec<WebhookChange>) -> Dispatch,
-    Dispatch: Future<Output = Result<(), DeliveryError>> + Send,
-{
-    let db = hooks.db.github();
-    let now = clock();
-    let Some(mut delivery) = db.next_pending(now).await? else {
-        return Ok(db
-            .next_retry(now)
-            .await?
-            .map(|next| (next - now).try_into().unwrap_or_default()));
-    };
-    let outcome = dispatch(std::mem::take(&mut delivery.changes)).await;
-    complete(&hooks.db, &delivery, outcome, clock()).await?;
-    Ok(Some(Duration::ZERO))
-}
-
 pub(super) async fn complete(
     db: &Db,
     delivery: &PendingDelivery,
@@ -178,6 +153,159 @@ mod tests {
                 .matches("GitHub webhook worker could not resume")
                 .count(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn work_step_excludes_held_retries_and_stops_at_capacity() {
+        use contracts::api::dashboard::RefreshTrigger;
+        use contracts::common::RepoRef;
+        use db::repo::DEFAULT_TENANT;
+        use db::repo::dashboard::StartOutcome;
+        use db::repo::github::{ChangeKind, Effect, NewDelivery, Repository, WebhookChange};
+        use db::repo::users::GithubProfile;
+        use serde_json::json;
+        use uuid::Uuid;
+
+        let state = crate::state::tests::test_state().await;
+        let now = Timestamp::now();
+        state
+            .db
+            .users()
+            .upsert_member(
+                DEFAULT_TENANT,
+                "u1",
+                &GithubProfile {
+                    github_id: 3,
+                    login: "fixture".into(),
+                    name: None,
+                    avatar_url: None,
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        let dashboard = state.db.dashboard();
+        let StartOutcome::Started { refresh, .. } = dashboard
+            .start_refresh(DEFAULT_TENANT, "u1", RefreshTrigger::Manual, now)
+            .await
+            .unwrap()
+        else {
+            panic!("expected scanning refresh")
+        };
+        let repo = RepoRef {
+            owner: "acme".into(),
+            name: "code".into(),
+        };
+        dashboard
+            .store_snapshot(
+                DEFAULT_TENANT,
+                "u1",
+                refresh.id,
+                &json!({
+                    "version": crate::dashboard::snapshot::SNAPSHOT_VERSION,
+                    "pull_requests": [{"facts": {"repo": repo, "number": 1}}],
+                    "issues": []
+                }),
+                now,
+            )
+            .await
+            .unwrap();
+        let github = state.db.github();
+        let change = WebhookChange {
+            kind: ChangeKind::PullRequest,
+            repository: Repository {
+                name: repo,
+                id: None,
+            },
+            head_repository: None,
+            number: Some(1),
+            head_sha: None,
+            action: None,
+            installation_id: None,
+            base_repository: None,
+            candidate_login: None,
+        };
+        let queue = async |id: Uuid| {
+            let hash = id.simple().to_string().repeat(2);
+            github
+                .record(
+                    &NewDelivery {
+                        id,
+                        hash: &hash,
+                        event: "pull_request",
+                        action: None,
+                        installation_id: None,
+                        effect: Effect::Signal(&change.repository, std::slice::from_ref(&change)),
+                    },
+                    now,
+                )
+                .await
+                .unwrap()
+        };
+        let first = Uuid::new_v4();
+        queue(first).await;
+        let delivery = github.next_pending(now).await.unwrap().unwrap();
+        assert!(
+            github
+                .fail(&delivery, DeliveryError::Dispatch, Some(now), now)
+                .await
+                .unwrap()
+        );
+
+        let mut dispatch = Dispatcher::default();
+        // Hold the first window through all of the intake steps regardless of host load.
+        let seeded = github.next_pending(now).await.unwrap().unwrap();
+        dispatch
+            .enqueue(&state, seeded, Instant::now() + Duration::from_secs(120))
+            .await
+            .unwrap();
+        let wait = work_step(&state, &mut dispatch).await.unwrap().unwrap();
+        assert!(
+            wait > Duration::from_secs(100),
+            "held retry must not wake the worker"
+        );
+        assert_eq!(dispatch.in_flight(), [first]);
+
+        queue(Uuid::new_v4()).await;
+        let delayed = github
+            .next_pending_excluding(now, &dispatch.in_flight())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            github
+                .fail(
+                    &delayed,
+                    DeliveryError::Dispatch,
+                    Some(now + SignedDuration::from_secs(30)),
+                    now
+                )
+                .await
+                .unwrap()
+        );
+        let wait = work_step(&state, &mut dispatch).await.unwrap().unwrap();
+        assert!(wait <= Duration::from_secs(30));
+        assert_eq!(dispatch.in_flight(), [first]);
+
+        for _ in 1..=MAX_HELD {
+            queue(Uuid::new_v4()).await;
+        }
+        for _ in 1..MAX_HELD {
+            assert_eq!(
+                work_step(&state, &mut dispatch).await.unwrap(),
+                Some(Duration::ZERO)
+            );
+        }
+        assert_eq!(dispatch.in_flight().len(), MAX_HELD);
+        assert!(work_step(&state, &mut dispatch).await.unwrap().unwrap() > Duration::ZERO);
+        assert_eq!(dispatch.in_flight().len(), MAX_HELD);
+        assert!(
+            github
+                .next_pending_excluding(Timestamp::now(), &dispatch.in_flight())
+                .await
+                .unwrap()
+                .is_some()
         );
     }
 

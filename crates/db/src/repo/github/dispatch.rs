@@ -63,10 +63,11 @@ impl Github<'_> {
         .await?)
     }
 
-    /// Maps direct hints by item, checks by repository and SHA, and new candidates by member login.
+    /// Maps hints to compatible snapshots by item, named check PR or repository and head SHA.
     pub async fn dashboard_targets(
         &self,
         changes: &[WebhookChange],
+        snapshot_version: u32,
     ) -> Result<Vec<DashboardTarget>, DbError> {
         let rows: Vec<Target> = sqlx::query_as(
             "WITH signals AS MATERIALIZED (
@@ -74,6 +75,7 @@ impl Github<'_> {
                       value ->> '$.repository.id' AS repo_id,
                       value ->> '$.repository.name.owner' AS owner,
                       value ->> '$.repository.name.name' AS name,
+                      value ->> '$.base_repository.id' AS base_id,
                       value ->> '$.base_repository.name.owner' AS base_owner,
                       value ->> '$.base_repository.name.name' AS base_name,
                       value ->> '$.number' AS number, value ->> '$.head_sha' AS sha,
@@ -87,7 +89,7 @@ impl Github<'_> {
                  WHERE tenant_id = m.tenant_id AND user_id = m.user_id AND state IN ('ranking', 'finished')
                  ORDER BY started_at DESC, rowid DESC LIMIT 1
                )
-               WHERE d.snapshot ->> '$.version' = 1
+               WHERE d.snapshot ->> '$.version' = ?2
              ), items AS MATERIALIZED (
                SELECT d.tenant_id, d.user_id, lists.key = 1 AS issue,
                       item.value ->> '$.facts.repo.owner' AS owner,
@@ -108,13 +110,19 @@ impl Github<'_> {
                  AND ((s.owner = i.owner COLLATE NOCASE AND s.name = i.name COLLATE NOCASE
                        AND (r.github_id IS NULL OR s.repo_id IS NULL)) OR r.github_id = s.repo_id)
              ) OR (
-                 s.kind = 'check' AND NOT i.issue AND i.sha = s.sha COLLATE NOCASE
+                 s.kind = 'check' AND NOT i.issue
                  AND (((s.owner = i.owner COLLATE NOCASE AND s.name = i.name COLLATE NOCASE)
                        AND (r.github_id IS NULL OR s.repo_id IS NULL)) OR r.github_id = s.repo_id
                       OR (s.owner = i.head_owner COLLATE NOCASE AND s.name = i.head_name COLLATE NOCASE))
-                 AND (s.number IS NULL OR (s.number = i.number
-                       AND i.owner = COALESCE(s.base_owner, s.owner) COLLATE NOCASE
-                       AND i.name = COALESCE(s.base_name, s.name) COLLATE NOCASE))
+                 AND (
+                   (s.number = i.number AND s.base_owner IS NOT NULL
+                     AND (r.github_id = s.base_id OR (
+                       i.owner = s.base_owner COLLATE NOCASE AND i.name = s.base_name COLLATE NOCASE
+                       AND (r.github_id IS NULL OR s.base_id IS NULL))))
+                   OR (s.base_owner IS NULL AND i.sha = s.sha COLLATE NOCASE
+                       AND (s.number IS NULL OR (s.number = i.number
+                         AND i.owner = s.owner COLLATE NOCASE AND i.name = s.name COLLATE NOCASE)))
+                 )
              )
              UNION ALL
              SELECT s.position, d.tenant_id, d.user_id, s.owner, s.name, s.number, 1
@@ -130,6 +138,7 @@ impl Github<'_> {
                    AND i.owner = s.owner COLLATE NOCASE AND i.name = s.name COLLATE NOCASE)",
         )
         .bind(serde_json::to_string(changes)?)
+        .bind(snapshot_version)
         .fetch_all(self.pool)
         .await?;
         rows.into_iter()

@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
 use db::repo::github::{ChangeKind, Effect, NewDelivery, Repository, WebhookChange};
 use tokio::time::Instant;
 
@@ -15,13 +15,30 @@ struct Github {
     reviewer: &'static str,
     cost: u32,
     remaining: u32,
+    throttle_once: Arc<Mutex<Option<Timestamp>>>,
 }
 
-async fn answer(State(github): State<Github>, Json(body): Json<Value>) -> Json<Value> {
+async fn answer(State(github): State<Github>, Json(body): Json<Value>) -> (HeaderMap, Json<Value>) {
     let document = body["query"].as_str().unwrap();
     github.queries.lock().unwrap().push(document.to_owned());
+    let mut headers = HeaderMap::new();
+    if let Some(reset) = github.throttle_once.lock().unwrap().take() {
+        headers.insert(
+            "x-ratelimit-reset",
+            reset.as_second().to_string().parse().unwrap(),
+        );
+        return (
+            headers,
+            Json(
+                json!({"data": null, "errors": [{"type": "RATE_LIMITED", "message": "fixture limit"}]}),
+            ),
+        );
+    }
     if !document.contains("a0: repository") {
-        return Json(json!({"errors": [{"type": "NOT_FOUND", "message": "no review fixture"}]}));
+        return (
+            headers,
+            Json(json!({"errors": [{"type": "NOT_FOUND", "message": "no review fixture"}]})),
+        );
     }
     let mut data = json!({"rateLimit": {
         "cost": github.cost, "remaining": github.remaining, "resetAt": "2099-01-01T00:00:00Z"
@@ -60,12 +77,12 @@ async fn answer(State(github): State<Github>, Json(body): Json<Value>) -> Json<V
             json!({"issue": {"state": "OPEN", "title": "Changed issue", "body": "new body",
                 "author": {"login":"bob"}, "createdAt": "2026-11-01T00:00:00Z",
                 "updatedAt": "2026-11-18T08:55:00Z", "labels": {"nodes": [{"name":"bug"}]},
-                "assignees": {"nodes": [{"login":"alice"}]}, "comments": {"totalCount": 7},
+                "assignees": {"nodes": []}, "comments": {"totalCount": 7},
                 "milestone": null, "repository": {"isPrivate": true} }})
         };
         data[format!("a{i}")] = value;
     }
-    Json(json!({"data": data}))
+    (headers, Json(json!({"data": data})))
 }
 
 async fn setup(reviewer: &'static str, cost: u32, remaining: u32) -> (Harness, Github) {
@@ -74,6 +91,7 @@ async fn setup(reviewer: &'static str, cost: u32, remaining: u32) -> (Harness, G
         reviewer,
         cost,
         remaining,
+        throttle_once: Arc::default(),
     };
     let app = Router::new()
         .route("/graphql", post(answer))
@@ -296,6 +314,7 @@ async fn issue_event_rereads_issue() {
     let stored = read(&h, "u1").await;
     assert_eq!(stored.issues[0].facts.title, "Changed issue");
     assert_eq!(stored.issues[0].comments, 7);
+    assert_eq!(stored.issues[0].facts.relations, [Relation::Assigned]);
     assert_eq!(stored.issues[1].facts.title, "Unchanged");
 }
 
@@ -348,6 +367,7 @@ async fn event_reads_stop_at_hourly_budget() {
         let (h, github) = setup("alice", cost, remaining).await;
         seed(&h, "u1", &snapshot(prs(1), vec![], vec![])).await;
         seed(&h, "u2", &snapshot(vec![pr(2, "Old")], vec![], vec![])).await;
+        let (logs, _guard) = crate::test_support::logs::LogCapture::start_scoped();
         let mut d = Dispatcher::default();
         let start = Instant::now();
         for (offset, number) in [1, 1, 2, 1].into_iter().enumerate() {
@@ -363,6 +383,15 @@ async fn event_reads_stop_at_hourly_budget() {
         }
         let count = github.queries.lock().unwrap().len();
         assert_eq!(count, 2);
+        let logs = logs.text();
+        assert!(
+            logs.lines().any(
+                |line| line.contains("GitHub webhook dashboard reads skipped")
+                    && line.contains("budget")
+                    && line.contains("acme/wallet-ui#1")
+            ),
+            "{logs}"
+        );
         let at = start + Duration::from_secs(3611);
         enqueue(
             &h,
@@ -520,15 +549,12 @@ async fn at_most_20_event_items_per_day() {
     assert!(read(&h, "u1").await.pull_requests.is_empty());
 }
 
-#[tokio::test]
-async fn watched_pr_probe_at_most_once_per_minute() {
+async fn watch_pr(h: &Harness, number: u32, watchers: &[&str], wall: Timestamp) {
     use crate::review_loop::watch::WATCH_LIMIT;
     use contracts::api::pr::PrSummary;
     use contracts::ids::CommitSha;
 
-    let (h, github) = setup("alice", 1, 4000).await;
     let repo = repo("wallet-ui");
-    let wall = Timestamp::now();
     let row = h
         .db()
         .repos()
@@ -543,10 +569,10 @@ async fn watched_pr_probe_at_most_once_per_minute() {
             row.id,
             &PrSummary {
                 repo: repo.clone(),
-                number: 1,
+                number,
                 title: "Watched".into(),
                 author: "bob".into(),
-                html_url: "https://github.com/acme/wallet-ui/pull/1".into(),
+                html_url: format!("https://github.com/acme/wallet-ui/pull/{number}"),
                 head_sha: CommitSha("a".repeat(40)),
                 base_sha: CommitSha("b".repeat(40)),
             },
@@ -554,7 +580,7 @@ async fn watched_pr_probe_at_most_once_per_minute() {
         )
         .await
         .unwrap();
-    for user in ["u1", "u2"] {
+    for user in watchers {
         h.db()
             .review_loop()
             .watch(DEFAULT_TENANT, user, pr_id, WATCH_LIMIT, wall)
@@ -579,6 +605,14 @@ async fn watched_pr_probe_at_most_once_per_minute() {
         .record_installation_lookup(&repo, Some((42, false)), wall)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn watched_pr_probe_at_most_once_per_minute() {
+    let (h, github) = setup("alice", 1, 4000).await;
+    let repo = repo("wallet-ui");
+    let wall = Timestamp::now();
+    watch_pr(&h, 1, &["u1", "u2"], wall).await;
     let mut d = Dispatcher::default();
     let start = Instant::now();
     for (offset, kind) in [
@@ -657,4 +691,254 @@ async fn event_item_waits_behind_dedicated_rejudge() {
     assert!(next.round > first.round);
     h.ranked("u1", id).await;
     assert!(!read(&h, "u1").await.event_ranking_pending);
+}
+
+#[tokio::test]
+async fn event_during_scan_rereads_the_replacement_snapshot() {
+    let (h, github) = setup("alice", 1, 4000).await;
+    seed(
+        &h,
+        "u1",
+        &snapshot(vec![pr(1, "Before scan")], vec![], vec![]),
+    )
+    .await;
+    let dashboard = h.db().dashboard();
+    let StartOutcome::Started { refresh, .. } = dashboard
+        .start_refresh(
+            DEFAULT_TENANT,
+            "u1",
+            RefreshTrigger::Manual,
+            now() + SignedDuration::from_secs(1),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("expected scanning refresh")
+    };
+    let mut d = Dispatcher::default();
+    let at = Instant::now();
+    enqueue(
+        &h,
+        &mut d,
+        at,
+        signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(1)),
+    )
+    .await;
+    flush(&h, &mut d, at + WINDOW).await;
+    assert!(github.queries.lock().unwrap().is_empty());
+    assert!(h.db().github().next_pending(now()).await.unwrap().is_some());
+    dashboard
+        .store_snapshot(
+            DEFAULT_TENANT,
+            "u1",
+            refresh.id,
+            &snapshot(vec![pr(1, "Scan read before event")], vec![], vec![]),
+            now(),
+        )
+        .await
+        .unwrap();
+    flush(&h, &mut d, at + WINDOW * 2).await;
+    assert_eq!(
+        read(&h, "u1").await.pull_requests[0].facts.title,
+        "Changed pull request 1"
+    );
+    assert!(h.db().github().next_pending(now()).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn explicit_base_check_rereads_pr_with_stale_head() {
+    let (h, github) = setup("alice", 1, 4000).await;
+    seed(&h, "u1", &snapshot(prs(1), vec![], vec![])).await;
+    let mut d = Dispatcher::default();
+    let at = Instant::now();
+    let mut check = signal(ChangeKind::Check, repo("wallet-ui"), Some(1));
+    check.head_sha = Some("b".repeat(40));
+    check.base_repository = Some(check.repository.clone());
+    enqueue(&h, &mut d, at, check).await;
+    flush(&h, &mut d, at + WINDOW).await;
+    assert_eq!(github.queries.lock().unwrap().len(), 1);
+    assert_eq!(
+        read(&h, "u1").await.pull_requests[0].facts.title,
+        "Changed pull request 1"
+    );
+}
+
+#[tokio::test]
+async fn sha_only_check_matches_the_base_repository_of_a_fork() {
+    assert_eq!(fork_check("acme").await, 1);
+}
+
+#[tokio::test]
+async fn new_item_allowance_resets_at_local_midnight() {
+    let (mut h, github) = setup("alice", 1, 4000).await;
+    let mut config = h
+        .db()
+        .dashboard()
+        .settings(DEFAULT_TENANT, "u1")
+        .await
+        .unwrap()
+        .unwrap()
+        .settings;
+    config.time_zone = Some("Europe/Warsaw".into());
+    h.db()
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, "u1", &config, now())
+        .await
+        .unwrap();
+    let before_midnight: Timestamp = "2026-11-18T22:59:00Z".parse().unwrap();
+    let mut snap = snapshot(vec![], vec![], vec![]);
+    snap.event_additions = vec![before_midnight; 20];
+    let id = seed(&h, "u1", &snap).await;
+    let mut d = Dispatcher::default();
+    let at = Instant::now();
+    h.state.dashboard = DashboardHub::testing(
+        Clock::starting_at(before_midnight),
+        SCAN_LIMIT,
+        Arc::new(JudgeRanker),
+        Duration::ZERO,
+    );
+    enqueue(&h, &mut d, at, candidate(21)).await;
+    flush(&h, &mut d, at + WINDOW).await;
+    assert!(github.queries.lock().unwrap().is_empty());
+    let midnight = before_midnight + SignedDuration::from_mins(1);
+    h.state.dashboard = DashboardHub::testing(
+        Clock::starting_at(midnight),
+        SCAN_LIMIT,
+        Arc::new(JudgeRanker),
+        Duration::ZERO,
+    );
+    enqueue(&h, &mut d, at + WINDOW, candidate(21)).await;
+    flush(&h, &mut d, at + WINDOW * 2).await;
+    assert_eq!(read(&h, "u1").await.event_additions.len(), 1);
+    let (_, input) = h.serve(|i| succeeded(neutral(i))).await;
+    assert_eq!(input.items[0].key, key(21));
+    h.ranked("u1", id).await;
+}
+
+#[tokio::test]
+async fn watch_windows_survive_rate_limit_until_reset() {
+    let (h, github) = setup("alice", 1, 4000).await;
+    let wall = Timestamp::now();
+    *github.throttle_once.lock().unwrap() = Some(wall + SignedDuration::from_secs(90));
+    watch_pr(&h, 1, &["u1"], wall).await;
+    watch_pr(&h, 2, &["u1"], wall).await;
+    let mut d = Dispatcher::default();
+    let at = Instant::now();
+    for (number, offset) in [(1, 0), (2, 20)] {
+        enqueue(
+            &h,
+            &mut d,
+            at + Duration::from_secs(offset),
+            signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(number)),
+        )
+        .await;
+        d.flush(
+            &h.state,
+            at + Duration::from_secs(offset + 10),
+            wall + SignedDuration::from_secs(offset as i64 + 10),
+        )
+        .await
+        .unwrap();
+        assert_eq!(d.in_flight().len(), number as usize);
+        assert_eq!(github.queries.lock().unwrap().len(), 1);
+    }
+    d.flush(
+        &h.state,
+        at + Duration::from_secs(91),
+        wall + SignedDuration::from_secs(91),
+    )
+    .await
+    .unwrap();
+    assert!(d.in_flight().is_empty());
+    assert_eq!(github.queries.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn comment_flood_on_watched_pr_stays_within_event_budget() {
+    for (cost, remaining) in [(1000, 4000), (1, 999)] {
+        let (h, github) = setup("alice", cost, remaining).await;
+        seed(&h, "u1", &snapshot(prs(1), vec![], vec![])).await;
+        let wall = Timestamp::now();
+        watch_pr(&h, 2, &["u1"], wall).await;
+        let mut d = Dispatcher::default();
+        let at = Instant::now();
+        enqueue(
+            &h,
+            &mut d,
+            at,
+            signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(1)),
+        )
+        .await;
+        flush(&h, &mut d, at + WINDOW).await;
+        for offset in [20, 90, 160] {
+            let later = at + Duration::from_secs(offset);
+            enqueue(
+                &h,
+                &mut d,
+                later,
+                signal(ChangeKind::PullRequestReview, repo("wallet-ui"), Some(2)),
+            )
+            .await;
+            d.flush(
+                &h.state,
+                later + WINDOW,
+                wall + SignedDuration::from_secs(offset as i64 + 10),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(github.queries.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn watch_probe_charges_shared_budget_and_gates_the_full_read() {
+    for (cost, remaining, kind) in [
+        (1000, 4000, ChangeKind::PullRequest),
+        (1, 999, ChangeKind::PullRequestReview),
+    ] {
+        let (h, github) = setup("alice", cost, remaining).await;
+        seed(&h, "u1", &snapshot(prs(1), vec![], vec![])).await;
+        let wall = Timestamp::now();
+        watch_pr(&h, 2, &["u1"], wall).await;
+        let mut d = Dispatcher::default();
+        let at = Instant::now();
+        enqueue(&h, &mut d, at, signal(kind, repo("wallet-ui"), Some(2))).await;
+        d.flush(&h.state, at + WINDOW, wall + SignedDuration::from_secs(10))
+            .await
+            .unwrap();
+        enqueue(
+            &h,
+            &mut d,
+            at + WINDOW,
+            signal(ChangeKind::PullRequest, repo("wallet-ui"), Some(1)),
+        )
+        .await;
+        flush(&h, &mut d, at + WINDOW * 2).await;
+        assert_eq!(github.queries.lock().unwrap().len(), 1);
+        assert_eq!(
+            read(&h, "u1").await.pull_requests[0].facts.title,
+            "feat(ui): screen 1"
+        );
+
+        if remaining < 1000 {
+            assert_eq!(
+                d.in_flight().len(),
+                1,
+                "the deferred review delivery was dropped"
+            );
+            d.flush(
+                &h.state,
+                at + Duration::from_secs(3960),
+                wall + SignedDuration::from_secs(3960),
+            )
+            .await
+            .unwrap();
+            assert!(d.in_flight().is_empty(), "the deferral must be bounded");
+            assert!(
+                h.db().github().next_retry(now()).await.unwrap().is_some(),
+                "the delivery should enter the durable retry ladder"
+            );
+        }
+    }
 }

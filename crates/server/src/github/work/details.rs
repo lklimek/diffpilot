@@ -304,7 +304,6 @@ pub(crate) struct IssueDetail {
     pub(crate) title: String,
     pub(crate) body: String,
     pub(crate) author: Option<Actor>,
-    pub(crate) assignees: Nodes<Login>,
     pub(crate) labels: Nodes<Name>,
     pub(crate) milestone: Option<Milestone>,
     pub(crate) created_at: Timestamp,
@@ -507,7 +506,7 @@ impl<T: TokenSource> WorkClient<T> {
                     &format!(
                         "isPrivate issue(number: {}) {{ state title body
                  author {{ login }} labels(first: 20) {{ nodes {{ name }} }}
-                 assignees(first: 20) {{ nodes {{ login }} }} comments {{ totalCount }}
+                 comments {{ totalCount }}
                  milestone {{ title number state }} createdAt updatedAt }}",
                         issue.number
                     ),

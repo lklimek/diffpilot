@@ -12,14 +12,19 @@ use uuid::Uuid;
 use super::worker;
 use crate::dashboard::plugin::PrKey;
 use crate::dashboard::refresh::{Scope, event};
+use crate::dashboard::snapshot::SNAPSHOT_VERSION;
 use crate::github::work::{EventBudget, ItemRef};
 use crate::review_loop::watch;
 use crate::state::AppState;
 
 const WINDOW: Duration = Duration::from_secs(10);
+const SCAN_RECHECK: Duration = Duration::from_secs(2);
+// Covers an hourly limit reset and one probe interval while bounding time in flight.
+const WATCH_DEFERRAL_LIMIT: Duration = Duration::from_secs(65 * 60);
 pub(super) const MAX_HELD: usize = 256;
 
 struct Window<T> {
+    opened: Instant,
     due: Instant,
     deliveries: Vec<Uuid>,
     work: T,
@@ -28,6 +33,7 @@ struct Window<T> {
 impl<T: Default> Window<T> {
     fn new(now: Instant) -> Self {
         Self {
+            opened: now,
             due: now + WINDOW,
             deliveries: Vec::new(),
             work: T::default(),
@@ -82,7 +88,7 @@ impl Dispatcher {
         }
         let github = state.db.github();
         let (targets, watched) = tokio::join!(
-            github.dashboard_targets(&delivery.changes),
+            github.dashboard_targets(&delivery.changes, SNAPSHOT_VERSION),
             github.watch_targets(&delivery.changes),
         );
         let (Ok(targets), Ok(watched)) = (targets, watched) else {
@@ -158,22 +164,27 @@ impl Dispatcher {
             .map(|(scope, _)| scope.clone())
             .collect();
         for scope in scopes {
-            if let Some(window) = self.users.remove(&scope) {
+            if let Some(mut window) = self.users.remove(&scope) {
                 let budget = self
                     .budgets
                     .entry(scope.user_id.clone())
                     .or_default()
                     .clone();
-                let error = event::reread_items(
+                match event::reread_items(
                     state,
                     &scope,
-                    window.work,
+                    &window.work,
                     budget,
                     now + started.elapsed(),
                 )
                 .await
-                .err();
-                self.finished(window.deliveries, error.is_some());
+                {
+                    Ok(event::EventRead::Scanning) => {
+                        window.due = now + started.elapsed() + SCAN_RECHECK;
+                        self.users.insert(scope, window);
+                    }
+                    result => self.finished(window.deliveries, result.is_err()),
+                }
             }
         }
 
@@ -188,12 +199,18 @@ impl Dispatcher {
                 let elapsed = started.elapsed();
                 let at =
                     jiff::SignedDuration::try_from(elapsed).map_or(wall, |elapsed| wall + elapsed);
-                match watch::event_probe(state, pr, at, window.work).await {
-                    Ok(Some(delay)) => {
-                        window.due = now + started.elapsed() + delay;
+                let instant = now + elapsed;
+                let deadline = window.opened + WATCH_DEFERRAL_LIMIT;
+                match watch::event_probe(state, pr, at, window.work, &mut self.budgets, instant)
+                    .await
+                {
+                    Ok(Some(delay)) if instant < deadline => {
+                        window.due =
+                            instant + delay.min(deadline.saturating_duration_since(instant));
                         self.watches.insert(pr, window);
                     }
-                    result => self.finished(window.deliveries, result.is_err()),
+                    Ok(None) => self.finished(window.deliveries, false),
+                    _ => self.finished(window.deliveries, true),
                 }
             }
         }

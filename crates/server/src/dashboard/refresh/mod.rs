@@ -111,6 +111,8 @@ pub async fn start(
     trigger: RefreshTrigger,
     rejudge_outdated: bool,
 ) -> Result<RefreshStatus, StartError> {
+    // Order the transition to Scanning with targeted reads and their snapshot writes.
+    let _writer = state.dashboard.readers().writer(scope).await;
     let now = state.dashboard.now();
     let dashboard = state.db.dashboard();
     let limited = dashboard
