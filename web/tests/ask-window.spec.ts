@@ -8,6 +8,10 @@ test("position can be dragged, restored, moved by keyboard or chosen from the me
   await page.goto(flow);
   await page.getByRole("button", { name: launcher }).click();
   const chat = page.getByRole("dialog", { name: "Ask" });
+  const barBottom = async () => {
+    const bar = (await page.getByRole("banner").boundingBox())!;
+    return bar.y + bar.height;
+  };
   const grip = chat.getByRole("button", { name: /^Move the Ask window/ });
   const start = (await chat.boundingBox())!;
   await grip.press("ArrowLeft");
@@ -23,10 +27,11 @@ test("position can be dragged, restored, moved by keyboard or chosen from the me
   await page.mouse.up();
   const dragPosition = (await chat.boundingBox())!;
   expect(dragPosition.x).toBeLessThan(moved.x);
-  expect(dragPosition.y).toBeGreaterThanOrEqual(0);
-  await chat.getByRole("separator", { name: /^Chat height/ }).press("ArrowUp");
+  expect(dragPosition.y).toBeGreaterThanOrEqual(await barBottom());
+  await chat.getByRole("separator", { name: /^Chat height/ }).press("ArrowDown");
   const dragged = (await chat.boundingBox())!;
   expect(dragged.height).toBe(dragPosition.height + 20);
+  expect(dragged.y).toBe(dragPosition.y);
 
   await page.reload();
   await expect(chat).toBeVisible();
@@ -45,13 +50,74 @@ test("position can be dragged, restored, moved by keyboard or chosen from the me
   await position.click();
   await chat.getByRole("menuitemradio", { name: "Top left" }).click();
   expect((await chat.boundingBox())!.x).toBeLessThan(20);
-  expect((await chat.boundingBox())!.y).toBeLessThan(20);
+  expect((await chat.boundingBox())!.y).toBeGreaterThanOrEqual(await barBottom());
+  await position.click();
+  await chat.getByRole("menuitemradio", { name: "Top right" }).click();
+  const topRight = (await chat.boundingBox())!;
+  expect(topRight.x + topRight.width).toBeGreaterThan(1420);
+  expect(topRight.y).toBeGreaterThanOrEqual(await barBottom());
+  await position.click();
+  await chat.getByRole("menuitemradio", { name: "Top left" }).click();
   await chat.getByRole("button", { name: "Full height" }).click();
   expect((await chat.boundingBox())!.x).toBeLessThan(20);
+  expect((await chat.boundingBox())!.y).toBeGreaterThanOrEqual(await barBottom());
   await grip.press("Home");
   expect((await chat.boundingBox())!.x).toBe(start.x);
   await grip.dblclick();
   expect(await chat.boundingBox()).toEqual(start);
+});
+
+test("resizing at a top-left preset moves the right and bottom edges", async ({ page }) => {
+  await page.goto(flow);
+  await page.getByRole("button", { name: launcher }).click();
+  const chat = page.getByRole("dialog", { name: "Ask" });
+  await chat.getByRole("button", { name: "Position" }).click();
+  await chat.getByRole("menuitemradio", { name: "Top left" }).click();
+  const before = (await chat.boundingBox())!;
+  const width = chat.getByRole("separator", { name: /^Chat width/ });
+  const height = chat.getByRole("separator", { name: /^Chat height/ });
+  expect((await width.boundingBox())!.x).toBeCloseTo(before.x + before.width - 5, 0);
+  expect((await height.boundingBox())!.y).toBeCloseTo(before.y + before.height - 5, 0);
+  await width.press("ArrowRight");
+  await height.press("ArrowDown");
+  expect(await chat.boundingBox()).toEqual({
+    ...before,
+    width: before.width + 20,
+    height: before.height + 20,
+  });
+  const corner = (await chat.locator("[data-resize-corner]").boundingBox())!;
+  await page.mouse.move(corner.x + corner.width / 2, corner.y + corner.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(corner.x + corner.width / 2 + 20, corner.y + corner.height / 2 + 20);
+  await page.mouse.up();
+  expect(await chat.boundingBox()).toEqual({
+    ...before,
+    width: before.width + 40,
+    height: before.height + 40,
+  });
+});
+
+test("the unread badge persists until an out-of-view answer is reached", async ({ page }) => {
+  await page.addInitScript((id) => {
+    localStorage.setItem(`diffpilot.askChat.seen.alice.${id}`, JSON.stringify({ ids: ["t2", "t3"] }));
+    localStorage.setItem("diffpilot.ask.geometry", JSON.stringify({ height: 240, width: 460, full: false }));
+  }, ANALYSIS_ID);
+  await page.goto(flow);
+  const badge = page.getByRole("button", { name: /^Ask 1 new answer: open your private chat/ });
+  const chat = page.getByRole("dialog", { name: "Ask" });
+  const jump = chat.getByRole("button", { name: "↓ New answer" });
+  const hide = chat.getByRole("button", { name: "Hide the Ask chat" });
+  await badge.click();
+  await expect(jump).toBeVisible();
+  await hide.click();
+  await expect(badge).toBeVisible();
+  await badge.click();
+  await jump.click();
+  await expect(chat.getByText("2. The client retries.")).toBeInViewport();
+  await expect(jump).toBeHidden();
+  await hide.click();
+  await expect(page.getByRole("button", { name: launcher })).toBeVisible();
+  await expect(badge).toBeHidden();
 });
 
 test("the phone sheet opens at half height and expands without desktop controls", async ({ page }) => {
@@ -110,8 +176,16 @@ for (const view of ["Flows", "Files"] as const) {
                 },
         },
       ]);
-    const anchor = chat.locator("[data-thread]").last().getByRole("button", { name: "Remark · line 99" });
+    const anchor = chat
+      .locator("[data-thread]")
+      .last()
+      .getByRole("button", {
+        name: /^Remark · line 99.*src\/rpc\/client\.rs:99/,
+      });
     await expect(anchor).toBeVisible();
+    await expect(anchor).toHaveAccessibleDescription(/src\/rpc\/client\.rs:99/);
+    await anchor.focus();
+    await expect(chat.getByRole("tooltip").filter({ hasText: "src/rpc/client.rs:99" })).toBeVisible();
     await chat.getByRole("button", { name: "Hide the Ask chat" }).click();
     await expect(marker).toBeFocused();
     await marker.click();

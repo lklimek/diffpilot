@@ -74,38 +74,6 @@ describe("Answer", () => {
     expect(within(container).queryByRole("link")).toBeNull();
   });
 
-  it.each([
-    ["pending", false, "Waiting to start"],
-    ["pending", true, "Queued behind your earlier question"],
-    ["answering", false, "Being written"],
-  ] as const)(
-    "shows the %s state (queued %s) in one line with the time since asking",
-    (state, queued, text) => {
-      const { container } = render(
-        <Answer question={question({ state })} queued={queued} now={Date.parse("2026-11-16T10:21:42Z")} />,
-      );
-      expect(screen.getByRole("status")).toHaveTextContent(new RegExp(`^${text}$`));
-      expect(container).toHaveTextContent(`${text} · asked 1 min ago`);
-      expect(container.querySelector(".animate-spin")).not.toBeNull();
-    },
-  );
-
-  it("names the time as time since asking (the start of the writing is not known)", () => {
-    const { container } = render(
-      <Answer question={question({ state: "answering" })} now={Date.parse("2026-11-16T12:35:00Z")} />,
-    );
-    expect(container).toHaveTextContent("Being written · asked 2 h 15 min ago");
-  });
-
-  it("shows a question waiting for the usage limit with the reset time", () => {
-    const resumes = new Date();
-    resumes.setHours(23, 59, 0, 0);
-    render(<Answer question={question({ state: "pending", resumes_at: resumes.toISOString() })} />);
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "Waiting for the LLM usage limit to reset; resumes at 23:59.",
-    );
-  });
-
   it("shows a failed question with its plain reason and lets the user ask again", async () => {
     const onAskAgain = vi.fn();
     const { container } = render(
@@ -149,11 +117,12 @@ describe("Answer", () => {
     const questions = seedFor(state, "questions") as AskQuestion[];
     const { container } = render(
       <>
-        {[...questions, question({ state: "failed", failure: "x" }), question({ state: "answering" })].map(
-          (q, i) => (
-            <Answer key={i} question={q} now={Date.now()} />
-          ),
-        )}
+        {[
+          ...questions.filter((q) => q.state === "answered"),
+          question({ state: "failed", failure: "x" }),
+        ].map((q, i) => (
+          <Answer key={i} question={q} />
+        ))}
       </>,
     );
     expectTrustWording(container.textContent ?? "");

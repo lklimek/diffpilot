@@ -130,8 +130,15 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
     const conversation = within(chat()).getByRole("region", { name: "Conversation, oldest first" });
     conversation.getBoundingClientRect = () => ({ top: 0, bottom: 200 }) as DOMRect;
     const outcome = last().querySelector<HTMLElement>("[data-ask-outcome]")!;
-    outcome.getBoundingClientRect = () => ({ top: 20, bottom: 80, height: 60 }) as DOMRect;
+    outcome.getBoundingClientRect = () => ({ top: -100, bottom: -40, height: 60 }) as DOMRect;
     fireEvent.scroll(conversation);
+    const jump = await within(chat()).findByRole("button", { name: "↓ New answer" });
+    outcome.scrollIntoView = vi.fn(() => {
+      outcome.getBoundingClientRect = () => ({ top: 20, bottom: 80, height: 60 }) as DOMRect;
+    });
+    await user().click(jump);
+    expect(outcome.scrollIntoView).toHaveBeenCalledOnce();
+    await waitFor(() => expect(jump).not.toBeInTheDocument());
     await user().click(within(chat()).getByRole("button", { name: "Hide the Ask chat" }));
     expect(launcher()).toHaveAccessibleName(/^Ask: open your private chat about this PR$/);
   });
@@ -172,7 +179,16 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
       failure: "the LLM did not finish.",
       created_at: "2026-11-16T10:00:00Z",
     };
-    let listed: AskQuestion[] = [failed];
+    const later: AskQuestion = {
+      ...failed,
+      id: "later",
+      text: "What happened later?",
+      state: "answered",
+      answer: { answer: "Another answer.", evidence: [] },
+      failure: null,
+      created_at: "2026-11-16T10:02:00Z",
+    };
+    let listed: AskQuestion[] = [failed, later];
     server.use(http.get("/api/v1/analyses/:id/questions", () => HttpResponse.json(listed)));
     const seen = captureAsk();
     try {
@@ -186,15 +202,28 @@ describe("Ask chat in the review (proposal AC1, AC4, AC6, AC8, AC11)", () => {
       expect(within(thread).getByRole("button", { name: "Ask again" })).toHaveAccessibleDescription(
         /its new answer takes the place of this one/,
       );
+      expect(within(thread).getByRole("button", { name: "Hide Q1" })).toBeVisible();
       await user().click(within(thread).getByRole("button", { name: "Ask again" }));
       await waitFor(() => expect(seen.bodies).toHaveLength(1));
       expect(seen.bodies[0]).toEqual({ text: "Does it retry twice?", anchor: failed.anchor });
       listed = [
         failed,
+        later,
         { ...failed, id: "f2", state: "pending", failure: null, created_at: "2026-11-16T10:05:00Z" },
       ];
       await waitFor(() => expect(chat().querySelector('[data-thread="f1"]')).toBeNull());
-      expect(chat().querySelectorAll("[data-thread]")).toHaveLength(1);
+      const checkNumbers = () => {
+        const [first, second] = chat().querySelectorAll<HTMLElement>("[data-thread]");
+        expect(first).toHaveTextContent(failed.text);
+        expect(within(first!).getByRole("button", { name: "Hide Q1" })).toBeVisible();
+        expect(second).toHaveTextContent(later.text);
+        expect(within(second!).getByRole("button", { name: "Hide Q2" })).toBeVisible();
+        expect(chat().querySelectorAll("[data-thread]")).toHaveLength(2);
+      };
+      checkNumbers();
+      cleanup();
+      await openTour("#f1.5");
+      await waitFor(checkNumbers);
     } finally {
       seen.stop();
     }

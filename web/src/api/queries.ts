@@ -24,6 +24,7 @@ import type {
 } from "./generated/types";
 import { api } from "./client";
 import { reviewStates } from "./review-state";
+import { withoutRetried } from "./questionHistory";
 
 /** The signed-in user and CSRF token. */
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: api.getMe });
@@ -105,26 +106,6 @@ function arrive(client: QueryClient, id: AnalysisId, question: AskQuestion, repl
     a.at.set(question.id, a.seq);
     return [...all.filter((q) => q.id !== question.id), question];
   });
-}
-
-/**
- * The questions without failed ones asked again: a failed question gives way to a later one with the same text,
- * subject and thread ("Ask again"), unless follow-ups hang on it.
- */
-export function withoutRetried(questions: readonly AskQuestion[]): AskQuestion[] {
-  const key = (q: AskQuestion) => JSON.stringify([q.text, q.anchor, q.parent_id ?? null]);
-  const parents = new Set(questions.flatMap((q) => (q.parent_id ? [q.parent_id] : [])));
-  return questions.filter(
-    (q) =>
-      q.state !== "failed" ||
-      parents.has(q.id) ||
-      !questions.some(
-        (later) =>
-          later.id !== q.id &&
-          key(later) === key(q) &&
-          Date.parse(later.created_at) > Date.parse(q.created_at),
-      ),
-  );
 }
 
 /**

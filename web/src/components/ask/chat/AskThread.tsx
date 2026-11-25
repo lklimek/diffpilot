@@ -6,7 +6,7 @@ import { growField, useAction } from "../../inspector/action";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { Answer } from "../Answer";
 import type { AskChatProps } from "./AskChat";
-import { hasLines, remarkLines, type ChatThread } from "./model";
+import { hasLines, remarkLines, remarkQuote, type ChatThread } from "./model";
 
 // The server's message says what to do; a hint is added only to a retryable failure whose message has none.
 const RETRY_LATER = new Set(["unavailable", "rate_limited"]);
@@ -139,10 +139,12 @@ function QuestionState({
   question,
   waitsFor,
   answeringSince,
+  live,
 }: {
   question: AskQuestion;
   waitsFor?: string;
   answeringSince?: number;
+  live: boolean;
 }) {
   const { state, resumes_at: resumes } = question;
   if (state === "answered" || state === "failed") {
@@ -150,14 +152,14 @@ function QuestionState({
   }
   if (state === "answering") {
     return (
-      <span role="status" className="text-accent">
+      <span role={live ? "status" : undefined} className="text-accent">
         ◔ answering
         {answeringSince !== undefined && ` since ${timeOf(new Date(answeringSince).toISOString())}`}
       </span>
     );
   }
   return (
-    <span role="status">
+    <span role={live ? "status" : undefined}>
       ◌{" "}
       {resumes
         ? `usage limit · resumes at ${clockText(resumes)}`
@@ -211,15 +213,23 @@ export function AskThread(props: ThreadProps) {
   const body = useId();
   const subject = describe(root.anchor);
   const remark = remarkLines(root.text, root.anchor);
-  const state = (q: AskQuestion) => (
-    <QuestionState question={q} waitsFor={waitsFor(q)} answeringSince={answeringSince(q)} />
+  const summary = root.text.replace(remarkQuote, "").trim() || root.text;
+  const questions = [root, ...followUps];
+  const active =
+    questions.findLast((q) => q.state === "answering") ??
+    questions.findLast((q) => q.state === "pending") ??
+    questions.findLast((q) => q.state === "failed") ??
+    root;
+  const chip = remark ? `Remark · ${remark}` : subject.text;
+  const state = (q: AskQuestion, live = false) => (
+    <QuestionState question={q} waitsFor={waitsFor(q)} answeringSince={answeringSince(q)} live={live} />
   );
   return (
     <li
       ref={register}
       data-thread={root.id}
       tabIndex={-1}
-      aria-label={`Question: ${root.text}`}
+      aria-label={`Question: ${summary}`}
       className="min-w-0 scroll-m-2 rounded-lg border border-border focus-visible:outline-3 focus-visible:outline-focus"
     >
       <div className="flex min-w-0 items-center gap-x-1.5 rounded-t-lg bg-surface-2 px-1 py-1 text-[11.5px] text-muted">
@@ -238,18 +248,22 @@ export function AskThread(props: ThreadProps) {
           </button>
         </Tooltip>
         <span className="shrink-0 font-bold text-text">{number}</span>
-        <Tooltip tip={subject.tip} className="min-w-0">
+        <Tooltip
+          tip={subject.fileLabel ? `${subject.fileLabel} · ${subject.tip}` : subject.tip}
+          className="min-w-0"
+        >
           <button
             type="button"
+            aria-label={subject.fileLabel ? `${chip} · ${subject.fileLabel}` : undefined}
             onClick={() => props.onGoto(root.anchor)}
             className="block min-h-6 max-w-full cursor-pointer truncate rounded-[10px] border border-border bg-surface px-1.5 text-left text-accent hover:border-accent hover:underline"
           >
-            {remark ? `Remark · ${remark}` : subject.text}
+            {chip}
           </button>
         </Tooltip>
-        <span className="min-w-0 flex-1 truncate">{!expanded && `“${root.text}”`}</span>
+        <span className="min-w-0 flex-1 truncate">{!expanded && `“${summary}”`}</span>
         {fresh && <span className="shrink-0 font-semibold text-text">new</span>}
-        <span className="shrink text-right">{state(root)}</span>
+        <span className="shrink text-right">{state(active, true)}</span>
         <time
           dateTime={root.created_at}
           title={`Asked by you · ${dateTimeText(root.created_at)}`}

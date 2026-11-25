@@ -85,8 +85,14 @@ describe("AskChat (proposal AC3–AC10)", () => {
       .filter((li) => li.dataset.thread);
     expect(threads.map((t) => t.dataset.thread)).toEqual(["a", "c"]);
     const chip = within(threads[0]!).getByRole("button", {
-      name: "Step 1.5 · client.rs 99",
+      name: "Step 1.5 · client.rs 99 · src/rpc/client.rs:99 (new code)",
     });
+    expect(chip).toHaveTextContent("Step 1.5 · client.rs 99");
+    expect(chip).toHaveAccessibleDescription(/src\/rpc\/client\.rs:99 \(new code\)/);
+    const subject = within(within(chat()).getByRole("form", { name: "New question" })).getByLabelText(
+      "Step 1.5 · client.rs 99 · src/rpc/client.rs:99 (new code)",
+    );
+    expect(subject).toHaveAccessibleDescription(/src\/rpc\/client\.rs:99/);
     fireEvent.click(chip);
     expect(onGoto).toHaveBeenCalledWith(STEP);
     expect(within(threads[1]!).getByRole("button", { name: "Whole PR" })).toBeVisible();
@@ -361,21 +367,27 @@ describe("AskChat (proposal AC3–AC10)", () => {
     const item = chat().querySelector<HTMLElement>('[data-thread="c"]')!;
     item.getBoundingClientRect = () => ({ top: 900, bottom: 960 }) as DOMRect;
     list.getBoundingClientRect = () => ({ top: 0, bottom: 200 }) as DOMRect;
-    const scrolled = vi.fn();
-    item.scrollIntoView = scrolled;
-    // Use the answer's location even if its card is partly on screen.
+    let visible = false;
+    const scrolled = vi.fn(() => {
+      visible = true;
+    });
+    const onSeen = vi.fn();
+    // Use the actual answer's location rather than the card's.
     const query = item.querySelectorAll.bind(item);
     vi.spyOn(item, "querySelectorAll").mockImplementation((selector) => {
       const matches = query(selector);
       const outcome = matches[0] as HTMLElement | undefined;
       if (outcome) {
         outcome.scrollIntoView = scrolled;
-        outcome.getBoundingClientRect = () => ({ top: 900, bottom: 960, height: 60 }) as DOMRect;
+        outcome.getBoundingClientRect = () =>
+          (visible ? { top: 20, bottom: 80, height: 60 } : { top: 900, bottom: 960, height: 60 }) as DOMRect;
       }
       return matches;
     });
     rerender(
       <Harness
+        unread={new Set([pending.id])}
+        onSeen={onSeen}
         questions={[
           ...QUESTIONS.slice(0, 2),
           { ...pending, state: "answered", answer: { answer: "Done.", evidence: [] } },
@@ -385,7 +397,8 @@ describe("AskChat (proposal AC3–AC10)", () => {
     const jump = await within(chat()).findByRole("button", { name: "↓ New answer" });
     await user.click(jump);
     expect(scrolled).toHaveBeenCalled();
-    expect(within(chat()).queryByRole("button", { name: "↓ New answer" })).toBeNull();
+    await waitFor(() => expect(within(chat()).queryByRole("button", { name: "↓ New answer" })).toBeNull());
+    expect(onSeen).toHaveBeenCalledWith([pending.id]);
   });
 
   it("the top-left corner resizes width and height together by dragging; Enter on a separator still resets", () => {

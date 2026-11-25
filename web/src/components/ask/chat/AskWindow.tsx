@@ -2,7 +2,7 @@ import { useRef, type PointerEvent } from "react";
 import { HEAD_BUTTON } from "../../button/button";
 import { MenuButton, MenuItem } from "../../menu/MenuButton";
 import { Tooltip } from "../../tooltip/Tooltip";
-import type { AskChatProps, ChatCorner } from "./AskChat";
+import type { AskChatProps, ChatCorner, ChatGeometry, ChatSize } from "./AskChat";
 
 const KEY_PX = 20;
 const DEFAULT_SIZE = { width: null, height: null, full: false };
@@ -135,6 +135,30 @@ export function AskWindowHeader({
   );
 }
 
+type Dimensions = Partial<Pick<ChatSize, "width" | "height">>;
+type ResizeStart = { x: number; y: number; geometry: ChatGeometry };
+
+/** Resizes from the captured edges while leaving the opposite edges in place. */
+function resized(size: ChatSize, at: ChatGeometry, { width, height }: Dimensions): ChatSize {
+  const dimension = (value: number, min: number, max: number) =>
+    Math.min(max, Math.max(min, Math.round(value)));
+  const next = { ...size };
+  if (width !== undefined) next.width = width === null ? null : dimension(width, at.minWidth, at.maxWidth);
+  if (height !== undefined) {
+    next.height = height === null ? null : dimension(height, at.minHeight, at.maxHeight);
+    next.full = false;
+  }
+  if (typeof size.position === "object") {
+    const { right, bottom } = size.position;
+    next.position = {
+      right: at.resizeFromRight && width != null ? at.right + at.width - (next.width ?? at.width) : right,
+      bottom:
+        at.resizeFromBottom && height != null ? at.bottom + at.height - (next.height ?? at.height) : bottom,
+    };
+  }
+  return next;
+}
+
 /** One separator of the panel's size: drag, arrow keys, Home / End, Enter or double-click resets. */
 export function SizeHandle({
   dimension,
@@ -142,17 +166,14 @@ export function SizeHandle({
   size,
   onSize,
 }: { dimension: "width" | "height" } & Pick<AskChatProps, "geometry" | "size" | "onSize">) {
-  const start = useRef<{ x: number; y: number; value: number } | null>(null);
+  const start = useRef<ResizeStart | null>(null);
   const height = dimension === "height";
   const [min, max, now] = height
     ? [geometry.minHeight, geometry.maxHeight, geometry.height]
     : [geometry.minWidth, geometry.maxWidth, geometry.width];
-  const set = (value: number | null) =>
-    onSize(
-      height
-        ? { ...size, height: value === null ? null : Math.round(value), full: false }
-        : { ...size, width: value === null ? null : Math.round(value) },
-    );
+  const reverse = height ? geometry.resizeFromBottom : geometry.resizeFromRight;
+  const set = (value: number | null, at = geometry) =>
+    onSize(resized(size, at, height ? { height: value } : { width: value }));
   return (
     <div
       role="separator"
@@ -167,21 +188,26 @@ export function SizeHandle({
       aria-valuemax={Math.round(max)}
       aria-valuenow={Math.round(now)}
       onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
-        start.current = { x: event.clientX, y: event.clientY, value: now };
+        start.current = { x: event.clientX, y: event.clientY, geometry };
         event.currentTarget.setPointerCapture?.(event.pointerId);
         event.preventDefault();
       }}
       onPointerMove={(event: PointerEvent<HTMLDivElement>) => {
         const from = start.current;
         if (!from) return;
-        set(from.value + (height ? from.y - event.clientY : from.x - event.clientX));
+        const at = from.geometry;
+        const reverse = height ? at.resizeFromBottom : at.resizeFromRight;
+        const delta = height ? event.clientY - from.y : event.clientX - from.x;
+        set((height ? at.height : at.width) + (reverse ? delta : -delta), at);
       }}
       onPointerUp={() => (start.current = null)}
       onPointerCancel={() => (start.current = null)}
       onDoubleClick={() => set(null)}
       onKeyDown={(event) => {
-        const grow = height ? "ArrowUp" : "ArrowLeft";
-        const shrink = height ? "ArrowDown" : "ArrowRight";
+        const up = height ? "ArrowUp" : "ArrowLeft";
+        const down = height ? "ArrowDown" : "ArrowRight";
+        const grow = reverse ? down : up;
+        const shrink = reverse ? up : down;
         const next =
           event.key === grow
             ? now + KEY_PX
@@ -196,46 +222,48 @@ export function SizeHandle({
                     : undefined;
         if (next === undefined) return;
         event.preventDefault();
-        set(next === null ? null : Math.min(max, Math.max(min, next)));
+        set(next);
       }}
       className={`absolute z-[2] touch-none rounded bg-transparent hover:bg-accent focus-visible:bg-accent ${
-        height ? "inset-x-3.5 -top-1 h-2 cursor-ns-resize" : "inset-y-3.5 -left-1 w-2 cursor-ew-resize"
+        height
+          ? `inset-x-3.5 h-2 cursor-ns-resize ${reverse ? "-bottom-1" : "-top-1"}`
+          : `inset-y-3.5 w-2 cursor-ew-resize ${reverse ? "-right-1" : "-left-1"}`
       }`}
     />
   );
 }
 
-/** The top-left corner: drags width and height together (the separators are its keyboard alternative). */
+/** The corner meeting both resize edges (the separators are its keyboard alternative). */
 export function CornerHandle({ geometry, size, onSize }: Pick<AskChatProps, "geometry" | "size" | "onSize">) {
-  const start = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
-  const clamp = (value: number, min: number, max: number) => Math.round(Math.min(max, Math.max(min, value)));
+  const start = useRef<ResizeStart | null>(null);
+  const { resizeFromRight: right, resizeFromBottom: bottom } = geometry;
   return (
     <div
       data-resize-corner
       aria-hidden="true"
       onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
-        start.current = {
-          x: event.clientX,
-          y: event.clientY,
-          width: geometry.width,
-          height: geometry.height,
-        };
+        start.current = { x: event.clientX, y: event.clientY, geometry };
         event.currentTarget.setPointerCapture?.(event.pointerId);
         event.preventDefault();
       }}
       onPointerMove={(event: PointerEvent<HTMLDivElement>) => {
         const from = start.current;
         if (!from) return;
-        onSize({
-          ...size,
-          width: clamp(from.width + from.x - event.clientX, geometry.minWidth, geometry.maxWidth),
-          height: clamp(from.height + from.y - event.clientY, geometry.minHeight, geometry.maxHeight),
-          full: false,
-        });
+        const at = from.geometry;
+        const dx = event.clientX - from.x;
+        const dy = event.clientY - from.y;
+        onSize(
+          resized(size, at, {
+            width: at.width + (at.resizeFromRight ? dx : -dx),
+            height: at.height + (at.resizeFromBottom ? dy : -dy),
+          }),
+        );
       }}
       onPointerUp={() => (start.current = null)}
       onPointerCancel={() => (start.current = null)}
-      className="absolute -top-1 -left-1 z-[3] size-3.5 cursor-nwse-resize touch-none rounded-tl-[10px] hover:bg-accent"
+      className={`absolute z-[3] size-3.5 touch-none hover:bg-accent
+        ${right ? "-right-1" : "-left-1"} ${bottom ? "-bottom-1" : "-top-1"}
+        ${Boolean(right) === Boolean(bottom) ? "cursor-nwse-resize" : "cursor-nesw-resize"}`}
     />
   );
 }

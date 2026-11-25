@@ -10,6 +10,7 @@ import type {
   Step,
   Tour,
 } from "../../../api/generated/types";
+import { askOrder, type HistoryQuestion } from "../../../api/questionHistory";
 import { annotationName, rangeText } from "../../section/format";
 
 /** The opening line of a draft from a remark; the capture names its lines. */
@@ -34,16 +35,16 @@ export function quoteRemark(remark: Annotation): string {
 
 /** A first question with its follow-ups, oldest first. */
 export interface ChatThread {
-  root: AskQuestion;
+  root: HistoryQuestion;
   followUps: AskQuestion[];
 }
 
 const asked = (a: AskQuestion, b: AskQuestion) => Date.parse(a.created_at) - Date.parse(b.created_at);
 
 /** Threads oldest first; a follow-up of a follow-up joins the thread of its first question (one level). */
-export function threadsOf(questions: readonly AskQuestion[]): ChatThread[] {
+export function threadsOf(questions: readonly HistoryQuestion[]): ChatThread[] {
   const byId = new Map(questions.map((q) => [q.id, q]));
-  const rootOf = (q: AskQuestion): AskQuestion => {
+  const rootOf = (q: HistoryQuestion): HistoryQuestion => {
     const seen = new Set<QuestionId>();
     let at = q;
     while (at.parent_id && byId.has(at.parent_id) && !seen.has(at.id)) {
@@ -59,13 +60,15 @@ export function threadsOf(questions: readonly AskQuestion[]): ChatThread[] {
     if (root.id !== q.id) thread.followUps.push(q);
     threads.set(root.id, thread);
   }
-  return [...threads.values()].sort((a, b) => asked(a.root, b.root));
+  return [...threads.values()].sort((a, b) => askOrder(a.root.firstAsk ?? a.root, b.root.firstAsk ?? b.root));
 }
 
 /** How a subject is named: in a chip, the field's placeholder and the Ask buttons. */
 export interface Subject {
   /** Compact chip label. */
   text: string;
+  /** Full path, range and side for the tooltip and accessible name. */
+  fileLabel?: string;
   /** "this step", "these lines", "this file", "this flow", "the whole PR". */
   what: string;
   /** Tooltip of its chip. */
@@ -77,6 +80,8 @@ const findStep = (tour: Tour, id: string): Step | undefined =>
 const flowOfStep = (tour: Tour, id: string) => tour.flows.find((f) => f.steps.some((s) => s.id === id));
 const basename = (path: string) => path.split("/").at(-1) ?? path;
 const old = (side: LineSide) => (side === "base" ? " (old code)" : "");
+const fileLabel = (path: string, side: LineSide, range: LineRange | null): string =>
+  `${path}${range ? `:${rangeText(range)}` : ""} (${side === "base" ? "old" : "new"} code)`;
 
 /** The per-PR numbers (`C<no>`) of the review-comment items the chat knows. */
 export type ItemNumbers = ReadonlyMap<CommentItemId, number>;
@@ -114,6 +119,7 @@ export function subjectOf(anchor: AskAnchor, tour: Tour, numbers: ItemNumbers = 
           : "A step not in these flows";
       return {
         text,
+        fileLabel: step && range ? fileLabel(step.facts.file, step.facts.side, range) : undefined,
         what: anchor.lines ? "these lines" : "this step",
         tip: anchor.lines
           ? "Asked about these lines. Opens them in the Files view; the chat stays open."
@@ -124,6 +130,7 @@ export function subjectOf(anchor: AskAnchor, tour: Tour, numbers: ItemNumbers = 
       const { path, side, range } = anchor;
       return {
         text: `${basename(path)}${range ? ` ${rangeText(range)}` : ""}${old(side)}`,
+        fileLabel: fileLabel(path, side, range),
         what: range ? "these lines" : "this file",
         tip: range
           ? "Asked about these lines. Opens them in the Files view; the chat stays open."
@@ -193,7 +200,11 @@ function about(anchor: AskAnchor, place: AskAnchor, tour: Tour): boolean {
 }
 
 /** The threads about a place (its Inspector copy), oldest first. */
-export function questionsAt(questions: readonly AskQuestion[], place: AskAnchor, tour: Tour): ChatThread[] {
+export function questionsAt(
+  questions: readonly HistoryQuestion[],
+  place: AskAnchor,
+  tour: Tour,
+): ChatThread[] {
   return threadsOf(questions).filter((t) => about(t.root.anchor, place, tour));
 }
 

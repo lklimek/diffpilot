@@ -32,6 +32,9 @@ export interface ChatGeometry {
   maxHeight: number;
   /** A narrow window: a full-width bottom sheet. */
   narrow?: boolean;
+  /** Use the free edge when the opposite edge is against a viewport limit. */
+  resizeFromRight?: boolean;
+  resizeFromBottom?: boolean;
 }
 
 /** Props of the floating Ask chat. */
@@ -81,6 +84,8 @@ export interface AskChatProps {
   about: string;
   /** Questions whose outcome the reader has not seen: their threads are marked new. */
   unread: ReadonlySet<QuestionId>;
+  /** Keeps the marker on an answer seen during this opening. */
+  marked?: ReadonlySet<QuestionId>;
   /** A thread to scroll to and focus ("Open in chat"); `nonce` repeats it. */
   focusThread: { id: QuestionId; nonce: number } | null;
   /** Records an unread outcome that entered the conversation viewport. */
@@ -94,6 +99,7 @@ const PRIMARY =
   "min-h-8 cursor-pointer rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-on-accent aria-disabled:cursor-wait aria-disabled:opacity-60";
 // Within this many px of the end the reader counts as following the newest entry.
 const FOLLOW_PX = 24;
+type OutcomeTarget = { root: QuestionId; id: QuestionId };
 
 /**
  * The floating Ask chat (proposal AC2–AC10): one private conversation per analysis and user, threads oldest first
@@ -122,6 +128,7 @@ export function AskChat(props: AskChatProps) {
   const threadItems = useRef(new Map<QuestionId, HTMLLIElement>());
   const s = describe(subject);
   const remark = remarkLines(draft, subject);
+  const chip = remark ? `Remark · ${s.text}` : s.text;
   const cards = threads.map(({ root, followUps }, index) => ({
     root,
     followUps,
@@ -140,7 +147,8 @@ export function AskChat(props: AskChatProps) {
   // Track state changes seen in this window. The server only sends the time the question was asked.
   const states = Object.fromEntries(all.map(({ question }) => [question.id, question.state]));
   const [known, setKnown] = useState(states);
-  const [arrival, setArrival] = useState<{ root: QuestionId; id: QuestionId } | null>(null);
+  const [jump, setJump] = useState<OutcomeTarget | null>(null);
+  const jumpRequest = useRef<OutcomeTarget | null>(null);
   const pastStates = useRef<Record<QuestionId, string>>({});
   const [starts, setStarts] = useState<Record<QuestionId, number>>({});
   useEffect(() => {
@@ -167,9 +175,7 @@ export function AskChat(props: AskChatProps) {
         known[q.id] !== q.state &&
         (q.state === "answered" || q.state === "failed"),
     );
-    const last = outcomes.at(-1);
-    if (last) {
-      setArrival({ root: last.card.root.id, id: last.question.id });
+    if (outcomes.length) {
       setDisclosed(
         Object.fromEntries(
           Object.entries(disclosed).filter(([id]) => !outcomes.some(({ card }) => card.root.id === id)),
@@ -178,25 +184,29 @@ export function AskChat(props: AskChatProps) {
     }
     setKnown(states);
   }
-  const outcomeOf = ({ root, id }: NonNullable<typeof arrival>) => {
+  const outcomeOf = ({ root, id }: OutcomeTarget) => {
     const card = threadItems.current.get(root);
     return Array.from(card?.querySelectorAll<HTMLElement>("[data-ask-outcome]") ?? []).find(
       (element) => element.dataset.askOutcome === id,
     );
   };
-  const inView = (target: NonNullable<typeof arrival>) => {
+  const inView = (target: OutcomeTarget) => {
     const at = outcomeOf(target)?.getBoundingClientRect();
     const box = list.current?.getBoundingClientRect();
     return Boolean(at?.height && box && at.top < box.bottom && at.bottom > box.top);
   };
 
   const markVisible = () => {
-    if (arrival && inView(arrival)) setArrival(null);
-    if (!props.onSeen || !props.unread.size) return;
-    const visible = all.flatMap(({ card, question }) =>
-      props.unread.has(question.id) && inView({ root: card.root.id, id: question.id }) ? [question.id] : [],
-    );
-    if (visible.length) props.onSeen(visible);
+    const seen: QuestionId[] = [];
+    let first: OutcomeTarget | null = null;
+    for (const { card, question } of ordered) {
+      if (!props.unread.has(question.id)) continue;
+      const target = { root: card.root.id, id: question.id };
+      if (inView(target)) seen.push(question.id);
+      else first ??= target;
+    }
+    setJump((current) => (current?.id === first?.id ? current : first));
+    if (seen.length) props.onSeen?.(seen);
   };
 
   // Follows the newest entry unless the reader scrolled up; a question just sent always shows.
@@ -205,7 +215,14 @@ export function AskChat(props: AskChatProps) {
     const added = newestThread !== lastThread.current;
     lastThread.current = newestThread;
     if (element && (added || following_.current)) element.scrollTop = element.scrollHeight;
-    if (!arrival && !props.unread.size) return;
+    const target = jumpRequest.current;
+    if (target) {
+      jumpRequest.current = null;
+      const item = threadItems.current.get(target.root);
+      (outcomeOf(target) ?? item)?.scrollIntoView?.({ block: "nearest" });
+      item?.focus({ preventScroll: true });
+    }
+    if (!jump && !props.unread.size) return;
     const frame = requestAnimationFrame(markVisible);
     return () => cancelAnimationFrame(frame);
   });
@@ -312,7 +329,7 @@ export function AskChat(props: AskChatProps) {
         ) : (
           <ol aria-label="Your questions, oldest first" className="m-0 grid list-none gap-4 p-0">
             {cards.map(({ root, followUps, number, questions }, index) => {
-              const fresh = questions.some((q) => props.unread.has(q.id) || q.id === arrival?.id);
+              const fresh = questions.some((q) => props.unread.has(q.id) || props.marked?.has(q.id));
               const replyOpen = replyFor === root.id;
               const expanded =
                 replyOpen ||
@@ -362,7 +379,7 @@ export function AskChat(props: AskChatProps) {
           {props.status}
         </p>
       )}
-      {arrival && (
+      {jump && props.unread.has(jump.id) && (
         <div className="relative h-0 flex-none">
           <Tooltip
             tip="Scrolls to the answer that arrived out of view"
@@ -372,11 +389,8 @@ export function AskChat(props: AskChatProps) {
               type="button"
               onClick={() => {
                 following_.current = false;
-                const item = threadItems.current.get(arrival.root);
-                (outcomeOf(arrival) ?? item)?.scrollIntoView?.({ block: "nearest" });
-                item?.focus({ preventScroll: true });
-                props.onSeen?.([arrival.id]);
-                setArrival(null);
+                jumpRequest.current = jump;
+                setDisclosed({ ...disclosed, [jump.root]: true });
               }}
               className="cursor-pointer rounded-full border border-accent bg-accent px-3 py-0.5 text-[12px] font-semibold text-on-accent shadow"
             >
@@ -403,14 +417,18 @@ export function AskChat(props: AskChatProps) {
             <span className="inline-flex max-w-full min-w-0 items-center gap-0.5 rounded-[10px] border border-accent bg-accent-bg pl-2">
               <Tooltip
                 tip={
-                  remark
-                    ? s.tip
+                  s.fileLabel
+                    ? `${s.fileLabel} · ${s.tip}`
                     : "Your question will be about this place. It follows where you are in the review; × asks about the whole PR instead."
                 }
               >
-                <span tabIndex={0} className="[overflow-wrap:anywhere]">
-                  {remark && "Remark · "}
-                  {s.text}
+                <span
+                  role="group"
+                  aria-label={s.fileLabel ? `${chip} · ${s.fileLabel}` : chip}
+                  tabIndex={0}
+                  className="[overflow-wrap:anywhere]"
+                >
+                  {chip}
                 </span>
               </Tooltip>
               <Tooltip tip={props.wholePrUnavailable ?? "Ask about the whole PR instead"}>

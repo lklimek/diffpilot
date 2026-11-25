@@ -97,7 +97,11 @@ test("line numbers select lines (click, Shift+click, drag); the permalink reopen
   await field.press("Enter");
   const thread = chat.locator("[data-thread]").last();
   await expect(thread).toContainText("Why return Exhausted here?");
-  await expect(thread.getByRole("button", { name: "Step 1.7 · client.rs 104–106" })).toBeVisible();
+  await expect(
+    thread.getByRole("button", {
+      name: "Step 1.7 · client.rs 104–106 · src/rpc/client.rs:104–106 (new code)",
+    }),
+  ).toBeVisible();
   // The Inspector keeps a read-only copy of the selection's threads.
   await expect(
     inspector(page).getByRole("region", { name: /^Your questions about these lines/ }),

@@ -16,6 +16,7 @@ import {
 import { useNavigate } from "react-router";
 import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
 import { useTourNotifications } from "../../app/workNotifications";
+import type { HistoryQuestion } from "../../api/questionHistory";
 import { routes } from "../../api/generated/routes";
 import type {
   AnalysisId,
@@ -191,7 +192,7 @@ function ReviewActivity({ tour, questions }: { tour: Tour; questions: readonly A
 interface ChatSource {
   /** Drafts, replies and seen answers are remembered per source (an analysis, or a PR's comment items). */
   key: string;
-  questions: { data: AskQuestion[] | undefined; isSuccess: boolean };
+  questions: { data: HistoryQuestion[] | undefined; isSuccess: boolean };
   ask: (body: AnchoredAskRequest) => Promise<AskQuestion>;
   /** Names a subject; null while the source is not ready (its tour loads): the chat is not drawn yet. */
   describe: ((anchor: AskAnchor) => Subject) | null;
@@ -594,7 +595,8 @@ function ChatShell({ source, children }: { source: ChatSource; children: ReactNo
           geometry={box}
           onSize={rememberGeometry}
           about={source.about}
-          unread={new Set([...marked, ...unread])}
+          unread={new Set(unread)}
+          marked={marked}
           onSeen={markSeen}
           focusThread={focusThread}
           inputRef={field}

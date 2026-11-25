@@ -58,6 +58,16 @@ describe("chatGeometry (proposal AC2, AC14)", () => {
     });
   });
 
+  it("keeps a preset's resize edges when it reaches the opposite viewport limit", () => {
+    const view = { width: 1600, height: 900 };
+    expect(chatGeometry(view, ws, null, null, { ...size, position: "top-right", width: 5000 })).toMatchObject(
+      { resizeFromRight: false, resizeFromBottom: true },
+    );
+    expect(
+      chatGeometry(view, ws, null, null, { ...size, position: "bottom-left", full: true }),
+    ).toMatchObject({ resizeFromRight: true, resizeFromBottom: false });
+  });
+
   it("is a full-width bottom sheet in a narrow window", () => {
     expect(chatGeometry({ width: 390, height: 800 }, ws, null, null, size)).toMatchObject({
       narrow: true,
