@@ -40,7 +40,7 @@ mod embedded {
 
     const INDEX: &str = "index.html";
     /// Prefixes the UI never answers.
-    const NOT_UI: [&str; 4] = ["/api/", "/auth/", "/runner/", "/healthz"];
+    const NOT_UI: [&str; 5] = ["/api/", "/auth/", "/runner/", "/webhooks/", "/healthz"];
     const CSP: (&str, &str) = (
         "content-security-policy",
         "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
@@ -151,6 +151,8 @@ mod embedded {
                 "/api/v1/nothing",
                 "/auth/github/other",
                 "/runner/v1/claim",
+                "/webhooks/github",
+                "/webhooks",
                 "/healthz",
                 "/assets/missing.js",
             ] {
