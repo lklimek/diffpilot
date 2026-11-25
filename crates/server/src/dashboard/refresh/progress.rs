@@ -114,6 +114,7 @@ impl Progress {
         let progress = RefreshProgress {
             steps: self.steps.clone(),
             percent: self.percent(),
+            left_provisional_keys: Vec::new(),
         };
         let written = self
             .state
