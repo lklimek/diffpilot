@@ -1,8 +1,9 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
+import { SETTINGS } from "../../mocks/scenarios";
 
 const server = startMockServer();
 
@@ -116,18 +117,20 @@ it("places the GitHub sync save between Slack names and GitHub App", async () =>
   expect(save.compareDocumentPosition(github)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 });
 
-it("keeps provisional usage neutral while loading and on a missing route", async () => {
+it("distinguishes loading usage from missing routes", async () => {
   let resolve!: () => void;
   const promise = new Promise<void>((release) => {
     resolve = release;
   });
-  const replied = vi.fn();
   const missing = async () => {
     await promise;
-    replied();
     return new HttpResponse(null, { status: 404 });
   };
   server.use(
+    http.get("/api/v1/settings", async () => {
+      await promise;
+      return HttpResponse.json({ ...SETTINGS, llm_usage: undefined });
+    }),
     http.get("/api/v1/settings/ranking-usage", missing),
     http.get("/api/v1/settings/monthly-token-usage", missing),
   );
@@ -135,13 +138,15 @@ it("keeps provisional usage neutral while loading and on a missing route", async
     renderRoute("/settings/llm");
     const ranking = within(await screen.findByRole("region", { name: "Ranking today" }));
     const tokens = within(screen.getByRole("region", { name: "Tokens" }));
-    expect(ranking.getByRole("status")).toHaveTextContent("Not available yet");
-    expect(tokens.getByRole("status")).toHaveTextContent("This month: not available yet");
-    expect(replied).not.toHaveBeenCalled();
+    expect(ranking.getByRole("status")).toHaveTextContent("Loading ranking usage…");
+    expect(tokens.getByText("Today: loading…")).toBeVisible();
+    expect(tokens.getByText("Last 7 days: loading…")).toBeVisible();
+    expect(tokens.getByText("This month: loading…")).toBeVisible();
     resolve();
-    await waitFor(() => expect(replied).toHaveBeenCalledTimes(2));
-    expect(ranking.getByRole("status")).toHaveTextContent("Not available yet");
-    expect(tokens.getByRole("status")).toHaveTextContent("This month: not available yet");
+    expect(await ranking.findByText("Not available yet")).toBeVisible();
+    expect(await tokens.findByText("This month: not available yet")).toBeVisible();
+    expect(await tokens.findByText("Today: not available yet")).toBeVisible();
+    expect(tokens.getByText("Last 7 days: not available yet")).toBeVisible();
     expect(ranking.queryByRole("alert")).toBeNull();
     expect(tokens.queryByRole("alert")).toBeNull();
   } finally {
@@ -149,26 +154,29 @@ it("keeps provisional usage neutral while loading and on a missing route", async
   }
 });
 
-it("shows an observed zero instead of unavailable monthly usage", async () => {
+it("shows zero jobs for usage windows with no token reports", async () => {
+  const zero = {
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: null,
+    jobs: 0,
+  };
   server.use(
-    http.get("/api/v1/settings/monthly-token-usage", () =>
-      HttpResponse.json({
-        this_month: {
-          input_tokens: 0,
-          cached_input_tokens: 0,
-          output_tokens: 0,
-          reasoning_output_tokens: null,
-          jobs: 0,
-        },
-      }),
+    http.get("/api/v1/settings", () =>
+      HttpResponse.json({ ...SETTINGS, llm_usage: { today: null, last_7_days: zero } }),
     ),
+    http.get("/api/v1/settings/monthly-token-usage", () => HttpResponse.json({ this_month: zero })),
   );
   renderRoute("/settings/llm");
+  expect(await screen.findByText("Today: 0 jobs with token reports")).toBeVisible();
+  expect(screen.getByText("Last 7 days: 0 jobs with token reports")).toBeVisible();
   expect(await screen.findByText("This month: 0 jobs with token reports")).toBeVisible();
 });
 
 it("shows a distinct error for each provisional usage request that fails", async () => {
   server.use(
+    http.get("/api/v1/settings", () => new HttpResponse(null, { status: 500 })),
     http.get("/api/v1/settings/ranking-usage", () => new HttpResponse(null, { status: 500 })),
     http.get("/api/v1/settings/monthly-token-usage", () => new HttpResponse(null, { status: 500 })),
   );
@@ -176,7 +184,8 @@ it("shows a distinct error for each provisional usage request that fails", async
   const ranking = within(await screen.findByRole("region", { name: "Ranking today" }));
   const tokens = within(screen.getByRole("region", { name: "Tokens" }));
   expect(await ranking.findByRole("alert")).toHaveTextContent("Could not load ranking usage");
-  expect(await tokens.findByRole("alert")).toHaveTextContent("Could not load monthly token usage");
+  expect(await tokens.findByText(/Could not load monthly token usage/)).toHaveRole("alert");
+  expect(await tokens.findByText(/Could not load today's and last 7 days' token usage/)).toHaveRole("alert");
 });
 
 it("places the browser and push channel headings under Notifications", async () => {

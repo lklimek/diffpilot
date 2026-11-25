@@ -253,6 +253,7 @@ test.describe("My work (msw)", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.emulateMedia({ colorScheme: "dark" });
     await open(page, "v14");
+    await expect(page.getByRole("button", { name: "Collapse navigation" })).toBeVisible();
     await expect(page.locator("[data-scan-info]")).toHaveText(/Live · full scan/);
     await expect(
       main(page).getByRole("button", { name: "Filter by label merges first" }),
@@ -484,23 +485,31 @@ test.describe("My work (msw)", () => {
   });
 
   test("ranking failure keeps the reason and can be retried without starting a scan", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
     await open(page, "ranking-failed");
     await pauseClock(page);
     const info = page.locator("[data-scan-info]");
-    await expect(info).toContainText("Ranking failed · Retry");
+    await expect(info).toContainText("Ranking failed");
     await expect(info).toHaveAccessibleDescription(/The LLM stopped answering/);
     await status(page).click();
     await expect(
       main(page).getByRole("menuitemradio", { name: /^Not judged yet/ }),
     ).toHaveAccessibleDescription(/Ranking failed/);
     await page.keyboard.press("Escape");
-    await page.getByRole("button", { name: "More refresh options" }).click();
-    await page.getByRole("menuitem", { name: "Retry ranking", exact: true }).click();
+    await info.focus();
+    await page.keyboard.press("Tab");
+    const retry = page.getByRole("button", { name: "Retry ranking", exact: true });
+    await expect(retry).toBeFocused();
+    expect((await retry.boundingBox())!.height).toBeGreaterThanOrEqual(24);
+    await page.keyboard.press("Enter");
     await settle(page, (quick) => quick(info).not.toContainText("Ranking failed"));
+    await expect(info).toBeFocused();
     await expect(strip(page)).toHaveCount(0);
   });
 
-  test("legacy daily limit and older prompt appear in Status and cap the unjudged row", async ({ page }) => {
+  test("legacy daily limit caps the unjudged row and the older prompt stays in the scan status", async ({
+    page,
+  }) => {
     await open(page, "ranking-daily-cap");
     const info = page.locator("[data-scan-info]");
     await expect(info).toContainText("Daily limit reached · resets at 00:00");
@@ -508,7 +517,7 @@ test.describe("My work (msw)", () => {
     await status(page).click();
     await expect(
       main(page).getByRole("menuitemradio", { name: /^Outdated judgement/ }),
-    ).toHaveAccessibleDescription(/older ranking prompt/);
+    ).toHaveAccessibleDescription("Judgement inputs changed after the LLM judged these items.");
     const unjudged = main(page).getByRole("menuitemradio", { name: /^Not judged yet/ });
     await expect(unjudged).toHaveAccessibleDescription(/00:00.*Europe\/Warsaw/);
     await unjudged.click();

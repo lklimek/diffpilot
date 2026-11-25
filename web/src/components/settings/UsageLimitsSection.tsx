@@ -43,6 +43,12 @@ function resetTime(at: string, zone?: string): string {
   return dateTimeText(at);
 }
 
+function tokenUsageFallback(usage: UsageWindows | UsageTotals | null | undefined): string {
+  if (usage === undefined) return "loading…";
+  if (usage === null) return "not available yet";
+  return "0 jobs with token reports";
+}
+
 /** Usage based on server counts and the last observations from the provider. */
 export function UsageLimitsSection({
   ranking,
@@ -52,6 +58,7 @@ export function UsageLimitsSection({
   quota,
   quotaError,
   tokens,
+  tokensError,
   month,
   monthError,
   codex,
@@ -64,12 +71,13 @@ export function UsageLimitsSection({
   onReset: () => Promise<unknown>;
   quota?: AssessmentQuota;
   quotaError?: string;
-  tokens?: UsageWindows;
+  tokens?: UsageWindows | null;
+  tokensError?: string;
   month?: UsageTotals | null;
   monthError?: string;
   codex?: CredentialStatus;
   now: Date;
-  lastCall: LlmCallOutcome | null;
+  lastCall?: LlmCallOutcome | null;
 }) {
   const [confirm, setConfirm] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -160,7 +168,7 @@ export function UsageLimitsSection({
           ) : rankingError ? (
             <p role="alert">Could not load ranking usage. {rankingError}</p>
           ) : (
-            <p role="status">Not available yet</p>
+            <p role="status">{ranking === undefined ? "Loading ranking usage…" : "Not available yet"}</p>
           )}
         </Tile>
         <Tile title="Comment assessment">
@@ -176,42 +184,50 @@ export function UsageLimitsSection({
           )}
         </Tile>
         <Tile title="Tokens">
-          {(
-            [
-              ["Today", tokens?.today],
-              ["Last 7 days", tokens?.last_7_days],
-            ] as const
-          ).map(([label, usage]) =>
-            usage?.jobs ? (
-              <UsageLine key={label} label={label} usage={usage} />
-            ) : (
-              <p key={label}>{label}: not available yet</p>
-            ),
+          {tokensError ? (
+            <p role="alert">Could not load today&apos;s and last 7 days&apos; token usage. {tokensError}</p>
+          ) : (
+            (
+              [
+                ["Today", tokens?.today],
+                ["Last 7 days", tokens?.last_7_days],
+              ] as const
+            ).map(([label, usage]) =>
+              usage?.jobs ? (
+                <UsageLine key={label} label={label} usage={usage} />
+              ) : (
+                <p key={label}>
+                  {label}: {tokenUsageFallback(tokens)}
+                </p>
+              ),
+            )
           )}
           {monthError ? (
             <p role="alert">Could not load monthly token usage. {monthError}</p>
           ) : month?.jobs ? (
             <UsageLine label="This month" usage={month} />
           ) : (
-            <p role="status">This month: {month ? "0 jobs with token reports" : "not available yet"}</p>
+            <p role="status">This month: {tokenUsageFallback(month)}</p>
           )}
         </Tile>
         <Tile title="Codex plan">
           <p className="text-xs text-muted">Reported by the provider.</p>
           <CodexPlanUsage status={codex} now={now} />
         </Tile>
-        <Tile title="Last LLM call">
-          {lastCall ? (
-            <>
-              <p>
-                {lastCall.status.state === "working" ? "Succeeded" : "Failed"} · {dateTimeText(lastCall.at)}
-              </p>
-              {lastCall.status.state === "not_working" && <p>{lastCall.status.message}</p>}
-            </>
-          ) : (
-            <p>No LLM call yet.</p>
-          )}
-        </Tile>
+        {lastCall !== undefined && (
+          <Tile title="Last LLM call">
+            {lastCall ? (
+              <>
+                <p>
+                  {lastCall.status.state === "working" ? "Succeeded" : "Failed"} · {dateTimeText(lastCall.at)}
+                </p>
+                {lastCall.status.state === "not_working" && <p>{lastCall.status.message}</p>}
+              </>
+            ) : (
+              <p>No LLM call yet.</p>
+            )}
+          </Tile>
+        )}
       </div>
     </Section>
   );

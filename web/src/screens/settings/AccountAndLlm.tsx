@@ -97,12 +97,6 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
     if (ask) await setAskEffort.mutateAsync(ask);
     if (ranking) await setJudgeEffort.mutateAsync(ranking);
   };
-  if (!settings.data)
-    return (
-      <StatusMessage kind={settings.isError ? "error" : "loading"}>
-        {settings.isError ? messageOf(settings.error) : "Loading the settings…"}
-      </StatusMessage>
-    );
   return (
     <>
       <div id={LLM_USAGE_SECTION} className="scroll-mt-14">
@@ -117,27 +111,30 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
           }}
           quota={assessment.data?.quota}
           quotaError={assessment.isError ? messageOf(assessment.error) : undefined}
-          tokens={settings.data.llm_usage}
-          month={month.data?.this_month}
+          tokens={settings.data && (settings.data.llm_usage ?? null)}
+          tokensError={!settings.data && settings.isError ? messageOf(settings.error) : undefined}
+          month={month.data === undefined ? undefined : (month.data?.this_month ?? null)}
           monthError={month.isError ? messageOf(month.error) : undefined}
           codex={codex.status.data}
           now={now}
-          lastCall={settings.data.llm_status}
+          lastCall={settings.data?.llm_status}
         />
       </div>
-      {settings.data.llm_selection && (
+      {settings.data?.llm_selection && (
         <LlmSelectionCard
           selection={settings.data.llm_selection}
           onSave={save}
           onDirtyChange={onDirtyChange}
         />
       )}
-      <LanguageCard
-        language={settings.data.language}
-        busy={setLanguage.isPending}
-        onChange={(language) => setLanguage.mutate(language)}
-        error={setLanguage.isError ? messageOf(setLanguage.error) : undefined}
-      />
+      {settings.data && (
+        <LanguageCard
+          language={settings.data.language}
+          busy={setLanguage.isPending}
+          onChange={(language) => setLanguage.mutate(language)}
+          error={setLanguage.isError ? messageOf(setLanguage.error) : undefined}
+        />
+      )}
     </>
   );
 }

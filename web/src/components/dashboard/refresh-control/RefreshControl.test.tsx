@@ -88,11 +88,11 @@ describe("RefreshControl", () => {
     render(
       <RefreshControl
         {...defaults}
-        rankingNotices={[{ label: "Ranking failed · Retry", detail: "The LLM stopped answering." }]}
+        rankingNotices={[{ label: "Ranking failed", detail: "The LLM stopped answering." }]}
         onRetryRanking={onRetryRanking}
       />,
     );
-    expect(screen.getByText(/Ranking failed · Retry.*Full scan/)).toHaveAccessibleDescription(
+    expect(screen.getByText(/Ranking failed · Full scan/)).toHaveAccessibleDescription(
       /The LLM stopped answering/,
     );
     await userEvent.click(screen.getByRole("button", { name: "More refresh options" }));

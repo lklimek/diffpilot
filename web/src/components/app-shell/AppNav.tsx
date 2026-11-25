@@ -75,7 +75,7 @@ export function AppNav({ current, hrefs, myWorkCount, settingsPages, onNavigate 
     <nav
       aria-label="Main"
       data-collapsed={collapsed || undefined}
-      className={`sticky top-12 flex h-[calc(100vh-48px)] flex-none flex-col gap-0.5 overflow-auto border-r border-border bg-surface px-2 py-2.5 ${collapsed ? "w-[52px]" : "w-[216px]"}`}
+      className={`sticky top-12 flex h-[calc(100vh-48px)] flex-none flex-col gap-0.5 overflow-auto border-r border-border bg-surface px-2 py-2.5 ${collapsed ? "w-[52px]" : "w-[min(216px,40vw)]"}`}
     >
       {ENTRIES.map(({ section, name, tip }) => (
         <div key={section} className="contents">

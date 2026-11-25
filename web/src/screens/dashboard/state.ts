@@ -85,7 +85,7 @@ export function rankingFeedback(summary: DashboardSummary, snapshotRefresh?: Ref
           ? "interrupted"
           : "failed";
     notices.push({
-      label: `Ranking ${state} · Retry`,
+      label: `Ranking ${state}`,
       detail: ranking.message ?? `The LLM ranking was ${state}.`,
     });
   }
@@ -121,7 +121,7 @@ export function rankingFeedback(summary: DashboardSummary, snapshotRefresh?: Ref
     notices,
     retryId,
     legacyDailyCap: daily && ranking?.state === "finished" && ranking.judged === ranking.total,
-    statusDescriptions: { not_judged: notJudged, outdated: olderPrompt },
+    statusDescriptions: { not_judged: notJudged },
   };
 }
 

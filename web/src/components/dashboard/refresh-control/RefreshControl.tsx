@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { RefreshStatus, ScheduleStatus, SnapshotMeta } from "../../../api/generated/types";
 import { RANKING_DAILY_LIMIT } from "../../../api/provisional/dashboardJudgement";
 import type { DashboardLive } from "../../../api/provisional/dashboardLive";
@@ -115,6 +116,9 @@ export function RefreshControl({
       : `Not live · ${scanText}`;
 
   const rankingLabel = rankingNotices[0]?.label;
+  const statusRef = useRef<HTMLSpanElement>(null);
+  const retryDescription =
+    "Rank the current snapshot again. Only items that still need judging count toward the limits.";
   const retryDisabled =
     latest?.state === "scanning" || latest?.state === "ranking"
       ? "Wait for the running refresh to finish."
@@ -136,10 +140,32 @@ export function RefreshControl({
         {rankingLabel && ` ${rankingLabel}.`}
       </span>
       <Tooltip tip={tip} className="min-w-0">
-        <span data-scan-info tabIndex={0} className="block cursor-help truncate text-xs text-muted">
+        <span
+          ref={statusRef}
+          data-scan-info
+          tabIndex={0}
+          className="block cursor-help truncate text-xs text-muted"
+        >
           {rankingLabel ? `${rankingLabel} · ${status}` : status}
         </span>
       </Tooltip>
+      {onRetryRanking && (
+        <Tooltip tip={retryDisabled ?? retryDescription} className="shrink-0">
+          <button
+            type="button"
+            aria-label="Retry ranking"
+            aria-disabled={Boolean(retryDisabled) || undefined}
+            className="min-h-6 min-w-6 cursor-pointer px-1 text-xs font-semibold text-accent underline aria-disabled:cursor-not-allowed aria-disabled:text-muted"
+            onClick={() => {
+              if (retryDisabled) return;
+              statusRef.current?.focus();
+              onRetryRanking();
+            }}
+          >
+            Retry
+          </button>
+        </Tooltip>
+      )}
       <div className="shrink-0">
         <SplitButton
           label={label}
@@ -171,7 +197,7 @@ export function RefreshControl({
           {onRetryRanking && (
             <MenuItem
               label="Retry ranking"
-              description="Rank the current snapshot again. Only items that still need judging count toward the limits."
+              description={retryDescription}
               disabledReason={retryDisabled}
               onSelect={onRetryRanking}
             />

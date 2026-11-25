@@ -37,7 +37,7 @@ describe("ranking feedback from the stored snapshot", () => {
     const feedback = rankingFeedback(withLatest(FAILED), failedRanking);
     expect(feedback.retryId).toBe(FINISHED.id);
     expect(feedback.notices).toContainEqual({
-      label: "Ranking failed · Retry",
+      label: "Ranking failed",
       detail: "The LLM stopped answering",
     });
     expect(feedback.statusDescriptions.not_judged).toContain("Ranking failed");
@@ -56,7 +56,9 @@ describe("ranking feedback from the stored snapshot", () => {
     );
     expect(daily.notices.map((notice) => notice.label)).toContain("Daily limit reached · resets at 00:00");
     expect(daily.statusDescriptions.not_judged).toMatch(/3 items.*00:00/);
-    expect(daily.statusDescriptions.outdated).toMatch(/2 items.*older ranking prompt/);
+    expect(daily.notices.map(({ detail }) => detail)).toContain(
+      "2 items were judged with an older ranking prompt.",
+    );
     expect(daily.legacyDailyCap).toBe(true);
     const perRefresh = rankingFeedback(
       withLatest(limited("3 items left provisional: this refresh's ranking limit (48)")),
