@@ -108,7 +108,7 @@ impl Jobs<'_> {
         totals(&row)
     }
 
-    /// One aggregate query for today's and the last seven local calendar days' tenant usage.
+    /// One aggregate query for tenant usage today, over seven days and in the current local calendar month.
     pub async fn usage_windows(
         &self,
         tenant: &str,
@@ -116,7 +116,8 @@ impl Jobs<'_> {
     ) -> Result<UsageWindows, DbError> {
         let rows = sqlx::query("WITH windows(label, since) AS (
                 VALUES ('today', datetime(?2, 'localtime', 'start of day', 'utc')),
-                       ('last_7_days', datetime(?2, 'localtime', 'start of day', '-6 days', 'utc'))),
+                       ('last_7_days', datetime(?2, 'localtime', 'start of day', '-6 days', 'utc')),
+                       ('this_month', datetime(?2, 'localtime', 'start of month', 'utc'))),
             reported AS (SELECT j.id, j.result, j.finished_at FROM jobs j JOIN analyses a ON a.id = j.analysis_id
                 WHERE a.tenant_id = ?1 AND j.finished_at IS NOT NULL AND json_type(j.result, '$.usage') = 'object')
             SELECT w.label, COUNT(r.id) AS jobs,
@@ -131,6 +132,7 @@ impl Jobs<'_> {
             match row.try_get::<String, _>("label")?.as_str() {
                 "today" => usage.today = totals(&row)?,
                 "last_7_days" => usage.last_7_days = totals(&row)?,
+                "this_month" => usage.this_month = totals(&row)?,
                 _ => {
                     return Err(DbError::Corrupt {
                         column: "usage window",
@@ -265,25 +267,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn calendar_windows_are_tenant_scoped_and_exclude_old_future_and_unreported_jobs() {
+    async fn this_month_usage_window() {
         let db = Db::in_memory().await.unwrap();
         let id = testing::seed_analysis(&db).await.unwrap();
-        // SQLite's `localtime` is the host's zone: noon of its current date.
-        let local = jiff::Zoned::now();
-        let now = Timestamp::from(
-            local
-                .date()
-                .at(12, 0, 0, 0)
-                .to_zoned(local.time_zone().clone())
-                .unwrap()
-                .timestamp(),
-        );
-        for (index, days, reported) in [
-            (1, 0, true),
-            (2, 3, true),
-            (3, 8, true),
-            (4, -1, true),
-            (5, 0, false),
+        let zone = jiff::tz::TimeZone::system();
+        let local = |month, day, hour| {
+            Timestamp::from(
+                jiff::civil::date(2026, month, day)
+                    .at(hour, 0, 0, 0)
+                    .to_zoned(zone.clone())
+                    .unwrap()
+                    .timestamp(),
+            )
+        };
+        let now = local(11, 15, 12);
+        let month_start = local(11, 1, 0);
+        for (index, finished_at, reported) in [
+            (1, now, true),
+            (2, local(11, 12, 12), true),
+            (3, month_start, true),
+            (4, month_start - SignedDuration::from_secs(1), true),
+            (5, local(11, 16, 12), true),
+            (6, now, false),
         ] {
             let job = db
                 .jobs()
@@ -306,7 +311,7 @@ mod tests {
             sqlx::query(
                 "UPDATE jobs SET state = 'succeeded', finished_at = ?, result = ? WHERE id = ?",
             )
-            .bind((now - SignedDuration::from_hours(24 * days)).to_rfc3339_offset())
+            .bind(finished_at.to_rfc3339_offset())
             .bind(result.to_string())
             .bind(job.id.to_string())
             .execute(&db.pool)
@@ -318,6 +323,16 @@ mod tests {
         assert_eq!(windows.today.unwrap().input_tokens, 100);
         assert_eq!(windows.last_7_days.unwrap().jobs, 2);
         assert_eq!(windows.last_7_days.unwrap().output_tokens, 24);
+        assert_eq!(
+            windows.this_month,
+            Some(UsageTotals {
+                input_tokens: 300,
+                cached_input_tokens: 120,
+                output_tokens: 36,
+                reasoning_output_tokens: None,
+                jobs: 3,
+            })
+        );
         assert_eq!(
             db.jobs()
                 .usage_windows("another-tenant", now)

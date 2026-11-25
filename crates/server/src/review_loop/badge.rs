@@ -356,6 +356,7 @@ mod tests {
     fn mergeable_pr() -> StoredPr {
         let at: Timestamp = "2026-11-22T09:00:00Z".parse().expect("time");
         StoredPr {
+            stack: None,
             facts: PrFacts {
                 repo: platform(),
                 number: 5949,

@@ -56,6 +56,7 @@ fn repo(name: &str) -> RepoRef {
 
 fn pr(number: u32, title: &str) -> StoredPr {
     StoredPr {
+        stack: None,
         facts: PrFacts {
             repo: repo("wallet-ui"),
             number,

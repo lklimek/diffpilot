@@ -121,7 +121,7 @@ pub struct Stack {
     pub position: StackPosition,
     /// Number of pull requests in the stack.
     pub size: u32,
-    /// Numbers of dependent pull requests.
+    /// Numbers of open pull requests above this one, in stack order.
     pub dependents: Vec<u32>,
 }
 
@@ -129,11 +129,11 @@ pub struct Stack {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum StackPosition {
-    /// Base of the stack.
+    /// Lowest open layer with open dependents.
     Bottom,
-    /// With a parent and dependents.
+    /// With a parent and open dependents.
     Middle,
-    /// Tip of the stack.
+    /// With no open dependents.
     Top,
 }
 
@@ -142,7 +142,7 @@ pub enum StackPosition {
 pub struct FactFilter {
     /// Stable key for the fact kind and its value where applicable.
     pub key: String,
-    /// Label shown in the filter menu.
+    /// Label shown on the filter chip.
     pub label: String,
 }
 
@@ -807,7 +807,7 @@ pub struct WorkItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub stack: Option<Stack>,
-    /// Base branch matching a configured or built-in release pattern.
+    /// The pull request's base branch when it matches a repository release pattern, configured or otherwise built-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub release_base: Option<String>,

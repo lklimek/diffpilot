@@ -490,12 +490,13 @@ Existing job-completion broadcasts refresh progress and the Tour's usage after A
 Settings exposes tenant totals in `llm_usage`:
 
 ```json
-{"llm_usage":{"today":{"input_tokens":1200000,"cached_input_tokens":900000,"output_tokens":45000,"reasoning_output_tokens":null,"jobs":7},"last_7_days":{"input_tokens":3400000,"cached_input_tokens":2900000,"output_tokens":120000,"reasoning_output_tokens":null,"jobs":23}}}
+{"llm_usage":{"today":{"input_tokens":1200000,"cached_input_tokens":900000,"output_tokens":45000,"reasoning_output_tokens":null,"jobs":7},"last_7_days":{"input_tokens":3400000,"cached_input_tokens":2900000,"output_tokens":120000,"reasoning_output_tokens":null,"jobs":23},"this_month":{"input_tokens":6000000,"cached_input_tokens":5000000,"output_tokens":200000,"reasoning_output_tokens":null,"jobs":41}}}
 ```
 
-Windows use job completion time, from the server's local midnight through now; `last_7_days` includes
-today and the previous six calendar days. Each window is null without reports. One aggregate SQL query
-reads both windows; no counters or tables are added. Old responses may omit `llm_usage` and `usage`.
+Windows use job completion time and the server's local calendar. `today` starts at local midnight,
+`last_7_days` includes today and the previous six calendar days, and `this_month` starts at midnight on
+the first day of the month. All three end at the current time. Without reports, `today` and `last_7_days`
+are null and `this_month` is omitted. One aggregate query reads all three windows.
 
 ### Large pull requests before starting
 
@@ -997,9 +998,11 @@ once any required session, token or CSRF checks pass.
   installation-wide count of verified deliveries dropped for untracked repositories since the last restart, at most
   14 days. They also show the number of TCP connections refused at the webhook listener's capacity limit since the
   last restart.
-- Fact tags may include stable filter keys and labels. Work items may include stack position, size, dependent PR
-  numbers and a matching release base. `Settings.llm_usage.this_month` uses the server-local month. The ranking
-  usage reset starts counting from the reset time. `resets_at` is the next midnight in the reader's configured zone.
+- Fact tags may include stable filter keys and labels. Work items may include stack position, size and dependent
+  PR numbers. `WorkItem.release_base` is the PR's base branch when it matches the repository's release patterns.
+  These are the configured patterns when present and the built-in patterns otherwise, including `main` and `master`.
+  `Settings.llm_usage.this_month` uses the server-local month. The ranking usage reset starts counting from the
+  reset time. `resets_at` is the next midnight in the reader's configured zone.
 - The activity response shows the reader's own jobs with optional subject, times and typed wait reason, plus
   other running or queued jobs in the same tenant with kind and a response-local opaque id. The pause and last
   call are the reader's own.

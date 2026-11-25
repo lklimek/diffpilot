@@ -11,7 +11,7 @@ import { authorFilter, repoFilter } from "../filter-chips/filters";
 export function workTags(item: DashboardItem): DashboardFactTag[] {
   const tags = [...item.tags];
   if (item.private) tags.unshift({ text: "private", tip: "From a private repository; shown only to you." });
-  if (item.stack?.position === "bottom") {
+  if (item.stack?.position === "bottom" && item.stack.dependents.length > 0) {
     const { size, dependents } = item.stack;
     const base = item.facts.find(({ label }) => label === "Base branch")?.value;
     const numbers = dependents.map((number) => `#${number}`);
@@ -19,14 +19,14 @@ export function workTags(item: DashboardItem): DashboardFactTag[] {
       numbers.length === 1 ? numbers[0] : `${numbers.slice(0, -1).join(", ")} and ${numbers.at(-1)}`;
     tags.push({
       text: "⤓ merges first",
-      tip: `Bottom of a stack of ${size}${base ? `: base is ${base}` : ""}${numbers.length ? `; ${rest} ${numbers.length === 1 ? "is" : "are"} based on it` : ""}`,
+      tip: `Bottom of a stack of ${size}${base ? `: base is ${base}` : ""}; ${rest} ${numbers.length === 1 ? "is" : "are"} based on it`,
       filter: { key: "stack_bottom", label: "merges first" },
     });
   }
   if (item.release_base)
     tags.push({
       text: `→ ${item.release_base}`,
-      tip: `Base ${item.release_base} matches this repository’s configured release branches`,
+      tip: `PR base branch ${item.release_base} matches this repository’s release patterns (configured, or built-in if none are configured)`,
       filter: { key: "release_base", label: "release base" },
     });
   return tags;

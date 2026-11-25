@@ -1,15 +1,15 @@
 //! Alias-batched GraphQL lookups: pull request details (Q2), issue milestones (Q9), history details (Q13) and the
 //! reach diagnostic (Q15).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
-use contracts::api::dashboard::ScanNote;
+use contracts::api::dashboard::{ScanNote, Stack, StackPosition};
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::batch::{PR_BATCH, literal};
+use super::batch::{PR_BATCH, literal, query};
 use super::client::{TokenSource, WorkClient, WorkError};
 use super::{Fetched, ItemRef, Milestone, note, repo_name, timestamp};
 
@@ -23,6 +23,8 @@ const REACH_BATCH: usize = 50;
 const PULL_FRAGMENT: &str = " fragment Pull on PullRequest { number title url state isDraft \
 isCrossRepository body additions deletions createdAt updatedAt mergeable mergeStateStatus reviewDecision \
 baseRefName baseRefOid headRefName headRefOid milestone { title number state } \
+stackEntry { position stack { id baseRefName size entries(first: 100) { pageInfo { hasNextPage endCursor } \
+nodes { position pullRequest { number state } } } } } \
 baseRepository { nameWithOwner isPrivate viewerPermission defaultBranchRef { name } } author { __typename login } \
 labels(first: 20) { nodes { name } } participants { totalCount } \
 closingIssuesReferences(first: 5) { nodes { number title labels(first: 10) { nodes { name } } } } \
@@ -329,6 +331,7 @@ pub struct PullDetail {
     /// Base commit.
     #[serde(default)]
     pub base_ref_oid: Option<String>,
+    stack_entry: Option<PullStackEntry>,
     /// Milestone.
     pub milestone: Option<Milestone>,
     /// Base repository.
@@ -355,6 +358,95 @@ pub struct PullDetail {
     pub timeline_items: Nodes<TimelineRequest>,
     /// The head commit's CI.
     pub commits: Nodes<CommitNode>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct PullStackEntry {
+    position: u32,
+    stack: Option<PullStack>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PullStack {
+    id: String,
+    base_ref_name: String,
+    size: u32,
+    entries: StackEntries,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StackEntries {
+    nodes: Option<Vec<Option<StackMember>>>,
+    page_info: Option<StackPageInfo>,
+}
+
+impl StackEntries {
+    fn next_cursor(&self) -> Option<&str> {
+        let info = self.page_info.as_ref().filter(|page| page.has_next_page)?;
+        info.end_cursor.as_deref()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StackPageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StackMember {
+    position: u32,
+    pull_request: Option<StackPull>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct StackPull {
+    number: u32,
+    state: String,
+}
+
+impl PullDetail {
+    /// The GitHub-native stack and its open layers above this pull request.
+    pub(crate) fn stack(&self) -> Option<Stack> {
+        let entry = self.stack_entry.as_ref()?;
+        let stack = entry.stack.as_ref()?;
+        if stack.size < 2 || entry.position == 0 || entry.position > stack.size {
+            return None;
+        }
+        let mut dependents: Vec<_> = stack
+            .entries
+            .nodes
+            .iter()
+            .flatten()
+            .flatten()
+            .filter(|member| member.position > entry.position)
+            .filter_map(|member| {
+                member
+                    .pull_request
+                    .as_ref()
+                    .filter(|pr| pr.state == "OPEN")
+                    .map(|pr| (member.position, pr.number))
+            })
+            .collect();
+        dependents.sort_unstable();
+        let position = if dependents.is_empty() {
+            StackPosition::Top
+        } else if self.base_ref_name == stack.base_ref_name {
+            // GitHub retargets the next open layer to the stack's base when the bottom merges.
+            StackPosition::Bottom
+        } else {
+            StackPosition::Middle
+        };
+        Some(Stack {
+            position,
+            size: stack.size,
+            dependents: dependents.into_iter().map(|(_, number)| number).collect(),
+        })
+    }
 }
 
 /// History facts of one pull request (Q13).
@@ -426,7 +518,14 @@ impl<T: TokenSource> WorkClient<T> {
         let mut fetched = Fetched::default();
         for (pr, value) in answers.resolved {
             match serde_json::from_value::<Option<PullDetail>>(value["pullRequest"].clone()) {
-                Ok(Some(detail)) => {
+                Ok(Some(mut detail)) => {
+                    if let Some(stack) = detail
+                        .stack_entry
+                        .as_mut()
+                        .and_then(|entry| entry.stack.as_mut())
+                    {
+                        self.read_remaining_stack_entries(&pr, stack).await?;
+                    }
                     fetched.found.insert(pr, detail);
                 }
                 Ok(None) => fetched.notes.push(left_out(&pr, "Details", false)),
@@ -440,6 +539,59 @@ impl<T: TokenSource> WorkClient<T> {
             fetched.notes.push(left_out(&pr, "Details", false));
         }
         Ok(fetched)
+    }
+
+    async fn read_remaining_stack_entries(
+        &self,
+        pr: &ItemRef,
+        stack: &mut PullStack,
+    ) -> Result<(), WorkError> {
+        let mut cursors = HashSet::new();
+        while let Some(cursor) = stack.entries.next_cursor() {
+            if !cursors.insert(cursor.to_owned()) {
+                break;
+            }
+            let lookup = repository(
+                &pr.repo,
+                &format!(
+                    "pullRequest(number: {}) {{ stackEntry {{ stack {{ id entries(first: 100, after: {}) {{ \
+                     pageInfo {{ hasNextPage endCursor }} nodes {{ position pullRequest {{ number state }} }} \
+                     }} }} }} }}",
+                    pr.number,
+                    literal(cursor)
+                ),
+            );
+            let data = match self.graphql(&query("", &[lookup])).await {
+                Ok(data) => data,
+                Err(error) if error.ends_refresh() => return Err(error),
+                Err(error) => {
+                    tracing::debug!(%pr, ?error, "could not read the next GitHub stack page");
+                    break;
+                }
+            };
+            let page =
+                &data.get("a0").unwrap_or(&Value::Null)["pullRequest"]["stackEntry"]["stack"];
+            if page["id"].as_str() != Some(stack.id.as_str()) {
+                break;
+            }
+            let Ok(StackEntries {
+                nodes: Some(nodes),
+                page_info,
+            }) = serde_json::from_value(page["entries"].clone())
+            else {
+                break;
+            };
+            if nodes.is_empty() {
+                break;
+            }
+            let members = stack.entries.nodes.get_or_insert_default();
+            members.extend(nodes);
+            if members.len() >= stack.size as usize {
+                break;
+            }
+            stack.entries.page_info = page_info;
+        }
+        Ok(())
     }
 
     /// `mergeStateStatus` of open pull requests, read again (Q17), ten per query. A pull request GitHub does not
