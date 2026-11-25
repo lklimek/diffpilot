@@ -484,7 +484,7 @@ async fn untracked_burst_does_not_take_write_lock_or_store_rows() {
             .unwrap(),
         0
     );
-    assert_eq!(db.github().status(now).await.unwrap(), (None, 0));
+    assert_eq!(db.github().last_delivery_at().await.unwrap(), None);
 
     super::super::analyses::testing::seed_analysis(&db)
         .await

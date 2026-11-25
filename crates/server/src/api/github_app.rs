@@ -22,7 +22,7 @@ async fn read(
     _: Session,
 ) -> Result<Json<GithubWebhook>, ApiFailure<DbError>> {
     let (last_delivery_at, dropped_deliveries) = state
-        .webhook_drops
+        .webhook_metrics
         .status(&state.db, Timestamp::now())
         .await?;
     Ok(Json(GithubWebhook {
@@ -34,5 +34,6 @@ async fn read(
             .map(ToString::to_string),
         last_delivery_at,
         dropped_deliveries,
+        refused_connections: state.webhook_metrics.refused_connections(),
     }))
 }

@@ -1065,14 +1065,15 @@ fn usage_and_size_warning_are_additive_json_numbers() {
 }
 
 #[test]
-fn github_webhook_status_reports_only_installation_wide_delivery_totals() {
+fn github_webhook_status_reports_only_installation_wide_totals() {
     use contracts::api::settings::GithubWebhook;
 
     let wire = json!({
         "configured": true,
         "webhook_url": "https://hooks.example.test/diffpilot/github",
         "last_delivery_at": "2026-11-25T10:00:00Z",
-        "dropped_deliveries": 3
+        "dropped_deliveries": 3,
+        "refused_connections": 2
     });
     let status: GithubWebhook = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(status).unwrap(), wire);

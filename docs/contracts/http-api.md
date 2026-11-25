@@ -983,7 +983,9 @@ The response and status in the table describe their final contract.
   `SnapshotMeta` omits `facts_checked_at`. Repository installations come from the database and cover repositories
   tracked by the reader's tenant through owners to list, repository rules, watches, analyses or current snapshots.
   Webhook settings show secret configuration, the optional public URL, the last verified delivery and the
-  installation-wide 14-day count of verified deliveries dropped for untracked repositories.
+  installation-wide count of verified deliveries dropped for untracked repositories since the last restart, at most
+  14 days. They also show the number of TCP connections refused at the webhook listener's capacity limit since the
+  last restart.
 - Fact tags may include stable filter keys and labels. Work items may include stack position, size, dependent PR
   numbers and a matching release base. `Settings.llm_usage.this_month` uses the server-local month. The ranking
   usage reset starts counting from the reset time. `resets_at` is the next midnight in the reader's configured zone.

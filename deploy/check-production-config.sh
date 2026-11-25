@@ -16,7 +16,8 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 forbidden='SR_RUNNER_DEV_NO_ISOLATION|SR_RUNNER_DEV_HOST_GATEWAY|SR_SUPERVISOR_TEST_FAULTS|SR_SUPERVISOR_UNPRIVILEGED|R1_FAULT_[A-Z_]+|fake-provider|SR_RUNNER_PROVIDER'
 # Files that build or run the production stack (the local variant runs the same images).
 files=(
-  deploy/compose.yaml deploy/compose.local.yaml .env.example
+  deploy/compose.yaml deploy/compose.local.yaml deploy/compose.secrets.yaml deploy/compose.webhook-secrets.yaml
+  .env.example
   deploy/server/Dockerfile deploy/server/healthcheck.sh deploy/server/entrypoint.sh
   deploy/containers/runner.Dockerfile
   deploy/egress-proxy/Dockerfile deploy/egress-proxy/entrypoint.sh deploy/egress-proxy/squid.conf
@@ -34,11 +35,10 @@ scan() {
   return "$found"
 }
 
-secrets=(SR_SECRET_KEY SR_RUNNER_SECRET SR_GITHUB_CLIENT_SECRET SR_MEMCAN_TOKEN SR_GITHUB_WEBHOOK_SECRET)
+secrets=(SR_SECRET_KEY SR_RUNNER_SECRET SR_GITHUB_CLIENT_SECRET SR_MEMCAN_TOKEN)
 declare -A secret_file_names=(
   [SR_SECRET_KEY]=sr-secret-key [SR_RUNNER_SECRET]=sr-runner-secret
   [SR_GITHUB_CLIENT_SECRET]=sr-github-client-secret [SR_MEMCAN_TOKEN]=sr-memcan-token
-  [SR_GITHUB_WEBHOOK_SECRET]=github-webhook/current
 )
 # Values that must differ from .env.example's.
 own_values=(SR_PUBLIC_URL SR_GITHUB_APP_ID SR_GITHUB_CLIENT_ID SR_MEMCAN_URL
@@ -241,25 +241,45 @@ check_env() {
     done
   else
     for key in "${secrets[@]}"; do
-      if [[ "$key" == SR_GITHUB_WEBHOOK_SECRET && "$local_mode" == 1 ]]; then continue; fi
       if [[ -z "${values[$key]:-}" ]]; then say "$key is empty (or use --secret-files with compose.secrets.yaml)"; fi
     done
-    for key in SR_RUNNER_SECRET SR_GITHUB_WEBHOOK_SECRET; do
-      value="${values[$key]:-}"
-      if [[ "$key" == SR_GITHUB_WEBHOOK_SECRET ]]; then
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        if [[ -z "$value" && -n "${values[$key]:-}" ]]; then say "$key is empty after trimming whitespace"; fi
-      fi
-      if [[ -n "$value" && "$value" != *REPLACE* ]] && ((${#value} < 32)); then
-        say "$key is shorter than 32 characters (openssl rand -hex 32)"
-      fi
-    done
+    value="${values[SR_RUNNER_SECRET]:-}"
+    if [[ -n "$value" && "$value" != *REPLACE* ]] && ((${#value} < 32)); then
+      say "SR_RUNNER_SECRET is shorter than 32 characters (openssl rand -hex 32)"
+    fi
   fi
+
+  secrets_dir="${values[SR_SECRETS_DIR]:-/srv/diffpilot/secrets}"
+  for key in SR_GITHUB_WEBHOOK_SECRET SR_GITHUB_WEBHOOK_SECRET_PREVIOUS; do
+    local file_key="${key}_FILE" filename=current
+    if [[ "$key" == SR_GITHUB_WEBHOOK_SECRET_PREVIOUS ]]; then filename=previous; fi
+    path="${values[$file_key]:-}"
+    if [[ -v "values[$key]" ]]; then
+      value="${values[$key]}"
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
+      if [[ -n "$path" ]]; then
+        say "set only one of $key and $file_key"
+      elif [[ -z "$value" ]]; then
+        say "$key is blank (leave it unset to disable it)"
+      elif [[ "$value" != *REPLACE* ]] && ((${#value} < 32)); then
+        say "$key is shorter than 32 characters"
+      fi
+    elif [[ -n "$path" ]]; then
+      if [[ "$path" == "/run/secrets/github-webhook/$filename" ]]; then
+        webhook_overlay="$repo/deploy/compose.webhook-secrets.yaml"
+        check_secret_file "$key" "$secrets_dir/github-webhook/$filename" || found=1
+      else
+        say "$file_key must be /run/secrets/github-webhook/$filename for the webhook secrets overlay"
+      fi
+    elif [[ "$key" == SR_GITHUB_WEBHOOK_SECRET ]]; then
+      echo "check-production-config: warning: webhook not configured" >&2
+    fi
+  done
   return "$found"
 }
 
-env_file="" local=0 render=1 self_test=0 secret_files=0
+env_file="" local=0 render=1 self_test=0 secret_files=0 webhook_overlay=""
 env_files=()
 while (($#)); do
   case "$1" in
@@ -289,16 +309,17 @@ can_render() {
 }
 
 # rendered ROOT ENV_FILE [OVERRIDE]: `docker compose config` of the production stack has no switch and keeps
-# nothing in RAM (OVERRIDE: a file in ROOT/deploy, or an absolute path).
+# nothing in RAM (each override is a file in ROOT/deploy or an absolute path).
 rendered() {
   local out mounts ram overlay files=(-f "$1/deploy/compose.yaml") env_args=(--env-file "$2")
   for overlay in "${env_files[@]:1}"; do env_args+=(--env-file "$overlay"); done
-  case "${3:-}" in
-    "") ;;
-    /*) files+=(-f "$3") ;;
-    *) files+=(-f "$1/deploy/$3") ;;
-  esac
-  if [[ -n "${4:-}" ]]; then files+=(-f "$4"); fi
+  for overlay in "${@:3}"; do
+    case "$overlay" in
+      "") ;;
+      /*) files+=(-f "$overlay") ;;
+      *) files+=(-f "$1/deploy/$overlay") ;;
+    esac
+  done
   # Bind mount sources only have to exist for `up`; `config` does not check them.
   out="$(docker compose "${env_args[@]}" "${files[@]}" config --format json 2>&1)" || {
     echo 'check-production-config: Compose rendering failed; check file syntax and required variables' >&2
@@ -330,9 +351,9 @@ rendered_local() {
   load_env "$2" values
   for overlay in "${env_files[@]:1}"; do load_env "$overlay" values 1; done
   if [[ -n "${values[SR_SERVER_UID]:-}" ]]; then
-    rendered "$1" "$2" compose.local.yaml "$1/deploy/dev/compose.host-uid.yaml"
+    rendered "$1" "$2" compose.local.yaml "$1/deploy/dev/compose.host-uid.yaml" "$webhook_overlay"
   else
-    rendered "$1" "$2" compose.local.yaml
+    rendered "$1" "$2" compose.local.yaml "$webhook_overlay"
   fi
 }
 
@@ -423,9 +444,12 @@ if ((self_test)); then
   env_case "allowed logins unset" fail 0 -e '/^SR_ALLOWED_LOGINS=/d'
   env_case "allowed logins placeholder" fail 0 -e 's|^SR_ALLOWED_LOGINS=.*|SR_ALLOWED_LOGINS=REPLACE_WITH_LOGINS|'
   env_local=1 env_case "local webhook can be disabled" pass 0 -e '/^SR_GITHUB_WEBHOOK_SECRET=/d'
-  env_case "missing webhook secret" fail 0 -e '/^SR_GITHUB_WEBHOOK_SECRET=/d'
+  want_text="warning: webhook not configured" env_case "missing webhook secret" pass 0 -e '/^SR_GITHUB_WEBHOOK_SECRET=/d'
+  env_case "empty webhook secret" fail 0 -e 's/^SR_GITHUB_WEBHOOK_SECRET=.*/SR_GITHUB_WEBHOOK_SECRET=/'
   env_case "blank webhook secret" fail 0 -e 's/^SR_GITHUB_WEBHOOK_SECRET=.*/SR_GITHUB_WEBHOOK_SECRET="  "/'
   env_case "short webhook secret" fail 0 -e 's/^SR_GITHUB_WEBHOOK_SECRET=.*/SR_GITHUB_WEBHOOK_SECRET=short/'
+  env_case "short previous webhook secret" fail 0 -e "1i SR_GITHUB_WEBHOOK_SECRET_PREVIOUS=short"
+  env_case "blank previous webhook secret" fail 0 -e "1i SR_GITHUB_WEBHOOK_SECRET_PREVIOUS="
   env_case "short runner secret" fail 0 -e 's|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=short|'
   for key in SR_DOCKER_GID SR_WORKER_IMAGE SR_FETCH_IMAGE; do
     runtime_env_case "$key unset" fail 0 -e "/^$key=/d"
@@ -545,16 +569,28 @@ if ((self_test)); then
   fi
   # Secrets as files.
   mkdir -m 0700 "$tmp/secrets"
-  mkdir -m 0700 "$tmp/secrets/github-webhook"
   for name in sr-secret-key sr-github-client-secret sr-memcan-token; do echo "CANARY-$name" > "$tmp/secrets/$name"; done
   echo "CANARY-runner-secret-0123456789abcdef0123456789" > "$tmp/secrets/sr-runner-secret"
-  echo "CANARY-webhook-secret-0123456789abcdef0123456789" > "$tmp/secrets/github-webhook/current"
-  chmod 0400 "$tmp/secrets"/sr-* "$tmp/secrets/github-webhook/current"
+  chmod 0400 "$tmp/secrets"/sr-*
   chmod 0440 "$tmp/secrets/sr-runner-secret"
   fixture_uids["$tmp/secrets/sr-runner-secret"]=10002
-  files_env=(-e 's/^\(SR_SECRET_KEY\|SR_RUNNER_SECRET\|SR_GITHUB_CLIENT_SECRET\|SR_MEMCAN_TOKEN\|SR_GITHUB_WEBHOOK_SECRET\)=.*/\1=/'
-    -e "\$a SR_SECRETS_DIR=$tmp/secrets")
-  env_case "secrets as files" pass 1 "${files_env[@]}"
+  files_env=(-e 's/^\(SR_SECRET_KEY\|SR_RUNNER_SECRET\|SR_GITHUB_CLIENT_SECRET\|SR_MEMCAN_TOKEN\)=.*/\1=/'
+    -e '/^SR_GITHUB_WEBHOOK_SECRET=/d' -e "1i SR_SECRETS_DIR=$tmp/secrets")
+  want_text="warning: webhook not configured" env_case "secrets as files without a webhook directory" pass 1 "${files_env[@]}"
+  webhook_files=(-e "1i SR_GITHUB_WEBHOOK_SECRET_FILE=/run/secrets/github-webhook/current")
+  env_case "opted-in webhook file is missing" fail 1 "${files_env[@]}" "${webhook_files[@]}"
+  mkdir -m 0700 "$tmp/secrets/github-webhook"
+  printf '  \n' > "$tmp/secrets/github-webhook/current"
+  chmod 0400 "$tmp/secrets/github-webhook/current"
+  env_case "opted-in webhook file is blank" fail 1 "${files_env[@]}" "${webhook_files[@]}"
+  chmod 0600 "$tmp/secrets/github-webhook/current"
+  echo short > "$tmp/secrets/github-webhook/current"
+  chmod 0400 "$tmp/secrets/github-webhook/current"
+  env_case "opted-in webhook file is short" fail 1 "${files_env[@]}" "${webhook_files[@]}"
+  chmod 0600 "$tmp/secrets/github-webhook/current"
+  echo "CANARY-webhook-secret-0123456789abcdef0123456789" > "$tmp/secrets/github-webhook/current"
+  chmod 0400 "$tmp/secrets/github-webhook/current"
+  env_case "valid opted-in webhook file" pass 1 "${files_env[@]}" "${webhook_files[@]}"
   for name in "${secret_file_names[@]}"; do
     fixture_uids["$tmp/secrets/$name"]=10001
     env_case "$name wrong consumer" fail 1 "${files_env[@]}"
@@ -578,12 +614,23 @@ if ((self_test)); then
     sed "${files_env[@]}" "$tmp/good.env" > "$tmp/files.env"
     out="$(docker compose --env-file "$tmp/files.env" -f "$repo/deploy/compose.yaml" \
       -f "$repo/deploy/compose.secrets.yaml" config 2>&1)" || { echo "self-test: compose.secrets.yaml does not render: $out" >&2; exit 1; }
-    if grep -qE '^ +SR_(SECRET_KEY|RUNNER_SECRET|GITHUB_CLIENT_SECRET|MEMCAN_TOKEN|GITHUB_WEBHOOK_SECRET):' <<< "$out" ||
-      [[ "$(grep -cE '_FILE: /run/secrets/(sr-|github-webhook/current)' <<< "$out")" != 6 ]]; then
+    if grep -qE '^ +SR_(SECRET_KEY|RUNNER_SECRET|GITHUB_CLIENT_SECRET|MEMCAN_TOKEN):' <<< "$out" ||
+      [[ "$(grep -c '_FILE: /run/secrets/sr-' <<< "$out")" != 5 ]] ||
+      grep -q '/run/secrets/github-webhook' <<< "$out"; then
       echo "self-test: compose.secrets.yaml does not replace the secrets by files" >&2
       exit 1
     fi
     rendered "$repo" "$tmp/files.env" compose.secrets.yaml > /dev/null || { echo "self-test: secrets variant rejected" >&2; exit 1; }
+    sed "${webhook_files[@]}" "$tmp/files.env" > "$tmp/webhook-files.env"
+    out="$(docker compose --env-file "$tmp/webhook-files.env" -f "$repo/deploy/compose.yaml" \
+      -f "$repo/deploy/compose.secrets.yaml" -f "$repo/deploy/compose.webhook-secrets.yaml" config --format json 2>&1)" || {
+      echo "self-test: opted-in webhook overlay does not render" >&2; exit 1;
+    }
+    if ! jq -e '.services.server |
+        .environment.SR_GITHUB_WEBHOOK_SECRET_FILE == "/run/secrets/github-webhook/current" and
+        any(.volumes[]; .target == "/run/secrets/github-webhook" and .read_only == true)' <<< "$out" >/dev/null; then
+      echo "self-test: the opted-in webhook mount is missing" >&2; exit 1
+    fi
     sed 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' "$tmp/good.env" > "$tmp/local.env"
     rendered_local "$repo" "$tmp/local.env" > /dev/null 2>&1 || { echo "self-test: localhost local variant rejected" >&2; exit 1; }
     rendered "$repo" "$tmp/good.env" > /dev/null 2>&1 || { echo "self-test: production stack rejected" >&2; exit 1; }
@@ -634,9 +681,9 @@ if [[ -n "$env_file" ]]; then check_env "$env_file" "$repo/.env.example" "$secre
 if can_render; then
   if [[ -n "$env_file" ]]; then
     if ((secret_files)); then
-      rendered "$repo" "$env_file" compose.secrets.yaml || status=1
+      rendered "$repo" "$env_file" compose.secrets.yaml "$webhook_overlay" || status=1
     else
-      rendered "$repo" "$env_file" || status=1
+      rendered "$repo" "$env_file" "$webhook_overlay" || status=1
     fi
     if ((local)); then rendered_local "$repo" "$env_file" || status=1; fi
   else

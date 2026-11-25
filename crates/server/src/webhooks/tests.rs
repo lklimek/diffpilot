@@ -114,10 +114,7 @@ async fn unsigned_or_bad_signature_is_401_before_parse() {
     ] {
         assert_eq!(send(&hooks, req).await.status(), 401);
     }
-    assert_eq!(
-        hooks.db.github().status(Timestamp::now()).await.unwrap(),
-        (None, 0)
-    );
+    assert_eq!(hooks.db.github().last_delivery_at().await.unwrap(), None);
     assert_eq!(
         send(&hooks, request(&hooks, "ping", id, "not json", SECRET))
             .await
@@ -128,10 +125,9 @@ async fn unsigned_or_bad_signature_is_401_before_parse() {
         hooks
             .db
             .github()
-            .status(Timestamp::now())
+            .last_delivery_at()
             .await
             .unwrap()
-            .0
             .is_some()
     );
 }
@@ -296,10 +292,9 @@ async fn ping_ok() {
         hooks
             .db
             .github()
-            .status(Timestamp::now())
+            .last_delivery_at()
             .await
             .unwrap()
-            .0
             .is_some()
     );
     assert!(
@@ -390,17 +385,14 @@ async fn delivery_for_untracked_repo_dropped_and_counted() {
         );
     }
     let (last, dropped) = hooks
-        .dropped
+        .metrics
         .status(&hooks.db, Timestamp::now())
         .await
         .unwrap();
+    assert_eq!(hooks.db.github().last_delivery_at().await.unwrap(), None);
+    let future = Timestamp::now() + super::DROP_RETENTION;
     assert_eq!(
-        hooks.db.github().status(Timestamp::now()).await.unwrap(),
-        (None, 0)
-    );
-    let future = Timestamp::now() + super::DROP_RETENTION + jiff::SignedDuration::from_hours(1);
-    assert_eq!(
-        hooks.dropped.status(&hooks.db, future).await.unwrap(),
+        hooks.metrics.status(&hooks.db, future).await.unwrap(),
         (None, 0)
     );
     assert!(last.is_some());
@@ -491,7 +483,12 @@ async fn check_run_success_ignored_at_receipt() {
             .is_none()
     );
     assert_eq!(
-        hooks.db.github().status(Timestamp::now()).await.unwrap().1,
+        hooks
+            .metrics
+            .status(&hooks.db, Timestamp::now())
+            .await
+            .unwrap()
+            .1,
         0
     );
 }
@@ -587,10 +584,21 @@ async fn full_handler_sheds_503() {
 }
 
 async fn listen(app: Router) -> (SocketAddr, watch::Sender<bool>, JoinHandle<()>) {
+    listen_with_metrics(app, super::WebhookMetrics::default()).await
+}
+
+async fn listen_with_metrics(
+    app: Router,
+    metrics: super::WebhookMetrics,
+) -> (SocketAddr, watch::Sender<bool>, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (stop, stopped) = watch::channel(false);
-    (addr, stop, tokio::spawn(serve(listener, app, stopped)))
+    (
+        addr,
+        stop,
+        tokio::spawn(serve(listener, app, metrics, stopped)),
+    )
 }
 
 async fn assert_drained(addr: SocketAddr, method: &str, path: &str, headers: &str, status: u16) {
@@ -803,6 +811,7 @@ async fn webhook_status_reports_audit_to_signed_in_users() {
     );
     assert!(status.last_delivery_at.is_some());
     assert_eq!(status.dropped_deliveries, 1);
+    assert_eq!(status.refused_connections, 0);
 }
 
 #[tokio::test]
@@ -941,10 +950,9 @@ async fn verified_webhook_payload_errors_are_audited_and_warn_rate_limited() {
                 hooks
                     .db
                     .github()
-                    .status(Timestamp::now())
+                    .last_delivery_at()
                     .await
                     .unwrap()
-                    .0
                     .is_some()
             );
         }
@@ -957,20 +965,54 @@ async fn verified_webhook_payload_errors_are_audited_and_warn_rate_limited() {
 
 #[tokio::test]
 async fn webhook_connection_limit_refuses_excess_tcp_connections() {
-    let hooks = fixture(Some(SECRET)).await;
-    let (addr, _stop, _server) = listen(webhook_router(hooks)).await;
+    use contracts::routes::GET_GITHUB_WEBHOOK;
+    use db::repo::analyses::testing::seed_analysis;
+
+    let mut config = test_config();
+    config.github_webhook_secret = Some(SECRET.into());
+    let db = Db::in_memory().await.unwrap();
+    seed_analysis(&db).await.unwrap();
+    let state = crate::state::AppState::with_queue(config, db);
+    let cookie = crate::test_support::session_cookie(&state, DEFAULT_TENANT).await;
+    let hooks = Webhooks::from_app(&state);
+    let (logs, _subscriber) = LogCapture::start_scoped();
+    let (addr, _stop, _server) =
+        listen_with_metrics(webhook_router(hooks), state.webhook_metrics.clone()).await;
     let mut occupied = Vec::new();
     for _ in 0..64 {
         let mut client = TcpStream::connect(addr).await.unwrap();
         client.write_all(b"GET / HTTP/1.1\r\nHost: ").await.unwrap();
         occupied.push(client);
     }
-    let mut excess = TcpStream::connect(addr).await.unwrap();
-    let result = timeout(Duration::from_secs(1), excess.read(&mut [0u8]))
+    for _ in 0..2 {
+        let mut excess = TcpStream::connect(addr).await.unwrap();
+        let result = timeout(Duration::from_secs(1), excess.read(&mut [0u8]))
+            .await
+            .unwrap();
+        assert!(matches!(result, Ok(0)) || result.is_err(), "{result:?}");
+    }
+    drop(occupied);
+    let response = crate::api::router(state)
+        .oneshot(
+            Request::get(GET_GITHUB_WEBHOOK.path)
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    assert!(matches!(result, Ok(0)) || result.is_err(), "{result:?}");
-    drop(occupied);
+    assert_eq!(response.status(), 200);
+    let status: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(status["refused_connections"], 2);
+    let logs = logs.text();
+    assert_eq!(
+        logs.matches("GitHub webhook connection limit reached")
+            .count(),
+        1,
+        "{logs}"
+    );
+    assert!(logs.contains("count=1"), "{logs}");
 }
 
 #[tokio::test]
@@ -1000,10 +1042,7 @@ async fn verified_wrong_hook_target_warns_once_and_remains_401() {
         logs.contains("target_type=Some(\"repository\")") && logs.contains("target_id=Some(456)"),
         "{logs}"
     );
-    assert_eq!(
-        hooks.db.github().status(Timestamp::now()).await.unwrap(),
-        (None, 0)
-    );
+    assert_eq!(hooks.db.github().last_delivery_at().await.unwrap(), None);
 }
 
 #[tokio::test]

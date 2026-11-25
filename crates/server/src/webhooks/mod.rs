@@ -6,6 +6,7 @@ mod receive;
 mod worker;
 
 use std::collections::{BTreeMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -42,7 +43,8 @@ const HANDLERS: usize = 8;
 const CONNECTIONS: usize = 64;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 const WARNING_INTERVAL: Duration = Duration::from_secs(60);
-const DROP_RETENTION: SignedDuration = SignedDuration::from_hours(14 * 24);
+const DROP_HOURS: i64 = 14 * 24;
+const DROP_RETENTION: SignedDuration = SignedDuration::from_hours(DROP_HOURS);
 const DROPPED_LOG_KEYS: usize = 2_000;
 
 /// State shared by the webhook receiver and its single delivery worker.
@@ -52,12 +54,18 @@ pub struct Webhooks {
     config: Arc<Config>,
     wake: Arc<Notify>,
     security_log: Arc<Mutex<SecurityLog>>,
-    dropped: DroppedDeliveries,
+    metrics: WebhookMetrics,
 }
 
-/// Bounded count of untracked GitHub webhook deliveries for Settings.
+/// Process-local webhook delivery and listener counters for Settings.
 #[derive(Clone, Debug, Default)]
-pub struct DroppedDeliveries(Arc<Mutex<DropCounts>>);
+pub struct WebhookMetrics(Arc<Counts>);
+
+#[derive(Debug, Default)]
+struct Counts {
+    dropped: Mutex<DropCounts>,
+    refused_connections: AtomicU32,
+}
 
 #[derive(Debug, Default)]
 struct DropCounts {
@@ -69,16 +77,24 @@ fn hour(at: Timestamp) -> i64 {
     at.as_second().div_euclid(3600)
 }
 
-impl DroppedDeliveries {
-    fn add(&self, now: Timestamp) {
-        let mut data = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+fn oldest_bucket(at: Timestamp) -> i64 {
+    hour(at) - DROP_HOURS + 1
+}
+
+impl WebhookMetrics {
+    fn drop_delivery(&self, now: Timestamp) {
+        let mut data = self
+            .0
+            .dropped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let latest = data.latest.map_or(now, |last| last.max(now));
         if data.latest.is_none_or(|last| hour(latest) != hour(last)) {
-            let oldest = hour(latest - DROP_RETENTION);
+            let oldest = oldest_bucket(latest);
             data.by_hour.retain(|bucket, _| *bucket >= oldest);
         }
         data.latest = Some(latest);
-        if hour(now) >= hour(latest - DROP_RETENTION) {
+        if hour(now) >= oldest_bucket(latest) {
             let count = data.by_hour.entry(hour(now)).or_default();
             *count = count.saturating_add(1);
         }
@@ -89,16 +105,33 @@ impl DroppedDeliveries {
         db: &Db,
         now: Timestamp,
     ) -> Result<(Option<Timestamp>, u32), db::error::DbError> {
-        let (last, legacy_count) = db.github().status(now).await?;
-        let data = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let cutoff = now - DROP_RETENTION;
+        let last = db.github().last_delivery_at().await?;
+        let data = self
+            .0
+            .dropped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let count = data
             .by_hour
-            .range(hour(cutoff)..)
-            .fold(legacy_count, |total, (_, count)| {
-                total.saturating_add(*count)
-            });
-        Ok((last.max(data.latest.filter(|last| *last >= cutoff)), count))
+            .range(oldest_bucket(now)..)
+            .fold(0u32, |total, (_, count)| total.saturating_add(*count));
+        Ok((
+            last.max(data.latest.filter(|last| *last >= now - DROP_RETENTION)),
+            count,
+        ))
+    }
+
+    fn refuse_connection(&self) {
+        let _ =
+            self.0
+                .refused_connections
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                    Some(count.saturating_add(1))
+                });
+    }
+
+    pub(crate) fn refused_connections(&self) -> u32 {
+        self.0.refused_connections.load(Ordering::Relaxed)
     }
 }
 
@@ -124,6 +157,18 @@ struct WarningRate {
     count: u64,
 }
 
+impl WarningRate {
+    fn record(&mut self) -> Option<u64> {
+        self.count = self.count.saturating_add(1);
+        let now = Instant::now();
+        if self.last.is_some_and(|last| now - last < WARNING_INTERVAL) {
+            return None;
+        }
+        self.last = Some(now);
+        Some(std::mem::take(&mut self.count))
+    }
+}
+
 impl Webhooks {
     /// Creates the receiver and worker over the given database and configuration.
     pub fn new(db: Db, config: Arc<Config>) -> Self {
@@ -132,14 +177,14 @@ impl Webhooks {
             config,
             wake: Arc::default(),
             security_log: Arc::default(),
-            dropped: DroppedDeliveries::default(),
+            metrics: WebhookMetrics::default(),
         }
     }
 
-    /// Shares the drop counter with the public settings route.
+    /// Shares webhook counters with the public settings route.
     pub fn from_app(state: &AppState) -> Self {
         Self {
-            dropped: state.webhook_drops.clone(),
+            metrics: state.webhook_metrics.clone(),
             ..Self::new(state.db.clone(), state.config.clone())
         }
     }
@@ -160,14 +205,7 @@ impl Webhooks {
             .security_log
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let rate = &mut log.warnings[warning as usize];
-        rate.count = rate.count.saturating_add(1);
-        let now = Instant::now();
-        if rate.last.is_some_and(|last| now - last < WARNING_INTERVAL) {
-            return None;
-        }
-        rate.last = Some(now);
-        Some(std::mem::take(&mut rate.count))
+        log.warnings[warning as usize].record()
     }
 
     fn first_installation_cap(&self) -> bool {
@@ -217,8 +255,14 @@ pub fn router(state: Webhooks) -> Router {
 }
 
 /// Serves HTTP/1 with a timed header read and closes connections gracefully on shutdown.
-pub async fn serve(mut listener: TcpListener, app: Router, mut stopped: watch::Receiver<bool>) {
+pub async fn serve(
+    mut listener: TcpListener,
+    app: Router,
+    metrics: WebhookMetrics,
+    mut stopped: watch::Receiver<bool>,
+) {
     let mut connections = JoinSet::new();
+    let mut refused = WarningRate::default();
     let slots = Arc::new(Semaphore::new(CONNECTIONS));
     let mut http = hyper::server::conn::http1::Builder::new();
     http.timer(TokioTimer::new())
@@ -230,6 +274,10 @@ pub async fn serve(mut listener: TcpListener, app: Router, mut stopped: watch::R
             _ = connections.join_next(), if !connections.is_empty() => {}
             (stream, _) = axum::serve::Listener::accept(&mut listener) => {
                 let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+                    metrics.refuse_connection();
+                    if let Some(count) = refused.record() {
+                        tracing::warn!(count, limit = CONNECTIONS, "GitHub webhook connection limit reached");
+                    }
                     continue;
                 };
                 let service = TowerToHyperService::new(app.clone());

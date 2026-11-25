@@ -399,20 +399,15 @@ impl Github<'_> {
         Ok(result.rows_affected() != 0)
     }
 
-    /// Last stored receipt and count of retained legacy untracked rows in the last 14 days.
-    pub async fn status(&self, now: Timestamp) -> Result<(Option<Timestamp>, u32), DbError> {
-        let (last, dropped): (Option<String>, i64) = sqlx::query_as(
-            "SELECT (SELECT MAX(received_at) FROM github_deliveries), COUNT(*)
-             FROM github_deliveries WHERE state = 'not_allowed' AND received_at >= ?",
-        )
-        .bind(ts(now - RETENTION))
-        .fetch_one(self.pool)
-        .await?;
-        let last = last
-            .as_deref()
+    /// When the last stored verified webhook delivery was received.
+    pub async fn last_delivery_at(&self) -> Result<Option<Timestamp>, DbError> {
+        let last: Option<String> =
+            sqlx::query_scalar("SELECT MAX(received_at) FROM github_deliveries")
+                .fetch_one(self.pool)
+                .await?;
+        last.as_deref()
             .map(|value| parse_ts(value, "received_at"))
-            .transpose()?;
-        Ok((last, u32::try_from(dropped).unwrap_or(u32::MAX)))
+            .transpose()
     }
 
     /// Deletes receipts past their retention window.

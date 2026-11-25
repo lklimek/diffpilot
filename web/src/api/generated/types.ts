@@ -4164,9 +4164,13 @@ webhook_url: string | null,
  */
 last_delivery_at: string | null,
 /**
- * Verified deliveries dropped for untracked repositories over the last 14 days, installation-wide.
+ * Verified deliveries dropped for untracked repositories, installation-wide, since the last restart, at most 14 days.
  */
-dropped_deliveries: number, };
+dropped_deliveries: number,
+/**
+ * TCP connections refused at the webhook listener's capacity limit since the last restart.
+ */
+refused_connections: number, };
 
 /**
  * A graph edge.

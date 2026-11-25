@@ -132,7 +132,7 @@ pub(super) async fn receive(State(hooks): State<Webhooks>, request: Request) -> 
         }
     };
     if outcome == Outcome::NotAllowed {
-        hooks.dropped.add(now);
+        hooks.metrics.drop_delivery(now);
     }
     let changes = match changes {
         Ok(changes) => changes,

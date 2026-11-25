@@ -169,9 +169,10 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         api::router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(stop_requested(stopped.clone()));
+    let metrics = state.webhook_metrics.clone();
     let runner = axum::serve(runner, api::runner_router(state))
         .with_graceful_shutdown(stop_requested(stopped.clone()));
-    let webhook = server::webhooks::serve(webhook, api::webhook_router(hooks), stopped);
+    let webhook = server::webhooks::serve(webhook, api::webhook_router(hooks), metrics, stopped);
     tokio::try_join!(public.into_future(), runner.into_future(), async {
         webhook.await;
         Ok(())
