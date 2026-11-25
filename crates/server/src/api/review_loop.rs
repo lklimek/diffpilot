@@ -246,8 +246,8 @@ async fn pr_page(
     let handle = handle_of(&state, &session, path).await?;
     let pr_id = handle.id;
     let page = views::pr_page(&state, &session, handle).await?;
-    if !session.is_access_token() {
-        state
+    if !session.is_access_token()
+        && let Err(error) = state
             .db
             .pull_requests()
             .record_opening(
@@ -257,7 +257,8 @@ async fn pr_page(
                 Timestamp::now(),
             )
             .await
-            .map_err(LoopError::from)?;
+    {
+        tracing::warn!(?error, pr = pr_id, "could not record PR page opening");
     }
     Ok(Json(page))
 }
@@ -269,6 +270,16 @@ async fn overview(
 ) -> ApiResult<Json<CommentsOverview>> {
     mark_present(&state, &session);
     let handle = handle_of(&state, &session, path).await?;
+    if !session.is_access_token()
+        && let Err(error) =
+            assess::request_pass_for(&state, handle.id, PassReason::Opened, &session.user_id).await
+    {
+        tracing::warn!(
+            ?error,
+            pr = handle.id,
+            "assessment pass on opening Comments could not be requested"
+        );
+    }
     Ok(Json(views::overview(&state, &session, handle).await?))
 }
 

@@ -103,6 +103,27 @@ async fn pr_page_get_upserts_opening() {
 }
 
 #[tokio::test]
+async fn pr_page_returns_success_when_recording_the_opening_fails() {
+    let w = world().await;
+    db::repo::pull_requests::testing::reject_openings(&w.state.db)
+        .await
+        .expect("reject openings");
+    let logs = crate::test_support::logs::LogCapture::start();
+
+    let page = w.get(PR).await;
+    assert_eq!(page["pr"]["number"], 482);
+    let pr = format!("pr={}", w.pr_id().await);
+    let logs = logs.text();
+    assert!(
+        logs.lines().any(|line| line.contains("WARN")
+            && line.contains("could not record PR page opening")
+            && line.contains(&pr)),
+        "{logs}"
+    );
+    assert!(history(&w, HISTORY).await.prs.is_empty());
+}
+
+#[tokio::test]
 async fn access_token_pr_page_read_records_no_opening() {
     let w = world().await;
     let pr = seed_pr(&w, DEFAULT_TENANT, 482).await;

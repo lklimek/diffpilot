@@ -64,7 +64,8 @@ fn leading_context_only_when_step_starts_an_item() {
         "const { 0 }",
         "unsafe { work() }",
         "structural();",
-        "#[inline]",
+        "#[inline]\nlet x = 0;",
+        "#![allow(dead_code)]\nfn f() {}",
     ] {
         assert_eq!(
             context("lib.rs", &format!("/// Doc\n{line}"), 2),
@@ -76,6 +77,49 @@ fn leading_context_only_when_step_starts_an_item() {
     assert_eq!(context("lib.rs", string, 3), None);
     assert_eq!(context("lib.rs", "fn f() {}", 0), None);
     assert_eq!(context("lib.rs", "fn f() {}", 2), None);
+}
+
+#[test]
+fn leading_context_when_step_starts_at_an_items_outer_attribute() {
+    let text = "/// Doc\n#[derive(Debug)]\npub struct S;";
+    assert_eq!(context("lib.rs", text, 2), range(1, 1));
+    let text = concat!(
+        "/// Doc\n",
+        "#[cfg_attr(\n",
+        "    feature = \"foo\", doc = r#\"]\"#\n",
+        ")]\n",
+        "/// Test docs\n",
+        "#[tokio::test]\n",
+        "async fn test() {}\n",
+    );
+    assert_eq!(context("lib.rs", text, 2), range(1, 1));
+    assert_eq!(context("lib.rs", text, 6), range(1, 5));
+    let inline = "/// Doc\n#[inline]\nfn f() {}";
+    assert_eq!(context("lib.rs", inline, 2), range(1, 1));
+}
+
+#[test]
+fn leading_context_recognises_extern_functions() {
+    for item in [
+        r#"extern "C" fn f() {}"#,
+        r#"pub unsafe extern "C" fn f() {}"#,
+        r#"extern "system" fn f() {}"#,
+        r#"const extern "C" fn f() {}"#,
+        "extern fn f() {}",
+    ] {
+        assert_eq!(
+            context("lib.rs", &format!("/// Doc\n{item}"), 2),
+            range(1, 1),
+            "{item}"
+        );
+    }
+    for line in [r#"unsafe extern "C" {}"#, r#"extern "C" fn(u8)"#] {
+        assert_eq!(
+            context("lib.rs", &format!("/// Doc\n{line}"), 2),
+            None,
+            "{line}"
+        );
+    }
 }
 
 #[test]

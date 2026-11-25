@@ -480,9 +480,10 @@ async fn comments_reads_omit_uncomputed_assessment_progress_and_counts() {
     let w = world().await;
     let page = w.get(PR).await;
     let overview = w.get(&format!("{PR}/comments")).await;
+    assert_eq!(page["comments"]["assessment"]["running"], false);
+    assert_eq!(overview["assessment"]["running"], true);
     for comments in [&page["comments"], &overview] {
         let progress = &comments["assessment"];
-        assert_eq!(progress["running"], false);
         assert!(progress.get("in_pass").is_none());
         assert!(progress.get("waiting").is_none());
         for key in ["needs_you", "needs_you_gates", "imported_unseen"] {
@@ -494,8 +495,7 @@ async fn comments_reads_omit_uncomputed_assessment_progress_and_counts() {
 #[tokio::test]
 async fn fixture_status_sources_are_omitted_and_new_prose_sources_explain_review_counts() {
     let w = world().await;
-    w.get(PR).await;
-    w.request_pass().await;
+    w.get(&format!("{PR}/comments")).await;
     let page = w.get(PR).await;
     let sources = w.get(&format!("{PR}/comments/sources")).await;
     for source in sources.as_array().unwrap() {

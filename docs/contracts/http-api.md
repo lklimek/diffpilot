@@ -1004,7 +1004,8 @@ once any required session, token or CSRF checks pass.
   one item per PR in the reader's tenant, newest activity first. Activity is the latest analysis request, watch start
   or end, or page visit. Pass `limit` (1–100, default 50) and the previous page's opaque `next_cursor`. An invalid
   cursor returns 400 `invalid_request`. A null `next_cursor` ends the list.
-- A successful PR page read in a browser session updates the reader's `last_opened_at`. Access-token reads omit
-  this update. PR page and Comments reads, including "Read GitHub again", never queue assessment work.
+- A successful PR page read in a browser session attempts to update the reader's `last_opened_at`. The page
+  remains available if the update fails. PR page, item list and GitHub refresh handlers read without scheduling
+  assessment. Until C20, the Comments overview requests assessment for browser sessions.
 
 B1 omits uncomputed response fields. Explicit zero counts carry data once the feature handlers are implemented.

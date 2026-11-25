@@ -303,6 +303,23 @@ pub struct PullRequestRecord {
     pub pr: PrSummary,
 }
 
+/// Fault injection for pull-request repository tests.
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing {
+    use super::*;
+
+    /// Rejects new PR page openings while leaving the rest of the database usable.
+    pub async fn reject_openings(db: &Db) -> Result<(), DbError> {
+        sqlx::query(
+            "CREATE TRIGGER reject_openings BEFORE INSERT ON pr_page_openings
+             BEGIN SELECT RAISE(ABORT, 'injected PR opening failure'); END",
+        )
+        .execute(&db.pool)
+        .await?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
 

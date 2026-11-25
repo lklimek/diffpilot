@@ -186,15 +186,6 @@ impl World {
             .expect("stored")
     }
 
-    async fn request_pass(&self) {
-        use crate::review_loop::assess::{PassQueued, PassReason, request_pass_for};
-
-        let queued = request_pass_for(&self.state, self.pr_id().await, PassReason::Opened, "u1")
-            .await
-            .expect("request assessment");
-        assert!(matches!(queued, PassQueued::Queued), "{queued:?}");
-    }
-
     /// Makes the last read old, so the next page read reads GitHub again.
     async fn age_read(&self) {
         let id = self.pr_id().await;
@@ -318,14 +309,13 @@ async fn comments_work_without_analysis() {
     assert_eq!(overview["read"]["complete"], true);
     assert_eq!(overview["rounds"].as_array().map(Vec::len), Some(3));
     assert!(!overview["queue"].as_array().expect("queue").is_empty());
-    w.request_pass().await;
     let items = w.items().await;
     assert_eq!(
         items.len(),
         15,
         "8 inline threads, legacy body findings, newly eligible prose sources and the merge question"
     );
-    // The explicit assessment starts one pass without starting a Tour analysis.
+    // Entering Comments starts one pass without starting a Tour analysis.
     for item in items.iter().filter(|item| item["kind"] != "pr_question") {
         assert_eq!(
             item["assessment_state"],
@@ -1103,7 +1093,6 @@ async fn pr_page_without_any_github_read_degrades() {
 async fn assess_again_while_a_pass_runs_is_a_conflict() {
     let w = world().await;
     w.get(&format!("{PR}/comments")).await;
-    w.request_pass().await;
     let item = w.item(L2).await;
     let uri = format!("{PR}/comments/items/C{}/assess", item["no"]);
     let (status, body) = w.post(&uri, json!({})).await;

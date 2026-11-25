@@ -273,11 +273,13 @@ async fn pr_page_opening_queues_no_llm_work() {
         !rl.items(pr).await.unwrap().is_empty(),
         "the read found comments"
     );
+    let (status, items) = w.call("GET", &format!("{PR}/comments/items"), None).await;
+    assert_eq!(status, StatusCode::OK, "{items}");
     assert!(rl.latest_pass(pr).await.unwrap().is_none());
     assert!(w.claim().await.is_none());
 }
 
-/// Reading Comments, explicitly requesting an assessment, running its jobs and storing a decision with its effects.
+/// Entering Comments starts an assessment whose jobs run before the reader stores a decision.
 #[tokio::test]
 async fn comments_open_assess_and_decide_end_to_end() {
     let w = world().await;
@@ -285,6 +287,16 @@ async fn comments_open_assess_and_decide_end_to_end() {
     assert_eq!(status, StatusCode::OK, "{overview}");
     assert_eq!(overview["read"]["complete"], true);
     let pr = w.pr_id().await;
+    let rl = w.state.db.review_loop();
+    let passes = rl.live_passes().await.expect("passes");
+    assert_eq!(passes.len(), 1, "{passes:?}");
+    assert_eq!(passes[0].cause, db::repo::review_loop::PassCause::Opened);
+    let (status, overview) = w.call("GET", &format!("{PR}/comments"), None).await;
+    assert_eq!(status, StatusCode::OK, "{overview}");
+    let repeated = rl.live_passes().await.expect("passes after another GET");
+    assert_eq!(repeated.len(), 1, "{repeated:?}");
+    assert_eq!(repeated[0].id, passes[0].id);
+
     let (_, items) = w.call("GET", &format!("{PR}/comments/items"), None).await;
     let threads = items
         .as_array()
@@ -294,16 +306,6 @@ async fn comments_open_assess_and_decide_end_to_end() {
         .count();
     assert!(threads > 0, "{items}");
 
-    let rl = w.state.db.review_loop();
-    assert!(rl.latest_pass(pr).await.expect("pass lookup").is_none());
-    crate::review_loop::assess::request_pass_for(
-        &w.state,
-        pr,
-        crate::review_loop::assess::PassReason::Opened,
-        "u1",
-    )
-    .await
-    .expect("request assessment");
     assert!(w.run_passes(pr).await >= 1);
     let pass = rl.latest_pass(pr).await.expect("pass").expect("a pass");
     assert_eq!(pass.state, PassState::Finished);

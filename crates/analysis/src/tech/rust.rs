@@ -102,29 +102,56 @@ fn context_start(tokens: &[Token<'_>], end: usize) -> Option<usize> {
     }
 }
 
-/// Recognises an item header at the start of the line, after optional visibility and qualifiers.
+/// Recognises an item header after any outer attributes, visibility and qualifiers.
 fn starts_item(mut tokens: &[Token<'_>]) -> bool {
+    while let [pound, bracket, ..] = tokens
+        && pound.kind == TokenKind::Pound
+        && bracket.kind == TokenKind::OpenBracket
+    {
+        let Some(rest) = after_delimited(&tokens[1..], TokenKind::CloseBracket) else {
+            return false;
+        };
+        tokens = rest;
+        while let [comment, rest @ ..] = tokens
+            && is_comment(comment.kind)
+        {
+            tokens = rest;
+        }
+    }
     if tokens.first().is_some_and(|token| token.text == "pub") {
         tokens = &tokens[1..];
-        if let Some(open) = tokens
+        if tokens
             .first()
-            .filter(|token| token.kind == TokenKind::OpenParen)
+            .is_some_and(|token| token.kind == TokenKind::OpenParen)
         {
-            let Some(end) = tokens.iter().position(|token| {
-                token.kind == TokenKind::CloseParen && token.depth == open.depth + 1
-            }) else {
+            let Some(rest) = after_delimited(tokens, TokenKind::CloseParen) else {
                 return false;
             };
-            tokens = &tokens[end + 1..];
+            tokens = rest;
         }
     }
     while let [token, next, ..] = tokens {
         if !(matches!(token.text, "async" | "unsafe")
-            || token.text == "const" && matches!(next.text, "async" | "unsafe" | "fn"))
+            || token.text == "const" && matches!(next.text, "async" | "unsafe" | "extern" | "fn"))
         {
             break;
         }
         tokens = &tokens[1..];
+    }
+    if let [external, next, ..] = tokens
+        && external.text == "extern"
+    {
+        let has_abi = matches!(
+            next.kind,
+            TokenKind::Literal {
+                kind: LiteralKind::Str { .. } | LiteralKind::RawStr { .. },
+                ..
+            }
+        );
+        tokens = &tokens[1 + usize::from(has_abi)..];
+        if tokens.first().is_none_or(|token| token.text != "fn") {
+            return false;
+        }
     }
     let [keyword, next, ..] = tokens else {
         return false;
@@ -140,6 +167,17 @@ fn starts_item(mut tokens: &[Token<'_>]) -> bool {
         "macro_rules" => next.kind == TokenKind::Bang,
         _ => false,
     }
+}
+
+fn after_delimited<'a, 'source>(
+    tokens: &'a [Token<'source>],
+    close: TokenKind,
+) -> Option<&'a [Token<'source>]> {
+    let depth = tokens.first()?.depth + 1;
+    let end = tokens
+        .iter()
+        .position(|token| token.depth == depth && is_close(token.kind))?;
+    (tokens[end].kind == close).then_some(&tokens[end + 1..])
 }
 
 /// Deepest `{` nesting of a `use` tree the rules read; a deeper tree is unreadable.

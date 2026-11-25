@@ -169,8 +169,9 @@ async fn last_attempt(state: &AppState, id: i64) -> Result<Option<Timestamp>, Db
     }))
 }
 
-/// The pull request for a page: read from GitHub with the reader's token after [`READ_INTERVAL`] or when forced.
-/// Access tokens are served the stored snapshot (ADR-019).
+/// The pull request for a page: read from GitHub first when its last read is older than [`READ_INTERVAL`] (or
+/// always with `force`). Browser reads use the reader's GitHub token without scheduling assessment.
+/// Access-token requests read stored data without updating the database (ADR-019).
 pub async fn ensure_read(
     state: &AppState,
     session: &Session,
