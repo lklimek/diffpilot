@@ -297,7 +297,12 @@ pub async fn items(
             state
                 .db
                 .review_loop()
-                .unseen_comment_imports(&session.tenant_id, &session.user_id, loaded.handle.id)
+                .unseen_comment_imports(
+                    &session.tenant_id,
+                    &session.user_id,
+                    loaded.handle.id,
+                    false,
+                )
                 .await?
                 .into_iter()
                 .collect::<std::collections::HashSet<_>>(),
@@ -712,7 +717,7 @@ pub async fn overview(
     let mut counts = counts(&loaded, waiting, needs_you);
     if !session.is_access_token() {
         counts.imported_unseen = Some(count(
-            rl.unseen_comment_imports(&session.tenant_id, &session.user_id, loaded.handle.id)
+            rl.unseen_comment_imports(&session.tenant_id, &session.user_id, loaded.handle.id, true)
                 .await?
                 .len(),
         ));

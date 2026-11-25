@@ -354,7 +354,7 @@ pub(super) fn candidate(
         kind,
         target: target_of(data, d, kind),
         binding: relay.is_none()
-            && authorities.members.contains_key(&id)
+            && (withdrawal || authorities.members.contains_key(&id))
             && whole_sentence(body, &d.quote)
             && markers::decision_cue(kind, &d.quote, withdrawal),
         author_withdrawal: withdrawal,

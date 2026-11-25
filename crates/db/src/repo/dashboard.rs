@@ -1809,6 +1809,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn saving_linked_logins_releases_only_removed_pins_in_the_same_transaction() {
+        let db = db().await;
+        sqlx::query("INSERT INTO memberships (tenant_id, user_id, created_at) VALUES (?, 'u1', ?)")
+            .bind(T)
+            .bind(ts(at(0)))
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let dash = db.dashboard();
+        let rl = db.review_loop();
+        let mut settings = DashboardSettings {
+            linked_logins: vec!["alice-ci".into(), "bob-ci".into()],
+            ..DashboardSettings::default()
+        };
+        dash.save_settings(T, "u1", &settings, at(0)).await.unwrap();
+        assert!(
+            rl.pin_linked_account(T, "u1", "alice-ci", 41)
+                .await
+                .unwrap()
+        );
+        assert!(rl.pin_linked_account(T, "u1", "bob-ci", 42).await.unwrap());
+
+        sqlx::query(
+            "CREATE TRIGGER reject_pin_removal BEFORE DELETE ON comment_linked_account_pins
+             BEGIN SELECT RAISE(ABORT, 'pin removal failed'); END",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let originally_linked = settings.linked_logins.clone();
+        settings.linked_logins = vec!["Bob-CI".into()];
+        assert!(dash.save_settings(T, "u1", &settings, at(1)).await.is_err());
+        assert_eq!(
+            dash.settings(T, "u1")
+                .await
+                .unwrap()
+                .unwrap()
+                .settings
+                .linked_logins,
+            originally_linked
+        );
+        sqlx::query("DROP TRIGGER reject_pin_removal")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+
+        dash.save_settings(T, "u1", &settings, at(2)).await.unwrap();
+        let pins: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT login, github_id FROM comment_linked_account_pins WHERE tenant_id = ? AND user_id = 'u1'",
+        )
+        .bind(T)
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(pins, [("bob-ci".into(), 42)]);
+        assert!(
+            !rl.pin_linked_account(T, "u1", "alice-ci", 41)
+                .await
+                .unwrap()
+        );
+        settings.linked_logins.push("ALICE-CI".into());
+        dash.save_settings(T, "u1", &settings, at(3)).await.unwrap();
+        assert!(
+            rl.pin_linked_account(T, "u1", "alice-ci", 43)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
     async fn hidden_mentions_are_per_user_and_survive_refreshes() {
         let db = db().await;
         let dash = db.dashboard();

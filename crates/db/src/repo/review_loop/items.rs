@@ -914,6 +914,8 @@ impl ReviewLoop<'_> {
                         AND v.pull_request_id = ci.pull_request_id AND v.user_id = ?3
                     WHERE ci.tenant_id = ?2 AND ci.pull_request_id = k.pr
                         AND o.origin = 'imported_github'
+                        AND NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id)
+                        AND NOT EXISTS (SELECT 1 FROM comment_decisions n WHERE n.supersedes = d.id)
                         AND (v.visited_at IS NULL OR rtrim(d.decided_at, 'Z') > rtrim(v.visited_at, 'Z')))
              FROM known k
              LEFT JOIN comment_items i ON k.was_read AND i.pull_request_id = k.pr AND i.kind <> 'pr_question'

@@ -424,8 +424,15 @@ async fn settle(
 ) -> Result<(), DbError> {
     sqlx::query(
         "UPDATE comment_effects AS e SET params = json_set(e.params, '$.text',
-                json_extract(e.params, '$.text') || char(10) || 'Primary outcome: ' || p.reference)
+                json_extract(e.params, '$.text') || char(10) || 'Tracked in ' ||
+                CASE WHEN p.kind = 'fix'
+                    THEN 'https://github.com/' || r.owner || '/' || r.name || '/commit/' || p.reference
+                    ELSE p.reference END)
          FROM comment_effects p
+         JOIN comment_decisions d ON d.id = p.decision_id
+         JOIN comment_items i ON i.id = d.item_id
+         JOIN pull_requests pr ON pr.id = i.pull_request_id
+         JOIN repos r ON r.id = pr.repo_id
          WHERE e.decision_id = ? AND e.state = 'waiting' AND e.after_seq IS NULL
             AND e.kind IN ('reply','pr_comment') AND p.id = e.after_primary_effect AND p.state = 'done'
             AND ((p.kind IN ('follow_up_pr', 'upstream_issue') AND p.reference LIKE 'https://github.com/%'
@@ -1077,7 +1084,7 @@ async fn store(
             super::origins::store(tx, id, origin, new).await?;
         }
         let artefact = if matches!(new.origin, Some(super::NewOrigin::Follows(_))) {
-            super::origins::follower_artefact(tx, id, item.no).await?
+            super::origins::follower_artefact(tx, id, &item).await?
         } else {
             None
         };

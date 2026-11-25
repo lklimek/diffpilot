@@ -325,12 +325,31 @@ fn withdrawal_decides_only_authors_own_items() {
     assert!(attempt(&authority(), 3, Some(4), &d, None, "T21").is_none());
     let import = attempt(&authority(), 3, Some(3), &d, None, "T21").unwrap();
     assert_eq!(import.kind, DecisionKind::Reject);
-    assert!(!import.binding && import.author_withdrawal);
+    assert!(import.binding && import.author_withdrawal);
     assert!(
         attempt(&authority(), 1, Some(1), &d, None, "T21")
             .unwrap()
             .binding
     );
+}
+
+#[test]
+fn own_withdrawal_requires_an_unnegated_whole_sentence() {
+    for (body, quote) in [
+        (
+            "I will not withdraw my finding.",
+            "I will not withdraw my finding.",
+        ),
+        ("I will not withdraw my finding.", "withdraw my finding."),
+        (
+            "I am reconsidering my finding.",
+            "I am reconsidering my finding.",
+        ),
+    ] {
+        let d = statement("reviewer", RecordedDecisionKind::Withdrawn, quote);
+        let import = attempt_with_body(&authority(), 3, Some(3), &d, None, "T21", body).unwrap();
+        assert!(!import.binding);
+    }
 }
 
 #[test]

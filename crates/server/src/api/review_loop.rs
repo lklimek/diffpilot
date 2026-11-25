@@ -291,9 +291,7 @@ async fn visit(
     SessionCsrf(session): SessionCsrf,
     path: PrPath,
 ) -> ApiResult<StatusCode> {
-    let Path((owner, name, number)) = path?;
-    let handle =
-        review_loop::find(&state, &session.tenant_id, &pr_ref(owner, name, number)).await?;
+    let handle = handle_of(&state, &session, path).await?;
     state
         .db
         .review_loop()

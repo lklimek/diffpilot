@@ -266,10 +266,7 @@ impl Loaded {
                         .as_deref()
                         .and_then(crate::github::threads::github_web_url)
                         .unwrap_or_else(|| snapshot.url.clone());
-                    let text = format!(
-                        "Duplicate of C{}. The outcome is tracked at {link}",
-                        source.no
-                    );
+                    let text = format!("Duplicate of {link}");
                     planned.reply_text = Some(text.clone());
                     planned.effects.retain(|effect| !is_artefact(effect.kind));
                     for effect in &mut planned.effects {

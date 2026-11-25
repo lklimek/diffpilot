@@ -183,11 +183,71 @@ async fn imported_unseen_counts_since_last_visit() {
     w.decide_ok(L2, decision("fix_here")).await;
     assert_eq!(w.get(&uri).await["counts"]["imported_unseen"], 1);
     let filtered = w.get(&format!("{uri}/items?imported_unseen=true")).await;
-    assert_eq!(filtered.as_array().unwrap().len(), 1);
-    assert_eq!(filtered[0]["stable_key"], L2);
+    assert_eq!(filtered, json!([]));
     assert_eq!(
         w.post(&format!("{uri}/visit"), json!({})).await.0,
         StatusCode::NO_CONTENT
+    );
+    assert_eq!(w.get(&uri).await["counts"]["imported_unseen"], 0);
+}
+
+#[tokio::test]
+async fn dashboard_and_comments_filter_exclude_inactive_imports() {
+    for undo in [true, false] {
+        let w = world().await;
+        let uri = format!("{PR}/comments/items?imported_unseen=true");
+        assess_recorded(&w, "reject", "We won't fix this issue.", "lklimek", 1).await;
+        assert_eq!(w.get(&uri).await[0]["stable_key"], L2);
+        let pr = crate::github::review_loop::tests::pr482();
+        let wanted = [(pr.repo, pr.number)];
+        let rl = w.state.db.review_loop();
+        assert_eq!(
+            rl.comment_tallies(DEFAULT_TENANT, "u1", &wanted)
+                .await
+                .unwrap()[0]
+                .imported_unseen,
+            1
+        );
+        if undo {
+            let item = w.item(L2).await;
+            let (status, body) = w
+                .post(
+                    &format!("{PR}/comments/items/C{}/undo", item["no"]),
+                    json!({"item_revision":item["revision"]}),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        } else {
+            w.decide_ok(L2, decision("fix_here")).await;
+        }
+        assert_eq!(
+            rl.comment_tallies(DEFAULT_TENANT, "u1", &wanted)
+                .await
+                .unwrap()[0]
+                .imported_unseen,
+            0,
+            "undo: {undo}"
+        );
+        assert_eq!(w.get(&uri).await, json!([]));
+    }
+}
+
+#[tokio::test]
+async fn first_comments_visit_succeeds_before_the_overview() {
+    let w = world().await;
+    w.link_llm().await;
+    let uri = format!("{PR}/comments");
+    let (status, body) = w.post(&format!("{uri}/visit"), json!({})).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let pr = w.pr_id().await;
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .latest_pass(pr)
+            .await
+            .unwrap()
+            .is_none()
     );
     assert_eq!(w.get(&uri).await["counts"]["imported_unseen"], 0);
 }
@@ -399,13 +459,19 @@ async fn owner_decision_supersedes_import() {
 async fn withdrawal_never_propagates_to_other_authors() {
     let w = world().await;
     let reviewer = w.item(L2).await["author"].as_str().unwrap().to_owned();
+    assert_eq!(w.item(L6).await["author"], reviewer);
     assert_ne!(w.item(THREAD_7).await["author"], reviewer);
-    assess_recorded(&w, "withdrawn", "I withdraw my finding.", &reviewer, 1).await;
+    assess_recorded(&w, "withdrawn", "I withdraw my finding.", &reviewer, 99).await;
+    link(&w, L6).await;
     link(&w, THREAD_7).await;
     crate::review_loop::propagation::propagate(&w.state, DEFAULT_TENANT, w.pr_id().await)
         .await
         .unwrap();
-    assert_eq!(w.item(L2).await["decisions"][0]["via"], "imported_github");
+    let primary = w.item(L2).await;
+    assert_eq!(primary["decisions"][0]["via"], "imported_github");
+    assert_eq!(primary["decisions"][0]["imported"]["by_id"], 99);
+    assert_eq!(primary["decisions"][0]["effects"], json!([]));
+    assert_eq!(w.item(L6).await["decisions"], json!([]));
     assert_eq!(w.item(THREAD_7).await["decisions"], json!([]));
 }
 
@@ -452,6 +518,7 @@ async fn duplicate_artifacts_are_created_once_for_the_primary() {
         let mut request = decision(kind);
         request["target"] = target;
         let primary = w.decide_ok(L2, request).await;
+        let primary_item = w.item(L2).await;
         let follower = w.item(L6).await;
         let work = primary["effects"]
             .as_array()
@@ -464,6 +531,15 @@ async fn duplicate_artifacts_are_created_once_for_the_primary() {
                 .as_array()
                 .unwrap()
                 .contains(&follower["no"]),
+            "{kind}"
+        );
+        assert_eq!(
+            work["params"]["text"],
+            format!(
+                "Review comments:\n{}\n{}",
+                primary_item["url"].as_str().unwrap(),
+                follower["url"].as_str().unwrap()
+            ),
             "{kind}"
         );
         let effects = follower["decisions"][0]["effects"].as_array().unwrap();
@@ -485,74 +561,83 @@ async fn duplicate_reply_waits_for_the_primary_outcome() {
     use contracts::api::review_loop::{EffectKind, ReportOutcome};
     use db::repo::review_loop::{ClaimOutcome, ReportOutcomeRecord, ReportRequest};
 
-    let w = world().await;
-    link(&w, L6).await;
-    let primary = w.decide_ok(L2, decision("follow_up_pr")).await;
-    let follower = w.item(L6).await;
-    let follower_id = serde_json::from_value(follower["decisions"][0]["id"].clone()).unwrap();
-    let primary_id = serde_json::from_value(primary["id"].clone()).unwrap();
-    let effect_id = serde_json::from_value(primary["effects"][0]["id"].clone()).unwrap();
-    let (_, agent) = super::feed::agent(&w, &super::feed::EXECUTE).await;
-    let rl = w.state.db.review_loop();
-    let lease = SignedDuration::from_mins(5);
-    let capabilities = [
-        EffectKind::FollowUpPr,
-        EffectKind::Reply,
-        EffectKind::Resolve,
-    ];
-    assert_eq!(
-        rl.claim(
-            follower_id,
-            &agent.token_id,
-            &capabilities,
-            lease,
-            Timestamp::now()
-        )
-        .await
-        .unwrap(),
-        ClaimOutcome::NothingOpen
-    );
-    assert!(matches!(
-        rl.claim(
-            primary_id,
-            &agent.token_id,
-            &capabilities,
-            lease,
-            Timestamp::now()
-        )
-        .await
-        .unwrap(),
-        ClaimOutcome::Claimed(_)
-    ));
-    let reference = "https://github.com/acme/node-client/pull/999";
-    let request = ReportRequest {
-        outcome: ReportOutcome::Done,
-        reference: Some(reference.into()),
-        message: None,
-        idempotency_key: uuid::Uuid::new_v4().to_string(),
-    };
-    assert_eq!(
-        rl.report(
-            DEFAULT_TENANT,
-            effect_id,
-            &agent.token_id,
-            &request,
-            lease,
-            Timestamp::now()
-        )
-        .await
-        .unwrap(),
-        ReportOutcomeRecord::Recorded
-    );
-    let follower = w.item(L6).await;
-    let reply = &follower["decisions"][0]["effects"][0];
-    assert_eq!(reply["state"], "open");
-    assert!(
-        reply["params"]["text"]
-            .as_str()
-            .unwrap()
-            .contains(reference)
-    );
+    for (kind, artefact, reference, outcome) in [
+        (
+            "follow_up_pr",
+            EffectKind::FollowUpPr,
+            "https://github.com/acme/node-client/pull/999",
+            "https://github.com/acme/node-client/pull/999",
+        ),
+        (
+            "fix_here",
+            EffectKind::Fix,
+            "aabbccd",
+            "https://github.com/acme/node-client/commit/aabbccd",
+        ),
+    ] {
+        let w = world().await;
+        link(&w, L6).await;
+        let primary = w.decide_ok(L2, decision(kind)).await;
+        let primary_url = w.item(L2).await["url"].as_str().unwrap().to_owned();
+        let follower = w.item(L6).await;
+        let follower_id = serde_json::from_value(follower["decisions"][0]["id"].clone()).unwrap();
+        let primary_id = serde_json::from_value(primary["id"].clone()).unwrap();
+        let effect_id = serde_json::from_value(primary["effects"][0]["id"].clone()).unwrap();
+        let (_, agent) = super::feed::agent(&w, &super::feed::EXECUTE).await;
+        let rl = w.state.db.review_loop();
+        let lease = SignedDuration::from_mins(5);
+        let capabilities = [artefact, EffectKind::Reply, EffectKind::Resolve];
+        assert_eq!(
+            rl.claim(
+                follower_id,
+                &agent.token_id,
+                &capabilities,
+                lease,
+                Timestamp::now()
+            )
+            .await
+            .unwrap(),
+            ClaimOutcome::NothingOpen
+        );
+        assert!(matches!(
+            rl.claim(
+                primary_id,
+                &agent.token_id,
+                &capabilities,
+                lease,
+                Timestamp::now()
+            )
+            .await
+            .unwrap(),
+            ClaimOutcome::Claimed(_)
+        ));
+        let request = ReportRequest {
+            outcome: ReportOutcome::Done,
+            reference: Some(reference.into()),
+            message: None,
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
+        };
+        assert_eq!(
+            rl.report(
+                DEFAULT_TENANT,
+                effect_id,
+                &agent.token_id,
+                &request,
+                lease,
+                Timestamp::now()
+            )
+            .await
+            .unwrap(),
+            ReportOutcomeRecord::Recorded
+        );
+        let follower = w.item(L6).await;
+        let reply = &follower["decisions"][0]["effects"][0];
+        assert_eq!(reply["state"], "open");
+        assert_eq!(
+            reply["params"]["text"],
+            format!("Duplicate of {primary_url}\nTracked in {outcome}")
+        );
+    }
 }
 
 #[tokio::test]

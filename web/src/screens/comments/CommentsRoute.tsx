@@ -96,22 +96,25 @@ const PAGE_OF: [string, CommentsPage][] = [
 /** Layout of V1–V5: top bar with the view menu, the PR status, the Comments pages and the shared Ask chat. */
 export function CommentsRoute() {
   const pr = prOfParams(useParams());
+  return <CommentsVisit key={commentsPath(pr)} pr={pr} />;
+}
+
+function CommentsVisit({ pr }: { pr: PrRef }) {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const me = useMe();
   const login = me.data?.user?.login ?? "anonymous";
-  const overview = useCommentsOverview(pr);
-  const { mutate: recordVisit } = useVisitComments(pr);
-  const visitKey = `${pr.repo.owner}/${pr.repo.name}#${pr.number}`;
-  const entered = useRef<string | null>(null);
-  const canRecordVisit = overview.isFetchedAfterMount && overview.data !== undefined;
+  const { mutate: recordVisit, isSuccess: visited, error: visitError } = useVisitComments(pr);
+  const entered = useRef(false);
   useEffect(() => {
-    if (!canRecordVisit || entered.current === visitKey) return;
-    entered.current = visitKey;
+    if (entered.current) return;
+    entered.current = true;
     recordVisit();
-  }, [canRecordVisit, recordVisit, visitKey]);
+  }, [recordVisit]);
+  const overview = useCommentsOverview(pr, visited);
   // Load items after the initial overview identifies the stored PR.
-  const items = useCommentItems(pr, overview.isFetchedAfterMount);
+  const overviewRead = visited && overview.isFetchedAfterMount;
+  const items = useCommentItems(pr, overviewRead);
   const page = usePrPage(pr);
   const read = useReadComments(pr);
   const watch = useWatchPr(pr);
@@ -145,14 +148,15 @@ export function CommentsRoute() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the PR's parts are its identity
     [pr.repo.owner, pr.repo.name, pr.number],
   );
-  const o = overview.data;
+  const o = overviewRead ? overview.data : undefined;
   const needsYou = needsYouCount(o?.counts.undecided ?? 0, o?.queue, commentsByNo(items.data));
   const watching = o?.watch === undefined ? page.data?.watch : o.watch;
   const analysis = o?.analysis ?? null;
   const base = analysis ? `/analyses/${encodeURIComponent(analysis)}` : null;
   const display = `${pr.repo.owner}/${pr.repo.name} #${pr.number}`;
 
-  const failed = overview.isError || items.isError ? errorText(overview.error ?? items.error) : null;
+  const error = visitError ?? (overviewRead ? (overview.error ?? items.error) : null);
+  const failed = error ? errorText(error) : null;
   const body = (count: (id: string) => number) => {
     if (!o || !items.data)
       return failed ? (

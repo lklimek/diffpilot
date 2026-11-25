@@ -1011,7 +1011,8 @@ once any required session, token or CSRF checks pass.
   from the queue, including `undecided`, and from `assessment.total`. Assess again on a status comment returns
   409 `conflict`. Ask can still use it as context. The browser's Comments overview and `/comments/items?imported_unseen=true` use
   the entry preceding the current visit as their baseline. The notice survives refetches and decisions during
-  the visit. My work reports `WorkItem.imported_unseen` per PR since the reader's latest Comments entry.
+  the visit. The items filter lists standing imports only. My work reports `WorkItem.imported_unseen` per PR
+  for standing imports since the reader's latest Comments entry.
 - The Tour's optional `StepFacts.leading_context` is the deterministic line range of doc comments and attributes
   immediately above the step's first item. The generic technology plugin leaves it absent.
 - PR history merges the reader's requested analyses, watches including ended ones, and PR page visits. It returns

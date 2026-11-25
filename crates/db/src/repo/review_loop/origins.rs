@@ -10,7 +10,7 @@ use sqlx::{Row, Sqlite, Transaction};
 
 use super::super::jobs::ts;
 use super::super::write_tx;
-use super::items::{item_in, set_state_in};
+use super::items::{ItemRecord, item_in, set_state_in};
 use super::{ReviewLoop, wire_col};
 use crate::error::DbError;
 
@@ -121,7 +121,7 @@ pub(super) async fn store(
 pub(super) async fn follower_artefact(
     tx: &mut Transaction<'static, Sqlite>,
     follower: DecisionId,
-    item_no: u32,
+    item: &ItemRecord,
 ) -> Result<Option<String>, DbError> {
     let artefact: Option<String> = sqlx::query_scalar(
         "SELECT e.id FROM comment_decision_origins o JOIN comment_effects e
@@ -136,12 +136,17 @@ pub(super) async fn follower_artefact(
         sqlx::query(
             "UPDATE comment_effects
              SET params = json_set(params, '$.item_nos', json_insert(json_extract(params, '$.item_nos'), '$[#]', ?1),
-                     '$.text', 'Review points: ' || (
-                         SELECT group_concat('C' || value, ', ') FROM
-                         json_each(json_insert(json_extract(params, '$.item_nos'), '$[#]', ?1))))
+                     '$.text', 'Review comments:' || char(10) || (
+                         SELECT group_concat(url, char(10)) FROM (
+                             SELECT i.url FROM
+                                 json_each(json_insert(json_extract(params, '$.item_nos'), '$[#]', ?1)) j
+                             JOIN comment_items i ON i.pull_request_id = ?3 AND i.item_no = j.value
+                             WHERE i.url LIKE 'https://github.com/%'
+                               AND substr(i.url, 20) NOT GLOB '*[^a-zA-Z0-9_./#-]*'
+                             GROUP BY i.url ORDER BY min(j.key))))
              WHERE id = ?2 AND state IN ('waiting', 'open')
                  AND NOT EXISTS (SELECT 1 FROM json_each(params, '$.item_nos') WHERE value = ?1)",
-        ).bind(item_no).bind(id).execute(&mut **tx).await?;
+        ).bind(item.no).bind(id).bind(item.pull_request_id).execute(&mut **tx).await?;
     }
     Ok(artefact)
 }
@@ -272,12 +277,13 @@ impl ReviewLoop<'_> {
         Ok(())
     }
 
-    /// Item ids of imports since the entry preceding this visit, including their decision history.
+    /// Imports since the entry preceding this visit. The notice can retain decision history.
     pub async fn unseen_comment_imports(
         &self,
         tenant: &str,
         user: &str,
         pr: i64,
+        include_history: bool,
     ) -> Result<Vec<CommentItemId>, DbError> {
         sqlx::query(
             "SELECT d.item_id FROM comment_decision_origins o
@@ -287,11 +293,15 @@ impl ReviewLoop<'_> {
                 AND v.pull_request_id = i.pull_request_id AND v.user_id = ?
              WHERE i.tenant_id = ? AND i.pull_request_id = ? AND o.origin = 'imported_github'
                 AND (v.previous_visited_at IS NULL
-                     OR rtrim(d.decided_at, 'Z') > rtrim(v.previous_visited_at, 'Z'))",
+                     OR rtrim(d.decided_at, 'Z') > rtrim(v.previous_visited_at, 'Z'))
+                AND (? OR (
+                    NOT EXISTS (SELECT 1 FROM comment_decision_undos u WHERE u.decision_id = d.id)
+                    AND NOT EXISTS (SELECT 1 FROM comment_decisions n WHERE n.supersedes = d.id)))",
         )
         .bind(user)
         .bind(tenant)
         .bind(pr)
+        .bind(include_history)
         .fetch_all(self.pool)
         .await?
         .iter()
