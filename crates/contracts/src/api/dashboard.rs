@@ -129,11 +129,11 @@ pub struct Stack {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum StackPosition {
-    /// Lowest open layer with higher layers in the stack.
+    /// Lowest open layer with open dependents.
     Bottom,
-    /// With a parent and dependents.
+    /// With a parent and open dependents.
     Middle,
-    /// Tip of the stack.
+    /// With no open dependents.
     Top,
 }
 
@@ -807,7 +807,7 @@ pub struct WorkItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub stack: Option<Stack>,
-    /// Base branch matching a configured or built-in release pattern.
+    /// The pull request's base branch when it matches a repository release pattern, configured or otherwise built-in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub release_base: Option<String>,

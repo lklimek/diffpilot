@@ -147,6 +147,27 @@ describe("WorkList", () => {
     expect(row("acme~platform~issue~1210").querySelector("[data-size-pill]")).toBeNull();
   });
 
+  it("describes the release pattern fallback for a main base badge", () => {
+    const items = ITEMS.map((item) => (item.id === "PLAT-1203" ? { ...item, release_base: "main" } : item));
+    render(<List items={items} />);
+    const badge = screen.getByRole("button", { name: "Filter by label release base" });
+    expect(badge).toHaveTextContent("→ main");
+    expect(badge).toHaveAccessibleDescription(
+      /PR base branch main matches this repository’s release patterns \(configured, or built-in if none are configured\)/,
+    );
+  });
+
+  it("hides the merges first badge when stored stack data has no open dependents", () => {
+    const items = ITEMS.map((item) =>
+      item.id === "PLAT-1203"
+        ? { ...item, stack: { position: "bottom" as const, size: 2, dependents: [] } }
+        : item,
+    );
+    render(<List items={items} />);
+    expect(rowIds()).toContain("acme~platform~pr~1203");
+    expect(screen.queryByRole("button", { name: "Filter by label merges first" })).toBeNull();
+  });
+
   it("the last kind on stays on and says why; keyboard toggles", async () => {
     render(<List initial={["pr", "issue"]} />);
     const prs = screen.getByRole("button", { name: /PRs 8/ });

@@ -530,6 +530,24 @@ async fn world() -> World {
     world_with(Arc::new(NoopRanker), Duration::from_secs(24 * 3600)).await
 }
 
+async fn world_with_pr_details(edit: impl FnOnce(&mut [Value])) -> World {
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let file = dir.path().join("pull-requests.json");
+    let mut prs: Vec<Value> = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    edit(&mut prs);
+    std::fs::write(&file, serde_json::to_vec(&prs).unwrap()).unwrap();
+    world_in(
+        Arc::new(NoopRanker),
+        Duration::from_secs(120),
+        dir.path().to_owned(),
+    )
+    .await
+}
+
 struct Answer {
     status: StatusCode,
     headers: HeaderMap,
@@ -1378,7 +1396,11 @@ async fn items_filters() {
 
 #[tokio::test]
 async fn fact_tags_carry_stable_filter_keys() {
-    let w = world().await;
+    let w = world_with_pr_details(|prs| {
+        let pr = prs.iter_mut().find(|pr| pr["number"] == 1203).unwrap();
+        pr["labels"]["nodes"] = json!([{"name": "Bug"}, {"name": "Ready-for-human"}]);
+    })
+    .await;
     assert_eq!(w.refreshed().await.state, RefreshState::Finished);
     let page = w.items("").await;
     for (id, text, key, label) in [
@@ -1401,13 +1423,41 @@ async fn fact_tags_carry_stable_filter_keys() {
             "review requested",
         ),
         ("WUI-311", "CI failing", "ci_failing", "CI failing"),
-        ("PLAT-1203", "bug", "label:bug", "bug"),
+        ("PLAT-1203", "Bug", "label:bug", "Bug"),
+        (
+            "PLAT-1203",
+            "ready label",
+            "label:ready-for-human",
+            "Ready-for-human",
+        ),
         (
             "PLAT-1187",
             "production report",
             "label:production report",
             "production report",
         ),
+        ("PLAT-1187", "new", "new", "new"),
+        (
+            "PLAT-1187",
+            "assigned to you",
+            "assigned_to_you",
+            "assigned to you",
+        ),
+        (
+            "PLAT-1215",
+            "watched repository",
+            "watched_repository",
+            "watched repository",
+        ),
+        ("TODO-3fa91c2e", "platform", "project:platform", "platform"),
+        ("TODO-3fa91c2e", "in progress", "in_progress", "in progress"),
+        (
+            "TODO-91bd0a44",
+            "consensus",
+            "project:consensus",
+            "consensus",
+        ),
+        ("TODO-91bd0a44", "postponed", "postponed", "postponed"),
     ] {
         let item = page.items.iter().find(|item| item.id == id).unwrap();
         let tag = item
@@ -1416,7 +1466,11 @@ async fn fact_tags_carry_stable_filter_keys() {
             .find(|tag| tag.text == text)
             .unwrap_or_else(|| panic!("missing {text:?} tag on {id}"));
         let filter = tag.filter.as_ref().expect("filter from the API");
-        assert_eq!((filter.key.as_str(), filter.label.as_str()), (key, label));
+        assert_eq!(
+            (filter.key.as_str(), filter.label.as_str()),
+            (key, label),
+            "{id}: {text}"
+        );
     }
     assert!(
         page.items
@@ -1428,44 +1482,33 @@ async fn fact_tags_carry_stable_filter_keys() {
 
 #[tokio::test]
 async fn bottom_of_stack_badge() {
-    let dir = tempfile::tempdir().unwrap();
-    for entry in std::fs::read_dir(repo_root().join("fixtures/dashboard/github")).unwrap() {
-        let entry = entry.unwrap();
-        std::fs::copy(entry.path(), dir.path().join(entry.file_name())).unwrap();
-    }
-    let file = dir.path().join("pull-requests.json");
-    let mut prs: Vec<Value> = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-    let stack = json!({"id": "stack-wallet", "size": 3, "baseRefName": "main", "entries": {"nodes": [
-        {"position": 1, "pullRequest": {"number": 311, "state": "OPEN"}},
-        {"position": 2, "pullRequest": {"number": 298, "state": "OPEN"}},
-        {"position": 3, "pullRequest": {"number": 320, "state": "OPEN"}}
-    ]}});
-    for (number, position, base) in [
-        (311, 1, "main"),
-        (298, 2, "feat/pending-withdrawals"),
-        (320, 3, "feat/export-csv"),
-    ] {
-        let pr = prs.iter_mut().find(|pr| pr["number"] == number).unwrap();
-        pr["baseRefName"] = json!(base);
-        pr["stackEntry"] = json!({"position": position, "stack": stack});
-    }
-    let mut entries = vec![
-        json!({"position": 1, "pullRequest": {"number": 499, "state": "MERGED"}}),
-        json!({"position": 2, "pullRequest": {"number": 482, "state": "OPEN"}}),
-    ];
-    entries.extend((3..=102).map(|position| {
-        json!({"position": position, "pullRequest": {"number": 10_000 + position, "state": "OPEN"}})
-    }));
-    prs.iter_mut().find(|pr| pr["number"] == 482).unwrap()["stackEntry"] = json!({
-        "position": 2,
-        "stack": {"id": "stack-node", "size": 102, "baseRefName": "main", "entries": {"nodes": entries}}
-    });
-    std::fs::write(&file, serde_json::to_vec(&prs).unwrap()).unwrap();
-    let w = world_in(
-        Arc::new(NoopRanker),
-        Duration::from_secs(120),
-        dir.path().to_owned(),
-    )
+    let w = world_with_pr_details(|prs| {
+        let stack = json!({"id": "stack-wallet", "size": 3, "baseRefName": "main", "entries": {"nodes": [
+            {"position": 1, "pullRequest": {"number": 311, "state": "OPEN"}},
+            {"position": 2, "pullRequest": {"number": 298, "state": "OPEN"}},
+            {"position": 3, "pullRequest": {"number": 320, "state": "OPEN"}}
+        ]}});
+        for (number, position, base) in [
+            (311, 1, "main"),
+            (298, 2, "feat/pending-withdrawals"),
+            (320, 3, "feat/export-csv"),
+        ] {
+            let pr = prs.iter_mut().find(|pr| pr["number"] == number).unwrap();
+            pr["baseRefName"] = json!(base);
+            pr["stackEntry"] = json!({"position": position, "stack": stack});
+        }
+        let mut entries = vec![
+            json!({"position": 1, "pullRequest": {"number": 499, "state": "MERGED"}}),
+            json!({"position": 2, "pullRequest": {"number": 482, "state": "OPEN"}}),
+        ];
+        entries.extend((3..=102).map(|position| {
+            json!({"position": position, "pullRequest": {"number": 10_000 + position, "state": "OPEN"}})
+        }));
+        prs.iter_mut().find(|pr| pr["number"] == 482).unwrap()["stackEntry"] = json!({
+            "position": 2,
+            "stack": {"id": "stack-node", "size": 102, "baseRefName": "main", "entries": {"nodes": entries}}
+        });
+    })
     .await;
     assert_eq!(w.refreshed().await.state, RefreshState::Finished);
     let page = w.items("").await;
@@ -1509,6 +1552,55 @@ async fn bottom_of_stack_badge() {
     );
     assert_eq!(next.size, 102);
     assert_eq!(next.dependents, (10_003..=10_102).collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn null_stack_keeps_the_pull_request_in_the_dashboard() {
+    let w = world_with_pr_details(|prs| {
+        let pr = prs.iter_mut().find(|pr| pr["number"] == 1203).unwrap();
+        pr["stackEntry"] = json!({"position": 1, "stack": null});
+    })
+    .await;
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let page = w.items("").await;
+    let pr = page
+        .items
+        .iter()
+        .find(|item| item.id == "PLAT-1203")
+        .expect("pull request stays ranked");
+    assert!(pr.stack.is_none());
+}
+
+#[tokio::test]
+async fn closed_or_merged_upper_layers_leave_the_open_pr_at_top() {
+    use contracts::api::dashboard::StackPosition;
+
+    let w = world_with_pr_details(|prs| {
+        let platform = prs.iter_mut().find(|pr| pr["number"] == 1203).unwrap();
+        platform["stackEntry"] = json!({"position": 1, "stack": {
+            "id": "stack-platform", "size": 2, "baseRefName": "main", "entries": {"nodes": [
+                {"position": 1, "pullRequest": {"number": 1203, "state": "OPEN"}},
+                {"position": 2, "pullRequest": {"number": 1204, "state": "CLOSED"}}
+            ]}
+        }});
+        let wallet = prs.iter_mut().find(|pr| pr["number"] == 298).unwrap();
+        wallet["stackEntry"] = json!({"position": 2, "stack": {
+            "id": "stack-wallet", "size": 3, "baseRefName": "main", "entries": {"nodes": [
+                {"position": 1, "pullRequest": {"number": 311, "state": "OPEN"}},
+                {"position": 2, "pullRequest": {"number": 298, "state": "OPEN"}},
+                {"position": 3, "pullRequest": {"number": 297, "state": "MERGED"}}
+            ]}
+        }});
+    })
+    .await;
+    assert_eq!(w.refreshed().await.state, RefreshState::Finished);
+    let page = w.items("").await;
+    for id in ["PLAT-1203", "WUI-298"] {
+        let item = page.items.iter().find(|item| item.id == id).unwrap();
+        let stack = item.stack.as_ref().expect("native stack from the API");
+        assert_eq!(stack.position, StackPosition::Top, "{id}");
+        assert!(stack.dependents.is_empty(), "{id}");
+    }
 }
 
 #[tokio::test]

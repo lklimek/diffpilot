@@ -363,7 +363,7 @@ pub struct PullDetail {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 struct PullStackEntry {
     position: u32,
-    stack: PullStack,
+    stack: Option<PullStack>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -413,18 +413,10 @@ impl PullDetail {
     /// The GitHub-native stack and its open layers above this pull request.
     pub(crate) fn stack(&self) -> Option<Stack> {
         let entry = self.stack_entry.as_ref()?;
-        let stack = &entry.stack;
+        let stack = entry.stack.as_ref()?;
         if stack.size < 2 || entry.position == 0 || entry.position > stack.size {
             return None;
         }
-        let position = if entry.position == stack.size {
-            StackPosition::Top
-        // After a lower layer merges, GitHub retargets the next one to the stack's base.
-        } else if self.base_ref_name == stack.base_ref_name {
-            StackPosition::Bottom
-        } else {
-            StackPosition::Middle
-        };
         let mut dependents: Vec<_> = stack
             .entries
             .nodes
@@ -441,6 +433,14 @@ impl PullDetail {
             })
             .collect();
         dependents.sort_unstable();
+        let position = if dependents.is_empty() {
+            StackPosition::Top
+        } else if self.base_ref_name == stack.base_ref_name {
+            // GitHub retargets the next open layer to the stack's base when the bottom merges.
+            StackPosition::Bottom
+        } else {
+            StackPosition::Middle
+        };
         Some(Stack {
             position,
             size: stack.size,
@@ -519,9 +519,12 @@ impl<T: TokenSource> WorkClient<T> {
         for (pr, value) in answers.resolved {
             match serde_json::from_value::<Option<PullDetail>>(value["pullRequest"].clone()) {
                 Ok(Some(mut detail)) => {
-                    if let Some(entry) = &mut detail.stack_entry {
-                        self.read_remaining_stack_entries(&pr, &mut entry.stack)
-                            .await?;
+                    if let Some(stack) = detail
+                        .stack_entry
+                        .as_mut()
+                        .and_then(|entry| entry.stack.as_mut())
+                    {
+                        self.read_remaining_stack_entries(&pr, stack).await?;
                     }
                     fetched.found.insert(pr, detail);
                 }

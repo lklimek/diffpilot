@@ -8270,7 +8270,7 @@ live?: boolean,
  */
 stack?: Stack,
 /**
- * Base branch matching a configured or built-in release pattern.
+ * The pull request's base branch when it matches a repository release pattern, configured or otherwise built-in.
  */
 release_base?: string,
 /**

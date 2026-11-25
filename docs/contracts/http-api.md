@@ -998,9 +998,11 @@ once any required session, token or CSRF checks pass.
   installation-wide count of verified deliveries dropped for untracked repositories since the last restart, at most
   14 days. They also show the number of TCP connections refused at the webhook listener's capacity limit since the
   last restart.
-- Fact tags may include stable filter keys and labels. Work items may include stack position, size, dependent PR
-  numbers and a matching release base. `Settings.llm_usage.this_month` uses the server-local month. The ranking
-  usage reset starts counting from the reset time. `resets_at` is the next midnight in the reader's configured zone.
+- Fact tags may include stable filter keys and labels. Work items may include stack position, size and dependent
+  PR numbers. `WorkItem.release_base` is the PR's base branch when it matches the repository's release patterns.
+  These are the configured patterns when present and the built-in patterns otherwise, including `main` and `master`.
+  `Settings.llm_usage.this_month` uses the server-local month. The ranking usage reset starts counting from the
+  reset time. `resets_at` is the next midnight in the reader's configured zone.
 - The activity response shows the reader's own jobs with optional subject, times and typed wait reason, plus
   other running or queued jobs in the same tenant with kind and a response-local opaque id. The pause and last
   call are the reader's own.

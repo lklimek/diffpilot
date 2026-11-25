@@ -218,7 +218,7 @@
           ]
         },
         "release_base": {
-          "description": "Base branch matching a configured or built-in release pattern.",
+          "description": "The pull request's base branch when it matches a repository release pattern, configured or otherwise built-in.",
           "type": [
             "string",
             "null"
@@ -485,17 +485,17 @@
       "description": "Position of a pull request in a stack.",
       "oneOf": [
         {
-          "description": "Lowest open layer with higher layers in the stack.",
+          "description": "Lowest open layer with open dependents.",
           "type": "string",
           "const": "bottom"
         },
         {
-          "description": "With a parent and dependents.",
+          "description": "With a parent and open dependents.",
           "type": "string",
           "const": "middle"
         },
         {
-          "description": "Tip of the stack.",
+          "description": "With no open dependents.",
           "type": "string",
           "const": "top"
         }
