@@ -6,7 +6,8 @@ use std::collections::{HashMap, HashSet};
 use contracts::api::dashboard::{
     AwaitingItem, AwaitingReason, EXCLUDED_ITEMS_LIMIT, ExcludedItem, ExclusionCount,
     ExclusionReason, Exclusions, Fact, FactTag, ItemCounts, ItemKey, ItemKind, ItemTarget,
-    ItemText, RankingState, ReadyToMergeItem, ScoreState, SnapshotMeta, Tier, WorkItem,
+    ItemText, Judgement as JudgementView, JudgementState, OutdatedBecause, RankingState,
+    ReadyToMergeItem, RefreshState, ScoreState, SnapshotMeta, StatusCounts, Tier, WorkItem,
 };
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
@@ -18,8 +19,8 @@ use super::{Snapshot, StoredIssue, StoredPr, StoredTodo};
 use crate::dashboard::plugin::{Move, Overlay};
 use crate::dashboard::refresh::rank::ItemJudgement;
 use crate::dashboard::score::{
-    self, CiEffective, Judgement, Mergeable, Milestone, PrFacts, Relation, ScoreError, ScoreRules,
-    Scored, TodoStatus, merge_ready, todo_display_ids,
+    self, CiEffective, Freshness, Judgement, Mergeable, Milestone, PrFacts, Relation, ScoreError,
+    ScoreRules, Scored, TodoStatus, merge_ready, todo_display_ids,
 };
 
 /// A ranked item with what the request-time review link needs.
@@ -69,6 +70,29 @@ impl View {
         );
     }
 
+    /// Summary counts across the ranked items, before item filters and pagination.
+    pub(crate) fn status_counts(&self) -> StatusCounts {
+        let mut counts = StatusCounts {
+            outdated: 0,
+            not_judged: 0,
+            not_live: 0,
+            excluded: self.exclusions.total,
+        };
+        for entry in &self.items {
+            match entry.item.judgement.map(|j| j.state) {
+                Some(JudgementState::Outdated | JudgementState::Judging) => counts.outdated += 1,
+                Some(
+                    JudgementState::NotJudged | JudgementState::Queued | JudgementState::Capped,
+                ) => {
+                    counts.not_judged += 1;
+                }
+                _ => {}
+            }
+            counts.not_live += u32::from(entry.item.live == Some(false));
+        }
+        counts
+    }
+
     /// `SnapshotMeta` of the snapshot held by `record`; the excluded items are listed only when `list_excluded`.
     pub fn meta(
         &self,
@@ -115,7 +139,13 @@ pub fn build(
     judgements: &HashMap<ItemKey, ItemJudgement>,
     memcan_ui: Option<&str>,
     overlay: &Overlay,
+    record: Option<&RefreshRecord>,
 ) -> View {
+    let ranking_live = record.is_some_and(|record| record.state == RefreshState::Ranking);
+    let capped: HashSet<_> = record
+        .into_iter()
+        .flat_map(|record| &record.progress.left_provisional_keys)
+        .collect();
     let rules = ScoreRules::new(&snapshot.own_login, &snapshot.settings);
     let at = snapshot.scanned_at;
     let look_back = LookBack {
@@ -192,10 +222,12 @@ pub fn build(
             continue;
         };
         count(&mut counts, &item);
-        let text = judgements
-            .get(&item.key)
-            .and_then(|judged| judged.text.clone());
+        let judged = judgements.get(&item.key);
+        let text = judged.and_then(|judged| judged.text.clone());
+        let judgement = (item.asks_eligibility || !item.asks.is_empty())
+            .then(|| judgement_for(judged, ranking_live, capped.contains(&item.key)));
         let mut view_item = work_item(&rules, &look_back, item, source, text, memcan_ui);
+        view_item.item.judgement = judgement;
         if let Source::Pr(pr) = source {
             view_item.item.plugin_notes = overlay.notes(&pr.facts.repo, pr.facts.number);
         }
@@ -222,6 +254,42 @@ pub fn build(
         awaiting,
         ready_to_merge,
         merge_state_pending,
+    }
+}
+
+fn judgement_for(
+    stored: Option<&ItemJudgement>,
+    ranking_live: bool,
+    capped: bool,
+) -> JudgementView {
+    let Some(stored) = stored else {
+        return JudgementView {
+            state: if ranking_live {
+                JudgementState::Queued
+            } else if capped {
+                JudgementState::Capped
+            } else {
+                JudgementState::NotJudged
+            },
+            judged_at: None,
+            outdated_because: None,
+        };
+    };
+    let stale = stored.judgement.freshness == Freshness::Inherited;
+    JudgementView {
+        state: if !stale {
+            JudgementState::Current
+        } else if ranking_live && stored.rejudge_requested {
+            JudgementState::Judging
+        } else {
+            JudgementState::Outdated
+        },
+        judged_at: Some(stored.judgement.judged_at),
+        outdated_because: stale.then_some(if stored.older_prompt {
+            OutdatedBecause::PromptChanged
+        } else {
+            OutdatedBecause::FactsChanged
+        }),
     }
 }
 
@@ -822,7 +890,45 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::dashboard::score::{Freshness, Judgement, TodoFacts, TodoStatus};
+    use crate::dashboard::score::{TodoFacts, TodoStatus};
+
+    #[test]
+    fn judgement_states_table() {
+        use JudgementState::*;
+        use OutdatedBecause::*;
+
+        let answer = |freshness, older_prompt, rejudge_requested| ItemJudgement {
+            judgement: Judgement {
+                parts: Vec::new(),
+                eligibility: None,
+                alarm: false,
+                also: Vec::new(),
+                judged_at: at(),
+                freshness,
+            },
+            text: None,
+            older_prompt,
+            rejudge_requested,
+        };
+        let fresh = answer(Freshness::Current, false, false);
+        let changed = answer(Freshness::Inherited, false, false);
+        let bumped = answer(Freshness::Inherited, true, true);
+        for (stored, live, capped, state, reason) in [
+            (None, false, false, NotJudged, None),
+            (None, true, false, Queued, None),
+            (None, true, true, Queued, None),
+            (None, false, true, Capped, None),
+            (Some(&fresh), false, false, Current, None),
+            (Some(&changed), true, false, Outdated, Some(FactsChanged)),
+            (Some(&bumped), false, false, Outdated, Some(PromptChanged)),
+            (Some(&bumped), true, false, Judging, Some(PromptChanged)),
+        ] {
+            let rendered = judgement_for(stored, live, capped);
+            assert_eq!(rendered.state, state);
+            assert_eq!(rendered.outdated_because, reason);
+            assert_eq!(rendered.judged_at, stored.map(|_| at()));
+        }
+    }
 
     fn at() -> Timestamp {
         "2026-11-18T09:00:00Z".parse().expect("time")

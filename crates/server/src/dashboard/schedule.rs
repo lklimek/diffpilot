@@ -459,7 +459,9 @@ async fn run_due(state: &AppState, run: &DueRun) -> Result<(), DbError> {
     record(state, run, ScheduledOutcome::Started, None).await?;
     // Before the start, so the scan's end is never missed.
     let mut events = state.dashboard.subscribe();
-    let (outcome, reason) = match refresh::start(state, scope, RefreshTrigger::Scheduled).await {
+    let (outcome, reason) = match refresh::start(state, scope, RefreshTrigger::Scheduled, false)
+        .await
+    {
         Ok(status) => match scan_end(state, scope, status.id, &mut events).await {
             Some(ended) => match outcome_of(&ended) {
                 Some(outcome) => outcome,

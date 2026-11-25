@@ -1,14 +1,11 @@
 //! HTTP routes on the public, runner and webhook listeners.
 
+use axum::Router;
 use axum::http::HeaderValue;
 use axum::middleware::{from_fn_with_state, map_response};
-use axum::response::{IntoResponse, Response};
-use axum::routing::post;
-use axum::{Json, Router};
-use contracts::api::error::{ApiError, ApiErrorCode};
-use contracts::routes::REJUDGE_DASHBOARD_ITEM;
+use axum::response::Response;
 
-use crate::auth::{SessionCsrf, TokenGate, access_tokens};
+use crate::auth::{TokenGate, access_tokens};
 use crate::frontend::SECURITY_HEADERS;
 use crate::state::AppState;
 
@@ -81,7 +78,6 @@ pub fn router(state: AppState) -> Router {
         .merge(settings::routes())
         .merge(codex::routes())
         .merge(tour::routes())
-        .merge(reserved_routes())
         .route_layer(from_fn_with_state(
             TokenGate::new(state.clone()),
             access_tokens::check,
@@ -107,23 +103,6 @@ pub fn runner_router(state: AppState) -> Router {
 }
 
 pub use crate::webhooks::router as webhook_router;
-
-fn reserved_routes() -> Router<AppState> {
-    let write = post(|_: SessionCsrf| async { not_implemented() });
-    Router::new().route(REJUDGE_DASHBOARD_ITEM.path, write)
-}
-
-fn not_implemented() -> Response {
-    let code = ApiErrorCode::NotImplemented;
-    (
-        error::status(code),
-        Json(ApiError {
-            code,
-            message: "This feature is not available yet.".to_owned(),
-        }),
-    )
-        .into_response()
-}
 
 #[cfg(test)]
 mod tests {
@@ -333,20 +312,8 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    async fn assert_not_implemented(response: Response) {
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-        let body = response
-            .into_body()
-            .collect()
-            .await
-            .expect("body")
-            .to_bytes();
-        let body: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
-        assert_eq!(body["code"], "not_implemented");
-    }
-
     #[tokio::test]
-    async fn phase_b_api_placeholders_require_their_route_auth() {
+    async fn rejudge_route_requires_csrf_and_owns_the_item() {
         let state = test_state().await;
         seed_analysis(&state.db).await.expect("seed");
         let cookie = session_cookie(&state, DEFAULT_TENANT).await;
@@ -374,7 +341,7 @@ mod tests {
             .oneshot(request(Some(&cookie), Some("csrf")))
             .await
             .expect("infallible");
-        assert_not_implemented(response).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     /// Headers every API response carries (threat model T7b; JSON and event streams load nothing).

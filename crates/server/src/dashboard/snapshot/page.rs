@@ -85,6 +85,16 @@ pub fn revision(record: &RefreshRecord, snapshot: &Snapshot, view: &View) -> Str
     if !live.is_empty() {
         source.push_str(&format!("|live {live:?}"));
     }
+    let judgements: Vec<_> = view
+        .items
+        .iter()
+        .filter_map(|item| {
+            item.item
+                .judgement
+                .map(|judgement| (&item.item.key, judgement))
+        })
+        .collect();
+    source.push_str(&format!("|judgements {judgements:?}"));
     format!("r-{}", short_hash(source.as_bytes()))
 }
 

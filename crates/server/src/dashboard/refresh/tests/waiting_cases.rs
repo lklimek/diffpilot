@@ -220,13 +220,20 @@ async fn reviewer_statement_must_not_clear_an_active_bot_request() {
                 "commit": {"oid": head}}));
         }
         let (w, snapshot) = blocked_snapshot(reviews, decision).await;
-        let without = snapshot::build(&snapshot, &Default::default(), None, &Default::default());
+        let without = snapshot::build(
+            &snapshot,
+            &Default::default(),
+            None,
+            &Default::default(),
+            None,
+        );
         assert_eq!(without.items.len(), 1, "control without a statement");
         let view = snapshot::build(
             &snapshot,
             &Default::default(),
             None,
             &w.state.plugins.overlay(w.state.dashboard.now()),
+            None,
         );
         assert_eq!(
             view.items.len(),
@@ -249,6 +256,7 @@ async fn a_statement_observed_before_a_new_human_objection_must_not_hide_it() {
         &Default::default(),
         None,
         &w.state.plugins.overlay(w.state.dashboard.now()),
+        None,
     );
     assert_eq!(
         view.items.len(),
@@ -276,6 +284,7 @@ async fn future_source_clock_must_not_hide_an_unanswered_github_objection() {
         &Default::default(),
         None,
         &w.state.plugins.overlay(w.state.dashboard.now()),
+        None,
     );
     assert_eq!(view.items.len(), 1, "a future clock cannot prove coverage");
     assert!(view.awaiting.is_empty());
@@ -305,6 +314,7 @@ async fn a_human_request_with_unknown_submission_time_is_not_proved_covered() {
             &Default::default(),
             None,
             &w.state.plugins.overlay(w.state.dashboard.now()),
+            None,
         );
         assert_eq!(
             view.items.len(),
@@ -345,6 +355,7 @@ async fn reviewer_statement_needs_a_newer_observed_github_version() {
             &Default::default(),
             None,
             &w.state.plugins.overlay(w.state.dashboard.now()),
+            None,
         );
         assert_eq!(
             view.awaiting.len(),
@@ -371,6 +382,7 @@ async fn reviewer_statement_only_covers_human_requests_older_than_its_data() {
             &Default::default(),
             None,
             &w.state.plugins.overlay(w.state.dashboard.now()),
+            None,
         );
         assert_eq!(view.awaiting.len(), usize::from(waits), "request at {at}");
         assert_eq!(view.items.len(), usize::from(!waits));
@@ -394,6 +406,7 @@ async fn reviewer_statement_can_apply_after_a_bot_request_is_superseded() {
         &Default::default(),
         None,
         &w.state.plugins.overlay(w.state.dashboard.now()),
+        None,
     );
     assert!(
         snapshot.pull_requests[0]
@@ -423,6 +436,7 @@ async fn reviewer_statement_keeps_requests_with_unknown_bot_types_ranked() {
         &Default::default(),
         None,
         &w.state.plugins.overlay(w.state.dashboard.now()),
+        None,
     );
     assert_eq!(view.items.len(), 1);
     assert!(view.awaiting.is_empty());

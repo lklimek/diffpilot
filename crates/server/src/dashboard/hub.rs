@@ -99,7 +99,7 @@ struct ReaderState {
     writers: HashMap<UserKey, Arc<tokio::sync::Mutex<()>>>,
 }
 
-/// Serializes targeted snapshot reads and remembers their GitHub rate limits.
+/// Serializes snapshot reads that write facts and ranking transitions, and remembers GitHub rate limits.
 #[derive(Debug, Default)]
 pub(crate) struct Readers {
     state: Mutex<ReaderState>,
@@ -110,7 +110,7 @@ impl Readers {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Serialises targeted re-reads, including their snapshot read and network calls.
+    /// Coordinates snapshot writers with re-judge requests and the ranking drain.
     pub(crate) async fn writer(&self, scope: &Scope) -> tokio::sync::OwnedMutexGuard<()> {
         let lock = self.state().writers.entry(key(scope)).or_default().clone();
         lock.lock_owned().await

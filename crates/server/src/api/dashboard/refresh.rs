@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::rejection::{PathRejection, QueryRejection};
+use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::header::{CONTENT_TYPE, ETAG, IF_NONE_MATCH, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -18,15 +18,16 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use contracts::api::dashboard::{
     CommentTally, DashboardEvent, DashboardSummary, ItemKey, ItemKind, ItemPage, ItemQuery,
-    RefreshStatus, RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, SummaryQuery,
-    WorkItem,
+    RefreshStatus, RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, StartRefreshRequest,
+    StatusCounts, SummaryQuery, WorkItem,
 };
 use contracts::api::error::ApiErrorCode;
 use contracts::common::PrRef;
 use contracts::ids::RefreshId;
 use contracts::routes::{
     CANCEL_DASHBOARD_REFRESH, DASHBOARD_REFRESH_EVENTS, GET_DASHBOARD, GET_DASHBOARD_REFRESH,
-    HIDE_DASHBOARD_MENTION, LIST_DASHBOARD_ITEMS, RANK_DASHBOARD_REFRESH, START_DASHBOARD_REFRESH,
+    HIDE_DASHBOARD_MENTION, LIST_DASHBOARD_ITEMS, RANK_DASHBOARD_REFRESH, REJUDGE_DASHBOARD_ITEM,
+    START_DASHBOARD_REFRESH,
 };
 use contracts::time::Timestamp;
 use db::error::DbError;
@@ -58,6 +59,9 @@ pub enum DashboardError {
     /// The item query is not valid.
     #[error("the item query is not valid")]
     Query(#[from] QueryRejection),
+    /// The optional refresh body could not be read.
+    #[error("the refresh body is not valid")]
+    Json(#[from] JsonRejection),
     /// The database failed, or the refresh is unknown.
     #[error("the dashboard could not be read or changed")]
     Db(#[from] DbError),
@@ -73,6 +77,12 @@ pub enum DashboardError {
     /// Cancel of an ended refresh, or Retry ranking of one that cannot be retried.
     #[error("the refresh does not allow this now")]
     NotAllowed,
+    /// The item cannot be re-judged in its current state.
+    #[error("the item's judgement is not outdated")]
+    NotOutdated,
+    /// The user's daily ranking cap has been reached.
+    #[error("today's ranking limit has been reached")]
+    RankingCap,
     /// The cursor is not usable.
     #[error(transparent)]
     Cursor(#[from] CursorError),
@@ -101,13 +111,14 @@ impl From<ControlError> for DashboardError {
 impl ApiErrorSource for DashboardError {
     fn code(&self) -> ApiErrorCode {
         match self {
-            Self::Path(_) | Self::Query(_) | Self::Cursor(CursorError::Malformed) => {
-                ApiErrorCode::InvalidRequest
-            }
+            Self::Path(_)
+            | Self::Query(_)
+            | Self::Json(_)
+            | Self::Cursor(CursorError::Malformed) => ApiErrorCode::InvalidRequest,
             Self::Db(error) => error.code(),
             Self::Running => ApiErrorCode::RefreshRunning,
             Self::RateLimited { .. } => ApiErrorCode::GithubRateLimited,
-            Self::NotAllowed => ApiErrorCode::Conflict,
+            Self::NotAllowed | Self::NotOutdated | Self::RankingCap => ApiErrorCode::Conflict,
             Self::Cursor(CursorError::Expired) => ApiErrorCode::CursorExpired,
         }
     }
@@ -116,6 +127,7 @@ impl ApiErrorSource for DashboardError {
         match self {
             Self::Path(rejection) => rejection.public_message(),
             Self::Query(rejection) => rejection.public_message(),
+            Self::Json(rejection) => rejection.public_message(),
             Self::Cursor(CursorError::Malformed) => Cow::Borrowed("The cursor is not valid."),
             Self::Db(error) => error.public_message(),
             Self::Running => Cow::Borrowed("A refresh is already running. Wait for it to finish."),
@@ -126,6 +138,8 @@ impl ApiErrorSource for DashboardError {
             Self::NotAllowed => Cow::Borrowed(
                 "The refresh does not allow this in its current state. Reload and try again.",
             ),
+            Self::NotOutdated => Cow::Borrowed("The item's judgement is not outdated."),
+            Self::RankingCap => Cow::Borrowed("Today's ranking limit has been reached."),
             Self::Cursor(CursorError::Expired) => Cow::Borrowed(
                 "The list changed since this page was read. Read it again from the start.",
             ),
@@ -158,6 +172,7 @@ pub fn routes() -> Router<AppState> {
         .route(GET_DASHBOARD.path, get(summary))
         .route(HIDE_DASHBOARD_MENTION.path, post(hide_mention))
         .route(LIST_DASHBOARD_ITEMS.path, get(items))
+        .route(REJUDGE_DASHBOARD_ITEM.path, post(rejudge))
         .route(START_DASHBOARD_REFRESH.path, post(start))
         .route(GET_DASHBOARD_REFRESH.path, get(refresh_status))
         .route(CANCEL_DASHBOARD_REFRESH.path, post(cancel))
@@ -212,6 +227,7 @@ async fn current_view(
         &judgements,
         state.config.memcan_ui_url.as_deref(),
         &state.plugins.overlay(state.dashboard.now()),
+        Some(&record),
     );
     let live = installations::live(state, &scope.tenant_id).await?;
     view.apply_installations(&live);
@@ -250,6 +266,7 @@ async fn summary(
         mention_coverage,
         (live_repositories, not_live_repositories),
         last_event_at,
+        status_counts,
     ) = match current_view(&state, &scope).await? {
         Some((revision, snapshot, view, record, older)) => (
             revision,
@@ -260,6 +277,7 @@ async fn summary(
             snapshot.mention_coverage,
             view.repository_counts,
             snapshot.last_event_at,
+            view.status_counts(),
         ),
         None => (
             snapshot::NO_SNAPSHOT.to_owned(),
@@ -270,11 +288,17 @@ async fn summary(
             Default::default(),
             (0, 0),
             None,
+            StatusCounts {
+                outdated: 0,
+                not_judged: 0,
+                not_live: 0,
+                excluded: 0,
+            },
         ),
     };
     let stored = dashboard.settings(&scope.tenant_id, &scope.user_id).await?;
     Ok(Json(DashboardSummary {
-        status_counts: None,
+        status_counts: Some(status_counts),
         live_repositories: Some(live_repositories),
         not_live_repositories: Some(not_live_repositories),
         last_event_at,
@@ -523,9 +547,33 @@ async fn comment_tallies(
 async fn start(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
+    body: Result<Option<Json<StartRefreshRequest>>, JsonRejection>,
 ) -> DashboardResult<(StatusCode, Json<RefreshStatus>)> {
-    let status = refresh::start(&state, &scope(&session), RefreshTrigger::Manual).await?;
+    let rejudge_outdated = body?.is_some_and(|Json(request)| request.rejudge_outdated);
+    let status = refresh::start(
+        &state,
+        &scope(&session),
+        RefreshTrigger::Manual,
+        rejudge_outdated,
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(status)))
+}
+
+async fn rejudge(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    path: Result<Path<ItemKey>, PathRejection>,
+) -> DashboardResult<StatusCode> {
+    let Path(key) = path?;
+    refresh::rejudge(&state, &scope(&session), &key)
+        .await
+        .map_err(|error| match error {
+            judge::RejudgeError::NotOutdated => DashboardError::NotOutdated,
+            judge::RejudgeError::DailyCap => DashboardError::RankingCap,
+            judge::RejudgeError::Db(error) => DashboardError::Db(error),
+        })?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn refresh_status(
