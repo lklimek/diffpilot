@@ -4,16 +4,18 @@ import { expectAccessible } from "./screens-support";
 test("history opens a PR first, with a separate action for finished reviews", async ({ page }) => {
   await page.goto("/prs");
   const row = page.getByRole("listitem").filter({ hasText: "acme/node-client #482" });
-  const review = row.getByRole("link", { name: "Review" });
+  const review = row.getByRole("link", { name: "Review acme/node-client #482", exact: true });
   await expect(review).toHaveAttribute("href", /\/analyses\//);
-  const pr = row.getByRole("link", { name: /acme\/node-client #482/ });
+  const pr = row.getByRole("link", { name: /^acme\/node-client #482/ });
   await pr.focus();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/pr\/acme\/node-client\/482$/);
   await expect(page.getByRole("region", { name: "Review the code" })).toBeVisible();
-  await expect(
-    page.getByRole("navigation", { name: "Breadcrumb" }).locator('[aria-current="page"]'),
-  ).toHaveAttribute("aria-current", "page");
+  const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
+  const prCrumb = crumbs.getByText("#482", { exact: true }).locator("..");
+  await expect(prCrumb).toContainText("acme/node-client #482");
+  await expect(prCrumb).toHaveAttribute("aria-current", "page");
+  await expect(crumbs.getByRole("link", { name: "acme/node-client #482", exact: true })).toHaveCount(0);
 });
 
 test("history filters and watch menu work on a phone with a legacy server", async ({ page }) => {
@@ -39,7 +41,7 @@ test("history filters and watch menu work on a phone with a legacy server", asyn
 test("the review breadcrumb shortens the label and always returns to the PR main page", async ({ page }) => {
   await page.goto("/prs?state=resume");
   const row = page.getByRole("listitem").filter({ hasText: "acme/node-client #482" });
-  await row.getByRole("link", { name: "Review" }).click();
+  await row.getByRole("link", { name: "Review acme/node-client #482", exact: true }).click();
   const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
   const pr = crumbs.getByRole("link", { name: "acme/node-client #482" });
   await expect(crumbs.getByRole("link", { name: "Pull requests" })).toHaveAttribute("href", "/prs");
@@ -70,5 +72,5 @@ test("opening a PR becomes a history entry with C17", async ({ page }) => {
     .click();
   const row = page.getByRole("listitem").filter({ hasText: "acme/node-client #482" });
   await expect(row).toContainText("opened");
-  await expect(row.getByRole("link", { name: "Review" })).toHaveCount(0);
+  await expect(row.getByRole("link", { name: "Review acme/node-client #482", exact: true })).toHaveCount(0);
 });

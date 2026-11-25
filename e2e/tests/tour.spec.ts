@@ -135,7 +135,7 @@ test("classic diff of a step: d toggles the base → head view of the file", asy
   await expect(diff).toHaveCount(0);
 });
 
-test("resume where left off: the tick and the last viewed block survive a a reload and reopening the PR", async ({
+test("resume where left off: the tick and the last viewed block survive a reload and reopening the PR", async ({
   page,
 }) => {
   const id = await finishedReview(page);

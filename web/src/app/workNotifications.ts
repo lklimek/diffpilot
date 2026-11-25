@@ -4,9 +4,10 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useNavigate } from "react-router";
 import type { AnalysisId, AnalysisSummary, AskQuestion, Tour } from "../api/generated/types";
+import { filesHash } from "../components/files/model";
 import { rangeText } from "../components/section/format";
 import type { NotificationSupport } from "../components/settings/NotificationsCard";
-import { prPath } from "../screens/pr/paths";
+import { commentsPath, prPath } from "../screens/pr/paths";
 import { findStep } from "../screens/tour/sequence";
 import { usePrDisplayId } from "./tabStatus";
 
@@ -157,6 +158,9 @@ export async function notifyWorkDone(event: WorkEvent, open: (path: string) => v
   });
 }
 
+const reviewPath = (id: AnalysisId, fragment?: string) =>
+  `/analyses/${encodeURIComponent(id)}${fragment ? `#${encodeURIComponent(fragment)}` : ""}`;
+
 /**
  * The analysis finished or failed between `before` and `after`; a finish after a reopening counts again. Its
  * `finished_at` (the last finish) tells attempts apart in every tab.
@@ -173,7 +177,7 @@ function analysisEnded(before: AnalysisSummary, after: AnalysisSummary, pr: stri
           key,
           title: `Analysis finished — ${pr}`,
           body: "The LLM analysis of this pull request finished.",
-          path: prPath(after.pr),
+          path: reviewPath(id),
         }
       : {
           key,
@@ -198,13 +202,13 @@ export function tourEvents(before: Tour, after: Tour, pr: string): WorkEvent[] {
             key: `${id}:flow:${flow.id}:analysed`,
             title: `Flow ${n} analysed — ${pr}`,
             body: `The LLM analysis of flow ${n} is ready.`,
-            path: prPath(after.analysis.pr),
+            path: reviewPath(id, flow.id),
           }
         : {
             key: `${id}:flow:${flow.id}:failed`,
             title: `Flow ${n} failed — ${pr}`,
             body: `The LLM analysis of flow ${n} failed. Open it for details.`,
-            path: prPath(after.analysis.pr),
+            path: reviewPath(id, flow.id),
           },
     ];
   });
@@ -223,24 +227,29 @@ export function questionEvents(
     const was = before.find((b) => b.id === q.id)?.state;
     if (q.mine === false || (was !== "pending" && was !== "answering")) return [];
     if (q.state !== "answered" && q.state !== "failed") return [];
-    const found = q.step_id === undefined ? undefined : findStep(tour, q.step_id);
-    const anchor = q.anchor as AskQuestion["anchor"] | undefined;
+    const anchor = q.anchor;
+    const stepId = q.step_id ?? (anchor?.kind === "step" ? anchor.step_id : undefined);
+    const found = stepId === undefined ? undefined : findStep(tour, stepId);
     const flow = anchor?.kind === "flow" ? tour.flows.find((f) => f.id === anchor.flow_id) : undefined;
-    const where = found
-      ? `flow ${found.flow.position}, step ${found.step.number}`
+    // Lines of a file open in the Files view; the rest in Flows.
+    const [where, path] = found
+      ? [`flow ${found.flow.position}, step ${found.step.number}`, reviewPath(id, stepId)]
       : anchor?.kind === "flow"
-        ? flow
-          ? `flow ${flow.position}`
-          : "a flow"
+        ? [flow ? `flow ${flow.position}` : "a flow", reviewPath(id, anchor.flow_id)]
         : anchor?.kind === "pr"
-          ? "the whole PR"
+          ? ["the whole PR", reviewPath(id, "pr_context")]
           : anchor?.kind === "comment_item"
-            ? "a review comment"
+            ? ["a review comment", commentsPath(tour.analysis.pr)]
             : anchor?.kind === "lines"
-              ? anchor.range
-                ? `${anchor.path}:${rangeText(anchor.range)}`
-                : anchor.path
-              : "a step";
+              ? [
+                  anchor.range ? `${anchor.path}:${rangeText(anchor.range)}` : anchor.path,
+                  `${reviewPath(id)}/files${filesHash({
+                    file: anchor.path,
+                    side: anchor.side,
+                    ...(anchor.range ? { line: anchor.range.start_line, end: anchor.range.end_line } : {}),
+                  })}`,
+                ]
+              : ["a step", reviewPath(id, stepId)];
     return [
       {
         key: `${id}:question:${q.id}:${q.state}`,
@@ -249,7 +258,7 @@ export function questionEvents(
           q.state === "answered"
             ? `LLM answer to your question on ${where}.`
             : `No LLM answer to your question on ${where}.`,
-        path: prPath(tour.analysis.pr),
+        path,
       },
     ];
   });
@@ -267,7 +276,7 @@ export function progressEvents(before: AnalysisSummary, after: AnalysisSummary, 
         key: `${id}:review-ready`,
         title: `Review ready — ${pr}`,
         body: "Plan and PR context are ready.",
-        path: prPath(after.pr),
+        path: reviewPath(id),
       },
     ];
   return [];

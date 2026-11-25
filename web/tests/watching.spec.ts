@@ -15,7 +15,9 @@ test("watch actions update history and never start an analysis", async ({ page }
   await page.getByRole("menuitem", { name: "Stop watching" }).click();
   await expect(row.getByText(/^watching since/)).toHaveCount(0);
   await more.click();
-  await page.getByRole("menuitem", { name: "Watch", exact: true }).click();
+  const watch = page.getByRole("menuitem", { name: "Watch", exact: true });
+  await expect(watch).toHaveAccessibleDescription(/assessed automatically.*uses LLM tokens/i);
+  await watch.click();
   await expect(row.getByText(/^watching since/)).toBeVisible();
   expect(mutations).toEqual([
     "DELETE /api/v1/prs/acme/node-client/482/watch",

@@ -7,6 +7,7 @@ import { GithubIcon } from "../github/GithubMark";
 import { prGithubUrl } from "../github/links";
 import { MenuButton, MenuItem } from "../menu/MenuButton";
 import { Tooltip } from "../tooltip/Tooltip";
+import { WATCH_OFFER } from "../watch/WatchControl";
 
 interface Entry {
   id: string;
@@ -118,6 +119,7 @@ export function PrHistory({
                 <Tooltip tip="Opens the finished code analysis.">
                   <a
                     href={row.reviewHref}
+                    aria-label={`Review ${name}`}
                     onClick={navigateOnClick(row.reviewHref, onNavigate)}
                     className={buttonClass("plain", true)}
                   >
@@ -128,6 +130,7 @@ export function PrHistory({
               <MenuButton label={`More actions for ${name}`} trigger={<span aria-hidden="true">⋯</span>}>
                 <MenuItem
                   label={watching ? "Stop watching" : "Watch"}
+                  description={watching ? undefined : WATCH_OFFER}
                   disabledReason={
                     busy ? "Saving a watch change." : canWatch ? undefined : "Watch status is unavailable."
                   }

@@ -214,7 +214,7 @@ const tour = (state: AnalysisState, flows: Flow[], finished_at: string | null = 
 const running: AnalysisState = { state: "running", done: 1, total: 3, idle: false };
 
 describe("events of the review", () => {
-  it("a flow analysed or failed, with its position and a link to the PR", () => {
+  it("a flow analysed or failed, with its position and a link to the flow", () => {
     const before = tour(running, [
       flow("f1", 1, "analysed"),
       flow("f2", 2, "analysing"),
@@ -227,8 +227,8 @@ describe("events of the review", () => {
     ]);
     const events = tourEvents(before, after, PR);
     expect(events.map((e) => [e.title, e.path])).toEqual([
-      ["Flow 2 analysed — NC#482", "/pr/acme/node-client/482"],
-      ["Flow 3 failed — NC#482", "/pr/acme/node-client/482"],
+      ["Flow 2 analysed — NC#482", "/analyses/a1#f2"],
+      ["Flow 3 failed — NC#482", "/analyses/a1#f3"],
     ]);
     expect(events[0]!.body).toMatch(/LLM/);
     expect(new Set(events.map((e) => e.key)).size).toBe(2);
@@ -252,7 +252,7 @@ describe("events of the review", () => {
     );
     const events = tourEvents(before, failed, PR);
     expect(events.map((e) => [e.title, e.path])).toEqual([
-      ["Flow 2 failed — NC#482", "/pr/acme/node-client/482"],
+      ["Flow 2 failed — NC#482", "/analyses/a1#f2"],
       ["Analysis failed — NC#482", "/pr/acme/node-client/482"],
     ]);
     expect(events[1]!.body).not.toContain("x");
@@ -313,33 +313,36 @@ describe("events of the review", () => {
     const after = [q("q1", "answered"), q("q2", "failed"), q("q3", "answered", false), q("q4", "answered")];
     const events = questionEvents("a1", before, after, t, PR);
     expect(events.map((e) => [e.title, e.body, e.path])).toEqual([
-      ["Answer ready — NC#482", "LLM answer to your question on flow 1, step 5.", "/pr/acme/node-client/482"],
-      [
-        "Question failed — NC#482",
-        "No LLM answer to your question on flow 1, step 5.",
-        "/pr/acme/node-client/482",
-      ],
+      ["Answer ready — NC#482", "LLM answer to your question on flow 1, step 5.", "/analyses/a1#s5"],
+      ["Question failed — NC#482", "No LLM answer to your question on flow 1, step 5.", "/analyses/a1#s5"],
     ]);
     expect(events.map((e) => e.body).join()).not.toContain("Why retry");
   });
 
-  it("names a question about a flow, the whole PR or lines of a file by its subject", () => {
+  it("links anchored answers to the step, flow, PR context, Comments or Files", () => {
     const t = tour(running, [flow("f1", 1, "analysed", [{ id: "s5", number: 5 }])]);
     const q = (id: string, anchor: AskQuestion["anchor"], state: AskQuestion["state"]) =>
       ({ id, anchor, state, mine: true, text: "Why?", answer: null }) as unknown as AskQuestion;
     const anchors: AskQuestion["anchor"][] = [
+      { kind: "step", step_id: "s5", lines: null },
       { kind: "flow", flow_id: "f1" },
       { kind: "pr" },
+      { kind: "comment_item", item: "comment-1" },
       { kind: "lines", path: "src/a.rs", side: "head", range: null },
       { kind: "lines", path: "src/a.rs", side: "base", range: { start_line: 3, end_line: 4 } },
     ];
     const before = anchors.map((a, i) => q(`q${i}`, a, "answering"));
     const after = anchors.map((a, i) => q(`q${i}`, a, "answered"));
     expect(questionEvents("a1", before, after, t, PR).map((e) => [e.body, e.path])).toEqual([
-      ["LLM answer to your question on flow 1.", "/pr/acme/node-client/482"],
-      ["LLM answer to your question on the whole PR.", "/pr/acme/node-client/482"],
-      ["LLM answer to your question on src/a.rs.", "/pr/acme/node-client/482"],
-      ["LLM answer to your question on src/a.rs:3–4.", "/pr/acme/node-client/482"],
+      ["LLM answer to your question on flow 1, step 5.", "/analyses/a1#s5"],
+      ["LLM answer to your question on flow 1.", "/analyses/a1#f1"],
+      ["LLM answer to your question on the whole PR.", "/analyses/a1#pr_context"],
+      ["LLM answer to your question on a review comment.", "/pr/acme/node-client/482/comments"],
+      ["LLM answer to your question on src/a.rs.", "/analyses/a1/files#lines?file=src%2Fa.rs&side=head"],
+      [
+        "LLM answer to your question on src/a.rs:3–4.",
+        "/analyses/a1/files#lines?file=src%2Fa.rs&side=base&line=3&end=4",
+      ],
     ]);
   });
 
@@ -358,12 +361,12 @@ describe("events of the progress page", () => {
     const planning = summary({ state: "planning" });
     const ready = summary(running, true);
     expect(progressEvents(planning, ready, PR).map((e) => [e.title, e.path])).toEqual([
-      ["Review ready — NC#482", "/pr/acme/node-client/482"],
+      ["Review ready — NC#482", "/analyses/a1"],
     ]);
     expect(progressEvents(planning, ready, PR)[0]!.body).toBe("Plan and PR context are ready.");
     expect(
-      progressEvents(ready, summary({ state: "finished", total: 3 }, true), PR).map((e) => e.title),
-    ).toEqual(["Analysis finished — NC#482"]);
+      progressEvents(ready, summary({ state: "finished", total: 3 }, true), PR).map((e) => [e.title, e.path]),
+    ).toEqual([["Analysis finished — NC#482", "/analyses/a1"]]);
     const failed = summary({ state: "failed", flow: null, message: "x" });
     expect(progressEvents(planning, failed, PR).map((e) => [e.title, e.path])).toEqual([
       ["Analysis failed — NC#482", "/pr/acme/node-client/482"],

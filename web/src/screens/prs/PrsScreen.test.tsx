@@ -18,7 +18,7 @@ it.each([404, 501])("merges legacy analyses and watches when history returns %s"
   const shared = matches[0]!;
   expect(shared).toHaveTextContent("failed");
   expect(shared).toHaveTextContent("watch ended");
-  expect(within(shared).queryByRole("link", { name: "Review" })).toBeNull();
+  expect(within(shared).queryByRole("link", { name: /^Review\b/ })).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "Watched" }));
   expect(within(list).queryByText(/wallet-ui/)).toBeNull();
 });
@@ -84,8 +84,50 @@ it("loads the next C17 page and keeps opened-only PRs without a review action", 
   renderRoute("/prs");
   const list = await screen.findByRole("list", { name: "Your pull requests" });
   expect(within(list).getAllByRole("listitem")).toHaveLength(50);
-  expect(within(list).queryByRole("link", { name: "Review" })).toBeNull();
+  expect(within(list).queryByRole("link", { name: /^Review\b/ })).toBeNull();
   await userEvent.click(screen.getByRole("button", { name: "Show more" }));
   expect(await within(list).findByText(/Older visit/)).toBeVisible();
   expect(within(list).getAllByRole("listitem")).toHaveLength(51);
+});
+
+it("counts active watches in the usage header, excluding the ended watch from the numerator", async () => {
+  server.use(http.get("/api/v1/me/prs", () => new HttpResponse(null, { status: 404 })));
+  renderRoute("/prs");
+  expect(await screen.findByText("Watching 4 of 20 · assessment passes today 7 of 80")).toBeVisible();
+  expect(await screen.findByText("ended: merged or closed")).toBeVisible();
+});
+
+it("names each finished review link with its PR", async () => {
+  server.use(
+    http.get("/api/v1/me/prs", () =>
+      HttpResponse.json({
+        prs: [482, 483].map((number) => ({
+          pr: { repo: { owner: "acme", name: "node-client" }, number },
+          title: `PR ${number}`,
+          last_activity_at: "2026-11-25T10:00:00Z",
+          analysis: { id: `analysis-${number}`, status: "finished", head_sha: "abc123", head_moved: false },
+        })),
+        next_cursor: null,
+      }),
+    ),
+  );
+  renderRoute("/prs");
+  const list = within(await screen.findByRole("list", { name: "Your pull requests" }));
+  expect(list.getByRole("link", { name: "Review acme/node-client #482" })).toHaveAttribute(
+    "href",
+    "/analyses/analysis-482",
+  );
+  expect(list.getByRole("link", { name: "Review acme/node-client #483" })).toHaveAttribute(
+    "href",
+    "/analyses/analysis-483",
+  );
+});
+
+it("discloses automatic assessment and token use before starting a watch from history", async () => {
+  server.use(http.get("/api/v1/me/prs", () => new HttpResponse(null, { status: 501 })));
+  renderRoute("/prs");
+  await userEvent.click(await screen.findByRole("button", { name: "More actions for acme/wallet-ui #96" }));
+  expect(screen.getByRole("menuitem", { name: "Watch" })).toHaveAccessibleDescription(
+    /assessed automatically.*uses LLM tokens/i,
+  );
 });
