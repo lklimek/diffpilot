@@ -342,7 +342,7 @@ test("every top-bar control explains itself in a tooltip", async ({ page }) => {
   await expect(banner.getByRole("button", { name: /^Pending review/ })).toHaveAccessibleDescription(
     /pending review/,
   );
-  const user = banner.getByRole("button", { name: "alice", exact: true });
+  const user = banner.getByRole("button", { name: "alice: account and LLM activity", exact: true });
   await expect(user).toHaveAccessibleDescription("Signed in as alice (GitHub)");
   await user.click();
   await expect(banner.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");

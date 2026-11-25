@@ -1,5 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import { expect, it, vi } from "vitest";
 import { MenuButton, MenuItem } from "./MenuButton";
 
@@ -105,5 +106,63 @@ it("closes when Tab or a click moves outside, preserving the new focus", async (
   expect(screen.queryByRole("menu")).toBeNull();
   await user.click(trigger);
   await user.click(trigger);
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+it("closes when a trigger click follows a blur without a focus destination", async () => {
+  render(
+    <MenuButton label="Actions">
+      <MenuItem label="Details" onSelect={vi.fn()} />
+    </MenuButton>,
+  );
+  const trigger = screen.getByRole("button", { name: "Actions" });
+  await userEvent.click(trigger);
+  const item = screen.getByRole("menuitem", { name: "Details" });
+
+  fireEvent.pointerDown(trigger);
+  fireEvent.focusOut(item, { relatedTarget: null });
+  fireEvent.click(trigger);
+  expect(trigger).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("menu")).toBeNull();
+});
+
+it("opens a GitHub menu link in a new tab and names that behaviour", async () => {
+  render(
+    <MenuButton label="Actions">
+      <MenuItem label="Open on GitHub" href="https://github.com/acme/repo/pull/1" external />
+    </MenuButton>,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Actions" }));
+  const link = screen.getByRole("menuitem", { name: "Open on GitHub, new tab" });
+  expect(link).toHaveAttribute("href", "https://github.com/acme/repo/pull/1");
+  expect(link).toHaveAttribute("target", "_blank");
+  expect(link).toHaveAttribute("rel", "noopener noreferrer");
+});
+
+it("follows an in-app link through the router", async () => {
+  function Actions() {
+    const navigate = useNavigate();
+    const { pathname } = useLocation();
+    return (
+      <>
+        <MenuButton label="Actions">
+          <MenuItem label="Settings" href="/settings" onNavigate={navigate} />
+        </MenuButton>
+        <p>{pathname}</p>
+      </>
+    );
+  }
+  render(
+    <MemoryRouter>
+      <Actions />
+    </MemoryRouter>,
+  );
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  const link = screen.getByRole("menuitem", { name: "Settings" });
+  expect(link).toHaveAttribute("href", "/settings");
+  expect(link).not.toHaveAttribute("target");
+  await user.keyboard("{Enter}");
+  expect(screen.getByText("/settings")).toBeVisible();
   expect(screen.queryByRole("menu")).toBeNull();
 });

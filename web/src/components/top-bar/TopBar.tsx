@@ -5,7 +5,6 @@ import type { CiStatus, LlmLanguage, PrSummary } from "../../api/generated/types
 import { LanguageTag } from "../language-tag/LanguageTag";
 import { PENDING_INCOMPLETE } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
-import { UserMenu, type UserMenuProps } from "../app-shell/UserMenu";
 
 interface TopBarProps {
   hideContextChanges?: boolean;
@@ -19,7 +18,7 @@ interface TopBarProps {
   /** Language of the analysis's LLM texts; no tag when absent. */
   language?: LlmLanguage;
   /** Account menu of the signed-in reader. */
-  userMenu?: UserMenuProps;
+  userMenu?: ReactNode;
   /** Review progress: flows with every step ticked, out of all flows. */
   progress?: { reviewed: number; total: number };
   /** The progress counter as the flows dropdown (both review views); replaces the plain `progress` text. */
@@ -313,7 +312,7 @@ export function TopBar({
           </label>
         </Tooltip>
       )}
-      {userMenu && <UserMenu {...userMenu} />}
+      {userMenu}
     </header>
   );
 }

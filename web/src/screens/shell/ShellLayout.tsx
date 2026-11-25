@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { AppNav, type AppSection } from "../../components/app-shell/AppNav";
 import { ShellTopBar } from "../../components/app-shell/ShellTopBar";
-import type { UserMenuProps } from "../../components/app-shell/UserMenu";
 import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_PATH } from "./paths";
 import { WATCHING_PATH } from "../pr/paths";
 
@@ -19,7 +18,7 @@ interface ShellLayoutProps {
   /** Page name after the brand. */
   crumb: string;
   /** Account menu of the signed-in reader. */
-  userMenu?: UserMenuProps;
+  userMenu?: ReactNode;
   /** Unhidden human mentions; no count when null. */
   myWorkCount: number | null;
   /** Page actions in the top bar (the refresh control). */

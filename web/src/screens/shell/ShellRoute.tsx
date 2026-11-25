@@ -1,4 +1,4 @@
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Navigate, Outlet, useLocation, useOutletContext } from "react-router";
 import { useMe } from "../../api/queries";
@@ -7,8 +7,8 @@ import { useUserEventNotifications } from "../../app/userEvents";
 import { ALL_CARRY_OVERS_PATH, WATCHING_PATH } from "../pr/paths";
 import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_HELP_PATH, SETTINGS_PATH } from "./paths";
 import { ShellLayout } from "./ShellLayout";
-import type { useSessionSignOut } from "./useSessionSignOut";
-import { useUserMenu } from "./useUserMenu";
+import { useSessionSignOut } from "./useSessionSignOut";
+import { ShellUserMenu } from "./ShellUserMenu";
 import { DashboardScreen } from "../dashboard/DashboardScreen";
 
 /** What a page inside the shell may set: My work's count (kept while other pages show), help, top-bar actions. */
@@ -41,14 +41,16 @@ export function ShellRoute() {
   const [count, setCount] = useState<number | null>(null);
   const [help, setHelp] = useState<{ open: () => void } | null>(null);
   const setPageHelp = useCallback((open: (() => void) | null) => setHelp(open ? { open } : null), []);
-  // Stable setters: pages call them from effects; a new function per render would loop.
-  const { userMenu, signOut } = useUserMenu(login, help?.open);
-  const slots: ShellSlots = { actions, setCount, setHelp: setPageHelp, signOut };
+  const signOut = useSessionSignOut(login);
+  const slots = useMemo<ShellSlots>(
+    () => ({ actions, setCount, setHelp: setPageHelp, signOut }),
+    [actions, setPageHelp, signOut],
+  );
   return (
     <ShellLayout
       current={page.section}
       crumb={page.crumb}
-      userMenu={userMenu}
+      userMenu={login && <ShellUserMenu key={login} login={login} onHelp={help?.open} signOut={signOut} />}
       myWorkCount={count}
       actions={<span ref={setActions} className="contents" />}
     >

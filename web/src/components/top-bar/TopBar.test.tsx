@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Tour } from "../../api/generated/types";
+import { UserMenu } from "../app-shell/UserMenu";
 import { expectTrustWording } from "../../__tests__/wording";
 import { seedFor } from "../../mocks/fixtures";
 import { TopBar } from "./TopBar";
@@ -14,14 +15,16 @@ describe("TopBar", () => {
       <TopBar
         pr={tour.analysis.pr}
         ci={tour.pr_context.facts.ci}
-        userMenu={{
-          login: "alice",
-          settingsHref: "/settings",
-          usageHref: "/settings#llm-usage",
-          activity: null,
-          now: new Date(),
-          onSignOut: vi.fn(),
-        }}
+        userMenu={
+          <UserMenu
+            login="alice"
+            settingsHref="/settings"
+            usageHref="/settings#llm-usage"
+            now={new Date()}
+            activity={null}
+            onSignOut={vi.fn()}
+          />
+        }
       />,
     );
     const banner = screen.getByRole("banner");
@@ -38,7 +41,7 @@ describe("TopBar", () => {
       "Check runs: 3 passed, 1 failed, 1 skipped, 1 neutral. Statuses: 1 pending.",
     );
     expect(ci).toHaveAccessibleDescription(/test \(integration\)/);
-    expect(within(banner).getByRole("button", { name: "alice" })).toBeVisible();
+    expect(within(banner).getByRole("button", { name: "alice: account and LLM activity" })).toBeVisible();
     expectTrustWording(banner.textContent ?? "");
   });
 

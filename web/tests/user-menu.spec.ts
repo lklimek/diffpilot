@@ -4,7 +4,7 @@ import { expectTrustWording } from "./support";
 test("user menu shows LLM work, preserves job privacy and opens keyboard help", async ({ page }) => {
   await page.goto("/?scenario=llm-activity-running");
   const banner = page.getByRole("banner");
-  const trigger = banner.getByRole("button", { name: "alice", exact: true });
+  const trigger = banner.getByRole("button", { name: "alice: account and LLM activity", exact: true });
   await trigger.focus();
   await trigger.press("Enter");
   await expect(trigger).toHaveAttribute("aria-expanded", "true");
@@ -31,7 +31,7 @@ test("the disclosed job lists fit a phone in dark mode and can be expanded", asy
   await page.emulateMedia({ colorScheme: "dark" });
   await page.goto("/?scenario=llm-activity-many");
   const banner = page.getByRole("banner");
-  await banner.getByRole("button", { name: "alice", exact: true }).click();
+  await banner.getByRole("button", { name: "alice: account and LLM activity", exact: true }).click();
   const jobs = banner.getByRole("list", { name: "Queued (7)" });
   await expect(jobs.getByRole("listitem")).toHaveCount(5);
   await banner.getByRole("button", { name: "Show all (7)" }).click();
