@@ -104,7 +104,8 @@ describe("V1 Questions (US3, US4, US11)", () => {
     );
     renderRoute(PR);
     await userEvent.click(await screen.findByRole("link", { name: "Open Comments →" }));
-    await waitFor(() => expect(readOverview).toHaveBeenCalledOnce());
+    expect(await screen.findByRole("navigation", { name: "Queue" })).toBeVisible();
+    expect(readOverview).toHaveBeenCalledOnce();
     expect(tries).toBe(2);
   });
 
