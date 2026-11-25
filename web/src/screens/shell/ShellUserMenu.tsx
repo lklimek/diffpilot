@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useNavigate } from "react-router";
 import { UserMenu } from "../../components/app-shell/UserMenu";
 import { LLM_USAGE_PATH, SETTINGS_PATH } from "./paths";
@@ -16,8 +15,7 @@ export function ShellUserMenu({
   signOut: ReturnType<typeof useSessionSignOut>;
 }) {
   const navigate = useNavigate();
-  const [open, setOpen] = useState(false);
-  const llm = useLlmActivity(login, open);
+  const llm = useLlmActivity(login);
   return (
     <UserMenu
       {...llm}
@@ -26,7 +24,6 @@ export function ShellUserMenu({
       usageHref={LLM_USAGE_PATH}
       onNavigate={(href) => void navigate(href)}
       onHelp={onHelp}
-      onOpenChange={setOpen}
       onSignOut={() => signOut.leave(false)}
       signingOut={signOut.pending}
       signOutError={signOut.everywhere ? undefined : signOut.error}

@@ -29,7 +29,7 @@ test("Polish chosen: every ranking job asks for Polish texts", async ({ page, st
     },
   ]);
   await signInForDashboardSetup(page);
-  await page.goto("/settings");
+  await page.goto("/settings/llm");
   const language = page.getByLabel(/written in/);
   await language.selectOption("pl");
   await expect(language).toBeEnabled();

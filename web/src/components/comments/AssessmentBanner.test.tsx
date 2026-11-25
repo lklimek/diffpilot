@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
-import { AssessmentBanner } from "./AssessmentBanner";
+import { AssessmentBanner, assessmentText } from "./AssessmentBanner";
 
 const progress = {
   running: true,
@@ -16,6 +16,12 @@ const progress = {
 const now = new Date("2026-11-18T11:00:00Z");
 
 beforeEach(() => localStorage.clear());
+
+it("keeps the observed counts when an older server cannot distinguish queued and running assessments", () => {
+  expect(
+    assessmentText({ running: true, assessed: 2, total: 12, limited: 0, head: null, at: null }, now),
+  ).toBe("Assessment pending or running · 2 of 12 comments assessed");
+});
 
 it("hides the current state across reloads and reappears when progress changes", () => {
   const focusStatus = vi.fn();

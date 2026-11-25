@@ -1,5 +1,5 @@
 import { useId, useRef, useState } from "react";
-import type { LlmCallOutcome } from "../../api/generated/types";
+import type { LlmCallOutcome, RankingStatus } from "../../api/generated/types";
 import type { LlmActivity } from "../../api/provisional/llmActivity";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText, dateTimeText } from "../format/time";
@@ -16,11 +16,11 @@ export interface UserMenuProps {
   usageHref: string;
   now: Date;
   activity: LlmActivity | null | undefined;
+  legacyRanking?: RankingStatus | null;
   pausedUntil?: string | null;
   lastCall?: LlmCallOutcome | null;
   onNavigate?: Navigate;
   onHelp?: () => void;
-  onOpenChange?: (open: boolean) => void;
   onSignOut: () => void;
   signingOut?: boolean;
   signOutError?: string;
@@ -33,11 +33,11 @@ export function UserMenu({
   usageHref,
   now,
   activity,
+  legacyRanking,
   pausedUntil = activity?.paused_until ?? null,
   lastCall = activity?.last_call ?? null,
   onNavigate,
   onHelp,
-  onOpenChange,
   onSignOut,
   signingOut = false,
   signOutError,
@@ -46,14 +46,10 @@ export function UserMenu({
   const wrapper = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
-  const changeOpen = (next: boolean) => {
-    setOpen(next);
-    onOpenChange?.(next);
-  };
-  useOutsidePress(open, wrapper, () => changeOpen(false));
+  useOutsidePress(open, wrapper, () => setOpen(false));
 
   const close = () => {
-    changeOpen(false);
+    setOpen(false);
     trigger.current?.focus();
   };
   const paused = pausedUntil && Date.parse(pausedUntil) > now.getTime() ? pausedUntil : null;
@@ -68,7 +64,7 @@ export function UserMenu({
   const follow =
     onNavigate &&
     ((href: string) => {
-      changeOpen(false);
+      setOpen(false);
       onNavigate(href);
     });
 
@@ -83,7 +79,7 @@ export function UserMenu({
         close();
       }}
       onBlur={(event) => {
-        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) changeOpen(false);
+        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
       }}
     >
       <Tooltip tip={attention ? name : `Signed in as ${login} (GitHub)`}>
@@ -94,7 +90,7 @@ export function UserMenu({
           aria-haspopup="dialog"
           aria-expanded={open}
           aria-controls={open ? id : undefined}
-          onClick={() => changeOpen(!open)}
+          onClick={() => setOpen(!open)}
           className="inline-flex min-h-7 min-w-6 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[13px] text-text hover:bg-surface-2 aria-expanded:bg-surface-2"
         >
           <span
@@ -137,6 +133,7 @@ export function UserMenu({
           <p className="px-2.5 py-1 text-xs text-muted">Signed in as {login} (GitHub)</p>
           <LlmActivityList
             activity={activity}
+            legacyRanking={legacyRanking}
             lastCall={lastCall}
             pausedUntil={paused}
             now={now}
@@ -147,29 +144,33 @@ export function UserMenu({
             Settings
           </a>
           {onHelp && (
+            <Tooltip tip="Show keyboard shortcuts for this page.">
+              <button
+                type="button"
+                aria-keyshortcuts="?"
+                onClick={() => {
+                  close();
+                  onHelp();
+                }}
+                className={ACTION}
+              >
+                Keyboard shortcuts{" "}
+                <kbd aria-hidden className="rounded border border-border px-1 text-xs">
+                  ?
+                </kbd>
+              </button>
+            </Tooltip>
+          )}
+          <Tooltip tip="End your diffpilot session in this browser.">
             <button
               type="button"
-              aria-keyshortcuts="?"
-              onClick={() => {
-                close();
-                onHelp();
-              }}
+              aria-disabled={signingOut || undefined}
+              onClick={() => !signingOut && onSignOut()}
               className={ACTION}
             >
-              Keyboard shortcuts{" "}
-              <kbd aria-hidden className="rounded border border-border px-1 text-xs">
-                ?
-              </kbd>
+              {signingOut ? "Signing out…" : "Sign out"}
             </button>
-          )}
-          <button
-            type="button"
-            aria-disabled={signingOut || undefined}
-            onClick={() => !signingOut && onSignOut()}
-            className={ACTION}
-          >
-            {signingOut ? "Signing out…" : "Sign out"}
-          </button>
+          </Tooltip>
           {signOutError && (
             <p role="alert" className="px-2.5 text-xs text-high">
               Not signed out: {signOutError}

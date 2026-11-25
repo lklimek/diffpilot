@@ -7,22 +7,6 @@ import { describe, expect, it } from "vitest";
 // be on this list, with the reason it does without one.
 const ALLOWED: { file: string; match: string; reason: string }[] = [
   {
-    file: "components/app-shell/LlmActivityList.tsx",
-    match: "aria-expanded={expanded}",
-    reason:
-      "Disclosure within the user menu: its label gives the job count and its expanded state is announced.",
-  },
-  {
-    file: "components/app-shell/UserMenu.tsx",
-    match: 'aria-keyshortcuts="?"',
-    reason: "Action within the user menu: the label names the help and shows the shortcut key.",
-  },
-  {
-    file: "components/app-shell/UserMenu.tsx",
-    match: "aria-disabled={signingOut",
-    reason: "Action within the user menu: the label names the action and changes while it runs.",
-  },
-  {
     file: "components/menu/MenuButton.tsx",
     match: "<button {...props}",
     reason: "Action inside a menu: its label and description are visible and accessible on focus.",

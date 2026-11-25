@@ -82,8 +82,13 @@ export function RefreshControl({
   const coverage =
     live &&
     `${live.live_repositories} live ${live.live_repositories === 1 ? "repository" : "repositories"} · ${live.not_live_repositories} not live. ${live.last_event_at ? `Last GitHub event: ${dateTimeText(live.last_event_at)}.` : "No GitHub events recorded."}`;
+  const scanOutcome =
+    latest?.state === "failed" || latest?.state === "cancelled"
+      ? `Scan started at ${dateTimeText(latest.started_at)} ${latest.state === "failed" ? "failed" : "was cancelled"}.`
+      : null;
   const tip = [
     coverage,
+    scanOutcome,
     snapshot ? `Last full scan: ${dateTimeText(snapshot.scanned_at)}.` : "No full scan has finished.",
     own && `LLM judged ${own.judged} · reused ${own.reused}.`,
     ...rankingNotices.map(({ detail }) => detail),
@@ -116,6 +121,7 @@ export function RefreshControl({
       : `Not live · ${scanText}`;
 
   const rankingLabel = rankingNotices[0]?.label;
+  const statusLabel = latest?.state === "cancelled" ? "Scan cancelled" : rankingLabel;
   const statusRef = useRef<HTMLSpanElement>(null);
   const retryDescription =
     "Rank the current snapshot again. Only items that still need judging count toward the limits.";
@@ -146,7 +152,7 @@ export function RefreshControl({
           tabIndex={0}
           className="block cursor-help truncate text-xs text-muted"
         >
-          {rankingLabel ? `${rankingLabel} · ${status}` : status}
+          {statusLabel ? `${statusLabel} · ${status}` : status}
         </span>
       </Tooltip>
       {onRetryRanking && (

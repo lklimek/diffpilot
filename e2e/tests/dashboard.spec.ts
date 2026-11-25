@@ -1,7 +1,7 @@
 // My work (v1.1 plan §A.4, §B.3, §F, §M): open the dashboard at `/` → automatic scan → the provisional
 // list → the ranked list (fake provider's neutral judgements), in the tab title too; TODO rows off and on; a row's
 // Review link and the moved `/?pr=` deep link; cancel during a scan; MemCan down keeps the TODO rows.
-import { checkScreen, memcan, PR_URL, signIn } from "../support/app";
+import { checkScreen, memcan, PR_URL, signIn, userMenuButton } from "../support/app";
 import {
   groupIds,
   JUDGE_DATA,
@@ -42,6 +42,10 @@ test("My work: automatic scan → provisional → ranked → manual refresh", as
   await expect(page).toHaveTitle("diffpilot My work");
   const progress = page.getByRole("region", { name: "Refreshing from GitHub and MemCan" });
   await expect(progress.getByRole("progressbar", { name: "Scan progress" })).toBeVisible();
+  const details = progress.getByRole("button", { name: "Details" });
+  await expect(details).toHaveAttribute("aria-expanded", "false");
+  await details.click();
+  await expect(details).toHaveAttribute("aria-expanded", "true");
   await expect(progress.locator("li[data-step]")).toHaveText([
     /Search PRs/,
     /Issues/,
@@ -52,7 +56,10 @@ test("My work: automatic scan → provisional → ranked → manual refresh", as
     /LLM ranking/,
   ]);
   await expect(progress.locator('li[data-step="search_prs"]')).toHaveAttribute("data-state", /running|done/);
-  await expect(page.getByRole("button", { name: "Refreshing…" })).toHaveAttribute("aria-disabled", "true");
+  await expect(page.getByRole("button", { name: /^Refreshing… \d+:\d\d$/ })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
   await checkScreen(page);
   await screens(page, "dashboard-scanning");
   // Work that lasts 10 s shows in the tab title.
@@ -61,12 +68,15 @@ test("My work: automatic scan → provisional → ranked → manual refresh", as
   // The scan is stored: every item is provisional ("Not judged yet") until the first judged batch lands.
   // 11 pull requests (the ownership policy keeps PLAT-1203 and PLAT-1199, directed at alice; PLAT-1176 and CON-1541
   // wait on others), 5 issues, 2 TODOs; the list opens with every kind shown.
-  const banner = page.getByText(/^Ranking with the LLM: \d+ of 18 items judged\.$/);
+  const account = userMenuButton(page);
+  const activity = page.getByRole("region", { name: "LLM activity" });
+  const ranking = activity.getByText(/^Ranking with the LLM: \d+ of 18 items judged\.$/);
   await expect(workList(page).getByRole("heading", { name: /^Not judged yet.*·\s*18$/ })).toBeVisible({
     timeout: 90_000,
   });
   expect((await groupIds(page, "Not judged yet")).slice(0, 3)).toEqual(["PLAT-1203", "WUI-320", "NC-482"]);
-  await expect(banner).toBeVisible({ timeout: 30_000 });
+  await account.click();
+  await expect(ranking).toBeVisible({ timeout: 30_000 });
   await expect(progress).toHaveCount(0);
   await checkScreen(page);
   await screens(page, "dashboard-provisional");
@@ -74,6 +84,10 @@ test("My work: automatic scan → provisional → ranked → manual refresh", as
   const done = await waitForRefresh(page, ranked, 150_000);
   expect(done.trigger).toBe("automatic");
   expect([done.judged, done.reused]).toEqual([18, 0]);
+  if ((await account.getAttribute("aria-expanded")) === "false") await account.click();
+  await expect(activity).toBeVisible();
+  await expect(ranking).toHaveCount(0);
+  await account.press("Escape");
   // Mention-only WUI-305 is a quick reply outside the ranking.
   await page
     .getByRole("region", { name: "Mentions" })
@@ -82,21 +96,20 @@ test("My work: automatic scan → provisional → ranked → manual refresh", as
   await expect(
     page.getByRole("link", { name: "Open mention on acme/wallet-ui#305 on GitHub" }),
   ).toBeVisible();
-  await expect(banner).toHaveCount(0);
   await expect(page).toHaveTitle("diffpilot My work: ready");
   await expect(page.getByRole("heading", { name: /^Not judged yet/ })).toHaveCount(0);
   expect(await groupIds(page, "P1")).toEqual(["PLAT-1203", "WUI-320", "NC-482"]);
   expect((await groupIds(page, "P2"))[0]).toBe("WUI-311");
-  await expect(
-    page.getByText(/^Refreshed automatically at \d\d:\d\d · .* · judged 18 · reused 0$/),
-  ).toBeVisible();
+  const scanStatus = page.getByText(/^Full scan \d\d:\d\d$/);
+  await expect(scanStatus).toBeVisible();
+  await expect(scanStatus).toHaveAccessibleDescription(/Last full scan:.*LLM judged 18 · reused 0\./);
   await checkScreen(page);
   await screens(page, "dashboard-ranked");
 
   await refreshButton(page).click();
   const manual = await waitForRefresh(page, (r) => r.id !== done.id && ranked(r));
   expect([manual.trigger, manual.judged, manual.reused]).toEqual(["manual", 0, 18]);
-  await expect(page.getByText(/^Refreshed manually at \d\d:\d\d · .* · judged 0 · reused 18$/)).toBeVisible();
+  await expect(scanStatus).toHaveAccessibleDescription(/Last full scan:.*LLM judged 0 · reused 18\./);
 });
 
 test("TODO rows: hidden when MemCan TODOs are switched off, back when on", async ({ page, stack }) => {
@@ -143,7 +156,9 @@ test("cancel during a scan: the scan stops, the list stays", async ({ page }) =>
   const cancelled = await waitForRefresh(page, (r) => r.id !== shown?.id && r.state === "cancelled", 30_000);
   expect(cancelled.scanned_at).toBeNull();
   await expect(progress).toHaveCount(0);
-  await expect(page.getByText(/^Refresh of \d\d:\d\d cancelled · showing \d\d:\d\d$/)).toBeVisible();
+  const status = page.getByText(/^Scan cancelled · Full scan \d\d:\d\d$/);
+  await expect(status).toBeVisible();
+  await expect(status).toHaveAccessibleDescription(/Scan started at .* was cancelled\. Last full scan:/);
   expect(await rowIds(page)).toEqual(before);
   await expect(refreshButton(page)).not.toHaveAttribute("aria-disabled", "true");
   await checkScreen(page);
@@ -162,7 +177,8 @@ test("MemCan down: the refresh finishes, TODO rows are kept and a note says they
     await refreshButton(page).click();
     const done = await waitForRefresh(page, (r) => r.id !== shown?.id && ranked(r));
     expect(done.failure).toBeNull();
-    await expect(page.getByText(/^Refreshed manually at /)).toBeVisible();
+    expect(done.trigger).toBe("manual");
+    await expect(page.getByText(/^Full scan \d\d:\d\d$/)).toBeVisible();
     expect(await rowIds(page)).toEqual(expect.arrayContaining(TODOS));
     await page.getByRole("button", { name: /^« More · waiting \d+ · ready \d+$/ }).click();
     await expect(

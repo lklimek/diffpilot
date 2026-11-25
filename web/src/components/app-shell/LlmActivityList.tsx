@@ -1,8 +1,9 @@
 import { useId, useState, type ReactNode } from "react";
-import type { LlmCallOutcome } from "../../api/generated/types";
+import type { LlmCallOutcome, RankingStatus } from "../../api/generated/types";
 import type { LlmActivity, LlmJobKind, QueuedLlmJob, RunningLlmJob } from "../../api/provisional/llmActivity";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
 import { clockText } from "../format/time";
+import { Tooltip } from "../tooltip/Tooltip";
 
 const PREVIEW_COUNT = 5;
 
@@ -117,22 +118,42 @@ function Jobs({
         )}
       </ul>
       {own.length > PREVIEW_COUNT && (
-        <button
-          type="button"
-          aria-expanded={expanded}
-          aria-controls={id}
-          onClick={() => setExpanded(!expanded)}
-          className="min-h-6 w-fit cursor-pointer text-xs text-accent underline"
-        >
-          {expanded ? "Show less" : `Show all (${own.length})`}
-        </button>
+        <Tooltip tip={expanded ? "Show the first five of your jobs." : "Show all of your jobs in this list."}>
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={id}
+            onClick={() => setExpanded(!expanded)}
+            className="min-h-6 w-fit cursor-pointer text-xs text-accent underline"
+          >
+            {expanded ? "Show less" : `Show all (${own.length})`}
+          </button>
+        </Tooltip>
       )}
     </div>
   );
 }
 
+function rankingProgress(ranking: RankingStatus | null | undefined, now: Date): string | null {
+  switch (ranking?.state) {
+    case "waiting_for_analysis":
+      return "Waiting for the review analysis to finish.";
+    case "running":
+      return ranking.total > 0
+        ? `Ranking with the LLM: ${ranking.judged} of ${ranking.total} items judged.`
+        : "Preparing to rank the dashboard.";
+    case "paused":
+      return ranking.resumes_at
+        ? `Dashboard ranking paused until ${clockText(ranking.resumes_at, now)}.`
+        : "Dashboard ranking is paused.";
+    default:
+      return null;
+  }
+}
+
 interface LlmActivityListProps {
   activity: LlmActivity | null | undefined;
+  legacyRanking?: RankingStatus | null;
   pausedUntil: string | null;
   lastCall: LlmCallOutcome | null;
   now: Date;
@@ -143,6 +164,7 @@ interface LlmActivityListProps {
 /** Current LLM jobs and the most recent call, using only server-observed facts. */
 export function LlmActivityList({
   activity,
+  legacyRanking,
   pausedUntil,
   lastCall,
   now,
@@ -152,6 +174,7 @@ export function LlmActivityList({
   const id = useId();
   const failed = lastCall?.status.state === "not_working";
   const count = activity ? activity.running.length + activity.queued.length : 0;
+  const ranking = activity === null ? rankingProgress(legacyRanking, now) : null;
   return (
     <section aria-labelledby={id} className="grid gap-2 border-y border-border px-2.5 py-2">
       <div>
@@ -170,6 +193,7 @@ export function LlmActivityList({
           <p className="text-muted">Idle</p>
         ) : null}
         {activity === undefined && <p className="text-muted">Loading job activity…</p>}
+        {ranking && <p className="text-muted">{ranking}</p>}
         {activity === null && <p className="text-muted">Job activity unavailable.</p>}
       </div>
       {activity && (

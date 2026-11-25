@@ -101,11 +101,19 @@ it("takes the activity route's last call and pause as authoritative without fetc
   expect(codex).not.toHaveBeenCalled();
 });
 
-it("reads fallback status only on opening the menu and does not poll it", async () => {
+it("keeps the attention indicator current when the activity route is missing", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {
     const activity = vi.fn(() => new HttpResponse(null, { status: 404 }));
-    const settings = vi.fn(() => HttpResponse.json(SETTINGS));
+    let failed = false;
+    const settings = vi.fn(() =>
+      HttpResponse.json({
+        ...SETTINGS,
+        llm_status: failed
+          ? { at: new Date().toISOString(), status: { state: "not_working", message: "LLM call failed." } }
+          : null,
+      }),
+    );
     const codex = vi.fn(() => HttpResponse.json(unlinkedCodex));
     server.use(
       http.get("/api/v1/llm/activity", activity),
@@ -113,18 +121,18 @@ it("reads fallback status only on opening the menu and does not poll it", async 
       http.get("/api/v1/settings/codex", codex),
     );
     renderRoute("/review");
-    const trigger = await accountButton();
+    await accountButton();
     await waitFor(() => expect(activity).toHaveBeenCalledOnce());
-    await act(() => vi.advanceTimersByTimeAsync(60_000));
-    expect(settings).not.toHaveBeenCalled();
-    expect(codex).not.toHaveBeenCalled();
-
-    await userEvent.click(trigger);
     await waitFor(() => expect(settings).toHaveBeenCalledOnce());
     await waitFor(() => expect(codex).toHaveBeenCalledOnce());
-    await act(() => vi.advanceTimersByTimeAsync(60_000));
-    expect(settings).toHaveBeenCalledOnce();
-    expect(codex).toHaveBeenCalledOnce();
+    failed = true;
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    const trigger = await screen.findByRole("button", { name: "alice — LLM not working" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(activity).toHaveBeenCalledOnce();
+    await userEvent.click(trigger);
+    expect(await screen.findByText("Job activity unavailable.")).toBeVisible();
+    expect(screen.getByText("LLM call failed.")).toBeVisible();
   } finally {
     vi.useRealTimers();
   }

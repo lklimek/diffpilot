@@ -11,10 +11,14 @@ export const PR_URL = "https://github.com/acme/node-client/pull/482";
 /** One analysis of the fixture PR, the runner's 5 s claim interval included. */
 export const FINISH_TIMEOUT_MS = 90_000;
 
+const USER_MENU_NAME = /: account and LLM activity$| — LLM (?:paused until|not working)/;
+
 /** The heading of the block shown in the centre column. */
 export const heading = (page: Page) => page.locator("main h2:not([data-column-title])").first();
 export const nav = (page: Page) => page.getByRole("navigation", { name: "Flows and steps" });
 export const inspector = (page: Page) => page.getByRole("complementary", { name: "Inspector" });
+export const userMenuButton = (page: Page) =>
+  page.getByRole("banner").getByRole("button", { name: USER_MENU_NAME });
 
 /**
  * Signs in through fake GitHub (as `alice`, or the `login` fake GitHub was switched to) and waits for the first
@@ -238,6 +242,8 @@ export interface RequiredTip {
 const REVIEW = 'nav[aria-label="Flows and steps"]';
 const PROGRESS = 'section[aria-label="Analysis progress"]';
 const HOME = 'form:has(input[type="url"])';
+const USER_MENU = 'header button[aria-haspopup="dialog"]';
+const USER_PANEL = 'header [role="dialog"][aria-label$=": account and LLM activity"]';
 
 /** The controls of web/src/components that carry a tooltip, per screen. */
 export const REQUIRED_TIPS: RequiredTip[] = [
@@ -251,11 +257,10 @@ export const REQUIRED_TIPS: RequiredTip[] = [
   },
   {
     screen: "body",
-    what: "top bar: button (your progress, pending review, help)",
+    what: "top bar: button",
     selector: "header button",
     min: 0,
   },
-  { screen: "body", what: "top bar: user", selector: 'header a[href="/settings"]', min: 0 },
   { screen: REVIEW, what: "top bar: PR number", selector: 'header a[href*="/pull/"]', min: 1 },
   { screen: REVIEW, what: "top bar: head SHA", selector: 'header code[tabindex="0"]', min: 1 },
   {
@@ -272,8 +277,20 @@ export const REQUIRED_TIPS: RequiredTip[] = [
     name: "^Pending review",
     min: 1,
   },
-  { screen: REVIEW, what: "top bar: help", selector: "header button", name: "^Help", min: 1 },
-  { screen: REVIEW, what: "top bar: user", selector: 'header a[href="/settings"]', min: 1 },
+  {
+    screen: REVIEW,
+    what: "top bar: user menu",
+    selector: USER_MENU,
+    name: USER_MENU_NAME.source,
+    min: 1,
+  },
+  {
+    screen: `body:has(${REVIEW}):has(${USER_PANEL})`,
+    what: "user menu: keyboard shortcuts",
+    selector: `${USER_PANEL} button[aria-keyshortcuts="?"]`,
+    name: "^Keyboard shortcuts",
+    min: 1,
+  },
   // Navigation (NavList.tsx): quiet rows, the pending-review row, risk and group labels.
   {
     screen: REVIEW,
@@ -392,6 +409,8 @@ export async function sweepTooltips(
       }
     }
 
+    // Moving focus directly from a disclosure to another control closes it before its tips can be checked.
+    previous?.blur();
     const focusable = "button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
     for (const trigger of document.querySelectorAll<HTMLElement>("[aria-describedby]")) {
       // Re-rendered while earlier triggers were swept (live data): its replacement is not this sweep's to judge.
