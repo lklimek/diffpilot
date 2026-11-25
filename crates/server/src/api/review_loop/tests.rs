@@ -937,6 +937,31 @@ async fn effects_preview_and_github_failure_keeps_the_last_read() {
     assert_eq!(w.items().await.len(), 15);
 }
 
+#[tokio::test]
+async fn read_again_queues_no_llm_work() {
+    let w = world().await;
+    let (status, _) = w.post(&format!("{PR}/comments/read"), json!({})).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(w.items().await.len(), 15, "the refresh stored new items");
+    let review_loop = w.state.db.review_loop();
+    let passes = review_loop.live_passes().await.expect("passes");
+    assert!(passes.is_empty(), "refresh queued {passes:?}");
+
+    w.get(&format!("{PR}/comments")).await;
+    let passes = review_loop.live_passes().await.expect("passes");
+    assert_eq!(passes.len(), 1, "Comments requests one pass: {passes:?}");
+    let first = passes[0].id;
+
+    w.get(&format!("{PR}/comments")).await;
+    let passes = review_loop.live_passes().await.expect("passes");
+    assert_eq!(
+        passes.len(),
+        1,
+        "Comments keeps the current pass: {passes:?}"
+    );
+    assert_eq!(passes[0].id, first);
+}
+
 /// T22: decisions, gate marks, re-reads and item actions refuse access tokens.
 #[tokio::test]
 async fn no_token_reaches_decision_routes() {

@@ -444,3 +444,30 @@ fn connection(items: Vec<Value>, field: &Field) -> Value {
             "startCursor": start_cursor, "endCursor": end_cursor},
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dashboard::query::parse;
+
+    #[test]
+    fn pr_facts_route_with_unaliased_repository_metadata() {
+        let recorded = ("acme/node-client".to_owned(), 482);
+        for (metadata, expected) in [
+            ("databaseId isPrivate", true),
+            ("id: databaseId isPrivate", false),
+            ("databaseId private: isPrivate", false),
+        ] {
+            let query = format!(
+                "{{
+                    repository(owner:\"acme\",name:\"node-client\") {{
+                        {metadata} pullRequest(number:482) {{ title headRefOid updatedAt }}
+                    }}
+                }}"
+            );
+            let mut doc = parse(&query).unwrap();
+            doc.resolve(&Value::Null).unwrap();
+            assert_eq!(routes_to_v1(&doc, Some(&recorded)), expected, "{query}");
+        }
+    }
+}

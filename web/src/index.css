@@ -174,10 +174,19 @@
   text-overflow: ellipsis;
 }
 
-@media (1200px <= width < 1440px) {
-  /* Let the repository crumb give up space before the PR line clips its badges. */
+@media (width >= 1200px) {
   [data-code-review] .review-pr-line {
-    flex: 1 0 min-content;
+    flex: 1 1 auto;
+  }
+
+  [data-code-review] .review-crumb {
+    min-width: min-content;
+  }
+
+  /* The breadcrumb can ellipsize a long repository name and still show the number. */
+  [data-code-review] .review-pr-crumb {
+    display: grid;
+    grid-template-columns: minmax(8ch, max-content) max-content;
   }
 }
 
@@ -199,6 +208,7 @@
 
   [data-code-review] .review-pr-line {
     gap: 0.375rem;
+    padding-left: 0.375rem;
   }
 
   [data-code-review] .review-ci-counts {

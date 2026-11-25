@@ -100,8 +100,8 @@ export function CommentsRoute() {
   const me = useMe();
   const login = me.data?.user?.login ?? "anonymous";
   const overview = useCommentsOverview(pr);
-  // Older servers start assessment from the overview. Read items after that request so the queue sees it.
-  const items = useCommentItems(pr, Boolean(overview.data));
+  // The overview queues assessment. Load items after the request settles so they include any new pass.
+  const items = useCommentItems(pr, overview.isFetchedAfterMount);
   const page = usePrPage(pr);
   const read = useReadComments(pr);
   const watch = useWatchPr(pr);

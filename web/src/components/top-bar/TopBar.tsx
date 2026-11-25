@@ -90,7 +90,7 @@ function Breadcrumb({
       <span className="sr-only">{full}</span>
     </>
   );
-  const prClass = "flex min-h-6 min-w-0 items-baseline gap-1 font-semibold text-text";
+  const prClass = "review-pr-crumb flex min-h-6 min-w-0 items-baseline gap-1 font-semibold text-text";
   return (
     <nav
       aria-label="Breadcrumb"

@@ -56,6 +56,38 @@ describe("V0 PR page (US1, US19)", () => {
 });
 
 describe("V1 Questions (US3, US4, US11)", () => {
+  it.each([200, 502])("reads items after the overview settles with HTTP %i", async (status) => {
+    let finishOverview!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finishOverview = resolve;
+    });
+    const readOverview = vi.fn();
+    const readItems = vi.fn();
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482/comments", async () => {
+        readOverview();
+        await pending;
+        return status === 200
+          ? HttpResponse.json(overview())
+          : HttpResponse.json({ code: "github_unavailable", message: "Overview unavailable." }, { status });
+      }),
+      http.get("/api/v1/prs/acme/node-client/482/comments/items", () => {
+        readItems();
+        return HttpResponse.json(commentItemsResponse());
+      }),
+    );
+    renderRoute(`${PR}/comments`);
+    try {
+      await waitFor(() => expect(readOverview).toHaveBeenCalledOnce());
+      expect(readItems).not.toHaveBeenCalled();
+    } finally {
+      finishOverview();
+    }
+    await waitFor(() => expect(readItems).toHaveBeenCalledOnce());
+    if (status === 200) expect(await screen.findByRole("navigation", { name: "Queue" })).toBeVisible();
+    else expect(await screen.findByRole("alert")).toHaveTextContent("Overview unavailable.");
+  });
+
   it("opens the first question of Needs you; PR-level questions come last; j moves to the next", async () => {
     const router = renderRoute(`${PR}/comments`);
     expect(await screen.findByRole("heading", { name: /C21 · Retry cap is checked/ })).toHaveFocus();

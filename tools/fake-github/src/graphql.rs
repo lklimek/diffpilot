@@ -73,6 +73,7 @@ struct PullRecording {
     body: Option<String>,
     html_url: String,
     state: String,
+    updated_at: String,
     merged: bool,
     draft: bool,
     user: Option<PullAuthor>,
@@ -271,7 +272,7 @@ impl Graphql {
                 "title": pull.title, "body": pull.body.as_deref().unwrap_or_default(),
                 "url": pull.html_url, "state": state, "isDraft": pull.draft, "author": author,
                 "baseRefName": pull.base.name, "baseRefOid": pull.base.sha, "headRefOid": self.head(),
-                "reviewDecision": null,
+                "reviewDecision": null, "updatedAt": pull.updated_at,
             }
         }}})
     }
@@ -484,11 +485,14 @@ pub(crate) async fn serve(
         graphql.pull_request(json!({"reviewThreads": empty_page()}))
     } else if query.contains("reviewThreads") {
         graphql.review_threads()
-    } else if query.contains("baseRefOid") && query.contains("reviewDecision") {
+    } else if query.contains("repository(")
+        && query.contains("baseRefOid")
+        && query.contains("reviewDecision")
+    {
         graphql.pull_facts()
-    } else if query.contains("reviews(first:100") {
+    } else if query.contains("pullRequest(number:$pr){reviews(first:100") {
         graphql.pull_request(json!({"reviews": empty_page()}))
-    } else if query.contains("comments(first:100") {
+    } else if query.contains("pullRequest(number:$pr){comments(first:100") {
         graphql.pull_request(json!({"comments": empty_page()}))
     } else if query.contains("headRefOid") {
         graphql.pull_request(json!({"id": graphql.pull.node_id, "headRefOid": graphql.head()}))
@@ -506,6 +510,38 @@ fn empty_page() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pr_facts_preserve_updated_at_and_report_a_merged_pr_with_a_deleted_author() {
+        let config = crate::Config {
+            fixture_dir: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/pr-482/github"),
+            app_url: url::Url::parse("http://app.test:3000").unwrap(),
+            user_login: None,
+            user_id: None,
+            app_id: None,
+            app_public_key_file: None,
+            dashboard_fixture_dir: None,
+            dashboard_world_at: None,
+            review_loop_fixture_dir: None,
+        };
+        let oauth = Arc::new(Oauth::load(&config).unwrap());
+        let mut graphql = Graphql::load(&config, oauth).unwrap();
+        graphql.pull.merged = true;
+        graphql.pull.user = None;
+        let head = "1".repeat(40);
+        graphql.move_head(head.clone());
+
+        let facts = graphql.pull_facts();
+        let repository = &facts["data"]["repository"];
+        let pull = &repository["pullRequest"];
+        assert_eq!(repository["databaseId"], 4821400);
+        assert_eq!(repository["isPrivate"], false);
+        assert_eq!(pull["updatedAt"], "2026-11-12T08:00:00Z");
+        assert_eq!(pull["state"], "MERGED");
+        assert!(pull.get("author").is_some_and(Value::is_null));
+        assert_eq!(pull["headRefOid"], head);
+    }
 
     #[test]
     fn hunk_headers_give_both_sides() {

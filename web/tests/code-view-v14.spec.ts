@@ -128,6 +128,8 @@ test("U49: the review bar shows the current file and keeps its badges at 1280 an
   for (const width of [1280, 1366]) {
     await page.setViewportSize({ width, height: 800 });
     for (const badge of badges) await expect(badge).toBeInViewport({ ratio: 1 });
+    await expect(pr.locator(".review-repo")).toBeInViewport({ ratio: 1 });
+    expect((await pr.locator(".review-repo").boundingBox())?.width).toBeGreaterThan(45);
     const counts = checks.locator(".review-ci-counts");
     expect(await counts.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
     expect((await title.boundingBox())?.width).toBeGreaterThan(95);
@@ -145,6 +147,42 @@ test("U49: the review bar shows the current file and keeps its badges at 1280 an
   await expect(path).toBeInViewport();
   await expect(banner.getByRole("button", { name: /^View: Files/ })).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(390);
+});
+
+test("U49/U62: a long PR title truncates without pushing review controls out of view", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`${review}?scenario=code-view-v14-long-title#f1.2`);
+  const banner = page.getByRole("banner");
+  const title = banner.locator(".review-pr-title");
+  const repo = banner.getByRole("navigation", { name: "Breadcrumb" }).locator(".review-repo");
+  const checks = banner.getByRole("link", {
+    name: /^CI: 3 passed, 1 failed, 1 pending, 1 skipped, 1 neutral/,
+  });
+  const controls = [
+    repo,
+    banner.getByText("#482", { exact: true }),
+    checks,
+    banner.getByText("EN", { exact: true }),
+    banner.getByText("52d2da1", { exact: true }),
+    banner.getByRole("button", { name: /^Your progress/ }),
+    banner.getByRole("button", { name: /^Pending review/ }),
+    banner.getByRole("button", { name: /account and LLM activity/ }),
+  ];
+  await expect(title).toHaveText(/^.{100,}$/);
+  for (const width of [1280, 1366, 1439]) {
+    await test.step(`${width} px`, async () => {
+      await page.setViewportSize({ width, height: 800 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+      for (const control of controls) await expect(control).toBeInViewport({ ratio: 1 });
+      expect((await repo.boundingBox())?.width).toBeGreaterThan(45);
+      expect((await title.boundingBox())?.width).toBeGreaterThan(95);
+      expect(
+        await checks.locator(".review-ci-counts").evaluate((el) => el.scrollWidth <= el.clientWidth),
+      ).toBe(true);
+      await expect(title).toHaveCSS("text-overflow", "ellipsis");
+      expect(await title.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+    });
+  }
 });
 
 test("U50/U51: doc context is shown automatically; range folds repeat and stop at a neighbour", async ({
