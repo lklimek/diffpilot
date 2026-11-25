@@ -109,7 +109,7 @@ describe("Ask chat review repros", () => {
       await openTour("#f1.5");
       const inspector = screen.getByRole("complementary", { name: "Inspector" });
       const diff = await within(inspector).findByRole("region", {
-        name: "Classic diff of src/rpc/client.rs",
+        name: /^Classic diff of src\/rpc\/client\.rs$/,
       });
       await user().click(await within(diff).findByRole("button", { name: "Ask the LLM about line 98" }));
       await user().click(within(diff).getByRole("button", { name: "Ask about this line" }));

@@ -11,7 +11,8 @@ import { GithubMark } from "../github/GithubMark";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CrateFacts } from "./CrateFacts";
 import { CrateNotes } from "./CrateNotes";
-import { inApp, LineLinkTo } from "./LineLinkTo";
+import { inApp } from "../inApp";
+import { LineLinkTo } from "./LineLinkTo";
 import { count, crateKey, crateOrigins, isOpen, repositoryKey, type DepsLinks } from "./model";
 
 interface DependencyTreeProps {

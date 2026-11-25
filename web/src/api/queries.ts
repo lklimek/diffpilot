@@ -34,8 +34,8 @@ export const useMyAnalyses = (enabled: boolean) =>
   useQuery({ queryKey: ["my-analyses"], queryFn: () => api.listMyAnalyses(), enabled });
 
 /** The review-ready analysis's tour, including pending flow placeholders. */
-export const useTour = (id: AnalysisId) =>
-  useQuery({ queryKey: ["tour", id], queryFn: () => api.getTour(id) });
+export const useTour = (id: AnalysisId, enabled = true) =>
+  useQuery({ queryKey: ["tour", id], queryFn: () => api.getTour(id), enabled });
 
 /** The query of a range's lines, shared by `useLines` and one-off reads of the same cache entry. */
 export const linesQuery = (id: AnalysisId, query: RangeQuery) => ({
@@ -121,8 +121,8 @@ export const useAskInChat = (id: AnalysisId) => {
 };
 
 /** The PR's files with their hunks and the user's GitHub Viewed marks; read again when the tab regains focus. */
-export const useFiles = (id: AnalysisId) =>
-  useQuery({ queryKey: ["files", id], queryFn: () => api.getFiles(id), refetchOnWindowFocus: true });
+export const useFiles = (id: AnalysisId, enabled = true) =>
+  useQuery({ queryKey: ["files", id], queryFn: () => api.getFiles(id), refetchOnWindowFocus: true, enabled });
 
 /** The Cargo map of the head commit with conversion facts and crate notes (ADR-021). */
 export const useDependencies = (id: AnalysisId) =>

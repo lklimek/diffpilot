@@ -33,6 +33,7 @@ import { StatusPopover } from "../../components/status/StatusPopover";
 import { clockText } from "../../components/format/time";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
+import { AnalysisPathLinks } from "../review/AnalysisPathLinks";
 import { PrAskChatProvider } from "../review/askChat";
 import { commentsPath, prOfParams, prPath } from "../pr/paths";
 
@@ -298,9 +299,11 @@ export function CommentsRoute() {
             }}
           />
         )}
-        <WithAsk pr={pr} items={items.data}>
-          {body}
-        </WithAsk>
+        <AnalysisPathLinks analysisId={analysis} head={o?.head ?? null}>
+          <WithAsk pr={pr} items={items.data}>
+            {body}
+          </WithAsk>
+        </AnalysisPathLinks>
       </main>
     </div>
   );
