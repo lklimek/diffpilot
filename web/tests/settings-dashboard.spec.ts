@@ -149,12 +149,17 @@ test("field help links to its anchors in the built-in guide", async ({ page }) =
   const help = page.getByRole("link", { name: "Help: Release branches" });
   await help.focus();
   await expect(page.getByRole("tooltip")).toContainText("vX.Y-dev matches v1.8-dev and v5.1-dev");
-  await expect(help).toHaveAttribute("href", "/settings/help#branch_patterns");
-  await page.goto("/settings/help#ownership_policy");
+  await expect(help).toHaveAttribute(
+    "href",
+    "/settings/help?from=%2Fsettings%2Frepositories#branch_patterns",
+  );
+  await page.goto("/settings/help?from=%2Fsettings%2Frepositories#ownership_policy");
   await expect(page.getByRole("heading", { level: 1, name: "Settings guide" })).toBeVisible();
   const policy = page.locator("section#ownership_policy");
   await expect(policy).toBeInViewport();
   await expect(
     policy.getByRole("link", { name: /^https:\/\/github\.com\/dashpay\/stale_prs_are_bad/ }),
   ).toHaveAttribute("target", "_blank");
+  await page.getByRole("link", { name: "Back to Settings" }).click();
+  await expect(page).toHaveURL(/\/settings\/repositories$/);
 });

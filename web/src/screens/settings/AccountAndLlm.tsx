@@ -119,6 +119,7 @@ export function LlmPage({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => 
           quotaError={assessment.isError ? messageOf(assessment.error) : undefined}
           tokens={settings.data.llm_usage}
           month={month.data?.this_month}
+          monthError={month.isError ? messageOf(month.error) : undefined}
           codex={codex.status.data}
           now={now}
           lastCall={settings.data.llm_status}

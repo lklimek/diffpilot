@@ -68,15 +68,11 @@ export function GitHubSyncPage({ onDirtyChange }: { onDirtyChange: (dirty: boole
           page="github-sync"
           onSave={save}
           onDirtyChange={dashboardDirty}
-        >
-          {app}
-        </DashboardSettingsCard>
+        />
       ) : (
-        <>
-          <DashboardSettingsStatus error={dashboard.error} />
-          {app}
-        </>
+        <DashboardSettingsStatus error={dashboard.error} />
       )}
+      {app}
       {settings.data?.controlled_owners && (
         <ControlledOwnersCard
           owners={settings.data.controlled_owners}

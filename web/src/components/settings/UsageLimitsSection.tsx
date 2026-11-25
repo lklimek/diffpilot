@@ -53,6 +53,7 @@ export function UsageLimitsSection({
   quotaError,
   tokens,
   month,
+  monthError,
   codex,
   now,
   lastCall,
@@ -65,6 +66,7 @@ export function UsageLimitsSection({
   quotaError?: string;
   tokens?: UsageWindows;
   month?: UsageTotals | null;
+  monthError?: string;
   codex?: CredentialStatus;
   now: Date;
   lastCall: LlmCallOutcome | null;
@@ -156,11 +158,9 @@ export function UsageLimitsSection({
               {action.error && <p role="alert">{action.error}</p>}
             </>
           ) : rankingError ? (
-            <p role="alert">{rankingError}</p>
+            <p role="alert">Could not load ranking usage. {rankingError}</p>
           ) : (
-            <p role="status">
-              {ranking === null ? "Ranking usage is unavailable." : "Loading ranking usage…"}
-            </p>
+            <p role="status">Not available yet</p>
           )}
         </Tile>
         <Tile title="Comment assessment">
@@ -180,14 +180,20 @@ export function UsageLimitsSection({
             [
               ["Today", tokens?.today],
               ["Last 7 days", tokens?.last_7_days],
-              ["This month", month],
             ] as const
           ).map(([label, usage]) =>
             usage?.jobs ? (
               <UsageLine key={label} label={label} usage={usage} />
             ) : (
-              <p key={label}>{label}: no usage reported</p>
+              <p key={label}>{label}: not available yet</p>
             ),
+          )}
+          {monthError ? (
+            <p role="alert">Could not load monthly token usage. {monthError}</p>
+          ) : month?.jobs ? (
+            <UsageLine label="This month" usage={month} />
+          ) : (
+            <p role="status">This month: {month ? "0 jobs with token reports" : "not available yet"}</p>
           )}
         </Tile>
         <Tile title="Codex plan">

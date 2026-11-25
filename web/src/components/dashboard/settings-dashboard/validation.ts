@@ -235,6 +235,8 @@ export const sameSettings = (a: DashboardSettings, b: DashboardSettings) =>
 
 /** A repository row as edited: text fields, split on save. */
 export interface RepositoryDraft {
+  id: string;
+  origin: { kind: "stored" | "installed"; name: string } | null;
   repo: string;
   alias: string;
   watch_issues: boolean;
@@ -258,7 +260,7 @@ export interface SettingsDraft extends Omit<
 }
 
 /** An empty repository row. */
-export const EMPTY_ROW: RepositoryDraft = {
+export const EMPTY_ROW = {
   repo: "",
   alias: "",
   watch_issues: false,
@@ -266,13 +268,15 @@ export const EMPTY_ROW: RepositoryDraft = {
   policy_path: "",
   branch_patterns: "",
   ignored_checks: "",
-};
+} satisfies Omit<RepositoryDraft, "id" | "origin">;
 
 /** The form of stored settings. */
 export function toDraft(settings: DashboardSettings): SettingsDraft {
   return {
     ...settings,
-    repositories: settings.repositories.map((row) => ({
+    repositories: settings.repositories.map((row, index) => ({
+      id: `stored:${index}`,
+      origin: { kind: "stored", name: repoText(row.repo) },
       repo: repoText(row.repo),
       alias: row.alias ?? "",
       watch_issues: row.watch_issues,

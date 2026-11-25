@@ -24,7 +24,7 @@ interface NotificationsCardProps {
 export function NotificationsCard({ support, enabled, onChange, onCheck }: NotificationsCardProps) {
   const available = support === "default" || support === "granted";
   return (
-    <Section title="Browser" help={<HelpTip topic="notify_when_done" />}>
+    <Section heading="h3" title="Browser" help={<HelpTip topic="notify_when_done" />}>
       <p className="text-xs text-muted">
         A browser notification when an Ask answer arrives, a flow is analysed, or an analysis is ready,
         finishes or fails, while a diffpilot tab is open but you are looking elsewhere. Only in this browser.

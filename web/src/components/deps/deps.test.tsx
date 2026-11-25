@@ -185,7 +185,7 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
       );
       expect(document.body).not.toHaveTextContent("No Rust crate is changed");
       expect(document.body).toHaveTextContent(
-        "Yours: acme (this pull request's owner). No other organisation is listed in Settings.",
+        "Yours: acme (this pull request's owner). No other organisation is listed in GitHub sync.",
       );
       expect(screen.getByRole("region", { name: "This map is incomplete" })).toBeVisible();
       expectTrustWording(document.body.textContent ?? "");
@@ -198,7 +198,7 @@ describe("DependencyNotices (brief 2026-11-20: Not available, limits, controlled
       <DependencyNotices prOwner="acme" view={mockDependenciesNoControlled()} links={links(onNavigate)} />,
     );
     expect(document.body).toHaveTextContent(
-      "Yours: acme (this pull request's owner). No other organisation is listed in Settings.",
+      "Yours: acme (this pull request's owner). No other organisation is listed in GitHub sync.",
     );
     const settings = screen.getByRole("link", { name: "Controlled organisations" });
     expect(settings).toHaveAttribute("href", "/settings");
@@ -242,7 +242,7 @@ describe("DependencyTree (repository → crate → facts and notes, disclosure b
     render(<Tree view={mockDependenciesMulti()} />);
     const chips = screen.getAllByText("yours");
     expect(chips).toHaveLength(3);
-    expect(chips[0]).toHaveAccessibleDescription(/Controlled organisations in Settings/);
+    expect(chips[0]).toHaveAccessibleDescription(/Controlled owners in GitHub sync/);
     const registry = screen.getByRole("button", { name: /^crates\.io/ }).closest("li")!;
     expect(within(registry).queryByText("yours")).toBeNull();
   });

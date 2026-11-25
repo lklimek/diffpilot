@@ -94,3 +94,15 @@ it("pluralizes the mention count and preserves the section description", () => {
   );
   expect(screen.getByRole("tooltip")).toHaveTextContent("1 unanswered mention from people");
 });
+
+it("keeps the navigation labels on a phone until the reader collapses it", () => {
+  window.localStorage.removeItem("diffpilot.nav.collapsed");
+  const matchMedia = vi.fn().mockReturnValue({ matches: true });
+  vi.stubGlobal("matchMedia", matchMedia);
+  try {
+    render(<AppNav current="settings" hrefs={HREFS} myWorkCount={null} />);
+    expect(screen.getByRole("button", { name: "Collapse navigation" })).toBeVisible();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

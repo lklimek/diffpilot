@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 
 const server = startMockServer();
@@ -11,7 +11,7 @@ it("redirects old repository links and opens the read-only rules in the requeste
   const table = await screen.findByRole("table", { name: "Repositories" });
   expect(router.state.location.pathname).toBe("/settings/repositories");
   expect(
-    await within(table).findByRole("button", { name: "Analysis rules for acme/node-client" }),
+    await within(table).findByRole("button", { name: "Hide analysis rules for acme/node-client" }),
   ).toHaveAttribute("aria-expanded", "true");
   expect(await within(table).findByText("Project profile source")).toBeVisible();
   expect(within(table).getAllByText("App not installed")[0]).toBeVisible();
@@ -105,4 +105,83 @@ it("edits an installed-only repository without losing focus or saving other defa
   expect(saves[0]?.repositories.filter(({ repo }) => repo.name === "live-only")).toEqual([
     expect.objectContaining({ alias: "LIVE" }),
   ]);
+});
+
+it("places the GitHub sync save between Slack names and GitHub App", async () => {
+  renderRoute("/settings/github-sync");
+  const slack = await screen.findByRole("region", { name: "Slack names" });
+  const save = screen.getByRole("button", { name: "Save" });
+  const github = await screen.findByRole("region", { name: "GitHub App" });
+  expect(slack.compareDocumentPosition(save)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  expect(save.compareDocumentPosition(github)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+});
+
+it("keeps provisional usage neutral while loading and on a missing route", async () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((release) => {
+    resolve = release;
+  });
+  const replied = vi.fn();
+  const missing = async () => {
+    await promise;
+    replied();
+    return new HttpResponse(null, { status: 404 });
+  };
+  server.use(
+    http.get("/api/v1/settings/ranking-usage", missing),
+    http.get("/api/v1/settings/monthly-token-usage", missing),
+  );
+  try {
+    renderRoute("/settings/llm");
+    const ranking = within(await screen.findByRole("region", { name: "Ranking today" }));
+    const tokens = within(screen.getByRole("region", { name: "Tokens" }));
+    expect(ranking.getByRole("status")).toHaveTextContent("Not available yet");
+    expect(tokens.getByRole("status")).toHaveTextContent("This month: not available yet");
+    expect(replied).not.toHaveBeenCalled();
+    resolve();
+    await waitFor(() => expect(replied).toHaveBeenCalledTimes(2));
+    expect(ranking.getByRole("status")).toHaveTextContent("Not available yet");
+    expect(tokens.getByRole("status")).toHaveTextContent("This month: not available yet");
+    expect(ranking.queryByRole("alert")).toBeNull();
+    expect(tokens.queryByRole("alert")).toBeNull();
+  } finally {
+    resolve();
+  }
+});
+
+it("shows an observed zero instead of unavailable monthly usage", async () => {
+  server.use(
+    http.get("/api/v1/settings/monthly-token-usage", () =>
+      HttpResponse.json({
+        this_month: {
+          input_tokens: 0,
+          cached_input_tokens: 0,
+          output_tokens: 0,
+          reasoning_output_tokens: null,
+          jobs: 0,
+        },
+      }),
+    ),
+  );
+  renderRoute("/settings/llm");
+  expect(await screen.findByText("This month: 0 jobs with token reports")).toBeVisible();
+});
+
+it("shows a distinct error for each provisional usage request that fails", async () => {
+  server.use(
+    http.get("/api/v1/settings/ranking-usage", () => new HttpResponse(null, { status: 500 })),
+    http.get("/api/v1/settings/monthly-token-usage", () => new HttpResponse(null, { status: 500 })),
+  );
+  renderRoute("/settings/llm");
+  const ranking = within(await screen.findByRole("region", { name: "Ranking today" }));
+  const tokens = within(screen.getByRole("region", { name: "Tokens" }));
+  expect(await ranking.findByRole("alert")).toHaveTextContent("Could not load ranking usage");
+  expect(await tokens.findByRole("alert")).toHaveTextContent("Could not load monthly token usage");
+});
+
+it("places the browser and push channel headings under Notifications", async () => {
+  renderRoute("/settings/review-loop");
+  expect(await screen.findByRole("heading", { name: "Notifications", level: 2 })).toBeVisible();
+  for (const name of ["Browser", "ntfy", "Webhook (e.g. Home Assistant)"])
+    expect(await screen.findByRole("heading", { name, level: 3 })).toBeVisible();
 });

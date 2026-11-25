@@ -1,7 +1,15 @@
 import { useId } from "react";
 
 /** Aside of Home: what happens after Start analysis, and where the settings are. */
-export function AnalyzeHelp({ settingsHref }: { settingsHref: string }) {
+export function AnalyzeHelp({
+  llmHref,
+  githubSyncHref,
+  repositoriesHref,
+}: {
+  llmHref: string;
+  githubSyncHref: string;
+  repositoriesHref: string;
+}) {
   const titleId = useId();
   return (
     <aside
@@ -21,8 +29,8 @@ export function AnalyzeHelp({ settingsHref }: { settingsHref: string }) {
         An existing analysis of the same PR is offered instead of a new one.
       </p>
       <p className="text-xs text-muted">
-        <a href={settingsHref}>Settings</a>: LLM status, language of LLM texts, GitHub App and repository
-        rules.
+        Settings pages for this review include <a href={llmHref}>LLM &amp; usage</a>,{" "}
+        <a href={githubSyncHref}>GitHub sync</a> and <a href={repositoriesHref}>Repositories</a>.
       </p>
     </aside>
   );

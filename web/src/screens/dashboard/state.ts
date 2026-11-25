@@ -41,8 +41,8 @@ function timeZoneNotes(summary: DashboardSummary, saveFailed: boolean): Dashboar
       tone: saveFailed ? "warn" : "info",
       title: `The nightly scan at ${schedule.time} starts once your time zone is known.`,
       text: saveFailed
-        ? "Your browser's time zone could not be saved; set it in Settings."
-        : "This page saves your browser's time zone; you can change it in Settings.",
+        ? "Your browser's time zone could not be saved; set it in GitHub sync."
+        : "This page saves your browser's time zone; you can change it in GitHub sync.",
     },
   ];
 }

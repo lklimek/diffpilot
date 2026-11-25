@@ -21,7 +21,7 @@ it("the guide lists every option by section, each with an anchor, its lines and 
     const heading = screen.getByRole("heading", { level: 3, name: SETTINGS_HELP[topic].title });
     expect(heading.closest("section")).toHaveAttribute("id", topic);
   }
-  expect(screen.getByRole("heading", { level: 2, name: "Dashboard" })).toBeVisible();
+  expect(screen.getByRole("heading", { level: 2, name: "GitHub sync" })).toBeVisible();
   expect(
     screen.getAllByRole("link", {
       name: "https://github.com/dashpay/stale_prs_are_bad (opens on GitHub in a new tab)",

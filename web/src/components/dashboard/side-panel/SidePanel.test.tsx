@@ -383,34 +383,34 @@ describe("side panel sections", () => {
     expect(items[1]).toMatch(/^MemCan TODOs not refreshed \(MemCan unreachable at \d\d:\d\d\)/);
   });
 
-  it("with notes, offers Open Settings (most notes are fixed there); without notes it does not", async () => {
+  it("with notes, offers Open GitHub sync (most notes are fixed there); without notes it does not", async () => {
     const onNavigate = vi.fn();
     const { unmount } = render(
       <ScanNotes
         notes={[{ text: "GitHub search refuses alice-bot.", item: null }]}
         unreachable={[]}
         todos={{ status: "read", read_at: null, failed_at: null }}
-        settingsHref="/settings"
+        settingsHref="/settings/github-sync"
         onNavigate={onNavigate}
         now={NOW}
       />,
     );
     await userEvent.click(screen.getByText("What the scan missed"));
-    const link = screen.getByRole("link", { name: "Open Settings" });
-    expect(link).toHaveAttribute("href", "/settings");
-    expect(link).toHaveAccessibleDescription(/Settings → Dashboard/);
+    const link = screen.getByRole("link", { name: "Open GitHub sync" });
+    expect(link).toHaveAttribute("href", "/settings/github-sync");
+    expect(link).toHaveAccessibleDescription(/Settings › GitHub sync/);
     await userEvent.click(link);
-    expect(onNavigate).toHaveBeenCalledWith("/settings");
+    expect(onNavigate).toHaveBeenCalledWith("/settings/github-sync");
     unmount();
     render(
       <ScanNotes
         notes={[]}
         unreachable={[]}
         todos={{ status: "read", read_at: null, failed_at: null }}
-        settingsHref="/settings"
+        settingsHref="/settings/github-sync"
         now={NOW}
       />,
     );
-    expect(screen.queryByRole("link", { name: "Open Settings" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Open GitHub sync" })).toBeNull();
   });
 });

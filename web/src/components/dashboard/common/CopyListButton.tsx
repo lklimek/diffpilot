@@ -49,7 +49,7 @@ export function CopyListButton({
         </button>
       </Tooltip>
       {slackLines && (
-        <Tooltip tip="Copies the same lines with the Slack names of Settings › Dashboard for GitHub logins; a login without one stays @login.">
+        <Tooltip tip="Copies the same lines with the Slack names of Settings › GitHub sync for GitHub logins; a login without one stays @login.">
           <button
             type="button"
             aria-label={`Copy for Slack: list of ${what}`}

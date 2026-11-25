@@ -9,7 +9,7 @@ interface ScanNotesProps {
   /** Configured repositories and owners the user's GitHub token cannot see. */
   unreachable: string[];
   todos: TodosState;
-  /** In-app href of Settings, where most notes are fixed (refused accounts, unreachable repositories). */
+  /** In-app href of GitHub sync, where scope and GitHub App installations are listed. */
   settingsHref?: string;
   onNavigate?: Navigate;
   now: Date;
@@ -51,13 +51,13 @@ export function ScanNotes({ notes, unreachable, todos, settingsHref, onNavigate,
         </ol>
       )}
       {lines.length > 0 && settingsHref && (
-        <Tooltip tip="Opens Settings → Dashboard, where accounts, repositories and the owners to list when GitHub search refuses an account are set.">
+        <Tooltip tip="Opens Settings › GitHub sync, where linked logins, owners to list and GitHub App installations are shown.">
           <a
             href={settingsHref}
             onClick={navigateOnClick(settingsHref, onNavigate)}
             className="text-xs text-accent underline"
           >
-            Open Settings
+            Open GitHub sync
           </a>
         </Tooltip>
       )}

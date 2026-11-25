@@ -62,7 +62,7 @@ function Delivery({ channel, now }: { channel: NotificationChannel; now: Date })
   );
 }
 
-/** Settings → Notifications: one push channel (ntfy or webhook) with its events, Send test and delivery state. */
+/** Review loop › Notifications: one push channel (ntfy or webhook) with its events, Send test and delivery state. */
 export function NotificationChannelCard(props: NotificationChannelCardProps) {
   const { kind, channel, now, onDirtyChange } = props;
   const id = useId();
@@ -100,7 +100,7 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
     setSecret({ action: "keep" });
   };
   return (
-    <SettingsCard title={ntfy ? "ntfy" : "Webhook (e.g. Home Assistant)"}>
+    <SettingsCard heading="h3" title={ntfy ? "ntfy" : "Webhook (e.g. Home Assistant)"}>
       <form noValidate onSubmit={save} className="grid gap-2 text-sm">
         <label className="flex min-h-6 items-center gap-2">
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />

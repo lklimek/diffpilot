@@ -318,6 +318,10 @@ describe("Home (brief §4.1)", () => {
     // Neither the cause nor what else is affected is known when the check failed.
     expect(noApp).not.toHaveTextContent(/works without the App|related work/i);
     expect(noApp).toHaveTextContent("The analysis still runs");
+    expect(within(noApp).getByRole("link", { name: "GitHub sync" })).toHaveAttribute(
+      "href",
+      "/settings/github-sync",
+    );
     expect(router.state.location.pathname).toBe("/review");
     await userEvent.click(within(await card()).getByRole("button", { name: "Start analysis anyway" }));
     await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));

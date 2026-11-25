@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ApiError } from "../../api/client";
 import type { MyAnalysis, ResolvePrResponse } from "../../api/generated/types";
 import { useCreateAnalysis, useMe, useMyAnalyses, useResolvePr, useResumeAnalysis } from "../../api/queries";
+import { GITHUB_SYNC_SETTINGS_PATH, LLM_USAGE_PATH, REPOSITORY_SETTINGS_PATH } from "../shell/paths";
 import { AnalyzeHelp } from "../../components/analyze-help/AnalyzeHelp";
 import { Banner } from "../../components/banner/Banner";
 import { busyTip, buttonClass } from "../../components/button/button";
@@ -229,7 +230,7 @@ export function HomeScreen() {
                     >
                       {COMMENTING_UNAVAILABLE_WHY} The analysis still runs; comments cannot be written into
                       your pending review while this lasts. The installations are listed in{" "}
-                      <Link to="/settings">Settings</Link>.
+                      <Link to={GITHUB_SYNC_SETTINGS_PATH}>GitHub sync</Link>.
                     </Banner>
                   )}
                   {outcome?.kind === "resume" && outcome.analysis.state.state === "finished" && (
@@ -361,7 +362,13 @@ export function HomeScreen() {
           </>
         )}
       </div>
-      {user && <AnalyzeHelp settingsHref="/settings" />}
+      {user && (
+        <AnalyzeHelp
+          llmHref={LLM_USAGE_PATH}
+          githubSyncHref={GITHUB_SYNC_SETTINGS_PATH}
+          repositoriesHref={REPOSITORY_SETTINGS_PATH}
+        />
+      )}
     </div>
   );
 }

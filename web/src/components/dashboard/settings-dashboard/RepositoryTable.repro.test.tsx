@@ -29,6 +29,20 @@ describe("RepositoryTable new row whose name passes through an installed reposit
     expect(screen.getByLabelText("Repository 1")).toHaveValue("acme/platform-tools");
   });
 
+  it("preserves the identity of the following row after removing a row", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+    const add = screen.getByRole("button", { name: "Add repository" });
+    await user.click(add);
+    await user.type(screen.getByLabelText("Repository 1"), "acme/one");
+    await user.click(add);
+    const second = screen.getByLabelText("Repository 2");
+    await user.type(second, "acme/two");
+    await user.click(screen.getByRole("button", { name: "Remove acme/one" }));
+    expect(screen.getByLabelText("Repository 1")).toBe(second);
+    expect(second).toHaveValue("acme/two");
+  });
+
   it("typing into the short name of an installation-only row keeps focus", async () => {
     const user = userEvent.setup();
     render(<Harness />);

@@ -58,11 +58,17 @@ export function ReviewLoopPage({ onDirtyChange }: { onDirtyChange: (dirty: boole
           </StatusMessage>
         </Section>
       )}
-      <div id="notifications" className="grid min-w-0 scroll-mt-16 gap-4">
-        <h2 className="text-base font-semibold">Notifications</h2>
+      <section
+        id="notifications"
+        aria-labelledby="notifications-heading"
+        className="grid min-w-0 scroll-mt-16 gap-4"
+      >
+        <h2 id="notifications-heading" className="text-base font-semibold">
+          Notifications
+        </h2>
         <NotificationsCard {...notify} />
         <NotificationChannels onDirtyChange={channelDirty} />
-      </div>
+      </section>
     </>
   );
 }

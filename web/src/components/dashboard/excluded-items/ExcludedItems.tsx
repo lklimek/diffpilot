@@ -9,6 +9,7 @@ import { dateTimeText } from "../../format/time";
 interface ExcludedItemsProps {
   /** The snapshot's exclusions; absent when the snapshot did not record them. */
   exclusions: Exclusions | null | undefined;
+  guideOrigin?: string;
   onNavigate?: Navigate;
   /** "Wake now" of a snoozed item (its key); without it no button. */
   onWake?: (key: string) => void;
@@ -84,7 +85,13 @@ export function exclusionDescription(exclusions: Exclusions | null | undefined):
 }
 
 /** The excluded snapshot items by reason, with links to evidence and Wake now for snoozes. */
-export function ExcludedItems({ exclusions, onNavigate, onWake, wakingKeys = [] }: ExcludedItemsProps) {
+export function ExcludedItems({
+  exclusions,
+  guideOrigin,
+  onNavigate,
+  onWake,
+  wakingKeys = [],
+}: ExcludedItemsProps) {
   if (!exclusions?.total)
     return (
       <p className="py-2 text-xs text-muted">
@@ -100,6 +107,7 @@ export function ExcludedItems({ exclusions, onNavigate, onWake, wakingKeys = [] 
           text={textOf(reason)}
           count={count}
           items={items.filter((item) => item.reason === reason)}
+          guideOrigin={guideOrigin}
           onNavigate={onNavigate}
           onWake={onWake}
           wakingKeys={wakingKeys}
@@ -118,6 +126,7 @@ function Group({
   text,
   count,
   items,
+  guideOrigin,
   onNavigate,
   onWake,
   wakingKeys,
@@ -125,22 +134,24 @@ function Group({
   text: ReasonText;
   count: number;
   items: ExcludedItem[];
+  guideOrigin?: string;
   onNavigate?: Navigate;
   onWake?: (key: string) => void;
   wakingKeys: string[];
 }) {
   const label = `${text.title}: ${count}`;
+  const guideHref = text.setting && helpHref(text.setting.topic, guideOrigin);
   return (
     <div role="group" aria-label={label} className="text-xs">
       <p className="font-semibold text-text">{label}</p>
       <p className="text-muted">
         {text.rule}
-        {text.setting && (
+        {text.setting && guideHref && (
           <>
             {" "}
             <a
-              href={helpHref(text.setting.topic)}
-              onClick={navigateOnClick(helpHref(text.setting.topic), onNavigate)}
+              href={guideHref}
+              onClick={navigateOnClick(guideHref, onNavigate)}
               className="text-accent underline"
             >
               {text.setting.name} in the settings guide

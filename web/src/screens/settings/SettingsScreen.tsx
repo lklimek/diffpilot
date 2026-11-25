@@ -2,10 +2,18 @@ import { useEffect, useState } from "react";
 import { Link, Navigate, useBlocker, useLocation } from "react-router";
 import { useMe } from "../../api/queries";
 import { UnsavedChangesPrompt } from "../../components/dashboard/settings-dashboard/UnsavedChangesPrompt";
+import { SettingsHelpOrigin, settingsGuideHref } from "../../components/settings/helpOrigin";
 import { messageOf } from "../../components/inspector/action";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
-import { LLM_USAGE_PATH, SETTINGS_HELP_PATH, SETTINGS_PAGES, type SettingsPage } from "../shell/paths";
+import {
+  ACCOUNT_SETTINGS_PATH,
+  LLM_USAGE_PATH,
+  REPOSITORY_SETTINGS_PATH,
+  REVIEW_LOOP_SETTINGS_PATH,
+  SETTINGS_PAGES,
+  type SettingsPage,
+} from "../shell/paths";
 import { useShellSlots } from "../shell/ShellRoute";
 import { AccountPage, LlmPage, MemcanPage } from "./AccountAndLlm";
 import { GitHubSyncPage, RepositoriesPage } from "./GitHubSettings";
@@ -15,12 +23,12 @@ import { ReviewLoopPage } from "./ReviewLoopPage";
 export function SettingsRedirect() {
   const { search, hash } = useLocation();
   const pathname = new URLSearchParams(search).has("repo")
-    ? "/settings/repositories"
+    ? REPOSITORY_SETTINGS_PATH
     : hash === "#notifications"
-      ? "/settings/review-loop"
+      ? REVIEW_LOOP_SETTINGS_PATH
       : hash === "#llm-usage"
         ? LLM_USAGE_PATH
-        : "/settings/account";
+        : ACCOUNT_SETTINGS_PATH;
   return <Navigate to={{ pathname, search, hash }} replace />;
 }
 
@@ -50,11 +58,14 @@ export function SettingsScreen({ page }: { page: SettingsPage }) {
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
   const Page = PAGES[page];
+  const { search, hash } = useLocation();
+  const current = SETTINGS_PAGES.find(({ id }) => id === page)!;
+  const origin = current.href + search + hash;
   return (
     <div className="@container/settings grid w-full max-w-[1280px] content-start gap-4">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h1 className="text-[22px] font-bold">{SETTINGS_PAGES.find(({ id }) => id === page)?.label}</h1>
-        <Link to={SETTINGS_HELP_PATH} className="text-sm text-accent underline">
+        <h1 className="text-[22px] font-bold">{current.label}</h1>
+        <Link to={settingsGuideHref(origin)} className="text-sm text-accent underline">
           Settings help
         </Link>
       </div>
@@ -64,7 +75,11 @@ export function SettingsScreen({ page }: { page: SettingsPage }) {
       {me.isPending && <StatusMessage kind="loading">Loading…</StatusMessage>}
       {me.isError && <StatusMessage kind="error">{messageOf(me.error)}</StatusMessage>}
       {me.isSuccess && !user && <SignInCard loginHref="/auth/github/login" />}
-      {user && <Page onDirtyChange={setDirty} />}
+      {user && (
+        <SettingsHelpOrigin value={origin}>
+          <Page onDirtyChange={setDirty} />
+        </SettingsHelpOrigin>
+      )}
     </div>
   );
 }

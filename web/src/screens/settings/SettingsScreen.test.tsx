@@ -81,7 +81,9 @@ describe("Settings (brief §4.4)", () => {
     expect(screen.getByRole("table", { name: "Repositories" })).toBeVisible();
     expect(screen.queryByRole("region", { name: /Analysis rules for/ })).toBeNull();
     expect(router.state.location.search).toBe("?repo=acme/unknown");
-    await userEvent.click(screen.getByRole("button", { name: "Analysis rules for acme/node-client" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /^Show analysis rules for acme\/node-client$/ }),
+    );
     expect(await region("Analysis rules for acme/node-client")).toBeVisible();
     expect(router.state.location.search).toBe("?repo=acme%2Fnode-client");
   });

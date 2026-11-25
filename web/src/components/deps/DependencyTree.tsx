@@ -63,7 +63,7 @@ function Level({
 }
 
 const YOURS_TIP =
-  "Its owner is this pull request's owner or is listed under Controlled organisations in Settings.";
+  "Its owner is this pull request's owner or is listed under Controlled owners in GitHub sync.";
 
 function repositoryLabel(repo: DependencyRepository): ReactNode {
   const name = repo.repo ? `${repo.repo.owner}/${repo.repo.name}` : (repo.location ?? "");
