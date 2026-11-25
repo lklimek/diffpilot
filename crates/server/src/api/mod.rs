@@ -7,8 +7,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use contracts::api::error::{ApiError, ApiErrorCode};
 use contracts::routes::{
-    GET_GITHUB_WEBHOOK, GET_LLM_ACTIVITY, GET_REPOSITORY_INSTALLATIONS, GITHUB_WEBHOOK,
-    REJUDGE_DASHBOARD_ITEM,
+    GET_GITHUB_WEBHOOK, GET_REPOSITORY_INSTALLATIONS, GITHUB_WEBHOOK, REJUDGE_DASHBOARD_ITEM,
 };
 
 use crate::auth::{Session, SessionCsrf, TokenGate, access_tokens};
@@ -31,6 +30,9 @@ pub mod files;
 pub mod flow_work;
 pub mod health;
 pub mod lines;
+mod llm_activity;
+#[cfg(test)]
+mod llm_activity_tests;
 pub mod notifications;
 pub mod pr;
 pub mod questions;
@@ -69,6 +71,7 @@ pub fn router(state: AppState) -> Router {
         .merge(files::routes())
         .merge(health::routes())
         .merge(lines::routes())
+        .merge(llm_activity::routes())
         .merge(notifications::routes())
         .merge(pr::routes())
         .merge(questions::routes())
@@ -117,7 +120,6 @@ fn reserved_routes() -> Router<AppState> {
     Router::new()
         .route(GET_GITHUB_WEBHOOK.path, read.clone())
         .route(GET_REPOSITORY_INSTALLATIONS.path, read.clone())
-        .route(GET_LLM_ACTIVITY.path, read)
         .route(REJUDGE_DASHBOARD_ITEM.path, write)
 }
 
@@ -356,7 +358,6 @@ mod tests {
         let cookie = session_cookie(&state, DEFAULT_TENANT).await;
         let app = router(state);
         for (method, path) in [
-            ("GET", "/api/v1/llm/activity"),
             ("GET", "/api/v1/settings/repository-installations"),
             ("GET", "/api/v1/settings/github-webhook"),
             ("POST", "/api/v1/dashboard/items/acme~repo~pr~1/rejudge"),

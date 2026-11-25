@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::migrate::{Migration, MigrationType, Migrator};
@@ -360,6 +361,7 @@ pub const DEFAULT_TENANT: &str = "default";
 #[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
+    job_changes: Arc<jobs::JobChanges>,
 }
 
 impl fmt::Debug for Db {
@@ -405,17 +407,30 @@ impl Db {
 
     async fn migrated(pool: SqlitePool) -> Result<Self, DbError> {
         migrate(&pool, MIGRATIONS.len()).await?;
-        Ok(Self { pool })
+        Ok(Self::from_pool(pool))
+    }
+
+    fn from_pool(pool: SqlitePool) -> Self {
+        Self {
+            pool,
+            job_changes: Arc::default(),
+        }
     }
 
     /// The job queue.
     pub fn jobs(&self) -> jobs::Jobs<'_> {
-        jobs::Jobs { pool: &self.pool }
+        jobs::Jobs {
+            pool: &self.pool,
+            changes: &self.job_changes,
+        }
     }
 
     /// Analyses.
     pub fn analyses(&self) -> analyses::Analyses<'_> {
-        analyses::Analyses { pool: &self.pool }
+        analyses::Analyses {
+            pool: &self.pool,
+            db: self,
+        }
     }
 
     /// JSON documents of an analysis.

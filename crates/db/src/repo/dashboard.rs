@@ -128,12 +128,16 @@ pub struct Snooze {
 #[derive(Debug)]
 pub struct Dashboard<'a> {
     pool: &'a SqlitePool,
+    job_changes: &'a super::jobs::JobChanges,
 }
 
 impl Db {
     /// Dashboard settings, refreshes with their snapshots, and stored judgements.
     pub fn dashboard(&self) -> Dashboard<'_> {
-        Dashboard { pool: &self.pool }
+        Dashboard {
+            pool: &self.pool,
+            job_changes: &self.job_changes,
+        }
     }
 }
 
@@ -717,7 +721,7 @@ impl Dashboard<'_> {
         .execute(&mut *tx)
         .await
         .map_err(missing_owner)?;
-        sqlx::query(concat!(
+        let pruned = sqlx::query(concat!(
             "DELETE FROM dashboard_refreshes AS r WHERE tenant_id = ?1 AND user_id = ?2
                AND id NOT IN (SELECT id FROM dashboard_refreshes WHERE tenant_id = ?1 AND user_id = ?2
                               ORDER BY started_at DESC, rowid DESC LIMIT ?3)
@@ -734,6 +738,10 @@ impl Dashboard<'_> {
         .await?;
         let refresh = read_record(&mut *tx, tenant_id, user_id, id).await?;
         tx.commit().await?;
+        // Pruning a refresh can cascade to its remaining ranking jobs.
+        if pruned.rows_affected() != 0 {
+            self.job_changes.publish(tenant_id);
+        }
         Ok(StartOutcome::Started {
             refresh: Box::new(refresh),
             superseded,
@@ -4003,7 +4011,7 @@ mod tests {
             .await
             .expect("pool");
         super::super::migrate(&pool, 2).await.expect("v1 schema");
-        let db = Db { pool };
+        let db = Db::from_pool(pool);
         let analysis = seed_analysis(&db).await.expect("analysis");
         sqlx::raw_sql(
             "INSERT INTO memberships (tenant_id, user_id, created_at) VALUES ('default', 'u1', 't');
@@ -4115,7 +4123,7 @@ mod tests {
             .await
             .expect("pool");
         super::super::migrate(&pool, 4).await.expect("0001-0004");
-        let db = Db { pool };
+        let db = Db::from_pool(pool);
         seed_users(&db).await;
         sqlx::raw_sql(
             "INSERT INTO dashboard_settings (user_id, tenant_id, time_zone, updated_at)
@@ -4471,6 +4479,61 @@ mod tests {
             dash.sent_totals(T, "u1", id, day).await.expect("totals"),
             SentTotals { refresh: 6, day: 2 }
         );
+    }
+
+    #[tokio::test]
+    async fn pruning_a_refresh_publishes_removal_of_its_queued_job() {
+        use crate::repo::analyses::testing::judge_spec;
+        use crate::repo::jobs::{JobStage, NewJob};
+        use contracts::job::spec::JobPriority;
+
+        let db = db().await;
+        let refresh = ranking(&db, "u1", 0).await;
+        let mut spec = judge_spec(refresh);
+        spec.payer.0 = "u1".into();
+        db.jobs()
+            .enqueue(
+                NewJob {
+                    spec,
+                    stage: JobStage::Judge { refresh, batch: 1 },
+                    priority: JobPriority::Batch,
+                    generation: 0,
+                },
+                at(0),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            db.dashboard()
+                .finish_ranking(
+                    T,
+                    "u1",
+                    refresh,
+                    0,
+                    RankingState::Failed,
+                    JudgeCounts::default(),
+                    at(0),
+                )
+                .await
+                .unwrap(),
+            RankingUpdate::Applied,
+        );
+        // A refresh can end before the executor finishes cancelling its queued jobs.
+        for minute in 1..i64::from(REFRESHES_KEPT) {
+            finished(&db, "u1", minute, RankingState::Finished).await;
+        }
+        let activity = db.jobs().subscribe_activity(T);
+        let other_tenant = db.jobs().subscribe_activity("other");
+        assert_eq!(db.jobs().activity(T, "u1").await.unwrap().jobs.len(), 1);
+
+        start(&db, "u1", i64::from(REFRESHES_KEPT)).await;
+
+        assert!(db.jobs().activity(T, "u1").await.unwrap().jobs.is_empty());
+        assert!(
+            activity.has_changed().unwrap(),
+            "cascading job deletion publishes"
+        );
+        assert!(!other_tenant.has_changed().unwrap());
     }
 
     #[tokio::test]

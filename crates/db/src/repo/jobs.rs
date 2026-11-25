@@ -1,6 +1,8 @@
 //! Repository for `jobs` and `job_events`: the queue behind `QueueExecutor` and the runner protocol.
 //! Frozen signatures (cross-WP).
 
+use std::collections::HashSet;
+
 use contracts::agent::JobKind;
 use contracts::ids::{AnalysisId, FlowId, JobId, PassId, QuestionId, RefreshId};
 use contracts::job::access::AgentAccess;
@@ -20,10 +22,16 @@ use super::dashboard::{log_refund, refund_finished_send};
 use crate::error::DbError;
 use crate::repo::settings::CallFailure;
 
+mod activity;
+
+pub(crate) use activity::JobChanges;
+pub use activity::{ActiveJob, Activity, OwnJob};
+
 /// Access to the job queue.
 #[derive(Debug)]
 pub struct Jobs<'a> {
     pub(crate) pool: &'a SqlitePool,
+    pub(crate) changes: &'a JobChanges,
 }
 
 /// Repair runs allowed after a first run whose output verification rejected (brief §5 Pipeline 6).
@@ -604,7 +612,7 @@ struct Current {
 
 async fn current(tx: &mut SqliteConnection, job: JobId) -> Result<(Current, SqliteRow), DbError> {
     let row = sqlx::query(
-        "SELECT kind, state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, payer_id, spec, pull_request_id,
+        "SELECT kind, tenant_id, state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, payer_id, spec, pull_request_id,
              json_extract(result, '$.attempt') AS result_attempt,
              CASE WHEN kind = 'judge_work' THEN json_extract(result, '$.usage') END AS judge_usage
          FROM jobs WHERE id = ?",
@@ -707,14 +715,16 @@ impl Jobs<'_> {
             JobTarget::PullRequest(target) => (
                 "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, payer_id, pull_request_id, stage,
                      generation, flow_id, question_id, created_at, round)
-                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, round FROM analyses WHERE id = ?",
+                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, round FROM analyses WHERE id = ?
+                 RETURNING tenant_id",
                 target.analysis_id.to_string(),
             ),
             JobTarget::PullRequestAsk(target) => (
                 "INSERT INTO jobs (id,tenant_id,private_question_id,kind,priority,state,spec,payer_id,pull_request_id,stage,
                      generation,flow_id,question_id,created_at,round)
                  SELECT ?,tenant_id,id,?,?,'queued',?,?,?,?,?,?,?,?,0 FROM questions
-                 WHERE id=? AND analysis_id IS NULL AND private_ask=1 AND kind='comment_item' AND pull_request_id IS NOT NULL",
+                 WHERE id=? AND analysis_id IS NULL AND private_ask=1 AND kind='comment_item' AND pull_request_id IS NOT NULL
+                 RETURNING tenant_id",
                 match &job.stage {
                     JobStage::Ask(question) if spec.kind == JobKind::Ask && target.pull_request_id > 0 => question.to_string(),
                     _ => return Err(DbError::Conflict),
@@ -724,18 +734,20 @@ impl Jobs<'_> {
                 "INSERT INTO jobs (id, tenant_id, refresh_id, kind, priority, state, spec, payer_id, pull_request_id, stage,
                      generation, flow_id, question_id, created_at, round)
                  SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ranking_attempt
-                 FROM dashboard_refreshes WHERE id = ? AND state = 'ranking'",
+                 FROM dashboard_refreshes WHERE id = ? AND state = 'ranking'
+                 RETURNING tenant_id",
                 refresh_id.to_string(),
             ),
             JobTarget::PullRequestComments(target) => (
                 "INSERT INTO jobs (id, tenant_id, pass_id, kind, priority, state, spec, payer_id, pull_request_id, stage,
                      generation, flow_id, question_id, created_at, round)
                  SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, 0
-                 FROM comment_passes WHERE id = ? AND state IN ('queued', 'running')",
+                 FROM comment_passes WHERE id = ? AND state IN ('queued', 'running')
+                 RETURNING tenant_id",
                 target.pass_id.to_string(),
             ),
         };
-        let inserted = sqlx::query(sql)
+        let tenant: Option<String> = sqlx::query_scalar(sql)
             .bind(spec.job_id.to_string())
             .bind(wire_name(spec.kind)?)
             .bind(priority_value(job.priority))
@@ -753,12 +765,11 @@ impl Jobs<'_> {
             .bind(question_id)
             .bind(ts(now))
             .bind(owner)
-            .execute(&mut *tx)
+            .fetch_optional(&mut *tx)
             .await?;
-        if inserted.rows_affected() == 0 {
-            return Err(DbError::NotFound);
-        }
+        let tenant = tenant.ok_or(DbError::NotFound)?;
         tx.commit().await?;
+        self.changes.publish(&tenant);
         self.get(spec.job_id).await
     }
 
@@ -823,16 +834,20 @@ impl Jobs<'_> {
         }
         query.push(
             " ORDER BY j.priority, j.kind <> 'ask', j.kind <> 'verify_comments', j.created_at, j.rowid LIMIT 1)
-             RETURNING id",
+             RETURNING id, tenant_id",
         );
-        let claimed: Option<String> = query.build_query_scalar().fetch_optional(&mut *tx).await?;
-        if let Some(id) = &claimed {
+        let claimed: Option<(String, String)> =
+            query.build_query_as().fetch_optional(&mut *tx).await?;
+        if let Some((id, _)) = &claimed {
             sqlx::query("UPDATE assessment_method_runs SET attempt=(SELECT attempt FROM jobs WHERE id=?),status='running',failure=NULL WHERE job_id=? AND accepted_attempt IS NULL")
                 .bind(id).bind(id).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         match claimed {
-            Some(id) => self.get(parse_wire(&id, "jobs.id")?).await.map(Some),
+            Some((id, tenant)) => {
+                self.changes.publish(&tenant);
+                self.get(parse_wire(&id, "jobs.id")?).await.map(Some)
+            }
             None => Ok(None),
         }
     }
@@ -847,7 +862,7 @@ impl Jobs<'_> {
         lease_until: Timestamp,
     ) -> Result<EventsRecorded, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
-        let (current, _) = current(&mut tx, job).await?;
+        let (current, row) = current(&mut tx, job).await?;
         current.accepts(attempt)?;
         let state = if events.is_empty() {
             current.state
@@ -883,7 +898,11 @@ impl Jobs<'_> {
             .bind(job.to_string())
             .execute(&mut *tx)
             .await?;
+        let tenant: String = row.try_get("tenant_id")?;
         tx.commit().await?;
+        if state != current.state {
+            self.changes.publish(&tenant);
+        }
         Ok(EventsRecorded {
             cancel_requested: current.cancel_requested,
         })
@@ -925,7 +944,11 @@ impl Jobs<'_> {
         .bind(job.to_string())
         .execute(&mut *tx)
         .await?;
+        let tenant: String = row.try_get("tenant_id")?;
         tx.commit().await?;
+        if current.state == JobState::Claimed {
+            self.changes.publish(&tenant);
+        }
         Ok(recorded)
     }
 
@@ -1002,9 +1025,11 @@ impl Jobs<'_> {
         .execute(&mut *tx)
         .await?;
         apply_credential_effects(&mut tx, &credential, result, now).await?;
+        let tenant: String = row.try_get("tenant_id")?;
         // A dashboard or `verify_comments` job has no session: nothing it reports touches one (ADR-018, ADR-023).
         if judge || kind == JobKind::VerifyComments.as_str() {
             commit_job_transition(tx, result.job_id, judge, state, now).await?;
+            self.changes.publish(&tenant);
             return Ok(Completion::Applied { state });
         }
         let next_generation: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(generation),0)+1 FROM analytic_threads WHERE pull_request_id=(SELECT pull_request_id FROM jobs WHERE id=?)")
@@ -1056,6 +1081,7 @@ impl Jobs<'_> {
                 .bind(next_generation).bind(result.job_id.to_string()).bind(result.job_id.to_string()).execute(&mut *tx).await?;
         }
         tx.commit().await?;
+        self.changes.publish(&tenant);
         Ok(Completion::Applied { state })
     }
 
@@ -1080,7 +1106,9 @@ impl Jobs<'_> {
                 .bind(job.to_string())
                 .execute(&mut *tx)
                 .await?;
+                let tenant: String = row.try_get("tenant_id")?;
                 commit_job_transition(tx, job, judge, JobState::Cancelled, now).await?;
+                self.changes.publish(&tenant);
                 Ok(JobState::Cancelled)
             }
             JobState::Claimed | JobState::Running => {
@@ -1102,7 +1130,7 @@ impl Jobs<'_> {
     pub async fn expire_leases(&self, now: Timestamp) -> Result<Vec<ExpiredLease>, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let rows = sqlx::query(
-            "SELECT id, kind, state, attempt, max_attempts, cancel_requested,
+            "SELECT id, tenant_id, kind, state, attempt, max_attempts, cancel_requested,
                 CASE WHEN kind = 'judge_work' THEN json_extract(result, '$.usage') END AS judge_usage
              FROM jobs
              WHERE state IN ('claimed', 'running') AND lease_expires_at < ?
@@ -1112,8 +1140,10 @@ impl Jobs<'_> {
         .fetch_all(&mut *tx)
         .await?;
         let mut expired = Vec::with_capacity(rows.len());
+        let mut tenants = HashSet::new();
         let mut refunds = Vec::new();
         for row in &rows {
+            tenants.insert(row.try_get::<String, _>("tenant_id")?);
             let id: String = row.try_get("id")?;
             let job: JobId = parse_wire(&id, "jobs.id")?;
             let state: String = row.try_get("state")?;
@@ -1166,19 +1196,28 @@ impl Jobs<'_> {
         for (job, owner) in refunds {
             log_refund(job, owner);
         }
+        for tenant in tenants {
+            self.changes.publish(&tenant);
+        }
         Ok(expired)
     }
 
     /// Re-queues paused jobs whose `resumes_at` has passed.
     pub async fn resume_paused(&self, now: Timestamp) -> Result<Vec<JobId>, DbError> {
-        let ids: Vec<String> = sqlx::query_scalar(
+        let rows: Vec<(String, String)> = sqlx::query_as(
             "UPDATE jobs SET state = 'queued', resumes_at = NULL
-             WHERE state = 'paused' AND resumes_at <= ? RETURNING id",
+             WHERE state = 'paused' AND resumes_at <= ? RETURNING id, tenant_id",
         )
         .bind(ts(now))
         .fetch_all(self.pool)
         .await?;
-        ids.iter().map(|id| parse_wire(id, "jobs.id")).collect()
+        let tenants: HashSet<_> = rows.iter().map(|(_, tenant)| tenant).collect();
+        for tenant in tenants {
+            self.changes.publish(tenant);
+        }
+        rows.iter()
+            .map(|(id, _)| parse_wire(id, "jobs.id"))
+            .collect()
     }
 
     /// Records whether the claimed `attempt` got a GitHub installation token (non-secret; related work is
@@ -1248,7 +1287,9 @@ impl Jobs<'_> {
         .bind(job.to_string())
         .execute(&mut *tx)
         .await?;
+        let tenant: String = row.try_get("tenant_id")?;
         commit_job_transition(tx, job, judge, next, now).await?;
+        self.changes.publish(&tenant);
         Ok(Some(next))
     }
 
@@ -2115,6 +2156,7 @@ mod tests {
                 .record_output(job, attempt, &json!({"draft": attempt}), at(start + 60))
                 .await
                 .expect("output");
+            let activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
             assert!(
                 db.jobs()
                     .expire_leases(at(start + 60))
@@ -2123,11 +2165,13 @@ mod tests {
                     .is_empty(),
                 "the lease ends only after lease_expires_at"
             );
+            assert!(!activity.has_changed().unwrap());
             let expired = db
                 .jobs()
                 .expire_leases(at(start + 61))
                 .await
                 .expect("expire");
+            assert!(activity.has_changed().unwrap(), "expired lease publishes");
             let expected = if attempt < 3 {
                 JobState::Queued
             } else {
@@ -2191,6 +2235,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn releasing_a_claim_publishes_the_requeued_job() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.unwrap();
+        let job = enqueue(&db, analysis, "f1", 0).await;
+        claim(&db, 0).await.unwrap();
+        let activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
+
+        assert_eq!(
+            db.jobs().release_claim(job, 1, at(2)).await.unwrap(),
+            Some(JobState::Queued)
+        );
+        assert_eq!(db.jobs().get(job).await.unwrap().state, JobState::Queued);
+        assert!(activity.has_changed().unwrap());
+    }
+
+    #[tokio::test]
     async fn released_claim_of_a_job_flagged_for_cancel_ends_cancelled() {
         let db = db().await;
         let analysis = seed_analysis(&db).await.expect("seed");
@@ -2201,6 +2261,7 @@ mod tests {
             JobState::Claimed,
             "a claimed job is only flagged"
         );
+        let mut activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
         assert_eq!(
             db.jobs()
                 .release_claim(job, 1, at(2))
@@ -2208,6 +2269,8 @@ mod tests {
                 .expect("release"),
             Some(JobState::Cancelled)
         );
+        assert!(activity.has_changed().unwrap(), "released claim publishes");
+        activity.changed().await.unwrap();
         let record = db.jobs().get(job).await.expect("get");
         assert_eq!(record.state, JobState::Cancelled);
         assert_eq!(
@@ -2220,6 +2283,7 @@ mod tests {
             None,
             "no longer claimed: nothing changes"
         );
+        assert!(!activity.has_changed().unwrap());
     }
 
     #[tokio::test]
@@ -2418,16 +2482,23 @@ mod tests {
         let job = enqueue(&db, analysis, "f1", 0).await;
         claim(&db, 0).await.expect("claim");
         let result = succeeded(job, 1);
+        let mut activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
         assert_eq!(
             db.jobs().complete(&result, at(5)).await.expect("complete"),
             Completion::Applied {
                 state: JobState::Succeeded
             }
         );
+        assert!(
+            activity.has_changed().unwrap(),
+            "first completion publishes"
+        );
+        activity.changed().await.unwrap();
         assert_eq!(
             db.jobs().complete(&result, at(9)).await.expect("repeat"),
             Completion::AlreadyRecorded
         );
+        assert!(!activity.has_changed().unwrap());
         let record = db.jobs().get(job).await.expect("get");
         assert_eq!(record.result, Some(result));
         assert_eq!(record.finished_at, Some(at(5)));
@@ -2576,6 +2647,7 @@ mod tests {
                 state: JobState::Paused
             }
         );
+        let activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
         let paused = db.jobs().get(job).await.expect("get");
         assert_eq!(paused.resumes_at, Some(at(10) + PAUSE_WITHOUT_RESET));
         assert_eq!(paused.finished_at, None);
@@ -2586,6 +2658,7 @@ mod tests {
                 .expect("too early")
                 .is_empty()
         );
+        assert!(!activity.has_changed().unwrap());
         assert_eq!(
             db.jobs()
                 .resume_paused(at(10) + PAUSE_WITHOUT_RESET)
@@ -2593,6 +2666,7 @@ mod tests {
                 .expect("resume"),
             [job]
         );
+        assert!(activity.has_changed().unwrap(), "usage reset publishes");
         let reclaimed = claim(&db, 4000).await.expect("claim");
         assert_eq!(reclaimed.attempt, 2);
         assert_eq!(reclaimed.result, None);
@@ -2805,6 +2879,74 @@ mod tests {
             stage: JobStage::Judge { refresh, batch },
             generation: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn judge_cancellation_refunds_before_publishing_activity() {
+        use crate::repo::DEFAULT_TENANT;
+        use crate::repo::dashboard::{JudgeSend, SendCaps, SendReservation};
+
+        let db = db().await;
+        let refresh = seed_ranking_refresh(&db).await.unwrap();
+        let pending = judge_job(refresh, 1);
+        let job = pending.spec.job_id;
+        let dash = db.dashboard();
+        assert_eq!(
+            dash.reserve_sends(
+                DEFAULT_TENANT,
+                CREDENTIAL,
+                refresh,
+                0,
+                JudgeSend {
+                    job_id: job,
+                    items: 1,
+                    sent_at: at(0),
+                    day_start: at(0),
+                },
+                SendCaps {
+                    per_refresh: None,
+                    per_day: 120,
+                },
+            )
+            .await
+            .unwrap(),
+            SendReservation::Reserved,
+        );
+        enqueue_new(&db, pending, 0).await;
+        let activity = db.jobs().subscribe_activity(DEFAULT_TENANT);
+
+        sqlx::query(
+            "CREATE TRIGGER reject_refund BEFORE UPDATE OF released_at ON dashboard_sends
+             BEGIN SELECT RAISE(ABORT, 'refund unavailable'); END",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        assert!(db.jobs().request_cancel(job, at(1)).await.is_err());
+        assert_eq!(db.jobs().get(job).await.unwrap().state, JobState::Queued);
+        assert_eq!(
+            dash.sent_today(DEFAULT_TENANT, CREDENTIAL, at(0))
+                .await
+                .unwrap(),
+            1,
+        );
+        assert!(!activity.has_changed().unwrap());
+
+        sqlx::query("DROP TRIGGER reject_refund")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.jobs().request_cancel(job, at(2)).await.unwrap(),
+            JobState::Cancelled,
+        );
+        assert_eq!(
+            dash.sent_today(DEFAULT_TENANT, CREDENTIAL, at(0))
+                .await
+                .unwrap(),
+            0,
+        );
+        assert!(activity.has_changed().unwrap());
     }
 
     #[tokio::test]
@@ -3047,10 +3189,15 @@ mod tests {
             running,
             "the running job is untouched"
         );
+        let activity = db.jobs().subscribe_activity(crate::repo::DEFAULT_TENANT);
         db.jobs()
             .complete(&succeeded(ranking, 1), at(5))
             .await
             .expect("complete");
+        assert!(
+            activity.has_changed().unwrap(),
+            "ranking completion publishes"
+        );
         assert_eq!(claim(&db, 6).await, None, "Ask still owns the PR container");
     }
 

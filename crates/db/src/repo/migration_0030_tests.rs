@@ -296,5 +296,5 @@ async fn migration_0030_cleanup_failure_rolls_back_data_and_schema() {
         .await
         .unwrap();
     migrate(&old, MIGRATIONS.len()).await.unwrap();
-    assert_clean(&Db { pool: old }).await;
+    assert_clean(&Db::from_pool(old)).await;
 }
