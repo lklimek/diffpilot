@@ -93,7 +93,19 @@ test("U48: line GitHub links follow the diff side, expose a tab stop and support
   );
 });
 
-const desktopWidths = [1200, 1280, 1366, 1439, 1440, 1599, 1600, 1601, 1920];
+const desktopWidths = [
+  900, 1000, 1199, 1200, 1280, 1366, 1439, 1440, 1599, 1600, 1601, 1823, 1824, 1825, 1920,
+];
+
+async function checkReviewLabelWidths(title: Locator, repo: Locator, previous = { title: 0, repo: 0 }) {
+  const widths = {
+    title: (await title.boundingBox())?.width ?? 0,
+    repo: (await repo.boundingBox())?.width ?? 0,
+  };
+  expect(widths.title).toBeGreaterThanOrEqual(previous.title);
+  expect(widths.repo).toBeGreaterThanOrEqual(previous.repo);
+  return widths;
+}
 
 test("U49: the review bar shows the current file and keeps its badges on desktop and on a phone", async ({
   page,
@@ -129,22 +141,28 @@ test("U49: the review bar shows the current file and keeps its badges on desktop
   const repo = pr.locator(".review-repo-name");
   await expect(pr).toHaveAttribute("href", `/pr/${repository}/482`);
   await expect(pr).toHaveAccessibleDescription(`${repository} #482`);
+  let previous = { title: 0, repo: 0 };
   for (const width of desktopWidths) {
     await test.step(`${width} px`, async () => {
       await page.setViewportSize({ width, height: 800 });
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+      await expect(path).toBeInViewport({ ratio: 1 });
       for (const badge of badges) await expect(badge).toBeInViewport({ ratio: 1 });
       await expect(repo).toBeInViewport({ ratio: 1 });
-      expect((await repo.boundingBox())?.width).toBeGreaterThan(45);
+      previous = await checkReviewLabelWidths(title, repo, previous);
+      expect(previous.repo).toBeGreaterThan(width >= 1200 ? 45 : 0);
       const counts = checks.locator(".review-ci-counts");
       expect(await counts.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
-      expect((await title.boundingBox())?.width).toBeGreaterThan(115);
-      const caption = banner.getByText(width < 1600 ? "Hide imports" : "Hide comment and import changes", {
+      expect(previous.title).toBeGreaterThan(width >= 1200 ? 115 : 0);
+      const compactCaption = width < 1824;
+      const caption = banner.getByText(compactCaption ? "Hide imports" : "Hide comment and import changes", {
         exact: true,
       });
       await expect(caption).toBeInViewport({ ratio: 1 });
       expect((await caption.boundingBox())?.width).toBeGreaterThan(20);
-      const checkbox = width < 1600 ? "Hide imports and comment changes" : "Hide comment and import changes";
+      const checkbox = compactCaption
+        ? "Hide imports and comment changes"
+        : "Hide comment and import changes";
       await expect(banner.getByRole("checkbox", { name: checkbox })).toBeChecked();
     });
   }
@@ -171,13 +189,18 @@ test("U49/U62: a long PR title truncates without pushing review controls out of 
   const title = banner.locator(".review-pr-title");
   const crumbs = banner.getByRole("navigation", { name: "Breadcrumb" });
   const repo = crumbs.locator(".review-repo-name");
+  const owner = crumbs.locator(".review-owner");
+  const fixedCrumbs = [
+    crumbs.getByRole("link", { name: "diffpilot" }),
+    crumbs.getByRole("link", { name: "Pull requests" }),
+  ];
   const checks = banner.getByRole("link", {
     name: /^CI: 3 passed, 1 failed, 1 pending, 1 skipped, 1 neutral/,
   });
   const controls = [
-    crumbs.getByRole("link", { name: "diffpilot" }),
-    crumbs.getByRole("link", { name: "Pull requests" }),
+    ...fixedCrumbs,
     repo,
+    banner.getByLabel(`Current file: ${rpc}`),
     banner.getByText("#482", { exact: true }),
     checks,
     banner.getByText("EN", { exact: true }),
@@ -187,20 +210,27 @@ test("U49/U62: a long PR title truncates without pushing review controls out of 
     banner.getByRole("button", { name: /account and LLM activity/ }),
   ];
   await expect(title).toHaveText(/^.{100,}$/);
+  let previous = { title: 0, repo: 0 };
   for (const width of desktopWidths) {
     await test.step(`${width} px`, async () => {
       await page.setViewportSize({ width, height: 800 });
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
       for (const control of controls) await expect(control).toBeInViewport({ ratio: 1 });
-      expect((await repo.boundingBox())?.width).toBeGreaterThan(45);
-      expect((await title.boundingBox())?.width).toBeGreaterThan(115);
+      for (const link of fixedCrumbs) {
+        expect(await link.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+      }
+      if (width >= 1440) {
+        await expect(owner).toBeInViewport({ ratio: 1 });
+        expect(await owner.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+      }
+      previous = await checkReviewLabelWidths(title, repo, previous);
+      expect(previous.repo).toBeGreaterThan(width >= 1200 ? 45 : 0);
+      expect(previous.title).toBeGreaterThan(width >= 1200 ? 115 : 0);
       expect(
         await checks.locator(".review-ci-counts").evaluate((el) => el.scrollWidth <= el.clientWidth),
       ).toBe(true);
       await expect(title).toHaveCSS("text-overflow", "ellipsis");
-      if (width < 1440) {
-        expect(await title.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
-      }
+      expect(await title.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
     });
   }
 });

@@ -169,7 +169,7 @@ function ViewMenu({ view }: { view: ReviewViews }) {
           </>
         }
         tip={`Switch between the views of this review: Flows (step by step), Files (one file at a time; s switches between these two) and Dependencies (crates this pull request changes, what they depend on in your organisations, and what was added for other crates' types).${view.commentsHref ? " Comments: decisions on the review comments of this pull request; needs no analysis." : ""}`}
-        className={`${BUTTON} border-accent`}
+        className={`review-view-trigger ${BUTTON} border-accent`}
       >
         {(["flows", "files", "deps", "comments"] as const)
           .filter((v) => href[v] !== undefined)
@@ -266,19 +266,21 @@ export function TopBar({
               </code>
             </Tooltip>
           )}
-          {pr.head_sha && (
-            <Tooltip
-              tip={`${view ? "Head commit analysed" : "Head commit"}: ${pr.head_sha}`}
-              className="shrink-0"
-            >
-              <code tabIndex={0} className="text-xs text-muted">
-                {pr.head_sha.slice(0, 7)}
-              </code>
-            </Tooltip>
-          )}
-          <span className="shrink-0">
-            <LanguageTag language={language} />
-          </span>
+          <div className="review-revision contents">
+            {pr.head_sha && (
+              <Tooltip
+                tip={`${view ? "Head commit analysed" : "Head commit"}: ${pr.head_sha}`}
+                className="shrink-0"
+              >
+                <code tabIndex={0} className="text-xs text-muted">
+                  {pr.head_sha.slice(0, 7)}
+                </code>
+              </Tooltip>
+            )}
+            <span className="shrink-0">
+              <LanguageTag language={language} />
+            </span>
+          </div>
           {ci && checksHref && (
             <Tooltip tip={`${CHECKS_LINK_TIP} ${ciTip(ci)}`} className={codeReview ? "shrink-0" : "min-w-0"}>
               <a

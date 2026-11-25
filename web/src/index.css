@@ -163,7 +163,7 @@
 
 .review-current-path {
   display: grid;
-  grid-template-columns: max-content minmax(3ch, max-content) max-content;
+  grid-template-columns: max-content minmax(clamp(0px, (100vw - 900px) / 8, 3ch), max-content) max-content;
 }
 
 .review-path-directory {
@@ -172,32 +172,6 @@
   overflow: hidden;
   text-align: left;
   text-overflow: ellipsis;
-}
-
-@media (width >= 1200px) {
-  /* Share the room left by the controls, independent of the natural width of the title. */
-  [data-code-review] .review-crumb {
-    flex: 4 1 0%;
-    max-inline-size: max-content;
-  }
-
-  [data-code-review] .review-pr-line {
-    flex: 5 1 0%;
-  }
-
-  [data-code-review] .review-crumb-lead {
-    min-width: 0;
-    flex-shrink: 0.05;
-  }
-
-  [data-code-review] .review-crumb-lead > a {
-    @apply min-w-0 truncate;
-  }
-
-  [data-code-review] .review-owner {
-    direction: rtl;
-    flex-shrink: 1000;
-  }
 }
 
 @media (width < 1440px) {
@@ -216,8 +190,9 @@
   line-height: 1.2;
 }
 
-@media (900px <= width < 1600px) {
+@media (width >= 900px) {
   [data-code-review] {
+    height: auto;
     gap: 0.25rem;
     padding-inline: 0.5rem;
   }
@@ -229,16 +204,41 @@
 
   [data-code-review] .review-crumb-lead {
     gap: 0.25rem;
-    font-size: 0.8125rem;
+    font-size: 0.75rem;
+  }
+
+  /* Share the space left by the controls independently of the PR title's length. */
+  [data-code-review] .review-crumb {
+    flex: 11 1 0%;
+    max-inline-size: max-content;
   }
 
   [data-code-review] .review-pr-line {
+    flex: 10 1 0%;
     padding-left: 0.375rem;
+  }
+
+  [data-code-review] .review-revision {
+    @apply flex flex-none flex-col items-center gap-0.5;
+  }
+
+  [data-code-review] .review-ci-counts {
+    max-inline-size: 7rem;
+  }
+
+  [data-code-review] .review-view-trigger {
+    padding-inline: 0.375rem;
+  }
+
+  [data-code-review] .user-menu-login {
+    max-inline-size: clamp(0px, (100vw - 1000px) / 6, 8rem);
   }
 
   [data-code-review] .review-count-button {
     inline-size: min-content;
+    padding-inline: 0.25rem;
     white-space: normal;
+    font-size: 11px;
     line-height: 13px;
   }
 
@@ -247,7 +247,28 @@
   }
 
   [data-code-review] .review-context-toggle {
-    @apply min-w-6 flex-col justify-center gap-0.5;
+    /* Grow the caption's slot before switching text so the neighboring labels keep their space. */
+    inline-size: clamp(2.5rem, 2.5rem + (100vw - 1640px) / 2, 12rem);
+  }
+}
+
+@media (1440px <= width) {
+  [data-code-review] .review-repo {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Adding the owner above the repository keeps the repository's inline allocation. */
+  [data-code-review] .review-owner {
+    contain: inline-size;
+    font-size: 0.75rem;
+    line-height: 1;
+  }
+}
+
+@media (900px <= width < 1824px) {
+  [data-code-review] .review-context-toggle {
+    @apply flex-col justify-center gap-0.5;
   }
 
   [data-code-review] .review-context-label {

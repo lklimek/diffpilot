@@ -377,7 +377,7 @@ const SCENARIOS = {
     tour: (seed) => {
       const tour = codeViewTour(seed);
       tour.analysis.pr.title =
-        "feat(rpc): retry timed-out requests with exponential backoff while preserving the existing caller deadlines";
+        "feat(rpc): retry timed-out requests with exponential backoff while preserving the existing caller deadlines and reporting the last transport failure when the retry budget is exhausted";
       return tour;
     },
     lines: codeViewLines,
