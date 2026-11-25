@@ -297,4 +297,5 @@ message or `Retry-After`) exits 4 with how long to wait instead.
   `assessment.total`. The server omits `imported_unseen` until it computes imports since the last Comments visit.
 - The new repository coverage read lists repositories tracked by the reader's tenant. The activity read
   exposes peer jobs in the reader's tenant with only kind and a response-local id. `GET /api/v1/me/prs` is a
-  reader-specific history. The new reads return 501 `not_implemented` in B1. See [HTTP API](http-api.md#v14-dashboard-comments-and-activity).
+  reader-specific history. A read token can list it and read a PR page without recording a visit. Reserved reads
+  return 501 `not_implemented`. See [HTTP API](http-api.md#v14-dashboard-comments-and-activity).

@@ -71,9 +71,12 @@ pub enum AnalysisApiError {
     /// The Tour exists only for finished analyses; the diff only once the analysis base is stored.
     #[error("the analysis has not finished")]
     NotFinished,
-    /// `limit` outside 1 to [`MyAnalysesQuery::MAX_LIMIT`].
+    /// Page limit outside 1 through 100.
     #[error("the limit is not valid")]
     InvalidLimit,
+    /// Malformed PR history cursor.
+    #[error("the page cursor is not valid")]
+    InvalidCursor,
     /// A line range is malformed (`from` 0 or after `to`).
     #[error("the line range is not valid")]
     InvalidRange,
@@ -227,7 +230,8 @@ impl ApiErrorSource for AnalysisApiError {
             Self::InvalidRange
             | Self::InvalidPath
             | Self::InvalidRepository
-            | Self::InvalidLimit => ApiErrorCode::InvalidRequest,
+            | Self::InvalidLimit
+            | Self::InvalidCursor => ApiErrorCode::InvalidRequest,
             Self::RangeTooLarge => ApiErrorCode::RangeTooLarge,
             Self::FileNotFound | Self::Github(GithubError::NotFound) => ApiErrorCode::NotFound,
             Self::Github(GithubError::Unauthorized) => ApiErrorCode::Unauthenticated,
@@ -269,6 +273,7 @@ impl ApiErrorSource for AnalysisApiError {
             Self::NotFinished => "The analysis has not finished yet.",
             Self::InvalidRange => "The line range is not valid.",
             Self::InvalidLimit => "The limit must be between 1 and 100.",
+            Self::InvalidCursor => "The page cursor is not valid; start from the first page.",
             Self::RangeTooLarge => "The line range is too large; ask for at most 2000 lines.",
             Self::InvalidPath => "The file path is not valid.",
             Self::InvalidRepository => "The repository or pull request number is not valid.",

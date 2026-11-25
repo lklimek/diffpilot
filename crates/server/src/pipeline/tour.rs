@@ -4,12 +4,14 @@
 //! Not analysed from the pre-pass, Unexplained from the coverage of the accepted flows, step ids, graph and move
 //! facts from verification.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
+use analysis::blob::{self, Blob, Limits, MAX_BLOB_BYTES, READ_TIMEOUT};
 use analysis::diff::FileDiff;
 use analysis::lines::{changed_lines_within, contains_range, ranges};
 use analysis::prepass::Prepass;
+use analysis::tech::{self, FileSource, Generic, OtherSide, TechPlugin};
 use analysis::verify::{OutputRef, Repair, TourSkeleton, VerifiedFlow};
 use contracts::agent::plan::PlannedFlow;
 use contracts::agent::pr_context::PrContextOutput;
@@ -25,6 +27,7 @@ use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use url::Url;
 
+use crate::github::mirror;
 use crate::memcan::profile;
 use crate::pipeline::context::StoredResults;
 use crate::pipeline::prepass::{self, PrepassRunError};
@@ -207,12 +210,14 @@ pub async fn with_projection<T>(
         .into_iter()
         .map(|(_, unsent)| unsent)
         .collect();
+    let leading_contexts = leading_contexts(Arc::clone(&facts), &skeleton).await;
     let projection = Projection {
         summary,
         skeleton: &skeleton,
         pr_context,
         prepass: &facts.prepass,
         snapshot: &snapshot,
+        leading_contexts: &leading_contexts,
         files: &facts.files,
         aliases: &aliases,
         related_work_checked,
@@ -222,6 +227,80 @@ pub async fn with_projection<T>(
     };
     let tour = project(&projection);
     Ok(f(&projection, tour))
+}
+
+/// Contiguous item context for verified head steps, indexed by path and first line.
+type LeadingContexts = BTreeMap<String, BTreeMap<u32, LineRange>>;
+
+async fn leading_contexts(facts: Arc<Facts>, skeleton: &TourSkeleton) -> LeadingContexts {
+    let mut wanted = BTreeMap::<String, BTreeSet<u32>>::new();
+    for step in skeleton.flows.iter().flat_map(|flow| &flow.output.steps) {
+        if step.side == LineSide::Head && tech::plugin_for(&step.file).name() != Generic.name() {
+            wanted
+                .entry(step.file.clone())
+                .or_default()
+                .insert(step.start_line);
+        }
+    }
+    if wanted.is_empty() {
+        return LeadingContexts::new();
+    }
+    let result = mirror::in_read_slot(move || {
+        let requests: Vec<_> = wanted
+            .keys()
+            .map(|path| (&facts.head, path.as_str()))
+            .collect();
+        let blobs = blob::read_blobs(
+            &facts.mirror,
+            &requests,
+            Limits {
+                max_blob_bytes: MAX_BLOB_BYTES,
+                total_bytes: prepass::MAX_PREPASS_BYTES,
+                timeout: READ_TIMEOUT,
+            },
+        )?;
+
+        let mut contexts = LeadingContexts::new();
+        for ((path, starts), blob) in wanted.into_iter().zip(blobs) {
+            let Blob::Content(bytes) = blob else { continue };
+            let Ok(text) = std::str::from_utf8(&bytes) else {
+                continue;
+            };
+            let file = FileSource {
+                path: &path,
+                side: LineSide::Head,
+                text: Some(text),
+                other: OtherSide::Unknown,
+                changed_lines: &[],
+                hunks: &[],
+            };
+            let plugin = tech::plugin_for(&path);
+            let ranges: BTreeMap<_, _> = starts
+                .into_iter()
+                .filter_map(|line| {
+                    plugin
+                        .leading_context(&file, line)
+                        .map(|range| (line, range))
+                })
+                .collect();
+            if !ranges.is_empty() {
+                contexts.insert(path, ranges);
+            }
+        }
+        Ok::<_, blob::BlobError>(contexts)
+    })
+    .await;
+    match result {
+        Ok(Ok(contexts)) => contexts,
+        Ok(Err(error)) => {
+            tracing::warn!(?error, "could not read files for Tour leading context");
+            LeadingContexts::new()
+        }
+        Err(error) => {
+            tracing::warn!(?error, "could not run Tour leading context projection");
+            LeadingContexts::new()
+        }
+    }
 }
 
 /// The server's issue codes of a stored flow that today's checks reject (for the log, never user text).
@@ -301,6 +380,7 @@ pub struct Projection<'a> {
     pub prepass: &'a Prepass,
     /// The stored GitHub snapshot.
     pub snapshot: &'a GithubSnapshot,
+    leading_contexts: &'a LeadingContexts,
     /// The whole diff.
     pub files: &'a [FileDiff],
     /// Thread aliases listed in each flow's prompt.
@@ -330,13 +410,7 @@ pub fn project(input: &Projection<'_>) -> Tour {
         else {
             continue;
         };
-        flows.push(project_flow(
-            planned,
-            verified,
-            position,
-            (input.files, input.prepass),
-            &links,
-        ));
+        flows.push(project_flow(planned, verified, position, input, &links));
     }
     let analysed = FlowAnalysisStatus {
         state: FlowAnalysisState::Analysed,
@@ -554,7 +628,7 @@ fn project_flow(
     planned: &PlannedFlow,
     verified: &VerifiedFlow,
     position: u32,
-    (files, prepass): (&[FileDiff], &Prepass),
+    input: &Projection<'_>,
     links: &Links,
 ) -> Flow {
     let output = &verified.output;
@@ -587,9 +661,9 @@ fn project_flow(
                 start_line: step.start_line,
                 end_line: step.end_line,
             };
-            let whitespace = prepass.whitespace_lines(step.side, &step.file);
+            let whitespace = input.prepass.whitespace_lines(step.side, &step.file);
             let mut inside = changed_lines_within(
-                files,
+                input.files,
                 &step.file,
                 step.side,
                 range.start_line,
@@ -627,7 +701,15 @@ fn project_flow(
                 id: id.clone(),
                 number,
                 facts: StepFacts {
-                    leading_context: None,
+                    leading_context: if step.side == LineSide::Head {
+                        input
+                            .leading_contexts
+                            .get(&step.file)
+                            .and_then(|ranges| ranges.get(&step.start_line))
+                            .copied()
+                    } else {
+                        None
+                    },
                     file: step.file.clone(),
                     side: step.side,
                     range,

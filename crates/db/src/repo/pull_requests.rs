@@ -1,14 +1,15 @@
 //! Repository for `pull_requests`: the latest snapshot of each resolved pull request.
 
-use contracts::api::pr::PrSummary;
-use contracts::common::{LlmLanguage, RepoRef};
+use contracts::api::pr::{PrHistoryAnalysis, PrHistoryItem, PrHistoryWatch, PrSummary};
+use contracts::common::{LlmLanguage, PrRef, RepoRef};
 use contracts::time::Timestamp;
+use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 
 use contracts::ids::{AnalysisId, CommitSha};
 
-use super::jobs::{parse_wire, ts, wire_name};
-use super::{Db, read_tx};
+use super::jobs::{parse_ts, parse_wire, ts, wire_name};
+use super::{Db, read_tx, write_tx};
 use crate::error::DbError;
 
 /// Access to pull-request snapshots.
@@ -53,6 +54,81 @@ impl PullRequests<'_> {
         .bind(ts(now))
         .fetch_one(self.pool)
         .await?)
+    }
+
+    /// Records a member's latest successful PR page opening.
+    pub async fn record_opening(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        pull_request_id: i64,
+        at: Timestamp,
+    ) -> Result<(), DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        sqlx::query(
+            "INSERT INTO pr_page_openings (tenant_id, user_id, pull_request_id, last_opened_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT (tenant_id, user_id, pull_request_id) DO UPDATE
+                 SET last_opened_at = MAX(last_opened_at, excluded.last_opened_at)",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(pull_request_id)
+        .bind(ts(at))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The member's PR history newest first, with row ids for keyset pagination.
+    pub async fn history(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        before: Option<(Timestamp, i64)>,
+        limit: u32,
+    ) -> Result<Vec<(i64, PrHistoryItem)>, DbError> {
+        let rows = sqlx::query(
+            "WITH analyses_ranked AS (
+                 SELECT id, pull_request_id, state, head_sha, created_at,
+                     ROW_NUMBER() OVER (PARTITION BY pull_request_id ORDER BY created_at DESC, id DESC) AS n
+                 FROM analyses WHERE tenant_id = ?1 AND created_by = ?2
+             ), latest_analyses AS (
+                 SELECT * FROM analyses_ranked WHERE n = 1
+             ), watches AS (
+                 SELECT pull_request_id, state, since, ended_at FROM pr_watches
+                 WHERE tenant_id = ?1 AND user_id = ?2
+             ), openings AS (
+                 SELECT pull_request_id, last_opened_at FROM pr_page_openings
+                 WHERE tenant_id = ?1 AND user_id = ?2
+             ), activity AS (
+                 SELECT pull_request_id, created_at AS at FROM latest_analyses
+                 UNION ALL SELECT pull_request_id, COALESCE(ended_at, since) FROM watches
+                 UNION ALL SELECT pull_request_id, last_opened_at FROM openings
+             ), history AS (
+                 SELECT pull_request_id, MAX(at) AS last_activity_at FROM activity GROUP BY pull_request_id
+             )
+             SELECT p.id, p.title, p.number, r.owner, r.name, h.last_activity_at, o.last_opened_at,
+                 a.id AS analysis_id, a.state AS analysis_state, a.head_sha AS analysis_head,
+                 a.head_sha <> p.head_sha AS head_moved, w.state AS watch_state, w.since, w.ended_at
+             FROM history h
+             JOIN pull_requests p ON p.id = h.pull_request_id AND p.tenant_id = ?1
+             JOIN repos r ON r.id = p.repo_id AND r.tenant_id = ?1
+             LEFT JOIN latest_analyses a ON a.pull_request_id = p.id
+             LEFT JOIN watches w ON w.pull_request_id = p.id
+             LEFT JOIN openings o ON o.pull_request_id = p.id
+             WHERE ?3 IS NULL OR (h.last_activity_at, p.id) < (?3, ?4)
+             ORDER BY h.last_activity_at DESC, p.id DESC LIMIT ?5",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(before.map(|(at, _)| ts(at)))
+        .bind(before.map(|(_, id)| id))
+        .bind(limit)
+        .fetch_all(self.pool)
+        .await?;
+        rows.iter().map(history_item).collect()
     }
 
     /// The row id of the tenant's stored pull request `repo#number` (owner and name case-insensitive); none when
@@ -159,6 +235,52 @@ impl PullRequests<'_> {
     }
 }
 
+fn history_item(row: &SqliteRow) -> Result<(i64, PrHistoryItem), DbError> {
+    let optional_time = |column| -> Result<Option<Timestamp>, DbError> {
+        row.try_get::<Option<String>, _>(column)?
+            .map(|value| parse_ts(&value, column))
+            .transpose()
+    };
+    let analysis = row
+        .try_get::<Option<String>, _>("analysis_id")?
+        .map(|id| -> Result<_, DbError> {
+            Ok(PrHistoryAnalysis {
+                id: parse_wire(&id, "analyses.id")?,
+                status: parse_wire(row.try_get("analysis_state")?, "analyses.state")?,
+                head_sha: CommitSha(row.try_get("analysis_head")?),
+                head_moved: row.try_get("head_moved")?,
+            })
+        })
+        .transpose()?;
+    let watch = row
+        .try_get::<Option<String>, _>("watch_state")?
+        .map(|state| -> Result<_, DbError> {
+            Ok(PrHistoryWatch {
+                state: parse_wire(&state, "pr_watches.state")?,
+                since: parse_ts(row.try_get("since")?, "pr_watches.since")?,
+                ended_at: optional_time("ended_at")?,
+            })
+        })
+        .transpose()?;
+    Ok((
+        row.try_get("id")?,
+        PrHistoryItem {
+            pr: PrRef {
+                repo: RepoRef {
+                    owner: row.try_get("owner")?,
+                    name: row.try_get("name")?,
+                },
+                number: row.try_get("number")?,
+            },
+            title: row.try_get("title")?,
+            last_activity_at: parse_ts(row.try_get("last_activity_at")?, "last_activity_at")?,
+            opened_at: optional_time("last_opened_at")?,
+            analysis,
+            watch,
+        },
+    ))
+}
+
 /// The analysis shown for one pull request of a [`PullRequests::review_links`] list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrReviewLink {
@@ -179,6 +301,23 @@ pub struct PullRequestRecord {
     pub tenant_id: String,
     /// The pull request as last resolved (title, author, base and head).
     pub pr: PrSummary,
+}
+
+/// Fault injection for pull-request repository tests.
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing {
+    use super::*;
+
+    /// Rejects new PR page openings while leaving the rest of the database usable.
+    pub async fn reject_openings(db: &Db) -> Result<(), DbError> {
+        sqlx::query(
+            "CREATE TRIGGER reject_openings BEFORE INSERT ON pr_page_openings
+             BEGIN SELECT RAISE(ABORT, 'injected PR opening failure'); END",
+        )
+        .execute(&db.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

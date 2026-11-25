@@ -31,6 +31,7 @@ use crate::state::AppState;
 use crate::test_support::session_cookie;
 
 mod assessment;
+mod pr_history;
 mod watching;
 
 const PR: &str = "/api/v1/prs/acme/node-client/482";
@@ -315,7 +316,7 @@ async fn comments_work_without_analysis() {
         15,
         "8 inline threads, legacy body findings, newly eligible prose sources and the merge question"
     );
-    // Opening Comments starts one `verify_comments` pass; review points show the assessment as running.
+    // Entering Comments starts one pass without starting a Tour analysis.
     for item in items
         .iter()
         .filter(|item| item["kind"] != "pr_question" && item["status_comment"] != true)

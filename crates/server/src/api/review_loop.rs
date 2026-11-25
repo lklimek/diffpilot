@@ -250,7 +250,23 @@ async fn pr_page(
 ) -> ApiResult<Json<PrPage>> {
     mark_present(&state, &session);
     let handle = handle_of(&state, &session, path).await?;
-    Ok(Json(views::pr_page(&state, &session, handle).await?))
+    let pr_id = handle.id;
+    let page = views::pr_page(&state, &session, handle).await?;
+    if !session.is_access_token()
+        && let Err(error) = state
+            .db
+            .pull_requests()
+            .record_opening(
+                &session.tenant_id,
+                &session.user_id,
+                pr_id,
+                Timestamp::now(),
+            )
+            .await
+    {
+        tracing::warn!(?error, pr = pr_id, "could not record PR page opening");
+    }
+    Ok(Json(page))
 }
 
 async fn overview(
