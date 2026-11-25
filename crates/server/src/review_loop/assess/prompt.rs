@@ -45,6 +45,10 @@ pub(super) fn render(
         .replace("{{head}}", &pr.head_sha.0)
         .replace("{{answer}}", answer)
         .replace("{{language}}", name)
+        .replace(
+            "{{translated_technical_terms}}",
+            &prompts::translated_technical_terms(language)?,
+        )
         .replace("{{rules}}", &prompts::read_only_rules()?)
         .replacen("{{data}}", &data, 1))
 }

@@ -1,7 +1,7 @@
 //! Admission and method isolation for one frozen logical assessment pass.
 
 use super::{
-    AssessError,
+    AssessError, VERIFY_PROMPT_VERSION,
     frozen::{self, Frozen},
     prompt,
 };
@@ -124,7 +124,10 @@ pub(super) async fn admit(
     let mut jobs = Vec::new();
     for method in methods {
         jobs.push(MethodJob {
-            version: version(method).into(),
+            version: match method {
+                AssessmentMethod::ClaudiusHost => HOST_VERSION.into(),
+                AssessmentMethod::PromptV4 => VERIFY_PROMPT_VERSION.to_string(),
+            },
             spec: JobSpec {
                 job_id: JobId::new_random(),
                 attempt: 0,
@@ -201,13 +204,6 @@ pub(super) async fn admit(
                 error => Err(error.into()),
             }
         }
-    }
-}
-
-fn version(method: AssessmentMethod) -> &'static str {
-    match method {
-        AssessmentMethod::ClaudiusHost => HOST_VERSION,
-        AssessmentMethod::PromptV4 => "4",
     }
 }
 

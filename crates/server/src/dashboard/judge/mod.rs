@@ -54,9 +54,8 @@ use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::model::{ModelContext, select_model};
 use crate::state::AppState;
 
-/// Version of the judge prompt and output schema (`prompts/judge_work.md`, pinned by its golden); a bump
-/// re-judges every item within the caps.
-pub const JUDGE_PROMPT_VERSION: u32 = 6;
+/// Version of the judge prompt and output schema; a mismatch makes a stored judgement stale.
+pub const JUDGE_PROMPT_VERSION: u32 = 7;
 /// Items sent to the judge per refresh at most, across its attempts and retries (plan §B.4).
 pub const REFRESH_CAP: u32 = 48;
 /// Items sent to the judge per user and local day at most, retries included (plan §B.4).
@@ -109,6 +108,8 @@ enum RankError {
     Executor(#[from] ExecutorError),
     #[error("the judge input could not be built")]
     Input(#[from] InputError),
+    #[error("the judge prompt could not be rendered")]
+    Prompt(#[from] crate::prompts::PromptError),
     #[error("the judge output schema is unavailable")]
     Schema(#[from] StrictSchemaError),
     #[error("the judgement could not be stored")]
@@ -144,6 +145,7 @@ impl RankError {
             | Self::Db(_)
             | Self::Executor(_)
             | Self::Input(_)
+            | Self::Prompt(_)
             | Self::Schema(_)
             | Self::Json(_) => "The ranking stopped on a server error",
         }

@@ -1,9 +1,11 @@
 @@ language_en
 Write every text value of the output in English. Keep code identifiers, paths, quoted code, JSON keys and enum values as they are.
 @@ language_pl
-Write every text value of the output in Polish (polski). Keep code identifiers, paths, quoted code, JSON keys and enum values as they are. Rules 2 to 4 apply to the Polish wording as well.
+Write every text value of the output in Polish (polski). Keep code identifiers, paths, quoted code, JSON keys and enum values as they are. Rules 2 to 4 apply to the Polish wording as well.{{translated_technical_terms}}
 @@ language_ru
-Write every text value of the output in Russian (русский). Keep code identifiers, paths, quoted code, JSON keys and enum values as they are. Rules 2 to 4 apply to the Russian wording as well.
+Write every text value of the output in Russian (русский). Keep code identifiers, paths, quoted code, JSON keys and enum values as they are. Rules 2 to 4 apply to the Russian wording as well.{{translated_technical_terms}}
+@@ translated_technical_terms
+At the first use of each translated technical term in each text, put the original English term in parentheses immediately after it. Never add English terms that dismiss risk, imply confirmation, quantify certainty, or otherwise violate the wording rules.
 @@ sub_agents_off
 Do not spawn sub-agents; do all the work in this session.
 @@ sub_agents_on
