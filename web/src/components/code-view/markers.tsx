@@ -106,10 +106,10 @@ export function RemarkMarker({
             {a.type === "behaviour" ? (
               <>
                 <span className="block">
-                  <span className="font-semibold">Was:</span> {a.was}
+                  <span className="font-semibold">Was:</span> <CodeText text={a.was} />
                 </span>
                 <span className="mt-1 block">
-                  <span className="font-semibold">Is:</span> {a.is}
+                  <span className="font-semibold">Is:</span> <CodeText text={a.is} />
                 </span>
               </>
             ) : (

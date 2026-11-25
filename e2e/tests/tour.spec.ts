@@ -77,6 +77,12 @@ test("flows by importance, then quiet rows with Unexplained first; flow introduc
   await expect(heading(page)).toHaveText("5 Retry allowed?");
   const code = page.getByRole("region", { name: /^src\/rpc\/client\.rs, line/ });
   await expect(code).toContainText("should_retry");
+  await expect(page.getByRole("banner").getByLabel("Current file: src/rpc/client.rs")).toBeVisible();
+  const number = code.getByRole("button", { name: "Comment on line 99", exact: true });
+  await number.focus();
+  await expect(
+    code.getByRole("link", { name: "Open line 99 of src/rpc/client.rs on GitHub, new tab" }),
+  ).toHaveAttribute("href", /\/pull\/482\/changes#diff-[a-f0-9]{64}R99$/);
   // The assessment lives in the Inspector now and stays collapsed.
   await expect(inspector(page).getByRole("button", { name: /Assessment/ })).toHaveAttribute(
     "aria-expanded",

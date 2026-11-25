@@ -14,11 +14,13 @@ import type { Highlight, Token } from "./highlight";
 import { CodeText, useTokens } from "./tokens";
 import { CHANGE_LOOK, changeLineText } from "./changeLook";
 import { AskLineButton, moveLineFocus, selectedTarget } from "./CodeView";
+import { LineGithub, type LineGithubLink } from "./LineGithub";
 
 /** Props of the classic diff ("Show old code", inspector section 1). */
 export interface ClassicDiffProps {
   /** The diff of a range (`GET …/diff`). */
   diff: DiffResponse;
+  githubLine?: LineGithubLink;
   /** Syntax colouring, as in the code view. */
   highlight?: Highlight;
   /** The reviewer's pending comments; those on shown lines get a marker that opens their text. */
@@ -35,7 +37,8 @@ interface AskLines {
   /** The line whose action is the view's tab stop. */
   tabKey: string;
   onFocus: (key: string) => void;
-  onAsk: (target: CommentTarget) => void;
+  onAsk?: (target: CommentTarget) => void;
+  githubLine?: LineGithubLink;
   path: string;
 }
 
@@ -107,17 +110,50 @@ function Hunk({
         const mine = lineComments(l, comments);
         const open = mine !== null && comments.open.has(mine[0]);
         const at = askRef(l);
+        const github = at && ask?.githubLine?.(at.side, at.line, l.kind !== "context");
+        const number = (value: number | null, side: LineSide) => {
+          const column = side === "base" ? "col-start-2" : "col-start-3";
+          const classes = `${column} row-start-1 pr-1 text-right text-muted`;
+          return github && at?.side === side && ask ? (
+            <button
+              type="button"
+              data-line-action
+              className={`${classes} hover:text-accent`}
+              tabIndex={ask.tabKey === at.key ? 0 : -1}
+              aria-label={`Line ${value}`}
+              title="Tab to open this line on GitHub."
+              onFocus={() => ask.onFocus(at.key)}
+            >
+              {value}
+            </button>
+          ) : (
+            <span className={`${classes} select-none`}>{value}</span>
+          );
+        };
         return (
           <Fragment key={i}>
             <div
               data-diff-line={l.kind}
               data-ask-side={at?.side}
               data-ask-number={at?.line}
-              className={`group/line grid min-w-full ${ask ? "grid-cols-[5ch_5ch_1.25rem_2ch_max-content]" : "grid-cols-[5ch_5ch_2ch_max-content]"} ${mine ? "min-h-6 items-center" : ""} ${kind.look}`}
+              className={`group/line grid min-w-full ${ask?.onAsk ? "grid-cols-[max-content_1.25rem_2ch_max-content]" : "grid-cols-[max-content_2ch_max-content]"} ${mine || github ? "min-h-6 items-center" : ""} ${kind.look}`}
             >
-              <span className="pr-1 text-right text-muted select-none">{l.old_line}</span>
-              <span className="pr-1 text-right text-muted select-none">{l.new_line}</span>
-              {ask &&
+              <span
+                className={`grid items-center ${ask?.githubLine ? "grid-cols-[18px_5ch_5ch]" : "grid-cols-[0_5ch_5ch]"}`}
+              >
+                {number(l.old_line, "base")}
+                {number(l.new_line, "head")}
+                {at && github && ask && (
+                  <LineGithub
+                    path={ask.path}
+                    line={at.line}
+                    link={github}
+                    tabbable={ask.tabKey === at.key}
+                    onFocus={() => ask.onFocus(at.key)}
+                  />
+                )}
+              </span>
+              {ask?.onAsk &&
                 (at ? (
                   <AskLineButton
                     line={at.line}
@@ -125,7 +161,7 @@ function Hunk({
                     tabbable={ask.tabKey === at.key}
                     onFocus={() => ask.onFocus(at.key)}
                     onAsk={(button) =>
-                      ask.onAsk(selectedTarget(button, ask.path, at.side, at.line, ASK_ROWS))
+                      ask.onAsk?.(selectedTarget(button, ask.path, at.side, at.line, ASK_ROWS))
                     }
                   />
                 ) : (
@@ -171,6 +207,7 @@ function Hunk({
 /** Classic diff of a range: hunks with old and new line numbers; removed and added lines named for screen readers. */
 export function ClassicDiff({
   diff,
+  githubLine,
   highlight,
   comments = [],
   onEditComment,
@@ -197,16 +234,21 @@ export function ClassicDiff({
   const fragments = useMemo(() => diff.hunks.map((h) => h.lines.map((l) => l.text)), [diff]);
   const tokens = useTokens(highlight, diff.path, fragments);
   const keys = diff.hunks.flatMap((h) => h.lines.flatMap((l) => askRef(l)?.key ?? []));
-  const ask: AskLines | undefined = onAskLine && {
-    tabKey: focusKey && keys.includes(focusKey) ? focusKey : (keys[0] ?? ""),
-    onFocus: setFocusKey,
-    onAsk: onAskLine,
-    path: diff.path,
-  };
+  const ask: AskLines | undefined =
+    onAskLine || githubLine
+      ? {
+          tabKey: focusKey && keys.includes(focusKey) ? focusKey : (keys[0] ?? ""),
+          onFocus: setFocusKey,
+          onAsk: onAskLine,
+          path: diff.path,
+          githubLine,
+        }
+      : undefined;
   return (
     <div
       role="region"
       aria-label={`Classic diff of ${diff.path}`}
+      data-code-path={diff.path}
       tabIndex={0}
       onKeyDown={moveLineFocus}
       className="min-w-0 max-w-full overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55]"

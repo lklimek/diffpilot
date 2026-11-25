@@ -71,7 +71,14 @@ import { flagComment } from "../../components/comment/prefill";
 import { useCommentDrafts, useUnresolvedPosts } from "../tour/drafts";
 import { InspectorPane, type CommentLineState, type FilesInspector } from "../tour/InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "../tour/layout";
-import { checksHref, isTyping, pendingCountOf, transient, useNoPageScroll } from "../tour/review";
+import {
+  checksHref,
+  isTyping,
+  openGithubLine,
+  pendingCountOf,
+  transient,
+  useNoPageScroll,
+} from "../tour/review";
 import { FlowsMenu } from "../tour/FlowsMenu";
 import { Workspace } from "../tour/Workspace";
 import { useAskChat, useAskPlace, type AnswerDraft } from "../review/askChat";
@@ -558,6 +565,17 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
         case "toggle_old_code":
           if (!file.not_rendered) setOldCode((s) => !s);
           return;
+        case "github_line":
+          event.preventDefault();
+          return openGithubLine(
+            mainRef.current,
+            lines
+              ? {
+                  side: lines.side,
+                  line: subject.kind === "lines" ? lines.to : lines.from,
+                }
+              : undefined,
+          );
         case "comment":
           event.preventDefault();
           return commentOnCurrentLine();
@@ -592,6 +610,8 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
   const ctx: CodeContext = {
     hideContextChanges,
     analysisId,
+    pr: tour.analysis.pr,
+    files: files.files,
     threads: tour.threads,
     comments: pending.data?.comments ?? [],
     activeLine: commentLine?.target ?? null,
@@ -660,6 +680,8 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
       query={{ path: pathOn(file, lines.side), side: lines.side, from: lines.from, to: lines.to }}
       comments={{
         comments: pending.data?.comments ?? [],
+        pr: tour.analysis.pr,
+        files: files.files,
         onEditComment: comments.edit,
         onDeleteComment: comments.remove,
       }}
@@ -936,6 +958,7 @@ function FilesView({ analysisId, tour, files, ticked, ticksUnread, login }: File
       </a>
       <ReviewTopBar
         pr={tour.analysis.pr}
+        currentPath={file.path}
         ci={tour.pr_context.facts.ci}
         checksHref={checksHref(tour.analysis.pr)}
         language={tour.analysis.language}

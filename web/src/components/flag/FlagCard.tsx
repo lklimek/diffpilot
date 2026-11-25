@@ -82,7 +82,7 @@ export function FlagCard({
   const listId = useId();
   const [expanded, setExpanded] = useState(false);
   const [list, overflow] = useOverflow<HTMLOListElement>(!expanded);
-  const title = <CodeText text={annotation.text ?? ""} />;
+  const title = <CodeText text={annotation.text ?? ""} linkPaths={!onOpen} />;
   return (
     <li
       data-annotation-id={annotation.id}

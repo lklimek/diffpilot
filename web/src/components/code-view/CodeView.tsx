@@ -33,6 +33,7 @@ import { foldRuns, type Piece } from "./fold";
 import { buildSegments, type Segment, type Row } from "./rows";
 import { CodeText, useTokens } from "./tokens";
 import { hiddenLines } from "./visibility";
+import { LineGithub, type LineGithubLink } from "./LineGithub";
 
 /** A displayed line: its side and number on that side. */
 export interface LineRef {
@@ -47,6 +48,13 @@ export interface CodeViewProps {
   hideContextChanges?: boolean;
   /** Reveal this line when this range opens, without stealing keyboard focus. */
   revealLine?: number;
+  githubLine?: LineGithubLink;
+  /** Client-loaded context rendered in the same grid as the step's lines. */
+  before?: readonly { lines: LinesResponse; kind: "expanded" | "leading" }[];
+  after?: readonly { lines: LinesResponse; kind: "expanded" | "leading" }[];
+  beforeControl?: ReactNode;
+  afterControl?: ReactNode;
+  leadingControl?: ReactNode;
   /** Scroll to this line and highlight it briefly (an evidence link jumped here); never hidden. */
   flashLine?: number;
   /** LLM annotations on these lines; only their ranges get the LLM bar. */
@@ -108,6 +116,7 @@ export interface CodeViewProps {
 }
 
 const BANDS = REMARK_LOOK;
+const NO_CONTEXT: NonNullable<CodeViewProps["before"]> = [];
 
 // Every segment reserves the same 5 px left bar column, so line numbers and code never shift.
 const SEGMENT = "border-l-5 min-w-full w-max";
@@ -153,6 +162,9 @@ interface LineContext {
   onDeleteComment?: (commentId: string) => Promise<void>;
   activeKey: string | null;
   tabKey: string | null;
+  touchKey: string | null;
+  onTouchLine: (key: string) => void;
+  githubLine?: LineGithubLink;
   onLineAction?: (target: CommentTarget, how: { extend: boolean }) => void;
   onAskLine?: (target: CommentTarget) => void;
   onFocusLine: (key: string) => void;
@@ -182,15 +194,17 @@ interface LineProps {
   tokens: Token[] | undefined;
   row?: Row;
   removed?: boolean;
+  context?: "expanded" | "leading";
   /** The LLM remarks starting on this line: one marker each. */
   remarks?: readonly Annotation[];
 }
 
-function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: LineProps) {
+function Line({ ctx, side, line, text, tokens, row, removed = false, remarks, context }: LineProps) {
   const key = keyOf({ side, line });
   const commenting = ctx.activeKey === key;
-  const changed = row?.changed ?? false;
+  const changed = !context && (row?.changed ?? false);
   const removedLine = removed || (side === "base" && changed);
+  const github = ctx.githubLine?.(side, line, changed || removed);
   // The classic diff's colours: green added, red removed. A moved line is added code there, so it gets the
   // same fill; its double bar says it moved.
   const background = commenting
@@ -199,14 +213,16 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
       ? CHANGE_LOOK.removed.fill
       : changed
         ? CHANGE_LOOK.added.fill
-        : "";
+        : context
+          ? "bg-surface-2"
+          : "";
   const selecting = ctx.selection !== undefined;
   const label = `${selecting ? "Select" : "Comment on"} ${removedLine ? "removed line" : "line"} ${line}`;
   const mine = ctx.comments.get(key);
   const open = mine !== undefined && ctx.isOpen(key);
   const threads = ctx.threads.get(key);
   // A row with a marker button grows to the button's 24 px target.
-  const tall = Boolean(remarks?.length || threads || mine);
+  const tall = Boolean(github || remarks?.length || threads || mine);
   const selected = ctx.selection?.side === side && ctx.selection.from <= line && line <= ctx.selection.to;
   const hunk = ctx.hunkOf?.(side, line) ?? null;
   const hunkSelected = hunk !== null && hunk === ctx.selectedHunk;
@@ -224,12 +240,52 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
     selected && ctx.selection!.to === line ? `inset 0 -2px 0 ${accent}` : "",
   ].filter(Boolean);
   const target: CommentTarget = { path: ctx.path, side, start_line: null, line };
+  const number =
+    ctx.onLineAction || github ? (
+      <button
+        type="button"
+        data-line-action
+        aria-label={ctx.onLineAction ? label : `Line ${line}`}
+        aria-pressed={selecting ? selected : undefined}
+        title={
+          selecting
+            ? `${label}: Shift+click or drag extends; a comment goes on the last selected line`
+            : label
+        }
+        tabIndex={ctx.tabKey === key ? 0 : -1}
+        onFocus={() => ctx.onFocusLine(key)}
+        onPointerDown={(event) => {
+          if (event.pointerType === "touch") ctx.onTouchLine(key);
+          if (!selecting) return;
+          ctx.startDrag();
+          ctx.onLineAction?.(target, { extend: event.shiftKey });
+        }}
+        onPointerOver={
+          selecting
+            ? (event) => {
+                if (event.buttons === 1 && ctx.dragging) ctx.onLineAction?.(target, { extend: true });
+              }
+            : undefined
+        }
+        onClick={(event: MouseEvent) => {
+          event.stopPropagation();
+          ctx.onLineAction?.(target, { extend: event.shiftKey });
+        }}
+        className={`${github ? "col-start-2 pl-1.5" : "sticky left-0"} row-start-1 cursor-pointer border-0 bg-transparent p-0 pr-2.5 text-right font-[inherit] hover:text-accent hover:underline ${selected ? "font-bold text-accent" : "text-muted"}`}
+      >
+        {line}
+      </button>
+    ) : (
+      <span className="sticky left-0 pr-2.5 text-right text-muted select-none">{line}</span>
+    );
   return (
     <>
       <div
         data-line={line}
         data-side={side}
         data-changed={changed || undefined}
+        data-context={context}
+        data-touch-line={ctx.touchKey === key || undefined}
         data-moved={row?.moved || undefined}
         data-removed={removed || undefined}
         data-commenting={commenting || undefined}
@@ -253,44 +309,19 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
           hunk !== null && !hunkSelected ? "cursor-pointer" : ""
         }`}
       >
-        {ctx.onLineAction ? (
-          <button
-            type="button"
-            data-line-action
-            aria-label={label}
-            aria-pressed={selecting ? selected : undefined}
-            title={
-              selecting
-                ? `${label}: Shift+click or drag extends; a comment goes on the last selected line`
-                : label
-            }
-            tabIndex={ctx.tabKey === key ? 0 : -1}
-            onFocus={() => ctx.onFocusLine(key)}
-            onPointerDown={
-              selecting
-                ? (event) => {
-                    ctx.startDrag();
-                    ctx.onLineAction?.(target, { extend: event.shiftKey });
-                  }
-                : undefined
-            }
-            onPointerOver={
-              selecting
-                ? (event) => {
-                    if (event.buttons === 1 && ctx.dragging) ctx.onLineAction?.(target, { extend: true });
-                  }
-                : undefined
-            }
-            onClick={(event: MouseEvent) => {
-              event.stopPropagation();
-              ctx.onLineAction?.(target, { extend: event.shiftKey });
-            }}
-            className={`sticky left-0 cursor-pointer border-0 bg-transparent p-0 pr-2.5 text-right font-[inherit] hover:text-accent hover:underline ${selected ? "font-bold text-accent" : "text-muted"}`}
-          >
-            {line}
-          </button>
+        {github ? (
+          <span className="sticky left-0 grid grid-cols-[18px_minmax(0,1fr)] items-center">
+            {number}
+            <LineGithub
+              path={ctx.path}
+              line={line}
+              link={github}
+              tabbable={ctx.tabKey === key}
+              onFocus={() => ctx.onFocusLine(key)}
+            />
+          </span>
         ) : (
-          <span className="sticky left-0 pr-2.5 text-right text-muted select-none">{line}</span>
+          number
         )}
         <span className="flex items-center gap-1 select-none">
           <span className={`h-[1.35em] w-1 ${row?.moved ? "border-l-4 border-double border-mv-bd" : ""}`} />
@@ -348,7 +379,7 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
               onToggle={() => ctx.toggle(key)}
             />
           )}
-          {ctx.onAskLine && (
+          {ctx.onAskLine && !context && (
             <AskLineButton
               line={line}
               removed={removedLine}
@@ -687,6 +718,12 @@ export function CodeView({
   lines,
   hideContextChanges = true,
   revealLine,
+  githubLine,
+  before = NO_CONTEXT,
+  after = NO_CONTEXT,
+  beforeControl,
+  afterControl,
+  leadingControl,
   flashLine,
   annotations = [],
   band = null,
@@ -717,6 +754,7 @@ export function CodeView({
   askLineHint,
 }: CodeViewProps) {
   const [dragging, setDragging] = useState(false);
+  const [touchKey, setTouchKey] = useState<string | null>(null);
   useEffect(() => {
     if (!dragging) return;
     const stop = () => setDragging(false);
@@ -745,7 +783,15 @@ export function CodeView({
   // Lines (and `file`) the reader opened or closed; the rest follow `revealComment`.
   const [toggled, setToggled] = useState<ReadonlyMap<string, boolean>>(new Map());
   // One highlight call (one budget) for the range and its removed blocks, the range first.
-  const fragments = useMemo(() => [lines.lines, ...lines.deleted.map((d) => d.lines)], [lines]);
+  const fragments = useMemo(
+    () => [
+      lines.lines,
+      ...lines.deleted.map((d) => d.lines),
+      ...before.map((range) => range.lines.lines),
+      ...after.map((range) => range.lines.lines),
+    ],
+    [lines, before, after],
+  );
   const fragmentTokens = useTokens(highlight, lines.path, fragments);
   const tokens = fragmentTokens?.[0];
   const [focusKey, setFocusKey] = useState<string | null>(null);
@@ -819,6 +865,12 @@ export function CodeView({
       .filter((ref) => !isHidden(ref))
       .map(keyOf),
   );
+  const contextKeys = (ranges: typeof before) =>
+    ranges.flatMap(({ lines: range }) =>
+      range.lines.map((_, index) => keyOf({ side: lines.side, line: range.from + index })),
+    );
+  keys.unshift(...contextKeys(before));
+  keys.push(...contextKeys(after));
   const byLine = commentsByLine(comments, lines.path);
   // File comments without a displayed line are listed at the top of the file's code.
   const fileComments = comments.filter(
@@ -845,7 +897,13 @@ export function CodeView({
     tabKey: focusKey && keys.includes(focusKey) ? focusKey : (keys[0] ?? null),
     onLineAction,
     onAskLine,
-    onFocusLine: setFocusKey,
+    onFocusLine: (key) => {
+      setFocusKey(key);
+      setTouchKey((old) => (old === key ? old : null));
+    },
+    touchKey,
+    onTouchLine: setTouchKey,
+    githubLine,
     onShowInInspector,
     unrated: band === null,
     otherThreadStep,
@@ -900,7 +958,10 @@ export function CodeView({
     ),
   );
 
-  const maxLine = Math.max(lines.to, ...lines.deleted.map((d) => d.base_start + d.lines.length));
+  const maxLine = Math.max(
+    beforeControl || afterControl || leadingControl ? lines.total_lines : lines.to,
+    ...lines.deleted.map((d) => d.base_start + d.lines.length),
+  );
   const base = lines.side === "base";
   const unchangedContext = kind === "context" && lines.changed.length === 0;
   const label = `${lines.path}, lines ${lines.from} to ${lines.to}${base ? ", removed code at the base commit" : ""}`;
@@ -915,6 +976,24 @@ export function CodeView({
       row={row}
       remarks={remarksAt.get(row.line)}
     />
+  );
+  const renderContext = ({ lines: range, kind }: (typeof before)[number], index: number) => (
+    <div
+      key={range.from}
+      className={`${SEGMENT} ${kind === "leading" ? "border-border" : "border-transparent"}`}
+    >
+      {range.lines.map((text, i) => (
+        <Line
+          key={i}
+          ctx={ctx}
+          side={lines.side}
+          line={range.from + i}
+          text={text}
+          tokens={fragmentTokens?.[lines.deleted.length + 1 + index]?.[i]}
+          context={kind}
+        />
+      ))}
+    </div>
   );
   // Lines in order, a fold row where rule-covered lines are hidden; a shown fold keeps its Hide row.
   const folded = <T extends { line: number; text: string }>(
@@ -984,7 +1063,7 @@ export function CodeView({
       onKeyDown={moveLineFocus}
       style={
         {
-          "--ln": `${String(maxLine).length + 2}ch`,
+          "--ln": `calc(${String(maxLine).length + 2}ch + ${githubLine ? 18 : 0}px)`,
           "--gutter": `${Math.max(50, 30 + 28 * buttons + (onAskLine ? 22 : 0))}px`,
         } as CSSProperties
       }
@@ -1029,6 +1108,10 @@ export function CodeView({
         </p>
       )}
       {lines.lines.length === 0 && <p className={`${STRIP} m-0 text-muted`}>No lines in this range.</p>}
+      {beforeControl}
+      {before.map((range, i) => range.kind === "expanded" && renderContext(range, i))}
+      {leadingControl}
+      {before.map((range, i) => range.kind === "leading" && renderContext(range, i))}
       {items.map((item) => {
         if (item.kind === "run") {
           const first = firstOf(item);
@@ -1054,6 +1137,8 @@ export function CodeView({
           </div>
         );
       })}
+      {after.map((range, i) => renderContext(range, before.length + i))}
+      {afterControl}
     </div>
   );
 }

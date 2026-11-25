@@ -180,22 +180,19 @@ export function PrContextBlock({
               {llm.fit_questions.map((q) => (
                 <li key={q.question} className={CARD}>
                   <span className="block text-[11px] text-muted">{FIT_TOPIC[q.topic]}</span>
-                  {q.evidence[0] && onEvidence ? (
+                  <CodeText text={q.question} />{" "}
+                  {q.evidence[0] && onEvidence && (
                     <Tooltip tip="Open the PR source lines this fit question concerns.">
                       <button
                         type="button"
                         className="cursor-pointer text-left text-accent underline"
                         onClick={() => onEvidence(q.evidence[0]!)}
                       >
-                        <CodeText text={q.question} />{" "}
-                        <span className="text-xs">
+                        <span className="inline-block min-h-6 text-xs">
                           {q.evidence[0].file}:{q.evidence[0].line}
                         </span>
                       </button>
                     </Tooltip>
-                  ) : (
-                    // TODO: citation-free fit questions need structured evidence before linking to code.
-                    <CodeText text={q.question} />
                   )}
                   {q.evidence.length > 0 && (
                     <div className="text-muted">
