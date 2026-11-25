@@ -55,9 +55,8 @@ export function isOlderStatus(next: RefreshStatus, kept: RefreshStatus | null | 
 }
 
 /**
- * How often the summary is read again while the tab is visible: the read keeps My work open on the server, which
- * checks the listed pull requests and scans again while it is (plan §M), and it keeps plug-in statements current
- * (ADR-022).
+ * How often the summary is read again while the tab is visible: it picks up changes the server applied from GitHub
+ * events and keeps plug-in statements current (ADR-022). Reading it starts no scan.
  */
 export const SUMMARY_REFETCH_MS = 60_000;
 
