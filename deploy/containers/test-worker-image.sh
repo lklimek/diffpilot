@@ -43,11 +43,10 @@ docker run -d --name "$name" --network none --init --read-only --cap-drop ALL \
 docker exec "$name" /bin/sh -ec 'test ! -e /run/dp/app.sock'
 docker exec -e DP_MEMCAN_URL=http://memcan.invalid/mcp -e DP_MEMCAN_TOKEN=fake-A \
     "$name" python3 /usr/local/bin/worker-config.py cs1
-for attempt in $(seq 1 100); do
-    if docker exec "$name" test -S /run/dp/app.sock; then break; fi
-    if [ "$attempt" = 100 ]; then docker logs "$name"; exit 1; fi
-    sleep 0.1
-done
+# The reset returns only once app-server accepts connections.
+if ! docker exec "$name" python3 -c 'import socket; socket.socket(socket.AF_UNIX).connect("/run/dp/app.sock")'; then
+    docker logs "$name"; exit 1
+fi
 docker exec "$name" /bin/sh -ec '
     test -z "${DP_MEMCAN_TOKEN:-}"
     mkdir -p "$CODEX_HOME/sessions" "$CODEX_HOME/skills" "$HOME/.agents/skills"

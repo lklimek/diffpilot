@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import sys
 import time
 
@@ -79,3 +80,15 @@ remove(codex / "config.toml")
 (codex / "config.toml").symlink_to(runtime / "config.toml")
 remove(runtime / "job-ready")
 (runtime / "job-ready").touch(mode=0o600)
+
+# The launcher attaches right after this exec; return only once app-server accepts connections.
+deadline = time.monotonic() + float(os.environ.get("DP_APP_READY_SECS", "9"))
+while True:
+    with socket.socket(socket.AF_UNIX) as probe:
+        try:
+            probe.connect(str(runtime / "app.sock"))
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                sys.exit("app-server did not accept connections on its control socket")
+    time.sleep(0.05)

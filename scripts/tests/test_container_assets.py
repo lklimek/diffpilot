@@ -2,8 +2,11 @@
 
 import json
 from pathlib import Path
+import socket
 import subprocess
 import tempfile
+import threading
+import time
 import tomllib
 import unittest
 
@@ -11,10 +14,72 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class WorkerAssets(unittest.TestCase):
+    def app_server(self, root):
+        """Stand in for app-server: a listening control socket in the runtime dir."""
+        (root / "runtime").mkdir(parents=True, exist_ok=True)
+        server = socket.socket(socket.AF_UNIX)
+        self.addCleanup(server.close)
+        server.bind(str(root / "runtime/app.sock"))
+        server.listen()
+
+    def test_job_reset_returns_only_after_app_server_listens(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            env = {
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(root / "home"),
+                "CODEX_HOME": str(root / "codex"),
+                "DP_RUNTIME_DIR": str(root / "runtime"),
+                "DP_APP_READY_SECS": "3",
+            }
+
+            def start_after_reset():
+                # Like dp-worker-entry: app-server starts only after job-ready.
+                while not (root / "runtime/job-ready").is_file():
+                    time.sleep(0.01)
+                time.sleep(0.3)
+                self.app_server(root)
+
+            threading.Thread(target=start_after_reset, daemon=True).start()
+            started = time.monotonic()
+            subprocess.run(
+                ["python3", ROOT / "deploy/worker/worker-config.py", "cs1"],
+                env=env,
+                check=True,
+                timeout=10,
+            )
+            self.assertGreaterEqual(time.monotonic() - started, 0.3)
+            self.assertTrue((root / "runtime/job-ready").is_file())
+
+    def test_job_reset_fails_when_app_server_never_listens(self):
+        for stale in (False, True):
+            with self.subTest(stale=stale), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                if stale:
+                    (root / "runtime").mkdir()
+                    with socket.socket(socket.AF_UNIX) as dead:
+                        dead.bind(str(root / "runtime/app.sock"))
+                result = subprocess.run(
+                    ["python3", ROOT / "deploy/worker/worker-config.py", "cs1"],
+                    env={
+                        "PATH": "/usr/bin:/bin",
+                        "HOME": str(root / "home"),
+                        "CODEX_HOME": str(root / "codex"),
+                        "DP_RUNTIME_DIR": str(root / "runtime"),
+                        "DP_APP_READY_SECS": "0.3",
+                    },
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("app-server", result.stderr)
+
     def test_entry_replaces_stale_config_and_pins_critical_flags(self):
         for shape in ("cs1", "cs2"):
             with self.subTest(shape=shape), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
+                self.app_server(root)
                 codex = root / "work/codex"
                 home = root / "work/home"
                 codex.mkdir(parents=True)
@@ -102,6 +167,7 @@ class WorkerAssets(unittest.TestCase):
     def test_job_reset_rotates_runtime_credentials_and_does_not_follow_links(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            self.app_server(root)
             codex = root / "work/codex"
             home = root / "work/home"
             codex.mkdir(parents=True)
@@ -163,6 +229,7 @@ class WorkerAssets(unittest.TestCase):
     def test_warm_reset_preserves_codex_runtime_and_empties_home(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            self.app_server(root)
             codex = root / "work/codex"
             home = root / "work/home"
             home.mkdir(parents=True)
