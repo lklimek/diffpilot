@@ -194,9 +194,10 @@ pub(crate) enum Tick {
 /// The scheduler loop: recovers interrupted runs, then evaluates, sleeps until the next start (at most [`TICK`]),
 /// and stops with the server. A failed or panicking evaluation is logged and retried after [`TICK`]. Watched pull
 /// requests (ADR-023 Watch) are evaluated in the same loop, at most once per [`TICK`].
-async fn run(state: AppState) {
+pub(super) async fn run(state: AppState) {
     let mut stopping = state.stopping.subscribe();
     tracing::info!("dashboard scheduler started");
+    tokio::spawn(super::installations::run(state.clone(), TICK));
     if let Some(Err(error)) = guarded(recover(state.clone())).await {
         tracing::warn!(%error, "scheduled runs interrupted by the restart could not be marked failed");
     }

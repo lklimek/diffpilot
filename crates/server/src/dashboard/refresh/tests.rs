@@ -1969,7 +1969,6 @@ async fn scan_over_the_time_limit_fails_as_timed_out() {
     assert_eq!(w.summary(ALICE).await.snapshot, None);
 }
 
-mod fresh;
 mod judged;
 mod plugin;
 mod snooze;
@@ -2580,11 +2579,4 @@ async fn unsearchable_mentions_do_not_spend_the_budget_on_unrelated_open_prs() {
 
 mod waiting_cases;
 
-#[tokio::test]
-async fn dashboard_summary_omits_live_counts_before_webhook_projection() {
-    let w = world().await;
-    let answer = w.send("GET", "/api/v1/dashboard", ALICE, &[]).await;
-    assert_eq!(answer.status, StatusCode::OK);
-    assert!(answer.body.get("live_repositories").is_none());
-    assert!(answer.body.get("not_live_repositories").is_none());
-}
+mod live;

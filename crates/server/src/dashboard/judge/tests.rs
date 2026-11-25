@@ -106,7 +106,6 @@ fn pr(number: u32, title: &str) -> StoredPr {
         ci_pending: Vec::new(),
         ci_ignored: Vec::new(),
         linked_issues: Vec::new(),
-        mark: None,
     }
 }
 
@@ -176,6 +175,7 @@ fn snapshot(prs: Vec<StoredPr>, issues: Vec<StoredIssue>, todos: Vec<StoredTodo>
         },
         merge_states_recorded: true,
         prs_reread_at: None,
+        last_event_at: None,
         todos_hidden: false,
         snoozes: Vec::new(),
     }

@@ -1,7 +1,7 @@
 //! The ranked items and the snapshot facts of R1/R1b, computed from a stored snapshot and the judgements present
 //! when read. Tags and facts come from scan facts only; LLM text only from a judgement.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use contracts::api::dashboard::{
     AwaitingItem, AwaitingReason, EXCLUDED_ITEMS_LIMIT, ExcludedItem, ExclusionCount,
@@ -36,6 +36,8 @@ pub struct ViewItem {
 pub struct View {
     /// Ranked items.
     pub items: Vec<ViewItem>,
+    /// Repository counts for the current snapshot (live, not live).
+    pub(crate) repository_counts: (u32, u32),
     /// Counts by kind and tier.
     pub item_counts: ItemCounts,
     /// Items left out of the ranking: counts per rule and the capped list.
@@ -49,6 +51,29 @@ pub struct View {
 }
 
 impl View {
+    /// Applies webhook coverage to GitHub items and counts distinct repositories in the snapshot.
+    pub(crate) fn apply_installations(&mut self, snapshot: &Snapshot, live: &HashSet<RepoRef>) {
+        let key = crate::dashboard::installations::key;
+        let repositories: HashSet<_> = snapshot
+            .pull_requests
+            .iter()
+            .map(|pr| key(&pr.facts.repo))
+            .chain(snapshot.issues.iter().map(|issue| key(&issue.facts.repo)))
+            .collect();
+        let live_count = repositories.intersection(live).count();
+        self.repository_counts = (
+            u32::try_from(live_count).unwrap_or(u32::MAX),
+            u32::try_from(repositories.len() - live_count).unwrap_or(u32::MAX),
+        );
+        for item in &mut self.items {
+            item.item.live = item
+                .item
+                .repo
+                .as_ref()
+                .map(|repo| live.contains(&key(repo)));
+        }
+    }
+
     /// `SnapshotMeta` of the snapshot held by `record`; the excluded items are listed only when `list_excluded`.
     pub fn meta(
         &self,
@@ -196,6 +221,7 @@ pub fn build(
     }
     View {
         items,
+        repository_counts: (0, 0),
         item_counts: counts,
         exclusions: exclusions(ranking.excluded, &sources, &snapshot.snoozes, memcan_ui),
         awaiting,

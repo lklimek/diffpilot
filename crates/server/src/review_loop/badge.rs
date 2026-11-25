@@ -393,7 +393,6 @@ mod tests {
             ci_pending: vec![],
             ci_ignored: vec!["PR Hygiene (FAILURE)".into()],
             linked_issues: vec![],
-            mark: None,
         }
     }
 

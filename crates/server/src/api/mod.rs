@@ -3,12 +3,12 @@
 use axum::http::HeaderValue;
 use axum::middleware::{from_fn_with_state, map_response};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::post;
 use axum::{Json, Router};
 use contracts::api::error::{ApiError, ApiErrorCode};
-use contracts::routes::{GET_REPOSITORY_INSTALLATIONS, REJUDGE_DASHBOARD_ITEM};
+use contracts::routes::REJUDGE_DASHBOARD_ITEM;
 
-use crate::auth::{Session, SessionCsrf, TokenGate, access_tokens};
+use crate::auth::{SessionCsrf, TokenGate, access_tokens};
 use crate::frontend::SECURITY_HEADERS;
 use crate::state::AppState;
 
@@ -109,11 +109,8 @@ pub fn runner_router(state: AppState) -> Router {
 pub use crate::webhooks::router as webhook_router;
 
 fn reserved_routes() -> Router<AppState> {
-    let read = get(|_: Session| async { not_implemented() });
     let write = post(|_: SessionCsrf| async { not_implemented() });
-    Router::new()
-        .route(GET_REPOSITORY_INSTALLATIONS.path, read)
-        .route(REJUDGE_DASHBOARD_ITEM.path, write)
+    Router::new().route(REJUDGE_DASHBOARD_ITEM.path, write)
 }
 
 fn not_implemented() -> Response {
@@ -354,39 +351,30 @@ mod tests {
         seed_analysis(&state.db).await.expect("seed");
         let cookie = session_cookie(&state, DEFAULT_TENANT).await;
         let app = router(state);
-        for (method, path) in [
-            ("GET", "/api/v1/settings/repository-installations"),
-            ("POST", "/api/v1/dashboard/items/acme~repo~pr~1/rejudge"),
-        ] {
-            let request = |cookie: Option<&str>, csrf: Option<&str>| {
-                let mut request = Request::builder().method(method).uri(path);
-                if let Some(cookie) = cookie {
-                    request = request.header("cookie", cookie);
-                }
-                if let Some(csrf) = csrf {
-                    request = request.header("x-csrf-token", csrf);
-                }
-                request.body(Body::empty()).expect("request")
-            };
-            assert_eq!(
-                status_of(app.clone(), request(None, None)).await,
-                StatusCode::UNAUTHORIZED,
-                "{path}"
-            );
-            if method == "POST" {
-                assert_eq!(
-                    status_of(app.clone(), request(Some(&cookie), None)).await,
-                    StatusCode::FORBIDDEN,
-                    "{path}"
-                );
+        let path = "/api/v1/dashboard/items/acme~repo~pr~1/rejudge";
+        let request = |cookie: Option<&str>, csrf: Option<&str>| {
+            let mut request = Request::post(path);
+            if let Some(cookie) = cookie {
+                request = request.header("cookie", cookie);
             }
-            let response = app
-                .clone()
-                .oneshot(request(Some(&cookie), Some("csrf")))
-                .await
-                .expect("infallible");
-            assert_not_implemented(response).await;
-        }
+            if let Some(csrf) = csrf {
+                request = request.header("x-csrf-token", csrf);
+            }
+            request.body(Body::empty()).expect("request")
+        };
+        assert_eq!(
+            status_of(app.clone(), request(None, None)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status_of(app.clone(), request(Some(&cookie), None)).await,
+            StatusCode::FORBIDDEN
+        );
+        let response = app
+            .oneshot(request(Some(&cookie), Some("csrf")))
+            .await
+            .expect("infallible");
+        assert_not_implemented(response).await;
     }
 
     /// Headers every API response carries (threat model T7b; JSON and event streams load nothing).

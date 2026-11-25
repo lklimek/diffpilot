@@ -16,8 +16,8 @@ use jiff::civil::Date;
 use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 
-use super::fresh::Readers;
 use super::judge::JudgeRanker;
+use super::refresh::Scope;
 #[cfg(test)]
 use super::refresh::rank::NoopRanker;
 use super::refresh::rank::Ranker;
@@ -82,8 +82,70 @@ struct Inner {
     given_up: Mutex<HashSet<(String, Date)>>,
     // None is the batch itself. Pull-request ids share one database across users.
     tally_warnings: Mutex<HashMap<Option<i64>, tokio::time::Instant>>,
-    /// Who has My work open, and their fact checks (plan §M).
     readers: Readers,
+}
+
+type UserKey = (String, String);
+
+fn key(scope: &Scope) -> UserKey {
+    (scope.tenant_id.clone(), scope.user_id.clone())
+}
+
+#[derive(Debug, Default)]
+struct ReaderState {
+    limited_until: HashMap<UserKey, Timestamp>,
+    writers: HashMap<UserKey, Arc<tokio::sync::Mutex<()>>>,
+}
+
+/// Serializes targeted snapshot reads and remembers their GitHub rate limits.
+#[derive(Debug, Default)]
+pub(crate) struct Readers {
+    state: Mutex<ReaderState>,
+}
+
+impl Readers {
+    fn state(&self) -> MutexGuard<'_, ReaderState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Serialises targeted re-reads, including their snapshot read and network calls.
+    pub(crate) async fn writer(&self, scope: &Scope) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self.state().writers.entry(key(scope)).or_default().clone();
+        lock.lock_owned().await
+    }
+
+    /// The user's GitHub backoff, shared by scans and targeted re-reads.
+    pub(crate) fn limited_until(&self, scope: &Scope, now: Timestamp) -> Option<Timestamp> {
+        self.state()
+            .limited_until
+            .get(&key(scope))
+            .copied()
+            .filter(|at| *at > now)
+    }
+
+    /// Remembers a rate limit found outside a full scan; unknown retry times wait five minutes.
+    pub(crate) fn remember_limit(
+        &self,
+        scope: &Scope,
+        error: &crate::github::work::WorkError,
+        now: Timestamp,
+    ) {
+        use crate::github::work::WorkError;
+        let retry = match error {
+            WorkError::PrimaryRateLimit { reset } => *reset,
+            WorkError::SecondaryRateLimit { retry_after } => retry_after
+                .and_then(|wait| SignedDuration::try_from(wait).ok())
+                .and_then(|wait| now.checked_add(wait)),
+            _ => return,
+        };
+        let retry = retry.unwrap_or(now + SignedDuration::from_mins(5));
+        let mut state = self.state();
+        state
+            .limited_until
+            .entry(key(scope))
+            .and_modify(|at| *at = (*at).max(retry))
+            .or_insert(retry);
+    }
 }
 
 /// Announces the end of a refresh's task, also when it is aborted (dropped at an await).
@@ -175,8 +237,8 @@ impl DashboardHub {
         self.inner.search_interval
     }
 
-    /// Who has My work open (plan §M).
-    pub fn readers(&self) -> &Readers {
+    /// Coordinates targeted re-reads of the same snapshot.
+    pub(crate) fn readers(&self) -> &Readers {
         &self.inner.readers
     }
 

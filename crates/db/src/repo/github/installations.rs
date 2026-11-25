@@ -2,11 +2,12 @@
 
 use std::collections::HashSet;
 
+use contracts::common::RepoRef;
 use contracts::time::Timestamp;
 use sqlx::SqliteConnection;
 
 use super::{
-    INSTALLATION_CAP, InstallationUpdate,
+    INSTALLATION_CAP, InstallationUpdate, Repository,
     tracking::{self, Tracked},
 };
 use crate::error::DbError;
@@ -16,7 +17,7 @@ pub(super) const UPDATE_CAP: i64 = 500;
 
 pub(super) enum Prepared<'a> {
     Add(Vec<Tracked<'a>>),
-    Remove(Vec<i64>),
+    Remove(Vec<Repository>),
     Delete,
     Suspend(bool),
 }
@@ -35,21 +36,32 @@ pub(super) async fn prepare<'a>(
             Prepared::Add(tracked)
         }
         InstallationUpdate::Remove(repos) => {
-            let ids: Vec<_> = repos.iter().filter_map(|repo| repo.id).collect();
-            let matched = sqlx::query_scalar(
-                "SELECT repository_id FROM app_repositories
-                 WHERE installation_id = ?1 AND repository_id IN (SELECT value FROM json_each(?2))
-                 ORDER BY repository_id LIMIT ?3",
+            let matched: Vec<(String, String, Option<i64>)> = sqlx::query_as(
+                "SELECT ar.owner, ar.name, MIN(offered.value ->> '$.id')
+                 FROM app_repositories ar JOIN json_each(?2) offered
+                   ON ar.repository_id = offered.value ->> '$.id'
+                      OR (ar.repository_id IS NULL AND ar.owner = offered.value ->> '$.name.owner'
+                          AND ar.name = offered.value ->> '$.name.name')
+                 WHERE ar.installation_id = ?1
+                 GROUP BY ar.owner, ar.name ORDER BY ar.owner, ar.name LIMIT ?3",
             )
             .bind(installation)
-            .bind(serde_json::to_string(&ids)?)
+            .bind(serde_json::to_string(repos)?)
             .bind(UPDATE_CAP + 1)
             .fetch_all(conn)
             .await?;
             if matched.is_empty() {
                 return Ok(None);
             }
-            Prepared::Remove(matched)
+            Prepared::Remove(
+                matched
+                    .into_iter()
+                    .map(|(owner, name, id)| Repository {
+                        name: RepoRef { owner, name },
+                        id,
+                    })
+                    .collect(),
+            )
         }
         InstallationUpdate::Delete | InstallationUpdate::Suspend(_) => {
             if !known(conn, installation).await? {
@@ -107,11 +119,10 @@ pub(super) async fn apply(
             }
             let offered = serde_json::to_string(&repos)?;
             sqlx::query(
-                "DELETE FROM app_repositories WHERE repository_id IN (
-                   SELECT ar.repository_id FROM json_each(?1) offered JOIN app_repositories ar
-                     ON ar.owner = offered.value ->> '$.name.owner'
-                    AND ar.name = offered.value ->> '$.name.name'
-                   WHERE ar.repository_id != offered.value ->> '$.id'
+                "DELETE FROM app_repositories AS ar WHERE EXISTS (
+                   SELECT 1 FROM json_each(?1) offered
+                   WHERE ar.owner = offered.value ->> '$.name.owner' AND ar.name = offered.value ->> '$.name.name'
+                     AND ar.repository_id IS NOT offered.value ->> '$.id'
                  )",
             )
             .bind(&offered)
@@ -135,11 +146,21 @@ pub(super) async fn apply(
             ).bind(offered).bind(installation).bind(ts(now)).bind(INSTALLATION_CAP).execute(conn).await?;
             Ok(Some(capped || applied.rows_affected() < repos.len() as u64))
         }
-        Prepared::Remove(mut ids) => {
-            let capped = ids.len() as i64 > UPDATE_CAP;
-            ids.truncate(UPDATE_CAP as usize);
-            sqlx::query("DELETE FROM app_repositories WHERE installation_id = ? AND repository_id IN (SELECT value FROM json_each(?))")
-                .bind(installation).bind(serde_json::to_string(&ids)?).execute(conn).await?;
+        Prepared::Remove(mut repos) => {
+            let capped = repos.len() as i64 > UPDATE_CAP;
+            repos.truncate(UPDATE_CAP as usize);
+            sqlx::query(
+                "DELETE FROM app_repositories AS ar WHERE installation_id = ?1 AND EXISTS (
+                   SELECT 1 FROM json_each(?2) removed
+                   WHERE ar.repository_id = removed.value ->> '$.id'
+                      OR (ar.repository_id IS NULL AND ar.owner = removed.value ->> '$.name.owner'
+                          AND ar.name = removed.value ->> '$.name.name')
+                 )",
+            )
+            .bind(installation)
+            .bind(serde_json::to_string(&repos)?)
+            .execute(conn)
+            .await?;
             Ok(Some(capped))
         }
         Prepared::Delete => {

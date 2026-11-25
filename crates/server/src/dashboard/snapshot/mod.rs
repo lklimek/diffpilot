@@ -66,6 +66,9 @@ pub struct Snapshot {
     /// while none was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prs_reread_at: Option<Timestamp>,
+    /// Latest GitHub webhook event applied to this dashboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_event_at: Option<Timestamp>,
     /// TODO rows hidden because the current settings hide TODOs (read time only, never stored).
     #[serde(skip)]
     pub todos_hidden: bool,
@@ -99,41 +102,6 @@ pub struct StoredPr {
     /// Issues it closes (`closingIssuesReferences`, first 5); empty in a snapshot stored before they were kept.
     #[serde(default)]
     pub linked_issues: Vec<StoredLinkedIssue>,
-    /// Its change mark when read (plan §M); none in a snapshot stored before marks were kept (counts as changed).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mark: Option<PrMark>,
-}
-
-/// What a fact check compares to tell that a pull request changed on GitHub (plan §M): built alike from the scan's
-/// details (Q2) and the change probe (Q18). Comments and reviews move `updated_at`; CI, merge state and resolved
-/// threads do not, hence their own fields.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PrMark {
-    /// GitHub's `state` (`OPEN`, `CLOSED`, `MERGED`).
-    pub state: String,
-    /// `updatedAt`.
-    pub updated_at: Timestamp,
-    /// Head commit.
-    pub head: String,
-    /// `mergeable`.
-    pub mergeable: String,
-    /// `mergeStateStatus`.
-    pub merge_state: String,
-    /// `reviewDecision`.
-    pub review_decision: Option<String>,
-    /// Draft.
-    pub draft: bool,
-    /// Label names, sorted.
-    pub labels: Vec<String>,
-    /// The head commit's CI rollup state; none without checks.
-    pub ci: Option<String>,
-    /// Digest of CI context identities, states and recency (K12); absent in snapshots stored before it was kept.
-    #[serde(default)]
-    pub ci_contexts_digest: Option<String>,
-    /// Review threads not resolved (of the first 100).
-    pub unresolved_threads: u32,
-    /// Pending review requests.
-    pub review_requests: u32,
 }
 
 /// An issue a pull request closes. The scan reads no repository for it: it is shown under the pull request's.
