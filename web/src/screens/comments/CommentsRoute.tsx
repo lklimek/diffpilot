@@ -5,10 +5,11 @@ import {
 } from "../../api/assessment-settings";
 import { AssessmentControls } from "../../components/comments/AssessmentControls";
 import { AssessmentComparisonPanel } from "../../components/comments/AssessmentComparisonReport";
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Outlet, useLocation, useNavigate, useOutletContext, useParams } from "react-router";
 import { ApiError } from "../../api/client";
-import type { CommentItem, CommentsOverview, PrPage, PrRef } from "../../api/generated/types";
+import type { CommentItem, PrPage, PrRef } from "../../api/generated/types";
+import type { ReviewComment, ReviewCommentsOverview } from "../../api/provisional/comments";
 import { useMe } from "../../api/queries";
 import {
   useCommentItems,
@@ -16,18 +17,20 @@ import {
   usePrPage,
   usePrQuestions,
   useReadComments,
+  useWatchPr,
 } from "../../api/review-loop";
 import { useNow } from "../../app/now";
 import { usePrTabSubject } from "../../app/tabStatus";
 import { useUserEventNotifications } from "../../app/userEvents";
 import { Banner } from "../../components/banner/Banner";
-import { buttonClass } from "../../components/button/button";
+import { AssessmentBanner } from "../../components/comments/AssessmentBanner";
+import { OpenExternal } from "../../components/dashboard/common/OpenExternal";
+import { WatchControl } from "../../components/watch/WatchControl";
 import { CommentsTabs, type CommentsPage } from "../../components/comments/CommentsTabs";
 import { READ_FAILURE } from "../../components/comments/parts";
-import { autoPassText, PrStatusStrip } from "../../components/comments/PrHeader";
+import { StatusPopover } from "../../components/status/StatusPopover";
 import { clockText } from "../../components/format/time";
 import { StatusMessage } from "../../components/status/StatusMessage";
-import { Tooltip } from "../../components/tooltip/Tooltip";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { PrAskChatProvider } from "../review/askChat";
 import { commentsPath, prOfParams, prPath } from "../pr/paths";
@@ -35,8 +38,10 @@ import { commentsPath, prOfParams, prPath } from "../pr/paths";
 /** What every Comments page gets from the layout. */
 export interface CommentsContext {
   pr: PrRef;
-  overview: CommentsOverview;
-  items: CommentItem[];
+  overview: ReviewCommentsOverview;
+  items: ReviewComment[];
+  statusHost: RefObject<HTMLDivElement | null>;
+  focusQueueStatus: () => void;
   page: PrPage | undefined;
   /** Ask answers about an item (stored count, or the live chat's, whichever is higher). */
   askAnswers: (item: CommentItem) => number;
@@ -94,6 +99,16 @@ export function CommentsRoute() {
   const items = useCommentItems(pr);
   const page = usePrPage(pr);
   const read = useReadComments(pr);
+  const watch = useWatchPr(pr);
+  const statusHost = useRef<HTMLDivElement>(null);
+  const focusStatusOnMount = useRef(false);
+  const focusQueueStatus = () => {
+    if (!focusStatusOnMount.current) return;
+    const button = statusHost.current?.querySelector("button");
+    if (!button) return;
+    focusStatusOnMount.current = false;
+    button.focus();
+  };
   const assessmentSettings = useAssessmentSettings();
   const saveAssessment = useSetAssessmentSettings();
   const [showComparison, setShowComparison] = useState(false);
@@ -115,6 +130,7 @@ export function CommentsRoute() {
     [pr.repo.owner, pr.repo.name, pr.number],
   );
   const o = overview.data;
+  const watching = o?.watch === undefined ? page.data?.watch : o.watch;
   const analysis = o?.analysis ?? null;
   const base = analysis ? `/analyses/${encodeURIComponent(analysis)}` : null;
   const display = `${pr.repo.owner}/${pr.repo.name} #${pr.number}`;
@@ -131,6 +147,8 @@ export function CommentsRoute() {
       pr,
       overview: o,
       items: items.data,
+      statusHost,
+      focusQueueStatus,
       page: page.data,
       askAnswers: (item) => Math.max(item.ask_answers, count(item.id)),
       login,
@@ -176,8 +194,8 @@ export function CommentsRoute() {
             : undefined
         }
       />
-      <main id="main" className="w-full px-5 py-3.5">
-        <h1 className="sr-only">Comments of {display}</h1>
+      <main id="main" className="w-full px-3 py-3.5 sm:px-5">
+        {!o && <h1 className="sr-only">Comments of {display}</h1>}
         {o?.read.failure && (
           <div className="mb-3">
             <Banner
@@ -193,37 +211,37 @@ export function CommentsRoute() {
           </div>
         )}
         {o && (
-          <div className="mb-3 flex flex-wrap items-center gap-3">
-            <div className="min-w-0 flex-1">
-              <PrStatusStrip
-                badge={o.badge}
-                rounds={o.rounds.length}
-                notes={page.data?.plugin_notes ?? []}
-                now={now}
-                itemId={display}
-              />
-            </div>
-            {page.data?.watch && (
-              <span className="rounded-full border border-low-bd bg-low-bg px-2 text-xs font-semibold text-low">
-                Watching{page.data.watch.last_auto_pass ? ` · ${autoPassText(page.data.watch, now)}` : ""}
-              </span>
+          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2">
+            <h1 className="m-0 min-w-0 text-sm font-semibold wrap-anywhere">
+              {display} <span className="font-normal text-muted">{o.title}</span>{" "}
+              <OpenExternal href={o.url} label={`Open ${display} on GitHub`} />
+            </h1>
+            <StatusPopover
+              badge={o.badge}
+              rounds={o.rounds.length}
+              notes={page.data?.plugin_notes ?? []}
+              read={o.read}
+              ci={page.data?.ci}
+              now={now}
+              itemId={display}
+              busy={read.isPending}
+              onRead={() => read.mutate()}
+            />
+            {watching !== undefined && (
+              <div className="ml-auto">
+                <WatchControl
+                  variant="state"
+                  watch={watching}
+                  now={now}
+                  busy={watch.isPending}
+                  onChange={(on) => watch.mutate(on)}
+                />
+              </div>
             )}
-            <span className="text-xs text-muted">
-              {o.read.read_at ? `GitHub read ${clockText(o.read.read_at, now)}` : "GitHub not read yet"}
-            </span>
-            <Tooltip tip="Read the threads, reviews and comments from GitHub again.">
-              <button
-                type="button"
-                aria-disabled={read.isPending || undefined}
-                onClick={() => !read.isPending && read.mutate()}
-                className={buttonClass("plain", true)}
-              >
-                Read GitHub again
-              </button>
-            </Tooltip>
           </div>
         )}
         {read.isError && <StatusMessage kind="error">{errorText(read.error)}</StatusMessage>}
+        {watch.isError && <StatusMessage kind="error">{errorText(watch.error)}</StatusMessage>}
         {o && (
           <>
             {assessmentSettings.data && (
@@ -251,6 +269,19 @@ export function CommentsRoute() {
           </>
         )}
         {o && <CommentsTabs current={current} hrefs={hrefs} questions={o.counts.undecided} onNavigate={go} />}
+        {o && (
+          <AssessmentBanner
+            progress={o.assessment}
+            head={o.head}
+            prKey={display}
+            now={now}
+            onHide={() => {
+              focusStatusOnMount.current = true;
+              if (current === "questions") focusQueueStatus();
+              else go(hrefs.questions);
+            }}
+          />
+        )}
         <WithAsk pr={pr} items={items.data}>
           {body}
         </WithAsk>

@@ -375,7 +375,8 @@ describe("Decide the rest per recommendation (plan §2.4; queue.rs decide_rest)"
 describe("202 Accepted without a body (RC3 read again, RC6 assess again; review_loop.rs answers no body)", () => {
   it("Read GitHub again succeeds without an error", async () => {
     renderRoute(`${PR}/comments?item=C14`);
-    await userEvent.click(await screen.findByRole("button", { name: "Read GitHub again" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Questions waiting" }));
+    await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
     await act(async () => {});
     expect(screen.queryByText("Something went wrong. Try again.")).toBeNull();
   });

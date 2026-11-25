@@ -19,7 +19,6 @@ import { NotificationChannelCard } from "../settings/NotificationChannelCard";
 import { CarryOvers } from "./CarryOvers";
 import { DecisionLog } from "./DecisionLog";
 import { ProcessCommentsCard } from "./ProcessCommentsCard";
-import { WatchToggle } from "./PrHeader";
 import { RoundsTable } from "./RoundsTable";
 import { StateBadge } from "./StateBadge";
 import { WatchedList } from "./WatchedList";
@@ -80,21 +79,6 @@ describe("StateBadge (B1–B5)", () => {
   it("unknown inputs: no badge, the tip names what is missing", () => {
     render(<StateBadge view={{ badge: null, facts: [], missing: ["CI of the head not read"] }} />);
     expect(screen.getByText("No state")).toHaveAccessibleDescription("Not known: CI of the head not read.");
-  });
-});
-
-describe("WatchToggle (US19)", () => {
-  it("toggles with aria-pressed and says what watching costs", async () => {
-    const onChange = vi.fn();
-    const { rerender } = render(<WatchToggle watch={null} busy={false} onChange={onChange} now={NOW} />);
-    const button = screen.getByRole("button", { name: "Watch" });
-    expect(button).toHaveAttribute("aria-pressed", "false");
-    expect(button).toHaveAccessibleDescription(/LLM tokens/);
-    await userEvent.click(button);
-    expect(onChange).toHaveBeenCalledWith(true);
-    rerender(<WatchToggle watch={watches().watches[0]!} busy={false} onChange={onChange} now={NOW} />);
-    expect(screen.getByRole("button", { name: "Watching" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText(/Assessed automatically 09:12 · 5 questions/)).toBeVisible();
   });
 });
 

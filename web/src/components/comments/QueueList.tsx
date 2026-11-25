@@ -1,4 +1,11 @@
+import { useState, type RefObject } from "react";
+import type { ReviewComment } from "../../api/provisional/comments";
 import type { CommentItem, DecisionKind, QueueEntry } from "../../api/generated/types";
+import { MenuButton, MenuItem } from "../menu/MenuButton";
+import { clockText } from "../format/time";
+import { CommentTitle, BotHeading } from "./CommentTitle";
+import { GithubDecision, githubDecisionEvidence } from "./GithubDecision";
+import { commentStatus, needsYouQueue, QUEUE_STATUS, type QueueStatus } from "./queueStatus";
 import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { ProvenanceTag, provenanceNote, type ProvenanceSource } from "../section/ProvenanceTag";
@@ -27,7 +34,12 @@ export function itemsAfter(queue: QueueEntry[], entry: QueueEntry): number[] {
 
 interface QueueListProps {
   queue: QueueEntry[];
-  items: ReadonlyMap<number, CommentItem>;
+  items: ReadonlyMap<number, ReviewComment>;
+  status?: QueueStatus;
+  onStatus?: (status: QueueStatus) => void;
+  statusHost?: RefObject<HTMLDivElement | null>;
+  since?: string | null;
+  now?: Date;
   /** The entry shown. */
   current: string | null;
   onOpen: (entry: QueueEntry) => void;
@@ -64,22 +76,19 @@ const RECOMMENDATION_LOOK: Partial<Record<DecisionKind, string>> = {
 function Marks({ entry, first }: { entry: QueueEntry; first: CommentItem }) {
   const group = entry.item_nos.length > 1;
   const rec = first.assessment?.recommendation;
+  const urgent = !group && (first.gates.length > 0 || first.bot_severity === "Blocking");
   const marks = [
     entry.reason === "asked_again" && (
       <span
         key="reason"
         data-mark="reason"
-        className={`${MARK} rounded-full border-med-bd bg-med-bg text-med`}
+        className={`${MARK} rounded-full ${urgent ? "border-border text-muted" : "border-med-bd bg-med-bg text-med"}`}
       >
         asked again
       </span>
     ),
     entry.reason === "answered" && (
-      <span
-        key="reason"
-        data-mark="reason"
-        className={`${MARK} rounded-full border-accent bg-surface text-accent`}
-      >
+      <span key="reason" data-mark="reason" className={`${MARK} rounded-full border-border text-text`}>
         Ask answer
       </span>
     ),
@@ -101,7 +110,7 @@ function Marks({ entry, first }: { entry: QueueEntry; first: CommentItem }) {
         key="marker"
         data-mark="marker"
         className={`${MARK} rounded-full bg-surface ${
-          first.bot_severity === "Blocking"
+          first.bot_severity === "Blocking" && !first.gates.length
             ? "border-high-bd font-semibold text-high"
             : "border-border text-text"
         }`}
@@ -114,7 +123,7 @@ function Marks({ entry, first }: { entry: QueueEntry; first: CommentItem }) {
         key="recommendation"
         data-mark="recommendation"
         data-recommendation={rec.kind}
-        className={`${MARK} rounded border-dashed ${RECOMMENDATION_LOOK[rec.kind] ?? "border-border text-text"}`}
+        className={`${MARK} rounded border-dashed ${(!urgent && entry.reason !== "asked_again" && RECOMMENDATION_LOOK[rec.kind]) || "border-border text-text"}`}
       >
         <ProvenanceTag source="llm" tip={false} /> recommends {CHOICE_LABEL[rec.kind] ?? rec.kind}
       </span>
@@ -129,10 +138,12 @@ function Marks({ entry, first }: { entry: QueueEntry; first: CommentItem }) {
 }
 
 /** The sources of the tags among a row's marks ({@link Marks}), GitHub first. */
-function tagSources(entry: QueueEntry, first: CommentItem): ProvenanceSource[] {
+function tagSources(entry: QueueEntry, first: ReviewComment): ProvenanceSource[] {
   const group = entry.item_nos.length > 1;
-  const github = !group && first.bot_severity;
+  const github = !group && (first.bot_severity || first.imported_decision || first.state === "outside");
   const llm =
+    Boolean(first.llm_title) ||
+    first.duplicate_of != null ||
     first.assessment?.recommendation !== undefined ||
     (!group && first.gates.some((g) => g.source === "assessment"));
   return [...(github ? ["github" as const] : []), ...(llm ? ["llm" as const] : [])];
@@ -142,13 +153,42 @@ function tagSources(entry: QueueEntry, first: CommentItem): ProvenanceSource[] {
  * The row's tooltip: what a click opens and what its marks' tags mean (the marks are not focusable inside the
  * row's button, plan §3.9).
  */
-const rowTip = (entry: QueueEntry, first: CommentItem) =>
+const rowTip = (entry: QueueEntry, first: ReviewComment) =>
   [
     entry.item_nos.length > 1 ? "Opens these questions as one group." : "Opens this question.",
     ...tagSources(entry, first).map(provenanceNote),
   ].join(" ");
 
-/** The Questions queue (mockup left column): questions, Ask answers, carried, decided, outside, then PR-level. */
+const DESCRIPTION: Partial<Record<QueueStatus, string>> = {
+  needs_you: "Undecided questions that need you. PR-level questions are last.",
+  assessing: "In the current assessment pass.",
+  waiting: "Read from GitHub and waiting for the next pass.",
+  not_assessed: "Assessment did not complete or reached the daily limit.",
+  decided: "Decisions made here, carried from earlier rounds or imported from GitHub.",
+  duplicates: "The same point as another item. Decided with that item.",
+  status_comments: "Bot status and summaries.",
+};
+
+export function commentStatusText(item: ReviewComment, since?: string | null, now?: Date) {
+  switch (commentStatus(item)) {
+    case "assessing":
+      return since ? `◔ assessing since ${clockText(since, now)}` : "◔ assessing now";
+    case "waiting":
+      return "◌ waiting for assessment";
+    case "not_assessed":
+      return item.assessment_state.state === "not_assessed" && item.assessment_state.reason !== "not_run"
+        ? `Not assessed: ${item.assessment_state.reason.replaceAll("_", " ")}`
+        : "Not assessed";
+    case "duplicates":
+      return `⧉ Same point as C${item.duplicate_of}`;
+    case "status_comments":
+      return "Status comment";
+    default:
+      return null;
+  }
+}
+
+/** Pick a status, then open an item or a recommendation group within that view. */
 export function QueueList({
   queue,
   items,
@@ -158,57 +198,169 @@ export function QueueList({
   onDecideRest,
   onOpenLog,
   onOpenCarryOvers,
+  status: controlledStatus,
+  onStatus,
+  statusHost,
+  since,
+  now,
 }: QueueListProps) {
+  const [localStatus, setLocalStatus] = useState<QueueStatus>("needs_you");
+  const status = controlledStatus ?? localStatus;
   const all = [...items.values()];
-  const prLevel = queue.filter((e) => e.reason === "pr_question");
-  const questions = queue.filter((e) => e.reason !== "pr_question");
-  const carried = all.filter(
-    (i) => i.state === "repeat" || (i.decisions.at(-1)?.via === "carried" && i.state !== "reopened"),
-  );
-  const decided = all.filter((i) => ["decided", "executing", "done"].includes(i.state));
-  const outside = all.filter((i) => i.state === "outside");
+  const questions = inListOrder(needsYouQueue(queue, items));
+  const needs = questions.flatMap((entry) => entry.item_nos);
+  const gates = needs.filter((no) => items.get(no)!.gates.length).length;
+  const subsets = {
+    needs_you: questions,
+    ...(Object.fromEntries(
+      Object.keys(QUEUE_STATUS)
+        .filter((key) => key !== "needs_you")
+        .map((key) => [
+          key,
+          all
+            .filter((item) => key === "all" || commentStatus(item) === key)
+            .map((item): QueueEntry => ({
+              item_nos: [item.no],
+              reason: item.kind === "pr_question" ? "pr_question" : "single",
+            })),
+        ]),
+    ) as Record<Exclude<QueueStatus, "needs_you">, QueueEntry[]>),
+  };
+  const count = (key: QueueStatus) => (key === "needs_you" ? needs.length : subsets[key].length);
+  const selected = subsets[status];
+  const visible =
+    status === "all"
+      ? selected.filter((entry) => {
+          const primary = items.get(entry.item_nos[0]!)?.duplicate_of;
+          return primary == null || primary === entry.item_nos[0] || !items.has(primary);
+        })
+      : selected;
+
   const row = (entry: QueueEntry) => {
     const first = items.get(entry.item_nos[0]!);
     if (!first) return null;
     const group = entry.item_nos.length > 1;
     const rec = first.assessment?.recommendation;
-    // Resolved review-body items form one group across reason classes (plan §2.4).
+    const duplicates = all.filter(
+      (item) =>
+        item.duplicate_of != null &&
+        entry.item_nos.includes(item.duplicate_of) &&
+        item.no !== item.duplicate_of,
+    );
     const oneClass = entry.item_nos.every(
       (no) => items.get(no)?.assessment?.recommendation.reason_class === rec?.reason_class,
     );
     const title =
-      group && rec
-        ? `${CHOICE_LABEL[rec.kind]}${oneClass ? `: ${rec.reason_class.replaceAll("_", " ")}` : ""} (${entry.item_nos.length})`
-        : first.title;
+      group && rec ? (
+        `${CHOICE_LABEL[rec.kind]}${oneClass ? `: ${rec.reason_class.replaceAll("_", " ")}` : ""} (${entry.item_nos.length})`
+      ) : (
+        <CommentTitle item={first} tip={false} />
+      );
+    const imported = first.imported_decision || first.state === "outside";
+    const previous = first.decisions.at(-1);
+    const state = commentStatus(first);
+    const note = imported ? (
+      <GithubDecision item={first} showEvidence={false} tip={false} />
+    ) : state === "decided" && previous ? (
+      `${decisionLabel(previous)} · ${first.repeat_of != null ? `carried from C${first.repeat_of}` : clockText(previous.decided_at, now)}`
+    ) : (
+      commentStatusText(first, since, now)
+    );
+    const evidence = imported ? githubDecisionEvidence(first) : null;
     return (
-      <li key={entryKey(entry)} className="flex items-center gap-0.5">
-        <Tooltip tip={rowTip(entry, first)} placement="right" className="min-w-0 flex-1">
-          <button
-            type="button"
-            aria-current={current === entryKey(entry)}
-            onClick={() => onOpen(entry)}
-            className={ROW}
-          >
-            <span className="min-w-8 font-mono text-xs text-muted">{group ? "G" : itemId(first)}</span>{" "}
-            <span className="min-w-0 flex-1">
-              <span className="block truncate">{title}</span> <Marks entry={entry} first={first} />
-            </span>
-          </button>
-        </Tooltip>
-        {!group && <OpenExternal href={first.url} label={`Open ${itemId(first)} on GitHub`} />}
+      <li key={entryKey(entry)}>
+        <div className="flex items-center gap-0.5">
+          <Tooltip tip={rowTip(entry, first)} placement="right" className="min-w-0 flex-1">
+            <button
+              type="button"
+              aria-current={current === entryKey(entry)}
+              onClick={() => onOpen(entry)}
+              className={ROW}
+            >
+              <span className="min-w-8 font-mono text-xs text-muted">{group ? "G" : itemId(first)}</span>{" "}
+              <span className="min-w-0 flex-1">
+                <span className="block wrap-anywhere">{title}</span>
+                {!group && <BotHeading item={first} />}
+                {note && (
+                  <span className="block text-xs font-normal text-muted">
+                    {note}
+                    {state === "duplicates" && (
+                      <>
+                        {" "}
+                        <ProvenanceTag source="llm" tip={false} />
+                      </>
+                    )}
+                  </span>
+                )}
+                {state === "needs_you" && needs.includes(first.no) && <Marks entry={entry} first={first} />}
+              </span>
+            </button>
+          </Tooltip>
+          {!group && (
+            <OpenExternal
+              href={evidence ?? first.url}
+              label={evidence ? `Evidence for ${itemId(first)} on GitHub` : `Open ${itemId(first)} on GitHub`}
+            />
+          )}
+        </div>
+        {duplicates.length > 0 && status !== "duplicates" && (
+          <details className="ml-9 text-xs text-muted">
+            <summary className="min-h-6 cursor-pointer content-center">
+              ⧉ +{duplicates.length} same point <ProvenanceTag source="llm" tip={false} />
+            </summary>
+            <ul className="m-0 list-none px-2">
+              {duplicates.map((item) => (
+                <li key={item.id} className="flex flex-wrap items-center gap-x-1">
+                  <Tooltip tip={`Open duplicate ${itemId(item)}.`}>
+                    <button
+                      type="button"
+                      className="min-h-6 cursor-pointer text-left text-accent underline"
+                      onClick={() => onOpen({ item_nos: [item.no], reason: "single" })}
+                    >
+                      {itemId(item)} · {item.author}
+                    </button>
+                  </Tooltip>
+                  <OpenExternal href={item.url} label={`Open ${itemId(item)} on GitHub`} />
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </li>
     );
   };
-  const h = "mt-3 mb-1 text-xs font-bold tracking-wide text-muted uppercase first:mt-0";
+  const trigger = `${QUEUE_STATUS[status]} · ${count(status)}`;
+  const gateText = status === "needs_you" && gates ? `${gates} ${gates === 1 ? "gate" : "gates"}` : null;
   return (
-    <nav aria-label="Queue" className="rounded-lg border border-border bg-surface px-3 py-3">
-      <h3 className={h}>Needs you ({questions.reduce((n, e) => n + e.item_nos.length, 0)})</h3>
-      {questions.length ? (
-        <ol className="m-0 list-none p-0">{questions.map(row)}</ol>
+    <nav aria-label="Queue" className="min-w-0 rounded-lg border border-border bg-surface px-3 py-3">
+      <div ref={statusHost} className="mb-2">
+        <MenuButton
+          label={`Status: ${trigger}${gateText ? `, ${gateText}` : ""}`}
+          trigger={
+            <>
+              {trigger}
+              {gateText && <span className="ml-1 font-semibold text-high"> · ▲ {gateText}</span>}{" "}
+              <span aria-hidden>▾</span>
+            </>
+          }
+        >
+          {(Object.keys(QUEUE_STATUS) as QueueStatus[]).map((key) => (
+            <MenuItem
+              key={key}
+              label={`${QUEUE_STATUS[key]} · ${count(key)}`}
+              selection={{ kind: "radio", checked: key === status }}
+              description={DESCRIPTION[key]}
+              onSelect={() => (onStatus ?? setLocalStatus)(key)}
+            />
+          ))}
+        </MenuButton>
+      </div>
+      {visible.length ? (
+        <ol className="m-0 list-none p-0">{visible.map(row)}</ol>
       ) : (
-        <p className="m-0 px-2 text-xs text-muted">none</p>
+        <p className="m-0 px-2 text-xs text-muted">No items in this view.</p>
       )}
-      {restCount > 0 && (
+      {status === "needs_you" && restCount > 0 && (
         <Tooltip tip="Each recommendation becomes its own decision after a confirmation list; gate items are left out.">
           <button
             type="button"
@@ -219,47 +371,27 @@ export function QueueList({
           </button>
         </Tooltip>
       )}
-      <h3 className={h}>Previously decided ({carried.length + decided.length})</h3>
-      <ul className="m-0 list-none p-0 text-xs">
-        {carried.map((i) => (
-          <li key={i.id} className="px-2 py-0.5">
-            <Tooltip tip="Opens the carry-overs of this pull request.">
-              <button
-                type="button"
-                onClick={onOpenCarryOvers}
-                className="cursor-pointer border-0 bg-transparent p-0 text-left text-accent underline"
-              >
-                {itemId(i)} repeat of C{i.repeat_of} ·{" "}
-                {i.decisions.at(-1) ? decisionLabel(i.decisions.at(-1)!) : ""}
-              </button>
-            </Tooltip>
-          </li>
-        ))}
-      </ul>
-      <p className="m-0 px-2 text-xs text-muted">
-        {decided.length} decided here · {decided.filter((i) => i.state === "executing").length} with effects
-        open ·{" "}
-        <Tooltip tip="Opens the decision log with the agents' reports.">
-          <button
-            type="button"
-            onClick={onOpenLog}
-            className="cursor-pointer border-0 bg-transparent p-0 text-accent underline"
-          >
-            decision log
-          </button>
-        </Tooltip>
-      </p>
-      <h3 className={h}>Outside diffpilot ({outside.length})</h3>
-      {outside.map((i) => (
-        <p key={i.id} className="m-0 px-2 text-xs text-muted">
-          {itemId(i)} resolved on GitHub by {i.outside?.by ?? i.github.resolved_by}, not through diffpilot
-        </p>
-      ))}
-      {prLevel.length > 0 && (
-        <>
-          <h3 className={h}>PR-level ({prLevel.length})</h3>
-          <ol className="m-0 list-none p-0">{prLevel.map(row)}</ol>
-        </>
+      {status === "decided" && (
+        <div className="flex flex-wrap gap-2 text-xs">
+          <Tooltip tip="Opens the decision log with the agents’ reports.">
+            <button
+              type="button"
+              onClick={onOpenLog}
+              className="min-h-6 cursor-pointer text-accent underline"
+            >
+              Decision log
+            </button>
+          </Tooltip>
+          <Tooltip tip="Opens the carry-overs of this pull request.">
+            <button
+              type="button"
+              onClick={onOpenCarryOvers}
+              className="min-h-6 cursor-pointer text-accent underline"
+            >
+              Carry-overs
+            </button>
+          </Tooltip>
+        </div>
       )}
     </nav>
   );

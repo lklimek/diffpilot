@@ -43,7 +43,7 @@ describe("V0 PR page (US1, US19)", () => {
     ).toHaveAttribute("target", "_blank");
     await userEvent.click(screen.getByRole("button", { name: "Watch" }));
     expect(await screen.findByRole("button", { name: "Watching" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText(/new comments are assessed automatically and use LLM tokens/)).toBeVisible();
+    expect(screen.getByText(/Watching since/)).toBeVisible();
     expectTrustWording(text());
   });
 
@@ -63,13 +63,9 @@ describe("V1 Questions (US3, US4, US11)", () => {
     const router = renderRoute(`${PR}/comments`);
     expect(await screen.findByRole("heading", { name: /C21 · Retry cap is checked/ })).toHaveFocus();
     expect(await screen.findByText("Why you are asked again")).toBeVisible();
-    const headings = within(screen.getByRole("navigation", { name: "Queue" })).getAllByRole("heading");
-    expect(headings.map((h) => h.textContent)).toEqual([
-      "Needs you (10)",
-      expect.stringMatching(/^Previously decided \(\d+\)$/),
-      "Outside diffpilot (1)",
-      "PR-level (1)",
-    ]);
+    const queue = within(screen.getByRole("navigation", { name: "Queue" }));
+    expect(queue.getByRole("button", { name: /^Status: Needs you · 11/ })).toBeVisible();
+    expect(queue.getAllByRole("listitem").at(-1)).toHaveTextContent("P24");
     fireEvent.keyDown(document.body, { key: "j" });
     await waitFor(() => expect(router.state.location.search).toBe("?item=C12"));
   });
@@ -243,6 +239,7 @@ describe("V4–V6 and Settings → Notifications", () => {
         ),
       ),
     );
+    await userEvent.click(screen.getByRole("button", { name: "Questions waiting" }));
     await userEvent.click(screen.getByRole("button", { name: "Read GitHub again" }));
     expect(await screen.findByText(/GitHub is not reachable\./)).toBeVisible();
     expect(screen.getByLabelText("Your comment on C22")).toHaveValue("keep the test small");
@@ -298,5 +295,59 @@ describe("V4–V6 and Settings → Notifications", () => {
     await userEvent.click(within(webhook).getByRole("button", { name: "Send test" }));
     expect(await within(webhook).findByText(/Test failed: connection refused/)).toBeVisible();
     await act(async () => {});
+  });
+});
+
+describe("v1.4 review status", () => {
+  it("reports the same Needs you count in the PR card, Questions tab and queue", async () => {
+    setScenario("comments-v14");
+    renderRoute(PR);
+    const panel = await screen.findByRole("region", { name: "Process PR comments" });
+    expect(within(panel).getByText("Needs you").nextElementSibling).toHaveTextContent("11");
+    await userEvent.click(within(panel).getByRole("link", { name: "Open Comments →" }));
+    const queue = within(await screen.findByRole("navigation", { name: "Queue" }));
+    expect(queue.getByRole("button", { name: /^Status: Needs you · 11/ })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Questions, 11 need you" })).toBeVisible();
+    expect(queue.getByRole("button", { name: /^C30/ }).closest("details")).not.toHaveAttribute("open");
+    expect(queue.queryByRole("button", { name: /^C32/ })).not.toBeInTheDocument();
+  });
+
+  it("opens the PR status details and restores focus on Escape", async () => {
+    renderRoute(PR);
+    const trigger = await screen.findByRole("button", { name: "Questions waiting" });
+    expect(screen.queryByText("PR Hygiene")).toBeNull();
+    await userEvent.click(trigger);
+    const panel = within(screen.getByRole("dialog", { name: "Pull request status" }));
+    expect(panel.getByRole("heading", { name: /^PR Hygiene/ })).toBeVisible();
+    expect(panel.getByText(/Bot rounds: 4/)).toBeVisible();
+    await userEvent.tab();
+    expect(panel.getAllByRole("link")[0]).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("decides linked duplicate items with their primary and undoes the same decision together", async () => {
+    setScenario("comments-v14");
+    renderRoute(`${PR}/comments?item=C14`);
+    const question = await screen.findByRole("article", { name: /C14 · Retry may resend/ });
+    expect(within(question).getByText("Bot heading: Medium severity finding")).toBeVisible();
+    expect(screen.getByRole("link", { name: /C30 \(coderabbit/ })).toBeVisible();
+    await decideWhenPlanned();
+    expect(await screen.findByText(/C14: decision recorded/)).toBeInTheDocument();
+    for (const no of [30, 31])
+      expect(
+        listItems()
+          .find((item) => item.no === no)
+          ?.decisions.at(-1)?.kind,
+      ).toBe("fix_here");
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(await screen.findByText(/C14: decision undone/)).toBeInTheDocument();
+    for (const no of [30, 31])
+      expect(
+        listItems()
+          .find((item) => item.no === no)
+          ?.decisions.at(-1)?.undone_at,
+      ).toBeTruthy();
   });
 });

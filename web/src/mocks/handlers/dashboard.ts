@@ -17,6 +17,7 @@ import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.js
 import rankingJson from "../../../../fixtures/dashboard/api/refresh-ranking.json";
 import failedJson from "../../../../fixtures/dashboard/api/refresh-failed.json";
 import { setFixtureState } from "../fixtures";
+import { commentTally } from "../review-loop";
 import { setScenario } from "../scenarios";
 import { apiError, route } from "./common";
 
@@ -546,13 +547,12 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
     mention_coverage: summary.mention_coverage,
     mentions: cursor ? [] : (page.mentions ?? []).filter((m) => !hiddenMentions.has(m.id)),
     revision: page.revision,
-    items: matching
-      .slice(offset, offset + limit)
-      .map((item) =>
-        watchedPrs.has(item.key) && !item.comments
-          ? { ...item, comments: { total: 0, needs_you: 0 }, watched: true }
-          : item,
-      ),
+    items: matching.slice(offset, offset + limit).map((item) => {
+      if (item.id === "NC-482" && item.comments) return { ...item, comments: commentTally() };
+      return watchedPrs.has(item.key) && !item.comments
+        ? { ...item, comments: { total: 0, needs_you: 0 }, watched: true }
+        : item;
+    }),
     next_cursor: next,
   };
   const headers = { ETag: etagOf(body), "Cache-Control": "no-store" };

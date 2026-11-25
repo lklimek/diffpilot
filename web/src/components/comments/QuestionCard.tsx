@@ -18,6 +18,9 @@ import { clockText, dateTimeText } from "../format/time";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, type EffectsPreviewState } from "./decisions";
+import type { ReviewComment } from "../../api/provisional/comments";
+import { BotHeading, CommentTitle } from "./CommentTitle";
+import { DuplicateLinks } from "./DuplicateLinks";
 import { DecisionForm } from "./DecisionForm";
 import { GateMenu } from "./GateMenu";
 import { GithubCommentText } from "./GithubCommentText";
@@ -40,7 +43,8 @@ const NOT_ASSESSED: Record<NotAssessedReason, string> = {
 };
 
 interface QuestionCardProps {
-  item: CommentItem;
+  item: ReviewComment;
+  duplicates?: CommentItem[];
   /** The carry-over event that asked this repeat again (US9), when it is one. */
   reask?: CarryEvent;
   /** "Question 2 of 9". */
@@ -299,9 +303,15 @@ export function QuestionCard(props: QuestionCardProps) {
         {itemId(item)} · {props.position.index} of {props.position.total} · {sourceText(item)}
         <Raised item={item} />
       </p>
-      <h2 id={`q-${item.id}`} ref={heading} tabIndex={-1} className="mt-1 mb-1.5 text-lg font-semibold">
-        {itemId(item)} · {item.title}
+      <h2
+        id={`q-${item.id}`}
+        ref={heading}
+        tabIndex={-1}
+        className="mt-1 mb-1.5 text-lg font-semibold wrap-anywhere"
+      >
+        {itemId(item)} · <CommentTitle item={item} />
       </h2>
+      <BotHeading item={item} />
       <div className="flex flex-wrap items-center gap-1.5">
         {item.gates.map((g) => (
           <GateChip key={g.gate} gate={g.gate} source={g.source} />
@@ -408,6 +418,7 @@ export function QuestionCard(props: QuestionCardProps) {
             )}
           </>
         )}
+        <DuplicateLinks primary={item} duplicates={props.duplicates ?? []} />
         {item.duplicate_of !== null && item.duplicate_of !== undefined && (
           <p>
             Same problem as C{item.duplicate_of} <ProvenanceTag source="llm" />

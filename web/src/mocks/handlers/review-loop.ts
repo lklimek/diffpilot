@@ -13,6 +13,7 @@ import type {
 import {
   PR,
   carryOvers,
+  commentItemsResponse,
   context,
   decide,
   decideBatch,
@@ -43,7 +44,7 @@ const itemQuestions = () => readStore("questions").filter((q) => q.anchor.kind =
 /** Items with the answers of the Ask chat about each counted in. */
 const itemsWithAsks = () => {
   const answered = itemQuestions().filter((q) => q.state === "answered");
-  return listItems().map((i) => ({
+  return commentItemsResponse().map((i) => ({
     ...i,
     ask_answers:
       i.ask_answers +

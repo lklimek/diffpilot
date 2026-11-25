@@ -35,7 +35,8 @@ export function useCardKeys(keys: CardKeys): void {
         isTypingField(event.target)
       )
         return;
-      if ((event.target as HTMLElement | null)?.closest?.("[data-ask-chat], [role=dialog]")) return;
+      if ((event.target as HTMLElement | null)?.closest?.("[data-ask-chat], [role=dialog], [role=menu]"))
+        return;
       const { options = 0, choose, decide, ask, skip } = latest.current;
       const n = Number(event.key);
       if (choose && Number.isInteger(n) && n >= 1 && n <= Math.min(8, options)) {
