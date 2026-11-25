@@ -554,7 +554,8 @@ impl AppserverProvider {
         let history = result["thread"]["turns"]
             .as_array()
             .is_some_and(|v| !v.is_empty());
-        rpc.restored_usage(&thread, history).await?;
+        let fork_resume = method == "thread/resume" && result["thread"]["forkedFromId"].is_string();
+        rpc.restored_usage(&thread, history, fork_resume).await?;
         Ok(thread)
     }
 
