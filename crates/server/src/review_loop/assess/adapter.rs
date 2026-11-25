@@ -658,7 +658,8 @@ fn host_card(
     {
         return None;
     }
-    let kind: DecisionKind =
+    use contracts::api::review_loop::ReviewDecisionKind;
+    let kind: ReviewDecisionKind =
         serde_json::from_value(serde_json::to_value(proposal.kind).ok()?).ok()?;
     let title = proposal
         .title
@@ -666,10 +667,10 @@ fn host_card(
         .map(|t| ingest::public(t, &row.id, "title"))
         .filter(|t| !t.is_empty() && ingest::fit_text(t, 600).is_ok());
     let target = match kind {
-        DecisionKind::HandledInPr => {
+        ReviewDecisionKind::HandledInPr => {
             local_pr(proposal, repo).map(|number| DecisionTarget::ExistingPr { number })
         }
-        DecisionKind::FollowUpPr => {
+        ReviewDecisionKind::FollowUpPr => {
             if proposal.target_pr.is_some() || proposal.target_url.is_some() {
                 None
             } else {
@@ -678,10 +679,10 @@ fn host_card(
                 })
             }
         }
-        DecisionKind::UpstreamIssue => Some(DecisionTarget::UpstreamIssue {
+        ReviewDecisionKind::UpstreamIssue => Some(DecisionTarget::UpstreamIssue {
             url: proposal.target_url.clone(),
         }),
-        DecisionKind::Todo => title.clone().map(|title| DecisionTarget::Todo { title }),
+        ReviewDecisionKind::Todo => title.clone().map(|title| DecisionTarget::Todo { title }),
         _ => None,
     };
     let mut guarded_proposal = proposal.clone();

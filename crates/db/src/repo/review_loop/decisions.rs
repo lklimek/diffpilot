@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use jiff::SignedDuration;
+use serde::de::DeserializeOwned;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, Sqlite, Transaction};
 
@@ -10,7 +11,7 @@ use contracts::api::access_tokens::AccessTokenId;
 use contracts::api::review_loop::{
     ClaimInfo, Decision, DecisionKind, DecisionTarget, DecisionVia, Effect, EffectKind,
     EffectParams, EffectReport, EffectState, Executor, FeedDecision, FeedItem, ImportedDecision,
-    ItemState, Override, Recommendation, ReportOutcome,
+    ItemState, Override, Recommendation, ReportOutcome, ReviewDecisionKind,
 };
 use contracts::common::{LineRange, PrRef, RepoRef};
 use contracts::ids::{CommentItemId, CommitSha, DecisionId, EffectId};
@@ -91,7 +92,7 @@ pub enum DecideOutcome {
 
 /// A decision with the item facts the carry-over rules compare.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StoredDecision {
+pub struct StoredDecision<K = DecisionKind> {
     /// Server user who owns this decision.
     pub user_id: String,
     /// Exact decision this follower depends on.
@@ -99,7 +100,7 @@ pub struct StoredDecision {
     /// A withdrawal has authority over its own point only.
     pub author_withdrawal: bool,
     /// The decision.
-    pub decision: Decision,
+    pub decision: Decision<K>,
     /// Its item.
     pub item: CommentItemId,
     /// The item's normalised text hash at decision time.
@@ -186,7 +187,9 @@ pub(super) const ORIGIN_JOIN: &str = "LEFT JOIN comment_decision_origins o ON o.
      LEFT JOIN comment_decisions pd ON pd.id = o.primary_decision_id
      LEFT JOIN comment_items pi ON pi.id = pd.item_id";
 
-pub(super) fn decision_from_row(row: &SqliteRow) -> Result<StoredDecision, DbError> {
+pub(super) fn decision_from_row<K: DeserializeOwned>(
+    row: &SqliteRow,
+) -> Result<StoredDecision<K>, DbError> {
     let start: Option<i64> = row.try_get("start_line")?;
     let end: Option<i64> = row.try_get("end_line")?;
     let lines = match (start, end) {
@@ -291,9 +294,9 @@ pub(super) fn effect_from_row(row: &SqliteRow) -> Result<Effect, DbError> {
 }
 
 /// Fills the effects (with reports) of `decisions` inside `tx`.
-async fn with_effects(
+async fn with_effects<K>(
     tx: &mut Transaction<'static, Sqlite>,
-    decisions: &mut [StoredDecision],
+    decisions: &mut [StoredDecision<K>],
 ) -> Result<(), DbError> {
     for stored in decisions.iter_mut() {
         let rows = sqlx::query(
@@ -336,11 +339,11 @@ async fn with_effects(
 }
 
 /// Decisions matching `filter` (a SQL condition on `d`/`i` with one `?`), oldest first, with effects.
-pub(super) async fn decisions_where(
+pub(super) async fn decisions_where<K: DeserializeOwned>(
     tx: &mut Transaction<'static, Sqlite>,
     filter: &str,
     value: String,
-) -> Result<Vec<StoredDecision>, DbError> {
+) -> Result<Vec<StoredDecision<K>>, DbError> {
     let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT {DECISION_COLUMNS} FROM comment_decisions d
          JOIN comment_items i ON i.id = d.item_id JOIN users u ON u.id = d.user_id {ORIGIN_JOIN}
@@ -1162,7 +1165,7 @@ async fn feed_decisions_where(
     filter: &str,
     value: String,
 ) -> Result<Vec<FeedDecision>, DbError> {
-    let decisions = decisions_where(tx, filter, value).await?;
+    let decisions = decisions_where::<ReviewDecisionKind>(tx, filter, value).await?;
     let mut items: BTreeMap<String, (PrRef, FeedItem)> = BTreeMap::new();
     let mut feed = Vec::new();
     for stored in decisions {

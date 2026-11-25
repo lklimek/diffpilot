@@ -568,7 +568,7 @@
       ]
     },
     "DecisionKind": {
-      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+      "description": "A review decision or an internal mark accepted by the decide routes.",
       "oneOf": [
         {
           "description": "D1: resolve, already fixed.",
@@ -782,7 +782,7 @@
       "properties": {
         "kind": {
           "description": "Recommended decision.",
-          "$ref": "#/$defs/DecisionKind"
+          "$ref": "#/$defs/ReviewDecisionKind"
         },
         "reason": {
           "description": "Why.",
@@ -808,6 +808,66 @@
         "kind",
         "reason",
         "reason_class"
+      ]
+    },
+    "ReviewDecisionKind": {
+      "description": "A review decision (D1–D7 and P1–P4) eligible for external use.",
+      "oneOf": [
+        {
+          "description": "D1: resolve, already fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "D2: fix in this pull request.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "D3: reject (with a reason); D8 with a `blocker_gate` override.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "D4: handled in an existing pull request.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "D5: create a follow-up pull request.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "D6: upstream issue (link or create).",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "D7: TODO, out of scope for this pull request.",
+          "type": "string",
+          "const": "todo"
+        },
+        {
+          "description": "P1: merge now, remaining items become follow-ups.",
+          "type": "string",
+          "const": "merge_with_follow_ups"
+        },
+        {
+          "description": "P2: another round.",
+          "type": "string",
+          "const": "another_round"
+        },
+        {
+          "description": "P3: dismiss the listed stale bot reviews.",
+          "type": "string",
+          "const": "dismiss_stale_reviews"
+        },
+        {
+          "description": "P4: keep the reviews.",
+          "type": "string",
+          "const": "keep_reviews"
+        }
       ]
     },
     "DecisionVia": {
@@ -1151,7 +1211,7 @@
         },
         "source_kind": {
           "description": "Its kind.",
-          "$ref": "#/$defs/DecisionKind"
+          "$ref": "#/$defs/ReviewDecisionKind"
         },
         "kind": {
           "description": "Kind.",

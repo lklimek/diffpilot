@@ -973,7 +973,7 @@ pub async fn decide_rest(state: &AppState, handle: PrHandle) -> Result<DecideRes
     let (proposed, left_out) = queue::decide_rest(&queue_items);
     let mut rows = Vec::new();
     let mut left_out = left_out;
-    let batch: Vec<DecisionBatchRow> = proposed
+    let batch: Vec<_> = proposed
         .iter()
         .map(|(item, request)| DecisionBatchRow {
             item_no: item.no,

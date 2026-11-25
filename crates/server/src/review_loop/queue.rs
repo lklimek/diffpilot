@@ -5,9 +5,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use contracts::api::review_loop::{
-    AssessmentState, CommentItemKind, DecideRequest, DecisionKind, GateMark,
-    ImportedGithubDecision, ItemMark, ItemState, LeftOutItem, LeftOutReason, QueueEntry,
-    QueueReason, Recommendation,
+    AssessmentState, CommentItemKind, DecideRequest, GateMark, ImportedGithubDecision, ItemMark,
+    ItemState, LeftOutItem, LeftOutReason, QueueEntry, QueueReason, Recommendation,
+    ReviewDecisionKind,
 };
 
 use super::effects::PrQuestion;
@@ -180,7 +180,7 @@ fn resolved_body(item: &QueueItem) -> bool {
         && item
             .recommendation
             .as_ref()
-            .is_some_and(|recommendation| recommendation.kind == DecisionKind::Resolve)
+            .is_some_and(|recommendation| recommendation.kind == ReviewDecisionKind::Resolve)
 }
 
 /// The queue in plan §2.4 order; skipped entries last.
@@ -270,19 +270,15 @@ pub fn queue(items: &[QueueItem]) -> Vec<QueueEntry> {
 pub fn proposed(
     recommendation: &Recommendation,
     revision: u32,
-) -> Result<DecideRequest, LeftOutReason> {
-    use DecisionKind as K;
+) -> Result<DecideRequest<ReviewDecisionKind>, LeftOutReason> {
+    use ReviewDecisionKind as K;
     let reason = matches!(recommendation.kind, K::Reject)
         .then(|| recommendation.reason.trim().to_owned())
         .filter(|reason| !reason.is_empty());
     let incomplete = match recommendation.kind {
         K::Reject => reason.is_none(),
         K::HandledInPr | K::UpstreamIssue | K::Todo => recommendation.target.is_none(),
-        K::MergeWithFollowUps
-        | K::AnotherRound
-        | K::DismissStaleReviews
-        | K::KeepReviews
-        | K::NotAReviewPoint => true,
+        K::MergeWithFollowUps | K::AnotherRound | K::DismissStaleReviews | K::KeepReviews => true,
         K::Resolve | K::FixHere | K::FollowUpPr => false,
     };
     if incomplete {
@@ -303,7 +299,12 @@ pub fn proposed(
 
 /// "Decide the rest per recommendation": the waiting items it decides (in `C<no>` order) and those it leaves out.
 /// PR-level questions are neither.
-pub fn decide_rest(items: &[QueueItem]) -> (Vec<(&QueueItem, DecideRequest)>, Vec<LeftOutItem>) {
+pub fn decide_rest(
+    items: &[QueueItem],
+) -> (
+    Vec<(&QueueItem, DecideRequest<ReviewDecisionKind>)>,
+    Vec<LeftOutItem>,
+) {
     let mut rows = Vec::new();
     let mut left_out = Vec::new();
     let mut waiting = waiting(items);
@@ -470,7 +471,7 @@ mod tests {
         }
     }
 
-    fn recommended(no: u32, kind: DecisionKind, class: &str) -> QueueItem {
+    fn recommended(no: u32, kind: ReviewDecisionKind, class: &str) -> QueueItem {
         QueueItem {
             recommendation: Some(Recommendation {
                 kind,
@@ -512,8 +513,8 @@ mod tests {
                 question: Some((PrQuestion::Merge, 3)),
                 ..item(7)
             },
-            recommended(8, DecisionKind::Reject, "pre-existing"),
-            recommended(9, DecisionKind::Reject, "pre-existing"),
+            recommended(8, ReviewDecisionKind::Reject, "pre-existing"),
+            recommended(9, ReviewDecisionKind::Reject, "pre-existing"),
             QueueItem {
                 state: ItemState::Decided,
                 ..item(10)
@@ -547,17 +548,17 @@ mod tests {
     fn gate_items_never_grouped_or_bulk() {
         let gated = |no| QueueItem {
             gated: true,
-            ..recommended(no, DecisionKind::Resolve, "fixed")
+            ..recommended(no, ReviewDecisionKind::Resolve, "fixed")
         };
         let items = vec![
             gated(1),
             gated(2),
-            recommended(3, DecisionKind::Resolve, "fixed"),
-            recommended(4, DecisionKind::Resolve, "fixed"),
+            recommended(3, ReviewDecisionKind::Resolve, "fixed"),
+            recommended(4, ReviewDecisionKind::Resolve, "fixed"),
             item(5),
             QueueItem {
                 state: ItemState::Reopened,
-                ..recommended(6, DecisionKind::Resolve, "fixed")
+                ..recommended(6, ReviewDecisionKind::Resolve, "fixed")
             },
         ];
         let entries = queue(&items);
@@ -601,13 +602,13 @@ mod tests {
 
     #[test]
     fn groups_need_the_same_kind_and_class_or_target() {
-        let mut handled = recommended(3, DecisionKind::HandledInPr, "elsewhere");
+        let mut handled = recommended(3, ReviewDecisionKind::HandledInPr, "elsewhere");
         if let Some(r) = &mut handled.recommendation {
             r.target = Some(DecisionTarget::ExistingPr { number: 490 });
         }
         let items = vec![
-            recommended(1, DecisionKind::Reject, "style"),
-            recommended(2, DecisionKind::Reject, "pre-existing"),
+            recommended(1, ReviewDecisionKind::Reject, "style"),
+            recommended(2, ReviewDecisionKind::Reject, "pre-existing"),
             handled,
         ];
         assert!(
@@ -625,7 +626,7 @@ mod tests {
         assert_eq!(
             proposed(
                 &Recommendation {
-                    kind: DecisionKind::Todo,
+                    kind: ReviewDecisionKind::Todo,
                     reason: "x".into(),
                     target: None,
                     reason_class: "c".into()
@@ -643,7 +644,7 @@ mod tests {
         let body = |no, blocking, class: &str| QueueItem {
             review_body: true,
             blocking,
-            ..recommended(no, DecisionKind::Resolve, class)
+            ..recommended(no, ReviewDecisionKind::Resolve, class)
         };
         let items = vec![
             body(1, true, "fixed_since"),
@@ -651,7 +652,7 @@ mod tests {
             body(3, false, "fixed_since"),
             QueueItem {
                 blocking: true,
-                ..recommended(4, DecisionKind::Resolve, "fixed_since")
+                ..recommended(4, ReviewDecisionKind::Resolve, "fixed_since")
             },
             QueueItem {
                 gated: true,
@@ -668,7 +669,7 @@ mod tests {
             QueueItem {
                 review_body: true,
                 blocking: true,
-                ..recommended(8, DecisionKind::FixHere, "bug")
+                ..recommended(8, ReviewDecisionKind::FixHere, "bug")
             },
         ];
         let order: Vec<(Vec<u32>, QueueReason, bool)> = queue(&items)

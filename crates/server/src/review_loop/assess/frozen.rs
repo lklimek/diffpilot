@@ -128,13 +128,15 @@ impl Frozen {
         );
         for item in &self.items {
             if item.status_comment
-                || item.active_mark.is_some()
                 || item.kind == CommentItemKind::PrQuestion
                 || item.gone_at.is_some()
             {
                 continue;
             }
-            let decision = standing.get(&item.id.to_string()).and_then(|d| {
+            let marked = item.active_mark.is_some();
+            let item_id = item.id.to_string();
+            let stored = standing.get(&item_id).filter(|_| !marked);
+            let decision = stored.and_then(|d| {
                 let kind =
                     serde_json::from_value(serde_json::to_value(d.decision.kind).ok()?).ok()?;
                 let (target_pr, target_url, title) = match &d.decision.target {
@@ -166,26 +168,27 @@ impl Frozen {
                     title,
                 })
             });
-            let current = super::fingerprint(
-                item,
-                &summary.head_sha,
-                code.lines(item).await.as_deref(),
-                &purpose,
-                snapshot.and_then(|s| s.item_context.get(&item.stable_key)),
-            );
-            self.fingerprints
-                .insert(item.id.to_string(), current.clone());
-            if let Some(stored) = standing.get(&item.id.to_string()) {
-                let previous = state.db.review_loop().latest_assessment(item.id).await?;
-                self.standing.insert(
-                    item.id.to_string(),
-                    FrozenDecision {
-                        id: stored.decision.id,
-                        kind: stored.decision.kind,
-                        target: stored.decision.target.clone(),
-                        changed: previous.is_none_or(|p| p.fingerprint != current),
-                    },
+            if !marked {
+                let current = super::fingerprint(
+                    item,
+                    &summary.head_sha,
+                    code.lines(item).await.as_deref(),
+                    &purpose,
+                    snapshot.and_then(|s| s.item_context.get(&item.stable_key)),
                 );
+                self.fingerprints.insert(item_id.clone(), current.clone());
+                if let Some(stored) = stored {
+                    let previous = state.db.review_loop().latest_assessment(item.id).await?;
+                    self.standing.insert(
+                        item_id,
+                        FrozenDecision {
+                            id: stored.decision.id,
+                            kind: stored.decision.kind,
+                            target: stored.decision.target.clone(),
+                            changed: previous.is_none_or(|p| p.fingerprint != current),
+                        },
+                    );
+                }
             }
             let key = if item.kind == CommentItemKind::Thread {
                 host::threads(&self.data)
@@ -214,7 +217,8 @@ impl Frozen {
                     }
                     _ => contracts::agent::comment_report::SourceKind::PrComment,
                 }),
-                quote: (super::assessable(item) || standing.contains_key(&item.id.to_string()))
+                // Shared sources can be sent for a sibling. Keep the marked point's identity for reuse.
+                quote: (marked || super::assessable(item) || stored.is_some())
                     .then(|| item.quote.clone().unwrap_or_else(|| item.body.clone())),
                 decision,
             });

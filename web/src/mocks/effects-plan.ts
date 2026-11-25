@@ -7,7 +7,6 @@ import type {
   CommentItem,
   DecideRequest,
   DecideRest,
-  DecisionBatchRow,
   DecisionKind,
   EffectKind,
   EffectParams,
@@ -343,7 +342,9 @@ export function dismissal(question: CommentItem, stale: BotChangeRequest[]): str
 }
 
 /** queue.rs `proposed`: a recommendation as the decision it proposes, or why it cannot be one. */
-function proposed(item: CommentItem): DecideRequest | LeftOutReason {
+type BulkRow = DecideRest["rows"][number]["row"];
+
+function proposed(item: CommentItem): Omit<BulkRow, "item_no"> | LeftOutReason {
   const rec = item.assessment!.recommendation;
   const reason = rec.kind === "reject" ? rec.reason.trim() || null : null;
   const incomplete =
@@ -372,7 +373,7 @@ export function decideRest(items: CommentItem[], scopeOf: (deciding: number[]) =
   for (const item of waiting(items)
     .filter((i) => i.kind !== "pr_question")
     .sort((a, b) => a.no - b.no)) {
-    const outcome: DecideRequest | LeftOutReason =
+    const outcome =
       item.gates.length > 0
         ? "gate"
         : item.state === "reopened"
@@ -384,7 +385,7 @@ export function decideRest(items: CommentItem[], scopeOf: (deciding: number[]) =
       leftOut.push({ item_no: item.no, reason: outcome });
       continue;
     }
-    const row: DecisionBatchRow = { item_no: item.no, ...outcome };
+    const row: BulkRow = { item_no: item.no, ...outcome };
     const planned = plan(item, outcome, scopeOf([item.no]));
     if (typeof planned === "string") leftOut.push({ item_no: item.no, reason: "incomplete" });
     else rows.push({ row, recommendation: item.assessment!.recommendation, effects: planned.effects });

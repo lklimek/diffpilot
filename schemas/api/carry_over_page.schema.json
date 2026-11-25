@@ -158,7 +158,7 @@
         },
         "source_kind": {
           "description": "Its kind.",
-          "$ref": "#/$defs/DecisionKind"
+          "$ref": "#/$defs/ReviewDecisionKind"
         },
         "kind": {
           "description": "Kind.",
@@ -214,8 +214,8 @@
       "type": "string",
       "format": "uuid"
     },
-    "DecisionKind": {
-      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+    "ReviewDecisionKind": {
+      "description": "A review decision (D1–D7 and P1–P4) eligible for external use.",
       "oneOf": [
         {
           "description": "D1: resolve, already fixed.",
@@ -271,11 +271,6 @@
           "description": "P4: keep the reviews.",
           "type": "string",
           "const": "keep_reviews"
-        },
-        {
-          "description": "Record an internal mark without effects.",
-          "type": "string",
-          "const": "not_a_review_point"
         }
       ]
     },

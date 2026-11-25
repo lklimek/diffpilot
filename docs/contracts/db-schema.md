@@ -72,6 +72,7 @@ parent. User-wide assessment configuration and quota and installation-wide infra
 | 0035 | Makes `app_repositories.repository_id` nullable for rows learned through an App installation lookup. | Preserves existing rows and the installation index. Numeric repository IDs remain unique. |
 | 0036 | `comment_items.import_candidate` holds the grounded candidate from the accepted primary assessment. `comment_decision_origins.author_withdrawal` identifies withdrawals. `comment_visits` retains the last Comments visit per tenant member and PR. | Withdrawals are limited to the source author's point. Candidate evidence is checked against the latest read before use. Each visit belongs to the same tenant as its reader and PR. |
 | 0037 | Adds the previous Comments entry, linked-account ID pins and `comment_effects.after_primary_effect`. | Visits are per tenant member and PR. A pin preserves the original account ID until the member removes the link. A follower's GitHub effects wait for the primary artefact. |
+| 0038 | Creates `comment_item_marks` for internal comment dispositions. `follows_mark_id` links a duplicate’s mark to the primary mark. | A partial unique index allows one active mark per item. An append-only trigger permits a single update setting `undone_at` and `undone_by`. |
 
 ## Feedback → MemCan
 The single writer (`server::memcan::writer`) takes the entries due at `now` (`pending_memcan(now, limit)`: not

@@ -329,7 +329,7 @@
           "description": "The decision made in diffpilot; null for one a reply records, whose text is `reason`.",
           "anyOf": [
             {
-              "$ref": "#/$defs/DecisionKind"
+              "$ref": "#/$defs/ReviewDecisionKind"
             },
             {
               "type": "null"
@@ -348,8 +348,8 @@
         "item"
       ]
     },
-    "DecisionKind": {
-      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+    "ReviewDecisionKind": {
+      "description": "A review decision (D1–D7 and P1–P4) eligible for external use.",
       "oneOf": [
         {
           "description": "D1: resolve, already fixed.",
@@ -405,11 +405,6 @@
           "description": "P4: keep the reviews.",
           "type": "string",
           "const": "keep_reviews"
-        },
-        {
-          "description": "Record an internal mark without effects.",
-          "type": "string",
-          "const": "not_a_review_point"
         }
       ]
     },

@@ -776,10 +776,12 @@ async fn earlier_decisions(
             && item.active_mark.is_none()
             && sent.iter().all(|sent| sent.id != item.id)
     }) {
-        if let Some(stored) = standing.get(&item.id.to_string()) {
+        if let Some(stored) = standing.get(&item.id.to_string())
+            && let Some(kind) = stored.decision.kind.review_kind()
+        {
             current.push(EarlierDecision {
                 item: format!("C{}", item.no),
-                decision: Some(stored.decision.kind),
+                decision: Some(kind),
                 reason: stored.decision.reason.clone(),
             });
         }

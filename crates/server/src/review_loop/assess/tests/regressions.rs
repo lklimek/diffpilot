@@ -269,6 +269,150 @@ async fn host_ask_outside_source_scope_is_terminal_or_answered() {
 }
 
 #[tokio::test]
+async fn marked_points_keep_their_ids_when_a_sibling_is_reassessed() {
+    let (f, items) = host_fixture(1).await;
+    let first = "Bound the retry loop for request 1.";
+    let second = "Release the lock before waiting.";
+    request_pass(&f.state, PR, PassReason::Opened)
+        .await
+        .unwrap();
+    complete_host(
+        &f.state,
+        vec![
+            host_row(&items[0], 100, first),
+            host_row(&items[0], 101, second),
+        ],
+    )
+    .await;
+    let rl = f.state.db.review_loop();
+    let marked = rl.item_by_no(PR, 100).await.unwrap().unwrap();
+    let sibling = rl.item_by_no(PR, 101).await.unwrap().unwrap();
+    let head_before = rl
+        .latest_assessment(marked.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .assessment
+        .head;
+    choose(
+        &f.state,
+        &marked,
+        DecisionKind::NotAReviewPoint,
+        None,
+        vec![],
+    )
+    .await;
+
+    move_head(&f.state, BASE).await;
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::AssessAgain(sibling.id))
+            .await
+            .unwrap(),
+        PassQueued::Queued
+    );
+    let pass = live_pass(&f.state).await;
+    assert_eq!(
+        pass.sent.iter().map(|item| item.item).collect::<Vec<_>>(),
+        [sibling.id]
+    );
+    let frozen_pass = f
+        .state
+        .db
+        .assessments()
+        .pass(
+            DEFAULT_TENANT,
+            &contracts::ids::UserId("u1".into()),
+            pass.id,
+        )
+        .await
+        .unwrap();
+    let frozen = frozen::Frozen::read(&f.state, &frozen_pass).await.unwrap();
+    let native_ids: Vec<_> = frozen
+        .native
+        .items
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect();
+    assert_eq!(native_ids, ["C101"]);
+    assert_eq!(frozen.data.scope.sources, [sibling.url.clone().unwrap()]);
+    let repeated = frozen
+        .data
+        .ids
+        .items
+        .iter()
+        .find(|item| item.quote.as_deref() == Some(first));
+    let reported_no = repeated
+        .and_then(|item| item.id.strip_prefix("CMT-")?.parse::<u32>().ok())
+        .unwrap_or(frozen.data.ids.next_id);
+    let count_before = rl.items(PR).await.unwrap().len();
+    complete_host(
+        &f.state,
+        vec![
+            host_row(&marked, reported_no, first),
+            host_row(&sibling, sibling.no, second),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        rl.items(PR).await.unwrap().len(),
+        count_before,
+        "a shared source must not re-create the marked point"
+    );
+    assert_eq!(repeated.map(|item| item.id.as_str()), Some("CMT-100"));
+    assert!(repeated.unwrap().decision.is_none());
+    let current = rl.item(marked.id).await.unwrap();
+    assert!(current.active_mark.is_some());
+    assert!(current.gone_at.is_none());
+    assert_eq!(
+        rl.latest_assessment(marked.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .assessment
+            .head,
+        head_before
+    );
+    assert_eq!(
+        rl.latest_assessment(sibling.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .assessment
+            .head
+            .0,
+        BASE
+    );
+
+    // A report can use a fresh ID even though it was given the existing one.
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::AssessAgain(sibling.id))
+            .await
+            .unwrap(),
+        PassQueued::Queued
+    );
+    let fresh_no = rl
+        .items(PR)
+        .await
+        .unwrap()
+        .iter()
+        .map(|item| item.no)
+        .max()
+        .unwrap()
+        + 1;
+    complete_host(
+        &f.state,
+        vec![
+            host_row(&marked, fresh_no, first),
+            host_row(&sibling, sibling.no, second),
+        ],
+    )
+    .await;
+    assert_eq!(rl.items(PR).await.unwrap().len(), count_before);
+    assert!(rl.item(marked.id).await.unwrap().active_mark.is_some());
+}
+
+#[tokio::test]
 async fn host_new_point_fingerprint_carries_owner_effects_at_unchanged_code() {
     host_point_owner_effects(false).await;
 }

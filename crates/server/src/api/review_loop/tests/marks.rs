@@ -163,7 +163,7 @@ async fn bulk_never_marks() {
     let w = world().await;
     w.assess(
         L2,
-        recommend(DecisionKind::NotAReviewPoint, "invalid recommendation"),
+        recommend(DecisionKind::FixHere, "normal recommendation"),
         vec![],
     )
     .await;
@@ -348,4 +348,60 @@ async fn later_duplicate_follows_mark_until_undone() {
         .unwrap();
     assert!(w.item(L6).await[MARK].is_null());
     assert!(w.item(L2).await[MARK].is_object());
+}
+
+#[tokio::test]
+async fn marked_bot_point_does_not_block_stale_review_dismissal() {
+    let w = world().await;
+    w.get(&format!("{PR}/comments")).await;
+    let mut points: Vec<_> = w
+        .items()
+        .await
+        .into_iter()
+        .filter(|item| {
+            item["author"] == "thepastaclaw"
+                && item["state"] == "undecided"
+                && item["status_comment"] != true
+        })
+        .collect();
+    assert!(points.len() > 1);
+    let marked = points.pop().unwrap();
+    mark(&w, marked["stable_key"].as_str().unwrap()).await;
+    let mut decisions = Vec::new();
+    for point in &points {
+        let mut request = row(point, "reject", Some("Out of scope."));
+        request["resolve_ticked"] = json!(true);
+        decisions.push(request);
+    }
+    let (status, body) = batch(&w, "table", &decisions).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    w.reread(&[]).await;
+    let decision = w
+        .decide_ok("pr:3:dismiss", decision("dismiss_stale_reviews"))
+        .await;
+    assert!(
+        decision["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|effect| {
+                effect["kind"] == "dismiss_review"
+                    && effect["params"]["review_id"] == "PRR_fixture482_r5"
+            })
+    );
+}
+
+#[tokio::test]
+async fn mark_cannot_hide_a_pr_question() {
+    let w = world().await;
+    let question = w.item("pr:3:merge").await;
+    assert_eq!(question["kind"], "pr_question");
+    let request = row(&question, MARK, None);
+    let (status, body) = w
+        .decide(question["no"].as_u64().unwrap(), request.clone())
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = batch(&w, "group", &[request]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(w.item("pr:3:merge").await[MARK].is_null());
 }

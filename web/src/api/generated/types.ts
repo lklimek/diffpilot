@@ -810,7 +810,7 @@ at: string,
 /**
  * Actual chosen kind.
  */
-kind: DecisionKind,
+kind: ReviewDecisionKind,
 /**
  * Actual target.
  */
@@ -1216,7 +1216,7 @@ source_decision: DecisionId,
 /**
  * Its kind.
  */
-source_kind: DecisionKind,
+source_kind: ReviewDecisionKind,
 /**
  * Kind.
  */
@@ -1811,7 +1811,7 @@ assessment: CommentAssessment | null,
 /**
  * Decisions, oldest first; the last is current.
  */
-decisions: Array<Decision>,
+decisions: Array<Decision<DecisionKind>>,
 /**
  * Answers in the Ask chat about this item.
  */
@@ -1855,7 +1855,7 @@ failed_effects: number,
 /**
  * Decisions, oldest first.
  */
-decisions: Array<Decision>,
+decisions: Array<Decision<DecisionKind>>,
 /**
  * Carry events of this PR, oldest first.
  */
@@ -2576,11 +2576,11 @@ plugins?: Array<PluginStatus>, };
 /**
  * Body of RC8 (`POST …/comments/items/{item}/decisions`).
  */
-export type DecideRequest = {
+export type DecideRequest<K = DecisionKind> = {
 /**
  * Decision.
  */
-kind: DecisionKind,
+kind: K,
 /**
  * Reason (required for D3 and D8).
  */
@@ -2635,7 +2635,7 @@ export type DecideRestRow = {
 /**
  * The decision submitted on confirmation (RC9 `via: bulk`).
  */
-row: DecisionBatchRow,
+row: DecisionBatchRow<ReviewDecisionKind>,
 /**
  * The recommendation it follows.
  */
@@ -2648,7 +2648,7 @@ effects: Array<PlannedEffect>, };
 /**
  * A stored decision (append-only) with its effects.
  */
-export type Decision = {
+export type Decision<K = DecisionKind> = {
 /**
  * Evidence and authority for a decision imported from GitHub.
  */
@@ -2668,7 +2668,7 @@ item_no: number,
 /**
  * Decision.
  */
-kind: DecisionKind,
+kind: K,
 /**
  * Reason (D3, D8; posted as the reply).
  */
@@ -2742,12 +2742,12 @@ via: BatchVia,
 /**
  * One row per item.
  */
-rows: Array<DecisionBatchRow>, };
+rows: Array<DecisionBatchRow<DecisionKind>>, };
 
 /**
  * One row of a decision batch.
  */
-export type DecisionBatchRow = {
+export type DecisionBatchRow<K = DecisionKind> = {
 /**
  * The item, `C<no>`.
  */
@@ -2755,7 +2755,7 @@ item_no: number,
 /**
  * Decision.
  */
-kind: DecisionKind,
+kind: K,
 /**
  * Reason (required for D3 and D8).
  */
@@ -2809,7 +2809,7 @@ next_cursor: string | null, };
 export type DecisionId = string;
 
 /**
- * A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.
+ * A review decision or an internal mark accepted by the decide routes.
  */
 export type DecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews" | "not_a_review_point";
 
@@ -3288,7 +3288,7 @@ export type EffectsPreviewRequest = {
 /**
  * One row per item.
  */
-rows: Array<DecisionBatchRow>, };
+rows: Array<DecisionBatchRow<DecisionKind>>, };
 
 /**
  * A place where the matter is handled already.
@@ -3482,7 +3482,7 @@ item: FeedItem,
 /**
  * The decision with its effects; `comment` carries the owner's instructions for the executor.
  */
-decision: Decision, };
+decision: Decision<ReviewDecisionKind>, };
 
 /**
  * SSE data of RF2.
@@ -6803,7 +6803,7 @@ export type Recommendation = {
 /**
  * Recommended decision.
  */
-kind: DecisionKind,
+kind: ReviewDecisionKind,
 /**
  * Why.
  */
@@ -7296,6 +7296,11 @@ analysis: AnalysisSummary | null,
  * The analysis is for an older head than the pull request now has.
  */
 head_moved: boolean, };
+
+/**
+ * A review decision (D1–D7 and P1–P4) eligible for external use.
+ */
+export type ReviewDecisionKind = "resolve" | "fix_here" | "reject" | "handled_in_pr" | "follow_up_pr" | "upstream_issue" | "todo" | "merge_with_follow_ups" | "another_round" | "dismiss_stale_reviews" | "keep_reviews";
 
 /**
  * The user's diffpilot analysis of a pull request item.

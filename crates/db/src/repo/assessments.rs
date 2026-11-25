@@ -527,7 +527,9 @@ impl Assessments<'_> {
                     sqlx::query("UPDATE comment_sources SET read_at=coalesce(read_at,?) WHERE tenant_id=? AND pull_request_id=? AND url=? AND body_hash=?")
                         .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).bind(version).execute(&mut *tx).await?;
                     if run.method == AssessmentMethod::ClaudiusHost {
-                        sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND gone_at IS NULL AND state IN ('assessing','undecided','asked_back','reopened') AND NOT EXISTS(SELECT 1 FROM assessment_comparison_items c WHERE c.pass_id=? AND c.method=? AND c.primary_item_id=comment_items.id AND c.status NOT IN ('missing_row','context','head_mismatch'))")
+                        sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND gone_at IS NULL AND state IN ('assessing','undecided','asked_back','reopened')
+                                     AND NOT EXISTS(SELECT 1 FROM comment_item_marks m WHERE m.item_id=comment_items.id AND m.undone_at IS NULL)
+                                     AND NOT EXISTS(SELECT 1 FROM assessment_comparison_items c WHERE c.pass_id=? AND c.method=? AND c.primary_item_id=comment_items.id AND c.status NOT IN ('missing_row','context','head_mismatch'))")
                             .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).bind(pass.id.to_string()).bind(wire_name(run.method)?).execute(&mut *tx).await?;
                     }
                 }
@@ -537,7 +539,9 @@ impl Assessments<'_> {
                     && let AssessmentSource::Body { url, quote, .. } = &row.source
                     && quote.is_empty()
                 {
-                    sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL AND NOT EXISTS(SELECT 1 FROM comment_assessments a WHERE a.item_id=comment_items.id)")
+                    sqlx::query("UPDATE comment_items SET gone_at=?,revision=revision+1 WHERE tenant_id=? AND pull_request_id=? AND url=? AND kind IN ('review_body','pr_comment') AND source_id IS NULL
+                                 AND NOT EXISTS(SELECT 1 FROM comment_item_marks m WHERE m.item_id=comment_items.id AND m.undone_at IS NULL)
+                                 AND NOT EXISTS(SELECT 1 FROM comment_assessments a WHERE a.item_id=comment_items.id)")
                         .bind(ts(Timestamp::now())).bind(tenant).bind(pass.input.pull_request_id).bind(url).execute(&mut *tx).await?;
                 }
             }

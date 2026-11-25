@@ -1095,8 +1095,7 @@ async fn add_pr_questions(
     Ok(())
 }
 
-/// Bots whose latest review requests changes while every item they raised (not resolved outside) has a standing
-/// decision and is not asked again.
+/// Bot change requests whose remaining review points all have standing decisions.
 fn stale_reviews<'a>(
     snapshot: &'a Snapshot,
     items: &[ItemRecord],
@@ -1113,6 +1112,7 @@ fn stale_reviews<'a>(
                     item.state != ItemState::Outside
                         && item.gone_at.is_none()
                         && !item.status_comment
+                        && item.active_mark.is_none()
                 })
                 .collect();
             !raised.is_empty()
@@ -1370,20 +1370,22 @@ impl Loaded {
     }
 
     /// Plans the effects of `rows` (validated against their items).
-    pub(crate) fn plan(
+    pub(crate) fn plan<K: Copy + Into<DecisionKind>>(
         &self,
-        rows: &[DecisionBatchRow],
+        rows: &[DecisionBatchRow<K>],
     ) -> Result<Vec<(&ItemRecord, effects::Planned)>, LoopError> {
         let deciding: Vec<u32> = rows.iter().map(|row| row.item_no).collect();
         let scope = self.scope(&deciding)?;
         rows.iter()
             .map(|row| {
                 let record = self.item(row.item_no)?;
-                if row.decision.kind == DecisionKind::NotAReviewPoint {
+                let kind = row.decision.kind.into();
+                if kind == DecisionKind::NotAReviewPoint {
                     if record.revision != row.decision.item_revision {
                         return Err(LoopError::ItemChanged(vec![record.no]));
                     }
-                    if record.status_comment
+                    if record.kind == CommentItemKind::PrQuestion
+                        || record.status_comment
                         || record.active_mark.is_some()
                         || !matches!(
                             record.state,
@@ -1397,7 +1399,7 @@ impl Loaded {
                         });
                     }
                 }
-                let dismissing = row.decision.kind == DecisionKind::DismissStaleReviews
+                let dismissing = kind == DecisionKind::DismissStaleReviews
                     && matches!(question_of(record), Some((PrQuestion::Dismiss, _)));
                 let listed;
                 let scope = if dismissing {

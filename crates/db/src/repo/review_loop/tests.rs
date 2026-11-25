@@ -3,8 +3,8 @@ use contracts::api::review_loop::{
     AuthorKind, CarryEvidence, CarryKind, ChannelKind, CommentAssessment, CommentItemKind,
     DecisionKind, DecisionVia, DeliveryOutcome, EffectKind, EffectParams, EffectState, Executor,
     Gate, GateMark, GateSource, ItemGithubFacts, ItemLocation, ItemState, Necessity,
-    NecessityVerdict, OutsideResolution, ReaskReason, Recommendation, ReportOutcome, UserEventKind,
-    Validity, WatchState,
+    NecessityVerdict, OutsideResolution, ReaskReason, Recommendation, ReportOutcome,
+    ReviewDecisionKind, UserEventKind, Validity, WatchState,
 };
 use contracts::common::{LineRange, RepoRef};
 use contracts::ids::{CommitSha, JobId};
@@ -303,12 +303,8 @@ async fn read_failure_keeps_the_last_good_read() {
     ));
 }
 
-#[tokio::test]
-async fn assessments_keep_their_fingerprint_and_newest_wins() {
-    let db = db().await;
-    let rl = db.review_loop();
-    let item = new_item(&db, "dedupe-a").await;
-    let assessment = |reason: &str| CommentAssessment {
+fn assessment(reason: &str) -> CommentAssessment {
+    CommentAssessment {
         proposed_decision: None,
         evidence_text: None,
         recorded_decision: None,
@@ -331,7 +327,7 @@ async fn assessments_keep_their_fingerprint_and_newest_wins() {
         fix_size: None,
         reply_drafts: vec![],
         recommendation: Recommendation {
-            kind: DecisionKind::FixHere,
+            kind: ReviewDecisionKind::FixHere,
             reason: reason.into(),
             target: None,
             reason_class: "real bug".into(),
@@ -339,7 +335,14 @@ async fn assessments_keep_their_fingerprint_and_newest_wins() {
         code: None,
         prompt_version: 1,
         skills_commit: Some("0123456789abcdef0123456789abcdef01234567".into()),
-    };
+    }
+}
+
+#[tokio::test]
+async fn assessments_keep_their_fingerprint_and_newest_wins() {
+    let db = db().await;
+    let rl = db.review_loop();
+    let item = new_item(&db, "dedupe-a").await;
     rl.add_assessment(T, item.id, &assessment("first"), "fp1")
         .await
         .expect("first");
@@ -1088,7 +1091,7 @@ async fn carry_events_are_logged_and_counted() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].kind, CarryKind::AskedAgain);
     assert_eq!((events[1].item_no, events[1].source_item_no), (2, 1));
-    assert_eq!(events[1].source_kind, DecisionKind::FixHere);
+    assert_eq!(events[1].source_kind, ReviewDecisionKind::FixHere);
     assert_eq!(
         events[1].effects_pending, 0,
         "asking the source again cancelled its decision's unclaimed effects"
@@ -2609,4 +2612,29 @@ async fn marks_exclude_a_stale_assessment_batch() {
         PassStart::MarkedItem
     );
     assert!(rl.latest_pass(PR).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn marked_item_discards_an_in_flight_assessment() {
+    let db = db().await;
+    sqlx::query("INSERT INTO memberships (tenant_id, user_id, created_at) VALUES (?, 'u1', 't')")
+        .bind(T)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let rl = db.review_loop();
+    let item = new_item(&db, "pending-assessment").await;
+    let mut mark = fix_decision(&item);
+    mark.kind = DecisionKind::NotAReviewPoint;
+    mark.effects.clear();
+    assert!(matches!(
+        rl.decide(T, &[mark], at(2)).await.unwrap(),
+        DecideOutcome::Stored(_)
+    ));
+    assert!(
+        !rl.add_assessment(T, item.id, &assessment("in flight"), "new")
+            .await
+            .unwrap()
+    );
+    assert!(rl.latest_assessment(item.id).await.unwrap().is_none());
 }

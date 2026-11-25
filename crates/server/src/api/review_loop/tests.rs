@@ -307,7 +307,7 @@ fn reject(reason: &str) -> Value {
 
 fn recommend(kind: DecisionKind, class: &str) -> Recommendation {
     Recommendation {
-        kind,
+        kind: kind.review_kind().expect("recommendable decision"),
         reason: "The lines are older than this change.".into(),
         target: None,
         reason_class: class.into(),
