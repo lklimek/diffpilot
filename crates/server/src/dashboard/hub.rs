@@ -27,6 +27,8 @@ use crate::github::work::SEARCH_INTERVAL;
 pub const SCAN_LIMIT: Duration = Duration::from_secs(5 * 60);
 /// Status events buffered per subscriber; a slower reader re-reads the status.
 const EVENTS_CAPACITY: usize = 256;
+/// Minimum gap between warnings for the same dashboard tally failure.
+const TALLY_WARNING_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Where the dashboard reads the time.
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +80,8 @@ struct Inner {
     stopped: broadcast::Sender<RefreshId>,
     /// Scheduled runs given up for a user's local date after a failure the run record could not hold.
     given_up: Mutex<HashSet<(String, Date)>>,
+    // None is the batch itself. Pull-request ids share one database across users.
+    tally_warnings: Mutex<HashMap<Option<i64>, tokio::time::Instant>>,
     /// Who has My work open, and their fact checks (plan §M).
     readers: Readers,
 }
@@ -150,6 +154,7 @@ impl DashboardHub {
                 events: broadcast::channel(EVENTS_CAPACITY).0,
                 stopped: broadcast::channel(EVENTS_CAPACITY).0,
                 given_up: Mutex::default(),
+                tally_warnings: Mutex::default(),
                 readers: Readers::default(),
             }),
         }
@@ -178,6 +183,22 @@ impl DashboardHub {
     /// The ranking step.
     pub fn ranker(&self) -> Arc<dyn Ranker> {
         Arc::clone(&self.inner.ranker)
+    }
+
+    /// Reserves one warning per batch or PR across dashboard polls during the warning interval.
+    pub(crate) fn tally_warning_due(&self, pr: Option<i64>) -> bool {
+        let now = tokio::time::Instant::now();
+        let mut warnings = self
+            .inner
+            .tally_warnings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        warnings.retain(|_, deadline| *deadline > now);
+        let std::collections::hash_map::Entry::Vacant(entry) = warnings.entry(pr) else {
+            return false;
+        };
+        entry.insert(now + TALLY_WARNING_INTERVAL);
+        true
     }
 
     /// Status events of every refresh; readers keep their own refresh's.
@@ -270,6 +291,21 @@ impl DashboardHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn tally_warnings_are_throttled_independently_per_pull_request_and_batch() {
+        let hub = DashboardHub::default();
+        assert!(hub.tally_warning_due(None));
+        assert!(hub.tally_warning_due(Some(1)));
+        assert!(hub.tally_warning_due(Some(2)));
+        assert!(!hub.tally_warning_due(Some(1)));
+        assert!(!hub.tally_warning_due(None));
+        tokio::time::advance(std::time::Duration::from_secs(59)).await;
+        assert!(!hub.tally_warning_due(Some(1)));
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        assert!(hub.tally_warning_due(Some(1)));
+        assert!(hub.tally_warning_due(None));
+    }
 
     #[test]
     fn production_hubs_pace_searches_three_seconds_apart() {

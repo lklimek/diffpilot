@@ -463,7 +463,9 @@ async fn comment_tallies(
     {
         Ok(batch) => Some(batch),
         Err(error) => {
-            tracing::debug!(?error, "dashboard comment tally batch could not be read");
+            if state.dashboard.tally_warning_due(None) {
+                tracing::warn!(?error, "dashboard comment tally batch could not be read");
+            }
             None
         }
     };
@@ -493,11 +495,16 @@ async fn comment_tallies(
                     {
                         Ok(needs_you) => Some(needs_you),
                         Err(error) => {
-                            tracing::debug!(
-                                ?error,
-                                pr = tally.pull_request_id,
-                                "dashboard comment tally omitted"
-                            );
+                            if state
+                                .dashboard
+                                .tally_warning_due(Some(tally.pull_request_id))
+                            {
+                                tracing::warn!(
+                                    ?error,
+                                    pr = tally.pull_request_id,
+                                    "dashboard comment tally omitted"
+                                );
+                            }
                             None
                         }
                     }

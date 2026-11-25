@@ -996,9 +996,10 @@ The response and status in the table describe their final contract.
   needs the owner to decide it. See [the Phase B rules](../v1.4-phase-b-plan.md#6-needs-you-c10-and-duplicates-c15).
 - `needs_you` counts queue items whose status is Needs you. `needs_you_gates` counts the gated subset. Running
   assessments and unassessed unlinked comments are excluded, with the exceptions in the [N1 rules](../v1.4-phase-b-plan.md#6-needs-you-c10-and-duplicates-c15).
-  The PR badge and dashboard use this calculation. An open non-bot review item awaiting assessment or in a
-  running pass vetoes Ready to merge. Status comments are listed and excluded from the queue, including
-  `undecided`, and from `assessment.total`. Assess again on a status comment returns 409 `conflict`. Ask can
+  The PR badge and dashboard use this calculation. An open non-bot review item in the decision queue vetoes
+  Ready to merge while awaiting assessment or included in a running pass. Status comments are listed and excluded
+  from the queue, including `undecided`, and from `assessment.total`. Assess again on a status comment returns
+  409 `conflict`. Ask can
   still use it as context. `imported_unseen` is omitted until the server tracks imports since the last Comments
   visit.
 - The Tour's optional `StepFacts.leading_context` is the deterministic line range of doc comments and attributes

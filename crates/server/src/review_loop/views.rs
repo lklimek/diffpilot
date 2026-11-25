@@ -1,18 +1,18 @@
 //! Read views of the review loop (RC1, RC2, RC4, RC5, RC10, RC11, RC16, RC17): built from the stored read, items,
 //! assessments and decisions; no GitHub call.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::deps::{CrateChanges, DependencyView, RepositoryKind};
 use contracts::api::files::{PartOwner, PrFile};
 use contracts::api::review_loop::{
     AssessmentProgress, AssessmentState, AuthorKind, CarryOverPage, CodeContext, CodeLine,
-    CommentCounts, CommentItem, CommentLog, CommentsOverview, CommentsSummary, ContextQuery,
-    DecideRest, DecideRestRow, DecisionBatchRow, DecisionVia, EffectState, EffectsPreview,
-    FeedSubscriber, FlowStepRef, GithubRead, ImportedGithubDecision, ItemState, ItemsQuery,
-    KindCount, NotAssessedReason, NoteElsewhere, NoteSource, PrBadgeView, PrPage, QueueEntry,
-    Round, WatchState,
+    CommentCounts, CommentItem, CommentItemKind, CommentLog, CommentsOverview, CommentsSummary,
+    ContextQuery, DecideRest, DecideRestRow, DecisionBatchRow, DecisionVia, EffectState,
+    EffectsPreview, FeedSubscriber, FlowStepRef, GithubRead, ImportedGithubDecision, ItemState,
+    ItemsQuery, KindCount, NotAssessedReason, NoteElsewhere, NoteSource, PrBadgeView, PrPage,
+    QueueEntry, Round, WatchState,
 };
 use contracts::api::tour::{CiState, Tour};
 use contracts::common::{AnnotationType, LineRange, LineSide, PrRef};
@@ -458,6 +458,7 @@ fn rounds(loaded: &Loaded, events: &[contracts::api::review_loop::CarryEvent]) -
 fn badge_of(
     state: &AppState,
     loaded: &Loaded,
+    queue_items: &[queue::QueueItem],
     needs_you: u32,
     pass: Option<&PassRecord>,
     my_work: &MyWork,
@@ -473,6 +474,10 @@ fn badge_of(
             badge::without_ignored(ci, pending, |name| my_work.is_ignored_check(&pr.repo, name))
         })
         .unzip();
+    let waiting: HashSet<u32> = queue::waiting(queue_items)
+        .into_iter()
+        .map(|item| item.no)
+        .collect();
     badge::badge(&BadgeInputs {
         open: snapshot.is_none_or(|snapshot| snapshot.state == "OPEN"),
         read_failed: loaded.row.read_failure.is_some() || snapshot.is_none(),
@@ -492,8 +497,9 @@ fn badge_of(
         failed_effects: standing.values().map(|s| failed(s)).sum(),
         needs_you,
         pending_human_review: loaded.items.iter().any(|item| {
-            item.author_kind != AuthorKind::Bot
-                && waits(item)
+            waiting.contains(&item.no)
+                && item.kind != CommentItemKind::PrQuestion
+                && item.author_kind != AuthorKind::Bot
                 && (!loaded.assessments.contains_key(&item.no)
                     || pass.is_some_and(|pass| {
                         pass.state == PassState::Running
@@ -525,7 +531,8 @@ pub(crate) async fn badge(
 ) -> Result<PrBadgeView, LoopError> {
     let loaded = Loaded::of(state, handle).await?;
     let pass = state.db.review_loop().latest_pass(loaded.handle.id).await?;
-    let entries = queue::queue(&loaded.queue_items(&[]));
+    let queue_items = loaded.queue_items(&[]);
+    let entries = queue::queue(&queue_items);
     let needs_you = needs_you(
         &loaded,
         &entries,
@@ -533,7 +540,14 @@ pub(crate) async fn badge(
         false,
     )
     .0;
-    Ok(badge_of(state, &loaded, needs_you, pass.as_ref(), my_work))
+    Ok(badge_of(
+        state,
+        &loaded,
+        &queue_items,
+        needs_you,
+        pass.as_ref(),
+        my_work,
+    ))
 }
 
 async fn latest_analysis(
@@ -610,6 +624,7 @@ pub async fn overview(
         badge: badge_of(
             state,
             &loaded,
+            &queue_items,
             needs_you.0,
             pass.as_ref(),
             &badge::my_work(state, &session.tenant_id, &session.user_id).await?,
@@ -651,7 +666,14 @@ pub async fn pr_page(
         pass.as_ref().map(|pass| pass.state),
         limited,
     );
-    let badge = badge_of(state, &loaded, needs_you.0, pass.as_ref(), &my_work);
+    let badge = badge_of(
+        state,
+        &loaded,
+        &queue_items,
+        needs_you.0,
+        pass.as_ref(),
+        &my_work,
+    );
     let watch = watch.map(|watch| super::watch::view(watch, badge.clone()));
     let url = snapshot.map_or_else(|| stored.html_url.clone(), |snapshot| snapshot.url.clone());
     let url = if url.is_empty() { pr_url(pr) } else { url };
