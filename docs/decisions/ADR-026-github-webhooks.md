@@ -17,8 +17,10 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
 
 ## Decision
 1. **Event source:** the GitHub App's webhook. Subscribed: `pull_request`, `pull_request_review`,
-   `pull_request_review_comment`, `pull_request_review_thread`, `issue_comment`, `issues`, `check_suite`, and
-   `status` if the owner adds "Commit statuses: read" (OQ2); `installation*` arrive automatically.
+   `pull_request_review_comment`, `pull_request_review_thread`, `issue_comment`, `issues`, `check_suite`,
+   `check_run` (failing conclusions only; the rest ignored at receipt), `status` (App permission "Commit statuses:
+   read"); `installation*` and `ping` arrive automatically. `workflow_run` (needs "Actions: read") repeats
+   `check_suite` for GitHub Actions and is recommended unsubscribed (OQ2); if kept it is mapped like `check_suite`.
 2. **Endpoint:** public route outside `/api/` with its own auth kind (`GithubSignature`): body ≤ 4 MiB, required
    GitHub headers, HMAC-SHA256 (`X-Hub-Signature-256`, constant time) over the raw body **before** parsing; 401
    without detail on failure. Source IPs are never authentication.
@@ -37,8 +39,9 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
 7. **Missed events:** our failures retry (3×, then `failed`, resumed at start-up); GitHub's failed deliveries are
    listed with the App JWT (`GET /app/hook/deliveries?status=failure`) and redelivered at start-up and every
    30 min (OQ1); GitHub keeps them 3 days; beyond that the nightly scan is the backstop.
-8. **Configuration:** `SR_GITHUB_WEBHOOK_SECRET` (secrets.env) and `SR_GITHUB_WEBHOOK_URL` (display in Settings),
-   both or neither. The App's webhook is turned on with that URL and secret.
+8. **Configuration:** `SR_GITHUB_WEBHOOK_SECRET` (secrets.env); content type `application/json`. Without the
+   secret the server starts, logs once, answers 503 on the route, runs no sweep and marks nothing live.
+   `SR_GITHUB_WEBHOOK_URL` is optional and only shown in Settings.
 
 ## Alternatives considered
 | Alternative | Why not |
@@ -49,7 +52,8 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
 | Trust the payload as the new facts | payload shapes differ per event and lack derived facts (rollups, stacks); a re-read keeps one fact path and makes order irrelevant |
 | Store raw payloads | needless retention of PR texts; the change keys are enough |
 | A webhook relay service (smee, hookdeck) | an extra third party for a path the owner's infrastructure already provides |
-| `check_run` events | one event per CI job; `check_suite completed` carries the same rollup change |
+| All `check_run` events | one event per CI job; only failing conclusions add a fact before the suite completes |
+| `workflow_run` | repeats `check_suite` for Actions and needs "Actions: read" |
 | Re-judge changed items automatically within the caps | the cap was spent on small changes; the owner wants explicit re-judging (P3) |
 
 ## Consequences
