@@ -295,7 +295,7 @@ async fn a_change_signal_rereads_only_the_changed_pull_requests_with_the_details
     let summary = w.summary(ALICE).await;
     assert_ne!(summary.revision, revision, "a re-read changes the revision");
     assert_eq!(
-        summary.snapshot.expect("snapshot").facts_checked_at,
+        w.state.dashboard.readers().checked_at(&alice(), id),
         None,
         "a signalled re-read is no check of every listed pull request (plan §M)"
     );

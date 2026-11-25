@@ -22,6 +22,24 @@
       ]
     },
     {
+      "description": "The reader's LLM activity snapshot.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "string",
+          "const": "llm_activity"
+        },
+        "activity": {
+          "description": "Running and queued jobs visible to the reader.",
+          "$ref": "#/$defs/LlmActivity"
+        }
+      },
+      "required": [
+        "event",
+        "activity"
+      ]
+    },
+    {
       "description": "Sent every 15 s while the stream is open; each one re-checks the session or token.",
       "type": "object",
       "properties": {
@@ -157,6 +175,296 @@
       "required": [
         "owner",
         "name"
+      ]
+    },
+    "LlmActivity": {
+      "description": "Running and queued jobs of the reader's tenant.",
+      "type": "object",
+      "properties": {
+        "running": {
+          "description": "Jobs currently running.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LlmJob"
+          }
+        },
+        "queued": {
+          "description": "Jobs awaiting execution or paused.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LlmJob"
+          }
+        },
+        "paused_until": {
+          "description": "End of the reader's own provider pause, if known.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "last_call": {
+          "description": "The reader's latest provider call.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LlmCallOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "running",
+        "queued"
+      ]
+    },
+    "LlmJob": {
+      "description": "A job as visible to the reader.",
+      "oneOf": [
+        {
+          "description": "A job paid for by the reader.",
+          "type": "object",
+          "properties": {
+            "owner": {
+              "type": "string",
+              "const": "self"
+            },
+            "id": {
+              "description": "The job's id.",
+              "$ref": "#/$defs/JobId"
+            },
+            "kind": {
+              "description": "The job kind.",
+              "$ref": "#/$defs/LlmJobKind"
+            },
+            "subject": {
+              "description": "The subject and app-relative link, when available.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/JobSubject"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "since": {
+              "description": "When the job started running.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "queued_at": {
+              "description": "When the job was queued.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "waits_for": {
+              "description": "Why the job is waiting.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/WaitReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "owner",
+            "id",
+            "kind"
+          ]
+        },
+        {
+          "description": "Another user's job in this tenant.",
+          "type": "object",
+          "properties": {
+            "owner": {
+              "type": "string",
+              "const": "other"
+            },
+            "id": {
+              "description": "Opaque index local to this response.",
+              "type": "string"
+            },
+            "kind": {
+              "description": "The job kind.",
+              "$ref": "#/$defs/LlmJobKind"
+            }
+          },
+          "required": [
+            "owner",
+            "id",
+            "kind"
+          ]
+        }
+      ]
+    },
+    "JobId": {
+      "description": "Identifier of a job (one agent run).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "LlmJobKind": {
+      "description": "Kind of LLM work as shown in the activity list.",
+      "oneOf": [
+        {
+          "description": "PR planning and context.",
+          "type": "string",
+          "const": "analysis"
+        },
+        {
+          "description": "Flow analysis.",
+          "type": "string",
+          "const": "flow_analysis"
+        },
+        {
+          "description": "Dashboard ranking or re-judgement.",
+          "type": "string",
+          "const": "ranking"
+        },
+        {
+          "description": "Comment assessment.",
+          "type": "string",
+          "const": "comment_assessment"
+        },
+        {
+          "description": "An Ask question.",
+          "type": "string",
+          "const": "ask"
+        }
+      ]
+    },
+    "JobSubject": {
+      "description": "Subject of a job paid for by the reader.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "description": "User-facing subject.",
+          "type": "string"
+        },
+        "href": {
+          "description": "App-relative URL built by the server.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "href"
+      ]
+    },
+    "WaitReason": {
+      "description": "What must happen before the reader's job can run.",
+      "oneOf": [
+        {
+          "description": "A runner slot must become available.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "runner"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The reader's provider usage limit must reset.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "usage_limit"
+            },
+            "until": {
+              "description": "When execution can resume.",
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "kind",
+            "until"
+          ]
+        },
+        {
+          "description": "An analysis is ahead of the ranking.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "analysis_running"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "LlmCallOutcome": {
+      "description": "Outcome and time of an LLM call.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "When the call ended.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "description": "Whether it worked.",
+          "$ref": "#/$defs/LlmCallStatus"
+        }
+      },
+      "required": [
+        "at",
+        "status"
+      ]
+    },
+    "LlmCallStatus": {
+      "description": "Whether the LLM worked on its most recent call (brief §4.4).",
+      "oneOf": [
+        {
+          "description": "The call succeeded.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "working"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "The call failed.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "not_working"
+            },
+            "message": {
+              "description": "Plain error message.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "message"
+          ]
+        }
       ]
     }
   }

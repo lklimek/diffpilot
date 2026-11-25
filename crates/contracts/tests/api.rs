@@ -156,6 +156,7 @@ fn tour() -> Tour {
                 id: step_id,
                 number: 1,
                 facts: StepFacts {
+                    leading_context: None,
                     file: "src/rpc/client.rs".to_owned(),
                     side: LineSide::Head,
                     range: LineRange {
@@ -270,6 +271,7 @@ fn error_codes_map_to_statuses() {
         ("not_rendered", 422),
         ("github_unavailable", 502),
         ("internal", 500),
+        ("not_implemented", 501),
         ("unavailable", 503),
         ("refresh_running", 409),
         ("github_rate_limited", 429),
@@ -317,6 +319,11 @@ fn routes_are_unique_and_split_by_listener() {
         assert!(names.insert(route.name), "duplicate name {}", route.name);
         let runner_auth = matches!(route.auth, RouteAuth::RunnerSecret | RouteAuth::JobToken);
         match route.listener {
+            Listener::Webhook => {
+                assert_eq!(route.path, "/webhooks/github");
+                assert_eq!(route.method, HttpMethod::Post);
+                assert_eq!(route.auth, RouteAuth::GithubSignature);
+            }
             Listener::Runner => {
                 assert!(route.path.starts_with("/runner/v1/"), "{}", route.path);
                 assert!(runner_auth, "{}", route.path);
@@ -807,6 +814,7 @@ fn deletions_have_valid_locations() {
     };
     // Whole file deleted: base-side step, unexplained base lines, base-side lines endpoint.
     let step = StepFacts {
+        leading_context: None,
         file: "src/rpc/old.rs".to_owned(),
         side: LineSide::Base,
         range: base_range,

@@ -3771,8 +3771,7 @@ mod tests {
         );
     }
 
-    /// Migrations 0003/0004 on an empty database: the dashboard tables and indexes exist and every read answers
-    /// "nothing yet".
+    /// The dashboard indexes exist and reads on a new database find no dashboard state.
     #[tokio::test]
     async fn dashboard_on_an_empty_database() {
         let db = Db::in_memory().await.expect("db");
@@ -3789,6 +3788,9 @@ mod tests {
                 "dashboard_judgements_by_last_seen",
                 "dashboard_refreshes_by_user",
                 "dashboard_refreshes_one_live_per_user",
+                "dashboard_sends_by_job",
+                "dashboard_sends_by_refresh",
+                "dashboard_sends_by_time",
                 "dashboard_snoozes_not_ended",
             ]
         );
@@ -3878,7 +3880,7 @@ mod tests {
             .await
             .expect("before");
 
-        super::super::migrate(&db.pool, super::super::MIGRATIONS.len() - 1)
+        super::super::migrate(&db.pool, super::super::migration_count_through(29))
             .await
             .expect("upgrade in place");
 
@@ -3925,7 +3927,7 @@ mod tests {
         .expect("versions");
         let all: Vec<i64> = super::super::MIGRATIONS
             .iter()
-            .take(super::super::MIGRATIONS.len() - 1)
+            .take(super::super::migration_count_through(29))
             .map(|(version, ..)| *version)
             .collect();
         assert_eq!(versions, all);
@@ -3976,7 +3978,7 @@ mod tests {
             .await
             .expect("before");
 
-        super::super::migrate(&db.pool, super::super::MIGRATIONS.len() - 1)
+        super::super::migrate(&db.pool, super::super::migration_count_through(29))
             .await
             .expect("upgrade in place");
 

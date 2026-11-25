@@ -87,7 +87,8 @@ fn uri(route: &Route, analysis: AnalysisId) -> String {
         .replace("{comment_id}", "1")
         .replace("{number}", "482")
         .replace("{item}", "C1")
-        .replace("{kind}", "ntfy");
+        .replace("{kind}", "ntfy")
+        .replace("{key}", "acme~node-client~pr~482");
     if path.ends_with("/lines") || path.ends_with("/diff") {
         path + "?path=src/lib.rs&side=head&from=1&to=5"
     } else {
@@ -189,7 +190,7 @@ fn every_route_has_a_token_classification() {
         let method = Method::from_bytes(route.method.as_str().as_bytes()).expect("method");
         let classified = token_use(&method, Some(route.path));
         let expected = match (route.listener, route.auth) {
-            (Listener::Runner, _) => TokenUse::Refused,
+            (Listener::Runner | Listener::Webhook, _) => TokenUse::Refused,
             (Listener::Public, RouteAuth::SessionOrToken(scope)) => {
                 assert_eq!(route.method, HttpMethod::Get, "{}", route.path);
                 TokenUse::Read(scope)
@@ -202,7 +203,8 @@ fn every_route_has_a_token_classification() {
                 | RouteAuth::Session
                 | RouteAuth::SessionCsrf
                 | RouteAuth::RunnerSecret
-                | RouteAuth::JobToken,
+                | RouteAuth::JobToken
+                | RouteAuth::GithubSignature,
             ) => TokenUse::Refused,
         };
         assert_eq!(

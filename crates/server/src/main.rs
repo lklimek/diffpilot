@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use db::error::DbError;
 use db::repo::Db;
 use server::api;
-use server::config::{Config, ConfigError, LISTEN_ADDR, RUNNER_LISTEN_ADDR};
+use server::config::{Config, ConfigError, LISTEN_ADDR, RUNNER_LISTEN_ADDR, WEBHOOK_LISTEN_ADDR};
 use server::state::AppState;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -123,6 +123,7 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         .map_err(StartError::AllowedLogins)?;
     let public = bind(LISTEN_ADDR, config.listen_addr).await?;
     let runner = bind(RUNNER_LISTEN_ADDR, config.runner_listen_addr).await?;
+    let webhook = bind(WEBHOOK_LISTEN_ADDR, config.webhook_listen_addr).await?;
     let state = AppState::with_queue(config, db);
     tokio::spawn(server::jobs::github_tokens::run_worker(
         state.db.clone(),
@@ -158,7 +159,7 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     let (stop, stopped) = (state.stopping.clone(), state.stopping.subscribe());
     tokio::spawn(async move {
         shutdown_signal().await;
-        // Both servers may already be gone; nothing to notify then.
+        // The listeners may already be gone; nothing to notify then.
         let _ = stop.send(true);
     });
     let public = axum::serve(
@@ -167,8 +168,15 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     )
     .with_graceful_shutdown(stop_requested(stopped.clone()));
     let runner = axum::serve(runner, api::runner_router(state))
-        .with_graceful_shutdown(stop_requested(stopped));
-    tokio::try_join!(public.into_future(), runner.into_future()).map_err(StartError::Serve)?;
+        .with_graceful_shutdown(stop_requested(stopped.clone()));
+    let webhook =
+        axum::serve(webhook, api::webhook_router()).with_graceful_shutdown(stop_requested(stopped));
+    tokio::try_join!(
+        public.into_future(),
+        runner.into_future(),
+        webhook.into_future()
+    )
+    .map_err(StartError::Serve)?;
     Ok(())
 }
 

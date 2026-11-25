@@ -75,6 +75,23 @@ pr: string,
 fetch: string, };
 
 /**
+ * An account allowed to send GitHub App webhook deliveries.
+ */
+export type AllowedInstallation = {
+/**
+ * GitHub account login.
+ */
+account: string,
+/**
+ * GitHub installation id, null while unresolved.
+ */
+installation_id: number | null,
+/**
+ * Repository selection, null while unresolved.
+ */
+repository_selection: RepositorySelection | null, };
+
+/**
  * A bounded estimate, not a deadline or a guarantee.
  */
 export type AnalysisEstimate = {
@@ -384,7 +401,7 @@ message: string, };
 /**
  * Machine-readable API error code.
  */
-export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable" | "refresh_running" | "github_rate_limited" | "invalid_dashboard_settings" | "cursor_expired" | "insufficient_scope" | "token_not_accepted" | "token_limit_reached" | "rate_limited" | "github_refused" | "item_changed" | "claimed" | "lease_expired" | "capability_missing" | "watch_limit_reached" | "scheme_not_allowed" | "secret_required";
+export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "not_implemented" | "github_unavailable" | "internal" | "unavailable" | "refresh_running" | "github_rate_limited" | "invalid_dashboard_settings" | "cursor_expired" | "insufficient_scope" | "token_not_accepted" | "token_limit_reached" | "rate_limited" | "github_refused" | "item_changed" | "claimed" | "lease_expired" | "capability_missing" | "watch_limit_reached" | "scheme_not_allowed" | "secret_required";
 
 /**
  * A GitHub App installation.
@@ -854,6 +871,18 @@ admitted_at: string, };
  */
 export type AssessmentProgress = {
 /**
+ * Items in the live pass input.
+ */
+in_pass?: number,
+/**
+ * Items waiting for the next pass.
+ */
+waiting?: number,
+/**
+ * When the live pass started.
+ */
+since?: string,
+/**
  * A pass is queued or running.
  */
 running: boolean,
@@ -971,7 +1000,7 @@ quote: string, };
 /**
  * Whether an item has an LLM assessment.
  */
-export type AssessmentState = { "state": "running" } | { "state": "assessed" } | { "state": "not_assessed",
+export type AssessmentState = { "state": "queued" } | { "state": "running" } | { "state": "assessed" } | { "state": "not_assessed",
 /**
  * Why.
  */
@@ -1620,6 +1649,18 @@ skills_commit: string | null, };
  */
 export type CommentCounts = {
 /**
+ * Items in the Needs you queue.
+ */
+needs_you?: number,
+/**
+ * Gated items in the Needs you queue.
+ */
+needs_you_gates?: number,
+/**
+ * Items with a decision imported since this reader last visited Comments.
+ */
+imported_unseen?: number,
+/**
  * Unresolved threads on GitHub (fact).
  */
 unresolved_threads: number,
@@ -1652,6 +1693,26 @@ total: number, };
  * A review-loop item with its assessment, decisions and effects (RC4).
  */
 export type CommentItem = {
+/**
+ * Whether the item is a bot status comment.
+ */
+status_comment?: boolean,
+/**
+ * Evidence of the current decision imported from GitHub.
+ */
+imported_decision?: ImportedGithubDecision,
+/**
+ * A recorded GitHub decision awaiting confirmation.
+ */
+import_proposal?: ImportedGithubDecision,
+/**
+ * First sentence of the primary assessment description, at most 90 characters.
+ */
+llm_title?: string,
+/**
+ * Whether this item follows the decision on its primary.
+ */
+decision_follows_primary?: boolean,
 /**
  * Grounded point read from a versioned source; absent on inline threads and PR questions.
  */
@@ -1926,6 +1987,10 @@ line: number, };
  * Response of RC2.
  */
 export type CommentsOverview = {
+/**
+ * The reader’s watch for this pull request.
+ */
+watch?: WatchedPr,
 /**
  * Pull request.
  */
@@ -2464,6 +2529,22 @@ unreachable: Array<string>, };
  */
 export type DashboardSummary = {
 /**
+ * Counts of distinct judgement and sync states.
+ */
+status_counts?: StatusCounts,
+/**
+ * Repositories updated by GitHub App webhooks.
+ */
+live_repositories?: number,
+/**
+ * Repositories refreshed by manual and scheduled scans.
+ */
+not_live_repositories?: number,
+/**
+ * Latest GitHub event applied to this dashboard.
+ */
+last_event_at?: string,
+/**
  * Unanswered, unhidden mentions, oldest first; independent of the ranking.
  */
 mentions: Array<Mention>,
@@ -2488,7 +2569,7 @@ snapshot: SnapshotMeta | null,
  */
 schedule: ScheduleStatus,
 /**
- * Items of the snapshot whose judgement came from an older ranking prompt (re-judged within the caps).
+ * Items judged against an older prompt. Superseded by `status_counts`.
  */
 older_prompt_judgements: number,
 /**
@@ -2573,6 +2654,14 @@ effects: Array<PlannedEffect>, };
  * A stored decision (append-only) with its effects.
  */
 export type Decision = {
+/**
+ * Evidence and authority for a decision imported from GitHub.
+ */
+imported?: ImportedDecision,
+/**
+ * Item number of the primary whose decision this follows.
+ */
+follows?: number,
 /**
  * Id.
  */
@@ -2753,7 +2842,7 @@ title: string, };
 /**
  * Where a decision was made. Open enum.
  */
-export type DecisionVia = "question" | "group" | "bulk" | "table" | "carried";
+export type DecisionVia = "imported_github" | "follows_primary" | "question" | "group" | "bulk" | "table" | "carried";
 
 /**
  * Removed code shown at its deletion marker.
@@ -3354,9 +3443,26 @@ label: string,
 value: string, };
 
 /**
+ * Selects items with a deterministic fact.
+ */
+export type FactFilter = {
+/**
+ * Stable key for the fact kind and its value where applicable.
+ */
+key: string,
+/**
+ * Label shown in the filter menu.
+ */
+label: string, };
+
+/**
  * A deterministic tag from scan facts.
  */
 export type FactTag = {
+/**
+ * Filter for items with this fact.
+ */
+filter?: FactFilter,
 /**
  * Short text.
  */
@@ -4059,6 +4165,31 @@ llm_status: ThreadLlmStatus | null,
 llm_reason: string | null, };
 
 /**
+ * GitHub App webhook configuration and delivery status.
+ */
+export type GithubWebhook = {
+/**
+ * Whether the webhook secret is configured.
+ */
+configured: boolean,
+/**
+ * Configured public HTTPS URL.
+ */
+webhook_url: string | null,
+/**
+ * When the last verified delivery was received.
+ */
+last_delivery_at: string | null,
+/**
+ * Accounts configured to send deliveries.
+ */
+allowed: Array<AllowedInstallation>,
+/**
+ * Verified deliveries from disallowed installations over the last 14 days.
+ */
+refused_deliveries: number, };
+
+/**
  * A graph edge.
  */
 export type GraphEdge = {
@@ -4204,6 +4335,56 @@ basis: Basis,
  * GitHub link.
  */
 github_url: string, };
+
+/**
+ * An imported decision's source and grounded evidence.
+ */
+export type ImportedDecision = {
+/**
+ * GitHub login of the decision's author.
+ */
+by: string,
+/**
+ * Numeric GitHub user id when available.
+ */
+by_id: number | null,
+/**
+ * When the statement was made on GitHub.
+ */
+at: string,
+/**
+ * GitHub URL of the evidence.
+ */
+evidence_url: string,
+/**
+ * Verbatim excerpt supporting the decision.
+ */
+quote: string,
+/**
+ * GitHub login of the configured relay when one spoke on the author's behalf.
+ */
+relay: string | null, };
+
+/**
+ * Decision evidence shown on a comment item.
+ */
+export type ImportedGithubDecision = {
+/**
+ * Kind of the decision.
+ */
+kind: DecisionKind,
+/**
+ * GitHub login of the author.
+ */
+by: string,
+/**
+ * When the statement was made.
+ */
+at: string,
+/**
+ * GitHub URL of the statement.
+ */
+evidence_url: string, };
 
 /**
  * Body of the item actions Undo, Reopen and Skip: the item revision the reader saw (409 `item_changed`
@@ -4439,6 +4620,7 @@ alarm: string | null,
 judged_at: string,
 /**
  * Carried over from before the item changed.
+ * Superseded by `WorkItem.judgement`.
  */
 inherited: boolean,
 /**
@@ -4470,6 +4652,19 @@ export type JobFailureKind = "configuration" | "provider_failed" | "output_not_j
 export type JobId = string;
 
 /**
+ * Subject of a job paid for by the reader.
+ */
+export type JobSubject = {
+/**
+ * User-facing subject.
+ */
+label: string,
+/**
+ * App-relative URL built by the server.
+ */
+href: string, };
+
+/**
  * What a job works on (ADR-018); exhaustive matches mark every pull-request-only site.
  */
 export type JobTarget = { "type": "pull_request" } & PullRequestTarget | { "type": "dashboard",
@@ -4477,6 +4672,28 @@ export type JobTarget = { "type": "pull_request" } & PullRequestTarget | { "type
  * The refresh whose items are judged.
  */
 refresh_id: RefreshId, } | { "type": "pull_request_comments" } & PullRequestCommentsTarget | { "type": "pull_request_ask" } & PullRequestAskTarget;
+
+/**
+ * Judgement state and its evidence.
+ */
+export type Judgement = {
+/**
+ * State of the item's judgement.
+ */
+state: JudgementState,
+/**
+ * When the existing judgement was made.
+ */
+judged_at: string | null,
+/**
+ * Which input to the existing judgement changed.
+ */
+outdated_because: OutdatedBecause | null, };
+
+/**
+ * Whether an item has a current judgement or is waiting for one.
+ */
+export type JudgementState = "current" | "outdated" | "queued" | "judging" | "not_judged" | "capped";
 
 /**
  * Reasons to revoke a local virtual key; none authorizes upstream revoke.
@@ -4646,6 +4863,27 @@ export type LinkCredential = {
 mode: CredentialMode, };
 
 /**
+ * Running and queued jobs of the reader's tenant.
+ */
+export type LlmActivity = {
+/**
+ * Jobs currently running.
+ */
+running: Array<LlmJob>,
+/**
+ * Jobs awaiting execution or paused.
+ */
+queued: Array<LlmJob>,
+/**
+ * End of the reader's own provider pause, if known.
+ */
+paused_until: string | null,
+/**
+ * The reader's latest provider call.
+ */
+last_call: LlmCallOutcome | null, };
+
+/**
  * Outcome and time of an LLM call.
  */
 export type LlmCallOutcome = {
@@ -4666,6 +4904,48 @@ export type LlmCallStatus = { "state": "working" } | { "state": "not_working",
  * Plain error message.
  */
 message: string, };
+
+/**
+ * A job as visible to the reader.
+ */
+export type LlmJob = { "owner": "self",
+/**
+ * The job's id.
+ */
+id: JobId,
+/**
+ * The job kind.
+ */
+kind: LlmJobKind,
+/**
+ * The subject and app-relative link, when available.
+ */
+subject: JobSubject | null,
+/**
+ * When the job started running.
+ */
+since: string | null,
+/**
+ * When the job was queued.
+ */
+queued_at: string | null,
+/**
+ * Why the job is waiting.
+ */
+waits_for: WaitReason | null, } | { "owner": "other",
+/**
+ * Opaque index local to this response.
+ */
+id: string,
+/**
+ * The job kind.
+ */
+kind: LlmJobKind, };
+
+/**
+ * Kind of LLM work as shown in the activity list.
+ */
+export type LlmJobKind = "analysis" | "flow_analysis" | "ranking" | "comment_assessment" | "ask";
 
 /**
  * Language of LLM-written texts.
@@ -5247,6 +5527,11 @@ channels: Array<NotificationChannel>, };
 export type Origin = "introduced" | "pre_existing" | "unclear";
 
 /**
+ * Input that made an existing judgement outdated.
+ */
+export type OutdatedBecause = "facts_changed" | "prompt_changed";
+
+/**
  * An item resolved or answered on GitHub outside diffpilot (US17).
  */
 export type OutsideResolution = {
@@ -5818,6 +6103,99 @@ viewed: FileViewedState | null,
 hunks: Array<FileHunk>, };
 
 /**
+ * Page of pull requests the reader analysed, watched, or opened.
+ */
+export type PrHistory = {
+/**
+ * One entry per pull request, newest activity first.
+ */
+prs: Array<PrHistoryItem>,
+/**
+ * Cursor of the next page, or null at the end.
+ */
+next_cursor: string | null, };
+
+/**
+ * The reader's most recent analysis of a pull request.
+ */
+export type PrHistoryAnalysis = {
+/**
+ * Analysis id.
+ */
+id: AnalysisId,
+/**
+ * Stored analysis status.
+ */
+status: AnalysisStatus,
+/**
+ * Head the analysis was requested for.
+ */
+head_sha: CommitSha,
+/**
+ * Whether the pull request has moved to a different head.
+ */
+head_moved: boolean, };
+
+/**
+ * The reader's activity on one pull request.
+ */
+export type PrHistoryItem = {
+/**
+ * Pull request.
+ */
+pr: PrRef,
+/**
+ * Latest stored pull request title.
+ */
+title: string,
+/**
+ * Latest activity across all included sources.
+ */
+last_activity_at: string,
+/**
+ * When the reader last opened the pull request page.
+ */
+opened_at?: string,
+/**
+ * Latest analysis requested by the reader.
+ */
+analysis?: PrHistoryAnalysis,
+/**
+ * The reader's watch, including an ended watch.
+ */
+watch?: PrHistoryWatch, };
+
+/**
+ * Query of `GET /api/v1/me/prs`.
+ */
+export type PrHistoryQuery = {
+/**
+ * Most rows to return.
+ */
+limit?: number,
+/**
+ * Opaque cursor issued by the previous page.
+ */
+cursor?: string, };
+
+/**
+ * The reader's watch of a pull request.
+ */
+export type PrHistoryWatch = {
+/**
+ * Current or ended watch state.
+ */
+state: WatchState,
+/**
+ * When the watch began.
+ */
+since: string,
+/**
+ * When the watch ended, if it did.
+ */
+ended_at: string | null, };
+
+/**
  * Response of RC1: the PR page.
  */
 export type PrPage = {
@@ -6223,6 +6601,31 @@ resumes_at: string | null,
  * Plain text of a failure; null unless `failed` or `interrupted`.
  */
 message: string | null, };
+
+/**
+ * Usage of the reader's dashboard ranking caps.
+ */
+export type RankingUsage = {
+/**
+ * Items sent today after the last reset.
+ */
+sent_today: number,
+/**
+ * Items allowed per local calendar day.
+ */
+daily_cap: number,
+/**
+ * Items allowed per scan ranking.
+ */
+per_refresh_cap: number,
+/**
+ * Next local midnight in the reader's configured time zone.
+ */
+resets_at: string,
+/**
+ * Items in the current snapshot left unjudged at a cap.
+ */
+left_provisional: number, };
 
 /**
  * Why the last GitHub read failed. Open enum.
@@ -6673,6 +7076,28 @@ merged_thread_ids: Array<string>,
 merged_urls: Array<string>, };
 
 /**
+ * Whether an allowed GitHub App installation updates this repository.
+ */
+export type RepositoryInstallation = {
+/**
+ * Repository.
+ */
+repo: RepoRef,
+/**
+ * Whether it gets live webhook updates.
+ */
+live: boolean, };
+
+/**
+ * Live webhook coverage of repositories in the reader's rules or dashboard snapshot.
+ */
+export type RepositoryInstallations = {
+/**
+ * Repositories visible through those rules or snapshot.
+ */
+repositories: Array<RepositoryInstallation>, };
+
+/**
  * Kind of a crate source.
  */
 export type RepositoryKind = "this" | "github" | "other_git" | "registry" | "path" | "unknown";
@@ -6706,6 +7131,11 @@ branch_patterns: Array<string>,
  * the built-ins.
  */
 ignored_checks: Array<string>, };
+
+/**
+ * Whether a GitHub App installation covers all or selected repositories.
+ */
+export type RepositorySelection = "all" | "selected";
 
 /**
  * Body of `POST /api/v1/pr/resolve`.
@@ -7227,12 +7657,7 @@ checked: KindCounts,
  * Why the rules left items out, computed with the ranking; absent only from a response without it (a server
  * older than this field), which the web shows as not recorded.
  */
-exclusions?: Exclusions,
-/**
- * When the listed pull requests' facts (CI, reviews, merge state) were last checked against GitHub after the scan,
- * while My work was open (plan §M); absent when none was since the scan or the server restarted since.
- */
-facts_checked_at?: string, };
+exclusions?: Exclusions, };
 
 /**
  * Body of `PUT /api/v1/dashboard/items/{key}/snooze` (R12).
@@ -7257,6 +7682,28 @@ export type SourceKind = "inline" | "review_body" | "pr_comment" | "reply" | "st
  * Host-assigned source role, independent of author membership.
  */
 export type SourceRole = "context" | "ignored" | "source";
+
+/**
+ * Position and dependent pull requests of an item in a stack.
+ */
+export type Stack = {
+/**
+ * Position of the pull request.
+ */
+position: StackPosition,
+/**
+ * Number of pull requests in the stack.
+ */
+size: number,
+/**
+ * Numbers of dependent pull requests.
+ */
+dependents: Array<number>, };
+
+/**
+ * Position of a pull request in a stack.
+ */
+export type StackPosition = "bottom" | "middle" | "top";
 
 /**
  * The flow of a `flow` stage.
@@ -7298,6 +7745,36 @@ target_url: string | null,
 title: string | null, };
 
 /**
+ * Optional body of `POST /api/v1/dashboard/refreshes`.
+ */
+export type StartRefreshRequest = {
+/**
+ * Request new judgements for outdated items within the refresh's caps.
+ */
+rejudge_outdated: boolean, };
+
+/**
+ * Dashboard item counts for the judgement and repository filters.
+ */
+export type StatusCounts = {
+/**
+ * Items judged against older facts or an older prompt, including those being re-judged.
+ */
+outdated: number,
+/**
+ * Items never judged, including queued and capped items.
+ */
+not_judged: number,
+/**
+ * Items in repositories without live webhook updates.
+ */
+not_live: number,
+/**
+ * Items excluded by the reader's rules.
+ */
+excluded: number, };
+
+/**
  * One step of a flow.
  */
 export type Step = {
@@ -7334,6 +7811,10 @@ side: LineSide,
  * Step lines on that side.
  */
 range: LineRange,
+/**
+ * Doc comments and attributes directly above the step’s first item, as found by the technology plugin.
+ */
+leading_context?: LineRange,
 /**
  * GitHub link to the lines at the head commit (base commit for a base-side step).
  */
@@ -7607,7 +8088,11 @@ today: UsageTotals | null,
 /**
  * Today and the previous six local calendar days; null without reports.
  */
-last_7_days: UsageTotals | null, };
+last_7_days: UsageTotals | null,
+/**
+ * From the start of the server-local calendar month through now.
+ */
+this_month?: UsageTotals, };
 
 /**
  * A per-user event (RW3 SSE data, push channels).
@@ -7669,7 +8154,11 @@ export type UserStreamEvent = { "event": "user_event",
 /**
  * The event.
  */
-user_event: UserEvent, } | { "event": "heartbeat",
+user_event: UserEvent, } | { "event": "llm_activity",
+/**
+ * Running and queued jobs visible to the reader.
+ */
+activity: LlmActivity, } | { "event": "heartbeat",
 /**
  * Server time of sending.
  */
@@ -7684,6 +8173,15 @@ export type Validity = "valid" | "already_fixed" | "partly_valid" | "invalid";
  * How completely the Viewed state was read.
  */
 export type ViewedStatus = "checked" | "partial" | "not_checked";
+
+/**
+ * What must happen before the reader's job can run.
+ */
+export type WaitReason = { "kind": "runner" } | { "kind": "usage_limit",
+/**
+ * When execution can resume.
+ */
+until: string, } | { "kind": "analysis_running" };
 
 /**
  * Response of RW2.
@@ -7781,6 +8279,22 @@ at: string, };
  * One ranked item.
  */
 export type WorkItem = {
+/**
+ * Judgement state when this item can be judged.
+ */
+judgement?: Judgement,
+/**
+ * Whether GitHub App webhooks update this repository.
+ */
+live?: boolean,
+/**
+ * Position of this pull request within a stack.
+ */
+stack?: Stack,
+/**
+ * Base branch matching a configured or built-in release pattern.
+ */
+release_base?: string,
 /**
  * Display alias, e.g. `PLAT-1187` or `TODO-3fa91c2e`.
  */

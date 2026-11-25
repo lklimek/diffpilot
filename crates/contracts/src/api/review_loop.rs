@@ -167,7 +167,9 @@ pub struct OutsideResolution {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum AssessmentState {
-    /// A `verify_comments` pass is running or queued for it.
+    /// The item waits for the next pass.
+    Queued,
+    /// The item is in the live pass input.
     Running,
     /// Assessed; see `assessment`.
     Assessed,
@@ -195,6 +197,26 @@ pub enum NotAssessedReason {
 /// A review-loop item with its assessment, decisions and effects (RC4).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentItem {
+    /// Whether the item is a bot status comment.
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub status_comment: bool,
+    /// Evidence of the current decision imported from GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub imported_decision: Option<ImportedGithubDecision>,
+    /// A recorded GitHub decision awaiting confirmation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub import_proposal: Option<ImportedGithubDecision>,
+    /// First sentence of the primary assessment description, at most 90 characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub llm_title: Option<String>,
+    /// Whether this item follows the decision on its primary.
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub decision_follows_primary: bool,
     /// Grounded point read from a versioned source; absent on inline threads and PR questions.
     #[serde(default)]
     #[ts(optional)]
@@ -525,6 +547,10 @@ pub enum Override {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum DecisionVia {
+    /// The recorded decision was verified and imported from GitHub.
+    ImportedGithub,
+    /// The decision was propagated from the item's primary.
+    FollowsPrimary,
     /// One question.
     Question,
     /// A group question.
@@ -540,6 +566,14 @@ pub enum DecisionVia {
 /// A stored decision (append-only) with its effects.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Decision {
+    /// Evidence and authority for a decision imported from GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub imported: Option<ImportedDecision>,
+    /// Item number of the primary whose decision this follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub follows: Option<u32>,
     /// Id.
     pub id: DecisionId,
     /// The item (`C<no>`).
@@ -579,6 +613,37 @@ pub struct Decision {
     pub undone_at: Option<Timestamp>,
     /// Effects in `seq` order.
     pub effects: Vec<Effect>,
+}
+
+/// An imported decision's source and grounded evidence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ImportedDecision {
+    /// GitHub login of the decision's author.
+    pub by: String,
+    /// Numeric GitHub user id when available.
+    #[ts(type = "number | null")]
+    pub by_id: Option<u64>,
+    /// When the statement was made on GitHub.
+    pub at: Timestamp,
+    /// GitHub URL of the evidence.
+    pub evidence_url: String,
+    /// Verbatim excerpt supporting the decision.
+    pub quote: String,
+    /// GitHub login of the configured relay when one spoke on the author's behalf.
+    pub relay: Option<String>,
+}
+
+/// Decision evidence shown on a comment item.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ImportedGithubDecision {
+    /// Kind of the decision.
+    pub kind: DecisionKind,
+    /// GitHub login of the author.
+    pub by: String,
+    /// When the statement was made.
+    pub at: Timestamp,
+    /// GitHub URL of the statement.
+    pub evidence_url: String,
 }
 
 /// Kind of an effect; also an executor capability. Open enum.
@@ -1055,6 +1120,18 @@ pub struct GithubRead {
 /// Assessment progress of a PR ("LLM assessment running: 4 of 9 comments").
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AssessmentProgress {
+    /// Items in the live pass input.
+    #[serde(default)]
+    #[ts(as = "Option<u32>", optional)]
+    pub in_pass: u32,
+    /// Items waiting for the next pass.
+    #[serde(default)]
+    #[ts(as = "Option<u32>", optional)]
+    pub waiting: u32,
+    /// When the live pass started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub since: Option<Timestamp>,
     /// A pass is queued or running.
     pub running: bool,
     /// Items assessed at the current head.
@@ -1072,6 +1149,18 @@ pub struct AssessmentProgress {
 /// Item counts of a PR.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentCounts {
+    /// Items in the Needs you queue.
+    #[serde(default)]
+    #[ts(as = "Option<u32>", optional)]
+    pub needs_you: u32,
+    /// Gated items in the Needs you queue.
+    #[serde(default)]
+    #[ts(as = "Option<u32>", optional)]
+    pub needs_you_gates: u32,
+    /// Items with a decision imported since this reader last visited Comments.
+    #[serde(default)]
+    #[ts(as = "Option<u32>", optional)]
+    pub imported_unseen: u32,
     /// Unresolved threads on GitHub (fact).
     pub unresolved_threads: u32,
     /// Undecided questions.
@@ -1151,6 +1240,10 @@ pub struct QueueEntry {
 /// Response of RC2.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentsOverview {
+    /// The reader’s watch for this pull request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub watch: Option<WatchedPr>,
     /// Pull request.
     pub pr: PrRef,
     /// Title (GitHub).
@@ -1431,6 +1524,11 @@ pub enum UserStreamEvent {
         /// The event.
         user_event: UserEvent,
     },
+    /// The reader's LLM activity snapshot.
+    LlmActivity {
+        /// Running and queued jobs visible to the reader.
+        activity: crate::api::llm::LlmActivity,
+    },
     /// Sent every 15 s while the stream is open; each one re-checks the session or token.
     Heartbeat {
         /// Server time of sending.
@@ -1443,6 +1541,7 @@ impl UserStreamEvent {
     pub fn name(&self) -> &'static str {
         match self {
             Self::UserEvent { .. } => "user_event",
+            Self::LlmActivity { .. } => "llm_activity",
             Self::Heartbeat { .. } => "heartbeat",
         }
     }

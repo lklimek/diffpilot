@@ -184,6 +184,26 @@
       "description": "A stored decision (append-only) with its effects.",
       "type": "object",
       "properties": {
+        "imported": {
+          "description": "Evidence and authority for a decision imported from GitHub.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImportedDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "follows": {
+          "description": "Item number of the primary whose decision this follows.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "id": {
           "description": "Id.",
           "$ref": "#/$defs/DecisionId"
@@ -321,6 +341,51 @@
         "decided_by",
         "decided_at",
         "effects"
+      ]
+    },
+    "ImportedDecision": {
+      "description": "An imported decision's source and grounded evidence.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "GitHub login of the decision's author.",
+          "type": "string"
+        },
+        "by_id": {
+          "description": "Numeric GitHub user id when available.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "at": {
+          "description": "When the statement was made on GitHub.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_url": {
+          "description": "GitHub URL of the evidence.",
+          "type": "string"
+        },
+        "quote": {
+          "description": "Verbatim excerpt supporting the decision.",
+          "type": "string"
+        },
+        "relay": {
+          "description": "GitHub login of the configured relay when one spoke on the author's behalf.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "by",
+        "at",
+        "evidence_url",
+        "quote"
       ]
     },
     "DecisionId": {
@@ -569,6 +634,16 @@
     "DecisionVia": {
       "description": "Where a decision was made. Open enum.",
       "oneOf": [
+        {
+          "description": "The recorded decision was verified and imported from GitHub.",
+          "type": "string",
+          "const": "imported_github"
+        },
+        {
+          "description": "The decision was propagated from the item's primary.",
+          "type": "string",
+          "const": "follows_primary"
+        },
         {
           "description": "One question.",
           "type": "string",

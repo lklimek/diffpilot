@@ -57,8 +57,18 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `notification_channels` | a user's ntfy and webhook channels: URL, topic, `secret` ciphertext, events, on/off, delivery health (last delivery, last error, failing since) | `UNIQUE (user_id, kind)` |
 | `notification_deliveries` | one row per (user event, channel) or (decision, agent token): attempts, state, next attempt, HTTP status, error | exactly one source and its matching target; `pending` exactly with a next attempt; once per pair (partial unique indexes) |
 
-Every table except `tenants`, `users` and installation-wide `llm_selection` has a `NOT NULL tenant_id` (schema test). `CHECK` lists mirror the
-closed contract enums (schema test compares them with the serde names).
+Tenant-owned tables carry a `NOT NULL tenant_id` (schema test). Decision origins inherit ownership through their
+parent. User-wide assessment configuration and quota and installation-wide infrastructure have separate scopes.
+`CHECK` lists mirror closed contract enums.
+
+## v1.4 migrations
+
+| Migration | Storage | Constraints |
+|---|---|---|
+| 0031 | `github_deliveries` retains the delivery id, body SHA-256, event, action, installation id, typed change list, state, attempts and timestamps. `app_installations_allowed` stores resolved account identities and selection mode. `app_repositories` stores repository coverage, suspension and check time. | Installation-wide. Delivery id is unique. Received time and body hash with received time are indexed for retention and replay checks. Repository owner/name is case-insensitive and links to an allowed installation. Delivery errors use typed codes. |
+| 0032 | `dashboard_sends` records reader, refresh, attempt, item count, job and send/release times. `dashboard_ranking_resets` records the reader's latest reset. `dashboard_judgements.rejudge_requested_at` is nullable. | Back-fill one row per refresh with `sent > 0` started within 48 hours, using its start as send time. Retain ledger entries across refresh and job pruning. Day usage will count unreleased sends since local midnight or the last reset, whichever is later. |
+| 0033 | `comment_items.status_comment` defaults to 0. `comment_decision_origins` records imported GitHub evidence or the primary decision a follower uses. | The flag is 0 or 1. An origin belongs to its decision. A trigger rejects updates, and deleting the decision cascades to its origin. The stored `via` for these rows is `question`; the origin selects the wire variant. |
+| 0034 | `pr_page_openings` holds `last_opened_at` once per tenant member and PR. | Composite foreign keys require the member and PR to belong to the same tenant. Removing either parent removes the opening. |
 
 ## Feedback → MemCan
 The single writer (`server::memcan::writer`) takes the entries due at `now` (`pending_memcan(now, limit)`: not

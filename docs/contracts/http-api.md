@@ -18,15 +18,18 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 
 ## Listeners and authentication
 - Public listener `SR_LISTEN_ADDR` (behind the reverse proxy): `/healthz`, `/auth/*`, `/api/v1/*`, the web UI.
-- Runner listener `SR_RUNNER_LISTEN_ADDR`: `/runner/v1/*` only (`runner-protocol.md`). Neither router serves the
-  other's routes (server test).
+- Runner listener `SR_RUNNER_LISTEN_ADDR` serves `/runner/v1/*` ([runner protocol](runner-protocol.md)).
+- Webhook listener `SR_WEBHOOK_LISTEN_ADDR` defaults to `0.0.0.0:3002` and serves only `POST /webhooks/github`.
+  The public listener returns 404 for `/webhooks/*`. The route registers `github_signature` authentication.
+  Its contract-only handler returns 501. The receiver will validate GitHub's signature and the installation
+  allowlist independently of the WAF. [ADR-026](../decisions/ADR-026-github-webhooks.md)
 - `session`: session cookie (`__Host-sr_session`, Secure, HttpOnly, SameSite=Lax, Path=/; `sr_session` without
   Secure only when `SR_PUBLIC_URL` is http and no trusted proxy forwards https), opaque token stored hashed. A
   session lasts 7 days, ends after 24 h unused, and only while its user stays on the tenant's allowlist (ADR-007
   addendum). `POST /auth/logout` ends this session (`everywhere`: all of the user's); the stored GitHub tokens end
   with the user's last session.
 - `session_csrf`: session plus header `X-CSRF-Token` equal to `MeResponse.csrf_token`. Every non-GET public
-  route is `session_csrf` (contract test). CSRF applies to cookie-authenticated routes only; runner routes use
+  route with a cookie is `session_csrf` (contract test). CSRF applies to cookie-authenticated routes only; runner routes use
   bearer tokens.
 - `GET /api/v1/me` is public: signed out it answers `200 {"user": null, "csrf_token": null}`, not 401.
 - `read` (v1.1, ADR-019): session, or a personal access token with scope `read` (`Authorization: Bearer
@@ -341,6 +344,7 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `github_refused` | 422 | GitHub refused a change made as the user (the Viewed mark, R13: refused before executing it, a rate limit, or `FORBIDDEN`); nothing was changed |
 | `not_rendered` | 422 | file classified as not rendered; diff of a binary file |
 | `internal` | 500 | anything else (no detail) |
+| `not_implemented` | 501 | a reserved route whose feature handler is pending |
 | `github_unavailable` | 502 | GitHub error or unexpected answer |
 | `unavailable` | 503 | the database was busy or locked past its wait; carries `Retry-After: 1`. The web client retries a GET, PUT or DELETE once after that delay, never a POST |
 | `insufficient_scope` | 403 | a valid access token without the route's scope |
@@ -636,7 +640,7 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 |---|---|---|---|---|---|
 | R1 | GET | `/api/v1/dashboard` | read | `SummaryQuery` | `DashboardSummary` |
 | R1b | GET | `/api/v1/dashboard/items` | read | `ItemQuery` | `ItemPage`; weak `ETag`, `If-None-Match` → 304; 409 `cursor_expired` |
-| R2 | POST | `/api/v1/dashboard/refreshes` | session_csrf | – | 201 `RefreshStatus` (supersedes a ranking, Refresh states); 409 `refresh_running` while one scans; 429 `github_rate_limited` |
+| R2 | POST | `/api/v1/dashboard/refreshes` | session_csrf | optional `StartRefreshRequest` | 201 `RefreshStatus` (supersedes a ranking, Refresh states); 409 `refresh_running` while one scans; 429 `github_rate_limited` |
 | R2b | GET | `/api/v1/dashboard/refreshes/{id}` | read | – | `RefreshStatus` |
 | R3 | POST | `/api/v1/dashboard/refreshes/{id}/cancel` | session_csrf | – | `RefreshStatus`; 409 `conflict` once the refresh ended |
 | R4 | POST | `/api/v1/dashboard/refreshes/{id}/rank` | session_csrf | – | 202 `RefreshStatus` (Retry ranking of that snapshot); 409 `conflict` or `refresh_running` (Refresh states) |
@@ -682,11 +686,8 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   or a release branch, every check passed except ignored ones, nothing left to answer, no ready label, not held by a
   current plug-in); they are ranked. `merge_state_pending` counts those of the user's pull requests Ready to merge
   could list whose merge state GitHub had not computed by the scan (the next refresh reads them again); null when the snapshot did not record merge states.
-  `facts_checked_at` (absent when none since the scan) is when the listed pull requests' facts were last checked
-  against GitHub after the scan, by the fact check while My work is open (plan §M, every 5 minutes; a re-read after
-  a plug-in signal reads only the signalled pull requests and does not count; a server restart forgets the time
-  until the next check). A summary read in a browser session (never with an access token) keeps My work open for
-  3 minutes.
+  A summary read in a browser session keeps My work open for 3 minutes while the v1.1 refresh schedule applies.
+  See the v1.4 dashboard status additions below.
 - **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
   with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
   recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per
@@ -865,7 +866,7 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC17 | GET | `…/comments/decide-rest` | read | – | `DecideRest` (the confirmation list of "Decide the rest per recommendation"; gate items and items without a complete recommendation are left out with their reason) |
 | RW1 | PUT / DELETE | `…/watch` | session_csrf | – | 204; 409 `watch_limit_reached` |
 | RW2 | GET | `/api/v1/watches` | read | – | `WatchList` (with the reader's assessment passes of the last 24 h and the daily limit) |
-| RW3 | GET | `/api/v1/events` | read | – | SSE `UserStreamEvent`: `user_event`, `heartbeat` (`sse-events.md`) |
+| RW3 | GET | `/api/v1/events` | read | – | SSE `UserStreamEvent`: `user_event`, `heartbeat`, `llm_activity` (reserved in B1) (`sse-events.md`) |
 | RN1 | GET | `/api/v1/settings/notifications` | session | – | `NotificationSettings` (secrets as `secret_last4` only) |
 | RN2 | PUT / DELETE | `/api/v1/settings/notifications/channels/{kind}` | session_csrf | `PutChannelRequest` / – | `NotificationChannel` / 204; 422 `scheme_not_allowed`; 400 `invalid_request` for a URL with credentials, a loopback, link-local or reserved address or a denied private address, a bad ntfy topic or secret; 422 `secret_required` when a kept secret would follow a changed URL scheme, host or port; 409 `conflict` when the stored target changed while the request was checked; `secret` is a `SecretChange` (absent or `keep`, `replace`, `remove`) |
 | RN3 | POST | `…/channels/{kind}/test` | session_csrf | – | `ChannelTestResult` (one attempt); 429 `rate_limited` with `Retry-After` when 30 messages went to the channel within the hour (nothing sent, health unchanged) |
@@ -953,3 +954,51 @@ missing usable credentials. W5/W6 implement route access checks and orchestratio
 alone never schedules work. Conditional writes compare the opaque config revision inside `write_tx`; a stale
 request returns 409 without replacing another tab's selections. Clients refresh and require an explicit retry.
 Cards show only the frozen primary; secondary results are comparison-only.
+
+
+## v1.4 dashboard, Comments and activity
+
+The following routes return 501 `not_implemented` in B1 once any required session, token or CSRF checks pass.
+The response and status in the table describe their final contract.
+
+| Method | Path | Auth | Request | Response |
+|---|---|---|---|---|
+| POST | `/webhooks/github` | github_signature | GitHub delivery | 202 when accepted, 200 for ping or a duplicate |
+| POST | `/api/v1/dashboard/items/{key}/rejudge` | session_csrf | – | 202, 404 outside the current snapshot, 409 `conflict` unless outdated or when the daily cap is reached |
+| GET | `/api/v1/settings/repository-installations` | read | – | `RepositoryInstallations` |
+| GET | `/api/v1/settings/github-webhook` | read | – | `GithubWebhook` |
+| GET | `/api/v1/llm/activity` | read | – | `LlmActivity` |
+| GET | `/api/v1/settings/ranking-usage` | read | – | `RankingUsage` |
+| POST | `/api/v1/settings/ranking-usage/reset` | session_csrf | – | `RankingUsage` |
+| GET | `/api/v1/me/prs` | read | `PrHistoryQuery` | `PrHistory` |
+
+- `WorkItem.judgement` describes current, outdated, queued, judging, not judged and capped items. An outdated
+  judgement can name changed facts or a changed prompt. `DashboardSummary.status_counts` counts outdated
+  (including judging), never judged (including queued and capped), not live and excluded items. The legacy
+  `ItemText.inherited` and `older_prompt_judgements` fields remain readable. The optional R2 request defaults
+  `rejudge_outdated` to false. B1 accepts the request with its existing refresh behaviour.
+- `WorkItem.live` and the summary's repository counts and `last_event_at` describe live webhook coverage.
+  `SnapshotMeta` omits `facts_checked_at`. Repository installations are limited to repositories in the reader's
+  rules or current snapshot. Webhook settings include the configured URL, last verified delivery, allowed
+  installation resolution and the 14-day refused count.
+- Fact tags may include stable filter keys and labels. Work items may include stack position, size, dependent PR
+  numbers and a matching release base. `Settings.llm_usage.this_month` uses the server-local month. The ranking
+  usage reset starts counting from the reset time. `resets_at` is the next midnight in the reader's configured zone.
+- The activity response shows the reader's own jobs with optional subject, times and typed wait reason, plus
+  other running or queued jobs in the same tenant with kind and a response-local opaque id. The pause and last
+  call are the reader's own.
+- `AssessmentState::Queued` waits for the next pass. `Running` identifies items in the live pass. Progress has
+  `in_pass`, `waiting` and optional `since`. Comments can carry a reader's watch and items can carry a short
+  LLM title, status-comment flag, imported-decision evidence, an import proposal or a primary-following flag.
+  `Decision` carries imported evidence or a primary item number with its corresponding `via`. A proposal still
+  needs the owner to decide it. See [the Phase B rules](../v1.4-phase-b-plan.md#6-needs-you-c10-and-duplicates-c15).
+- `needs_you` counts queued items that need the reader's decision. `needs_you_gates` counts the gated subset and
+  `imported_unseen` counts decisions imported since the last Comments visit. `undecided` keeps its existing
+  meaning. The PR badge and dashboard tally will use the shared Needs you calculation.
+- The Tour's optional `StepFacts.leading_context` is the deterministic line range of doc comments and attributes
+  immediately above the step's first item. The generic technology plugin leaves it absent.
+- PR history merges the reader's requested analyses, watches including ended ones, and PR page visits. It returns
+  one item per PR, newest activity first, in `prs` with `next_cursor` for pagination. A PR page visit updates the
+  reader's `last_opened_at` when the history feature is active.
+
+B1 fills added response fields with neutral values until their feature handlers are implemented.

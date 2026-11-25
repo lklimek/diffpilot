@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GithubWebhook",
+  "description": "GitHub App webhook configuration and delivery status.",
+  "type": "object",
+  "properties": {
+    "configured": {
+      "description": "Whether the webhook secret is configured.",
+      "type": "boolean"
+    },
+    "webhook_url": {
+      "description": "Configured public HTTPS URL.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_delivery_at": {
+      "description": "When the last verified delivery was received.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "allowed": {
+      "description": "Accounts configured to send deliveries.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AllowedInstallation"
+      }
+    },
+    "refused_deliveries": {
+      "description": "Verified deliveries from disallowed installations over the last 14 days.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    }
+  },
+  "required": [
+    "configured",
+    "allowed",
+    "refused_deliveries"
+  ],
+  "$defs": {
+    "AllowedInstallation": {
+      "description": "An account allowed to send GitHub App webhook deliveries.",
+      "type": "object",
+      "properties": {
+        "account": {
+          "description": "GitHub account login.",
+          "type": "string"
+        },
+        "installation_id": {
+          "description": "GitHub installation id, null while unresolved.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "repository_selection": {
+          "description": "Repository selection, null while unresolved.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RepositorySelection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "account"
+      ]
+    },
+    "RepositorySelection": {
+      "description": "Whether a GitHub App installation covers all or selected repositories.",
+      "oneOf": [
+        {
+          "description": "All repositories of the account.",
+          "type": "string",
+          "const": "all"
+        },
+        {
+          "description": "Selected repositories only.",
+          "type": "string",
+          "const": "selected"
+        }
+      ]
+    }
+  }
+}

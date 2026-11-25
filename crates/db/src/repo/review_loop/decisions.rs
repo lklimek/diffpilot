@@ -186,6 +186,8 @@ fn decision_from_row(row: &SqliteRow) -> Result<StoredDecision, DbError> {
     let resolve: i64 = row.try_get("resolve_ticked")?;
     Ok(StoredDecision {
         decision: Decision {
+            imported: None,
+            follows: None,
             id: wire_col(row, "id")?,
             item_no: u32_col(row, "item_no")?,
             kind: wire_col(row, "kind")?,

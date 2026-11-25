@@ -121,7 +121,7 @@ async fn gone_items_migration_applies_after_later_migrations() {
         .expect("pool");
     let without_0024 = MIGRATIONS
         .iter()
-        .filter(|(version, _, _)| *version != 24 && *version != 30)
+        .filter(|(version, _, _)| *version != 24 && *version <= 29)
         .map(|(version, description, sql)| {
             Migration::new(
                 *version,
@@ -136,7 +136,7 @@ async fn gone_items_migration_applies_after_later_migrations() {
         .run(&pool)
         .await
         .expect("through 0026 without 0024");
-    migrate(&pool, MIGRATIONS.len() - 1)
+    migrate(&pool, migration_count_through(29))
         .await
         .expect("0024 later");
     let column: i64 = sqlx::query_scalar(
@@ -205,7 +205,7 @@ async fn flow_auto_retries_migration_keeps_the_rows_of_an_existing_database() {
         .expect("counts");
     assert_eq!(before, "2/1/2/1");
 
-    migrate(&db.pool, MIGRATIONS.len() - 1)
+    migrate(&db.pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
 
@@ -250,12 +250,12 @@ async fn flow_auto_retries_migration_keeps_the_rows_of_an_existing_database() {
         versions,
         MIGRATIONS
             .iter()
-            .take(MIGRATIONS.len() - 1)
+            .take(migration_count_through(29))
             .map(|(version, ..)| *version)
             .collect::<Vec<_>>()
     );
     // Running the migrator again changes nothing (the checksum of 0001 still matches).
-    migrate(&db.pool, MIGRATIONS.len() - 1)
+    migrate(&db.pool, migration_count_through(29))
         .await
         .expect("idempotent");
 }
@@ -321,7 +321,9 @@ async fn unbound_seed_logins_migration_keeps_bound_and_added_entries() {
     .execute(&pool)
     .await
     .expect("existing install");
-    migrate(&pool, MIGRATIONS.len() - 1).await.expect("0016");
+    migrate(&pool, migration_count_through(29))
+        .await
+        .expect("0016");
     assert_eq!(
         allowlist_rows(&pool).await,
         [("alice".to_owned(), None), ("lklimek".to_owned(), Some(7))]
@@ -363,12 +365,13 @@ async fn allowlist_binds_each_github_id_once_per_tenant() {
 
 #[tokio::test]
 async fn tenant_id_on_every_table() {
-    // Assessment configuration and quota are user-wide across tenant memberships.
+    // User-wide settings, installation-wide infrastructure and decision-owned origins have their own scope.
     let db = db().await;
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
            AND name NOT IN ('_sqlx_migrations', 'tenants', 'users', 'llm_selection',
-               'assessment_config', 'assessment_daily_usage') ORDER BY name",
+               'assessment_config', 'assessment_daily_usage',
+               'github_deliveries', 'app_installations_allowed', 'app_repositories', 'comment_decision_origins') ORDER BY name",
     )
     .fetch_all(&db.pool)
     .await
@@ -924,7 +927,7 @@ async fn ask_effort_migration_upgrades_a_stored_selection() {
     .execute(&pool)
     .await
     .expect("stored row");
-    migrate(&pool, MIGRATIONS.len() - 1)
+    migrate(&pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
     let row: (String, String, String, String, String) = sqlx::query_as(
@@ -972,7 +975,7 @@ async fn dashboard_migrations_upgrade_a_v1_database() {
     .execute(&pool)
     .await
     .expect("v1 row");
-    migrate(&pool, MIGRATIONS.len() - 1)
+    migrate(&pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
     let row: (String, String, String) =
@@ -1253,7 +1256,7 @@ async fn jobs_targets_migration_applies_to_a_v1_database() {
             .expect("child row");
     }
 
-    migrate(&db.pool, MIGRATIONS.len() - 1)
+    migrate(&db.pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
 
@@ -1377,7 +1380,7 @@ async fn russian_migration_keeps_the_data_and_accepts_ru() {
     let analysis = crate::repo::analyses::testing::seed_analysis(&db)
         .await
         .expect("analysis");
-    migrate(&db.pool, MIGRATIONS.len() - 1)
+    migrate(&db.pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
     let kept: (String, String) =
@@ -1454,7 +1457,7 @@ async fn dependencies_migration_keeps_documents_and_accepts_the_new_kind() {
     .execute(&db.pool)
     .await;
     assert!(refused.is_err(), "not a kind before 0015");
-    migrate(&db.pool, MIGRATIONS.len() - 1)
+    migrate(&db.pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
     db.documents()
@@ -1521,7 +1524,7 @@ async fn question_anchors_migration_keeps_every_question_as_a_step_anchor() {
     .execute(&db.pool)
     .await
     .expect("questions of the old schema");
-    migrate(&db.pool, MIGRATIONS.len() - 1)
+    migrate(&db.pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
     type Row = (
@@ -1755,7 +1758,7 @@ async fn russian_migration_reaches_other_open_connections() {
     .execute(&mut *other)
     .await
     .expect("user");
-    migrate(&pool, MIGRATIONS.len() - 1)
+    migrate(&pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
     sqlx::query("UPDATE users SET language = 'ru' WHERE id = 'u1'")
@@ -1902,7 +1905,9 @@ async fn first_v12_start_on_a_partially_bound_seed_ends_the_unlisted_maintainer(
     signed_in_v11_user(&pool, "u-owner", "owner", 9).await;
     assert_eq!(live_credentials(&pool, "u-lk").await, (1, 1, 1));
 
-    migrate(&pool, MIGRATIONS.len() - 1).await.expect("0016");
+    migrate(&pool, migration_count_through(29))
+        .await
+        .expect("0016");
     assert_eq!(
         allowlist_rows(&pool).await,
         [
@@ -2021,7 +2026,7 @@ async fn verify_comments_jobs_migration_keeps_rows_and_adds_the_pass_owner() {
         .expect("rowids")
     };
     let kept = rowids().await;
-    migrate(&db.pool, MIGRATIONS.len() - 1)
+    migrate(&db.pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
     assert_eq!(rowids().await, kept, "rows and rowids are kept");
@@ -2155,7 +2160,7 @@ async fn snooze_ends_migration_keeps_every_snooze_as_not_ended() {
     .execute(&db.pool)
     .await
     .expect("snoozes of the old schema");
-    migrate(&db.pool, MIGRATIONS.len() - 1)
+    migrate(&db.pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
     type Row = (String, String, String, Option<String>, Option<String>);
@@ -2251,7 +2256,7 @@ async fn slack_names_migration_gives_existing_settings_an_empty_table() {
     .execute(&db.pool)
     .await
     .expect("settings of the old schema");
-    migrate(&db.pool, MIGRATIONS.len() - 1)
+    migrate(&db.pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
     let row: (String, String) =
@@ -2355,7 +2360,7 @@ async fn automatic_trigger_migration_keeps_refreshes_and_what_references_them() 
         contents
     }
     let original = contents(&db).await;
-    migrate(&db.pool, MIGRATIONS.len() - 1)
+    migrate(&db.pool, migration_count_through(29))
         .await
         .expect("upgrade in place");
     assert_eq!(
@@ -2475,4 +2480,189 @@ async fn automatic_trigger_migration_keeps_refreshes_and_what_references_them() 
         ],
         "every reference names the final tables"
     );
+}
+
+#[tokio::test]
+async fn migrations_upgrade_v13_db_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("diffpilot.sqlite");
+    testing::pre_container_database(&path).await.unwrap();
+    let pool = SqlitePoolOptions::new()
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(&path)
+                .foreign_keys(true),
+        )
+        .await
+        .unwrap();
+    migrate(&pool, migration_count_through(30)).await.unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO dashboard_refreshes (id, tenant_id, user_id, trigger, state, started_at, ranking_attempt, sent)
+         SELECT 'recent', tenant_id, user_id, 'manual', 'cancelled',
+             strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day'), 2, 7 FROM dashboard_settings
+         UNION ALL SELECT 'old', tenant_id, user_id, 'scheduled', 'cancelled',
+             strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-3 days'), 1, 4 FROM dashboard_settings
+         UNION ALL SELECT 'unsent', tenant_id, user_id, 'manual', 'cancelled',
+             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 0, 0 FROM dashboard_settings;
+         INSERT INTO dashboard_judgements (tenant_id, user_id, item_key, input_fingerprint, input_version,
+             prompt_version, body, refresh_id, model, judged_at, last_seen_at)
+         SELECT tenant_id, user_id, 'item', 'fingerprint', 1, 1, '{}', id, 'model', started_at, started_at
+             FROM dashboard_refreshes WHERE id = 'recent';
+         INSERT INTO comment_prs (pull_request_id, tenant_id, created_at)
+         SELECT id, tenant_id, 't' FROM pull_requests LIMIT 1;
+         INSERT INTO comment_items (id, tenant_id, pull_request_id, item_no, kind, stable_key, author, author_kind,
+             title, body, body_hash, first_seen_head, github, state, created_at, updated_at)
+         SELECT 'v13-item', tenant_id, id, 1, 'pr_comment', 'key', 'bot', 'bot', 'title', 'body', 'hash', head_sha,
+             '{}', 'decided', 't', 't' FROM pull_requests LIMIT 1;
+         INSERT INTO comment_decisions (id, tenant_id, item_id, user_id, kind, resolve_ticked, via, head, body_hash, decided_at)
+         SELECT 'v13-decision', i.tenant_id, i.id, r.user_id, 'reject', 0, 'question', i.first_seen_head, i.body_hash, 't'
+             FROM comment_items i JOIN dashboard_refreshes r ON r.id = 'recent' WHERE i.id = 'v13-item';",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let db = Db::open(&path).await.unwrap();
+    db.pool.close().await;
+    let db = Db::open(&path).await.unwrap();
+    let versions: Vec<i64> = sqlx::query_scalar(
+        "SELECT version FROM _sqlx_migrations WHERE version > 30 ORDER BY version",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(versions, [31, 32, 33, 34]);
+    let sends: Vec<(String, i64, i64, bool)> = sqlx::query_as(
+        "SELECT s.refresh_id, s.attempt, s.items,
+                s.sent_at = r.started_at AND s.tenant_id = r.tenant_id AND s.user_id = r.user_id
+                AND s.job_id IS NULL AND s.released_at IS NULL
+           FROM dashboard_sends s JOIN dashboard_refreshes r ON r.id = s.refresh_id",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(sends, [("recent".into(), 2, 7, true)]);
+    let kept: (i64, i64, String, Option<String>, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM dashboard_refreshes),
+                (SELECT sent FROM dashboard_refreshes WHERE id = 'recent'),
+                (SELECT via FROM comment_decisions WHERE id = 'v13-decision'),
+                (SELECT rejudge_requested_at FROM dashboard_judgements WHERE item_key = 'item'),
+                (SELECT status_comment FROM comment_items WHERE id = 'v13-item')",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(kept, (3, 7, "question".into(), None, 0));
+    assert!(
+        sqlx::query("UPDATE comment_items SET status_comment = 2 WHERE id = 'v13-item'")
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+    assert!(sqlx::query("INSERT INTO comment_decision_origins (decision_id, origin) VALUES ('v13-decision', 'other')")
+        .execute(&db.pool).await.is_err());
+    sqlx::query("INSERT INTO comment_decision_origins (decision_id, origin, by_login, recorded_at, evidence_url, quote)
+        VALUES ('v13-decision', 'imported_github', 'owner', 't', 'https://github.com/comment', 'quote')")
+        .execute(&db.pool).await.unwrap();
+    assert!(
+        sqlx::query("UPDATE comment_decision_origins SET quote = 'changed'")
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+    sqlx::query("DELETE FROM comment_items WHERE id = 'v13-item'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let origins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM comment_decision_origins")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(origins, 0);
+    assert!(
+        sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn github_webhook_schema_enforces_delivery_and_repository_keys() {
+    let db = db().await;
+    sqlx::raw_sql(
+        "INSERT INTO github_deliveries (delivery_id, body_sha256, event, changes, state, received_at)
+         VALUES ('d1', 'hash', 'ping', '[]', 'pending', 't'), ('d2', 'hash', 'ping', '[]', 'ignored', 't');
+         INSERT INTO app_installations_allowed (installation_id, account_id, account_login, repository_selection, resolved_at)
+         VALUES (1, 2, 'Acme', 'selected', 't');
+         INSERT INTO app_repositories (owner, name, installation_id, checked_at)
+         VALUES ('Acme', 'Project', 1, 't');",
+    ).execute(&db.pool).await.unwrap();
+    for invalid in [
+        "UPDATE github_deliveries SET delivery_id = 'd1' WHERE delivery_id = 'd2'",
+        "UPDATE github_deliveries SET state = 'unknown' WHERE delivery_id = 'd1'",
+        "UPDATE github_deliveries SET changes = 'invalid' WHERE delivery_id = 'd1'",
+        "UPDATE github_deliveries SET changes = '{}' WHERE delivery_id = 'd1'",
+        "UPDATE app_installations_allowed SET repository_selection = 'unknown'",
+        "INSERT INTO app_repositories (owner, name, installation_id, checked_at) VALUES ('acme', 'project', 1, 't')",
+    ] {
+        assert!(
+            sqlx::query(invalid).execute(&db.pool).await.is_err(),
+            "{invalid}"
+        );
+    }
+    let indexing: Vec<String> = sqlx::query_scalar(
+        "SELECT group_concat(name, ',') FROM (
+            SELECT indexes.name AS index_name, cols.name
+            FROM pragma_index_list('github_deliveries') AS indexes, pragma_index_info(indexes.name) AS cols
+            ORDER BY indexes.name, cols.seqno
+         ) GROUP BY index_name",
+    ).fetch_all(&db.pool).await.unwrap();
+    assert!(
+        indexing
+            .iter()
+            .any(|columns| columns == "body_sha256,received_at")
+    );
+    assert!(indexing.iter().any(|columns| columns == "received_at"));
+}
+
+#[tokio::test]
+async fn pr_page_openings_belong_to_a_member_and_pr_in_the_same_tenant() {
+    let db = db().await;
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO tenants (id, name, created_at) VALUES ('another', 'Another', 't');
+         INSERT INTO memberships (tenant_id, user_id, created_at) VALUES ('default', 'u1', 't'), ('another', 'u1', 't');
+         INSERT INTO users (id, github_id, login, created_at, updated_at) VALUES ('u2', 2, 'alice', 't', 't');
+         INSERT INTO memberships (tenant_id, user_id, created_at) VALUES ('default', 'u2', 't');
+         INSERT INTO pr_page_openings (tenant_id, user_id, pull_request_id, last_opened_at)
+         VALUES ('default', 'u1', 1, 'first'), ('default', 'u2', 1, 'other')
+         ON CONFLICT (tenant_id, user_id, pull_request_id) DO UPDATE SET last_opened_at = excluded.last_opened_at;
+         INSERT INTO pr_page_openings (tenant_id, user_id, pull_request_id, last_opened_at)
+         VALUES ('default', 'u1', 1, 'latest')
+         ON CONFLICT (tenant_id, user_id, pull_request_id) DO UPDATE SET last_opened_at = excluded.last_opened_at;",
+    ).execute(&db.pool).await.unwrap();
+    let times: Vec<String> =
+        sqlx::query_scalar("SELECT last_opened_at FROM pr_page_openings ORDER BY user_id")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(times, ["latest", "other"]);
+    assert!(
+        sqlx::query("INSERT INTO pr_page_openings VALUES ('another', 'u1', 1, 't')")
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+    sqlx::query("DELETE FROM memberships WHERE tenant_id = 'default' AND user_id = 'u1'")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let times: Vec<String> = sqlx::query_scalar("SELECT last_opened_at FROM pr_page_openings")
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(times, ["other"]);
 }

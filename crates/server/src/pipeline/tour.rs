@@ -627,6 +627,7 @@ fn project_flow(
                 id: id.clone(),
                 number,
                 facts: StepFacts {
+                    leading_context: None,
                     file: step.file.clone(),
                     side: step.side,
                     range,

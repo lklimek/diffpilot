@@ -10,6 +10,45 @@
       "description": "A review-loop item with its assessment, decisions and effects (RC4).",
       "type": "object",
       "properties": {
+        "status_comment": {
+          "description": "Whether the item is a bot status comment.",
+          "type": "boolean",
+          "default": false
+        },
+        "imported_decision": {
+          "description": "Evidence of the current decision imported from GitHub.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImportedGithubDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "import_proposal": {
+          "description": "A recorded GitHub decision awaiting confirmation.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImportedGithubDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "llm_title": {
+          "description": "First sentence of the primary assessment description, at most 90 characters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decision_follows_primary": {
+          "description": "Whether this item follows the decision on its primary.",
+          "type": "boolean",
+          "default": false
+        },
         "point": {
           "description": "Grounded point read from a versioned source; absent on inline threads and PR questions.",
           "anyOf": [
@@ -210,6 +249,95 @@
         "assessment_state",
         "decisions",
         "ask_answers"
+      ]
+    },
+    "ImportedGithubDecision": {
+      "description": "Decision evidence shown on a comment item.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Kind of the decision.",
+          "$ref": "#/$defs/DecisionKind"
+        },
+        "by": {
+          "description": "GitHub login of the author.",
+          "type": "string"
+        },
+        "at": {
+          "description": "When the statement was made.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_url": {
+          "description": "GitHub URL of the statement.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "by",
+        "at",
+        "evidence_url"
+      ]
+    },
+    "DecisionKind": {
+      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
+      "oneOf": [
+        {
+          "description": "D1: resolve, already fixed.",
+          "type": "string",
+          "const": "resolve"
+        },
+        {
+          "description": "D2: fix in this pull request.",
+          "type": "string",
+          "const": "fix_here"
+        },
+        {
+          "description": "D3: reject (with a reason); D8 with a `blocker_gate` override.",
+          "type": "string",
+          "const": "reject"
+        },
+        {
+          "description": "D4: handled in an existing pull request.",
+          "type": "string",
+          "const": "handled_in_pr"
+        },
+        {
+          "description": "D5: create a follow-up pull request.",
+          "type": "string",
+          "const": "follow_up_pr"
+        },
+        {
+          "description": "D6: upstream issue (link or create).",
+          "type": "string",
+          "const": "upstream_issue"
+        },
+        {
+          "description": "D7: TODO, out of scope for this pull request.",
+          "type": "string",
+          "const": "todo"
+        },
+        {
+          "description": "P1: merge now, remaining items become follow-ups.",
+          "type": "string",
+          "const": "merge_with_follow_ups"
+        },
+        {
+          "description": "P2: another round.",
+          "type": "string",
+          "const": "another_round"
+        },
+        {
+          "description": "P3: dismiss the listed stale bot reviews.",
+          "type": "string",
+          "const": "dismiss_stale_reviews"
+        },
+        {
+          "description": "P4: keep the reviews.",
+          "type": "string",
+          "const": "keep_reviews"
+        }
       ]
     },
     "CommentPoint": {
@@ -604,7 +732,20 @@
       "description": "Whether an item has an LLM assessment.",
       "oneOf": [
         {
-          "description": "A `verify_comments` pass is running or queued for it.",
+          "description": "The item waits for the next pass.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "queued"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "The item is in the live pass input.",
           "type": "object",
           "properties": {
             "state": {
@@ -1188,66 +1329,6 @@
         "reason_class"
       ]
     },
-    "DecisionKind": {
-      "description": "A decision (D1–D7; D8 is `reject` with a `blocker_gate` override; P1–P4 for PR-level questions). Open enum.",
-      "oneOf": [
-        {
-          "description": "D1: resolve, already fixed.",
-          "type": "string",
-          "const": "resolve"
-        },
-        {
-          "description": "D2: fix in this pull request.",
-          "type": "string",
-          "const": "fix_here"
-        },
-        {
-          "description": "D3: reject (with a reason); D8 with a `blocker_gate` override.",
-          "type": "string",
-          "const": "reject"
-        },
-        {
-          "description": "D4: handled in an existing pull request.",
-          "type": "string",
-          "const": "handled_in_pr"
-        },
-        {
-          "description": "D5: create a follow-up pull request.",
-          "type": "string",
-          "const": "follow_up_pr"
-        },
-        {
-          "description": "D6: upstream issue (link or create).",
-          "type": "string",
-          "const": "upstream_issue"
-        },
-        {
-          "description": "D7: TODO, out of scope for this pull request.",
-          "type": "string",
-          "const": "todo"
-        },
-        {
-          "description": "P1: merge now, remaining items become follow-ups.",
-          "type": "string",
-          "const": "merge_with_follow_ups"
-        },
-        {
-          "description": "P2: another round.",
-          "type": "string",
-          "const": "another_round"
-        },
-        {
-          "description": "P3: dismiss the listed stale bot reviews.",
-          "type": "string",
-          "const": "dismiss_stale_reviews"
-        },
-        {
-          "description": "P4: keep the reviews.",
-          "type": "string",
-          "const": "keep_reviews"
-        }
-      ]
-    },
     "DecisionTarget": {
       "description": "The target a decision needs.",
       "oneOf": [
@@ -1358,6 +1439,26 @@
       "description": "A stored decision (append-only) with its effects.",
       "type": "object",
       "properties": {
+        "imported": {
+          "description": "Evidence and authority for a decision imported from GitHub.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImportedDecision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "follows": {
+          "description": "Item number of the primary whose decision this follows.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
         "id": {
           "description": "Id.",
           "$ref": "#/$defs/DecisionId"
@@ -1497,6 +1598,51 @@
         "effects"
       ]
     },
+    "ImportedDecision": {
+      "description": "An imported decision's source and grounded evidence.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "GitHub login of the decision's author.",
+          "type": "string"
+        },
+        "by_id": {
+          "description": "Numeric GitHub user id when available.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "at": {
+          "description": "When the statement was made on GitHub.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidence_url": {
+          "description": "GitHub URL of the evidence.",
+          "type": "string"
+        },
+        "quote": {
+          "description": "Verbatim excerpt supporting the decision.",
+          "type": "string"
+        },
+        "relay": {
+          "description": "GitHub login of the configured relay when one spoke on the author's behalf.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "by",
+        "at",
+        "evidence_url",
+        "quote"
+      ]
+    },
     "DecisionId": {
       "description": "Identifier of a decision on a review-loop item (append-only).",
       "type": "string",
@@ -1541,6 +1687,16 @@
     "DecisionVia": {
       "description": "Where a decision was made. Open enum.",
       "oneOf": [
+        {
+          "description": "The recorded decision was verified and imported from GitHub.",
+          "type": "string",
+          "const": "imported_github"
+        },
+        {
+          "description": "The decision was propagated from the item's primary.",
+          "type": "string",
+          "const": "follows_primary"
+        },
         {
           "description": "One question.",
           "type": "string",

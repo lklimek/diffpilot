@@ -348,6 +348,10 @@ pub struct StepFacts {
     pub side: LineSide,
     /// Step lines on that side.
     pub range: LineRange,
+    /// Doc comments and attributes directly above the step’s first item, as found by the technology plugin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub leading_context: Option<LineRange>,
     /// GitHub link to the lines at the head commit (base commit for a base-side step).
     pub github_url: String,
     /// Changed lines inside the step: added lines of a head step, removed lines of a base step.

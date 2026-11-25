@@ -40,6 +40,8 @@ pub enum RouteAuth {
     Session,
     /// Session cookie and the `X-CSRF-Token` header.
     SessionCsrf,
+    /// GitHub App webhook signature.
+    GithubSignature,
     /// `Authorization: Bearer <runner secret>`.
     RunnerSecret,
     /// `Authorization: Bearer <job token>`.
@@ -59,6 +61,7 @@ impl RouteAuth {
             Self::Public => "public",
             Self::Session => "session",
             Self::SessionCsrf => "session_csrf",
+            Self::GithubSignature => "github_signature",
             Self::RunnerSecret => "runner_secret",
             Self::JobToken => "job_token",
             Self::SessionOrToken(scope) => scope.as_str(),
@@ -75,6 +78,8 @@ pub enum Listener {
     Public,
     /// The runner-only listener (`SR_RUNNER_LISTEN_ADDR`); never exposed through the reverse proxy.
     Runner,
+    /// The GitHub webhook-only listener (`SR_WEBHOOK_LISTEN_ADDR`).
+    Webhook,
 }
 
 /// One route.
@@ -124,6 +129,54 @@ use RouteAuth::{JobToken, Public, RunnerSecret, Session, SessionCsrf};
 const READ: RouteAuth = RouteAuth::SessionOrToken(TokenScope::Read);
 /// A personal access token with `review_loop_execute` only (ADR-023).
 const EXECUTE: RouteAuth = RouteAuth::TokenOnly(TokenScope::ReviewLoopExecute);
+
+/// GitHub App delivery on the dedicated webhook listener.
+pub const GITHUB_WEBHOOK: Route = Route {
+    name: "githubWebhook",
+    method: Post,
+    path: "/webhooks/github",
+    auth: RouteAuth::GithubSignature,
+    listener: Listener::Webhook,
+};
+/// Repository coverage for the reader's dashboard.
+pub const GET_REPOSITORY_INSTALLATIONS: Route = route(
+    "getRepositoryInstallations",
+    Get,
+    "/api/v1/settings/repository-installations",
+    READ,
+);
+/// GitHub webhook configuration and delivery status.
+pub const GET_GITHUB_WEBHOOK: Route = route(
+    "getGithubWebhook",
+    Get,
+    "/api/v1/settings/github-webhook",
+    READ,
+);
+/// The reader's current LLM activity.
+pub const GET_LLM_ACTIVITY: Route = route("getLlmActivity", Get, "/api/v1/llm/activity", READ);
+/// The reader's ranking cap usage.
+pub const GET_RANKING_USAGE: Route = route(
+    "getRankingUsage",
+    Get,
+    "/api/v1/settings/ranking-usage",
+    READ,
+);
+/// Resets the reader's daily ranking usage.
+pub const RESET_RANKING_USAGE: Route = route(
+    "resetRankingUsage",
+    Post,
+    "/api/v1/settings/ranking-usage/reset",
+    SessionCsrf,
+);
+/// Request a new judgement for an outdated dashboard item.
+pub const REJUDGE_DASHBOARD_ITEM: Route = route(
+    "rejudgeDashboardItem",
+    Post,
+    "/api/v1/dashboard/items/{key}/rejudge",
+    SessionCsrf,
+);
+/// Pull requests the reader has analysed, watched or opened.
+pub const LIST_MY_PRS: Route = route("listMyPrs", Get, "/api/v1/me/prs", READ);
 
 /// Liveness for compose health checks.
 pub const HEALTHZ: Route = route("healthz", Get, "/healthz", Public);
@@ -721,10 +774,12 @@ pub const ROUTES: &[Route] = &[
     REQUEST_FLOW,
     SET_BACKGROUND_ANALYSIS,
     HEALTHZ,
+    GITHUB_WEBHOOK,
     AUTH_LOGIN,
     AUTH_CALLBACK,
     AUTH_LOGOUT,
     GET_ME,
+    LIST_MY_PRS,
     RESOLVE_PR,
     CREATE_ANALYSIS,
     LIST_MY_ANALYSES,
@@ -753,6 +808,11 @@ pub const ROUTES: &[Route] = &[
     UPDATE_COMMENT,
     DELETE_COMMENT,
     GET_SETTINGS,
+    GET_REPOSITORY_INSTALLATIONS,
+    GET_GITHUB_WEBHOOK,
+    GET_LLM_ACTIVITY,
+    GET_RANKING_USAGE,
+    RESET_RANKING_USAGE,
     GET_ASSESSMENT_SETTINGS,
     SET_ASSESSMENT_SETTINGS,
     GET_ASSESSMENT_COMPARISON,
@@ -772,6 +832,7 @@ pub const ROUTES: &[Route] = &[
     SNOOZE_DASHBOARD_ITEM,
     WAKE_DASHBOARD_ITEM,
     START_DASHBOARD_REFRESH,
+    REJUDGE_DASHBOARD_ITEM,
     GET_DASHBOARD_REFRESH,
     CANCEL_DASHBOARD_REFRESH,
     RANK_DASHBOARD_REFRESH,

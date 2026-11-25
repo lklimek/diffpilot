@@ -21,19 +21,12 @@ async fn since(w: &World, before: usize) -> (Vec<Value>, u64) {
 async fn a_fact_check_without_changes_reads_only_the_probe() {
     let w = world().await;
     w.refreshed().await;
-    let (_, snapshot) = stored(&w).await;
+    let (id, snapshot) = stored(&w).await;
     let listed = snapshot.pull_requests.len() as u64;
     assert!(snapshot.pull_requests.iter().all(|pr| pr.mark.is_some()));
     let before = github_log(&w).await.len();
     let summary = w.summary(ALICE).await;
-    assert_eq!(
-        summary
-            .snapshot
-            .as_ref()
-            .expect("snapshot")
-            .facts_checked_at,
-        None
-    );
+    assert_eq!(w.state.dashboard.readers().checked_at(&alice(), id), None);
 
     assert_eq!(
         check(&w.state, &alice()).await.expect("check"),
@@ -50,10 +43,10 @@ async fn a_fact_check_without_changes_reads_only_the_probe() {
     );
     let after = w.summary(ALICE).await;
     assert_eq!(after.revision, summary.revision, "nothing written");
-    let meta = after.snapshot.expect("snapshot");
+    let checked = w.state.dashboard.readers().checked_at(&alice(), id);
     assert!(
-        meta.facts_checked_at.is_some_and(|at| at > meta.scanned_at),
-        "{meta:?}"
+        checked.is_some_and(|at| at > snapshot.scanned_at),
+        "{checked:?}"
     );
 }
 
@@ -240,13 +233,9 @@ async fn failed_or_missing_probe_and_detail_responses_keep_the_last_good_check_t
             let w = world().await;
             w.refreshed().await;
             check(&w.state, &alice()).await.expect("good check");
-            let good = w
-                .summary(ALICE)
-                .await
-                .snapshot
-                .expect("snapshot")
-                .facts_checked_at;
             let (id, mut snapshot) = stored(&w).await;
+            let good = w.state.dashboard.readers().checked_at(&alice(), id);
+            assert!(good.is_some());
             if details {
                 for pr in &mut snapshot.pull_requests {
                     pr.mark = None;
@@ -258,27 +247,16 @@ async fn failed_or_missing_probe_and_detail_responses_keep_the_last_good_check_t
                 check(&w.state, &alice()).await.is_err(),
                 "missing={missing}, details={details}"
             );
-            assert_eq!(
-                w.summary(ALICE)
-                    .await
-                    .snapshot
-                    .expect("snapshot")
-                    .facts_checked_at,
-                good
-            );
+            assert_eq!(w.state.dashboard.readers().checked_at(&alice(), id), good);
         }
     }
     for fragment in ["fragment Probe", "fragment Pull"] {
         let w = world().await;
         w.refreshed().await;
         check(&w.state, &alice()).await.expect("good check");
-        let good = w
-            .summary(ALICE)
-            .await
-            .snapshot
-            .expect("snapshot")
-            .facts_checked_at;
         let (id, mut snapshot) = stored(&w).await;
+        let good = w.state.dashboard.readers().checked_at(&alice(), id);
+        assert!(good.is_some());
         for pr in &mut snapshot.pull_requests {
             pr.mark = None;
         }
@@ -290,13 +268,6 @@ async fn failed_or_missing_probe_and_detail_responses_keep_the_last_good_check_t
             check(&w.state, &alice()).await.is_err(),
             "failed {fragment}"
         );
-        assert_eq!(
-            w.summary(ALICE)
-                .await
-                .snapshot
-                .expect("snapshot")
-                .facts_checked_at,
-            good
-        );
+        assert_eq!(w.state.dashboard.readers().checked_at(&alice(), id), good);
     }
 }
