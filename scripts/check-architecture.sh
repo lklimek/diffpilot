@@ -46,7 +46,9 @@ RULES='
     else null end;
   def forbidden: ["anyhow", "eyre", "color-eyre"];
 
-  [.packages[].name] as $members
+  if length == 1 and (.[0].packages | type == "array") then .[0]
+  else error("expected one cargo metadata JSON object with a packages array") end
+  | [.packages[].name] as $members
   | (allowed | keys[] | select(. as $c | $members | index($c) | not)
       | "A1: expected workspace crate \(.) is missing"),
     (.packages[] as $p
@@ -105,13 +107,16 @@ source_check() {
 
 # Prints one line per violation of the rules; prints nothing when the metadata is clean.
 violations() {
-  jq -r "$RULES" "$1"
+  jq -rs "$RULES" "$1"
 }
 
 # Exit 0 when clean; otherwise prints the violations to stderr and exits 1.
 check() {
   local found
-  found="$(violations "$1")"
+  if ! found="$(violations "$1")"; then
+    printf 'architecture check failed: invalid cargo metadata (%s)\n' "$1" >&2
+    return 1
+  fi
   if [[ -n "$found" ]]; then
     printf 'architecture check failed:\n%s\n' "$found" >&2
     return 1
@@ -124,7 +129,7 @@ workspace_metadata() {
 }
 
 self_test() {
-  local real failures=0
+  local real fixture failures=0
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
   real="$tmp/real.json"
@@ -132,8 +137,9 @@ self_test() {
 
   # expect_pass NAME FILE / expect_fail NAME FILE PATTERN
   expect_pass() {
-    if violations "$2" | grep -q .; then
-      echo "FAIL $1: expected no violation, got: $(violations "$2")"
+    local out
+    if ! out="$(check "$2" 2>&1)"; then
+      echo "FAIL $1: $out"
       failures=$((failures + 1))
     else
       echo "ok   $1"
@@ -232,6 +238,23 @@ self_test() {
   else
     echo "ok   check exits non-zero on a violation"
   fi
+
+  mkdir "$tmp/bin"
+  cat > "$tmp/bin/cargo" <<'EOF'
+#!/bin/sh
+cat "$METADATA_FIXTURE"
+EOF
+  chmod +x "$tmp/bin/cargo"
+  printf '{\n' > "$tmp/malformed.json"
+  : > "$tmp/empty.json"
+  for fixture in malformed empty; do
+    if PATH="$tmp/bin:$PATH" METADATA_FIXTURE="$tmp/$fixture.json" "$0" > /dev/null 2>&1; then
+      echo "FAIL check exits 0 on $fixture cargo metadata"
+      failures=$((failures + 1))
+    else
+      echo "ok   check exits non-zero on $fixture cargo metadata"
+    fi
+  done
 
   if ((failures > 0)); then
     echo "self-test failed: $failures case(s)" >&2
