@@ -5,7 +5,14 @@ import itemsJson from "../../../../fixtures/dashboard/api/items.json";
 import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
 import failedJson from "../../../../fixtures/dashboard/api/refresh-failed.json";
 import { ApiError } from "../../api/client";
-import { dashboardView, railText, reviewHref, watchErrorText } from "./state";
+import {
+  dashboardView,
+  rankingFeedback,
+  withLegacyDailyCap,
+  railText,
+  reviewHref,
+  watchErrorText,
+} from "./state";
 
 const SUMMARY = summaryJson as unknown as DashboardSummary;
 const FINISHED = SUMMARY.latest_refresh!;
@@ -21,6 +28,69 @@ const withLatest = (
   latest_refresh: latest,
   ...extra,
 });
+describe("ranking feedback from the stored snapshot", () => {
+  it("keeps the previous snapshot’s failed ranking reachable after a newer scan fails", () => {
+    const failedRanking: RefreshStatus = {
+      ...FINISHED,
+      ranking: { ...FINISHED.ranking!, state: "failed", message: "The LLM stopped answering" },
+    };
+    const feedback = rankingFeedback(withLatest(FAILED), failedRanking);
+    expect(feedback.retryId).toBe(FINISHED.id);
+    expect(feedback.notices).toContainEqual({
+      label: "Ranking failed · Retry",
+      detail: "The LLM stopped answering",
+    });
+    expect(feedback.statusDescriptions.not_judged).toContain("Ranking failed");
+  });
+
+  it("distinguishes daily and per-refresh caps and preserves the older-prompt count", () => {
+    const limited = (detail: string): RefreshStatus => ({
+      ...FINISHED,
+      left_provisional: 3,
+      steps: FINISHED.steps.map((step) => (step.key === "ranking" ? { ...step, detail } : step)),
+    });
+    const daily = rankingFeedback(
+      withLatest(limited("3 items left provisional: today's ranking limit (120)"), {
+        older_prompt_judgements: 2,
+      }),
+    );
+    expect(daily.notices.map((notice) => notice.label)).toContain("Daily limit reached · resets at 00:00");
+    expect(daily.statusDescriptions.not_judged).toMatch(/3 items.*00:00/);
+    expect(daily.statusDescriptions.outdated).toMatch(/2 items.*older ranking prompt/);
+    expect(daily.legacyDailyCap).toBe(true);
+    const perRefresh = rankingFeedback(
+      withLatest(limited("3 items left provisional: this refresh's ranking limit (48)")),
+    );
+    expect(perRefresh.notices.map((notice) => notice.label)).toContain("Per-refresh ranking limit");
+    expect(perRefresh.legacyDailyCap).toBe(false);
+  });
+
+  it("marks legacy unjudged candidates after a completed daily-limited ranking, preserving explicit states", () => {
+    const item = ITEMS.find((row) => row.id === "NC-482")!;
+    const candidate = {
+      ...item,
+      llm: null,
+      score: {
+        ...item.score,
+        state: "unjudged" as const,
+        parts: item.score.parts.map((part) =>
+          part.source === "llm" ? { ...part, status: "estimated" as const } : part,
+        ),
+      },
+    };
+    expect(withLegacyDailyCap(candidate).judgement?.state).toBe("capped");
+    expect(
+      withLegacyDailyCap({ ...candidate, score: { ...candidate.score, parts: [] } }).judgement,
+    ).toBeUndefined();
+    expect(withLegacyDailyCap(item).judgement).toBeUndefined();
+    const queued = {
+      ...candidate,
+      judgement: { state: "queued" as const, judged_at: null, outdated_because: null },
+    };
+    expect(withLegacyDailyCap(queued)).toBe(queued);
+  });
+});
+
 describe('dashboardView: refresh states (http-api.md "Refresh states")', () => {
   it("a finished refresh: no scan, no error, no banner", () => {
     expect(dashboardView(SUMMARY)).toEqual({

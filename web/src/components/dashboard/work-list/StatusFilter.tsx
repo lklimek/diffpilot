@@ -52,12 +52,14 @@ export function StatusFilter({
   counts,
   total,
   excludedDescription,
+  descriptions,
   onChange,
 }: {
   status: WorkStatus;
   counts: DashboardStatusCounts;
   total: number;
   excludedDescription: string;
+  descriptions?: Partial<Record<WorkStatus, string>>;
   onChange: (status: WorkStatus) => void;
 }) {
   const outdated = counts.outdated > 0 ? `${counts.outdated} outdated` : null;
@@ -77,7 +79,9 @@ export function StatusFilter({
           key={choice}
           label={`${LABELS[choice]} · ${choice === "all" ? total : counts[choice]}`}
           selection={{ kind: "radio", checked: choice === status }}
-          description={choice === "excluded" ? excludedDescription : DESCRIPTIONS[choice]}
+          description={
+            choice === "excluded" ? excludedDescription : (descriptions?.[choice] ?? DESCRIPTIONS[choice])
+          }
           onSelect={() => onChange(choice)}
         />
       ))}

@@ -176,6 +176,17 @@ describe("useDashboardPage", () => {
     expect(state()).toBe("outdated");
   });
 
+  it("retries the failed ranking on the existing snapshot and opens its events", async () => {
+    setDashboardScenario("ranking-failed");
+    const { result } = renderPage();
+    await waitFor(() => expect(result.current.summary.data?.latest_refresh?.ranking?.state).toBe("failed"));
+    const id = result.current.summary.data!.snapshot!.refresh_id;
+    act(() => result.current.retryRanking.run(id));
+    await waitFor(() => expect(result.current.summary.data?.latest_refresh?.ranking?.state).toBe("running"));
+    expect(FakeEventSource.latest().url).toContain(`/refreshes/${id}/events`);
+    expect(result.current.retryRanking.error).toBeNull();
+  });
+
   it("an empty snapshot and a first visit without a snapshot read no items", async () => {
     setDashboardScenario("empty");
     const empty = renderPage();

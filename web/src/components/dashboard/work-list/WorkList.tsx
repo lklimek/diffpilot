@@ -37,6 +37,7 @@ interface WorkListProps {
   filters?: Filter[];
   onFiltersChange?: (filters: Filter[]) => void;
   statusCounts?: DashboardStatusCounts;
+  statusDescriptions?: Partial<Record<WorkStatus, string>>;
   exclusions?: Exclusions | null;
   onWake?: (key: string) => void;
   wakingKeys?: string[];
@@ -112,6 +113,7 @@ export function WorkList({
   filters = [],
   onFiltersChange,
   statusCounts,
+  statusDescriptions,
   exclusions,
   onWake,
   wakingKeys,
@@ -290,6 +292,7 @@ export function WorkList({
           counts={counts}
           total={items.length}
           onChange={setStatus}
+          descriptions={statusDescriptions}
           excludedDescription={exclusionDescription(exclusions)}
         />
       </div>

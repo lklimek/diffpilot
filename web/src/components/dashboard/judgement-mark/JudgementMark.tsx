@@ -63,7 +63,7 @@ export function JudgementMark({
       <Tooltip tip={tip}>
         <span
           tabIndex={0}
-          className={`${MARK} cursor-help ${state === "judging" ? "border-accent bg-accent-bg text-accent" : "border-med-bd text-med"}`}
+          className={`${MARK} cursor-help ${state === "judging" ? "border-accent bg-accent-bg text-accent" : "border-mv-bd text-mv"}`}
         >
           {text}
         </span>

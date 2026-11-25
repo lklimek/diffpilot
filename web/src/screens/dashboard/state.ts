@@ -2,6 +2,8 @@
 // pure functions of the screen, tested without rendering.
 import { ApiError } from "../../api/client";
 import type { DashboardSummary, RefreshStatus, SnapshotMeta, WorkItem } from "../../api/generated/types";
+import type { DashboardItem } from "../../api/provisional/dashboard";
+import type { RankingNotice } from "../../components/dashboard/refresh-control/RefreshControl";
 import { commentsPath } from "../pr/paths";
 import { REVIEW_START_PATH } from "../shell/paths";
 
@@ -60,6 +62,77 @@ export function dashboardView(summary: DashboardSummary, timeZoneSaveFailed = fa
     empty: snapshot !== null && snapshot.item_counts.total === 0,
     notes: timeZoneNotes(summary, timeZoneSaveFailed),
   };
+}
+
+/** Feedback about ranking the snapshot on screen, including when a later scan failed. */
+export function rankingFeedback(summary: DashboardSummary, snapshotRefresh?: RefreshStatus) {
+  const holder = [summary.latest_refresh, snapshotRefresh].find(
+    (refresh) => refresh != null && refresh.id === summary.snapshot?.refresh_id,
+  );
+  const ranking = holder?.ranking;
+  const notices: RankingNotice[] = [];
+  let retryId: string | undefined;
+  if (
+    holder?.state === "finished" &&
+    ranking &&
+    ["failed", "interrupted", "cancelled"].includes(ranking.state)
+  ) {
+    retryId = holder.id;
+    const state =
+      ranking.state === "cancelled"
+        ? "cancelled"
+        : ranking.state === "interrupted"
+          ? "interrupted"
+          : "failed";
+    notices.push({
+      label: `Ranking ${state} · Retry`,
+      detail: ranking.message ?? `The LLM ranking was ${state}.`,
+    });
+  }
+  const left = holder?.left_provisional ?? 0;
+  // The ranking step names the cap when the legacy counter alone cannot distinguish it.
+  const detail = holder?.steps.find(({ key }) => key === "ranking")?.detail ?? "";
+  const limit = detail.match(
+    /^\d+ items? left provisional: (today's|this refresh's) ranking limit \(\d+\)$/,
+  )?.[1];
+  const daily = left > 0 && limit === "today's";
+  if (left > 0) {
+    const estimate = `${left} ${left === 1 ? "item was" : "items were"} left provisional by the last ranking.`;
+
+    if (daily) {
+      const reset = `The daily allowance resets at 00:00 (${summary.schedule.time_zone || "UTC"}).`;
+      const reached = ranking?.state === "finished" ? "Daily limit reached" : "Daily ranking limit";
+      notices.push({ label: `${reached} · resets at 00:00`, detail: `${estimate} ${reset}` });
+    } else {
+      notices.push({
+        label: limit === "this refresh's" ? "Per-refresh ranking limit" : `${left} left provisional`,
+        detail: estimate,
+      });
+    }
+  }
+  const notJudged = notices.map(({ label, detail }) => `${label}. ${detail}`).join(" ") || undefined;
+  const older = summary.older_prompt_judgements;
+  const olderPrompt =
+    older > 0
+      ? `${older} ${older === 1 ? "item was" : "items were"} judged with an older ranking prompt.`
+      : undefined;
+  if (olderPrompt) notices.push({ label: `${older} judged with older prompt`, detail: olderPrompt });
+  return {
+    notices,
+    retryId,
+    legacyDailyCap: daily && ranking?.state === "finished" && ranking.judged === ranking.total,
+    statusDescriptions: { not_judged: notJudged, outdated: olderPrompt },
+  };
+}
+
+/** A successful daily-limited ranking left unjudged candidates with open parts out of its queue. */
+export function withLegacyDailyCap(item: DashboardItem): DashboardItem {
+  const asked = item.score.parts.some(
+    ({ status, source }) => status === "estimated" || (status === "pending" && source === "llm"),
+  );
+  return !item.judgement && !item.llm && item.score.state === "unjudged" && asked
+    ? { ...item, judgement: { state: "capped", judged_at: null, outdated_because: null } }
+    : item;
 }
 
 /**

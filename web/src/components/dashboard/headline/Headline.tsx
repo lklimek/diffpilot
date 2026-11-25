@@ -26,6 +26,8 @@ export type ChartUnit = "day" | "week";
 
 interface HeadlineProps {
   figures: HeadlineFigures;
+  zoneLabel?: string;
+  unsupportedZone?: string | null;
   /** Last 20 working days, oldest first. */
   days: NetPoint[];
   /** Last 12 weeks, oldest first. */
@@ -61,6 +63,8 @@ function Tile({ label, value, sub, tip }: { label: string; value: number; sub: s
 /** Today’s headline, three comparison periods and the longer chart. */
 export function Headline({
   figures,
+  zoneLabel = "your browser’s time zone",
+  unsupportedZone,
   days,
   weeks,
   unit,
@@ -99,7 +103,9 @@ export function Headline({
     >
       <div className="grid items-start gap-x-7 gap-y-3 @min-[820px]:grid-cols-[minmax(250px,320px)_minmax(0,1fr)]">
         <div ref={headline} data-headline-figures className="min-w-0">
-          <Tooltip tip="Today uses the time zone in Settings › GitHub sync. Net = closed − opened. Closed counts your PRs merged or closed without merge; opened counts PRs you opened. Positive means your open backlog shrank.">
+          <Tooltip
+            tip={`These periods use ${zoneLabel}. Net = closed − opened. Closed counts your PRs merged or closed without merge; opened counts PRs you opened. Positive means your open backlog shrank.`}
+          >
             <h2 id={titleId} tabIndex={0} className="inline cursor-help text-[13px] font-semibold">
               Closed − opened, today
             </h2>
@@ -126,6 +132,11 @@ export function Headline({
               />
             ))}
           </div>
+          {unsupportedZone && (
+            <p className="mt-2 text-xs text-muted">
+              Your browser does not recognize {unsupportedZone}. These periods use {zoneLabel}.
+            </p>
+          )}
           {staleNote && <p className="mt-2 text-xs text-muted">{staleNote}</p>}
         </div>
         <div className="flex min-w-0 flex-col gap-1.5">
