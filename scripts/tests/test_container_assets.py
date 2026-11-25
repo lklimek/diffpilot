@@ -30,10 +30,17 @@ class WorkerAssets(unittest.TestCase):
                 "HOME": str(root / "home"),
                 "CODEX_HOME": str(root / "codex"),
                 "DP_RUNTIME_DIR": str(root / "runtime"),
+                "DP_APP_READY_SECS": "3",
             }
-            timer = threading.Timer(0.5, self.app_server, [root])
-            timer.start()
-            self.addCleanup(timer.cancel)
+
+            def start_after_reset():
+                # Like dp-worker-entry: app-server starts only after job-ready.
+                while not (root / "runtime/job-ready").is_file():
+                    time.sleep(0.01)
+                time.sleep(0.3)
+                self.app_server(root)
+
+            threading.Thread(target=start_after_reset, daemon=True).start()
             started = time.monotonic()
             subprocess.run(
                 ["python3", ROOT / "deploy/worker/worker-config.py", "cs1"],
@@ -41,7 +48,7 @@ class WorkerAssets(unittest.TestCase):
                 check=True,
                 timeout=10,
             )
-            self.assertGreaterEqual(time.monotonic() - started, 0.5)
+            self.assertGreaterEqual(time.monotonic() - started, 0.3)
             self.assertTrue((root / "runtime/job-ready").is_file())
 
     def test_job_reset_fails_when_app_server_never_listens(self):
