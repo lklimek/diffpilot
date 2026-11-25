@@ -960,8 +960,8 @@ Cards show only the frozen primary; secondary results are comparison-only.
 
 ## v1.4 dashboard, Comments and activity
 
-The following routes return 501 `not_implemented` in B1 once any required session, token or CSRF checks pass.
-The response and status in the table describe their final contract.
+The response and status in the table describe the route contract. Reserved routes return 501 `not_implemented`
+once any required session, token or CSRF checks pass.
 
 | Method | Path | Auth | Request | Response |
 |---|---|---|---|---|
@@ -1001,7 +1001,10 @@ The response and status in the table describe their final contract.
 - The Tour's optional `StepFacts.leading_context` is the deterministic line range of doc comments and attributes
   immediately above the step's first item. The generic technology plugin leaves it absent.
 - PR history merges the reader's requested analyses, watches including ended ones, and PR page visits. It returns
-  one item per PR, newest activity first, in `prs` with `next_cursor` for pagination. A PR page visit updates the
-  reader's `last_opened_at` when the history feature is active.
+  one item per PR in the reader's tenant, newest activity first. Activity is the latest analysis request, watch start
+  or end, or page visit. Pass `limit` (1–100, default 50) and the previous page's opaque `next_cursor`. An invalid
+  cursor returns 400 `invalid_request`. A null `next_cursor` ends the list.
+- A successful PR page read in a browser session updates the reader's `last_opened_at`. Access-token reads omit
+  this update. PR page and Comments reads, including "Read GitHub again", never queue assessment work.
 
 B1 omits uncomputed response fields. Explicit zero counts carry data once the feature handlers are implemented.

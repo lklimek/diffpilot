@@ -251,6 +251,7 @@ async fn read_after_a_report_marks_what_github_shows() {
 async fn items_the_daily_limit_holds_back_say_so() {
     let w = world().await;
     w.get(&format!("{PR}/comments")).await;
+    w.request_pass().await;
     let rl = w.state.db.review_loop();
     for pass in rl.live_passes().await.expect("passes") {
         rl.finish_pass(pass.id, false, Timestamp::now())

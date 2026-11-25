@@ -1046,6 +1046,37 @@ async fn slice_pipeline() {
 }
 
 #[tokio::test]
+async fn tour_step_carries_leading_context() {
+    let h = harness().await;
+    let id = h.create_fixture_analysis().await;
+    h.wait_until_finished(&id).await;
+    let mut flow = agent_output("flow:f1");
+    assert_eq!(flow["steps"][0]["id"], "s1");
+    // Begin at broadcast_tx itself, leaving its doc comment outside the step.
+    flow["steps"][0]["start_line"] = json!(127);
+    h.state
+        .db
+        .documents()
+        .put(
+            analysis_id(&id),
+            DocumentKind::Flow,
+            "f1",
+            &flow,
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let facts = &tour["flows"][0]["steps"][0]["facts"];
+    assert_eq!(facts["range"]["start_line"], 127);
+    assert_eq!(
+        facts["leading_context"],
+        json!({"start_line": 126, "end_line": 126})
+    );
+}
+
+#[tokio::test]
 async fn pipeline_resumes_unfinished_analysis_from_stored_documents() {
     let h = harness().await;
     let id = h.seed_analysis().await;

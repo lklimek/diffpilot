@@ -4,13 +4,143 @@
 
 use std::collections::{HashMap, HashSet};
 
-use contracts::common::LineSide;
-use ra_ap_rustc_lexer::{FrontmatterAllowed, LiteralKind, TokenKind, strip_shebang, tokenize};
+use contracts::api::tour::CallHierarchy;
+use contracts::common::{LineRange, LineSide};
+use ra_ap_rustc_lexer::{
+    DocStyle, FrontmatterAllowed, LiteralKind, TokenKind, strip_shebang, tokenize,
+};
 
-use super::{FileSource, OtherSide};
+use super::{Classified, FileSource, Generic, OtherSide, SymbolAt, TechError, TechPlugin};
 use crate::diff::Hunk;
 
 pub(super) mod conversions;
+
+/// The built-in Rust plugin.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Rust;
+
+impl TechPlugin for Rust {
+    fn name(&self) -> &'static str {
+        "rust"
+    }
+
+    fn detect(&self, path: &str) -> bool {
+        path.ends_with(".rs")
+    }
+
+    fn classify(&self, file: &FileSource<'_>) -> Result<Vec<Classified>, TechError> {
+        Generic.classify(file)
+    }
+
+    fn call_hierarchy(&self, _symbol: &SymbolAt) -> Option<CallHierarchy> {
+        None
+    }
+
+    fn leading_context(&self, file: &FileSource<'_>, first_line: u32) -> Option<LineRange> {
+        let item_line = usize::try_from(first_line.checked_sub(1)?).ok()?;
+        let text = file.text?;
+        let previous = text.lines().nth(item_line.checked_sub(1)?)?.trim_end();
+        // Most steps have no context to lex. Tokens still decide what the markers mean.
+        if !(previous.ends_with(']')
+            || previous.ends_with("*/")
+            || previous.contains("///")
+            || previous.contains("//!"))
+        {
+            return None;
+        }
+        let lexed = lex(text)?;
+        let tokens = &lexed.tokens;
+        let mut before = tokens.partition_point(|token| token.first < item_line);
+        let item = tokens.get(before..)?;
+        if item.first()?.first != item_line || !starts_item(item) {
+            return None;
+        }
+
+        let nearest = item_line.saturating_sub(30);
+        let mut first = item_line;
+        let mut next = item_line;
+        while before > 0 && first > nearest {
+            let last = &tokens[before - 1];
+            if last.last + 1 < next || last.last >= item_line {
+                break;
+            }
+            let Some(start) = context_start(tokens, before - 1) else {
+                break;
+            };
+            before = start;
+            next = tokens[start].first;
+            // Skip a boundary line still shared with the preceding token.
+            let shared_line = before > 0 && tokens[before - 1].last == next;
+            first = (next + usize::from(shared_line)).min(first).max(nearest);
+        }
+        (first < item_line).then_some(LineRange {
+            start_line: u32::try_from(first + 1).ok()?,
+            end_line: first_line - 1,
+        })
+    }
+}
+
+/// The first token of a doc comment or outer attribute ending at `end`.
+fn context_start(tokens: &[Token<'_>], end: usize) -> Option<usize> {
+    let last = &tokens[end];
+    match last.kind {
+        TokenKind::LineComment { doc_style: Some(_) }
+        | TokenKind::BlockComment {
+            doc_style: Some(DocStyle::Outer),
+            ..
+        } => Some(end),
+        TokenKind::CloseBracket => {
+            let bracket = tokens[..end]
+                .iter()
+                .rposition(|token| token.depth < last.depth)?;
+            let pound = bracket.checked_sub(1)?;
+            (tokens[bracket].kind == TokenKind::OpenBracket
+                && tokens[pound].kind == TokenKind::Pound)
+                .then_some(pound)
+        }
+        _ => None,
+    }
+}
+
+/// Recognises an item header at the start of the line, after optional visibility and qualifiers.
+fn starts_item(mut tokens: &[Token<'_>]) -> bool {
+    if tokens.first().is_some_and(|token| token.text == "pub") {
+        tokens = &tokens[1..];
+        if let Some(open) = tokens
+            .first()
+            .filter(|token| token.kind == TokenKind::OpenParen)
+        {
+            let Some(end) = tokens.iter().position(|token| {
+                token.kind == TokenKind::CloseParen && token.depth == open.depth + 1
+            }) else {
+                return false;
+            };
+            tokens = &tokens[end + 1..];
+        }
+    }
+    while let [token, next, ..] = tokens {
+        if !(matches!(token.text, "async" | "unsafe")
+            || token.text == "const" && matches!(next.text, "async" | "unsafe" | "fn"))
+        {
+            break;
+        }
+        tokens = &tokens[1..];
+    }
+    let [keyword, next, ..] = tokens else {
+        return false;
+    };
+    match keyword.text {
+        "fn" | "struct" | "enum" | "trait" | "mod" | "const" | "static" | "type" => {
+            matches!(next.kind, TokenKind::Ident | TokenKind::RawIdent)
+        }
+        "impl" => matches!(
+            next.kind,
+            TokenKind::Ident | TokenKind::RawIdent | TokenKind::Lt | TokenKind::Bang
+        ),
+        "macro_rules" => next.kind == TokenKind::Bang,
+        _ => false,
+    }
+}
 
 /// Deepest `{` nesting of a `use` tree the rules read; a deeper tree is unreadable.
 const MAX_USE_DEPTH: usize = 32;
