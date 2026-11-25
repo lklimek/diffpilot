@@ -513,7 +513,7 @@ impl<'a> Ranking<'a> {
             .await?
         {
             tracing::info!(user_id = %user, refresh = %self.run.refresh_id, %job,
-                "dashboard judge send released from daily usage");
+                "unused dashboard judge reservation released after submission");
         }
         Ok(())
     }
@@ -667,16 +667,6 @@ impl<'a> Ranking<'a> {
         pending: Vec<&'q Queued>,
         result: JobResult,
     ) -> Result<Vec<&'q Queued>, RankError> {
-        if !matches!(result.outcome, JobOutcome::Succeeded { .. })
-            && result.llm_call.is_none()
-            && result.usage.is_none_or(|usage| {
-                usage.input_tokens == 0
-                    && usage.cached_input_tokens == 0
-                    && usage.output_tokens == 0
-            })
-        {
-            self.release(job).await?;
-        }
         let output = match result.outcome {
             JobOutcome::Succeeded { output } => output,
             JobOutcome::Failed { kind, .. } => {
@@ -1056,7 +1046,7 @@ pub async fn cancel_jobs(state: &AppState, refresh: RefreshId, attempt: Option<u
         Err(error) => {
             tracing::warn!(%error, %refresh,
                 "judge jobs of an ended dashboard ranking could not be listed; they are never claimed");
-            return;
+            Vec::new()
         }
     };
     for job in live
@@ -1068,6 +1058,20 @@ pub async fn cancel_jobs(state: &AppState, refresh: RefreshId, attempt: Option<u
                 "judge job of an ended dashboard ranking cancelled"),
             Err(error) => tracing::warn!(%error, %refresh, job = %job.id,
                 "judge job of an ended dashboard ranking could not be cancelled"),
+        }
+    }
+    match state
+        .db
+        .dashboard()
+        .release_unsubmitted_sends(refresh, attempt, state.dashboard.now())
+        .await
+    {
+        Ok(0) => {}
+        Ok(released) => {
+            tracing::info!(%refresh, released, "unsubmitted dashboard sends refunded after ranking ended")
+        }
+        Err(error) => {
+            tracing::warn!(%error, %refresh, "unsubmitted dashboard sends could not be refunded after ranking ended")
         }
     }
 }

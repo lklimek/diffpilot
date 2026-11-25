@@ -238,7 +238,7 @@ pub async fn rank_again(
 }
 
 /// Startup recovery (plan §A.4): no task survived the restart, so every live refresh ends (`scanning` → `failed`
-/// interrupted, `ranking` → ranking `interrupted`, Retry ranking offered).
+/// interrupted, `ranking` → ranking `interrupted`, Retry ranking offered) and abandoned judge sends are refunded.
 pub async fn recover(state: &AppState) -> Result<(), DbError> {
     let interrupted = state
         .db
@@ -249,6 +249,17 @@ pub async fn recover(state: &AppState) -> Result<(), DbError> {
         tracing::info!(user_id = %refresh.user_id, refresh = %refresh.id, was = ?refresh.was,
             "dashboard refresh interrupted by the server restart");
         super::judge::cancel_jobs(state, refresh.id, None).await;
+    }
+    let released = state
+        .db
+        .dashboard()
+        .reconcile_sends(state.dashboard.now())
+        .await?;
+    if released > 0 {
+        tracing::info!(
+            released,
+            "dashboard judge reservations reconciled after restart"
+        );
     }
     Ok(())
 }
