@@ -57,7 +57,11 @@ describe("RefreshControl", () => {
     expect(onRefresh).toHaveBeenCalledOnce();
     const more = screen.getByRole("button", { name: "More refresh options" });
     await userEvent.click(more);
-    await userEvent.click(screen.getByRole("menuitem", { name: "Refresh and re-judge outdated (2)" }));
+    const rejudge = screen.getByRole("menuitem", { name: "Refresh and re-judge outdated (2)" });
+    expect(rejudge).toHaveAccessibleDescription(
+      /uses up to 2 of today’s 120 judgements.*caps may leave.*outdated/i,
+    );
+    await userEvent.click(rejudge);
     expect(onRejudgeOutdated).toHaveBeenCalledOnce();
     expect(more).toHaveFocus();
     rerender(<RefreshControl {...defaults} outdated={0} onRejudgeOutdated={onRejudgeOutdated} />);
@@ -78,5 +82,21 @@ describe("RefreshControl", () => {
     screen.getByRole("button", { name: "More refresh options" }).focus();
     await userEvent.keyboard("{ArrowDown}{End}{Enter}");
     expect(onCancel).toHaveBeenCalledOnce();
+  });
+  it("shows ranking failure in the status and keeps Retry ranking reachable in the Refresh menu", async () => {
+    const onRetryRanking = vi.fn();
+    render(
+      <RefreshControl
+        {...defaults}
+        rankingNotices={[{ label: "Ranking failed · Retry", detail: "The LLM stopped answering." }]}
+        onRetryRanking={onRetryRanking}
+      />,
+    );
+    expect(screen.getByText(/Ranking failed · Retry.*Full scan/)).toHaveAccessibleDescription(
+      /The LLM stopped answering/,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "More refresh options" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Retry ranking" }));
+    expect(onRetryRanking).toHaveBeenCalledOnce();
   });
 });

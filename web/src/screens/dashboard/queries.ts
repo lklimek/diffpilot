@@ -274,6 +274,23 @@ export function useCancelRefresh() {
   });
 }
 
+/** Retry ranking the current snapshot via R4. */
+export function useRetryRanking() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.rankDashboardRefresh,
+    onSuccess: (status) => {
+      applyRefreshStatus(client, status);
+      client.setQueryData<RefreshStatus>(refreshKey(status.id), (kept) => kept ?? status);
+    },
+    onSettled: (_, error, id) =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: SUMMARY_KEY }),
+        error && client.invalidateQueries({ queryKey: refreshKey(id) }),
+      ]),
+  });
+}
+
 /** Requests a fresh LLM judgement; subsequent item pages carry the state and new judgement. */
 export function useRejudgeItem() {
   const client = useQueryClient();

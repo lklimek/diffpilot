@@ -108,7 +108,7 @@ export function WorkItemRow({
             {expanded ? "▾" : "▸"}
           </button>
         </Tooltip>
-        <div className="flex flex-col gap-0.5 pt-0.5 font-mono text-[12.5px] font-semibold">
+        <div className="flex flex-col gap-1.5 pt-0.5 font-mono text-[12.5px] font-semibold">
           <span className="flex items-center gap-1 font-sans text-[10.5px] tracking-wide text-muted uppercase">
             <KindIcon kind={item.kind} />
             {KIND_LABEL[item.kind] ?? item.kind}

@@ -173,6 +173,28 @@ const SCENARIOS = {
   waiting: () => ranking("waiting_for_analysis"),
   /** The ranking failed: the estimates stay, "Rank again" (R4) restarts it. */
   "ranking-failed": () => ranking("failed", "The LLM stopped answering"),
+  "ranking-daily-cap": (): Base => {
+    const capped = ranking("finished");
+    const refresh = capped.summary.latest_refresh!;
+    const finished = { ...refresh.ranking!, total: refresh.judged };
+    return {
+      ...capped,
+      summary: {
+        ...capped.summary,
+        older_prompt_judgements: 2,
+        latest_refresh: {
+          ...refresh,
+          ranking: finished,
+          left_provisional: 1,
+          steps: refresh.steps.map((step) =>
+            step.key === "ranking"
+              ? { ...step, state: "done", detail: "1 item left provisional: today's ranking limit (120)" }
+              : step,
+          ),
+        },
+      },
+    };
+  },
   /** Nothing needs the user; three own PRs wait on others. */
   empty: (): Base => {
     const counts = SUMMARY.snapshot!.item_counts;
@@ -259,6 +281,10 @@ const SCENARIOS = {
   "no-time-zone": noTimeZone,
   /** As no-time-zone, but R6b refuses the browser's zone (422): the note points to Settings. */
   "no-time-zone-refused": noTimeZone,
+  "unknown-time-zone": (): Base => ({
+    items: ITEMS,
+    summary: { ...SUMMARY, schedule: { ...SUMMARY.schedule, time_zone: "Etc/Unknown" } },
+  }),
   /** NC-482 without an analysis: its row opens the review start page, which offers a new analysis. */
   "review-new": () => withReview(() => null),
   /** NC-482 analysed at its current head: its row opens the review (fixture state `resume`). */

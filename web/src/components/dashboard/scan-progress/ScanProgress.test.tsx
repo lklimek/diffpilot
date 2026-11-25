@@ -17,7 +17,11 @@ describe("ScanProgress", () => {
     );
     expect(screen.getByText(/PR details 23 \/ 41/)).toBeVisible();
     expect(screen.getByText(/started \d\d:\d\d/)).toBeVisible();
-    expect(screen.queryByRole("progressbar")).toBeNull();
+    const progress = screen.getByRole("progressbar", { name: "Scan progress" });
+    expect(progress).toHaveAttribute("aria-valuenow", "23");
+    expect(progress).toHaveAttribute("aria-valuemax", "41");
+    expect(progress).toHaveAttribute("aria-valuetext", "PR details: 23 of 41");
+    expect(progress).not.toHaveTextContent("%");
     expect(screen.queryByRole("list")).toBeNull();
     const details = screen.getByRole("button", { name: "Details" });
     await userEvent.click(details);
@@ -28,5 +32,12 @@ describe("ScanProgress", () => {
     expect(screen.queryByRole("list")).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "Cancel scan" }));
     expect(onCancel).toHaveBeenCalledOnce();
+  });
+  it("uses indeterminate progress when the step has no counts", () => {
+    const steps = SCANNING.steps.map((step) => ({ ...step, total: null, done: null }));
+    render(<ScanProgress status={{ ...SCANNING, steps }} snapshotAt={null} onCancel={vi.fn()} now={NOW} />);
+    const progress = screen.getByRole("progressbar", { name: "Scan progress" });
+    expect(progress).not.toHaveAttribute("aria-valuenow");
+    expect(progress).not.toHaveAttribute("aria-valuemax");
   });
 });

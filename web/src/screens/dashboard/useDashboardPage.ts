@@ -16,6 +16,7 @@ import {
   useDashboardItems,
   useDashboardSummary,
   useRejudgeItem,
+  useRetryRanking,
   useRefreshEvents,
   useSaveBrowserTimeZone,
   useSlackNames,
@@ -115,13 +116,18 @@ function useRankingFinished(latest?: RefreshStatus | null, holder?: RefreshStatu
 }
 
 /** Plain text of a failed action. */
-function actionError(error: unknown, action: "refresh" | "cancel"): string | null {
+function actionError(error: unknown, action: "refresh" | "cancel" | "rank"): string | null {
   if (!error) return null;
   if (error instanceof ApiError) {
     if (error.code === "refresh_running") {
-      return "A refresh is already scanning; its progress is shown.";
+      return action === "rank"
+        ? "Wait for the running refresh to finish before retrying ranking."
+        : "A refresh is already scanning; its progress is shown.";
     }
-    if (error.code === "conflict" && action === "cancel") return "This refresh had already ended.";
+    if (error.code === "conflict") {
+      if (action === "cancel") return "This refresh had already ended.";
+      if (action === "rank") return "This ranking can no longer be retried.";
+    }
     return error.message;
   }
   return "Something went wrong. Try again.";
@@ -151,16 +157,19 @@ export function useDashboardPage() {
   const start = useStartRefresh();
   const cancel = useCancelRefresh();
   const rejudge = useRejudgeItem();
+  const rank = useRetryRanking();
   const notice = useRankingFinished(data?.latest_refresh, snapshotRefresh.data);
 
   // An action's error belongs to the refresh it was about: a change of the latest refresh clears it.
   const latestKey = `${data?.latest_refresh?.id}:${data?.latest_refresh?.state}`;
   const { reset: resetStart } = start;
   const { reset: resetCancel } = cancel;
+  const { reset: resetRank } = rank;
   useEffect(() => {
     resetStart();
     resetCancel();
   }, [latestKey, resetStart, resetCancel]);
+  useEffect(() => resetRank(), [data?.snapshot?.refresh_id, resetRank]);
 
   // Items of a newer revision than the summary: the summary is behind, read it again.
   const itemsRevision = items.data?.revision;
@@ -202,6 +211,11 @@ export function useDashboardPage() {
       rejudgeOutdated: () => start.mutate(true),
       starting: start.isPending,
       error: actionError(start.error, "refresh"),
+    },
+    retryRanking: {
+      run: (id: string) => rank.mutate(id),
+      pending: rank.isPending,
+      error: actionError(rank.error, "rank"),
     },
     cancel: {
       run: (id: string) => cancel.mutate(id),

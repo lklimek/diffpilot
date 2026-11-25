@@ -11,11 +11,7 @@ export interface Judgement {
 export function itemJudgement(item: WorkItem & { judgement?: Judgement }): Judgement {
   return (
     item.judgement ?? {
-      state: item.llm
-        ? item.llm.inherited || item.score.state === "provisional"
-          ? "outdated"
-          : "current"
-        : "not_judged",
+      state: item.llm ? (item.llm.inherited ? "outdated" : "current") : "not_judged",
       judged_at: item.llm?.judged_at ?? null,
       outdated_because: null,
     }

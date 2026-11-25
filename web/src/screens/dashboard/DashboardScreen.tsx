@@ -28,15 +28,20 @@ import {
   barPullRequests,
   chartPoints,
   dailySeries,
-  fullDayLabel,
   headline,
   throughputWeeks,
   weeklySeries,
-  yesterday,
 } from "./history";
 import { GITHUB_SYNC_SETTINGS_PATH, LLM_USAGE_PATH, REVIEW_START_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
-import { commentsHref, railText, reviewHref, watchErrorText } from "./state";
+import {
+  commentsHref,
+  railText,
+  rankingFeedback,
+  reviewHref,
+  watchErrorText,
+  withLegacyDailyCap,
+} from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
 const errorText = (error: unknown) =>
@@ -89,7 +94,6 @@ export function DashboardScreen() {
       days: chartPoints(dailySeries(events, now), "day"),
       weeks: chartPoints(weeklySeries(events, now), "week"),
       throughput: throughputWeeks(events, now),
-      yesterday: yesterday(events, now),
     };
   }, [snapshot, now, zone]);
 
@@ -110,12 +114,19 @@ export function DashboardScreen() {
 
   const snapshotAt = snapshot?.scanned_at ?? null;
   const stale = view?.stale && snapshotAt ? clockText(snapshotAt, now) : null;
-  const actionErrors = [page.refresh.error, page.cancel.error].filter(
+  const actionErrors = [page.refresh.error, page.cancel.error, page.retryRanking.error].filter(
     (error): error is string => error !== null,
   );
+  const ranking = summary && rankingFeedback(summary, page.snapshotRefresh);
+  const allItems =
+    ranking?.legacyDailyCap && page.items.data?.revision === summary?.revision
+      ? page.allItems?.map(withLegacyDailyCap)
+      : page.allItems;
+  const retryId = ranking?.retryId;
+  const retryRanking = retryId ? () => page.retryRanking.run(retryId) : undefined;
   const counts =
     summary?.status_counts ??
-    getStatusCounts(page.allItems ?? [], snapshot?.exclusions?.total ?? snapshot?.excluded ?? 0);
+    getStatusCounts(allItems ?? [], snapshot?.exclusions?.total ?? snapshot?.excluded ?? 0);
   const scan = view?.scanning;
   const cancelScan = scan ? () => page.cancel.run(scan.id) : undefined;
   const live =
@@ -161,6 +172,8 @@ export function DashboardScreen() {
       {snapshot && charts && (
         <Headline
           figures={charts.figures}
+          zoneLabel={charts.figures.zoneLabel}
+          unsupportedZone={charts.figures.unsupportedZone}
           days={charts.days}
           weeks={charts.weeks}
           unit={unit}
@@ -247,15 +260,16 @@ export function DashboardScreen() {
       {snapshot && !view.empty && page.items.isError && (
         <StatusMessage kind="error">{errorText(page.items.error)}</StatusMessage>
       )}
-      {snapshot && (view.empty || page.allItems) && (
+      {snapshot && (view.empty || allItems) && (
         <WorkList
           guideOrigin={pathname + search + hash}
-          items={view.empty ? [] : (page.allItems ?? [])}
+          items={view.empty ? [] : (allItems ?? [])}
           kinds={page.filter}
           onKindsChange={page.setFilter}
           filters={filters}
           onFiltersChange={setFilters}
           statusCounts={counts}
+          statusDescriptions={ranking?.statusDescriptions}
           exclusions={snapshot.exclusions}
           onWake={(key) => page.wake.mutate({ key })}
           wakingKeys={page.wake.pendingKeys}
@@ -311,6 +325,9 @@ export function DashboardScreen() {
             onRejudgeOutdated={summary.status_counts ? page.refresh.rejudgeOutdated : undefined}
             onCancel={cancelScan}
             cancelling={page.cancel.pending}
+            rankingNotices={ranking?.notices}
+            onRetryRanking={retryRanking}
+            retryingRanking={page.retryRanking.pending}
             onRefresh={page.refresh.start}
             starting={page.refresh.starting}
             now={now}
@@ -338,9 +355,10 @@ export function DashboardScreen() {
               plugins={summary?.plugins}
             />
             <Yesterday
-              label={fullDayLabel(charts.yesterday.day)}
-              prs={charts.yesterday.prs}
-              reviews={charts.yesterday.reviews}
+              label={charts.figures.yesterday.label}
+              zoneLabel={charts.figures.zoneLabel}
+              prs={charts.figures.yesterdayDetails.prs}
+              reviews={charts.figures.yesterdayDetails.reviews}
             />
             <ThroughputMinis weeks={charts.throughput} />
             <QueueAge

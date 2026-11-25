@@ -43,4 +43,8 @@ describe("JudgementMark", () => {
     rerender(<JudgementMark judgement={{ state: "current", judged_at, outdated_because: null }} />);
     expect(screen.queryByText(/judg/)).toBeNull();
   });
+  it.each(["not_judged", "queued", "capped"] as const)("renders the %s mark in neutral colours", (state) => {
+    render(<JudgementMark judgement={{ state, judged_at: null, outdated_because: null }} />);
+    expect(screen.getByText(/^◌ not judged/)).toHaveClass("border-mv-bd", "text-mv");
+  });
 });

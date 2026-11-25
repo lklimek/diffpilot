@@ -6,7 +6,6 @@ import { ANALYSIS_ID } from "./support";
 
 // My work at `/` (plan §F) against the msw dashboard scenarios
 // (`?dashboard=<name>`, src/mocks/handlers/dashboard.ts).
-// TODO(v1.4): Run these flows in the coordinator’s browser-enabled test environment.
 
 /** One step of the mock's scripted refresh (`SCRIPT_STEP_MS` of src/mocks/handlers/dashboard.ts). */
 const SCRIPT_STEP_MS = 500;
@@ -235,6 +234,21 @@ test.describe("My work (msw)", () => {
     await expect(chips.getByRole("button", { name: /^author:/ })).toHaveAttribute("aria-pressed", "true");
   });
 
+  test("size buttons and their row ID links have distinct 24 px targets", async ({ page }) => {
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await open(page);
+      const row = main(page).locator('[data-item="acme~wallet-ui~pr~311"]');
+      const size = await row.getByRole("button", { name: "Filter by size small" }).boundingBox();
+      const link = await row
+        .getByRole("link", { name: "Open acme/wallet-ui#311 on GitHub, new tab", exact: true })
+        .boundingBox();
+      expect(size!.width).toBeGreaterThanOrEqual(24);
+      expect(size!.height).toBeGreaterThanOrEqual(24);
+      expect(size!.y + size!.height).toBeLessThanOrEqual(link!.y);
+    }
+  });
+
   test("filters by status and shows deterministic stack, base and App facts on a phone", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.emulateMedia({ colorScheme: "dark" });
@@ -293,7 +307,9 @@ test.describe("My work (msw)", () => {
     await expect(ready.getByText("CI failing")).toBeVisible();
     // Still ranked: the same PR is in Needs you.
     await expect(
-      page.getByRole("region", { name: "Needs you" }).getByRole("link", { name: "Open WUI-311 on GitHub" }),
+      page
+        .getByRole("region", { name: "Needs you" })
+        .getByRole("link", { name: "Open acme/wallet-ui#311 on GitHub, new tab", exact: true }),
     ).toBeVisible();
     const copy = ready.getByRole("button", { name: "Copy list of PRs ready to merge" });
     const box = (await copy.boundingBox())!;
@@ -430,7 +446,9 @@ test.describe("My work (msw)", () => {
     await expect(strip(page).getByRole("list")).toHaveCount(0);
     await strip(page).getByRole("button", { name: "Details" }).click();
     await expect(strip(page).getByRole("listitem")).toHaveCount(7);
-    await expect(page.getByRole("progressbar")).toHaveCount(0);
+    const progress = strip(page).getByRole("progressbar", { name: "Scan progress" });
+    await expect(progress).toHaveAttribute("aria-valuenow", "23");
+    await expect(progress).toHaveAttribute("aria-valuemax", "41");
     await expect(page.getByRole("button", { name: /Refreshing…/ })).toHaveAttribute("aria-disabled", "true");
     await page.getByRole("button", { name: "More refresh options" }).click();
     await page.getByRole("menuitem", { name: "Cancel scan" }).click();
@@ -463,6 +481,46 @@ test.describe("My work (msw)", () => {
       ).toBeVisible();
       await expect(page.getByText(/Ranking with the LLM:/)).toHaveCount(0);
     }
+  });
+
+  test("ranking failure keeps the reason and can be retried without starting a scan", async ({ page }) => {
+    await open(page, "ranking-failed");
+    await pauseClock(page);
+    const info = page.locator("[data-scan-info]");
+    await expect(info).toContainText("Ranking failed · Retry");
+    await expect(info).toHaveAccessibleDescription(/The LLM stopped answering/);
+    await status(page).click();
+    await expect(
+      main(page).getByRole("menuitemradio", { name: /^Not judged yet/ }),
+    ).toHaveAccessibleDescription(/Ranking failed/);
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "More refresh options" }).click();
+    await page.getByRole("menuitem", { name: "Retry ranking", exact: true }).click();
+    await settle(page, (quick) => quick(info).not.toContainText("Ranking failed"));
+    await expect(strip(page)).toHaveCount(0);
+  });
+
+  test("legacy daily limit and older prompt appear in Status and cap the unjudged row", async ({ page }) => {
+    await open(page, "ranking-daily-cap");
+    const info = page.locator("[data-scan-info]");
+    await expect(info).toContainText("Daily limit reached · resets at 00:00");
+    await expect(info).toHaveAccessibleDescription(/2 items were judged with an older ranking prompt/);
+    await status(page).click();
+    await expect(
+      main(page).getByRole("menuitemradio", { name: /^Outdated judgement/ }),
+    ).toHaveAccessibleDescription(/older ranking prompt/);
+    const unjudged = main(page).getByRole("menuitemradio", { name: /^Not judged yet/ });
+    await expect(unjudged).toHaveAccessibleDescription(/00:00.*Europe\/Warsaw/);
+    await unjudged.click();
+    await expect(main(page).getByText("◌ not judged · daily limit")).toBeVisible();
+  });
+
+  test("an unknown stored zone leaves My work usable and names the browser fallback", async ({ page }) => {
+    await open(page, "unknown-time-zone");
+    await expect(main(page).getByText(/Your browser does not recognize Etc\/Unknown/)).toBeVisible();
+    await expect(
+      main(page).getByRole("heading", { name: "Closed − opened, today" }),
+    ).toHaveAccessibleDescription(/browser’s time zone/);
   });
 
   test("MemCan unreachable: each kept TODO row says it was not refreshed, with a tooltip", async ({
@@ -505,7 +563,7 @@ test.describe("My work (msw)", () => {
   test("first run: nothing scanned yet, then Refresh starts the first scan", async ({ page }) => {
     await open(page, "first-run");
     await expect(page.getByText("Nothing scanned yet.")).toBeVisible();
-    await page.getByRole("button", { name: "Refresh" }).click();
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(strip(page)).toBeVisible();
     await expect(main(page).getByText("fix(sync): retry header fetch after peer timeout")).toBeVisible({
       timeout: 10_000,

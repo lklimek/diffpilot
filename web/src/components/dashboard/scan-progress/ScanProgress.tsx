@@ -19,7 +19,11 @@ export function ScanProgress({ status, snapshotAt, onCancel, cancelling = false,
   const trigger = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const step = status.steps.find((step) => step.state === "running");
-  const count = step?.done != null && step.total != null ? ` ${step.done} / ${step.total}` : "";
+  const label = step ? scanStepLabel(step.key) : null;
+  const counts =
+    step?.done != null && step.total != null && step.total > 0
+      ? { done: step.done, total: step.total }
+      : null;
   const kept = snapshotAt ? `the ${clockText(snapshotAt, now)} snapshot stays` : "the current list stays";
   return (
     <section
@@ -38,7 +42,17 @@ export function ScanProgress({ status, snapshotAt, onCancel, cancelling = false,
           Refreshing from GitHub and MemCan
         </h2>
         <span className="text-xs text-muted">
-          {step && `· ${scanStepLabel(step.key)}${count} `}· started {clockText(status.started_at, now)}
+          <span
+            role="progressbar"
+            aria-label="Scan progress"
+            aria-valuenow={counts?.done}
+            aria-valuemax={counts?.total}
+            aria-valuetext={counts ? `${label}: ${counts.done} of ${counts.total}` : (label ?? undefined)}
+          >
+            {`· ${label ?? "Scanning"}`}
+            {counts && ` ${counts.done} / ${counts.total}`}
+          </span>{" "}
+          · started {clockText(status.started_at, now)}
         </span>
         <div className="ml-auto flex gap-1.5">
           <Tooltip tip="Show or hide every scan step.">

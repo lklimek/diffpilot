@@ -1,4 +1,5 @@
 import type { RefreshStatus, ScheduleStatus, SnapshotMeta } from "../../../api/generated/types";
+import { RANKING_DAILY_LIMIT } from "../../../api/provisional/dashboardJudgement";
 import type { DashboardLive } from "../../../api/provisional/dashboardLive";
 import { BUSY_NOTE } from "../../button/button";
 import { clockText, dateTimeText } from "../../format/time";
@@ -8,6 +9,11 @@ import { Tooltip } from "../../tooltip/Tooltip";
 import { elapsedText } from "../common/format";
 import { RefreshIcon, Spinner } from "../common/icons";
 import { canRetry } from "../refresh-error/RefreshError";
+
+export interface RankingNotice {
+  label: string;
+  detail: string;
+}
 
 interface RefreshControlProps {
   latest: RefreshStatus | null;
@@ -21,6 +27,9 @@ interface RefreshControlProps {
   onCancel?: () => void;
   starting?: boolean;
   cancelling?: boolean;
+  rankingNotices?: RankingNotice[];
+  onRetryRanking?: () => void;
+  retryingRanking?: boolean;
   now: Date;
 }
 
@@ -62,6 +71,9 @@ export function RefreshControl({
   onCancel,
   starting = false,
   cancelling = false,
+  rankingNotices = [],
+  onRetryRanking,
+  retryingRanking = false,
   now,
 }: RefreshControlProps) {
   const scannedAt = snapshot ? clockText(snapshot.scanned_at, now) : null;
@@ -73,6 +85,7 @@ export function RefreshControl({
     coverage,
     snapshot ? `Last full scan: ${dateTimeText(snapshot.scanned_at)}.` : "No full scan has finished.",
     own && `LLM judged ${own.judged} · reused ${own.reused}.`,
+    ...rankingNotices.map(({ detail }) => detail),
   ]
     .filter(Boolean)
     .join(" ");
@@ -101,6 +114,14 @@ export function RefreshControl({
       ? `● Live · ${scannedAt ? `full ${scanText}` : scanText}`
       : `Not live · ${scanText}`;
 
+  const rankingLabel = rankingNotices[0]?.label;
+  const retryDisabled =
+    latest?.state === "scanning" || latest?.state === "ranking"
+      ? "Wait for the running refresh to finish."
+      : starting || retryingRanking
+        ? BUSY_NOTE
+        : undefined;
+
   return (
     <div className="flex min-w-0 items-center gap-2.5">
       {problem && (
@@ -112,10 +133,11 @@ export function RefreshControl({
       )}
       <span role="status" className="sr-only">
         {scanAnnouncement(latest, scannedAt)}
+        {rankingLabel && ` ${rankingLabel}.`}
       </span>
       <Tooltip tip={tip} className="min-w-0">
         <span data-scan-info tabIndex={0} className="block cursor-help truncate text-xs text-muted">
-          {status}
+          {rankingLabel ? `${rankingLabel} · ${status}` : status}
         </span>
       </Tooltip>
       <div className="shrink-0">
@@ -135,7 +157,7 @@ export function RefreshControl({
           />
           <MenuItem
             label={`Refresh and re-judge outdated (${outdated})`}
-            description="Scan and spend LLM usage on outdated judgements."
+            description={`Scans, then re-judges outdated items. Uses up to ${outdated} of today’s ${RANKING_DAILY_LIMIT} judgements. The daily and per-refresh caps may leave some items outdated.`}
             disabledReason={
               disabledReason ??
               (outdated === 0
@@ -146,6 +168,14 @@ export function RefreshControl({
             }
             onSelect={onRejudgeOutdated}
           />
+          {onRetryRanking && (
+            <MenuItem
+              label="Retry ranking"
+              description="Rank the current snapshot again. Only items that still need judging count toward the limits."
+              disabledReason={retryDisabled}
+              onSelect={onRetryRanking}
+            />
+          )}
           {scanning && onCancel && (
             <MenuItem
               label="Cancel scan"
