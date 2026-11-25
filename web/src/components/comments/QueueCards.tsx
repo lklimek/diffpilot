@@ -2,7 +2,6 @@
 // running and the empty queue.
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type {
-  AssessmentProgress,
   CommentItem,
   DecideRest,
   DecisionBatchRow,
@@ -14,12 +13,14 @@ import { buttonClass } from "../button/button";
 import { Banner } from "../banner/Banner";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { clockText } from "../format/time";
+import { GithubMark } from "../github/GithubMark";
 import { Kbd } from "../help/Kbd";
 import { CodeText } from "../section/CodeText";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { useCardKeys } from "./cardKeys";
+import { DuplicateLinks } from "./DuplicateLinks";
 import { GithubCommentText } from "./GithubCommentText";
 import { COMMENT_HINT } from "./DecisionForm";
 import {
@@ -72,6 +73,7 @@ const Heading = ({ id, text }: { id: string; text: ReactNode }) => {
 interface GroupCardProps {
   /** Two or more non-gate items with the same recommendation. */
   items: CommentItem[];
+  duplicates?: ReadonlyMap<number, CommentItem[]>;
   position: { index: number; total: number };
   onDecide: (rows: DecisionBatchRow[]) => void;
   /** Takes the item out of the group: it is asked on its own. */
@@ -92,6 +94,7 @@ interface GroupCardProps {
  */
 export function GroupCard({
   items,
+  duplicates,
   position,
   onDecide,
   onDiscussIndividually,
@@ -116,7 +119,11 @@ export function GroupCard({
   const threads = items.some((item) => item.kind === "thread");
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== "i" || /^(INPUT|TEXTAREA|SELECT)$/.test((event.target as HTMLElement).tagName))
+      if (
+        event.key !== "i" ||
+        /^(INPUT|TEXTAREA|SELECT)$/.test((event.target as HTMLElement).tagName) ||
+        (event.target as HTMLElement | null)?.closest?.("[role=menu], [role=dialog]")
+      )
         return;
       event.preventDefault();
       discuss.current?.focus();
@@ -162,60 +169,65 @@ export function GroupCard({
           </>
         }
       />
-      <table className="w-full border-collapse text-[13px]">
-        <thead>
-          <tr className="text-left text-[11px] text-muted uppercase">
-            <th scope="col" className="border-b border-border px-2 py-1">
-              ID
-            </th>
-            <th scope="col" className="border-b border-border px-2 py-1">
-              Reviewer
-            </th>
-            <th scope="col" className="border-b border-border px-2 py-1">
-              Comment
-            </th>
-            <th scope="col" className="border-b border-border px-2 py-1">
-              LLM assessment <ProvenanceTag source="llm" />
-            </th>
-            <th scope="col" className="border-b border-border px-2 py-1">
-              <span className="sr-only">Action</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item, i) => (
-            <tr key={item.id}>
-              <td className="border-b border-border px-2 py-1.5 whitespace-nowrap">
-                {itemId(item)} <OpenItem item={item} />
-              </td>
-              <td className="border-b border-border px-2 py-1.5">
-                {sourceText(item)}
-                {item.bot_severity && ` · ${item.bot_severity}`}
-              </td>
-              <td className="border-b border-border px-2 py-1.5">{item.title}</td>
-              <td className="border-b border-border px-2 py-1.5">
-                {item.assessment && (
-                  <CodeText
-                    text={shared ? item.assessment.necessity.reason : item.assessment.recommendation.reason}
-                  />
-                )}
-              </td>
-              <td className="border-b border-border px-2 py-1.5">
-                <Tooltip tip={`Takes ${itemId(item)} out of this group; it is asked on its own (i).`}>
-                  <button
-                    ref={i === 0 ? discuss : undefined}
-                    type="button"
-                    onClick={() => onDiscussIndividually(item.no)}
-                    className={buttonClass("plain", true)}
-                  >
-                    Discuss individually
-                  </button>
-                </Tooltip>
-              </td>
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-[13px]">
+          <thead>
+            <tr className="text-left text-[11px] text-muted uppercase">
+              <th scope="col" className="border-b border-border px-2 py-1">
+                ID
+              </th>
+              <th scope="col" className="border-b border-border px-2 py-1">
+                Reviewer
+              </th>
+              <th scope="col" className="border-b border-border px-2 py-1">
+                Comment
+              </th>
+              <th scope="col" className="border-b border-border px-2 py-1">
+                LLM assessment <ProvenanceTag source="llm" />
+              </th>
+              <th scope="col" className="border-b border-border px-2 py-1">
+                <span className="sr-only">Action</span>
+              </th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {items.map((item, i) => (
+              <tr key={item.id}>
+                <td className="border-b border-border px-2 py-1.5 whitespace-nowrap">
+                  {itemId(item)} <OpenItem item={item} />
+                </td>
+                <td className="border-b border-border px-2 py-1.5">
+                  {sourceText(item)}
+                  {item.bot_severity && ` · ${item.bot_severity}`}
+                </td>
+                <td className="border-b border-border px-2 py-1.5">
+                  {item.title}
+                  <DuplicateLinks primary={item} duplicates={duplicates?.get(item.no) ?? []} />
+                </td>
+                <td className="border-b border-border px-2 py-1.5">
+                  {item.assessment && (
+                    <CodeText
+                      text={shared ? item.assessment.necessity.reason : item.assessment.recommendation.reason}
+                    />
+                  )}
+                </td>
+                <td className="border-b border-border px-2 py-1.5">
+                  <Tooltip tip={`Takes ${itemId(item)} out of this group; it is asked on its own (i).`}>
+                    <button
+                      ref={i === 0 ? discuss : undefined}
+                      type="button"
+                      onClick={() => onDiscussIndividually(item.no)}
+                      className={buttonClass("plain", true)}
+                    >
+                      Discuss individually
+                    </button>
+                  </Tooltip>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       <CollapsibleSection title="Your decision" storageKey={`${storageKey}:group-decision`}>
         <label htmlFor={`${id}-reason`} className="mb-0.5 block text-xs font-semibold">
           {rec.kind === "reject" ? "Reason for all (posted as each reply)" : "Reason or target for all"}
@@ -695,7 +707,7 @@ export function PrQuestionCard({
         {!dismiss && (
           <Tooltip tip="Opens the pull request on GitHub, where you merge it yourself (new tab).">
             <a href={prUrl} target="_blank" rel="noopener noreferrer" className={buttonClass("plain")}>
-              Merge on GitHub<span className="sr-only"> (opens on GitHub in a new tab)</span>
+              Merge on GitHub <GithubMark />
             </a>
           </Tooltip>
         )}
@@ -706,49 +718,6 @@ export function PrQuestionCard({
         </Tooltip>
       </div>
     </form>
-  );
-}
-
-/** "LLM assessment running: 4 of 9 comments assessed". */
-export function AssessmentRunningCard({ progress }: { progress: AssessmentProgress }) {
-  return (
-    <section
-      aria-label="LLM assessment running"
-      className="rounded-lg border border-border bg-surface px-4 py-3.5"
-    >
-      <h2 className="mt-0 mb-1.5 text-lg font-semibold">LLM assessment running</h2>
-      <p>
-        diffpilot&apos;s LLM reads each comment against the PR
-        {progress.head && (
-          <>
-            {" "}
-            at <code>{progress.head.slice(0, 7)}</code>
-          </>
-        )}
-        . Questions appear as soon as the job finishes.
-      </p>
-      <div
-        role="progressbar"
-        aria-label="Comments assessed"
-        aria-valuemin={0}
-        aria-valuemax={progress.total}
-        aria-valuenow={progress.assessed}
-        className="my-1.5 h-2 overflow-hidden rounded border border-border bg-surface-2"
-      >
-        <i
-          className="block h-full origin-left bg-accent"
-          style={{ transform: `scaleX(${progress.total ? progress.assessed / progress.total : 0})` }}
-        />
-      </div>
-      <p className="text-sm">
-        <b>
-          {progress.assessed} of {progress.total} comments assessed
-        </b>
-      </p>
-      <p className="text-xs text-muted">
-        The LLM reads and does not change code. You can already decide items assessed earlier.
-      </p>
-    </section>
   );
 }
 

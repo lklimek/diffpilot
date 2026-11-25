@@ -35,7 +35,7 @@ export function CommentsInfo({
     return (
       <>
         <span aria-hidden="true">·</span>
-        <Tooltip tip="Opens the comments of this pull request in diffpilot: counted from its last read; those that need you wait for your decision.">
+        <Tooltip tip="Opens the comments of this pull request in diffpilot: counted from its last read; Needs you counts undecided questions for you, including PR-level questions.">
           <a
             href={href}
             aria-label={`${text}: comments of ${subject}`}

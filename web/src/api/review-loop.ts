@@ -9,6 +9,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { api, ApiError } from "./client";
+import { fetchReviewCommentItems, fetchReviewComments, fetchReviewPrPage } from "./provisional/comments";
 import { withoutRetried } from "./queries";
 import type {
   AnalysisId,
@@ -37,13 +38,13 @@ export const useAnalysisOnce = (id: AnalysisId) =>
 
 /** The PR page (RC1). */
 export const usePrPage = (pr: PrRef) =>
-  useQuery({ queryKey: ["pr-page", ...prKey(pr)], queryFn: () => api.getPrPage(pr) });
+  useQuery({ queryKey: ["pr-page", ...prKey(pr)], queryFn: () => fetchReviewPrPage(pr) });
 
 /** Comments overview: header, counts, rounds, queue (RC2); read again every minute. */
 export const useCommentsOverview = (pr: PrRef) =>
   useQuery({
     queryKey: ["comments", ...prKey(pr)],
-    queryFn: () => api.getComments(pr),
+    queryFn: () => fetchReviewComments(pr),
     refetchInterval: COMMENTS_POLL_MS,
   });
 
@@ -51,7 +52,7 @@ export const useCommentsOverview = (pr: PrRef) =>
 export const useCommentItems = (pr: PrRef | null, enabled = true) =>
   useQuery({
     queryKey: ["comment-items", ...(pr ? prKey(pr) : [])],
-    queryFn: () => api.listCommentItems(pr!),
+    queryFn: () => fetchReviewCommentItems(pr!),
     refetchInterval: COMMENTS_POLL_MS,
     enabled: pr !== null && enabled,
   });

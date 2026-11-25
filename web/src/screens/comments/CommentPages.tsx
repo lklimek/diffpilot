@@ -60,13 +60,14 @@ export function TableScreen() {
 
 /** V3 Decision log and execution. */
 export function LogScreen() {
-  const { pr, login, now } = useComments();
+  const { pr, login, now, items } = useComments();
   const log = useCommentLog(pr);
   if (log.isError) return <StatusMessage kind="error">{errorText(log.error)}</StatusMessage>;
   if (!log.data) return <StatusMessage kind="loading">Loading the decision log…</StatusMessage>;
   return (
     <DecisionLog
       log={log.data}
+      githubDecisions={items.filter((item) => item.imported_decision || item.state === "outside")}
       pr={pr}
       origin={window.location.origin}
       now={now}

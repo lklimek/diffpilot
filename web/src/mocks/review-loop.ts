@@ -24,13 +24,21 @@ import type {
   GateMarkRequest,
   NotificationSettings,
   PrBadgeView,
-  PrPage,
   PrRef,
   QueueEntry,
   Recommendation,
   WatchedPr,
   WatchList,
 } from "../api/generated/types";
+import {
+  asReviewComment,
+  type CommentItemResponse,
+  type ReviewComment,
+  type ReviewCommentTally,
+  type ReviewCommentsOverview,
+  type ReviewPrPage,
+} from "../api/provisional/comments";
+import { commentStatus } from "../components/comments/queueStatus";
 import {
   ASKED_AGAIN,
   NOT_READ,
@@ -50,7 +58,8 @@ import { liveAnalysis } from "./live-analysis";
 import { scenario } from "./scenarios";
 
 /** Mockup states of the review loop (scenario field `comments`). */
-export type CommentsMockState = "no-analysis" | "running" | "empty" | "no-agent" | "github-error" | "watched";
+export type CommentsMockState =
+  "no-analysis" | "running" | "empty" | "no-agent" | "github-error" | "watched" | "v14";
 
 const state = (): CommentsMockState | undefined => scenario().comments;
 
@@ -105,8 +114,11 @@ const facts = (fields: Partial<CommentItem["github"]> = {}): CommentItem["github
 });
 
 /** A thread item of thepastaclaw at the head. */
-function item(no: number, fields: Partial<CommentItem> & Pick<CommentItem, "title" | "body">): CommentItem {
-  const built: CommentItem = {
+function item(
+  no: number,
+  fields: Partial<ReviewComment> & Pick<CommentItem, "title" | "body">,
+): ReviewComment {
+  const built: ReviewComment = {
     id: `00000000-0000-4000-8000-${String(no).padStart(12, "0")}`,
     no,
     kind: "thread",
@@ -157,6 +169,11 @@ function effect(
     updated_at: at("09:00"),
     ...fields,
   };
+}
+
+function nextDecisionId(): string {
+  store!.decided += 1;
+  return `e0000000-0000-4000-8000-${String(store!.decided).padStart(12, "0")}`;
 }
 
 /** A stored decision. */
@@ -271,7 +288,7 @@ const CODE: CodeLine[] = [
   "}",
 ].map((text, i) => ({ line: 82 + i, text }));
 
-function seedItems(): CommentItem[] {
+function seedItems(): ReviewComment[] {
   return [
     item(24, {
       kind: "pr_question",
@@ -492,10 +509,87 @@ function seedItems(): CommentItem[] {
   ];
 }
 
+function v14Items(): ReviewComment[] {
+  const seeded = seedItems();
+  const primary = seeded.find((i) => i.no === 14)!;
+  primary.llm_title = primary.title;
+  primary.title = "Medium severity finding";
+  return [
+    ...seeded,
+    item(30, {
+      duplicate_of: 14,
+      author: "coderabbitai[bot]",
+      title: "The timeout can repeat the request",
+      body: "The retry can send a request that was already accepted.",
+    }),
+    item(31, {
+      duplicate_of: 14,
+      title: "The same request can be sent twice",
+      body: "The resend may duplicate an accepted request.",
+    }),
+    item(32, {
+      kind: "pr_comment",
+      location: null,
+      status_comment: true,
+      title: "Review round 4 finished",
+      body: "The review bot has published its summary.",
+    }),
+    item(33, {
+      state: "decided",
+      title: "Use a seeded RNG for the jitter",
+      body: "The jitter should use a fixed seed.",
+      imported_decision: {
+        via: "imported_github",
+        kind: "reject",
+        by: "alice",
+        at: at("08:50"),
+        evidence_url: `${URL_PR}#discussion_r1038`,
+      },
+    }),
+    item(34, {
+      state: "assessing",
+      assessment_state: { state: "running" },
+      title: "Jitter range documented twice",
+      body: "The range is described in two places.",
+    }),
+    item(35, {
+      ...asReviewComment({
+        ...item(35, { state: "assessing", title: "Unused import", body: "The import may be unused." }),
+        assessment_state: { state: "queued" },
+      }),
+    }),
+    item(36, {
+      assessment_state: { state: "not_assessed", reason: "daily_limit" },
+      title: "Default changed without changelog",
+      body: "The changelog omits the new default.",
+    }),
+    item(37, {
+      assessment_state: { state: "not_assessed", reason: "failed" },
+      title: "Check timeout units",
+      body: "The timeout unit is unclear.",
+    }),
+  ];
+}
+
+export function commentTally(): ReviewCommentTally {
+  const list = listItems();
+  return {
+    total: list.filter((item) => item.kind !== "pr_question" && !item.gone_at).length,
+    needs_you: waitingIn(list).length,
+  };
+}
+
+export function commentItemsResponse(): CommentItemResponse[] {
+  return listItems().map(({ assessment_queued, ...item }) => ({
+    ...item,
+    assessment_state: assessment_queued ? { state: "queued" } : item.assessment_state,
+  }));
+}
+
 /** Items, decisions stored so far and the reader's skips ("Skip for now": item → revision skipped at). */
-let store: { items: CommentItem[]; decided: number; skips: Map<number, number> } | null = null;
-const items = (): CommentItem[] => {
-  store ??= { items: seedItems(), decided: 0, skips: new Map() };
+let store: { items: ReviewComment[]; decided: number; skips: Map<number, number> } | null = null;
+const items = (): ReviewComment[] => {
+  store ??= { items: state() === "v14" ? v14Items() : seedItems(), decided: 0, skips: new Map() };
   return store.items;
 };
 
@@ -508,13 +602,13 @@ const OPEN_STATES = new Set(["undecided", "reopened", "asked_back"]);
 /** Waiting for a decision: open and still produced by the read (an item with `gone_at` leaves the queue). */
 const isOpen = (i: CommentItem) => OPEN_STATES.has(i.state) && !i.gone_at;
 /** The open items of `list` no standing "Merge with follow-ups" covers (queue.rs `waiting`). */
-function waitingIn(list: CommentItem[]): CommentItem[] {
+function waitingIn(list: ReviewComment[]): ReviewComment[] {
   const covered = followedUp(list);
-  return list.filter((i) => isOpen(i) && !covered.has(i.no));
+  return list.filter((i) => commentStatus(i) === "needs_you" && !covered.has(i.no));
 }
 
 /** Items as RC4 answers them in the selected state. */
-export function listItems(): CommentItem[] {
+export function listItems(): ReviewComment[] {
   const all = items();
   switch (state()) {
     case "empty":
@@ -532,7 +626,7 @@ export function listItems(): CommentItem[] {
 }
 
 /** Queue order (plan §2.4) with the reader's skipped entries last (RC14). */
-function queue(list: CommentItem[]): QueueEntry[] {
+function queue(list: ReviewComment[]): QueueEntry[] {
   const skipped = (e: QueueEntry) =>
     e.item_nos.every((n) => store?.skips.get(n) === list.find((i) => i.no === n)?.revision);
   const entries = ordered(list).map((e) => (skipped(e) ? { ...e, skipped: true } : e));
@@ -540,7 +634,7 @@ function queue(list: CommentItem[]): QueueEntry[] {
 }
 
 /** Queue order (plan §2.4): PR-level, asked again, answered, gate, blocking, single, groups. */
-function ordered(list: CommentItem[]): QueueEntry[] {
+function ordered(list: ReviewComment[]): QueueEntry[] {
   const open = waitingIn(list);
   const by = (reason: QueueEntry["reason"], pick: (i: CommentItem) => boolean) =>
     open.filter(pick).map((i) => ({ item_nos: [i.no], reason }));
@@ -571,12 +665,12 @@ const READ = () => ({
   next_read_at: state() === "github-error" ? at("09:52") : at("09:21"),
 });
 
-function counts(list: CommentItem[]) {
+function counts(list: ReviewComment[]) {
   const effects = list.flatMap((i) => i.decisions.at(-1)?.effects ?? []);
   return {
     unresolved_threads: list.filter((i) => i.kind === "thread" && i.github.resolved === false).length,
     undecided: waitingIn(list).length,
-    asked_again: list.filter((i) => i.state === "reopened").length,
+    asked_again: waitingIn(list).filter((i) => i.state === "reopened").length,
     waiting_for_agents: list.filter((i) => i.state === "executing").length,
     failed_effects: effects.filter((e) => e.state === "failed").length,
     outside: list.filter((i) => i.state === "outside").length,
@@ -584,20 +678,34 @@ function counts(list: CommentItem[]) {
   };
 }
 
-function assessmentProgress(list: CommentItem[]) {
-  const needs = list.filter((i) => i.kind !== "pr_question" && i.state !== "outside" && !i.gone_at);
+function assessmentProgress(list: ReviewComment[]) {
+  const needs = list.filter(
+    (i) =>
+      i.kind !== "pr_question" &&
+      !i.status_comment &&
+      !i.imported_decision &&
+      i.state !== "outside" &&
+      !i.gone_at,
+  );
   const assessed = needs.filter((i) => i.assessment_state.state === "assessed").length;
+  const in_pass = needs.filter((i) => commentStatus(i) === "assessing").length;
+  const waiting = needs.filter((i) => commentStatus(i) === "waiting").length;
   return {
-    running: state() === "running",
+    running: in_pass > 0,
+    in_pass,
+    waiting,
+    since: in_pass > 0 ? at("09:18") : null,
     assessed,
     total: needs.length,
-    limited: 0,
+    limited: needs.filter(
+      (i) => i.assessment_state.state === "not_assessed" && i.assessment_state.reason === "daily_limit",
+    ).length,
     head: HEAD,
-    at: state() === "running" ? null : at("09:12"),
+    at: at("09:12"),
   };
 }
 
-function badge(list: CommentItem[]): PrBadgeView {
+function badge(list: ReviewComment[]): PrBadgeView {
   const c = counts(list);
   if (c.undecided > 0)
     return {
@@ -644,7 +752,7 @@ const PURPOSE =
 const analysis = (): AnalysisSummary | null => (state() === "no-analysis" ? null : liveAnalysis());
 
 /** RC2. */
-export function overview(): CommentsOverview {
+export function overview(): ReviewCommentsOverview {
   const list = listItems();
   return {
     pr: PR,
@@ -659,12 +767,14 @@ export function overview(): CommentsOverview {
     queue: queue(list),
     badge: badge(list),
     analysis: analysis()?.id ?? null,
+    watch: watchOfPr(),
   };
 }
 
 let watched: WatchedPr | null = null;
 /** The reader unwatched the fixture PR (it leaves the list). */
 let unwatched = false;
+const watchOfPr = () => watched ?? (state() === "watched" && !unwatched ? WATCH_482() : null);
 
 const WATCH_482 = (): WatchedPr => ({
   pr: PR,
@@ -678,7 +788,7 @@ const WATCH_482 = (): WatchedPr => ({
 });
 
 /** RC1. */
-export function prPage(): PrPage {
+export function prPage(): ReviewPrPage {
   const list = listItems();
   return {
     pr: PR,
@@ -717,7 +827,7 @@ export function prPage(): PrPage {
         facts: [],
       },
     ],
-    watch: watched ?? (state() === "watched" && !unwatched ? WATCH_482() : null),
+    watch: watchOfPr(),
     badge: badge(list),
     analysis: analysis(),
     comments: {
@@ -840,8 +950,7 @@ function store_decision(
   planned: Planned,
   via: Decision["via"],
 ): Decision {
-  store!.decided += 1;
-  const id = `e0000000-0000-4000-8000-${String(store!.decided).padStart(12, "0")}`;
+  const id = nextDecisionId();
   const decided: Decision = {
     id,
     item_no: it.no,
@@ -913,6 +1022,13 @@ export function undo(raw: string, revision: number): CommentItem | Refusal {
     return [409, "conflict", `An agent already claimed an effect of the decision on C${it.no}; it stays.`];
   cancelUnclaimed(last);
   last.undone_at = now();
+  for (const duplicate of store!.items.filter((item) => item.duplicate_of === it.no)) {
+    const decision = duplicate.decisions.at(-1);
+    if (!decision || decision.carried_from !== last.id || decision.undone_at) continue;
+    decision.undone_at = last.undone_at;
+    duplicate.state = "undecided";
+    duplicate.revision += 1;
+  }
   it.state = "undecided";
   it.revision += 1;
   return it;
@@ -990,7 +1106,13 @@ export function previewEffects(rows: DecisionBatchRow[]): EffectsPreview[] | Ref
 }
 
 /** RC17. */
-export const decideRestList = (): DecideRest => decideRest(listItems(), scopeOf);
+export const decideRestList = (): DecideRest =>
+  decideRest(
+    listItems().filter(
+      (item) => !item.status_comment && item.duplicate_of == null && !item.imported_decision,
+    ),
+    scopeOf,
+  );
 
 /** RC8, RC9 (mod.rs `decide`): one record per row, all or nothing; gate rows never under group or bulk, items
  * asked again or no longer read never in bulk. */
@@ -1038,7 +1160,30 @@ function storeRows(via: Decision["via"], rows: DecisionBatchRow[]): Decision[] |
       "item_changed",
       `These comments changed since you looked: ${changed.join(", ")}. Read them again.`,
     ];
-  return planned.map(([it, p], i) => store_decision(it, rows[i]!, p, via));
+  const recorded = planned.map(([it, p], i) => store_decision(it, rows[i]!, p, via));
+  for (const primary of recorded) {
+    for (const duplicate of store!.items.filter(
+      (item) => item.duplicate_of === primary.item_no && isOpen(item) && !item.imported_decision,
+    )) {
+      duplicate.decisions = [
+        ...duplicate.decisions,
+        {
+          ...primary,
+          id: nextDecisionId(),
+          item_no: duplicate.no,
+          via: "carried",
+          carried_from: primary.id,
+          supersedes: duplicate.decisions.at(-1)?.id ?? null,
+          reply_text: null,
+          recommendation: duplicate.assessment?.recommendation ?? null,
+          effects: [],
+        },
+      ];
+      duplicate.state = "decided";
+      duplicate.revision += 1;
+    }
+  }
+  return recorded;
 }
 
 /** RC8. */

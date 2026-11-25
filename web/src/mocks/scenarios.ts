@@ -347,6 +347,7 @@ const SCENARIOS = {
   // The empty queue with no agent subscribed: how to start one is shown open.
   "comments-no-agent": { comments: "no-agent" },
   "comments-github-error": { comments: "github-error" },
+  "comments-v14": { comments: "v14" },
   "comments-watched": { comments: "watched" },
   "show-less": { showLess: true },
   // Owner screenshot: one remark over a replaced line, unchanged lines and added comment lines that fold.

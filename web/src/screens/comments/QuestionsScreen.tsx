@@ -25,10 +25,15 @@ import { CollapsibleSection } from "../../components/collapsible/CollapsibleSect
 import { isTypingField } from "../../components/comments/cardKeys";
 import type { EffectsPreviewState } from "../../components/comments/decisions";
 import { itemId } from "../../components/comments/parts";
-import { assessmentText } from "../../components/comments/ProcessCommentsCard";
+import { CommentOverviewCard } from "../../components/comments/CommentOverviewCard";
+import {
+  needsYouQueue,
+  commentStatus,
+  queueStatusOf,
+  type QueueStatus,
+} from "../../components/comments/queueStatus";
 import { QuestionCard, type ContextState } from "../../components/comments/QuestionCard";
 import {
-  AssessmentRunningCard,
   DecideRestCard,
   EmptyQueueCard,
   GroupCard,
@@ -36,6 +41,7 @@ import {
 } from "../../components/comments/QueueCards";
 import { StartAgentHelp } from "../../components/comments/StartAgentHelp";
 import { entryKey, inListOrder, itemsAfter, QueueList } from "../../components/comments/QueueList";
+import { isGithubUrl } from "../../components/github/links";
 import { Kbd } from "../../components/help/Kbd";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { buttonClass } from "../../components/button/button";
@@ -62,8 +68,22 @@ const KEYS: [string, string][] = [
 
 /** V1 Questions (plan §3.2, §2.4): one question at a time, groups, "Decide the rest", PR-level questions. */
 export function QuestionsScreen() {
-  const { pr, overview, items, askAnswers, login, now } = useComments();
+  const { pr, overview, items, askAnswers, login, now, statusHost, focusQueueStatus } = useComments();
   const [search, setSearch] = useSearchParams();
+  const status = queueStatusOf(search.get("status"));
+  useEffect(focusQueueStatus, [focusQueueStatus]);
+  const changeStatus = (next: QueueStatus) => {
+    const params = new URLSearchParams(search);
+    if (next === "needs_you") params.delete("status");
+    else params.set("status", next);
+    setSearch(params);
+  };
+  const selectItem = (item: string | null, replace = false) => {
+    const params = new URLSearchParams(search);
+    if (item) params.set("item", item);
+    else params.delete("item");
+    setSearch(params, { replace });
+  };
   const navigate = useNavigate();
   const chat = useAskChat();
   const decide = useDecide(pr);
@@ -93,13 +113,23 @@ export function QuestionsScreen() {
     to: null,
   });
   const byNo = useMemo(() => new Map(items.map((i) => [i.no, i])), [items]);
+  const duplicates = useMemo(() => {
+    const grouped = new Map<number, CommentItem[]>();
+    for (const item of items) {
+      if (item.duplicate_of == null || item.duplicate_of === item.no) continue;
+      const peers = grouped.get(item.duplicate_of) ?? [];
+      peers.push(item);
+      grouped.set(item.duplicate_of, peers);
+    }
+    return grouped;
+  }, [items]);
   const storageKey = `${login}:comments-question`;
 
   // The queue in list order with groups split where the owner chose to discuss rows individually; skipped entries
   // last in their section.
   const queue = useMemo(() => {
     const out: QueueEntry[] = [];
-    for (const entry of overview.queue) {
+    for (const entry of needsYouQueue(overview.queue, byNo)) {
       const nos = entry.item_nos.filter((n) => byNo.has(n));
       const singles = nos.filter((n) => individual.has(n));
       const kept = nos.filter((n) => !individual.has(n));
@@ -160,9 +190,9 @@ export function QuestionsScreen() {
   const open = (next: QueueEntry | undefined) => {
     setRest(false);
     setAfter(null);
-    if (!next) return setSearch({}, { replace: true });
+    if (!next) return selectItem(null, true);
     const first = byNo.get(next.item_nos[0]!);
-    if (first) setSearch({ item: itemId(first) });
+    if (first) selectItem(itemId(first));
   };
 
   const contextItem = single && single.location ? single.no : null;
@@ -180,7 +210,7 @@ export function QuestionsScreen() {
   const afterDecided = (what: string, count: number, next: number[] | null) => {
     const left = Math.max(0, overview.counts.undecided - count);
     setAnnouncement(`${what}: decision recorded. ${left} ${left === 1 ? "question" : "questions"} left.`);
-    setSearch({}, { replace: true });
+    selectItem(null, true);
     setSkipped(new Set());
     setAfter(next);
   };
@@ -217,7 +247,7 @@ export function QuestionsScreen() {
       onSuccess: () => {
         setUndoable(null);
         setAnnouncement(`${label}: decision undone; it is asked again.`);
-        setSearch({ item: label });
+        selectItem(label);
       },
     });
   };
@@ -236,7 +266,7 @@ export function QuestionsScreen() {
       const item = byNo.get(no);
       if (item) action.mutate({ action: "skip", no, revision: item.revision });
     }
-    setSearch({}, { replace: true });
+    selectItem(null, true);
   };
   const ask = (item: CommentItem) => chat.open({ anchor: { kind: "comment_item", item: item.id } });
 
@@ -255,7 +285,8 @@ export function QuestionsScreen() {
         isTypingField(event.target)
       )
         return;
-      if ((event.target as HTMLElement | null)?.closest?.("[data-ask-chat]")) return;
+      if ((event.target as HTMLElement | null)?.closest?.("[data-ask-chat], [role=menu], [role=dialog]"))
+        return;
       const l = latestRef.current;
       if (event.key === "j" || event.key === "k") {
         event.preventDefault();
@@ -263,7 +294,7 @@ export function QuestionsScreen() {
       } else if (event.key === "t") {
         event.preventDefault();
         void l.navigate(commentsPath(l.pr, "table"));
-      } else if (event.key === "g" && l.single?.url) {
+      } else if (event.key === "g" && l.single?.url && isGithubUrl(l.single.url)) {
         event.preventDefault();
         window.open(l.single.url, "_blank", "noopener,noreferrer");
       } else if (event.key === "?") {
@@ -285,7 +316,6 @@ export function QuestionsScreen() {
     .flatMap((e) => e.item_nos)
     .map((n) => byNo.get(n))
     .filter((i) => i && i.gates.length > 0).length;
-  const running = overview.assessment.running;
   const error = decide.isError ? errorText(decide.error) : batch.isError ? errorText(batch.error) : null;
   const undoError = undoable && undoDecision.isError ? errorText(undoDecision.error) : null;
 
@@ -308,9 +338,7 @@ export function QuestionsScreen() {
       </p>
     );
   else if (!entry)
-    card = running ? (
-      <AssessmentRunningCard progress={overview.assessment} />
-    ) : (
+    card = (
       <EmptyQueueCard
         read={overview.read}
         assessed={overview.assessment.assessed}
@@ -329,6 +357,7 @@ export function QuestionsScreen() {
       <GroupCard
         key={entryKey(entry)}
         items={entry.item_nos.map((n) => byNo.get(n)!)}
+        duplicates={duplicates}
         position={{ index: index + 1, total: queue.length }}
         onDecide={(rows) => onBatch("group", rows)}
         onDiscussIndividually={(no) => {
@@ -343,7 +372,7 @@ export function QuestionsScreen() {
         onDraft={setDraft}
       />
     );
-  else if (single?.kind === "pr_question")
+  else if (single?.kind === "pr_question" && commentStatus(single) === "needs_you")
     card = (
       <PrQuestionCard
         key={single.id}
@@ -357,12 +386,22 @@ export function QuestionsScreen() {
         onDraft={setDraft}
       />
     );
-  else if (single?.state === "assessing") card = <AssessmentRunningCard progress={overview.assessment} />;
+  else if (single && !["needs_you", "not_assessed"].includes(commentStatus(single)))
+    card = (
+      <CommentOverviewCard
+        key={single.id}
+        item={single}
+        duplicates={duplicates.get(single.no) ?? []}
+        since={overview.assessment.since}
+        now={now}
+      />
+    );
   else if (single)
     card = (
       <QuestionCard
         key={single.id}
         item={single}
+        duplicates={duplicates.get(single.no) ?? []}
         reask={reask}
         position={{ index: index + 1, total: Math.max(queue.length, index + 1) }}
         prNumber={pr.number}
@@ -418,17 +457,17 @@ export function QuestionsScreen() {
         items={byNo}
         current={rest ? null : entry && entryKey(entry)}
         onOpen={open}
+        status={status}
+        onStatus={changeStatus}
+        statusHost={statusHost}
+        since={overview.assessment.since}
+        now={now}
         restCount={decideRest.data?.rows.length ?? 0}
         onDecideRest={() => setRest(true)}
         onOpenLog={() => void navigate(commentsPath(pr, "log"))}
         onOpenCarryOvers={() => void navigate(commentsPath(pr, "carry-overs"))}
       />
       <div className="grid min-w-0 gap-3">
-        {running && entry && (
-          <p role="status" className="m-0 rounded-md border border-low-bd bg-low-bg px-3 py-1.5 text-sm">
-            {assessmentText(overview.assessment)}. You can already decide items assessed earlier.
-          </p>
-        )}
         <div className={undoable ? "flex flex-wrap items-center gap-2 text-sm" : "sr-only"}>
           <p className="m-0" aria-live="polite">
             {announcement}
@@ -472,13 +511,12 @@ export function QuestionsScreen() {
             <tbody>
               {(
                 [
-                  ["Undecided questions", overview.counts.undecided],
+                  ["Needs you", overview.counts.undecided],
                   ["… gate items", gateCount],
                   ["Asked again", overview.counts.asked_again],
                   ["Decisions waiting for agents", overview.counts.waiting_for_agents],
                   ["Failed effects", overview.counts.failed_effects],
                   ["Unresolved threads on GitHub", overview.counts.unresolved_threads],
-                  ["Resolved outside diffpilot", overview.counts.outside],
                 ] as const
               ).map(([label, n]) => (
                 <tr key={label}>

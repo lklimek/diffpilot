@@ -2,16 +2,14 @@ import { Tooltip } from "../../components/tooltip/Tooltip";
 import { Link, useNavigate, useParams } from "react-router";
 import { ApiError } from "../../api/client";
 import { useMe } from "../../api/queries";
-import { usePrPage, useWatchPr } from "../../api/review-loop";
+import { usePrPage, useReadComments, useWatchPr } from "../../api/review-loop";
 import { useNow } from "../../app/now";
 import { useUserEventNotifications } from "../../app/userEvents";
-import { Banner } from "../../components/banner/Banner";
 import { buttonClass } from "../../components/button/button";
 import { CollapsibleSection } from "../../components/collapsible/CollapsibleSection";
-import { autoPassText, PrStatusStrip, WatchToggle } from "../../components/comments/PrHeader";
 import { ProcessCommentsCard } from "../../components/comments/ProcessCommentsCard";
 import { OpenExternal } from "../../components/dashboard/common/OpenExternal";
-import { clockText } from "../../components/format/time";
+import { StatusPopover } from "../../components/status/StatusPopover";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { ReviewTopBar } from "../shell/ReviewTopBar";
 import { MY_WORK_PATH, REVIEW_START_PATH } from "../shell/paths";
@@ -28,6 +26,7 @@ export function PrScreen() {
   const me = useMe();
   const login = me.data?.user?.login ?? null;
   const watch = useWatchPr(pr);
+  const read = useReadComments(pr);
   const navigate = useNavigate();
   const now = new Date(useNow());
   useUserEventNotifications();
@@ -75,27 +74,20 @@ export function PrScreen() {
                   head <code>{data.head.slice(0, 7)}</code>
                 </p>
               </div>
-              <WatchToggle
-                watch={data.watch}
-                busy={watch.isPending}
-                onChange={(on) => watch.mutate(on)}
+              <StatusPopover
+                badge={data.badge}
+                rounds={data.comments.rounds}
+                notes={data.plugin_notes}
+                read={data.comments.read}
+                ci={data.ci}
                 now={now}
+                itemId={display}
+                busy={read.isPending}
+                onRead={() => read.mutate()}
               />
             </div>
+            {read.isError && <StatusMessage kind="error">{errorText(read.error)}</StatusMessage>}
             {watch.isError && <StatusMessage kind="error">{errorText(watch.error)}</StatusMessage>}
-            {data.watch?.last_auto_pass && (
-              <Banner tone="info" title="Watching.">
-                {autoPassText(data.watch, now)} at {clockText(data.watch.last_auto_pass.at, now)}; you were
-                notified where notifications are on.
-              </Banner>
-            )}
-            <PrStatusStrip
-              badge={data.badge}
-              rounds={data.comments.rounds}
-              notes={data.plugin_notes}
-              now={now}
-              itemId={display}
-            />
             <div className="grid items-start gap-3.5 lg:grid-cols-2">
               <div className="rounded-lg border border-border bg-surface px-4 pb-3.5">
                 <CollapsibleSection title="Review a PR" level={2} storageKey={key("review")}>
@@ -122,6 +114,9 @@ export function PrScreen() {
               </div>
               <ProcessCommentsCard
                 summary={data.comments}
+                watch={data.watch}
+                watchBusy={watch.isPending}
+                onWatchChange={(on) => watch.mutate(on)}
                 now={now}
                 questionsHref={commentsPath(pr)}
                 tableHref={commentsPath(pr, "table")}

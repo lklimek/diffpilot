@@ -26,7 +26,7 @@ test("table_row_opens_question", async ({ page }) => {
 test("decide_from_the_middle_opens_the_next_question", async ({ page }) => {
   await page.goto(`${PR}/comments`);
   const queue = page.getByRole("navigation", { name: "Queue" });
-  await expect(queue.getByRole("heading").last()).toHaveText("PR-level (1)");
+  await expect(queue.getByRole("listitem").last()).toContainText("P24");
   await queue.getByRole("button", { name: /^C15(?!\d)/ }).click();
   await expect(page.getByRole("heading", { level: 2, name: /C15 · Debug log prints/ })).toBeFocused();
   const row = queue.getByRole("button", { name: /^C15(?!\d)/ });
@@ -150,3 +150,89 @@ for (const [name, url] of [
     await expectAccessible(page);
   });
 }
+
+test("v1.4 queue filters, duplicate decisions, and GitHub provenance", async ({ page }) => {
+  await page.goto(`${PR}/comments?scenario=comments-v14&item=C14`);
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  const status = queue.getByRole("button", { name: /^Status:/ });
+  await expect(status).toHaveText(/Needs you · 11.*2 gates/);
+  await expect(page.getByRole("link", { name: "Questions, 11 need you" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /C14 · Retry may resend.*LLM/ })).toBeVisible();
+  await expect(queue.getByRole("button", { name: /^C30/ })).toHaveCount(0);
+  await queue.getByText(/\+2 same point/).click();
+  await expect(queue.getByRole("button", { name: /^C30/ })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: /C30 \(coderabbit/ }).locator('[data-icon="github"]'),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Decide", exact: true }).click();
+  await expect(status).toHaveText(/Needs you · 10.*1 gate/);
+
+  await status.press("ArrowDown");
+  const menu = page.getByRole("menu");
+  await expect(menu.getByRole("menuitemradio")).toHaveCount(8);
+  await menu.getByRole("menuitemradio", { name: "Duplicates · 2" }).click();
+  await expect(queue.getByRole("button", { name: /^C30/ })).toBeVisible();
+  await status.click();
+  await menu.getByRole("menuitemradio", { name: /^Decided · / }).click();
+  await expect(page).toHaveURL(/status=decided/);
+  const imported = queue.getByRole("button", { name: /^C33/ });
+  await expect(imported).toContainText("Rejected on GitHub by @alice");
+  await expect(queue.getByRole("link", { name: /Evidence for C33/ })).toHaveAttribute(
+    "href",
+    "https://github.com/acme/node-client/pull/482#discussion_r1038",
+  );
+  await expect(queue.getByRole("button", { name: /^C9 / })).toContainText("no reason given");
+  await page.getByRole("link", { name: "Decision log and agents" }).click();
+  await expect(page.getByText(/Rejected on GitHub by @alice/)).toBeVisible();
+});
+
+test("v1.4 assessment dismissal, status and Watch work on a dark phone", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto(`${PR}/comments?scenario=comments-v14`);
+  const header = page.getByRole("heading", { level: 1 });
+  await expect(header).toContainText("acme/node-client #482");
+  const watch = page.getByRole("button", { name: "Watch this PR" });
+  await expect(watch).toHaveAttribute("aria-pressed", "false");
+  await watch.click();
+  await expect(page.getByRole("button", { name: "Watching" })).toHaveAttribute("aria-pressed", "true");
+
+  const prStatus = page.getByRole("button", { name: "Questions waiting" });
+  await prStatus.press("Enter");
+  const panel = page.getByRole("dialog", { name: "Pull request status" });
+  await expect(panel.getByText(/Bot rounds: 4/)).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Read GitHub again" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(prStatus).toBeFocused();
+
+  const queue = page.getByRole("navigation", { name: "Queue" });
+  const status = queue.getByRole("button", { name: /^Status:/ });
+  const hide = page.getByRole("button", { name: "Hide", exact: true });
+  await expect(page.getByText(/Assessing 1 comment now.*1 waits.*1 not assessed: daily limit/)).toBeVisible();
+  await hide.press("Space");
+  await expect(status).toBeFocused();
+  await page.reload();
+  await expect(status).toBeVisible();
+  await expect(hide).toHaveCount(0);
+
+  await status.click();
+  await page.getByRole("menuitemradio", { name: "Waiting for assessment · 1" }).click();
+  await expect(queue.getByRole("button", { name: /^C35/ })).toContainText("waiting for assessment");
+  await expect(queue.getByRole("button", { name: /^C35/ })).not.toContainText("running");
+  await page.reload();
+  await expect(status).toHaveText("Waiting for assessment · 1 ▾");
+  await expectAccessible(page);
+});
+
+test("v1.4 dashboard, PR panel and queue agree on Needs you", async ({ page }) => {
+  await page.goto("/?scenario=comments-v14");
+  const tally = page.getByRole("link", { name: /11 need you: comments of #482/ });
+  await expect(tally).toBeVisible();
+  await tally.click();
+  await expect(page.getByRole("link", { name: "Questions, 11 need you" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Status: Needs you · 11/ })).toBeVisible();
+  await page.goto(`${PR}?scenario=comments-v14`);
+  const panel = page.getByRole("region", { name: "Process PR comments" });
+  await expect(panel.getByText("Needs you").locator("xpath=following-sibling::dd[1]")).toContainText("11");
+  await expect(panel.getByRole("button", { name: "Watch" })).toBeVisible();
+});

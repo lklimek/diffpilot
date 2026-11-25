@@ -1,6 +1,9 @@
 import { Tooltip } from "../tooltip/Tooltip";
 import { useId, useState } from "react";
 import type { CommentItem, DecisionBatchRow, DecisionVia } from "../../api/generated/types";
+import type { ReviewComment } from "../../api/provisional/comments";
+import { GithubDecision } from "./GithubDecision";
+import { commentStatus } from "./queueStatus";
 import { buttonClass } from "../button/button";
 import { OpenExternal } from "../dashboard/common/OpenExternal";
 import { navigateOnClick, type Navigate } from "../dashboard/common/navigate";
@@ -53,7 +56,7 @@ interface CommentsTableProps {
   /** PR number and purpose for the line above the table. */
   prNumber: number;
   purpose: string | null;
-  items: CommentItem[];
+  items: ReviewComment[];
   /** The pull request's head now: an assessment of another commit names that commit. */
   prHead: string;
   /** Ask answers per item (live). */
@@ -72,7 +75,6 @@ interface CommentsTableProps {
 const TH =
   "border-b border-border bg-surface px-2 py-1.5 text-left text-[11px] font-semibold tracking-wide text-muted uppercase";
 const TD = "border-b border-border px-2 py-1.5 align-top";
-const OPEN = new Set(["undecided", "reopened", "asked_back"]);
 
 /**
  * The table page (V2, RQ21): `check-pr-comments` §4 columns, a decision select per row (default = recommendation,
@@ -82,7 +84,7 @@ const OPEN = new Set(["undecided", "reopened", "asked_back"]);
 export function CommentsTable(props: CommentsTableProps) {
   const { items, now } = props;
   const missingId = useId();
-  const isOpen = (i: CommentItem) => OPEN.has(i.state) && !i.gone_at;
+  const isOpen = (i: ReviewComment) => ["needs_you", "not_assessed"].includes(commentStatus(i));
   const open = items.filter((i) => isOpen(i) && i.kind !== "pr_question");
   const closed = items.filter((i) => !isOpen(i) && i.state !== "assessing" && i.kind !== "pr_question");
   const [rows, setRows] = useState<Record<string, Row>>({});
@@ -321,9 +323,9 @@ export function CommentsTable(props: CommentsTableProps) {
             })}
             <tr>
               <th scope="rowgroup" colSpan={12} className={`${TD} bg-surface-2 text-left`}>
-                Previously decided, outside diffpilot or no longer read ({closed.length})
+                Decided and other comments ({closed.length})
                 {closed.length > 2 && (
-                  <Tooltip tip="Shows or hides the previously decided and outside rows beyond the first two.">
+                  <Tooltip tip="Shows or hides additional rows.">
                     <button
                       type="button"
                       onClick={() => setShowAll(!showAll)}
@@ -348,8 +350,14 @@ export function CommentsTable(props: CommentsTableProps) {
                           {VIA[d.via] ?? d.via} {clockText(d.decided_at, now)} · {d.decided_by}
                         </div>
                       </>
-                    ) : item.state === "outside" ? (
-                      `Resolved on GitHub by ${item.outside?.by ?? "someone"}, not through diffpilot`
+                    ) : item.imported_decision || item.state === "outside" ? (
+                      <GithubDecision item={item} />
+                    ) : item.duplicate_of != null ? (
+                      <>
+                        Same point as C{item.duplicate_of} <ProvenanceTag source="llm" />
+                      </>
+                    ) : item.status_comment ? (
+                      "Status comment"
                     ) : (
                       "—"
                     )}

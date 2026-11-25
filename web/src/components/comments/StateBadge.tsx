@@ -14,6 +14,9 @@ const LOOK: Record<PrBadge, { label: string; icon: string; look: string }> = {
   ready_to_merge: { label: "Ready to merge", icon: "✓", look: "border-ok bg-ok-bg text-ok" },
 };
 
+export const badgeLook = (view: PrBadgeView) =>
+  (view.badge && LOOK[view.badge]) || { label: "No state", icon: "–", look: "border-border text-muted" };
+
 /** The tip of a badge: its facts, and what was not read. */
 export function badgeTip(view: PrBadgeView): string {
   const facts = view.facts.length ? view.facts.join(" · ") : "";
@@ -23,18 +26,18 @@ export function badgeTip(view: PrBadgeView): string {
 
 /** One PR state badge (B1–B5); with unknown inputs and no badge, a muted "No state" naming what is missing. */
 export function StateBadge({ view }: { view: PrBadgeView }) {
-  const known = view.badge ? LOOK[view.badge] : undefined;
+  const known = badgeLook(view);
   return (
     <Tooltip tip={badgeTip(view)}>
       <span
         tabIndex={0}
         data-state-badge={view.badge ?? "none"}
         className={`inline-flex min-h-6 cursor-help items-center gap-1.5 rounded-full border px-2 text-xs font-semibold whitespace-nowrap ${
-          known ? known.look : "border-border text-muted"
+          known.look
         }`}
       >
-        <span aria-hidden="true">{known ? known.icon : "–"}</span>
-        {known ? known.label : "No state"}
+        <span aria-hidden="true">{known.icon}</span>
+        {known.label}
       </span>
     </Tooltip>
   );

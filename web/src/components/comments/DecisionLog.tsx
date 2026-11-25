@@ -1,3 +1,5 @@
+import type { ReviewComment } from "../../api/provisional/comments";
+import { GithubDecision } from "./GithubDecision";
 import { GithubCommentText } from "./GithubCommentText";
 import type {
   CommentLog,
@@ -14,7 +16,7 @@ import { commitGithubUrl, isGithubUrl } from "../github/links";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { CollapsibleSection } from "../collapsible/CollapsibleSection";
 import { CHOICE_LABEL, decisionLabel, EFFECT_WORD } from "./decisions";
-import { Chip, FactChip } from "./parts";
+import { Chip, FactChip, itemId } from "./parts";
 import { StartAgentHelp } from "./StartAgentHelp";
 
 const STATE: Record<EffectState, string> = {
@@ -163,6 +165,7 @@ function Agents({ subscribers, now }: { subscribers: FeedSubscriber[]; now: Date
 
 interface DecisionLogProps {
   log: CommentLog;
+  githubDecisions?: ReviewComment[];
   /** The pull request (commit links of agent reports, the agent prompt). */
   pr: PrRef;
   /** This diffpilot's origin, named in the agent prompt. */
@@ -175,7 +178,7 @@ interface DecisionLogProps {
  * V3: agents and push targets, how to start an agent (shown while none is subscribed, else collapsed), open and
  * failed effects, and every decision with its effects and reports; an undone decision says so.
  */
-export function DecisionLog({ log, pr, origin, now, storageKey }: DecisionLogProps) {
+export function DecisionLog({ log, githubDecisions = [], pr, origin, now, storageKey }: DecisionLogProps) {
   return (
     <div>
       <CollapsibleSection title="Decision feed" level={2} storageKey={`${storageKey}:feed`}>
@@ -193,10 +196,15 @@ export function DecisionLog({ log, pr, origin, now, storageKey }: DecisionLogPro
         </div>
       </CollapsibleSection>
       <CollapsibleSection title="Decisions" level={2} storageKey={`${storageKey}:decisions`}>
-        {log.decisions.length === 0 ? (
+        {log.decisions.length === 0 && githubDecisions.length === 0 ? (
           <p className="text-muted">No decision recorded through diffpilot yet.</p>
         ) : (
           <ol className="m-0 grid list-none gap-2 p-0 text-[13px]">
+            {githubDecisions.map((item) => (
+              <li key={item.id} className="rounded-lg border border-border bg-surface px-3 py-2">
+                <b>{itemId(item)}</b> · <GithubDecision item={item} />
+              </li>
+            ))}
             {[...log.decisions].reverse().map((d) => (
               <li
                 key={d.id}

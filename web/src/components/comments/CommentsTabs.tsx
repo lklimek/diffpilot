@@ -28,12 +28,17 @@ export function CommentsTabs({ current, hrefs, questions, onNavigate }: Comments
           key={page}
           href={hrefs[page]}
           aria-current={page === current ? "page" : undefined}
+          aria-label={
+            page === "questions"
+              ? `Questions, ${questions} ${questions === 1 ? "needs" : "need"} you`
+              : undefined
+          }
           onClick={navigateOnClick(hrefs[page], onNavigate)}
           className="-mb-px inline-flex min-h-6 items-center gap-1.5 border-b-[3px] border-transparent px-3 py-1.5 text-text no-underline aria-[current=page]:border-accent aria-[current=page]:font-semibold"
         >
-          {NAMES[page]}
+          {NAMES[page]}{" "}
           {page === "questions" && (
-            <span className="rounded-full bg-accent px-1.5 text-xs text-on-accent">{questions}</span>
+            <span className="rounded-full bg-surface-2 px-1.5 text-xs text-text">{questions}</span>
           )}
         </a>
       ))}

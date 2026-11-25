@@ -82,7 +82,7 @@ test.describe("My work (msw)", () => {
   }) => {
     await open(page);
     await main(page)
-      .getByRole("link", { name: /^15 comments · 10 need you: comments of #482 / })
+      .getByRole("link", { name: /^15 comments · 11 need you: comments of #482 / })
       .click();
     await expect(page).toHaveURL("/pr/acme/node-client/482/comments");
     await expect(page.getByRole("navigation", { name: "Queue" })).toBeVisible();
