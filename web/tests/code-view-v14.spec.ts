@@ -94,13 +94,40 @@ test("U48: line GitHub links follow the diff side, expose a tab stop and support
 });
 
 const desktopWidths = [
-  900, 1000, 1199, 1200, 1280, 1366, 1439, 1440, 1599, 1600, 1601, 1823, 1824, 1825, 1920,
+  900, 1000, 1100, 1199, 1200, 1280, 1366, 1439, 1440, 1599, 1600, 1601, 1823, 1824, 1825, 1920,
 ];
 
+async function expectReadableTitle(title: Locator, width: number) {
+  if (width < 1200 && !(await title.isVisible())) {
+    await expect(title).toBeHidden();
+    return;
+  }
+  await expect(title).toBeVisible();
+  const { available, readable } = await title.evaluate((el) => {
+    const context = document.createElement("canvas").getContext("2d")!;
+    context.font = getComputedStyle(el).font;
+    return {
+      available: el.getBoundingClientRect().width,
+      readable: context.measureText("0".repeat(16)).width,
+    };
+  });
+  expect(available).toBeGreaterThanOrEqual(readable - 1);
+}
+
+async function expectInlineOwner(owner: Locator, repo: Locator) {
+  await expect(owner).toBeInViewport({ ratio: 1 });
+  expect(await owner.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  const ownerBox = (await owner.boundingBox())!;
+  const repoBox = (await repo.boundingBox())!;
+  expect(Math.abs(ownerBox.y + ownerBox.height / 2 - repoBox.y - repoBox.height / 2)).toBeLessThan(2);
+}
+
 async function checkReviewLabelWidths(title: Locator, repo: Locator, previous = { title: 0, repo: 0 }) {
+  const visibleWidth = async (label: Locator) =>
+    (await label.isVisible()) ? Math.round((await label.boundingBox())?.width ?? 0) : 0;
   const widths = {
-    title: (await title.boundingBox())?.width ?? 0,
-    repo: (await repo.boundingBox())?.width ?? 0,
+    title: await visibleWidth(title),
+    repo: await visibleWidth(repo),
   };
   expect(widths.title).toBeGreaterThanOrEqual(previous.title);
   expect(widths.repo).toBeGreaterThanOrEqual(previous.repo);
@@ -148,12 +175,12 @@ test("U49: the review bar shows the current file and keeps its badges on desktop
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
       await expect(path).toBeInViewport({ ratio: 1 });
       for (const badge of badges) await expect(badge).toBeInViewport({ ratio: 1 });
-      await expect(repo).toBeInViewport({ ratio: 1 });
+      if (width >= 1200) await expect(repo).toBeInViewport({ ratio: 1 });
       previous = await checkReviewLabelWidths(title, repo, previous);
-      expect(previous.repo).toBeGreaterThan(width >= 1200 ? 45 : 0);
+      if (width >= 1200) expect(previous.repo).toBeGreaterThan(45);
       const counts = checks.locator(".review-ci-counts");
       expect(await counts.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
-      expect(previous.title).toBeGreaterThan(width >= 1200 ? 115 : 0);
+      await expectReadableTitle(title, width);
       const compactCaption = width < 1824;
       const caption = banner.getByText(compactCaption ? "Hide imports" : "Hide comment and import changes", {
         exact: true,
@@ -199,7 +226,6 @@ test("U49/U62: a long PR title truncates without pushing review controls out of 
   });
   const controls = [
     ...fixedCrumbs,
-    repo,
     banner.getByLabel(`Current file: ${rpc}`),
     banner.getByText("#482", { exact: true }),
     checks,
@@ -219,18 +245,50 @@ test("U49/U62: a long PR title truncates without pushing review controls out of 
       for (const link of fixedCrumbs) {
         expect(await link.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
       }
-      if (width >= 1440) {
-        await expect(owner).toBeInViewport({ ratio: 1 });
-        expect(await owner.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
-      }
+      expect((await banner.boundingBox())?.height).toBe(48);
+      if (width >= 1200) await expect(repo).toBeInViewport({ ratio: 1 });
+      if (width >= 1440) await expectInlineOwner(owner, repo);
       previous = await checkReviewLabelWidths(title, repo, previous);
-      expect(previous.repo).toBeGreaterThan(width >= 1200 ? 45 : 0);
-      expect(previous.title).toBeGreaterThan(width >= 1200 ? 115 : 0);
+      if (width >= 1200) expect(previous.repo).toBeGreaterThan(45);
+      await expectReadableTitle(title, width);
+      if (!previous.title) await expect(repo).toBeHidden();
+      if (width === 1100) await expect(title).toBeInViewport({ ratio: 1 });
       expect(
         await checks.locator(".review-ci-counts").evaluate((el) => el.scrollWidth <= el.clientWidth),
       ).toBe(true);
-      await expect(title).toHaveCSS("text-overflow", "ellipsis");
-      expect(await title.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+      if (width >= 1200) {
+        await expect(title).toHaveCSS("text-overflow", "ellipsis");
+        expect(await title.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+      }
+      if (width === 1920) {
+        const lines = await checks.locator(".review-ci-counts").evaluate((el) => {
+          const text = document.createRange();
+          text.selectNodeContents(el);
+          return text.getClientRects().length;
+        });
+        expect(lines).toBe(1);
+      }
+    });
+  }
+});
+
+test("U49/U62: the review bar fits a short repository name at 700px and stays 48px high", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 700, height: 800 });
+  await page.goto(`${review}#f1.2`);
+  const banner = page.getByRole("banner");
+  const pr = banner.getByRole("link", { name: "acme/node-client #482", exact: true });
+  const repo = pr.locator(".review-repo-name");
+  for (const width of [700, 1200, 1440, 1920]) {
+    await test.step(`${width} px`, async () => {
+      await page.setViewportSize({ width, height: 800 });
+      await expect(repo).toHaveText("node-client");
+      await expect(repo).toBeInViewport({ ratio: 1 });
+      expect(await repo.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+      expect((await banner.boundingBox())?.height).toBe(48);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+      if (width >= 1440) await expectInlineOwner(pr.locator(".review-owner"), repo);
     });
   }
 });

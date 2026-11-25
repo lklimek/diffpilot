@@ -84,7 +84,11 @@ function Breadcrumb({
         <span className="review-owner hidden min-w-0 truncate min-[1440px]:inline">
           <bdi>{pr.repo.owner}/</bdi>
         </span>
-        <span className="review-repo-name min-w-0 truncate">{pr.repo.name}</span>
+        <span className="review-name-slot contents" data-name={pr.repo.name}>
+          <span className="review-name-viewport contents">
+            <span className="review-repo-name min-w-0 truncate">{pr.repo.name}</span>
+          </span>
+        </span>
       </span>{" "}
       <span aria-hidden className="shrink-0">
         #{pr.number}
@@ -242,9 +246,11 @@ export function TopBar({
           }`}
         >
           {pr.title && (
-            <strong title={pr.title} className="review-pr-title min-w-0 truncate font-semibold">
-              {pr.title}
-            </strong>
+            <span className="review-title-slot contents">
+              <strong title={pr.title} className="review-pr-title min-w-0 truncate font-semibold">
+                {pr.title}
+              </strong>
+            </span>
           )}
           {codeReview && currentPath && (
             <Tooltip tip={currentPath} className="review-path-tip">
