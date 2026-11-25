@@ -370,6 +370,37 @@ describe("v1.4 review status", () => {
 });
 
 describe("reviewing duplicates and deferred questions", () => {
+  it("shows a neutral assessment group when the server omits the current pass count", async () => {
+    setScenario("comments-v14");
+    server.use(
+      http.get("/api/v1/prs/acme/node-client/482/comments", () => {
+        const current = overview();
+        return HttpResponse.json({
+          ...current,
+          assessment: { ...current.assessment, in_pass: undefined, waiting: undefined, since: undefined },
+          queue: [],
+        });
+      }),
+      http.get("/api/v1/prs/acme/node-client/482/comments/items", () =>
+        HttpResponse.json(commentItemsResponse().filter((item) => item.no === 34)),
+      ),
+    );
+    renderRoute(`${PR}/comments`);
+    const summary = await screen.findByRole("region", { name: "No questions need you now" });
+    expect(within(summary).getByRole("button", { name: "Pending or assessing · 1" })).toBeVisible();
+
+    const queue = within(screen.getByRole("navigation", { name: "Queue" }));
+    await userEvent.click(queue.getByRole("button", { name: "Status: Needs you · 0" }));
+    const pending = queue.getByRole("menuitemradio", { name: "Pending or assessing · 1" });
+    expect(pending).toHaveAccessibleDescription("Waiting for assessment or in an assessment pass.");
+    await userEvent.click(pending);
+    expect(queue.getByRole("button", { name: "Status: Pending or assessing · 1" })).toBeVisible();
+    await userEvent.click(queue.getByRole("button", { name: /^C34 .*pending or assessing$/ }));
+    expect(
+      within(screen.getByRole("article", { name: "C34" })).getByText("◌ pending or assessing"),
+    ).toBeVisible();
+  });
+
   it("keeps legacy and gated duplicates individually decidable in Questions and Table", async () => {
     setScenario("comments-v14");
     const c30 = listItems().find((item) => item.no === 30)!;

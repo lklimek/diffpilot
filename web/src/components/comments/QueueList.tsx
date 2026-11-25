@@ -15,6 +15,7 @@ import {
   needsYouQueue,
   NOT_ASSESSED,
   QUEUE_STATUS,
+  queueStatusLabel,
   type QueueStatus,
 } from "./queueStatus";
 import { buttonClass } from "../button/button";
@@ -49,6 +50,7 @@ interface QueueListProps {
   status?: QueueStatus;
   onStatus?: (status: QueueStatus) => void;
   statusHost?: RefObject<HTMLDivElement | null>;
+  inPass?: number;
   since?: string | null;
   now?: Date;
   /** The entry shown. */
@@ -182,9 +184,10 @@ const DESCRIPTION: Partial<Record<QueueStatus, string>> = {
   status_comments: "Bot status and summaries.",
 };
 
-export function commentStatusText(item: ReviewComment, since?: string | null, now?: Date) {
+export function commentStatusText(item: ReviewComment, inPass?: number, since?: string | null, now?: Date) {
   switch (commentStatus(item)) {
     case "assessing":
+      if (inPass === undefined) return `◌ ${queueStatusLabel("assessing", inPass).toLowerCase()}`;
       return since ? `◔ assessing since ${clockText(since, now)}` : "◔ assessing now";
     case "waiting":
       return "◌ waiting for assessment";
@@ -216,6 +219,7 @@ export function QueueList({
   status: controlledStatus,
   onStatus,
   statusHost,
+  inPass,
   since,
   now,
 }: QueueListProps) {
@@ -279,7 +283,7 @@ export function QueueList({
     ) : state === "decided" && previous ? (
       `${decisionLabel(previous)} · ${first.repeat_of != null ? `carried from C${first.repeat_of}` : clockText(previous.decided_at, now)}`
     ) : (
-      commentStatusText(first, since, now)
+      commentStatusText(first, inPass, since, now)
     );
     const evidence = imported ? githubDecisionEvidence(first) : null;
     const primary = duplicatePrimary(first);
@@ -354,7 +358,7 @@ export function QueueList({
       </li>
     );
   };
-  const trigger = `${QUEUE_STATUS[status]} · ${count(status)}`;
+  const trigger = `${queueStatusLabel(status, inPass)} · ${count(status)}`;
   const gateText = status === "needs_you" && gates ? `${gates} ${gates === 1 ? "gate" : "gates"}` : null;
   return (
     <nav aria-label="Queue" className="min-w-0 rounded-lg border border-border bg-surface px-3 py-3">
@@ -372,9 +376,13 @@ export function QueueList({
           {(Object.keys(QUEUE_STATUS) as QueueStatus[]).map((key) => (
             <MenuItem
               key={key}
-              label={`${QUEUE_STATUS[key]} · ${count(key)}`}
+              label={`${queueStatusLabel(key, inPass)} · ${count(key)}`}
               selection={{ kind: "radio", checked: key === status }}
-              description={DESCRIPTION[key]}
+              description={
+                key === "assessing" && inPass === undefined
+                  ? "Waiting for assessment or in an assessment pass."
+                  : DESCRIPTION[key]
+              }
               onSelect={() => (onStatus ?? setLocalStatus)(key)}
             />
           ))}

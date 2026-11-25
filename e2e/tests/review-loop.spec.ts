@@ -122,8 +122,10 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
   const queue = page.getByRole("navigation", { name: "Queue" });
   const queueStatus = queue.getByRole("button", { name: /^Status: / });
   await queueStatus.click();
-  await queue.getByRole("menuitemradio", { name: /^Assessing now · 12$/ }).click();
-  await queue.getByRole("button", { name: new RegExp(`^${ITEM} ${ITEM_TITLE}`) }).click();
+  await queue.getByRole("menuitemradio", { name: "Pending or assessing · 12", exact: true }).click();
+  await queue
+    .getByRole("button", { name: new RegExp(`^${ITEM} ${ITEM_TITLE} .*pending or assessing$`) })
+    .click();
   const questionTitle = `${ITEM} · ${ITEM_TITLE}`;
   const pendingQuestion = page.getByRole("article", { name: ITEM, exact: true });
   await expect(pendingQuestion.getByRole("heading", { name: questionTitle, exact: true })).toBeVisible();
