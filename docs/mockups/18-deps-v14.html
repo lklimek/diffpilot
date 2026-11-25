@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dependencies v1.4 addendum - diffpilot mockup</title>
+<!-- docs/v1.4-ui-plan.md §12.4 (U64) wins on behaviour. Fictional data. -->
+<link rel="stylesheet" href="mockup.css">
+<link rel="stylesheet" href="mockup-v14.css">
+</head>
+<body data-page="deps14">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><symbol id="gh" viewBox="0 0 16 16"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"/></symbol></svg>
+<a class="skip" href="#main">Skip to content</a>
+<noscript><p style="padding:8px">This mockup needs JavaScript for the checkbox.</p></noscript>
+<header class="rbar">
+ <nav class="crumbs" aria-label="Breadcrumb"><a class="c-long" href="index.html">diff<span style="color:var(--accent)">pilot</span></a><span class="sepc c-long" aria-hidden="true">&rsaquo;</span><a class="c-long" href="17-prs-v14.html">Pull requests</a><span class="sepc c-long" aria-hidden="true">&rsaquo;</span><a class="prn" href="17-prs-v14.html?s=pr-new"><span class="c-long"><span class="c-owner">dashpay/</span>platform </span>#5536</a><a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Pull request #5536 on GitHub (opens on GitHub in a new tab)"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><span class="sepc" aria-hidden="true">&rsaquo;</span><span class="mbtn">Dependencies <span class="car" aria-hidden="true">&#9662;</span></span></nav>
+ <div class="prline"><strong class="prt">feat(sdk): adopt invitations that already landed on chain</strong><code class="badge0 small muted">9f3c2e1</code></div>
+ <span class="usermenu" aria-label="alice"><span class="avatar" aria-hidden="true">a</span><span class="un">alice</span></span>
+</header>
+<div class="states" role="group" aria-label="Mockup states"><b>mockup states:</b>
+ <button type="button" data-s="default" aria-pressed="true">default (unchanged hidden)</button>
+ <button type="button" data-s="none" aria-pressed="false">nothing changed</button>
+</div>
+<main class="page" id="main" style="max-width:1100px">
+ <h1>Dependencies</h1>
+ <p class="annot"><b>U64</b> dependencies the PR does not change and that have no notes or facts are hidden by default; the checkbox shows them with their count. <b>Out of scope for v1.4:</b> LLM &ldquo;belongs elsewhere&rdquo; suggestions (v1.5).</p>
+ <p class="row" style="margin:0 0 10px"><label class="row" style="gap:6px;font-size:13px"><input type="checkbox" id="showun"> Show unchanged dependencies (14)</label><span class="small muted">Remembered in this browser.</span></p>
+
+ <div data-for="default">
+  <ul class="dtree" aria-label="Repositories and crates">
+   <li><div class="cr"><b>This repository</b> <span class="small muted">dashpay/platform</span></div>
+    <ul>
+     <li class="cr"><code>rs-sdk</code> <span class="b">changed: 640 lines in 9 files</span> <span class="small"><span class="llmtag">LLM</span> 2 notes</span></li>
+     <li class="cr"><code>dpp</code> <span class="b">changed: 120 lines in 3 files</span> <span class="small"><span class="llmtag">LLM</span> 1 note</span></li>
+     <li class="cr un" hidden><code>drive-abci</code> <span class="small muted">unchanged</span></li>
+     <li class="cr un" hidden><code>platform-version</code> <span class="small muted">unchanged</span></li>
+    </ul></li>
+   <li><div class="cr"><b>Yours</b> <span class="small muted">dashpay/rust-dashcore</span> <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="dashpay/rust-dashcore on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></div>
+    <ul>
+     <li class="cr"><code>dashcore</code> <span class="small muted">unchanged here</span> <span class="b b-det" data-tip="Conversion facts: this PR adds From impls for 2 of its types.">2 facts about its types</span></li>
+     <li class="cr un" hidden><code>dashcore-hashes</code> <span class="small muted">unchanged</span></li>
+    </ul></li>
+   <li class="un" hidden><div class="cr"><b>crates.io</b> <span class="small muted">11 crates, all unchanged</span></div>
+    <ul><li class="cr"><code>tokio</code> <span class="small muted">unchanged</span></li><li class="cr"><code>serde</code> <span class="small muted">unchanged</span></li><li class="cr muted small">&hellip; 9 more</li></ul></li>
+  </ul>
+  <p class="small muted" style="margin-top:8px">A crate stays visible when the PR changes it or a conversion fact names its types (<code>dashcore</code>). Unchanged crates carry no LLM notes.</p>
+ </div>
+ <div data-for="none" hidden class="card">
+  <p style="margin:0">No dependency is changed and none has notes or facts.</p>
+  <p class="small muted" style="margin:4px 0 0">Use &ldquo;Show unchanged dependencies (14)&rdquo; above to list them.</p>
+ </div>
+</main>
+<footer class="mock-foot">Mockup &mdash; static example data &middot; v1.4 plan &sect;12.4</footer>
+<dialog id="help" aria-labelledby="help-t"><h2 id="help-t">Keyboard shortcuts</h2><p class="small">No page shortcuts.</p><form method="dialog"><button class="btn pri">Close</button></form></dialog>
+<div id="tip" role="tooltip" hidden></div><div id="toast" role="status" hidden></div>
+<script src="mockup.js"></script>
+<script src="mockup-v14.js"></script>
+<script>
+document.getElementById('showun').addEventListener('change', function () { var on = this.checked; document.querySelectorAll('.un').forEach(function (x) { x.hidden = !on; }); });
+</script>
+</body>
+</html>

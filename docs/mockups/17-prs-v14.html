@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pull requests v1.4 addendum - diffpilot mockup</title>
+<!-- docs/v1.4-ui-plan.md §12.3 (U59-U63) wins on behaviour. Fictional data. -->
+<link rel="stylesheet" href="mockup.css">
+<link rel="stylesheet" href="mockup-v14.css">
+</head>
+<body data-page="prs14">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><symbol id="gh" viewBox="0 0 16 16"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"/></symbol></svg>
+<a class="skip" href="#main">Skip to content</a>
+<noscript><p style="padding:8px">This mockup needs JavaScript for its states.</p></noscript>
+
+<!-- shell top bar (PRs page) -->
+<header class="topbar" data-for="list watched invalid empty">
+ <nav class="row" aria-label="Breadcrumb" style="gap:6px;flex-wrap:nowrap"><a class="brand" href="index.html">diff<span>pilot</span></a><span class="muted" aria-hidden="true">&rsaquo;</span><span aria-current="page" style="font-weight:600">Pull requests</span></nav><span class="sp"></span>
+ <a class="usermenu" href="13-shell-llm-activity.html" style="text-decoration:none"><span class="avatar" aria-hidden="true">a</span>alice <span class="car" aria-hidden="true">&#9662;</span></a>
+</header>
+<!-- PR context top bar (PR main page) -->
+<header class="rbar" data-for="pr-new pr-moved" hidden>
+ <nav class="crumbs" aria-label="Breadcrumb"><a class="c-long" href="index.html">diff<span style="color:var(--accent)">pilot</span></a><span class="sepc c-long" aria-hidden="true">&rsaquo;</span><a href="?s=list">Pull requests</a><span class="sepc" aria-hidden="true">&rsaquo;</span><span class="prn" aria-current="page" style="font-weight:600"><span class="c-long"><span class="c-owner">dashpay/</span>platform </span>#5536</span><a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Pull request #5536 on GitHub (opens on GitHub in a new tab)"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></nav>
+ <div class="prline"><strong class="prt">feat(sdk): adopt invitations that already landed on chain</strong><code class="badge0 small muted">9f3c2e1</code><span class="b badge0">CI: 14 passed, 1 pending</span></div>
+ <span class="usermenu" aria-label="alice"><span class="avatar" aria-hidden="true">a</span><span class="un">alice</span></span>
+</header>
+
+<div class="states" role="group" aria-label="Mockup states"><b>mockup states:</b>
+ <button type="button" data-s="list" aria-pressed="true">Pull requests: history</button>
+ <button type="button" data-s="watched" aria-pressed="false">Show: Watched</button>
+ <button type="button" data-s="invalid" aria-pressed="false">invalid URL</button>
+ <button type="button" data-s="empty" aria-pressed="false">empty</button>
+ <button type="button" data-s="pr-new" aria-pressed="false">PR main page: no analysis yet</button>
+ <button type="button" data-s="pr-moved" aria-pressed="false">PR main page: head moved</button>
+</div>
+
+<!-- ============ PULL REQUESTS PAGE ============ -->
+<div class="shell" data-for="list watched invalid empty">
+<nav class="app" aria-label="Main">
+ <a href="11-dashboard-v14.html" aria-label="My work, 1 unanswered mention"><span class="ni" aria-hidden="true">&#9638;</span><span class="lbl">My work</span><span class="count" aria-hidden="true">1</span></a>
+ <a href="#" aria-current="page" aria-label="Pull requests" data-tip="Open a pull request by URL; the ones you opened, analysed or watch, newest first"><span class="ni" aria-hidden="true">&#5833;</span><span class="lbl">Pull requests</span></a>
+ <div class="sep" role="presentation"></div>
+ <a href="12-settings-v14.html" aria-label="Settings"><span class="ni" aria-hidden="true">&#9881;</span><span class="lbl">Settings</span></a>
+</nav>
+<main class="main" id="main" style="max-width:1100px">
+ <h1>Pull requests</h1>
+ <p class="annot"><b>U59</b> one page instead of &ldquo;Review a PR&rdquo; and &ldquo;Watched PRs&rdquo; &middot; <b>U63</b> navigation: My work &middot; Pull requests &middot; Settings; <code>/review</code> and <code>/watching</code> redirect here &middot; <b>U61</b> Open goes to the PR main page; nothing starts.</p>
+ <section class="card" aria-labelledby="op-h" style="margin-bottom:14px">
+  <h2 id="op-h">Open a pull request</h2>
+  <form class="openpr" id="openf" novalidate onsubmit="return false">
+   <label class="vh" for="pru">Pull request URL</label>
+   <input id="pru" type="url" placeholder="https://github.com/owner/repo/pull/123 or owner/repo#123" aria-describedby="pru-e" data-for="list watched empty">
+   <input id="pru2" type="url" value="github.com/dashpay/platform/issues/5536" aria-invalid="true" aria-describedby="pru-e" data-for="invalid" hidden aria-label="Pull request URL">
+   <button class="btn pri" type="button" id="openb">Open</button>
+  </form>
+  <p id="pru-e" class="small" style="margin:6px 0 0;color:var(--high)" data-for="invalid" hidden role="alert">This is not a pull request link. Use e.g. <code>https://github.com/dashpay/platform/pull/5536</code> or <code>dashpay/platform#5536</code>.</p>
+  <p class="small muted" style="margin:6px 0 0" data-for="list watched empty">Opens the pull request&rsquo;s page, where you start the review analysis or process its comments.</p>
+ </section>
+
+ <section aria-labelledby="hi-h">
+  <div class="lhead" style="margin-bottom:8px">
+   <h2 id="hi-h">Your pull requests</h2><span class="small muted">opened, analysed or watched &middot; newest first</span><span class="sp"></span>
+   <span class="seg" role="group" aria-label="Show"><button type="button" data-show="all" aria-pressed="true">All <b>6</b></button><button type="button" data-show="watched" aria-pressed="false">Watched <b>3</b></button><button type="button" data-show="analysed" aria-pressed="false">Analysed <b>4</b></button></span>
+   <label class="vh" for="pf">Filter by repository or title</label><input id="pf" type="search" placeholder="Filter by repository or title" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;font:inherit;font-size:13px;background:var(--surface);color:var(--text)">
+  </div>
+  <p class="small muted" style="margin:0 0 8px">Watching 3 of 10 &middot; assessment passes today 4 of 80 &middot; <a href="#">Carry-overs on all pull requests</a></p>
+
+  <p class="card small muted" data-for="empty" hidden>No pull requests yet. Open one by URL above, or from <a href="11-dashboard-v14.html">My work</a>.</p>
+
+  <ul class="prh" id="prh" aria-label="Your pull requests" data-for="list watched invalid">
+   <li data-kind="opened analysed"><a class="rowlink" href="?s=pr-moved"><span class="pid">dashpay/platform #5536</span> &middot; <span class="pt">feat(sdk): adopt invitations that already landed on chain</span>
+     <span class="why">opened 10:40 &middot; analysed 24 Nov <span class="b b-ok">analysis finished</span> <span class="b" style="border-color:var(--med-bd);color:var(--med);background:var(--med-bg)" data-tip="The analysis is of 1a2b3c4; the PR is now at 9f3c2e1.">head moved</span></span></a>
+    <span class="ra"><a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open dashpay/platform#5536 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><a class="btn sm" href="15-code-view-v14.html">Review &rarr;</a><button class="iconbtn" type="button" aria-label="More actions for dashpay/platform#5536">&ctdot;</button></span></li>
+   <li data-kind="watched analysed"><a class="rowlink" href="?s=pr-new"><span class="pid">acme/node-client #482</span> &middot; <span class="pt">feat(rpc): retry with backoff on timeout</span>
+     <span class="why">assessed automatically 10:52 &middot; analysed 22 Nov <span class="b b-ok">analysis finished</span> <span class="b" style="border-color:var(--low-bd);color:var(--low);background:var(--low-bg)">&#9673; watching</span></span></a>
+    <span class="ra"><a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open acme/node-client#482 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><a class="btn sm" href="15-code-view-v14.html">Review &rarr;</a><button class="iconbtn" type="button" aria-label="More actions for acme/node-client#482">&ctdot;</button></span></li>
+   <li data-kind="analysed"><a class="rowlink" href="?s=pr-new"><span class="pid">acme/wallet-ui #311</span> &middot; <span class="pt">feat(wallet): show pending withdrawals</span>
+     <span class="why">analysis started 10:21 <span class="b" style="border-color:var(--low-bd);color:var(--low);background:var(--low-bg)">&#9684; analysing since 10:21</span></span></a>
+    <span class="ra"><a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open acme/wallet-ui#311 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="iconbtn" type="button" aria-label="More actions for acme/wallet-ui#311">&ctdot;</button></span></li>
+   <li data-kind="opened"><a class="rowlink" href="?s=pr-new"><span class="pid">dashpay/dash-evo-tool #1169</span> &middot; <span class="pt">fix(wallet): keep the selected identity after refresh</span>
+     <span class="why">opened 09:12 <span class="muted">&middot; no analysis</span></span></a>
+    <span class="ra"><a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open dashpay/dash-evo-tool#1169 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="iconbtn" type="button" aria-label="More actions for dashpay/dash-evo-tool#1169">&ctdot;</button></span></li>
+   <li data-kind="watched"><a class="rowlink" href="?s=pr-new"><span class="pid">dashpay/platform #6024</span> &middot; <span class="pt">refactor(drive): split the fee estimator</span>
+     <span class="why">watching since 21 Nov <span class="b" style="border-color:var(--med-bd);color:var(--med);background:var(--med-bg)" data-tip="Automatic assessment stopped at today's limit (80 passes); it continues tomorrow.">limit reached</span></span></a>
+    <span class="ra"><a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open dashpay/platform#6024 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><button class="iconbtn" type="button" aria-label="More actions for dashpay/platform#6024">&ctdot;</button></span></li>
+   <li data-kind="watched analysed"><a class="rowlink" href="?s=pr-new"><span class="pid">dashpay/rust-dashcore #702</span> &middot; <span class="pt">feat(spv): filter headers by checkpoint</span>
+     <span class="why">watch ended 23 Nov &middot; analysed 19 Nov <span class="b">ended: merged</span></span></a>
+    <span class="ra"><a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open dashpay/rust-dashcore#702 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a><a class="btn sm" href="15-code-view-v14.html">Review &rarr;</a><button class="iconbtn" type="button" aria-label="More actions for dashpay/rust-dashcore#702">&ctdot;</button></span></li>
+  </ul>
+  <p class="annot" style="margin-top:8px"><b>U60</b> history = analyses you requested + your watches + PR pages you opened (the last needs C17; dash-evo-tool #1169 is listed only because it was opened). Row = PR main page; <i>Review &rarr;</i> only with a finished analysis; &ctdot;: Watch / Stop watching, Open on GitHub.</p>
+ </section>
+</main>
+</div>
+
+<!-- ============ PR MAIN PAGE ============ -->
+<main class="page" data-for="pr-new pr-moved" hidden style="max-width:1600px">
+ <div class="row" style="align-items:flex-start;margin-bottom:12px">
+  <div style="flex:1;min-width:0"><h1 style="margin:0">dashpay/platform #5536 <span class="muted" style="font-weight:400">feat(sdk): adopt invitations that already landed on chain</span> <a class="gh" href="https://github.com/" target="_blank" rel="noopener noreferrer" aria-label="Open dashpay/platform#5536 on GitHub, new tab"><svg class="ghi" aria-hidden="true"><use href="#gh"/></svg></a></h1>
+   <p class="small muted" style="margin:0">by mira-k &middot; base <code>v2.1-dev</code> &middot; open &middot; head <code>9f3c2e1</code></p></div>
+  <span class="st b2">? Questions waiting &#9662;</span>
+ </div>
+ <p class="annot"><b>U61</b> every entry opens this page first; the analysis starts only from <i>Start analysis</i>. <b>U62</b> the breadcrumb&rsquo;s PR name always leads here.</p>
+ <div class="tiles" style="grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr))">
+  <article class="card" aria-labelledby="rv-h">
+   <h2 id="rv-h">Review the code</h2>
+   <div data-for="pr-new">
+    <p class="small" style="margin:0 0 6px">No analysis yet.</p>
+    <dl class="kv"><dt>Size</dt><dd>1,204 changed lines in 23 files (+980 &minus;224)</dd><dt>Planning</dt><dd>about 2 minutes, then flows one by one</dd><dt>Commenting</dt><dd><span class="b b-ok">available</span> (GitHub App on dashpay)</dd></dl>
+    <div class="row" style="margin-top:10px"><button class="btn pri" type="button" data-toast="Analysis started (mock): its progress shows here.">Start analysis</button><span class="small muted">LLM texts in English (your setting) &middot; uses LLM tokens</span></div>
+   </div>
+   <div data-for="pr-moved" hidden>
+    <div class="banner warn" style="display:block"><b>The PR has moved.</b> The analysis is of <code>1a2b3c4</code>; the PR is now at <code>9f3c2e1</code>. Your ticks stay with the old analysis.</div>
+    <div class="row" style="margin-top:10px"><a class="btn" href="15-code-view-v14.html">Open the old analysis</a><button class="btn pri" type="button" data-toast="Analysis of 9f3c2e1 started (mock)">Start analysis of the new head</button></div>
+   </div>
+  </article>
+  <article class="card" aria-labelledby="pc-h">
+   <h2 id="pc-h">Process PR comments</h2>
+   <dl class="kv"><dt>Unresolved threads on GitHub</dt><dd>6 <span class="b b-det">read 10:41</span></dd><dt>Needs you</dt><dd><b>3</b></dd><dt>LLM assessment</dt><dd>not run yet</dd></dl>
+   <div class="panelfoot"><a class="btn pri" href="14-comments-v14.html">Open Comments &rarr;</a><span class="sp"></span><button class="watch14 big" type="button" aria-pressed="false" data-watch data-off="Watch this PR"><span class="eye" aria-hidden="true">&#9675;</span><span class="wt">Watch this PR</span></button></div>
+  </article>
+ </div>
+</main>
+
+<footer class="mock-foot">Mockup &mdash; static example data &middot; v1.4 plan &sect;12.3</footer>
+<dialog id="help" aria-labelledby="help-t"><h2 id="help-t">Keyboard shortcuts</h2><p class="small">Tab through the rows; Enter opens the PR main page.</p><form method="dialog"><button class="btn pri">Close</button></form></dialog>
+<div id="tip" role="tooltip" hidden></div><div id="toast" role="status" hidden></div>
+<script src="mockup.js"></script>
+<script src="mockup-v14.js"></script>
+<script>
+(function () {
+  var rows = Array.prototype.slice.call(document.querySelectorAll('#prh>li')), show = 'all', q = '';
+  function apply() { rows.forEach(function (r) { var k = r.dataset.kind.split(' '); r.hidden = !((show === 'all' || k.indexOf(show) >= 0) && r.textContent.toLowerCase().indexOf(q) >= 0); }); }
+  document.querySelectorAll('[data-show]').forEach(function (b) { b.addEventListener('click', function () { show = b.dataset.show; document.querySelectorAll('[data-show]').forEach(function (x) { x.setAttribute('aria-pressed', x === b); }); apply(); }); });
+  document.getElementById('pf').addEventListener('input', function () { q = this.value.toLowerCase(); apply(); });
+  document.querySelector('.states').addEventListener('click', function () { if (document.body.dataset.state === 'watched') document.querySelector('[data-show="watched"]').click(); });
+  document.getElementById('openb').addEventListener('click', function () {
+    var v = (document.getElementById('pru').hidden ? document.getElementById('pru2') : document.getElementById('pru')).value.trim();
+    var ok = /^(https?:\/\/)?(www\.)?github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/.test(v) || /^[\w.-]+\/[\w.-]+#\d+$/.test(v);
+    document.querySelector('.states [data-s="' + (ok ? 'pr-new' : 'invalid') + '"]').click();
+  });
+}());
+</script>
+</body>
+</html>

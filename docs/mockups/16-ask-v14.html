@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ask window v1.4 addendum - diffpilot mockup</title>
+<!-- docs/v1.4-ui-plan.md §12.2 (U53-U58) wins on behaviour. Fictional data. -->
+<link rel="stylesheet" href="mockup.css">
+<link rel="stylesheet" href="mockup-v14.css">
+</head>
+<body data-page="ask14">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><symbol id="gh" viewBox="0 0 16 16"><path d="M6.766 11.328c-2.063-.25-3.516-1.734-3.516-3.656 0-.781.281-1.625.75-2.188-.203-.515-.172-1.609.063-2.062.625-.078 1.468.25 1.968.703.594-.187 1.219-.281 1.985-.281.765 0 1.39.094 1.953.265.484-.437 1.344-.765 1.969-.687.218.422.25 1.515.046 2.047.5.593.766 1.39.766 2.203 0 1.922-1.453 3.375-3.547 3.64.531.344.89 1.094.89 1.954v1.625c0 .468.391.734.86.547C13.781 14.359 16 11.53 16 8.03 16 3.61 12.406 0 7.984 0 3.563 0 0 3.61 0 8.031a7.88 7.88 0 0 0 5.172 7.422c.422.156.828-.125.828-.547v-1.25c-.219.094-.5.156-.75.156-1.031 0-1.64-.562-2.078-1.609-.172-.422-.36-.672-.719-.719-.187-.015-.25-.093-.25-.187 0-.188.313-.328.625-.328.453 0 .844.281 1.25.86.313.452.64.655 1.031.655s.641-.14 1-.5c.266-.265.47-.5.657-.656"/></symbol></svg>
+<a class="skip" href="#main">Skip to content</a>
+<noscript><p style="padding:8px">This mockup needs JavaScript for dragging and states.</p></noscript>
+<header class="rbar">
+ <nav class="crumbs" aria-label="Breadcrumb"><a href="index.html">diff<span style="color:var(--accent)">pilot</span></a><span class="sepc" aria-hidden="true">&rsaquo;</span><a href="17-prs-v14.html">Pull requests</a><span class="sepc" aria-hidden="true">&rsaquo;</span><a class="prn" href="17-prs-v14.html?s=pr-new"><span class="c-owner">dashpay/</span>platform #5536</a><span class="sepc" aria-hidden="true">&rsaquo;</span><span class="mbtn">Flows <span class="car" aria-hidden="true">&#9662;</span></span></nav>
+ <div class="prline"><strong class="prt">feat(sdk): adopt invitations that already landed on chain</strong><span class="cp"><span aria-hidden="true">&middot;&nbsp;</span><span class="dir"><bdi>packages/rs-sdk/src/platform/dashpay/</bdi></span><span class="fn">invitation.rs</span></span></div>
+ <span class="usermenu"><span class="avatar" aria-hidden="true">a</span>alice</span>
+</header>
+<div class="states" role="group" aria-label="Mockup states"><b>mockup states:</b>
+ <button type="button" data-s="threads" aria-pressed="true">threads</button>
+ <button type="button" data-s="follow-up" aria-pressed="false">follow-up open in Q3</button>
+ <button type="button" data-s="from-remark" aria-pressed="false">opened from a remark</button>
+ <button type="button" data-s="states" aria-pressed="false">waiting / answering / failed / not sent</button>
+ <button type="button" data-s="empty" aria-pressed="false">empty</button>
+ <button type="button" data-s="position" aria-pressed="false">Position menu</button>
+ <span class="muted">&middot; drag the header; below 640 px it becomes a bottom sheet</span>
+</div>
+<main class="page" id="main" style="max-width:780px">
+ <p class="annot"><b>U53</b> each new question is a card <code>Q1, Q2&hellip;</code> with its anchor; follow-ups live inside their card. <b>U54</b> &ldquo;New question&rdquo; is always the bottom composer; a follow-up is written inside its card (&ldquo;Follow up on Q3&rdquo;). <b>U55</b> states use counts and clock times only. <b>U56</b> drag the header, or use the grip with arrow keys, or Position &#9662;; the position is remembered; double-click the header resets. <b>U57</b> phone: bottom sheet, no dragging. <b>U58</b> opened from a remark: subject and a quoted context line are prefilled.</p>
+ <div class="card"><h2>Step 2.3 &middot; adopt_already_landed_claim</h2><p class="small muted">(the review page behind the floating window)</p></div>
+</main>
+
+<section class="askw" id="askw" role="dialog" aria-modal="false" aria-labelledby="ask-t" aria-describedby="ask-d">
+ <div class="askh" id="askh" data-tip="Drag to move. Double-click resets the position.">
+  <button class="grip" id="grip" type="button" aria-label="Move the Ask window: arrow keys move it, Shift moves further, Home resets">&#10303;</button>
+  <h2 id="ask-t">Ask</h2>
+  <span class="aboutbox" data-tip="Only you see this conversation. Answers are LLM analysis, not checked; the agent was told not to run code."><span class="about" id="ask-d">Private &middot; LLM answers</span></span>
+  <div class="mb posm"><button class="hb" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="m-pos" data-open-on="position">Position <span aria-hidden="true">&#9662;</span></button>
+   <div class="menu" id="m-pos" role="menu" aria-label="Window position" hidden style="min-width:220px">
+    <button role="menuitemradio" aria-checked="true" type="button" data-pos="br"><span class="ck">&#10003;</span><span class="k">Bottom right <small>default</small></span></button>
+    <button role="menuitemradio" aria-checked="false" type="button" data-pos="bl"><span class="ck"></span><span class="k">Bottom left</span></button>
+    <button role="menuitemradio" aria-checked="false" type="button" data-pos="tr"><span class="ck"></span><span class="k">Top right</span></button>
+    <button role="menuitemradio" aria-checked="false" type="button" data-pos="tl"><span class="ck"></span><span class="k">Top left</span></button>
+    <hr><button role="menuitem" type="button" data-pos="reset"><span class="ck"></span><span class="k">Reset size and position</span></button>
+   </div></div>
+  <button class="hb" type="button" aria-pressed="false" id="fullh">Full height</button>
+  <button class="hb" type="button" aria-label="Hide the Ask chat" data-toast="Hidden; the Ask button or a brings it back (mock)">Hide</button>
+ </div>
+
+ <div class="askl" role="region" aria-label="Conversation, oldest first" tabindex="0">
+  <div data-for="empty" hidden class="small muted" style="border:1px dashed var(--border);border-radius:8px;padding:12px">
+   <p style="margin:0 0 4px"><b style="color:var(--text)">No questions yet.</b></p>
+   <p style="margin:0 0 4px">Ask about the step you are on, lines you selected, a flow or the whole PR. Each question becomes a card that remembers where it was asked.</p>
+   <p style="margin:0">Under an answer, <i>Follow up</i> continues that card: the LLM keeps its context.</p>
+  </div>
+  <ol data-for="threads follow-up from-remark states position" style="list-style:none;margin:0;padding:0;display:grid;gap:10px">
+   <li class="thr closed">
+    <div class="thh"><button class="disc" type="button" aria-expanded="false" aria-controls="t1b" data-disclose aria-label="Show Q1">&#9656;</button><span class="qn">Q1</span><button class="anch" type="button">Step 1.4</button><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">&ldquo;Why is the contact cache keyed by identity?&rdquo;</span><span>answered 10:31</span></div>
+    <div class="thb" id="t1b" hidden><p class="qtext">Why is the contact cache keyed by identity?</p><p class="atext"><span class="llmtag">LLM</span> Two devices of one identity share contacts; keying by device would duplicate them.</p></div>
+   </li>
+   <li class="thr">
+    <div class="thh"><button class="disc" type="button" aria-expanded="true" aria-controls="t2b" data-disclose aria-label="Hide Q2">&#9662;</button><span class="qn">Q2</span><button class="anch" type="button" data-tip="Go to flow 3 (the chat stays open)">Flow 3</button><span class="sp"></span><span>10:40</span></div>
+    <div class="thb" id="t2b">
+     <p class="qtext">Does this flow ever broadcast the claim twice?</p>
+     <p class="atext"><span class="llmtag">LLM</span> Not on the paths read: <code>adopt_already_landed_claim</code> returns before <code>publish_claim</code> when the transition is final. Not checked: a timeout between the wait and the return.</p>
+     <ol class="fus" aria-label="Follow-ups to Q2"><li><div class="fh">&#8627; Follow-up &middot; 10:44</div><p class="qtext">And if the wait times out?</p><p class="atext"><span class="llmtag">LLM</span> The error propagates; nothing is published. A retry by the caller would publish once.</p></li></ol>
+     <div><button class="hb" type="button">&#8627; Follow up on Q2</button></div>
+    </div>
+   </li>
+   <li class="thr new">
+    <div class="thh"><button class="disc" type="button" aria-expanded="true" aria-controls="t3b" data-disclose aria-label="Hide Q3">&#9662;</button><span class="qn">Q3</span><button class="anch" type="button" data-tip="Go to step 2.3, lines 1508&ndash;1511">Step 2.3 &middot; <code>invitation.rs 1508&ndash;1511</code></button><span class="sp"></span><span class="st2 nw" data-for="threads follow-up from-remark position">new</span><span>10:52</span></div>
+    <div class="thb" id="t3b">
+     <p class="qtext">Is the retry here bounded?</p>
+     <div data-for="threads follow-up from-remark position"><p class="atext"><span class="llmtag">LLM</span> Only by finality: see <a class="plink" href="15-code-view-v14.html">packages/rs-sdk/src/platform/dashpay/invitation.rs:974</a>. The former cap lives in <a class="plink" href="15-code-view-v14.html">sdk/retry.rs:40-58</a>.</p>
+      <p class="small" style="margin:0"><button class="linkbtn" type="button">Use as review comment</button></p></div>
+     <div data-for="states" hidden><span class="st2 run">&#9684; answering since 10:52</span></div>
+     <div data-for="threads from-remark position"><button class="hb" type="button" data-reveal="fu3" data-gone="" >&#8627; Follow up on Q3</button></div>
+     <form class="fuform" id="fu3" data-for="follow-up" hidden onsubmit="return false">
+      <label for="fu3t">Follow-up to Q3 <span class="muted" style="font-weight:400">&mdash; the LLM gets this card&rsquo;s questions and answers</span></label>
+      <textarea id="fu3t">Would a cap of 5 attempts break the adopt path?</textarea>
+      <div class="row"><button class="btn pri" type="button" data-toast="Follow-up sent (mock)">Send follow-up</button><button class="hb" type="button">Cancel</button></div>
+     </form>
+    </div>
+   </li>
+   <li class="thr" data-for="states" hidden>
+    <div class="thh"><span class="qn">Q4</span><button class="anch" type="button">Whole PR</button><span class="sp"></span><span class="st2 wait">&#9676; waits for Q3</span><span>10:53</span></div>
+    <div class="thb"><p class="qtext">Which flows touch the identity cache?</p></div>
+   </li>
+   <li class="thr" data-for="states" hidden>
+    <div class="thh"><span class="qn">Q5</span><button class="anch" type="button">Step 3.1</button><span class="sp"></span><span class="st2 err">failed</span><span>10:49</span></div>
+    <div class="thb"><p class="qtext">What does the migration do with old claims?</p><p class="atext" style="color:var(--high)">The answer did not arrive: the LLM job failed (runner stopped). <button class="hb" type="button">Ask again</button></p></div>
+   </li>
+  </ol>
+ </div>
+
+ <form class="askc" onsubmit="return false" aria-labelledby="nq-l">
+  <div class="row" style="gap:6px"><span class="lab" id="nq-l">New question</span><span class="small muted">About:</span>
+   <span class="subj" data-for="threads follow-up states empty position"><span>Step 2.3 &middot; <code>invitation.rs 1508&ndash;1511</code></span><button type="button" aria-label="Remove the subject: ask about the whole PR">&times;</button></span>
+   <span class="subj" data-for="from-remark" hidden><span><span class="llmtag">LLM</span> remark &middot; Step 3.2 &middot; <code>lines 345&ndash;383</code></span><button type="button" aria-label="Remove the subject: ask about the whole PR">&times;</button></span>
+  </div>
+  <label class="vh" for="nq">Your new question</label>
+  <textarea id="nq" data-for="threads follow-up states empty position" placeholder="Ask about step 2.3, lines 1508–1511…"></textarea>
+  <textarea id="nq2" data-for="from-remark" hidden aria-label="Your new question">&gt; LLM remark (Behaviour, lines 345–383): a failed broadcast is retried until the claim is final.
+
+</textarea>
+  <p class="small" data-for="states" hidden style="margin:0;color:var(--high)" role="alert">Not sent: you are signed out. Your text is kept. <a href="#">Sign in again</a></p>
+  <div class="row"><span class="small muted"><kbd>Enter</kbd> sends &middot; <kbd>Shift</kbd>+<kbd>Enter</kbd> new line &middot; <kbd>Esc</kbd> hides</span><span class="sp"></span><button class="btn pri" type="button" data-toast="Question sent: new card Q4 (mock)">Ask</button></div>
+ </form>
+</section>
+
+<footer class="mock-foot">Mockup &mdash; static example data &middot; v1.4 plan &sect;12.2</footer>
+<dialog id="help" aria-labelledby="help-t"><h2 id="help-t">Keyboard shortcuts</h2><table><tbody><tr><td><kbd>a</kbd></td><td>ask about the current step</td></tr><tr><td>arrow keys on the grip</td><td>move the Ask window (Shift: further; Home: default place)</td></tr><tr><td><kbd>Esc</kbd></td><td>hide the Ask window</td></tr></tbody></table><form method="dialog"><button class="btn pri">Close</button></form></dialog>
+<div id="tip" role="tooltip" hidden></div><div id="toast" role="status" hidden></div>
+<script src="mockup.js"></script>
+<script src="mockup-v14.js"></script>
+<script>
+/* U56 mock: drag by the header, keep inside the viewport, arrow keys on the grip, position presets, remembered. */
+(function () {
+  var w = document.getElementById('askw'), h = document.getElementById('askh'), g = document.getElementById('grip'), KEY = 'diffpilot.mock.ask.pos';
+  function clamp(x, y) { var r = w.getBoundingClientRect(); return [Math.max(0, Math.min(innerWidth - r.width, x)), Math.max(48, Math.min(innerHeight - r.height, y))]; }
+  function place(x, y, save) { var p = clamp(x, y); w.style.left = p[0] + 'px'; w.style.top = p[1] + 'px'; w.style.right = 'auto'; w.style.bottom = 'auto'; if (save) try { localStorage.setItem(KEY, JSON.stringify(p)); } catch (e) {} }
+  function reset() { w.style.left = w.style.top = ''; w.style.right = '24px'; w.style.bottom = '24px'; try { localStorage.removeItem(KEY); } catch (e) {} }
+  try { var s = JSON.parse(localStorage.getItem(KEY) || 'null'); if (s) place(s[0], s[1], false); } catch (e) {}
+  var d = null;
+  h.addEventListener('pointerdown', function (e) { if (e.target.closest('button:not(.grip),.menu')) return; var r = w.getBoundingClientRect(); d = [e.clientX - r.left, e.clientY - r.top]; h.setPointerCapture(e.pointerId); });
+  h.addEventListener('pointermove', function (e) { if (d) place(e.clientX - d[0], e.clientY - d[1], false); });
+  h.addEventListener('pointerup', function () { if (!d) return; d = null; var r = w.getBoundingClientRect(); place(r.left, r.top, true); });
+  h.addEventListener('dblclick', function (e) { if (!e.target.closest('button')) reset(); });
+  g.addEventListener('keydown', function (e) {
+    var r = w.getBoundingClientRect(), s = e.shiftKey ? 50 : 10, m = { ArrowLeft: [-s, 0], ArrowRight: [s, 0], ArrowUp: [0, -s], ArrowDown: [0, s] }[e.key];
+    if (e.key === 'Home') { e.preventDefault(); reset(); return; }
+    if (m) { e.preventDefault(); place(r.left + m[0], r.top + m[1], true); }
+  });
+  addEventListener('resize', function () { if (w.style.left) { var r = w.getBoundingClientRect(); place(r.left, r.top, false); } });
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-pos]'); if (!b) return;
+    var r = w.getBoundingClientRect(), p = b.dataset.pos;
+    if (p === 'reset' || p === 'br') { reset(); w.classList.remove('full'); document.getElementById('fullh').setAttribute('aria-pressed', 'false'); return; }
+    place(p[1] === 'l' ? 24 : innerWidth - r.width - 24, p[0] === 't' ? 60 : innerHeight - r.height - 24, true);
+  });
+  document.getElementById('fullh').addEventListener('click', function () { var on = w.classList.toggle('full'); this.setAttribute('aria-pressed', on); if (on) { w.style.top = ''; w.style.bottom = '24px'; } });
+}());
+</script>
+</body>
+</html>
