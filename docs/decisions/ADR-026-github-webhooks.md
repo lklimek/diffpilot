@@ -31,8 +31,11 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
    body in constant time **before** parsing, then the hook target must be this App; 401 without detail on failure.
 3. **Trust:** **the WAF and source IPs are not authentication** (GitHub's hook ranges deliver any user's webhooks to
    any URL). The App `claudbot` is public, so a valid signature proves only "GitHub, our App"; deliveries are
-   processed only from installations of the accounts in `SR_GITHUB_WEBHOOK_ACCOUNTS` (resolved to numeric
-   installation and account ids; fail closed when unset). Others are recorded `not_allowed` and do nothing.
+   processed only when its repository is **tracked by at least one tenant** (owner 2026-11-25): its owner is in a
+   tenant user's "Owners to list", it is in a tenant user's repository rules, a PR of it is watched or analysed by a
+   tenant user, or the item is in a tenant user's snapshot — matched by numeric ids where the event has them. Others
+   are acknowledged (2xx), recorded `not_allowed`, counted and do nothing. No environment allow-list: per-tenant
+   policy never lives in environment variables (it would break multi-tenant).
 4. **Delivery handling:** dedupe by `X-GitHub-Delivery` in `github_deliveries`, and by body SHA-256 for 14 days (the
    GUID is not signed, so a captured body replayed under new GUIDs is a duplicate); a failed processing stays
    retryable (GitHub redelivery reuses the id). The handler stores only typed change keys (repo, number, kind, head
@@ -55,8 +58,9 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
    could not hand over (server, tunnel or traefik down) are **not** fetched or redelivered automatically (owner OQ1,
    2026-11-25): the nightly scan and manual Refresh recover the facts; the owner may redeliver by hand in the App
    settings.
-9. **Configuration:** `SR_GITHUB_WEBHOOK_SECRET` (secrets.env), optional `SR_GITHUB_WEBHOOK_SECRET_PREVIOUS` for
-   rotation, `SR_GITHUB_WEBHOOK_ACCOUNTS`, `SR_WEBHOOK_LISTEN_ADDR`; content type `application/json`. Without the
+9. **Configuration:** deployment facts only: `SR_GITHUB_WEBHOOK_SECRET` (secrets.env), optional
+   `SR_GITHUB_WEBHOOK_SECRET_PREVIOUS` for rotation, `SR_WEBHOOK_LISTEN_ADDR`; content type `application/json`.
+   Tenant policy (tracked repositories; relays = members' linked logins) comes from Settings. Without the
    secret the server starts, logs once, answers 503 on the route and marks nothing live.
    `SR_GITHUB_WEBHOOK_URL` is optional and only shown in Settings. Logs carry no body, signature or payload text;
    traefik and cloudflared must not log request bodies.
@@ -74,6 +78,7 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
 | Store raw payloads | needless retention of PR texts; the change keys are enough |
 | Webhook route on the UI/API listener | one traefik rewrite would be the only barrier to the UI and API; matcher bypasses happened in 2025 |
 | Trust any installation of the public App | outsiders' installations deliver validly signed events and could add repositories or force reads |
+| Allow-list of accounts in an environment variable | per-tenant policy in the environment breaks multi-tenant; the tenants' Settings already say which repositories they track |
 | A webhook relay service (smee, hookdeck) | an extra third party for a path the owner's infrastructure already provides |
 | All `check_run` events | one event per CI job; only failing conclusions add a fact before the suite completes |
 | `workflow_run` | repeats `check_suite` for Actions and needs "Actions: read" (owner OQ2) |
@@ -85,10 +90,10 @@ Automatic re-judging of changed items spent the daily cap (120) on items whose r
 - Contract changes: `RouteAuth::GithubSignature`, `Listener::Webhook`, route `githubWebhook`, C1–C3 and C13 of the
   phase B plan; migration `0031_github_webhooks.sql`; App settings change (webhook on, events, "Commit statuses:
   read" accepted by each installation); a third published port that only traefik reaches; `docs/deployment.md`,
-  runbook (traefik version, rotation order) and threat model (T30) are updated.
+  runbook (traefik version, rotation order) and threat model (T40) are updated.
 - Facts of live repositories are minutes fresh without an open page; non-live ones are as fresh as the last
   manual or nightly scan, and the UI says so.
 - Rankings show more *outdated* judgements; the owner's clicks, not a timer, spend the daily cap.
 - A public inbound endpoint exists; its safety rests on the separate listener, the HMAC secret, the installation
   allow-list and the fact that events only trigger bounded reads. The WAF only reduces noise. Residual risk: a party
-  holding a captured signed body can replay it after the 14-day dedupe window (cost only, T30).
+  holding a captured signed body can replay it after the 14-day dedupe window (cost only, T40).
