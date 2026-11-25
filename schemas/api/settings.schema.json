@@ -235,7 +235,7 @@
           ]
         },
         "this_month": {
-          "description": "From the start of the server-local calendar month through now.",
+          "description": "From local midnight on the first of the month through now; omitted without reports.",
           "anyOf": [
             {
               "$ref": "#/$defs/UsageTotals"

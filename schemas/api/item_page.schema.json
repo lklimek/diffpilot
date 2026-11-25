@@ -466,7 +466,7 @@
           "minimum": 0
         },
         "dependents": {
-          "description": "Numbers of dependent pull requests.",
+          "description": "Numbers of open pull requests above this one, in stack order.",
           "type": "array",
           "items": {
             "type": "integer",
@@ -485,7 +485,7 @@
       "description": "Position of a pull request in a stack.",
       "oneOf": [
         {
-          "description": "Base of the stack.",
+          "description": "Lowest open layer with higher layers in the stack.",
           "type": "string",
           "const": "bottom"
         },
@@ -559,7 +559,7 @@
           "type": "string"
         },
         "label": {
-          "description": "Label shown in the filter menu.",
+          "description": "Label shown on the filter chip.",
           "type": "string"
         }
       },

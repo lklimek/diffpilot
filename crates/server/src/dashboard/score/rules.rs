@@ -120,6 +120,11 @@ impl ScoreRules {
         }
     }
 
+    /// The branch matches the repository override or its built-in patterns.
+    pub(crate) fn matches_branch_pattern(&self, repo: &RepoRef, branch: &str) -> bool {
+        self.branch_patterns(repo).iter().any(|p| p.matches(branch))
+    }
+
     /// A pull request based on this branch is not stacked on another (K9): the default branch or a pattern match.
     pub fn is_long_lived(
         &self,
@@ -127,8 +132,7 @@ impl ScoreRules {
         branch: &str,
         default_branch: Option<&str>,
     ) -> bool {
-        default_branch == Some(branch)
-            || self.branch_patterns(repo).iter().any(|p| p.matches(branch))
+        default_branch == Some(branch) || self.matches_branch_pattern(repo, branch)
     }
 
     /// A check or status of this repository that never makes CI red or pending (K17 R4): the row's Ignored checks,
@@ -147,7 +151,7 @@ impl ScoreRules {
         base: &str,
         default_branch: Option<&str>,
     ) -> bool {
-        default_branch != Some(base) && self.branch_patterns(repo).iter().any(|p| p.matches(base))
+        default_branch != Some(base) && self.matches_branch_pattern(repo, base)
     }
 }
 

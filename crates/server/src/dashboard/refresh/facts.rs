@@ -356,6 +356,7 @@ pub(super) fn pr(
     };
     StoredPr {
         facts,
+        stack: detail.stack(),
         private: detail
             .base_repository
             .as_ref()

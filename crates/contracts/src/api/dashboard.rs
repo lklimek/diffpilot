@@ -121,7 +121,7 @@ pub struct Stack {
     pub position: StackPosition,
     /// Number of pull requests in the stack.
     pub size: u32,
-    /// Numbers of dependent pull requests.
+    /// Numbers of open pull requests above this one, in stack order.
     pub dependents: Vec<u32>,
 }
 
@@ -129,7 +129,7 @@ pub struct Stack {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum StackPosition {
-    /// Base of the stack.
+    /// Lowest open layer with higher layers in the stack.
     Bottom,
     /// With a parent and dependents.
     Middle,
@@ -142,7 +142,7 @@ pub enum StackPosition {
 pub struct FactFilter {
     /// Stable key for the fact kind and its value where applicable.
     pub key: String,
-    /// Label shown in the filter menu.
+    /// Label shown on the filter chip.
     pub label: String,
 }
 

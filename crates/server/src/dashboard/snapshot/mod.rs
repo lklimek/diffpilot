@@ -82,6 +82,9 @@ pub struct Snapshot {
 pub struct StoredPr {
     /// Scoring facts.
     pub facts: PrFacts,
+    /// GitHub-native stack membership at the latest GitHub read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<contracts::api::dashboard::Stack>,
     /// From a private repository.
     pub private: bool,
     /// Head commit at scan time (review links compare it with the analysed head).

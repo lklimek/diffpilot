@@ -31,7 +31,7 @@ pub struct UsageWindows {
     pub today: Option<UsageTotals>,
     /// Today and the previous six local calendar days; null without reports.
     pub last_7_days: Option<UsageTotals>,
-    /// From the start of the server-local calendar month through now.
+    /// From local midnight on the first of the month through now; omitted without reports.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub this_month: Option<UsageTotals>,

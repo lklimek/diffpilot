@@ -5,9 +5,10 @@ use std::collections::{HashMap, HashSet};
 
 use contracts::api::dashboard::{
     AwaitingItem, AwaitingReason, EXCLUDED_ITEMS_LIMIT, ExcludedItem, ExclusionCount,
-    ExclusionReason, Exclusions, Fact, FactTag, ItemCounts, ItemKey, ItemKind, ItemTarget,
-    ItemText, Judgement as JudgementView, JudgementState, OutdatedBecause, RankingState,
-    ReadyToMergeItem, RefreshState, ScoreState, SnapshotMeta, StatusCounts, Tier, WorkItem,
+    ExclusionReason, Exclusions, Fact, FactFilter, FactTag, ItemCounts, ItemKey, ItemKind,
+    ItemTarget, ItemText, Judgement as JudgementView, JudgementState, OutdatedBecause,
+    RankingState, ReadyToMergeItem, RefreshState, ScoreState, SnapshotMeta, StatusCounts, Tier,
+    WorkItem,
 };
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
@@ -493,12 +494,23 @@ fn count(counts: &mut ItemCounts, item: &Scored) {
     }
 }
 
-fn tag(text: impl Into<String>, tip: impl Into<String>) -> FactTag {
+fn tag(key: impl Into<String>, label: &str, tip: impl Into<String>) -> FactTag {
     FactTag {
-        filter: None,
-        text: text.into(),
+        filter: Some(FactFilter {
+            key: key.into(),
+            label: label.to_owned(),
+        }),
+        text: label.to_owned(),
         tip: tip.into(),
     }
+}
+
+fn label_tag(label: &str) -> FactTag {
+    tag(
+        format!("label:{}", label.to_lowercase()),
+        label,
+        "GitHub label",
+    )
 }
 
 fn fact(label: &str, value: impl Into<String>) -> Fact {
@@ -565,7 +577,7 @@ fn work_item(
                     f.author.clone(),
                     issue.private,
                     f.updated_at,
-                    issue_tags(&f.relations, issue.opened_at, look_back),
+                    issue_tags(issue, look_back),
                     issue_facts(issue),
                     None,
                 )
@@ -583,12 +595,23 @@ fn work_item(
                 None,
             ),
         };
+    let (stack, release_base) = match source {
+        Source::Pr(pr) => (
+            pr.stack.clone(),
+            pr.facts
+                .base_ref
+                .as_ref()
+                .filter(|base| rules.matches_branch_pattern(&pr.facts.repo, base))
+                .cloned(),
+        ),
+        Source::Issue(_) | Source::Todo(_) => (None, None),
+    };
     ViewItem {
         item: WorkItem {
             judgement: None,
             live: None,
-            stack: None,
-            release_base: None,
+            stack,
+            release_base,
             id: scored.id,
             key: scored.key,
             kind: scored.kind,
@@ -619,10 +642,12 @@ fn work_item(
 fn ci_tag(pr: &StoredPr) -> Option<FactTag> {
     match pr.facts.ci {
         CiEffective::Green if pr.ci_ignored.is_empty() => Some(tag(
+            "ci_passing",
             "CI passing",
             "Every build, test and lint check on the head commit passed",
         )),
         CiEffective::Green => Some(tag(
+            "ci_passing",
             "CI passing",
             format!(
                 "Every build, test and lint check on the head commit passed; ignored checks not passing: {}",
@@ -630,10 +655,12 @@ fn ci_tag(pr: &StoredPr) -> Option<FactTag> {
             ),
         )),
         CiEffective::Red => Some(tag(
+            "ci_failing",
             "CI failing",
             format!("Failing: {}", pr.ci_red.join(", ")),
         )),
         CiEffective::Pending => Some(tag(
+            "ci_running",
             "CI running",
             if pr.ci_pending.is_empty() {
                 "Checks have not reported yet".to_owned()
@@ -642,6 +669,7 @@ fn ci_tag(pr: &StoredPr) -> Option<FactTag> {
             },
         )),
         CiEffective::Unknown => Some(tag(
+            "ci_partly_read",
             "CI partly read",
             "More checks exist than were read; none of those read failed",
         )),
@@ -654,35 +682,54 @@ fn pr_tags(rules: &ScoreRules, pr: &StoredPr) -> Vec<FactTag> {
     let mut tags = Vec::new();
     if f.relations.contains(&Relation::ReviewRequested) {
         tags.push(tag(
+            "review_requested",
             "review requested",
             "Your review is requested, directly or through a team",
         ));
     }
     if f.relations.contains(&Relation::Assigned) {
-        tags.push(tag("assigned to you", "You are an assignee of this PR"));
+        tags.push(tag(
+            "assigned_to_you",
+            "assigned to you",
+            "You are an assignee of this PR",
+        ));
     }
     if f.is_draft {
-        tags.push(tag("draft", "The PR is a draft"));
+        tags.push(tag("draft", "draft", "The PR is a draft"));
     }
     tags.extend(ci_tag(pr));
     if f.mergeable == Mergeable::Conflicting {
-        tags.push(tag("conflicts", "GitHub reports merge conflicts"));
+        tags.push(tag(
+            "conflicts",
+            "conflicts",
+            "GitHub reports merge conflicts",
+        ));
     }
     if !f.changes_requested_by.is_empty() {
         tags.push(tag(
+            "changes_requested",
             "changes requested",
             format!("Requested by {}", f.changes_requested_by.join(", ")),
         ));
     }
     if f.unresolved_threads > 0 {
-        tags.push(tag(
-            format!("{} unresolved threads", f.unresolved_threads),
-            "Review threads not resolved on GitHub",
-        ));
+        tags.push(FactTag {
+            text: format!("{} unresolved threads", f.unresolved_threads),
+            ..tag(
+                "unresolved_threads",
+                "unresolved threads",
+                "Review threads not resolved on GitHub",
+            )
+        });
     }
-    if f.labels.iter().any(|l| rules.is_ready_label(l)) {
-        tags.push(tag("ready label", "Marked ready for a human review"));
-    }
+    tags.extend(f.labels.iter().map(|label| {
+        let mut tag = label_tag(label);
+        if rules.is_ready_label(label) {
+            tag.text = "ready label".to_owned();
+            tag.tip = "Marked ready for a human review".to_owned();
+        }
+        tag
+    }));
     tags
 }
 
@@ -711,14 +758,12 @@ fn pr_facts(pr: &StoredPr) -> Vec<Fact> {
     facts
 }
 
-fn issue_tags(
-    relations: &[Relation],
-    opened_at: Option<Timestamp>,
-    look_back: &LookBack,
-) -> Vec<FactTag> {
+fn issue_tags(issue: &StoredIssue, look_back: &LookBack) -> Vec<FactTag> {
+    let relations = &issue.facts.relations;
     let mut tags = Vec::new();
-    if let Some(opened) = opened_at.filter(|at| *at >= look_back.since) {
+    if let Some(opened) = issue.opened_at.filter(|at| *at >= look_back.since) {
         tags.push(tag(
+            "new",
             "new",
             format!(
                 "Opened {} (UTC), within your look-back of {} {}",
@@ -729,17 +774,27 @@ fn issue_tags(
         ));
     }
     if relations.contains(&Relation::Assigned) {
-        tags.push(tag("assigned to you", "You are an assignee of this issue"));
+        tags.push(tag(
+            "assigned_to_you",
+            "assigned to you",
+            "You are an assignee of this issue",
+        ));
     }
     if relations.contains(&Relation::Mentioned) {
-        tags.push(tag("mentions you", "The issue or a comment mentions you"));
+        tags.push(tag(
+            "mentions_you",
+            "mentions you",
+            "The issue or a comment mentions you",
+        ));
     }
     if relations.contains(&Relation::RepoOpen) {
         tags.push(tag(
+            "watched_repository",
             "watched repository",
             "Open issue of a repository whose issues you watch",
         ));
     }
+    tags.extend(issue.facts.labels.iter().map(|label| label_tag(label)));
     tags
 }
 
@@ -754,15 +809,19 @@ fn issue_facts(issue: &StoredIssue) -> Vec<Fact> {
 }
 
 fn todo_tags(todo: &StoredTodo) -> Vec<FactTag> {
-    let status = match todo.facts.status {
-        TodoStatus::Pending => "pending",
-        TodoStatus::InProgress => "in progress",
-        TodoStatus::Blocked => "blocked",
-        TodoStatus::Postponed => "postponed",
+    let (key, status) = match todo.facts.status {
+        TodoStatus::Pending => ("pending", "pending"),
+        TodoStatus::InProgress => ("in_progress", "in progress"),
+        TodoStatus::Blocked => ("blocked", "blocked"),
+        TodoStatus::Postponed => ("postponed", "postponed"),
     };
     vec![
-        tag(todo.project.clone(), "MemCan project"),
-        tag(status, "MemCan status"),
+        tag(
+            format!("project:{}", todo.project),
+            &todo.project,
+            "MemCan project",
+        ),
+        tag(key, status, "MemCan status"),
     ]
 }
 

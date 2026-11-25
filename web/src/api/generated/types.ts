@@ -3434,7 +3434,7 @@ export type FactFilter = {
  */
 key: string,
 /**
- * Label shown in the filter menu.
+ * Label shown on the filter chip.
  */
 label: string, };
 
@@ -7674,7 +7674,7 @@ position: StackPosition,
  */
 size: number,
 /**
- * Numbers of dependent pull requests.
+ * Numbers of open pull requests above this one, in stack order.
  */
 dependents: Array<number>, };
 
@@ -8068,7 +8068,7 @@ today: UsageTotals | null,
  */
 last_7_days: UsageTotals | null,
 /**
- * From the start of the server-local calendar month through now.
+ * From local midnight on the first of the month through now; omitted without reports.
  */
 this_month?: UsageTotals, };
 
