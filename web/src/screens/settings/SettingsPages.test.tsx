@@ -117,14 +117,19 @@ it("places the GitHub sync save between Slack names and GitHub App", async () =>
   expect(save.compareDocumentPosition(github)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 });
 
-it("distinguishes loading usage from missing routes", async () => {
+it.each([404, 405, 501])("distinguishes loading usage from an absent route returning %i", async (status) => {
   let resolve!: () => void;
   const promise = new Promise<void>((release) => {
     resolve = release;
   });
   const missing = async () => {
     await promise;
-    return new HttpResponse(null, { status: 404 });
+    return status === 501
+      ? HttpResponse.json(
+          { code: "not_implemented", message: "This feature is not available yet." },
+          { status },
+        )
+      : new HttpResponse(null, { status });
   };
   server.use(
     http.get("/api/v1/settings", async () => {

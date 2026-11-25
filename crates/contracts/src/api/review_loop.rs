@@ -198,7 +198,7 @@ pub enum NotAssessedReason {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentItem {
     /// Whether the item is a bot status comment.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     pub status_comment: bool,
     /// Evidence of the current decision imported from GitHub.
@@ -214,7 +214,7 @@ pub struct CommentItem {
     #[ts(optional)]
     pub llm_title: Option<String>,
     /// Whether this item follows the decision on its primary.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[ts(as = "Option<bool>", optional)]
     pub decision_follows_primary: bool,
     /// Grounded point read from a versioned source; absent on inline threads and PR questions.
@@ -1121,13 +1121,13 @@ pub struct GithubRead {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AssessmentProgress {
     /// Items in the live pass input.
-    #[serde(default)]
-    #[ts(as = "Option<u32>", optional)]
-    pub in_pass: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub in_pass: Option<u32>,
     /// Items waiting for the next pass.
-    #[serde(default)]
-    #[ts(as = "Option<u32>", optional)]
-    pub waiting: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub waiting: Option<u32>,
     /// When the live pass started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -1150,17 +1150,17 @@ pub struct AssessmentProgress {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CommentCounts {
     /// Items in the Needs you queue.
-    #[serde(default)]
-    #[ts(as = "Option<u32>", optional)]
-    pub needs_you: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub needs_you: Option<u32>,
     /// Gated items in the Needs you queue.
-    #[serde(default)]
-    #[ts(as = "Option<u32>", optional)]
-    pub needs_you_gates: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub needs_you_gates: Option<u32>,
     /// Items with a decision imported since this reader last visited Comments.
-    #[serde(default)]
-    #[ts(as = "Option<u32>", optional)]
-    pub imported_unseen: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub imported_unseen: Option<u32>,
     /// Unresolved threads on GitHub (fact).
     pub unresolved_threads: u32,
     /// Undecided questions.

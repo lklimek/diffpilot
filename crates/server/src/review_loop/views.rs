@@ -234,9 +234,9 @@ fn count(n: usize) -> u32 {
 fn counts(loaded: &Loaded, waiting: usize) -> CommentCounts {
     let standing = loaded.standing();
     CommentCounts {
-        needs_you: 0,
-        needs_you_gates: 0,
-        imported_unseen: 0,
+        needs_you: None,
+        needs_you_gates: None,
+        imported_unseen: None,
         unresolved_threads: loaded
             .snapshot
             .as_ref()
@@ -290,8 +290,8 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> Assess
         .max_by_key(|stored| stored.assessment.assessed_at);
     let running = pass_live(pass);
     AssessmentProgress {
-        in_pass: 0,
-        waiting: 0,
+        in_pass: None,
+        waiting: None,
         since: None,
         running,
         assessed: count(assessed),

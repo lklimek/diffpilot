@@ -404,24 +404,30 @@
       "properties": {
         "needs_you": {
           "description": "Items in the Needs you queue.",
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint32",
-          "minimum": 0,
-          "default": 0
+          "minimum": 0
         },
         "needs_you_gates": {
           "description": "Gated items in the Needs you queue.",
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint32",
-          "minimum": 0,
-          "default": 0
+          "minimum": 0
         },
         "imported_unseen": {
           "description": "Items with a decision imported since this reader last visited Comments.",
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint32",
-          "minimum": 0,
-          "default": 0
+          "minimum": 0
         },
         "unresolved_threads": {
           "description": "Unresolved threads on GitHub (fact).",
@@ -641,17 +647,21 @@
       "properties": {
         "in_pass": {
           "description": "Items in the live pass input.",
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint32",
-          "minimum": 0,
-          "default": 0
+          "minimum": 0
         },
         "waiting": {
           "description": "Items waiting for the next pass.",
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint32",
-          "minimum": 0,
-          "default": 0
+          "minimum": 0
         },
         "since": {
           "description": "When the live pass started.",

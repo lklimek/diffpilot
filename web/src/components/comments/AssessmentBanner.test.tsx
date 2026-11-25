@@ -50,7 +50,7 @@ it("hides the current state across reloads and reappears when progress changes",
 it("uses a waiting count without declaring an active pass", () => {
   render(
     <AssessmentBanner
-      progress={{ ...progress, running: false, in_pass: 0, since: null }}
+      progress={{ ...progress, running: false, in_pass: 0, since: undefined }}
       head="9f3c2e1"
       prKey="acme/node-client/482"
       now={now}

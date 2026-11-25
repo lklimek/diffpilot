@@ -17,17 +17,21 @@
     },
     "live_repositories": {
       "description": "Repositories updated by GitHub App webhooks.",
-      "type": "integer",
+      "type": [
+        "integer",
+        "null"
+      ],
       "format": "uint32",
-      "minimum": 0,
-      "default": 0
+      "minimum": 0
     },
     "not_live_repositories": {
       "description": "Repositories refreshed by manual and scheduled scans.",
-      "type": "integer",
+      "type": [
+        "integer",
+        "null"
+      ],
       "format": "uint32",
-      "minimum": 0,
-      "default": 0
+      "minimum": 0
     },
     "last_event_at": {
       "description": "Latest GitHub event applied to this dashboard.",

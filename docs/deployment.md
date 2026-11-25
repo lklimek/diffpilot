@@ -19,7 +19,7 @@ configuration check) and [`deploy/backup.sh`](../deploy/backup.sh) (online backu
 
 | Service | Image | Role | Listens |
 |---|---|---|---|
-| `server` | `lklimek/diffpilot` | Web UI and API, GitHub sign-in, job queue, SQLite database | `3000` (HTTP, published), `3001` (runner protocol, runner network only) |
+| `server` | `lklimek/diffpilot` | Web UI and API, GitHub sign-in, job queue, SQLite database | `3000` (HTTP, published), `3001` (runner protocol, runner network only), `3002` (webhook, public network) |
 | `runner` | `lklimek/diffpilot-runner` | Root supervisor, runner and the Codex agents (ADR-013) | nothing |
 | `egress-proxy` | `lklimek/diffpilot-egress-proxy` | Squid explicit proxy: the runner's only way out | `3128` (runner network only) |
 
@@ -228,7 +228,13 @@ Required means compose or the service refuses to start without it. "Secret" valu
 Change the subnets only when they clash with existing networks; keep each address inside its subnet.
 
 The containers fix the rest themselves (data paths, listen ports, the runner's state layout); do not set
-`SR_DATA_DIR`, `SR_LISTEN_ADDR`, `SR_RUNNER_LISTEN_ADDR`, `SR_RUNNER_STATE_DIR` or `SR_RUNNER_WORK_DIR`.
+`SR_DATA_DIR`, `SR_LISTEN_ADDR`, `SR_RUNNER_LISTEN_ADDR`, `SR_WEBHOOK_LISTEN_ADDR`, `SR_RUNNER_STATE_DIR`
+or `SR_RUNNER_WORK_DIR`.
+
+A standalone server defaults its webhook listener to `127.0.0.1:3002`. Compose binds it to the server's
+`public` network address (`SR_SERVER_PUBLIC_ADDR`, default `172.29.73.2`) on port 3002. The host port will be
+published for Traefik in B16 after the receiver ships. Until then, Traefik continues to reach the webhook
+catch-all on the public HTTP listener. The dev stack assigns a separate loopback port per instance.
 
 ### Secrets as files (optional)
 

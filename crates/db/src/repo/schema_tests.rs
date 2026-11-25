@@ -2593,17 +2593,29 @@ async fn migrations_upgrade_v13_db_in_place() {
 async fn github_webhook_schema_enforces_delivery_and_repository_keys() {
     let db = db().await;
     sqlx::raw_sql(
-        "INSERT INTO github_deliveries (delivery_id, body_sha256, event, changes, state, received_at)
-         VALUES ('d1', 'hash', 'ping', '[]', 'pending', 't'), ('d2', 'hash', 'push', '[]', 'not_allowed', 't');
+        "INSERT INTO github_deliveries (delivery_id, body_sha256, event, action, changes, state, received_at)
+         VALUES ('00000000-0000-4000-8000-000000000001', printf('%064x',1), 'ping', NULL, '[]', 'pending', 't'),
+                ('00000000-0000-4000-8000-000000000002', printf('%064x',1), 'pull_request', 'opened', '[]', 'not_allowed', 't');
+         UPDATE github_deliveries SET error = 'dispatch_failed' WHERE event = 'pull_request';
          INSERT INTO app_repositories (owner, name, repository_id, installation_id, checked_at)
          VALUES ('Acme', 'Project', 42, 1, 't');
          UPDATE app_repositories SET name = 'Renamed' WHERE repository_id = 42;",
     ).execute(&db.pool).await.unwrap();
     for invalid in [
-        "UPDATE github_deliveries SET delivery_id = 'd1' WHERE delivery_id = 'd2'",
-        "UPDATE github_deliveries SET state = 'unknown' WHERE delivery_id = 'd1'",
-        "UPDATE github_deliveries SET changes = 'invalid' WHERE delivery_id = 'd1'",
-        "UPDATE github_deliveries SET changes = '{}' WHERE delivery_id = 'd1'",
+        "UPDATE github_deliveries SET delivery_id = '00000000-0000-4000-8000-000000000001' WHERE event = 'pull_request'",
+        "UPDATE github_deliveries SET delivery_id = '0000000-00000-4000-8000-000000000001'",
+        "UPDATE github_deliveries SET delivery_id = '00000000-0000-4000-8000-00000000000g'",
+        "UPDATE github_deliveries SET body_sha256 = printf('%063x',1)",
+        "UPDATE github_deliveries SET body_sha256 = printf('%063x',1) || 'g'",
+        "UPDATE github_deliveries SET body_sha256 = printf('%064x',1) || char(0) || 'hidden'",
+        "UPDATE github_deliveries SET event = 'push'",
+        "UPDATE github_deliveries SET action = 'opened' WHERE event = 'ping'",
+        "UPDATE github_deliveries SET action = 'rerequested' WHERE event = 'pull_request'",
+        "UPDATE github_deliveries SET error = 'upstream said bad request'",
+        "UPDATE github_deliveries SET error = 'unregistered_code'",
+        "UPDATE github_deliveries SET state = 'unknown'",
+        "UPDATE github_deliveries SET changes = 'invalid'",
+        "UPDATE github_deliveries SET changes = '{}'",
         "INSERT INTO app_repositories (owner, name, repository_id, installation_id, checked_at) VALUES ('acme', 'renamed', 43, 1, 't')",
         "INSERT INTO app_repositories (owner, name, repository_id, installation_id, checked_at) VALUES ('Acme', 'Project', 42, 1, 't')",
     ] {
@@ -2625,6 +2637,60 @@ async fn github_webhook_schema_enforces_delivery_and_repository_keys() {
             .any(|columns| columns == "body_sha256,received_at")
     );
     assert!(indexing.iter().any(|columns| columns == "received_at"));
+}
+
+#[tokio::test]
+async fn comment_origin_shapes_and_primary_scope_are_enforced() {
+    let db = db().await;
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO tenants (id, name, created_at) VALUES ('other', 'Other', 't');
+         INSERT INTO repos (id, tenant_id, owner, name) VALUES (2, 'other', 'acme', 'node-client');
+         INSERT INTO pull_requests (id, tenant_id, repo_id, number, title, author, html_url, base_sha, head_sha, fetched_at)
+         VALUES (2, 'other', 2, 482, 't', 'alice', 'u', 'b', 'h', 't'),
+                (3, 'default', 1, 483, 't', 'alice', 'u', 'b', 'h', 't');
+         INSERT INTO comment_prs (pull_request_id, tenant_id, created_at)
+         SELECT id, tenant_id, 't' FROM pull_requests;
+         INSERT INTO comment_items (id, tenant_id, pull_request_id, item_no, kind, stable_key, author, author_kind,
+             title, body, body_hash, first_seen_head, github, state, created_at, updated_at)
+         SELECT 'p' || id, tenant_id, id, 1, 'pr_comment', 'primary', 'alice', 'human', 't', 'b', 'h',
+             head_sha, '{}', 'decided', 't', 't' FROM pull_requests
+         UNION ALL SELECT 'f1', tenant_id, id, 2, 'pr_comment', 'follower', 'alice', 'human', 't', 'b', 'h',
+             head_sha, '{}', 'decided', 't', 't' FROM pull_requests WHERE id = 1;
+         INSERT INTO comment_decisions (id, tenant_id, item_id, user_id, kind, resolve_ticked, via, head, body_hash, decided_at)
+         SELECT 'd-' || id, tenant_id, id, 'u1', 'reject', 0, 'question', first_seen_head, body_hash, 't'
+             FROM comment_items;",
+    ).execute(&db.pool).await.unwrap();
+
+    for invalid in [
+        "INSERT INTO comment_decision_origins (decision_id, origin) VALUES ('d-p1', 'imported_github')",
+        "INSERT INTO comment_decision_origins (decision_id, origin) VALUES ('d-f1', 'follows_primary')",
+        "INSERT INTO comment_decision_origins (decision_id, origin, primary_decision_id)
+         VALUES ('d-f1', 'follows_primary', 'd-p2')",
+        "INSERT INTO comment_decision_origins (decision_id, origin, primary_decision_id)
+         VALUES ('d-f1', 'follows_primary', 'd-p3')",
+        "INSERT INTO comment_decision_origins (decision_id, origin, primary_decision_id)
+         VALUES ('d-f1', 'follows_primary', 'd-f1')",
+        "INSERT INTO comment_decision_origins (decision_id, origin, primary_decision_id, by_login)
+         VALUES ('d-f1', 'follows_primary', 'd-p1', 'unexpected-evidence')",
+        "INSERT INTO comment_decision_origins (decision_id, origin, by_login, recorded_at, evidence_url, quote)
+         VALUES ('d-p1', 'imported_github', 'alice', 't', 'https://github.com/comment', printf('%0601d',0))",
+    ] {
+        assert!(sqlx::query(invalid).execute(&db.pool).await.is_err(), "{invalid}");
+    }
+    sqlx::raw_sql(
+        "INSERT INTO comment_decision_origins (decision_id, origin, by_login, by_github_id, relay_login, recorded_at, evidence_url, quote)
+         VALUES ('d-p1', 'imported_github', 'alice', 123, 'alice-ci', 't', 'https://github.com/comment', 'quote');
+         INSERT INTO comment_decision_origins (decision_id, origin, primary_decision_id)
+         VALUES ('d-f1', 'follows_primary', 'd-p1');",
+    ).execute(&db.pool).await.unwrap();
+    let evidence: (i64, String) = sqlx::query_as(
+        "SELECT by_github_id, relay_login FROM comment_decision_origins WHERE decision_id = 'd-p1'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(evidence, (123, "alice-ci".into()));
 }
 
 #[tokio::test]

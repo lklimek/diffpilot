@@ -19,8 +19,10 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
 ## Listeners and authentication
 - Public listener `SR_LISTEN_ADDR` (behind the reverse proxy): `/healthz`, `/auth/*`, `/api/v1/*`, the web UI.
 - Runner listener `SR_RUNNER_LISTEN_ADDR` serves `/runner/v1/*` ([runner protocol](runner-protocol.md)).
-- Webhook listener `SR_WEBHOOK_LISTEN_ADDR` defaults to `0.0.0.0:3002` and serves only `POST /webhooks/github`.
-  The public listener returns 404 for `/webhooks/*`. The route registers `github_signature` authentication.
+- Webhook listener `SR_WEBHOOK_LISTEN_ADDR` defaults to `127.0.0.1:3002` and serves only `POST /webhooks/github`.
+  The public listener drains requests to `/webhooks/*` before returning 404, up to 4 MiB and 8 seconds.
+  A declared body over 4 MiB gets a 413 with `Connection: close` immediately. A drain that exceeds either limit
+  returns 404 with `Connection: close`. The dedicated route registers `github_signature` authentication.
   Its contract-only handler returns 501. The receiver will authenticate the delivery by GitHub signature and
   App target, then check whether a tenant tracks the repository. [ADR-026](../decisions/ADR-026-github-webhooks.md)
 - `session`: session cookie (`__Host-sr_session`, Secure, HttpOnly, SameSite=Lax, Path=/; `sr_session` without
@@ -1002,4 +1004,4 @@ The response and status in the table describe their final contract.
   one item per PR, newest activity first, in `prs` with `next_cursor` for pagination. A PR page visit updates the
   reader's `last_opened_at` when the history feature is active.
 
-B1 fills added response fields with neutral values until their feature handlers are implemented.
+B1 omits uncomputed response fields. Explicit zero counts carry data once the feature handlers are implemented.

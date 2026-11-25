@@ -74,7 +74,7 @@ const DEFAULT_LISTEN_ADDR: SocketAddr =
 const DEFAULT_RUNNER_LISTEN_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 3001);
 const DEFAULT_WEBHOOK_LISTEN_ADDR: SocketAddr =
-    SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 3002);
+    SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 3002);
 const DEFAULT_DATA_DIR: &str = "data";
 const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
 const DEFAULT_GITHUB_WEB_URL: &str = "https://github.com";
@@ -93,7 +93,7 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     /// Runner-only listen address (default `0.0.0.0:3001`); serves only the runner protocol.
     pub runner_listen_addr: SocketAddr,
-    /// GitHub webhook-only listen address (default `0.0.0.0:3002`).
+    /// GitHub webhook-only listen address (default `127.0.0.1:3002`).
     pub webhook_listen_addr: SocketAddr,
     /// GitHub logins allowed to sign in to the default tenant; at least one, unique ignoring ASCII case.
     pub allowed_logins: Vec<String>,
@@ -1099,7 +1099,7 @@ pub(crate) mod tests {
         let mut env = required_env();
         assert_eq!(
             parse(&env).unwrap().webhook_listen_addr,
-            "0.0.0.0:3002".parse().unwrap()
+            "127.0.0.1:3002".parse().unwrap()
         );
         env.insert(WEBHOOK_LISTEN_ADDR, "127.0.0.1:4321".to_owned());
         assert_eq!(

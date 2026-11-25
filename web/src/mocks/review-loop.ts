@@ -541,7 +541,6 @@ function v14Items(): ReviewComment[] {
       title: "Use a seeded RNG for the jitter",
       body: "The jitter should use a fixed seed.",
       imported_decision: {
-        via: "imported_github",
         kind: "reject",
         by: "alice",
         at: at("08:50"),
@@ -708,7 +707,7 @@ function assessmentProgress(list: ReviewComment[]) {
     running: in_pass > 0,
     in_pass,
     waiting,
-    since: in_pass > 0 ? at("09:18") : null,
+    since: in_pass > 0 ? at("09:18") : undefined,
     assessed,
     total: needs.length,
     limited: needs.filter(
@@ -781,7 +780,7 @@ export function overview(): ReviewCommentsOverview {
     queue: queue(list),
     badge: badge(list),
     analysis: analysis()?.id ?? null,
-    watch: watchOfPr(),
+    watch: watchOfPr() ?? undefined,
   };
 }
 

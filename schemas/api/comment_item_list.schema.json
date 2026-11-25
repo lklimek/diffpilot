@@ -12,8 +12,7 @@
       "properties": {
         "status_comment": {
           "description": "Whether the item is a bot status comment.",
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         },
         "imported_decision": {
           "description": "Evidence of the current decision imported from GitHub.",
@@ -46,8 +45,7 @@
         },
         "decision_follows_primary": {
           "description": "Whether this item follows the decision on its primary.",
-          "type": "boolean",
-          "default": false
+          "type": "boolean"
         },
         "point": {
           "description": "Grounded point read from a versioned source; absent on inline threads and PR questions.",

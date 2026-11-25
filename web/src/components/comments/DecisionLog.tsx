@@ -33,6 +33,8 @@ const VIA: Record<Decision["via"], string> = {
   group: "in a group",
   bulk: 'via "decide the rest"',
   table: "via table",
+  imported_github: "imported from GitHub",
+  follows_primary: "follows primary",
   carried: "carried",
 };
 

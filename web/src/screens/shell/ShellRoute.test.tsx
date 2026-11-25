@@ -101,39 +101,49 @@ it("takes the activity route's last call and pause as authoritative without fetc
   expect(codex).not.toHaveBeenCalled();
 });
 
-it("shows the fallback attention indicator on mount without polling", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-  try {
-    const activity = vi.fn(() => new HttpResponse(null, { status: 404 }));
-    const settings = vi.fn(() =>
-      HttpResponse.json({
-        ...SETTINGS,
-        llm_status: {
-          at: new Date().toISOString(),
-          status: { state: "not_working", message: "LLM call failed." },
-        },
-      }),
-    );
-    const codex = vi.fn(() => HttpResponse.json(unlinkedCodex));
-    server.use(
-      http.get("/api/v1/llm/activity", activity),
-      http.get("/api/v1/settings", settings),
-      http.get("/api/v1/settings/codex", codex),
-    );
-    renderRoute("/review");
-    const trigger = await screen.findByRole("button", { name: "alice — LLM not working" });
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    await act(() => vi.advanceTimersByTimeAsync(60_000));
-    expect(activity).toHaveBeenCalledOnce();
-    expect(settings).toHaveBeenCalledOnce();
-    expect(codex).toHaveBeenCalledOnce();
-    await userEvent.click(trigger);
-    expect(await screen.findByText("Job activity unavailable.")).toBeVisible();
-    expect(screen.getByText("LLM call failed.")).toBeVisible();
-  } finally {
-    vi.useRealTimers();
-  }
-});
+it.each([404, 405, 501])(
+  "shows the fallback attention indicator without polling after %i",
+  async (status) => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const activity = vi.fn(() =>
+        status === 501
+          ? HttpResponse.json(
+              { code: "not_implemented", message: "This feature is not available yet." },
+              { status },
+            )
+          : new HttpResponse(null, { status }),
+      );
+      const settings = vi.fn(() =>
+        HttpResponse.json({
+          ...SETTINGS,
+          llm_status: {
+            at: new Date().toISOString(),
+            status: { state: "not_working", message: "LLM call failed." },
+          },
+        }),
+      );
+      const codex = vi.fn(() => HttpResponse.json(unlinkedCodex));
+      server.use(
+        http.get("/api/v1/llm/activity", activity),
+        http.get("/api/v1/settings", settings),
+        http.get("/api/v1/settings/codex", codex),
+      );
+      renderRoute("/review");
+      const trigger = await screen.findByRole("button", { name: "alice — LLM not working" });
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      expect(activity).toHaveBeenCalledOnce();
+      expect(settings).toHaveBeenCalledOnce();
+      expect(codex).toHaveBeenCalledOnce();
+      await userEvent.click(trigger);
+      expect(await screen.findByText("Job activity unavailable.")).toBeVisible();
+      expect(screen.getByText("LLM call failed.")).toBeVisible();
+    } finally {
+      vi.useRealTimers();
+    }
+  },
+);
 
 it("updates the activity in the menu without rendering the shell layout again", async () => {
   let answer!: () => void;

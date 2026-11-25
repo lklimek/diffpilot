@@ -20,13 +20,13 @@ pub struct DashboardSummary {
     #[ts(optional)]
     pub status_counts: Option<StatusCounts>,
     /// Repositories updated by GitHub App webhooks.
-    #[serde(default)]
-    #[ts(as = "Option<u32>", optional)]
-    pub live_repositories: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub live_repositories: Option<u32>,
     /// Repositories refreshed by manual and scheduled scans.
-    #[serde(default)]
-    #[ts(as = "Option<u32>", optional)]
-    pub not_live_repositories: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub not_live_repositories: Option<u32>,
     /// Latest GitHub event applied to this dashboard.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
