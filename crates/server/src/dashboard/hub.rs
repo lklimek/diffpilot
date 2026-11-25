@@ -212,10 +212,6 @@ impl Readers {
         }
     }
 
-    pub(super) fn cancel_rejudges(&self, scope: &Scope) {
-        self.state().rejudges.remove(&key(scope));
-    }
-
     /// The user's GitHub backoff, shared by scans and targeted re-reads.
     pub(crate) fn limited_until(&self, scope: &Scope, now: Timestamp) -> Option<Timestamp> {
         self.state()

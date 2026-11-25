@@ -1494,6 +1494,107 @@ async fn c2_accepted_before_a_superseded_ranking_is_picked_up_after_a_failed_sca
 }
 
 #[tokio::test]
+async fn c2_accepted_during_cancelled_scan_gets_a_new_attempt() {
+    use axum::http::StatusCode;
+
+    let h = harness().await;
+    let mut snap = snapshot(prs(1), vec![], vec![]);
+    let (id, _) = h.rank_all("u1", &snap).await;
+    snap.pull_requests[0].facts.ci = CiEffective::Red;
+    snap.pull_requests.push(pr(2, "New PR"));
+    let dashboard = h.db().dashboard();
+    dashboard
+        .replace_current_snapshot(DEFAULT_TENANT, "u1", id, &snap)
+        .await
+        .expect("snapshot");
+    let StartOutcome::Started { refresh: scan, .. } = dashboard
+        .start_refresh(
+            DEFAULT_TENANT,
+            "u1",
+            RefreshTrigger::Manual,
+            h.state.dashboard.now(),
+        )
+        .await
+        .expect("start scan")
+    else {
+        panic!("the scan should start");
+    };
+
+    assert_eq!(h.click("u1", key(1)).await.0, StatusCode::ACCEPTED);
+    let (status, body) = h
+        .post(
+            "u1",
+            &format!("/api/v1/dashboard/refreshes/{}/cancel", scan.id),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["state"], "cancelled");
+    let restarted = dashboard
+        .refresh(DEFAULT_TENANT, "u1", id)
+        .await
+        .expect("snapshot");
+    assert_eq!(
+        (restarted.state, restarted.ranking_attempt),
+        (RefreshState::Ranking, 1)
+    );
+    let (job, input) = h.serve(|input| succeeded(neutral(input))).await;
+    assert_eq!(job.round, restarted.ranking_attempt);
+    assert_eq!(
+        input.items.iter().map(|item| &item.key).collect::<Vec<_>>(),
+        [&key(1)]
+    );
+    h.ranked("u1", id).await;
+}
+
+#[tokio::test]
+async fn c2_waiting_on_cancelled_rejudge_gets_a_new_attempt() {
+    use axum::http::StatusCode;
+
+    let h = harness().await;
+    let mut snap = snapshot(prs(2), vec![], vec![]);
+    let (id, _) = h.rank_all("u1", &snap).await;
+    for pr in &mut snap.pull_requests {
+        pr.facts.ci = CiEffective::Red;
+    }
+    let dashboard = h.db().dashboard();
+    dashboard
+        .replace_current_snapshot(DEFAULT_TENANT, "u1", id, &snap)
+        .await
+        .expect("snapshot");
+
+    assert_eq!(h.click("u1", key(1)).await.0, StatusCode::ACCEPTED);
+    let first = h.claim().await;
+    assert_eq!(h.click("u1", key(2)).await.0, StatusCode::ACCEPTED);
+    let (status, body) = h
+        .post(
+            "u1",
+            &format!("/api/v1/dashboard/refreshes/{id}/cancel"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ranking"]["state"], "cancelled");
+    let restarted = dashboard
+        .refresh(DEFAULT_TENANT, "u1", id)
+        .await
+        .expect("snapshot");
+    assert_eq!(
+        (restarted.state, restarted.ranking_attempt),
+        (RefreshState::Ranking, first.round + 1)
+    );
+
+    h.complete(&first, JobOutcome::Cancelled).await;
+    let (job, input) = h.serve(|input| succeeded(neutral(input))).await;
+    assert_eq!(job.round, restarted.ranking_attempt);
+    assert_eq!(
+        input.items.iter().map(|item| &item.key).collect::<Vec<_>>(),
+        [&key(2)]
+    );
+    h.ranked("u1", id).await;
+}
+
+#[tokio::test]
 async fn c2_double_click_accepts_once_and_charges_once() {
     use axum::http::StatusCode;
 

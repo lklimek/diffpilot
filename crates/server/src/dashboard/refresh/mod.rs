@@ -197,14 +197,16 @@ pub async fn cancel(
         match ended {
             Ok(true) => {
                 state.dashboard.abort(id);
-                state.dashboard.readers().cancel_rejudges(scope);
                 tracing::info!(user_id = %scope.user_id, refresh = %id, was = ?record.state, "dashboard refresh cancelled");
-                let record = dashboard
+                let status = dashboard
                     .refresh(&scope.tenant_id, &scope.user_id, id)
-                    .await?;
-                let status = status_of(&record);
-                state.dashboard.publish(status.clone());
-                return Ok(status);
+                    .await
+                    .map(|cancelled| status_of(&cancelled));
+                if let Ok(status) = &status {
+                    state.dashboard.publish(status.clone());
+                }
+                continue_rejudges(state, scope, id, record.ranking_attempt).await;
+                return Ok(status?);
             }
             Ok(false) | Err(DbError::Conflict) => continue,
             Err(error) => return Err(error.into()),
