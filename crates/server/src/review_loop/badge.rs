@@ -170,8 +170,10 @@ pub struct BadgeInputs {
     pub failed_effects: u32,
     /// Undecided questions.
     pub needs_you: u32,
-    /// An open non-bot review point still needs assessment.
-    pub pending_human_review: bool,
+    /// Open non-bot review points without a stored assessment.
+    pub pending_human_review: u32,
+    /// Open non-bot review points with a stored assessment that a running pass includes.
+    pub reassessing_human_review: u32,
     /// Decisions with open or claimed effects.
     pub executing: u32,
     /// thepastaclaw reviews or queues this PR (plug-in, or its gate comment).
@@ -254,9 +256,20 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
         return view;
     }
     let mut ready = view.missing.is_empty();
-    if inputs.pending_human_review {
-        view.facts
-            .push("Review items still need assessment".to_owned());
+    if inputs.pending_human_review > 0 {
+        view.facts.push(plural(
+            inputs.pending_human_review,
+            "review item not assessed yet",
+            "review items not assessed yet",
+        ));
+        ready = false;
+    }
+    if inputs.reassessing_human_review > 0 {
+        view.facts.push(plural(
+            inputs.reassessing_human_review,
+            "review item being assessed again",
+            "review items being assessed again",
+        ));
         ready = false;
     }
     match inputs.ci {
@@ -860,17 +873,28 @@ mod tests {
             panic!("new pass")
         };
         let view = || super::super::views::badge(&state, handle.clone(), &work);
-        assert_eq!(view().await.unwrap().badge, Some(PrBadge::ReadyToMerge));
+        let reassessing = "1 review item being assessed again".to_owned();
+        let queued = view().await.unwrap();
+        assert_eq!(queued.badge, Some(PrBadge::ReadyToMerge));
+        assert!(!queued.facts.contains(&reassessing));
+        assert!(
+            !queued
+                .facts
+                .contains(&"1 review item not assessed yet".to_owned())
+        );
         rl.pass_running(pass, job).await.unwrap();
         let during = view().await.unwrap();
         assert_eq!(during.badge, None);
+        assert!(during.facts.contains(&reassessing), "{during:?}");
         assert!(
-            during
+            !during
                 .facts
-                .contains(&"Review items still need assessment".to_owned())
+                .contains(&"1 review item not assessed yet".to_owned())
         );
         rl.finish_pass(pass, true, Timestamp::now()).await.unwrap();
-        assert_eq!(view().await.unwrap().badge, Some(PrBadge::ReadyToMerge));
+        let finished = view().await.unwrap();
+        assert_eq!(finished.badge, Some(PrBadge::ReadyToMerge));
+        assert!(!finished.facts.contains(&reassessing));
     }
 
     #[tokio::test]
@@ -1003,6 +1027,26 @@ mod tests {
             ready_to_merge: Some(true),
             ..BadgeInputs::default()
         }
+    }
+
+    #[test]
+    fn badge_counts_first_assessments_and_reassessments_separately() {
+        let view = badge(&BadgeInputs {
+            pending_human_review: 1,
+            reassessing_human_review: 2,
+            ..ready()
+        });
+        assert_eq!(view.badge, None);
+        assert!(
+            view.facts
+                .iter()
+                .any(|fact| fact == "1 review item not assessed yet")
+        );
+        assert!(
+            view.facts
+                .iter()
+                .any(|fact| fact == "2 review items being assessed again")
+        );
     }
 
     #[test]

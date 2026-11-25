@@ -1781,6 +1781,7 @@ async fn assessment_stale_canonical_leaves_duplicate_missing_without_aborting_va
         source: None,
         duplicate,
         assessment: None,
+        description: None,
         fingerprint: "fp".into(),
     };
     let writes = vec![
@@ -1846,6 +1847,7 @@ async fn assessment_primary_preserves_items_gone_during_the_pass() {
             source: None,
             duplicate: None,
             assessment: None,
+            description: None,
             fingerprint: "fp".into(),
         };
         assert!(

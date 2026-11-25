@@ -166,13 +166,34 @@ pub struct StoredAssessment {
     pub assessment: CommentAssessment,
     /// Fingerprint of comment text, code at its lines and PR purpose.
     pub fingerprint: String,
+    /// Description from the primary method's report, when provided.
+    pub description: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AssessmentBody<T> {
+    #[serde(flatten)]
+    assessment: T,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+fn stored_assessment(
+    body: AssessmentBody<CommentAssessment>,
+    fingerprint: String,
+) -> StoredAssessment {
+    StoredAssessment {
+        assessment: body.assessment,
+        fingerprint,
+        description: body.description,
+    }
 }
 
 /// What started an assessment pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PassCause {
-    /// Comments or the PR page opened with unassessed items.
+    /// A session requested a pass for the PR's comments.
     Opened,
     /// A read found new comments or a moved head.
     Read,
@@ -247,14 +268,43 @@ pub struct PassRecord {
     pub sent: Vec<SentItem>,
     /// The question a question pass answers.
     pub question: Option<QuestionId>,
+    /// The batch whose continuation this question interrupted.
+    pub resume_after_question: Option<PassId>,
+    /// Whether the primary method can still produce progress, or already did.
+    pub may_continue: bool,
+    /// When the live pass was admitted.
+    pub created_at: Timestamp,
     /// When it ended (finished or failed).
     pub finished_at: Option<Timestamp>,
 }
 
-const PASS_COLUMNS: &str =
-    "id, pull_request_id, user_id, cause, head, state, job_id, sent, question_id, finished_at";
+// The primary job is linked on admission. A terminal primary without a card promises no follow-up,
+// even while the secondary method still holds the pass open.
+const PASS_MAY_CONTINUE: &str = "NOT EXISTS (
+    SELECT 1 FROM jobs j LEFT JOIN assessment_method_runs r ON r.job_id=j.id
+    WHERE j.id=p.job_id AND (
+        j.state IN ('failed','cancelled') OR j.cancel_requested OR
+        r.status IN ('failed','cancelled') OR (r.status='succeeded' AND NOT EXISTS (
+            SELECT 1 FROM assessment_comparison_items c
+            JOIN comment_assessments a ON a.item_id=c.primary_item_id AND a.pass_id=c.pass_id
+            WHERE c.pass_id=r.pass_id AND c.method=r.method
+        ))
+    )) AS may_continue";
+
+const PASS_COLUMNS: &str = "p.id, p.pull_request_id, p.user_id, p.cause, p.head, p.state, p.job_id, p.sent, p.question_id, p.created_at, p.finished_at";
+
+// Keep the sent-item array readable by older binaries when adding a question handoff.
+#[derive(Deserialize, Serialize)]
+struct PassInputItem<T> {
+    #[serde(flatten)]
+    item: T,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resume_after_question: Option<PassId>,
+}
 
 fn pass_from_row(row: &SqliteRow) -> Result<PassRecord, DbError> {
+    let input: Vec<PassInputItem<SentItem>> = json_col(row, "sent")?;
+    let resume_after_question = input.first().and_then(|entry| entry.resume_after_question);
     Ok(PassRecord {
         id: wire_col(row, "id")?,
         pull_request_id: row.try_get("pull_request_id")?,
@@ -263,8 +313,11 @@ fn pass_from_row(row: &SqliteRow) -> Result<PassRecord, DbError> {
         head: CommitSha(row.try_get("head")?),
         state: wire_col(row, "state")?,
         job_id: opt_wire_col(row, "job_id")?,
-        sent: json_col(row, "sent")?,
+        sent: input.into_iter().map(|entry| entry.item).collect(),
         question: opt_wire_col(row, "question_id")?,
+        resume_after_question,
+        may_continue: row.try_get("may_continue")?,
+        created_at: ts_col(row, "created_at")?,
         finished_at: opt_ts_col(row, "finished_at")?,
     })
 }
@@ -625,8 +678,29 @@ impl ReviewLoop<'_> {
         assessment: &CommentAssessment,
         fingerprint: &str,
     ) -> Result<bool, DbError> {
+        self.add_assessment_with_description(tenant_id, item, assessment, fingerprint, None)
+            .await
+    }
+
+    /// Stores a validated assessment with its report description, including when it is reused at a new head.
+    pub async fn add_assessment_with_description(
+        &self,
+        tenant_id: &str,
+        item: CommentItemId,
+        assessment: &CommentAssessment,
+        fingerprint: &str,
+        description: Option<&str>,
+    ) -> Result<bool, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let stored = add_assessment_in(&mut tx, tenant_id, item, assessment, fingerprint).await?;
+        let stored = add_assessment_in(
+            &mut tx,
+            tenant_id,
+            item,
+            assessment,
+            fingerprint,
+            description,
+        )
+        .await?;
         tx.commit().await?;
         Ok(stored)
     }
@@ -643,10 +717,7 @@ impl ReviewLoop<'_> {
         .fetch_optional(self.pool)
         .await?
         .map(|row| {
-            Ok(StoredAssessment {
-                assessment: json_col(&row, "body")?,
-                fingerprint: row.try_get("fingerprint")?,
-            })
+            Ok(stored_assessment(json_col(&row, "body")?, row.try_get("fingerprint")?))
         })
         .transpose()
     }
@@ -656,6 +727,18 @@ impl ReviewLoop<'_> {
         tenant_id: &str,
         pass: &NewPass,
         now: Timestamp,
+    ) -> Result<PassStart, DbError> {
+        self.start_pass_with_continuation(tenant_id, pass, now, None)
+            .await
+    }
+
+    /// Queues a pass and stores the interrupted batch with a question, if there was one.
+    pub async fn start_pass_with_continuation(
+        &self,
+        tenant_id: &str,
+        pass: &NewPass,
+        now: Timestamp,
+        resume_after_question: Option<PassId>,
     ) -> Result<PassStart, DbError> {
         let mut tx = write_tx(self.pool).await?;
         let live: Option<String> = sqlx::query_scalar(
@@ -685,7 +768,11 @@ impl ReviewLoop<'_> {
         .bind(&pass.head.0)
         .bind(items)
         .bind(ts(now))
-        .bind(json(&pass.sent)?)
+        .bind(match (resume_after_question, pass.cause, pass.sent.as_slice()) {
+            (Some(id), PassCause::Question, [item]) => json(&[PassInputItem { item, resume_after_question: Some(id) }])?,
+            (Some(_), _, _) => return Err(DbError::Conflict),
+            (None, _, items) => json(&items)?,
+        })
         .bind(pass.question.map(|question| question.to_string()))
         .execute(&mut *tx)
         .await?;
@@ -732,7 +819,7 @@ impl ReviewLoop<'_> {
     /// A pass.
     pub async fn pass(&self, id: PassId) -> Result<PassRecord, DbError> {
         let row = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {PASS_COLUMNS} FROM comment_passes WHERE id = ?"
+            "SELECT {PASS_COLUMNS}, {PASS_MAY_CONTINUE} FROM comment_passes p WHERE p.id = ?"
         )))
         .bind(id.to_string())
         .fetch_optional(self.pool)
@@ -744,8 +831,8 @@ impl ReviewLoop<'_> {
     /// The PR's latest assessment pass.
     pub async fn latest_pass(&self, pull_request_id: i64) -> Result<Option<PassRecord>, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {PASS_COLUMNS} FROM comment_passes WHERE pull_request_id = ?
-             ORDER BY created_at DESC, rowid DESC LIMIT 1"
+            "SELECT {PASS_COLUMNS}, {PASS_MAY_CONTINUE} FROM comment_passes p WHERE p.pull_request_id = ?
+             ORDER BY p.created_at DESC, p.rowid DESC LIMIT 1"
         )))
         .bind(pull_request_id)
         .fetch_optional(self.pool)
@@ -758,8 +845,8 @@ impl ReviewLoop<'_> {
     /// Queued and running passes of every pull request, oldest first (server start: follow them again).
     pub async fn live_passes(&self) -> Result<Vec<PassRecord>, DbError> {
         sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SELECT {PASS_COLUMNS} FROM comment_passes WHERE state IN ('queued', 'running')
-             ORDER BY created_at, rowid"
+            "SELECT {PASS_COLUMNS}, {PASS_MAY_CONTINUE} FROM comment_passes p WHERE p.state IN ('queued', 'running')
+             ORDER BY p.created_at, p.rowid"
         )))
         .fetch_all(self.pool)
         .await?
@@ -852,15 +939,16 @@ impl ReviewLoop<'_> {
         }
         let wanted = json(&prs)?;
         let mut tx = read_tx(self.pool).await?;
-        let rows = sqlx::query(
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
             "SELECT c.pull_request_id, c.read_at, c.read_failure, c.read_failed_at, NULL AS github_snapshot,
-                    c.round_count, c.purpose,
-                    (SELECT p.state FROM comment_passes p WHERE p.pull_request_id = c.pull_request_id
-                     ORDER BY p.created_at DESC, p.rowid DESC LIMIT 1) AS pass_state
-             FROM comment_prs c
+                    c.round_count, c.purpose, p.id, p.user_id, p.cause, p.head, p.state, p.job_id,
+                    p.sent, p.question_id, p.created_at, p.finished_at, {PASS_MAY_CONTINUE}
+             FROM comment_prs c LEFT JOIN comment_passes p ON p.id = (
+                 SELECT id FROM comment_passes WHERE pull_request_id = c.pull_request_id
+                 ORDER BY created_at DESC, rowid DESC LIMIT 1)
              WHERE c.tenant_id = ? AND c.read_at IS NOT NULL
                AND c.pull_request_id IN (SELECT value FROM json_each(?))",
-        )
+        )))
         .bind(tenant_id)
         .bind(wanted)
         .fetch_all(&mut *tx)
@@ -878,7 +966,10 @@ impl ReviewLoop<'_> {
                             assessments: vec![],
                             decisions: vec![],
                         },
-                        latest_pass: opt_wire_col(row, "pass_state")?,
+                        latest_pass: row
+                            .try_get::<Option<String>, _>("id")?
+                            .map(|_| pass_from_row(row))
+                            .transpose()?,
                     })
                 })(),
             );
@@ -906,10 +997,7 @@ impl ReviewLoop<'_> {
             if let Some(assessment) = opt_json_col(row, "assessment_body")? {
                 view.pr.assessments.push((
                     item.id,
-                    StoredAssessment {
-                        assessment,
-                        fingerprint: row.try_get("assessment_fingerprint")?,
-                    },
+                    stored_assessment(assessment, row.try_get("assessment_fingerprint")?),
                 ));
             }
             view.pr.items.push(item);
@@ -1146,8 +1234,8 @@ pub struct PrView {
 pub struct PrTallyView {
     /// Items, their latest assessments and the decisions needed for queue membership.
     pub pr: PrView,
-    /// The latest assessment pass's state.
-    pub latest_pass: Option<PassState>,
+    /// The latest assessment pass.
+    pub latest_pass: Option<PassRecord>,
 }
 
 fn apply_tally_rows(
@@ -1196,10 +1284,7 @@ pub(super) async fn pr_view_in(
     .map(|row| {
         Ok((
             wire_col(row, "item_id")?,
-            StoredAssessment {
-                assessment: json_col(row, "body")?,
-                fingerprint: row.try_get("fingerprint")?,
-            },
+            stored_assessment(json_col(row, "body")?, row.try_get("fingerprint")?),
         ))
     })
     .collect::<Result<Vec<_>, DbError>>()?;
@@ -1252,6 +1337,7 @@ pub(crate) async fn add_assessment_in(
     item: CommentItemId,
     assessment: &CommentAssessment,
     fingerprint: &str,
+    description: Option<&str>,
 ) -> Result<bool, DbError> {
     let status: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM comment_items WHERE id = ? AND status_comment)",
@@ -1262,14 +1348,24 @@ pub(crate) async fn add_assessment_in(
     if status {
         return Ok(false);
     }
-    let latest: Option<CommentAssessment> = sqlx::query(
-        "SELECT body FROM comment_assessments WHERE item_id = ? ORDER BY id DESC LIMIT 1",
+    let latest = sqlx::query(
+        "SELECT body, fingerprint FROM comment_assessments WHERE item_id = ? ORDER BY id DESC LIMIT 1",
     )
     .bind(item.to_string())
     .fetch_optional(&mut **tx)
     .await?
-    .map(|row| json_col(&row, "body"))
+    .map(|row| -> Result<StoredAssessment, DbError> {
+        Ok(stored_assessment(json_col(&row, "body")?, row.try_get("fingerprint")?))
+    })
     .transpose()?;
+    let description = description.or_else(|| {
+        latest
+            .as_ref()
+            .filter(|prior| {
+                prior.assessment.head == assessment.head && prior.fingerprint == fingerprint
+            })
+            .and_then(|prior| prior.description.as_deref())
+    });
     sqlx::query(
             "INSERT INTO comment_assessments (tenant_id, item_id, job_id, head, fingerprint, body, prompt_version,
                  assessed_at,pass_id,method,payer_id)
@@ -1282,7 +1378,7 @@ pub(crate) async fn add_assessment_in(
         .bind(assessment.job.to_string())
         .bind(&assessment.head.0)
         .bind(fingerprint)
-        .bind(json(assessment)?)
+        .bind(json(&AssessmentBody { assessment, description: description.map(str::to_owned) })?)
         .bind(assessment.prompt_version)
         .bind(ts(assessment.assessed_at))
         .bind(assessment.job.to_string())
@@ -1290,7 +1386,8 @@ pub(crate) async fn add_assessment_in(
         .execute(&mut **tx)
         .await?;
     let shown_before = latest.is_some_and(|latest| {
-        latest.recommendation == assessment.recommendation && latest.gates == assessment.gates
+        latest.assessment.recommendation == assessment.recommendation
+            && latest.assessment.gates == assessment.gates
     });
     if !shown_before {
         sqlx::query(

@@ -25,7 +25,7 @@ use contracts::routes::{
     ASSESS_COMMENT, DECIDE_COMMENT, DECIDE_COMMENT_BATCH, GET_COMMENT_CONTEXT, GET_COMMENT_LOG,
     GET_COMMENTS, GET_DECIDE_REST, GET_PR_PAGE, LIST_CARRY_OVERS, LIST_COMMENT_ITEMS,
     MARK_COMMENT_GATE, PREVIEW_COMMENT_EFFECTS, READ_COMMENTS, REOPEN_COMMENT_ITEM,
-    SKIP_COMMENT_ITEM, UNDO_COMMENT_DECISION,
+    SKIP_COMMENT_ITEM, START_COMMENT_ASSESSMENT, UNDO_COMMENT_DECISION,
 };
 use contracts::time::Timestamp;
 
@@ -191,6 +191,7 @@ pub fn routes() -> Router<AppState> {
         .route(GET_PR_PAGE.path, get(pr_page))
         .route(GET_COMMENTS.path, get(overview))
         .route(READ_COMMENTS.path, post(read_again))
+        .route(START_COMMENT_ASSESSMENT.path, post(start_assessment))
         .route(LIST_COMMENT_ITEMS.path, get(items))
         .route(GET_COMMENT_CONTEXT.path, get(context))
         .route(ASSESS_COMMENT.path, post(assess_again))
@@ -276,17 +277,16 @@ async fn overview(
 ) -> ApiResult<Json<CommentsOverview>> {
     mark_present(&state, &session);
     let handle = handle_of(&state, &session, path).await?;
-    if !session.is_access_token()
-        && let Err(error) =
-            assess::request_pass_for(&state, handle.id, PassReason::Opened, &session.user_id).await
-    {
-        tracing::warn!(
-            ?error,
-            pr = handle.id,
-            "assessment pass on opening Comments could not be requested"
-        );
-    }
     Ok(Json(views::overview(&state, &session, handle).await?))
+}
+
+async fn start_assessment(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    path: PrPath,
+) -> ApiResult<Response> {
+    let handle = handle_of(&state, &session, path).await?;
+    request_assessment(&state, &session, handle.id, PassReason::Opened).await
 }
 
 async fn read_again(
@@ -337,14 +337,22 @@ async fn assess_again(
         .await
         .map_err(LoopError::from)?
         .ok_or(LoopError::NotFound)?;
-    match assess::request_pass_for(
+    request_assessment(
         &state,
+        &session,
         handle.id,
         PassReason::AssessAgain(item.id),
-        &session.user_id,
     )
     .await
-    {
+}
+
+async fn request_assessment(
+    state: &AppState,
+    session: &Session,
+    pr: i64,
+    reason: PassReason,
+) -> ApiResult<Response> {
+    match assess::request_pass_for(state, pr, reason, &session.user_id).await {
         Ok(assess::PassQueued::AlreadyRunning) => Err(LoopError::AssessmentRunning.into()),
         Ok(assess::PassQueued::DailyLimit) => {
             let quota = state
@@ -380,15 +388,15 @@ async fn assess_again(
             Ok((status, Json(failure)).into_response())
         }
         Ok(queued) => {
-            tracing::debug!(pr = handle.id, item = no, ?queued, "assess again requested");
+            tracing::debug!(pr, ?reason, ?queued, "comment assessment requested");
             Ok(StatusCode::ACCEPTED.into_response())
         }
         Err(error) => {
             tracing::warn!(
                 ?error,
-                pr = handle.id,
-                item = no,
-                "assess again could not be requested"
+                pr,
+                ?reason,
+                "comment assessment could not be requested"
             );
             Err(ReviewLoopApiError::Assess(Box::new(error)))
         }

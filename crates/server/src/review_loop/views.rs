@@ -19,7 +19,9 @@ use contracts::common::{AnnotationType, LineRange, LineSide, PrRef};
 use contracts::ids::{AnalysisId, CarryEventId, CommentItemId, CommitSha, StepId};
 use contracts::time::Timestamp;
 use db::error::DbError;
-use db::repo::review_loop::{ItemRecord, PassRecord, PassState, StoredDecision};
+use db::repo::review_loop::{
+    ItemRecord, PassCause, PassRecord, PassState, StoredDecision, WatchRecord,
+};
 
 use super::badge::{self, BadgeInputs, MyWork};
 use super::observe::Snapshot;
@@ -40,47 +42,71 @@ const MAX_CONTEXT_LINES: u32 = 400;
 /// Carry events per page (RC11).
 const CARRY_PAGE: u32 = 50;
 
-fn pass_live(pass: Option<PassState>) -> bool {
-    matches!(pass, Some(PassState::Queued | PassState::Running))
+fn live_pass(pass: Option<&PassRecord>) -> Option<&PassRecord> {
+    pass.filter(|pass| matches!(pass.state, PassState::Queued | PassState::Running))
 }
 
-/// The reader watches the pull request and today's limit stopped its automatic passes (plan §2.8, §4.2).
-async fn limit_reached(state: &AppState, session: &Session, pr_id: i64) -> Result<bool, LoopError> {
+fn sent_in(record: &ItemRecord, pass: &PassRecord) -> bool {
+    pass.sent.iter().any(|sent| sent.item == record.id)
+}
+
+async fn reader_watch(
+    state: &AppState,
+    session: &Session,
+    pr_id: i64,
+) -> Result<Option<WatchRecord>, DbError> {
     Ok(state
         .db
         .review_loop()
         .watches(&session.user_id)
         .await?
-        .iter()
-        .any(|watch| watch.pull_request_id == pr_id && watch.state == WatchState::LimitReached))
+        .into_iter()
+        .find(|watch| watch.pull_request_id == pr_id))
 }
 
 fn assessment_state(
+    loaded: &Loaded,
     record: &ItemRecord,
-    assessed: bool,
-    pass: Option<PassState>,
+    pass: Option<&PassRecord>,
     limited: bool,
 ) -> AssessmentState {
-    if record.status_comment {
+    if record.status_comment || record.kind == CommentItemKind::PrQuestion {
         return AssessmentState::NotAssessed {
             reason: NotAssessedReason::NotRun,
         };
     }
-    if assessed {
-        AssessmentState::Assessed
-    } else if record.kind == contracts::api::review_loop::CommentItemKind::PrQuestion {
-        AssessmentState::NotAssessed {
-            reason: NotAssessedReason::NotRun,
-        }
-    } else if pass_live(pass) {
+    let live = live_pass(pass);
+    let assessment = loaded.assessments.get(&record.no);
+    if live.is_some_and(|pass| sent_in(record, pass)) {
         AssessmentState::Running
-    } else if limited {
+    } else if let Some(pass) = live
+        && matches!(
+            pass.cause,
+            PassCause::Opened | PassCause::Read | PassCause::Watch
+        )
+        && pass.may_continue
+        && waits(record)
+        && assessment.is_none_or(|stored| {
+            let head = loaded
+                .snapshot
+                .as_ref()
+                .map_or(pass.head.0.as_str(), |snapshot| snapshot.head.as_str());
+            stored.assessment.head.0 != head
+        })
+    {
+        AssessmentState::Queued
+    } else if assessment.is_some() {
+        AssessmentState::Assessed
+    } else if limited && waits(record) {
         AssessmentState::NotAssessed {
             reason: NotAssessedReason::DailyLimit,
         }
     } else {
         AssessmentState::NotAssessed {
-            reason: match pass {
+            reason: match pass
+                .filter(|pass| sent_in(record, pass))
+                .map(|pass| pass.state)
+            {
                 Some(PassState::Failed) => NotAssessedReason::Failed,
                 Some(PassState::Finished) => NotAssessedReason::Missing,
                 Some(PassState::Queued | PassState::Running) | None => NotAssessedReason::NotRun,
@@ -93,7 +119,7 @@ fn item_status(
     loaded: &Loaded,
     record: &ItemRecord,
     standing: &HashMap<String, &StoredDecision>,
-    pass: Option<PassState>,
+    pass: Option<&PassRecord>,
     limited: bool,
 ) -> queue::StatusItem {
     let imported_decision = standing.get(&record.id.to_string()).and_then(|stored| {
@@ -113,12 +139,7 @@ fn item_status(
         no: record.no,
         kind: record.kind,
         state: record.state,
-        assessment_state: assessment_state(
-            record,
-            loaded.assessments.contains_key(&record.no),
-            pass,
-            limited,
-        ),
+        assessment_state: assessment_state(loaded, record, pass, limited),
         status_comment: record.status_comment,
         imported_decision,
         duplicate_of: record.duplicate_of.and_then(|id| loaded.number_of(id)),
@@ -144,7 +165,9 @@ fn item_view(
         status_comment: status.status_comment,
         imported_decision: status.imported_decision,
         import_proposal: None,
-        llm_title: None,
+        llm_title: assessment
+            .and_then(|stored| stored.description.as_deref())
+            .map(llm_title),
         decision_follows_primary: status.decision_follows_primary,
         point: record
             .quote
@@ -204,6 +227,40 @@ fn item_view(
     }
 }
 
+fn llm_title(description: &str) -> String {
+    const ABBREVIATIONS: &[&str] = &["e.g.", "i.e.", "vs.", "etc.", "cf."];
+    let text = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    let first = text
+        .match_indices(['.', '!', '?'])
+        .find_map(|(index, mark)| {
+            let end = index + mark.len();
+            let sentence = &text[..end];
+            let last = sentence
+                .rsplit(' ')
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches(['(', '[', '"', '\'', '`']);
+            let abbreviated = mark == "."
+                && ABBREVIATIONS
+                    .iter()
+                    .any(|word| last.eq_ignore_ascii_case(word));
+            (text[end..].starts_with(' ') && !abbreviated).then_some(sentence)
+        })
+        .unwrap_or(&text);
+    if first.chars().count() <= 90 {
+        return first.to_owned();
+    }
+    let prefix: String = first.chars().take(89).collect();
+    let cut = if first[prefix.len()..].starts_with(' ') {
+        prefix.as_str()
+    } else {
+        prefix
+            .rsplit_once(' ')
+            .map_or(prefix.as_str(), |(whole, _)| whole)
+    };
+    format!("{cut}…")
+}
+
 /// RC4: the items with the reader's Ask answer counts.
 pub async fn items(
     state: &AppState,
@@ -220,8 +277,9 @@ pub async fn items(
         .await?
         .into_iter()
         .collect();
-    let limited = limit_reached(state, session, loaded.handle.id).await?;
-    let pass = pass.map(|record| record.state);
+    let limited = reader_watch(state, session, loaded.handle.id)
+        .await?
+        .is_some_and(|watch| watch.state == WatchState::LimitReached);
     let standing = loaded.standing();
     Ok(loaded
         .items
@@ -230,7 +288,7 @@ pub async fn items(
         .filter(|record| query.kind.is_none_or(|wanted| record.kind == wanted))
         .map(|record| {
             let asked = answers.get(&record.id).copied().unwrap_or(0);
-            let status = item_status(&loaded, record, &standing, pass, limited);
+            let status = item_status(&loaded, record, &standing, pass.as_ref(), limited);
             item_view(&loaded, record, status, asked)
         })
         .collect())
@@ -280,7 +338,7 @@ fn count(n: usize) -> u32 {
 fn needs_you(
     loaded: &Loaded,
     entries: &[QueueEntry],
-    pass: Option<PassState>,
+    pass: Option<&PassRecord>,
     limited: bool,
 ) -> (u32, u32) {
     let standing = loaded.standing();
@@ -304,7 +362,7 @@ pub(crate) fn dashboard_needs_you(
 ) -> Result<u32, DbError> {
     let loaded = Loaded::from_view(handle, view.pr).ok_or(DbError::NotFound)?;
     let entries = queue::queue(&loaded.queue_items(&[]));
-    Ok(needs_you(&loaded, &entries, view.latest_pass, false).0)
+    Ok(needs_you(&loaded, &entries, view.latest_pass.as_ref(), false).0)
 }
 
 fn counts(
@@ -369,15 +427,19 @@ fn progress(loaded: &Loaded, pass: Option<&PassRecord>, limited: bool) -> Assess
         .assessments
         .values()
         .max_by_key(|stored| stored.assessment.assessed_at);
-    let running = pass_live(pass.map(|pass| pass.state));
+    let live = live_pass(pass);
+    let waiting = needing
+        .iter()
+        .filter(|item| assessment_state(loaded, item, pass, limited) == AssessmentState::Queued)
+        .count();
     AssessmentProgress {
-        in_pass: None,
-        waiting: None,
-        since: None,
-        running,
+        in_pass: Some(live.map_or(0, |pass| count(pass.sent.len()))),
+        waiting: Some(count(waiting)),
+        since: live.map(|pass| pass.created_at),
+        running: live.is_some(),
         assessed: count(assessed),
         total: count(needing.len()),
-        limited: if limited && !running {
+        limited: if limited && live.is_none() {
             count(needing.len().saturating_sub(assessed))
         } else {
             0
@@ -478,6 +540,28 @@ fn badge_of(
         .into_iter()
         .map(|item| item.no)
         .collect();
+    let review_items = loaded.items.iter().filter(|item| {
+        waiting.contains(&item.no)
+            && item.kind != CommentItemKind::PrQuestion
+            && item.author_kind != AuthorKind::Bot
+    });
+    let pending_human_review = count(
+        review_items
+            .clone()
+            .filter(|item| !loaded.assessments.contains_key(&item.no))
+            .count(),
+    );
+    let reassessing_human_review =
+        pass.filter(|pass| pass.state == PassState::Running)
+            .map_or(0, |pass| {
+                count(
+                    review_items
+                        .filter(|item| {
+                            loaded.assessments.contains_key(&item.no) && sent_in(item, pass)
+                        })
+                        .count(),
+                )
+            });
     badge::badge(&BadgeInputs {
         open: snapshot.is_none_or(|snapshot| snapshot.state == "OPEN"),
         read_failed: loaded.row.read_failure.is_some() || snapshot.is_none(),
@@ -496,16 +580,8 @@ fn badge_of(
         unresolved_threads: snapshot.map_or(0, |snapshot| snapshot.unresolved_threads),
         failed_effects: standing.values().map(|s| failed(s)).sum(),
         needs_you,
-        pending_human_review: loaded.items.iter().any(|item| {
-            waiting.contains(&item.no)
-                && item.kind != CommentItemKind::PrQuestion
-                && item.author_kind != AuthorKind::Bot
-                && (!loaded.assessments.contains_key(&item.no)
-                    || pass.is_some_and(|pass| {
-                        pass.state == PassState::Running
-                            && pass.sent.iter().any(|sent| sent.item == item.id)
-                    }))
-        }),
+        pending_human_review,
+        reassessing_human_review,
         executing: count(standing.values().filter(|s| effects_open(s)).count()),
         bot_round: super::bot_round_running(state, pr, snapshot),
         changes_requested: snapshot.map_or_else(Vec::new, |s| s.changes_requested_by.clone()),
@@ -533,13 +609,7 @@ pub(crate) async fn badge(
     let pass = state.db.review_loop().latest_pass(loaded.handle.id).await?;
     let queue_items = loaded.queue_items(&[]);
     let entries = queue::queue(&queue_items);
-    let needs_you = needs_you(
-        &loaded,
-        &entries,
-        pass.as_ref().map(|pass| pass.state),
-        false,
-    )
-    .0;
+    let needs_you = needs_you(&loaded, &entries, pass.as_ref(), false).0;
     Ok(badge_of(
         state,
         &loaded,
@@ -581,7 +651,7 @@ fn pr_url(pr: &PrRef) -> String {
     )
 }
 
-/// RC2 (the caller asks for the opening assessment pass).
+/// RC2: the stored Comments overview and the reader's watch.
 pub async fn overview(
     state: &AppState,
     session: &Session,
@@ -595,18 +665,24 @@ pub async fn overview(
     let entries = queue::queue(&queue_items);
     let waiting = entries.iter().map(|entry| entry.item_nos.len()).sum();
     let pass = rl.latest_pass(loaded.handle.id).await?;
-    let limited = limit_reached(state, session, loaded.handle.id).await?;
-    let needs_you = needs_you(
+    let watch = reader_watch(state, session, loaded.handle.id).await?;
+    let limited = watch
+        .as_ref()
+        .is_some_and(|watch| watch.state == WatchState::LimitReached);
+    let needs_you = needs_you(&loaded, &entries, pass.as_ref(), limited);
+    let badge = badge_of(
+        state,
         &loaded,
-        &entries,
-        pass.as_ref().map(|pass| pass.state),
-        limited,
+        &queue_items,
+        needs_you.0,
+        pass.as_ref(),
+        &badge::my_work(state, &session.tenant_id, &session.user_id).await?,
     );
     let events = rl
         .carry_events(&session.tenant_id, Some(loaded.handle.id), None, u32::MAX)
         .await?;
     Ok(CommentsOverview {
-        watch: None,
+        watch: watch.map(|watch| super::watch::view(watch, badge.clone())),
         pr: loaded.handle.pr.clone(),
         title: snapshot.title.clone(),
         url: if snapshot.url.is_empty() {
@@ -621,14 +697,7 @@ pub async fn overview(
         rounds: rounds(&loaded, &events),
         assessment: progress(&loaded, pass.as_ref(), limited),
         queue: entries,
-        badge: badge_of(
-            state,
-            &loaded,
-            &queue_items,
-            needs_you.0,
-            pass.as_ref(),
-            &badge::my_work(state, &session.tenant_id, &session.user_id).await?,
-        ),
+        badge,
         analysis: latest_analysis(state, session, loaded.handle.id)
             .await?
             .map(|summary| summary.id),
@@ -652,20 +721,11 @@ pub async fn pr_page(
     let my_work = badge::my_work(state, &session.tenant_id, &session.user_id).await?;
     let pr = &loaded.handle.pr;
     let stored = state.db.pull_requests().get(loaded.handle.id).await?.pr;
-    let watch = rl
-        .watches(&session.user_id)
-        .await?
-        .into_iter()
-        .find(|watch| watch.pull_request_id == loaded.handle.id);
+    let watch = reader_watch(state, session, loaded.handle.id).await?;
     let limited = watch
         .as_ref()
         .is_some_and(|watch| watch.state == WatchState::LimitReached);
-    let needs_you = needs_you(
-        &loaded,
-        &entries,
-        pass.as_ref().map(|pass| pass.state),
-        limited,
-    );
+    let needs_you = needs_you(&loaded, &entries, pass.as_ref(), limited);
     let badge = badge_of(
         state,
         &loaded,
@@ -1207,6 +1267,29 @@ mod notes_tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn llm_title_stops_after_the_first_short_sentence() {
+        assert_eq!(
+            llm_title("`item.path` is unchecked!\nA second sentence explains why."),
+            "`item.path` is unchecked!"
+        );
+    }
+
+    #[test]
+    fn llm_title_keeps_abbreviations_and_marks_truncation() {
+        let sentence = "Use retries, e.g. for 503, i.e. transient errors, vs. validation failures etc. before returning.";
+        let title = "Use retries, e.g. for 503, i.e. transient errors, vs. validation failures etc. before…";
+        assert_eq!(llm_title(&format!("{sentence} Another sentence.")), title);
+        let exact = "Ł".repeat(90);
+        assert_eq!(llm_title(&exact), exact);
+        let too_long = "Ł".repeat(91);
+        assert_eq!(llm_title(&too_long), format!("{}…", "Ł".repeat(89)));
+        assert_eq!(
+            llm_title("Use exponential backoff, e.g. for 503. The logs explain why."),
+            "Use exponential backoff, e.g. for 503."
+        );
+    }
 
     fn tour() -> Tour {
         let path = concat!(

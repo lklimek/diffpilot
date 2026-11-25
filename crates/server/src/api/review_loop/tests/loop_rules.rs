@@ -245,12 +245,78 @@ async fn read_after_a_report_marks_what_github_shows() {
     );
 }
 
+#[tokio::test]
+async fn agent_report_read_queues_pass_only_for_watched() {
+    for watched in [false, true] {
+        let w = world().await;
+        w.link_llm().await;
+        let reported = reported_reply_and_resolve(&w).await;
+        let pr = w.pr_id().await;
+        let rl = w.state.db.review_loop();
+        if watched {
+            rl.watch(DEFAULT_TENANT, "u1", pr, 10, Timestamp::now())
+                .await
+                .unwrap();
+        }
+        serve(
+            &w.server,
+            &[("review-threads.json", &|answer| {
+                acted_on_l2(answer);
+                let mut new = thread_node(answer, "PRRT_fixture482_l2").clone();
+                new["id"] = json!("PRRT_fixture482_new_report");
+                new["isResolved"] = json!(false);
+                new["resolvedBy"] = Value::Null;
+                new["comments"]["nodes"][0]["url"] =
+                    json!("https://github.com/acme/node-client/pull/482#discussion_r3000000999");
+                answer["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(new);
+            })],
+        )
+        .await;
+        w.age_read().await;
+        wait_until_seen(
+            &w,
+            reported.item,
+            seen::REPORT_READ_DELAY + Duration::from_secs(5),
+        )
+        .await;
+        let scheduled = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(pass) = rl.latest_pass(pr).await.unwrap() {
+                    break pass;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        if watched {
+            assert_eq!(
+                scheduled.unwrap().cause,
+                db::repo::review_loop::PassCause::Watch
+            );
+        } else {
+            assert!(
+                scheduled.is_err(),
+                "unwatched PR queued a pass: {scheduled:?}"
+            );
+        }
+    }
+}
+
 /// Plan §2.8, §4.2: while today's limit holds the reader's automatic passes back, an item not assessed says so and
 /// the progress counts the items it holds back.
 #[tokio::test]
 async fn items_the_daily_limit_holds_back_say_so() {
     let w = world().await;
-    w.get(&format!("{PR}/comments")).await;
+    w.link_llm().await;
+    assert_eq!(
+        w.call("POST", &format!("{PR}/comments/assess"), None)
+            .await
+            .0,
+        StatusCode::ACCEPTED
+    );
     let rl = w.state.db.review_loop();
     for pass in rl.live_passes().await.expect("passes") {
         rl.finish_pass(pass.id, false, Timestamp::now())

@@ -509,6 +509,260 @@ async fn wait_pass(state: &AppState, id: PassId) {
     .unwrap();
 }
 
+async fn finish_assessment_job(state: &AppState, pass: &PassRecord, answer: Option<&str>) {
+    let job = claim_method(state).await;
+    assert_eq!(Some(job.id), pass.job_id);
+    let entries: Vec<_> = pass
+        .sent
+        .iter()
+        .map(|sent| entry(&format!("C{}", sent.no)))
+        .collect();
+    let mut result = succeeded(
+        job.id,
+        json!({"purpose": "Retry calls", "items": entries, "answer": answer}),
+    );
+    result.assessment = job.spec.assessment.map(Box::new);
+    result.attempt = job.attempt;
+    state
+        .db
+        .jobs()
+        .complete(&result, Timestamp::now())
+        .await
+        .unwrap();
+}
+
+async fn wait_follower(id: PassId) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while FOLLOWING.lock().unwrap().contains(&id) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn assessment_continues_after_an_intervening_question() {
+    let f = fixture(HEAD).await;
+    let mut items = Vec::new();
+    for n in 0..MAX_ITEMS_PER_PASS + 1 {
+        items.push(item(&f.state, &format!("T{n}"), "src/rpc/client.rs", (40, 43)).await);
+    }
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Opened)
+            .await
+            .unwrap(),
+        PassQueued::Queued
+    );
+    let first = live_pass(&f.state).await;
+    assert_eq!(first.sent.len(), MAX_ITEMS_PER_PASS);
+    let question = question(&f.state, items[0].id, "Is retry bounded?").await;
+    finish_assessment_job(&f.state, &first, None).await;
+    wait_follower(first.id).await;
+
+    let ask = live_pass(&f.state).await;
+    assert_eq!(ask.question, Some(question));
+    finish_assessment_job(
+        &f.state,
+        &ask,
+        Some("Retries are bounded by the configured policy."),
+    )
+    .await;
+    wait_follower(ask.id).await;
+
+    let rest = f.state.db.review_loop().live_passes().await.unwrap();
+    assert_eq!(rest.len(), 1, "assessment did not resume after Ask");
+    assert_eq!(rest[0].cause, PassCause::Opened);
+    assert_eq!(
+        rest[0]
+            .sent
+            .iter()
+            .map(|sent| sent.item)
+            .collect::<Vec<_>>(),
+        vec![items.last().unwrap().id]
+    );
+    finish_assessment_job(&f.state, &rest[0], None).await;
+    wait_follower(rest[0].id).await;
+    assert!(
+        f.state
+            .db
+            .review_loop()
+            .latest_assessment(items.last().unwrap().id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn continuation_stops_at_daily_cap() {
+    let f = fixture(HEAD).await;
+    let payer = contracts::ids::UserId("u1".into());
+    db::repo::assessments::testing::usage(
+        &f.state.db,
+        &payer,
+        Timestamp::now(),
+        DAILY_PASSES_PER_USER - 1,
+    )
+    .await
+    .unwrap();
+    for n in 0..=MAX_ITEMS_PER_PASS {
+        item(&f.state, &format!("T{n}"), "src/rpc/client.rs", (40, 43)).await;
+    }
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Opened)
+            .await
+            .unwrap(),
+        PassQueued::Queued
+    );
+    let first = live_pass(&f.state).await;
+    assert_eq!(first.sent.len(), MAX_ITEMS_PER_PASS);
+    finish_assessment_job(&f.state, &first, None).await;
+    wait_follower(first.id).await;
+    assert_eq!(
+        f.state
+            .db
+            .review_loop()
+            .latest_pass(PR)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        first.id
+    );
+    assert_eq!(
+        f.state
+            .db
+            .assessments()
+            .quota(&payer, Timestamp::now())
+            .await
+            .unwrap()
+            .remaining,
+        0
+    );
+}
+
+#[tokio::test]
+async fn question_pass_preserves_existing_assessment_title() {
+    let f = fixture(HEAD).await;
+    let item = item(&f.state, "T1", "src/rpc/client.rs", (40, 43)).await;
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Opened)
+            .await
+            .unwrap(),
+        PassQueued::Queued
+    );
+    let pass = live_pass(&f.state).await;
+    finish_assessment_job(&f.state, &pass, None).await;
+    wait_follower(pass.id).await;
+    let rl = f.state.db.review_loop();
+    let prior = rl.latest_assessment(item.id).await.unwrap().unwrap();
+    assert_eq!(
+        prior.description.as_deref(),
+        Some("The loop has no upper bound.")
+    );
+    let mut card = prior.assessment;
+    card.job = JobId::new_random();
+    rl.add_assessment_with_description(
+        DEFAULT_TENANT,
+        item.id,
+        &card,
+        &prior.fingerprint,
+        Some("Retries can run indefinitely."),
+    )
+    .await
+    .unwrap();
+    question(&f.state, item.id, "Is retry bounded?").await;
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Ask).await.unwrap(),
+        PassQueued::Queued
+    );
+    let ask = live_pass(&f.state).await;
+    finish_assessment_job(&f.state, &ask, Some("Retries can run indefinitely.")).await;
+    wait_follower(ask.id).await;
+    let after = rl.latest_assessment(item.id).await.unwrap().unwrap();
+    assert_eq!(Some(after.assessment.job), ask.job_id);
+    assert_eq!(
+        after.description.as_deref(),
+        Some("Retries can run indefinitely.")
+    );
+}
+
+#[tokio::test]
+async fn incomplete_pass_continues_until_no_progress() {
+    let f = fixture(HEAD).await;
+    let first_item = item(&f.state, "first", "src/rpc/client.rs", (40, 43)).await;
+    let second_item = item(&f.state, "second", "src/rpc/client.rs", (40, 43)).await;
+    watch(&f.state).await;
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Watch).await.unwrap(),
+        PassQueued::Queued
+    );
+    let first = live_pass(&f.state).await;
+    assert_eq!(first.sent.len(), 2);
+    let complete = |job: db::repo::jobs::JobRecord, items: Vec<Value>| {
+        let mut result = succeeded(
+            job.id,
+            json!({"purpose":"Retry calls","items":items,"answer":null}),
+        );
+        result.assessment = job.spec.assessment.map(Box::new);
+        result
+    };
+    let job = claim_method(&f.state).await;
+    f.state
+        .db
+        .jobs()
+        .complete(
+            &complete(job, vec![entry(&format!("C{}", first_item.no))]),
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
+    let continued = claim_method(&f.state).await;
+    let next = live_pass(&f.state).await;
+    assert_ne!(first.id, next.id);
+    assert_eq!(next.cause, PassCause::Watch);
+    assert_eq!(
+        next.sent.iter().map(|sent| sent.item).collect::<Vec<_>>(),
+        vec![second_item.id]
+    );
+    f.state
+        .db
+        .jobs()
+        .complete(&complete(continued, vec![]), Timestamp::now())
+        .await
+        .unwrap();
+    wait_pass(&f.state, next.id).await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while FOLLOWING.lock().unwrap().contains(&next.id) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        f.state
+            .db
+            .review_loop()
+            .latest_pass(PR)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        next.id
+    );
+    assert_eq!(
+        f.state
+            .db
+            .assessments()
+            .quota(&contracts::ids::UserId("u1".into()), Timestamp::now())
+            .await
+            .unwrap()
+            .remaining,
+        DAILY_PASSES_PER_USER - 2
+    );
+}
+
 #[tokio::test]
 async fn paired_failed_method_retry_keeps_primary_snapshot_and_one_slot() {
     use contracts::assessment::*;
@@ -631,6 +885,7 @@ async fn paired_primary_failure_never_promotes_the_secondary() {
     use contracts::assessment::*;
     let f = fixture(HEAD).await;
     let item = item(&f.state, "T1", "src/rpc/client.rs", (40, 43)).await;
+    self::item(&f.state, "T2", "src/rpc/client.rs", (40, 43)).await;
     let payer = contracts::ids::UserId("u1".into());
     f.state
         .db
@@ -663,6 +918,15 @@ async fn paired_primary_failure_never_promotes_the_secondary() {
         .await
         .unwrap();
     let secondary = claim_method(&f.state).await;
+    assert!(
+        !f.state
+            .db
+            .review_loop()
+            .pass(pass.id)
+            .await
+            .unwrap()
+            .may_continue
+    );
     let mut success = succeeded(
         secondary.id,
         json!({"purpose":"Retry calls","items":[entry(&format!("C{}",item.no))],"answer":null}),
@@ -675,6 +939,28 @@ async fn paired_primary_failure_never_promotes_the_secondary() {
         .await
         .unwrap();
     wait_pass(&f.state, pass.id).await;
+    wait_follower(pass.id).await;
+    assert_eq!(
+        f.state
+            .db
+            .review_loop()
+            .latest_pass(PR)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        pass.id
+    );
+    assert_eq!(
+        f.state
+            .db
+            .assessments()
+            .quota(&payer, Timestamp::now())
+            .await
+            .unwrap()
+            .remaining,
+        79
+    );
     assert!(
         f.state
             .db
@@ -784,7 +1070,8 @@ async fn paired_body_points_allocate_ids_only_for_the_primary_and_keep_direct_du
                 .unwrap();
         }
         let data = json!({"manifest":{"repo":"acme/node-client","pr":482,"head":HEAD,"base_sha":BASE,"base_ref":"main","title":"Retry calls","body":"Bound retries","pr_author":"alice","maintainers":["owner"],"bots":[]},"threads":[],"review_comments":[],"reviews":[{"id":"R2","html_url":review,"user":{"login":"owner"},"body":quote_a}],"comments":[{"id":42,"url":comment,"author":{"login":"owner"},"body":body}],"conventions":{},"ids":{"next_id":3,"items":[]},"scope":{"threads":[],"sources":[comment,review]}});
-        store_read(&f.state, "Bound retries", json!({"pr_data":data})).await;
+        let description = "Bound retries. ".repeat(prompts::MAX_DESCRIPTION_CHARS / 10);
+        store_read(&f.state, &description, json!({"pr_data":data})).await;
         request_pass(&f.state, PR, PassReason::Opened)
             .await
             .unwrap();
@@ -819,6 +1106,7 @@ async fn paired_body_points_allocate_ids_only_for_the_primary_and_keep_direct_du
                 .unwrap();
         }
         wait_pass(&f.state, pass.id).await;
+        wait_follower(pass.id).await;
         let items = f.state.db.review_loop().items(PR).await.unwrap();
         let comparisons = f
             .state
@@ -850,6 +1138,21 @@ async fn paired_body_points_allocate_ids_only_for_the_primary_and_keep_direct_du
             );
             assert_eq!(items[1].duplicate_of, Some(items[0].id));
             assert_eq!(items[2].quote.as_deref(), Some(quote_b));
+            let split = f
+                .state
+                .db
+                .review_loop()
+                .latest_assessment(items[2].id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!split.fingerprint.is_empty());
+            assert_eq!(
+                request_pass(&f.state, PR, PassReason::Opened)
+                    .await
+                    .unwrap(),
+                PassQueued::Skipped
+            );
         } else {
             assert_eq!(items.len(), 2);
             assert!(items.iter().all(|i| i.duplicate_of.is_none()));

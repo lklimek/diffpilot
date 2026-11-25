@@ -95,6 +95,7 @@ pub(super) async fn admit(
         native: native.clone(),
         standing: Default::default(),
         fingerprints: Default::default(),
+        purpose_fingerprint: None,
     };
     frozen
         .ids(state, review.pull_request_id, pr, snapshot)
@@ -260,12 +261,8 @@ pub(super) async fn run(
         .runs(&tenant, &pass.payer, pass.id)
         .await?;
     runs.sort_by_key(|r| r.reference.method != pass.config.primary_method);
-    let mut primary_complete = false;
     for run in runs {
         if run.status == AssessmentRunStatus::Succeeded {
-            if run.reference.method == pass.config.primary_method {
-                primary_complete = true;
-            }
             continue;
         }
         loop {
@@ -348,8 +345,9 @@ pub(super) async fn run(
                 summary.head_sha = pass.input.head.clone();
                 summary.base_sha = pass.input.base.clone();
                 let mut code = super::CodeReader::new(state, &summary);
-                let purpose =
-                    super::purpose_hash(&frozen.native.title, frozen.native.description.as_deref());
+                let purpose = frozen.purpose_fingerprint.clone().unwrap_or_else(|| {
+                    super::purpose_hash(&frozen.native.title, frozen.native.description.as_deref())
+                });
                 for write in &mut writes {
                     if let Some(observed) = &write.observed {
                         write.fingerprint = super::fingerprint_fields(
@@ -380,25 +378,18 @@ pub(super) async fn run(
                     if primary { &writes } else { &[] },
                 )
                 .await?;
-            if primary && accepted {
-                primary_complete = normalized.status == AssessmentRunStatus::Succeeded
-                    && !normalized.items.iter().any(|r| {
-                        matches!(
-                            r.status,
-                            ComparisonItemStatus::MissingRow | ComparisonItemStatus::HeadMismatch
-                        )
-                    });
-                if run.reference.method == AssessmentMethod::PromptV4
-                    && let JobOutcome::Succeeded { output } = &result.outcome
-                    && let Some(purpose) = output["purpose"].as_str()
-                    && super::ingest::fit_text(purpose, 600).is_ok()
-                {
-                    state
-                        .db
-                        .review_loop()
-                        .set_purpose(record.pull_request_id, purpose)
-                        .await?;
-                }
+            if primary
+                && accepted
+                && run.reference.method == AssessmentMethod::PromptV4
+                && let JobOutcome::Succeeded { output } = &result.outcome
+                && let Some(purpose) = output["purpose"].as_str()
+                && super::ingest::fit_text(purpose, 600).is_ok()
+            {
+                state
+                    .db
+                    .review_loop()
+                    .set_purpose(record.pull_request_id, purpose)
+                    .await?;
             }
             if normalized.status == AssessmentRunStatus::Failed
                 && normalized.failure.is_some_and(JobFailureKind::retryable)
@@ -424,17 +415,13 @@ pub(super) async fn run(
             r.reference.method == pass.config.primary_method
                 && r.status == AssessmentRunStatus::Succeeded
         });
+    let made_progress =
+        primary_succeeded && state.db.assessments().primary_made_progress(&pass).await?;
     state
         .db
         .review_loop()
         .finish_pass(pass.id, primary_succeeded, Timestamp::now())
         .await?;
-    super::next(
-        state,
-        record,
-        primary_complete,
-        frozen.data.scope.sources.len() >= 5,
-    )
-    .await;
+    super::next(state, record, made_progress).await;
     Ok(())
 }

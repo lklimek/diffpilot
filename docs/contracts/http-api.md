@@ -851,6 +851,7 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RC4 | GET | `…/comments/items` | read | `ItemsQuery` | `CommentItem[]`; `first_seen_head` is the head of diffpilot's first read, `written` (`Written { round?, commit?, at }`) where GitHub says the comment was written, from the latest read: for a comment of a round's own review that round with its head and end; for any other its review's commit (absent for a PR comment) and the review's submission or the comment's creation (absent when that read gives no time, or for a read stored before it was kept) |
 | RC5 | GET | `…/comments/items/{item}/context` | read | `ContextQuery` | `CodeContext` |
 | RC6 | POST | `…/comments/items/{item}/assess` | session_csrf | – | 202; 409 `conflict` while a pass is live; 429 `AssessmentAdmissionFailure::AssessmentDailyLimit { resets_at }` at 80 admitted UTC daily passes; 409 `credential_missing` without a usable linked plan |
+| C20 | POST | `…/comments/assess` | session_csrf | – | 202; requests a pass for the PR's comments under the same admission rules as RC6 |
 | CA1 | GET | `/api/v1/settings/comment-assessment` | read | – | `AssessmentSettings`: primary/A-B configuration and remaining/reset quota |
 | CA2 | PUT | `/api/v1/settings/comment-assessment` | session_csrf | `AssessmentSettingsUpdate` | `AssessmentSettings`; stale revision → 409; never schedules assessment; at most 100 distinct `owner/repo#number` selections |
 | CA3 | GET | `…/comments/assessment-comparison` | read | optional `cutoff` (UTC timestamp) | Latest `AssessmentComparison` for this PR and payer, including exact-count summary, nullable verdict/proposal, owner revisions and method usage; 404 without a payer-owned pass; no GitHub fetch |
@@ -879,6 +880,12 @@ Fixtures: `fixtures/review-loop/` (spike S13-1).
 | RF5 | PUT / DELETE | `/api/v1/decision-feed/push-target` | token: review_loop_execute | `PutPushTargetRequest` / – | `PushTarget` / 204; the calling token's own target only; as RN2 for the URL, and 422 `secret_required` when a kept secret would follow a changed kind or URL origin, 409 `conflict` when the target changed meanwhile |
 
 ### Rules
+- **Assessment:** RC1, RC2, RC3 and RC4 can refresh the stored GitHub read. They never start LLM work. Browser
+  clients call `startCommentAssessment` (C20) on entry to Comments and after a manual GitHub refresh that found new
+  items. Items in the live pass input show `running`; other eligible items waiting for a subsequent pass show
+  `queued`. An item title uses the first sentence of the host report's description, or the validated recommendation
+  reason from PromptV4 (its necessity reason when the recommendation has no public text). It uses at most
+  90 characters including an ellipsis when shortened.
 - **Who decides (T22).** Decisions, batches, re-reads, re-assessments, watches and channel settings need a session
   with CSRF; a token gets 403 `token_not_accepted`. `RouteAuth::TokenOnly(TokenScope::ReviewLoopExecute)` (named
   `token_review_loop_execute` in `routes.ts`) marks RF3–RF5: a personal access token with the scope

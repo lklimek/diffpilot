@@ -477,16 +477,53 @@ async fn codex_status_enriches_gateway_observations_without_credentials_or_auth_
 }
 
 #[tokio::test]
-async fn comments_reads_send_counts_and_omit_uncomputed_assessment_progress() {
+async fn pr_page_read_queues_no_llm_work() {
     let w = world().await;
+    w.link_llm().await;
     let page = w.get(PR).await;
+    assert_eq!(page["comments"]["read"]["threads"], 8);
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn comments_overview_and_items_get_queue_no_llm_work() {
+    let w = world().await;
+    w.link_llm().await;
+    assert!(!w.items().await.is_empty());
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let overview = w.get(&format!("{PR}/comments")).await;
-    assert_eq!(page["comments"]["assessment"]["running"], false);
-    assert_eq!(overview["assessment"]["running"], true);
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let page = w.get(PR).await;
     for comments in [&page["comments"], &overview] {
         let progress = &comments["assessment"];
-        assert!(progress.get("in_pass").is_none());
-        assert!(progress.get("waiting").is_none());
+        assert_eq!(progress["running"], false);
+        assert_eq!(progress["in_pass"], 0);
+        assert_eq!(progress["waiting"], 0);
+        assert!(progress["since"].is_null());
         assert!(comments["counts"]["needs_you"].is_u64());
         assert!(comments["counts"]["needs_you_gates"].is_u64());
         assert!(comments["counts"].get("imported_unseen").is_none());
@@ -494,8 +531,339 @@ async fn comments_reads_send_counts_and_omit_uncomputed_assessment_progress() {
 }
 
 #[tokio::test]
+async fn comments_entry_post_queues_pass() {
+    let w = world().await;
+    w.link_llm().await;
+    let uri = format!("{PR}/comments/assess");
+    assert_eq!(
+        w.call("POST", &uri, None).await,
+        (StatusCode::ACCEPTED, Value::Null)
+    );
+    let payer = contracts::ids::UserId("u1".into());
+    let usage = w
+        .state
+        .db
+        .assessments()
+        .quota(&payer, Timestamp::now())
+        .await
+        .unwrap();
+    let (status, body) = w.call("POST", &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "conflict");
+    assert_eq!(
+        w.state
+            .db
+            .assessments()
+            .quota(&payer, Timestamp::now())
+            .await
+            .unwrap(),
+        usage
+    );
+    let passes = w.state.db.review_loop().live_passes().await.unwrap();
+    assert_eq!(passes.len(), 1);
+    let pass = &passes[0];
+    assert_eq!(pass.cause, db::repo::review_loop::PassCause::Opened);
+    assert_eq!(pass.user_id.as_deref(), Some("u1"));
+    let job = w.state.db.jobs().get(pass.job_id.unwrap()).await.unwrap();
+    assert_eq!(job.spec.kind, contracts::agent::JobKind::VerifyComments);
+    assert_eq!(job.analysis_id, None);
+}
+
+#[tokio::test]
+async fn comments_assessment_reports_daily_cap_and_missing_credential() {
+    use crate::review_loop::assess::DAILY_PASSES_PER_USER;
+    let w = world().await;
+    let payer = contracts::ids::UserId("u1".into());
+    let uri = format!("{PR}/comments/assess");
+    let now = Timestamp::now();
+    db::repo::assessments::testing::usage(&w.state.db, &payer, now, DAILY_PASSES_PER_USER)
+        .await
+        .unwrap();
+    let quota = w.state.db.assessments().quota(&payer, now).await.unwrap();
+    let (status, body) = w.call("POST", &uri, None).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(
+        body,
+        json!({"code": "assessment_daily_limit", "resets_at": quota.resets_at})
+    );
+
+    db::repo::assessments::testing::usage(&w.state.db, &payer, now, 0)
+        .await
+        .unwrap();
+    w.state
+        .db
+        .llm_credentials()
+        .remove_status("u1")
+        .await
+        .unwrap();
+    let (status, body) = w.call("POST", &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "credential_missing");
+    let rl = w.state.db.review_loop();
+    assert!(rl.latest_pass(w.pr_id().await).await.unwrap().is_none());
+    assert_eq!(
+        w.state
+            .db
+            .assessments()
+            .quota(&payer, now)
+            .await
+            .unwrap()
+            .remaining,
+        DAILY_PASSES_PER_USER
+    );
+}
+
+#[tokio::test]
+async fn comments_assessment_cannot_use_another_tenants_read() {
+    let mut w = world().await;
+    w.get(PR).await;
+    let foreign_pr = w.pr_id().await;
+    db::repo::analyses::testing::seed_tenant(&w.state.db, "other")
+        .await
+        .unwrap();
+    w.cookie = session_cookie(&w.state, "other").await;
+    w.server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":{"repository":null}})))
+        .mount(&w.server)
+        .await;
+    let (status, body) = w.call("POST", &format!("{PR}/comments/assess"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .latest_pass(foreign_pr)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn start_assessment_needs_session_csrf() {
+    let w = world().await;
+    let (token, _) = crate::auth::access_tokens::stored_token(
+        &w.state.db,
+        "u1",
+        vec![TokenScope::Read],
+        Timestamp::now() + SignedDuration::from_hours(1),
+    )
+    .await;
+    let uri = format!("{PR}/comments/assess");
+    for (header, value) in [
+        (COOKIE, w.cookie.clone()),
+        (AUTHORIZATION, format!("Bearer {token}")),
+    ] {
+        let request = Request::post(&uri)
+            .header(header, value)
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            w.app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+    let request = Request::post(&uri).body(Body::empty()).unwrap();
+    assert_eq!(
+        w.app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(w.server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn item_outside_live_pass_is_queued() {
+    let w = world().await;
+    w.link_llm().await;
+    let (status, body) = w.call("POST", &format!("{PR}/comments/assess"), None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let pass = w
+        .state
+        .db
+        .review_loop()
+        .live_passes()
+        .await
+        .unwrap()
+        .remove(0);
+    let items = w.items().await;
+    let mut running = 0;
+    let mut waiting = 0;
+    for item in items.iter().filter(|item| {
+        item["kind"] != "pr_question"
+            && item["status_comment"] != true
+            && item["state"] != "outside"
+    }) {
+        if pass.sent.iter().any(|sent| item["no"] == sent.no) {
+            assert_eq!(item["assessment_state"]["state"], "running", "{item}");
+            running += 1;
+        } else {
+            assert_eq!(item["assessment_state"]["state"], "queued", "{item}");
+            waiting += 1;
+        }
+    }
+    assert!(running > 0 && waiting > 0);
+    let page = w.get(PR).await;
+    let overview = w.get(&format!("{PR}/comments")).await;
+    for progress in [&page["comments"]["assessment"], &overview["assessment"]] {
+        assert_eq!(progress["in_pass"], running);
+        assert_eq!(progress["waiting"], waiting);
+        assert!(progress["since"].is_string());
+    }
+}
+
+#[tokio::test]
+async fn single_item_passes_do_not_queue_other_items() {
+    use db::repo::review_loop::{NewPass, PassCause, PassStart, SentItem};
+    let w = world().await;
+    let first = w.item(L2).await;
+    let other = w.item(L6).await;
+    assert_eq!(other["assessment_state"]["reason"], "not_run");
+    let pr = w.pr_id().await;
+    for cause in [PassCause::AssessAgain, PassCause::Question] {
+        let rl = w.state.db.review_loop();
+        let PassStart::Started(pass) = rl
+            .start_pass(
+                DEFAULT_TENANT,
+                &NewPass {
+                    pull_request_id: pr,
+                    user_id: Some("u1".into()),
+                    cause,
+                    head: contracts::ids::CommitSha(crate::test_support::github::HEAD.into()),
+                    sent: vec![SentItem {
+                        item: serde_json::from_value(first["id"].clone()).unwrap(),
+                        no: first["no"].as_u64().unwrap().try_into().unwrap(),
+                        fingerprint: "fixture".into(),
+                    }],
+                    question: None,
+                },
+                Timestamp::now(),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("pass is live")
+        };
+        assert_eq!(w.item(L2).await["assessment_state"]["state"], "running");
+        assert_eq!(
+            w.item(L6).await["assessment_state"],
+            other["assessment_state"]
+        );
+        assert_eq!(w.get(PR).await["comments"]["assessment"]["waiting"], 0);
+        rl.finish_pass(pass, false, Timestamp::now()).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn overview_carries_reader_watch() {
+    let w = world().await;
+    let overview = format!("{PR}/comments");
+    assert!(w.get(&overview).await["watch"].is_null());
+    w.state
+        .db
+        .review_loop()
+        .watch(DEFAULT_TENANT, "u1", w.pr_id().await, 10, Timestamp::now())
+        .await
+        .unwrap();
+    let page = w.get(PR).await;
+    assert!(page["watch"].is_object());
+    assert_eq!(w.get(&overview).await["watch"], page["watch"]);
+}
+
+#[tokio::test]
+async fn llm_title_first_sentence_cut() {
+    use contracts::job::result::{JobOutcome, JobResult};
+    let w = world().await;
+    w.link_llm().await;
+    let item = w.item(L2).await;
+    assert!(item["llm_title"].is_null());
+    assert_eq!(
+        w.call("POST", &format!("{PR}/comments/assess"), None)
+            .await
+            .0,
+        StatusCode::ACCEPTED
+    );
+    let now = Timestamp::now();
+    let job = w
+        .state
+        .db
+        .jobs()
+        .claim(db::repo::jobs::ClaimParams {
+            payer_ids: &["u1".into()],
+            job_token_hash: b"fake-method",
+            lease_until: now + SignedDuration::from_mins(5),
+            now,
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    let expected =
+        "Łącznik retry clears the backoff deadline before the response handler can inspect it";
+    let report = json!({
+        "schema_version": "4.2.0",
+        "metadata": {
+            "report_type": "comment_check",
+            "input_mode": "host_supplied",
+            "pr_number": 482,
+            "commit": crate::test_support::github::HEAD
+        },
+        "comment_assessments": [{
+            "id": format!("CMT-{:03}", item["no"].as_u64().unwrap()),
+            "reviewer": "thepastaclaw",
+            "source_kind": "inline",
+            "thread_id": "PRRT_fixture482_l2",
+            "comment_url": item["url"],
+            "description": format!("{expected} consistently. This is a second sentence."),
+            "reasoning": "The deadline should bound retries.",
+            "assessment": "valid",
+            "proposed_action": "Fix here",
+            "proposed_decision": {"kind": "fix_here"}
+        }]
+    });
+    let pass = job.spec.assessment.as_ref().unwrap().pass_id;
+    let result = JobResult {
+        assessment: job.spec.assessment.map(Box::new),
+        report: Some(Box::new(serde_json::from_value(report).unwrap())),
+        job_id: job.id,
+        attempt: job.attempt,
+        outcome: JobOutcome::Succeeded {
+            output: Value::Null,
+        },
+        session: None,
+        usage: None,
+        skills_commit: None,
+        llm_call: None,
+    };
+    w.state
+        .db
+        .jobs()
+        .complete(&result, Timestamp::now())
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while w
+            .state
+            .db
+            .review_loop()
+            .pass(pass)
+            .await
+            .unwrap()
+            .finished_at
+            .is_none()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(w.item(L2).await["llm_title"], format!("{expected}…"));
+}
+
+#[tokio::test]
 async fn fixture_status_sources_are_omitted_and_new_prose_sources_explain_review_counts() {
     let w = world().await;
+    w.link_llm().await;
     let page = w.get(PR).await;
     assert!(
         w.state
@@ -525,7 +893,12 @@ async fn fixture_status_sources_are_omitted_and_new_prose_sources_explain_review
     assert_eq!(w.item("comment:5000000104:1").await["status_comment"], true);
     assert_eq!(page["comments"]["counts"]["undecided"], 12);
     assert_eq!(page["comments"]["assessment"]["total"], 11);
-    w.get(&format!("{PR}/comments")).await;
+    assert_eq!(
+        w.call("POST", &format!("{PR}/comments/assess"), None)
+            .await
+            .0,
+        StatusCode::ACCEPTED
+    );
     let pending = w.state.db.review_loop().live_passes().await.unwrap();
     assert_eq!(
         pending[0].sent.len(),

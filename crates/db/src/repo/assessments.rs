@@ -216,6 +216,21 @@ impl Assessments<'_> {
             tx.commit().await.map_err(DbError::from)?;
             return Ok(pass);
         }
+        let input = &request.input;
+        if let Some(review) = review {
+            if review.pull_request_id != input.pull_request_id
+                || review.head != input.head
+                || review.user_id.as_deref() != Some(user.0.as_str())
+                || review.question.is_some()
+            {
+                return Err(DbError::Conflict.into());
+            }
+            let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM comment_passes WHERE pull_request_id=? AND state IN ('queued','running'))")
+                .bind(input.pull_request_id).fetch_one(&mut *tx).await.map_err(DbError::from)?;
+            if busy {
+                return Err(DbError::Conflict.into());
+            }
+        }
         let usable:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM llm_credentials c JOIN memberships m ON m.user_id=c.user_id WHERE c.user_id=? AND m.tenant_id=? AND c.mode='chatgpt_plan' AND c.state='linked' AND (c.paused_until IS NULL OR julianday(c.paused_until)<=julianday(?)))")
             .bind(&user.0).bind(tenant).bind(ts(now)).fetch_one(&mut *tx).await.map_err(DbError::from)?;
         if !usable {
@@ -230,7 +245,6 @@ impl Assessments<'_> {
         if reserved.rows_affected() != 1 {
             return Err(AssessmentAdmissionFailure::AssessmentDailyLimit { resets_at }.into());
         }
-        let input = &request.input;
         sqlx::query("INSERT INTO assessment_passes(id,tenant_id,payer_id,pull_request_id,request_key,head,base,input_hash,scope_hash,snapshot_ref,primary_method,paired,config,input,day_utc,admitted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
             .bind(request.id.to_string()).bind(tenant).bind(&user.0).bind(input.pull_request_id).bind(&request.request_key)
             .bind(&input.head.0).bind(&input.base.0).bind(&input.input_hash).bind(&input.scope_hash).bind(&input.snapshot_ref)
@@ -250,18 +264,6 @@ impl Assessments<'_> {
                 .bind(format!("verify:{}",request.id)).bind(ts(now)).execute(&mut *tx).await.map_err(DbError::from)?;
         }
         if let Some(review) = review {
-            if review.pull_request_id != input.pull_request_id
-                || review.head != input.head
-                || review.user_id.as_deref() != Some(user.0.as_str())
-                || review.question.is_some()
-            {
-                return Err(DbError::Conflict.into());
-            }
-            let busy: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM comment_passes WHERE pull_request_id=? AND state IN ('queued','running'))")
-                .bind(input.pull_request_id).fetch_one(&mut *tx).await.map_err(DbError::from)?;
-            if busy {
-                return Err(DbError::Conflict.into());
-            }
             sqlx::query("INSERT INTO comment_passes(id,tenant_id,pull_request_id,user_id,cause,head,items,state,created_at,sent,job_id) VALUES(?,?,?,?,?,?,?,'running',?,?,?)")
                 .bind(request.id.to_string()).bind(tenant).bind(input.pull_request_id).bind(&user.0)
                 .bind(wire_name(review.cause)?).bind(&input.head.0).bind(review.sent.len() as i64).bind(ts(now))
@@ -313,6 +315,20 @@ impl Assessments<'_> {
     ) -> Result<bool, DbError> {
         self.finish_with_primary(tenant, user, run, attempt, result, &[])
             .await
+    }
+
+    /// Whether the pass projected at least one primary assessment card.
+    pub async fn primary_made_progress(&self, pass: &AssessmentPass) -> Result<bool, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM assessment_comparison_items c
+             JOIN comment_assessments a ON a.item_id=c.primary_item_id AND a.pass_id=c.pass_id
+             WHERE c.pass_id=? AND c.method=? AND c.payer_id=?)",
+        )
+        .bind(pass.id.to_string())
+        .bind(wire_name(pass.config.primary_method)?)
+        .bind(&pass.payer.0)
+        .fetch_one(self.pool)
+        .await?)
     }
 
     /// Atomically accept a method and project only its frozen primary's validated cards.
