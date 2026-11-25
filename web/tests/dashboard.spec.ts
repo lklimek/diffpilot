@@ -168,7 +168,9 @@ test.describe("My work (msw)", () => {
     await expect(link).toHaveAttribute("target", "_blank");
     await expect(authors.getByText("by @dependabot")).toBeVisible();
     await authors.getByRole("link", { name: "Excluded authors in the settings guide" }).click();
-    await expect(page).toHaveURL(/\/settings\/help#skip_authors$/);
+    await expect(page).toHaveURL(/\/settings\/help\?from=[^#]+#skip_authors$/);
+    await page.getByRole("link", { name: "Back to My work" }).click();
+    await expect(page).toHaveURL(/\/(?:\?.*)?$/);
   });
 
   test("snooze: a row's menu leaves the item out until Wake now in Excluded brings it back", async ({
@@ -525,7 +527,7 @@ test.describe("My work (msw)", () => {
     test("a refused time zone: the note points to Settings instead", async ({ page }) => {
       await open(page, "no-time-zone-refused");
       await expect(
-        page.getByText("Your browser's time zone could not be saved; set it in Settings."),
+        page.getByText("Your browser's time zone could not be saved; set it in GitHub sync."),
       ).toBeVisible();
       await expect(page.getByText(/This page saves your browser's time zone/)).toHaveCount(0);
     });

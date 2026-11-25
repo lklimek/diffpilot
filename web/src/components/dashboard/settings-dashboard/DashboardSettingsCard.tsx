@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode, type ComponentProps } from "react";
+import { useEffect, useState, type ComponentProps } from "react";
 import type { DashboardSettings, DashboardSettingsView } from "../../../api/generated/types";
 import { busyTip, buttonClass } from "../../button/button";
 import { useAction } from "../../inspector/action";
@@ -30,7 +30,6 @@ interface DashboardSettingsCardProps {
     ComponentProps<typeof RepositoryTable>,
     "installations" | "installationStatusKnown" | "expanded" | "onExpand" | "details"
   >;
-  children?: ReactNode;
   /** Saves the whole form (one `PUT`); rejects with the server's message (422 names the field). */
   onSave: (settings: DashboardSettings) => Promise<unknown>;
   /** Called when the form starts or stops differing from the stored settings. */
@@ -42,7 +41,6 @@ export function DashboardSettingsCard({
   view,
   page,
   repositoryOptions,
-  children,
   onSave,
   onDirtyChange,
 }: DashboardSettingsCardProps) {
@@ -170,7 +168,6 @@ export function DashboardSettingsCard({
           </>
         )}
       </fieldset>
-      {children}
       <div className="flex flex-wrap justify-end gap-2">
         {dirty && <span className="self-center text-sm font-semibold text-med">Unsaved changes</span>}
         {page === "github-sync" && (

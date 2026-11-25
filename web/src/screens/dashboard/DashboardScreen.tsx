@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { useDashboardTabStatus } from "../../app/tabStatus";
 import { ApiError } from "../../api/client";
 import { Banner } from "../../components/banner/Banner";
@@ -34,7 +34,7 @@ import {
   weeklySeries,
   yesterday,
 } from "./history";
-import { LLM_USAGE_PATH, REVIEW_START_PATH, SETTINGS_PATH } from "../shell/paths";
+import { GITHUB_SYNC_SETTINGS_PATH, LLM_USAGE_PATH, REVIEW_START_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
 import { commentsHref, railText, reviewHref, watchErrorText } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
@@ -52,6 +52,7 @@ const snoozeErrorText = (error: unknown) =>
 export function DashboardScreen() {
   const page = useDashboardPage();
   const navigate = useNavigate();
+  const { pathname, search, hash } = useLocation();
   const [params, setParams] = useSearchParams();
   const filters = decodeFilters(params.get("f"));
   const setFilters = (filters: Filter[]) => {
@@ -248,6 +249,7 @@ export function DashboardScreen() {
       )}
       {snapshot && (view.empty || page.allItems) && (
         <WorkList
+          guideOrigin={pathname + search + hash}
           items={view.empty ? [] : (page.allItems ?? [])}
           kinds={page.filter}
           onKindsChange={page.setFilter}
@@ -353,7 +355,7 @@ export function DashboardScreen() {
               notes={snapshot.notes}
               unreachable={snapshot.unreachable}
               todos={snapshot.todos}
-              settingsHref={SETTINGS_PATH}
+              settingsHref={GITHUB_SYNC_SETTINGS_PATH}
               onNavigate={go}
               now={now}
             />

@@ -9,7 +9,7 @@ import { StatusMessage } from "../../components/status/StatusMessage";
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 
-/** Settings → Notifications push channels (V7, RN1–RN3): ntfy and a generic webhook. */
+/** Review loop › Notifications push channels (V7, RN1–RN3): ntfy and a generic webhook. */
 export function NotificationChannels({
   onDirtyChange,
 }: {

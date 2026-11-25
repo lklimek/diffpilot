@@ -52,12 +52,22 @@ export function RepositoryTable({
 }: RepositoryTableProps) {
   const id = useId();
   const opened = useRef<HTMLButtonElement>(null);
+  const nextDraftId = useRef(0);
+  const installationByName = new Map(installations.map((entry) => [entry.name.toLowerCase(), entry]));
   const configured = new Set(rows.map((row) => row.repo.trim().toLowerCase()));
-  const entries = [
+  const entries: { row: RepositoryDraft; index: number }[] = [
     ...rows.map((row, index) => ({ row, index })),
     ...installations
       .filter(({ name }) => !configured.has(name.toLowerCase()))
-      .map(({ name }) => ({ row: { ...EMPTY_ROW, repo: name }, index: -1 })),
+      .map(({ name }) => ({
+        row: {
+          ...EMPTY_ROW,
+          id: `installed:${name.toLowerCase()}`,
+          origin: { kind: "installed" as const, name },
+          repo: name,
+        },
+        index: -1,
+      })),
   ];
   const expandedKnown =
     !!expanded && entries.some(({ row }) => row.repo.trim().toLowerCase() === expanded.toLowerCase());
@@ -117,9 +127,10 @@ export function RepositoryTable({
             <tbody>
               {entries.map(({ row, index }, i) => {
                 const name = row.repo.trim() || `row ${i + 1}`;
-                const installation = installations.find(
-                  (entry) => entry.name.toLowerCase() === name.toLowerCase(),
-                );
+                const installation = installationByName.get(name.toLowerCase());
+                const readOnlyName =
+                  row.origin !== null &&
+                  (row.origin.kind === "installed" || installationByName.has(row.origin.name.toLowerCase()));
                 const duplicate = entries
                   .slice(0, i)
                   .some(({ row: earlier }) => earlier.repo.trim().toLowerCase() === name.toLowerCase());
@@ -145,11 +156,11 @@ export function RepositoryTable({
                     </p>
                   );
                 return (
-                  <Fragment key={installation && !duplicate ? installation.name.toLowerCase() : index}>
+                  <Fragment key={row.id}>
                     <tr className="align-top">
                       <td className="border-b border-border px-2 py-1.5">
                         <div className="grid gap-1">
-                          {installation ? (
+                          {readOnlyName ? (
                             <span className="font-mono">{name}</span>
                           ) : (
                             <input
@@ -282,7 +293,7 @@ export function RepositoryTable({
                             <button
                               ref={openedRow ? opened : undefined}
                               type="button"
-                              aria-label={`Analysis rules for ${name}`}
+                              aria-label={`${openedRow ? "Hide" : "Show"} analysis rules for ${name}`}
                               aria-expanded={openedRow}
                               aria-controls={openedRow ? detailsId : undefined}
                               className={buttonClass("plain", true)}
@@ -341,7 +352,10 @@ export function RepositoryTable({
           type="button"
           aria-disabled={full || undefined}
           className={`${buttonClass("plain", true)} w-fit`}
-          onClick={() => !full && onChange([...rows, EMPTY_ROW])}
+          onClick={() => {
+            if (!full)
+              onChange([...rows, { ...EMPTY_ROW, id: `new:${nextDraftId.current++}`, origin: null }]);
+          }}
         >
           Add repository
         </button>

@@ -25,7 +25,7 @@ export function CopyLineButton({ line, id, slack = false }: { line: CopyLine; id
       <Tooltip
         tip={
           slack
-            ? `Copies the line of ${id} with its GitHub link and the Slack names of Settings › Dashboard for GitHub logins; a login without one stays @login.`
+            ? `Copies the line of ${id} with its GitHub link and the Slack names of Settings › GitHub sync for GitHub logins; a login without one stays @login.`
             : `Copies the line of ${id} with its GitHub link, to paste into Slack.`
         }
       >

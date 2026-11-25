@@ -345,7 +345,7 @@ export function useSaveBrowserTimeZone(summary: DashboardSummary | undefined): {
 }
 
 /**
- * The user's Slack names (Settings › Dashboard) for Copy for Slack (K19). A cache entry of its own: the Settings form
+ * The user's Slack names (Settings › GitHub sync) for Copy for Slack (K19). A cache entry of its own: the Settings form
  * starts from its own read, never from this one.
  */
 export const useSlackNames = (enabled: boolean) =>

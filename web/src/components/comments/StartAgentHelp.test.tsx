@@ -53,7 +53,7 @@ describe("StartAgentHelp (owner 2026-11-23)", () => {
     const help = screen.getByRole("region", { name: "How to start an agent" });
     expect(help).toHaveTextContent("Decided effects wait until an agent claims their decision.");
     expect(help).toHaveTextContent(
-      "an access token with the review_loop_execute scope (its checkbox in Settings › Access tokens)",
+      "an access token with the review_loop_execute scope (its checkbox in Settings › Account › Access tokens)",
     );
     expect(help).toHaveTextContent(
       "the skill reads it from ~/envs/diffpilot.env (SR_AGENT_KEY, SR_URL; plain http needs SR_HTTP_HOST), never from the chat",

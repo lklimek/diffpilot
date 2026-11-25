@@ -77,12 +77,12 @@ describe("dashboardView: nightly scan notes", () => {
   it("says where to set the zone once saving the browser's zone failed, not that the page saves it", () => {
     const summary = { ...SUMMARY, schedule: { ...SUMMARY.schedule, time_zone: null } };
     const [saving] = dashboardView(summary, false).notes;
-    expect(saving?.text).toBe("This page saves your browser's time zone; you can change it in Settings.");
+    expect(saving?.text).toBe("This page saves your browser's time zone; you can change it in GitHub sync.");
     const [failed] = dashboardView(summary, true).notes;
     expect(failed).toMatchObject({
       tone: "warn",
       title: "The nightly scan at 06:00 starts once your time zone is known.",
-      text: "Your browser's time zone could not be saved; set it in Settings.",
+      text: "Your browser's time zone could not be saved; set it in GitHub sync.",
     });
   });
 });

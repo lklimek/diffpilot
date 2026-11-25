@@ -48,8 +48,7 @@ interface AppNavProps {
 
 function stored(): boolean {
   try {
-    const saved = window.localStorage.getItem(NAV_STORAGE_KEY);
-    return saved === null ? (window.matchMedia?.("(max-width: 639px)").matches ?? false) : saved === "true";
+    return window.localStorage.getItem(NAV_STORAGE_KEY) === "true";
   } catch {
     return false;
   }
@@ -89,7 +88,9 @@ export function AppNav({ current, hrefs, myWorkCount, settingsPages, onNavigate 
             <a
               href={hrefs[section]}
               aria-current={
-                current === section && !(section === "settings" && settingsPages) ? "page" : undefined
+                current === section && !(section === "settings" && settingsPages?.some((page) => page.active))
+                  ? "page"
+                  : undefined
               }
               aria-label={section === "my-work" && myWorkCount !== null ? `My work, ${mentions}` : name}
               onClick={navigateOnClick(hrefs[section], onNavigate)}

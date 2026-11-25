@@ -1,3 +1,5 @@
+import { useContext } from "react";
+import { SettingsHelpOrigin } from "./helpOrigin";
 import { Tooltip } from "../tooltip/Tooltip";
 import { SETTINGS_HELP, helpHref, helpLines, type HelpTopic } from "./settingsHelp";
 
@@ -8,6 +10,7 @@ const TIP_LINES = new Set(["What", "When used", "Example"]);
  * the guide at the option in a new tab, so unsaved settings stay. */
 export function HelpTip({ topic }: { topic: HelpTopic }) {
   const help = SETTINGS_HELP[topic];
+  const from = useContext(SettingsHelpOrigin);
   const tip = (
     <span className="grid gap-1">
       {helpLines(help)
@@ -23,7 +26,7 @@ export function HelpTip({ topic }: { topic: HelpTopic }) {
   return (
     <Tooltip tip={tip}>
       <a
-        href={helpHref(topic)}
+        href={helpHref(topic, from)}
         target="_blank"
         rel="noopener"
         className="inline-flex size-6 flex-none items-center justify-center rounded-full border border-border text-xs font-bold text-muted no-underline hover:border-accent hover:text-text"

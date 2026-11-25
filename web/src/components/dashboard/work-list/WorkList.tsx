@@ -38,6 +38,7 @@ interface WorkListProps {
   onFiltersChange?: (filters: Filter[]) => void;
   statusCounts?: DashboardStatusCounts;
   exclusions?: Exclusions | null;
+  guideOrigin?: string;
   onWake?: (key: string) => void;
   wakingKeys?: string[];
   onRejudge?: (key: string) => void;
@@ -113,6 +114,7 @@ export function WorkList({
   onFiltersChange,
   statusCounts,
   exclusions,
+  guideOrigin,
   onWake,
   wakingKeys,
   onRejudge,
@@ -341,6 +343,7 @@ export function WorkList({
         {status === "excluded" ? (
           <ExcludedItems
             exclusions={exclusions}
+            guideOrigin={guideOrigin}
             onWake={onWake}
             wakingKeys={wakingKeys}
             onNavigate={onNavigate}
