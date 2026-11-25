@@ -1345,6 +1345,16 @@ async fn coderabbit_review_skipped_is_status_comment() {
     let item = w.item("comment:160001:1").await;
     assert_eq!(item["author_kind"], "bot");
     assert_eq!(item["status_comment"], true);
+    let (status, error) = w
+        .post(
+            &format!("{PR}/comments/items/C{}/assess", item["no"]),
+            json!(null),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(error["code"], "conflict");
+    assert_eq!(error["message"], "Status comments cannot be assessed.");
+
     assert_eq!(overview["queue"], json!([]));
     assert_eq!(overview["counts"]["needs_you"], 0);
     assert_ne!(overview["badge"]["badge"], "questions_waiting");

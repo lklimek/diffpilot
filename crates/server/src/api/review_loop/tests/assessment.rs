@@ -488,7 +488,7 @@ async fn comments_reads_send_counts_and_omit_uncomputed_assessment_progress() {
         assert!(progress.get("waiting").is_none());
         assert!(comments["counts"]["needs_you"].is_u64());
         assert!(comments["counts"]["needs_you_gates"].is_u64());
-        assert_eq!(comments["counts"]["imported_unseen"], 0);
+        assert!(comments["counts"].get("imported_unseen").is_none());
     }
 }
 

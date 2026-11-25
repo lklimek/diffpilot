@@ -44,6 +44,18 @@ impl BotRule {
             _ => AuthorKind::Human,
         }
     }
+
+    /// Bot identity and status classification for a fallback PR comment.
+    pub(super) fn pr_comment(
+        &self,
+        comment: &crate::github::review_loop::PrComment,
+    ) -> (AuthorKind, bool) {
+        let kind = self.kind(comment.author.as_ref());
+        let status_comment = kind == AuthorKind::Bot
+            && markers::finding_marker(&comment.body).is_none()
+            && markers::body_findings(&comment.body).is_empty();
+        (kind, status_comment)
+    }
 }
 
 /// A bot round (plan §2.6, spike S13-1 R1).

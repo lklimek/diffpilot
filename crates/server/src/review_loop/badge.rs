@@ -170,6 +170,8 @@ pub struct BadgeInputs {
     pub failed_effects: u32,
     /// Undecided questions.
     pub needs_you: u32,
+    /// An open non-bot review point still needs assessment.
+    pub pending_human_review: bool,
     /// Decisions with open or claimed effects.
     pub executing: u32,
     /// thepastaclaw reviews or queues this PR (plug-in, or its gate comment).
@@ -251,7 +253,7 @@ pub fn badge(inputs: &BadgeInputs) -> PrBadgeView {
         view.badge = Some(PrBadge::WaitingForBotRound);
         return view;
     }
-    let mut ready = view.missing.is_empty();
+    let mut ready = view.missing.is_empty() && !inputs.pending_human_review;
     match inputs.ci {
         Some(CiState::Passing | CiState::NoFailures) => view.facts.push("CI passed".to_owned()),
         Some(CiState::None) => view.facts.push("No CI checks reported".to_owned()),
@@ -619,6 +621,136 @@ mod tests {
             view.facts,
             ["CI passed", "Ignored checks not passing: PR Hygiene"]
         );
+    }
+
+    #[tokio::test]
+    async fn watched_pr_at_daily_limit_with_unassessed_human_comment_is_not_ready() {
+        use contracts::api::pr::PrSummary;
+        use contracts::api::review_loop::{
+            AuthorKind, CommentItemKind, ItemGithubFacts, ItemState, WatchState,
+        };
+        use contracts::common::PrRef;
+        use contracts::ids::CommitSha;
+        use db::repo::DEFAULT_TENANT;
+        use db::repo::review_loop::{ObservedItem, ReadResult};
+        use db::repo::users::GithubProfile;
+        use serde_json::json;
+
+        let scanned = mergeable_pr();
+        let work = MyWork::new(
+            "alice",
+            &DashboardSettings::default(),
+            std::slice::from_ref(&scanned),
+        );
+        let state = AppState::with_queue(
+            crate::config::tests::test_config(),
+            db::repo::Db::in_memory().await.unwrap(),
+        );
+        let now = Timestamp::now();
+        state
+            .db
+            .users()
+            .upsert_member(
+                DEFAULT_TENANT,
+                "u1",
+                &GithubProfile {
+                    github_id: 1,
+                    login: "alice".into(),
+                    name: None,
+                    avatar_url: None,
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        let repo = state
+            .db
+            .repos()
+            .upsert(DEFAULT_TENANT, &scanned.facts.repo, None)
+            .await
+            .unwrap();
+        let head = CommitSha(scanned.head_sha.clone());
+        let base = scanned.base_sha.unwrap();
+        let number = scanned.facts.number;
+        let pr = state
+            .db
+            .pull_requests()
+            .upsert(
+                DEFAULT_TENANT,
+                repo.id,
+                &PrSummary {
+                    repo: repo.repo.clone(),
+                    number,
+                    title: "Fixture".into(),
+                    author: "alice".into(),
+                    html_url: "https://github.com/dashpay/platform/pull/5949".into(),
+                    base_sha: CommitSha(base.clone()),
+                    head_sha: head.clone(),
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        let rl = state.db.review_loop();
+        rl.ensure_pr(DEFAULT_TENANT, pr, now).await.unwrap();
+        rl.record_read(pr, &ReadResult::Read {
+            snapshot: json!({
+                "title": "Fixture", "url": "", "state": "OPEN", "draft": false,
+                "base": "v3.1-dev", "head": head.0, "base_sha": base,
+                "rounds": [], "bot_change_requests": [], "changes_requested_by": [],
+                "ci": {"state": "passing", "total": 0, "check_runs": null, "statuses": null, "failing": []},
+                "counts": [0, 0, 1], "complete": true, "unresolved_threads": 0,
+                "thread_ids": {}, "review_ids": {}
+            }),
+            round_count: 0,
+        }, now).await.unwrap();
+        rl.watch(DEFAULT_TENANT, "u1", pr, 20, now).await.unwrap();
+        rl.set_watch_state("u1", pr, WatchState::LimitReached, now)
+            .await
+            .unwrap();
+        let handle = super::super::PrHandle {
+            id: pr,
+            pr: PrRef {
+                repo: repo.repo,
+                number,
+            },
+        };
+        let view = || super::super::views::badge(&state, handle.clone(), &work);
+        assert_eq!(view().await.unwrap().badge, Some(PrBadge::ReadyToMerge));
+        rl.upsert_item(
+            DEFAULT_TENANT,
+            pr,
+            &ObservedItem {
+                kind: CommentItemKind::PrComment,
+                stable_key: "comment:1:1".into(),
+                author: "reviewer".into(),
+                author_kind: AuthorKind::Human,
+                status_comment: false,
+                url: None,
+                location: None,
+                title: "Check the edge case".into(),
+                body: "Please check the empty input.".into(),
+                body_hash: "body".into(),
+                head,
+                round: None,
+                bot_severity: None,
+                github: ItemGithubFacts {
+                    resolved: None,
+                    resolved_by: None,
+                    outdated: None,
+                    bot_status: None,
+                    edited_after_decision: false,
+                    replies: 0,
+                    marker: None,
+                },
+                outside: None,
+            },
+            ItemState::Undecided,
+            now,
+        )
+        .await
+        .unwrap();
+        assert_eq!(view().await.unwrap().badge, None);
     }
 
     fn ready() -> BadgeInputs {

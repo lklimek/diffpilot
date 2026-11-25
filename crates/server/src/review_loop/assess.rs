@@ -122,6 +122,9 @@ enum Charge {
 /// A pass could not be requested or ingested.
 #[derive(Debug, thiserror::Error)]
 pub enum AssessError {
+    /// A status comment cannot be assessed as a review point.
+    #[error("status comments cannot be assessed")]
+    StatusComment,
     /// Frozen input could not be archived or recovered.
     #[error("the frozen assessment snapshot is unavailable")]
     Io(#[from] std::io::Error),
@@ -190,6 +193,11 @@ async fn request(
     by: Option<&str>,
 ) -> Result<PassQueued, AssessError> {
     let db = &state.db;
+    if let PassReason::AssessAgain(item) = reason
+        && db.review_loop().item(item).await?.status_comment
+    {
+        return Err(AssessError::StatusComment);
+    }
     let Some(pr_state) = db.review_loop().pr_state(pr).await? else {
         tracing::debug!(
             pr,
@@ -262,10 +270,14 @@ async fn request(
     let sources = db.comment_sources().list(&record.tenant_id, pr).await?;
     for item in &items {
         let wanted = match asked {
-            Some(asked) => item.id == asked && item.kind != CommentItemKind::PrQuestion,
+            Some(asked) => {
+                item.id == asked
+                    && item.kind != CommentItemKind::PrQuestion
+                    && (reason == PassReason::Ask || !item.status_comment)
+            }
             None => assessable(item),
         };
-        if !wanted || item.status_comment {
+        if !wanted {
             continue;
         }
         if reason != PassReason::Ask
@@ -475,7 +487,8 @@ async fn charged_watcher(
 /// Items a pass assesses: comments of open, undecided items the read still produces (not PR-level questions, which
 /// the server asks).
 fn assessable(item: &ItemRecord) -> bool {
-    item.kind != CommentItemKind::PrQuestion
+    !item.status_comment
+        && item.kind != CommentItemKind::PrQuestion
         && item.gone_at.is_none()
         && matches!(
             item.state,
@@ -729,7 +742,7 @@ async fn earlier_decisions(
     let mut current = Vec::new();
     for item in items
         .iter()
-        .filter(|item| sent.iter().all(|sent| sent.id != item.id))
+        .filter(|item| !item.status_comment && sent.iter().all(|sent| sent.id != item.id))
     {
         if let Some(stored) = standing.get(&item.id.to_string()) {
             current.push(EarlierDecision {

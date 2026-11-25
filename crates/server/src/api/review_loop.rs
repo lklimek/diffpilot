@@ -69,6 +69,9 @@ fn item_list(nos: &[u32]) -> String {
 impl ApiErrorSource for ReviewLoopApiError {
     fn code(&self) -> ApiErrorCode {
         match self {
+            Self::Assess(error) if matches!(error.as_ref(), assess::AssessError::StatusComment) => {
+                ApiErrorCode::Conflict
+            }
             Self::Assess(_) => ApiErrorCode::Internal,
             Self::Path(_) | Self::Query(_) | Self::Json(_) => ApiErrorCode::InvalidRequest,
             Self::Loop(error) => match error {
@@ -98,6 +101,9 @@ impl ApiErrorSource for ReviewLoopApiError {
 
     fn public_message(&self) -> Cow<'static, str> {
         match self {
+            Self::Assess(error) if matches!(error.as_ref(), assess::AssessError::StatusComment) => {
+                Cow::Borrowed("Status comments cannot be assessed.")
+            }
             Self::Assess(_) => {
                 Cow::Borrowed("The assessment could not be started. Try again later.")
             }

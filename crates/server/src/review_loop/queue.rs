@@ -5,11 +5,13 @@
 use std::collections::{BTreeMap, HashMap};
 
 use contracts::api::review_loop::{
-    AssessmentState, CommentItemKind, DecideRequest, DecisionKind, ItemState, LeftOutItem,
-    LeftOutReason, QueueEntry, QueueReason, Recommendation,
+    AssessmentState, CommentItemKind, DecideRequest, DecisionKind, GateMark,
+    ImportedGithubDecision, ItemState, LeftOutItem, LeftOutReason, QueueEntry, QueueReason,
+    Recommendation,
 };
 
 use super::effects::PrQuestion;
+use contracts::time::Timestamp;
 
 /// What the queue needs of one item.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,17 +69,20 @@ pub fn waiting(items: &[QueueItem]) -> Vec<&QueueItem> {
 }
 
 /// The facts used to classify an item in the Comments list.
+#[cfg_attr(test, derive(serde::Deserialize))]
 pub(super) struct StatusItem {
     pub no: u32,
     pub kind: CommentItemKind,
     pub state: ItemState,
     pub assessment_state: AssessmentState,
+    #[cfg_attr(test, serde(default))]
     pub status_comment: bool,
-    pub imported: bool,
+    pub imported_decision: Option<ImportedGithubDecision>,
     pub duplicate_of: Option<u32>,
+    #[cfg_attr(test, serde(default))]
     pub decision_follows_primary: bool,
-    pub gone: bool,
-    pub gated: bool,
+    pub gone_at: Option<Timestamp>,
+    pub gates: Vec<GateMark>,
 }
 
 /// The Comments list status, in N1 precedence order.
@@ -96,25 +101,25 @@ enum CommentStatus {
 
 fn comment_status(item: &StatusItem) -> CommentStatus {
     let linked = item.duplicate_of.is_some_and(|no| no != item.no);
-    let awaits = !item.gone
+    let awaits = item.gone_at.is_none()
         && matches!(
             item.state,
             ItemState::Undecided | ItemState::Reopened | ItemState::AskedBack
         );
     if item.status_comment {
         CommentStatus::StatusComments
-    } else if item.imported || item.state == ItemState::Outside {
+    } else if item.imported_decision.is_some() || item.state == ItemState::Outside {
         CommentStatus::Decided
-    } else if linked && item.decision_follows_primary && !item.gated {
+    } else if linked && item.decision_follows_primary && item.gates.is_empty() {
         CommentStatus::Duplicates
     } else if matches!(
         item.state,
         ItemState::Decided | ItemState::Executing | ItemState::Done | ItemState::Repeat
     ) {
         CommentStatus::Decided
-    } else if item.gone {
+    } else if item.gone_at.is_some() {
         CommentStatus::All
-    } else if linked && (awaits || (item.gated && item.state == ItemState::Assessing)) {
+    } else if linked && (awaits || (!item.gates.is_empty() && item.state == ItemState::Assessing)) {
         CommentStatus::NeedsYou
     } else if item.assessment_state == AssessmentState::Queued {
         CommentStatus::Waiting
@@ -142,7 +147,7 @@ pub(super) fn needs_you(entries: &[QueueEntry], items: &HashMap<u32, StatusItem>
     {
         if comment_status(item) == CommentStatus::NeedsYou {
             total = total.saturating_add(1);
-            gates = gates.saturating_add(u32::from(item.gated));
+            gates = gates.saturating_add(u32::from(!item.gates.is_empty()));
         }
     }
     (total, gates)
@@ -325,26 +330,6 @@ mod tests {
 
     #[test]
     fn needs_you_matches_fixture() {
-        use contracts::api::review_loop::{GateMark, ImportedGithubDecision};
-        use contracts::time::Timestamp;
-        use serde::Deserialize;
-
-        #[derive(Deserialize)]
-        struct Item {
-            no: u32,
-            kind: CommentItemKind,
-            state: ItemState,
-            assessment_state: AssessmentState,
-            gates: Vec<GateMark>,
-            #[serde(default)]
-            status_comment: bool,
-            imported_decision: Option<ImportedGithubDecision>,
-            duplicate_of: Option<u32>,
-            #[serde(default)]
-            decision_follows_primary: bool,
-            gone_at: Option<Timestamp>,
-        }
-
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../docs/contracts/fixtures/needs-you-cases.json"
         ))
@@ -357,19 +342,7 @@ mod tests {
             .map(|overrides| {
                 let mut data = defaults.clone();
                 data.extend(overrides.as_object().unwrap().clone());
-                let item: Item = serde_json::from_value(data.into()).unwrap();
-                StatusItem {
-                    no: item.no,
-                    kind: item.kind,
-                    state: item.state,
-                    assessment_state: item.assessment_state,
-                    status_comment: item.status_comment,
-                    imported: item.imported_decision.is_some(),
-                    duplicate_of: item.duplicate_of,
-                    decision_follows_primary: item.decision_follows_primary,
-                    gone: item.gone_at.is_some(),
-                    gated: !item.gates.is_empty(),
-                }
+                serde_json::from_value::<StatusItem>(data.into()).unwrap()
             })
             .collect();
         let expected: Vec<CommentStatus> =
@@ -397,25 +370,26 @@ mod tests {
             #[serde(default)]
             assessed: bool,
             duplicate_of: Option<u32>,
-            #[serde(default)]
-            status_comment: bool,
+            comment: Option<crate::github::review_loop::PrComment>,
         }
 
-        #[derive(Deserialize)]
-        struct Fixture {
-            legacy_dashboard_needs_you: usize,
-            expected_needs_you: Vec<u32>,
-            items: Vec<Item>,
-        }
-
-        let fixture: Fixture = serde_json::from_str(include_str!(
-            "../../../../fixtures/review-loop/regressions/rust-dashcore-1336.json"
-        ))
+        let fixture: Vec<Item> = serde_json::from_value(
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../../../fixtures/review-loop/regressions/rust-dashcore-1336.json"
+            ))
+            .unwrap()["items"]
+                .clone(),
+        )
         .unwrap();
+        let bots =
+            super::super::observe::BotRule::new(&contracts::api::dashboard::default_known_bots());
         let by_no: HashMap<_, _> = fixture
-            .items
             .iter()
             .map(|item| {
+                let status_comment = item
+                    .comment
+                    .as_ref()
+                    .is_some_and(|comment| bots.pr_comment(comment).1);
                 (
                     item.no,
                     StatusItem {
@@ -429,33 +403,35 @@ mod tests {
                                 reason: NotAssessedReason::Missing,
                             }
                         },
-                        status_comment: item.status_comment,
-                        imported: false,
+                        status_comment,
+                        imported_decision: None,
                         duplicate_of: item.duplicate_of,
                         decision_follows_primary: false,
-                        gone: false,
-                        gated: false,
+                        gone_at: None,
+                        gates: vec![],
                     },
                 )
             })
             .collect();
-        let item_nos: Vec<_> = fixture.items.iter().map(|item| item.no).collect();
-        assert_eq!(item_nos.len(), fixture.legacy_dashboard_needs_you);
+        let item_nos: Vec<_> = fixture.iter().map(|item| item.no).collect();
+        let status: Vec<_> = item_nos
+            .iter()
+            .copied()
+            .filter(|no| by_no[no].status_comment)
+            .collect();
+        assert_eq!(status, (29..=49).collect::<Vec<_>>());
         let actual: Vec<_> = item_nos
             .iter()
             .copied()
             .filter(|no| comment_status(&by_no[no]) == CommentStatus::NeedsYou)
             .collect();
-        assert_eq!(actual, fixture.expected_needs_you);
+        assert_eq!(actual, [21, 23, 24, 25, 28, 50, 51, 52]);
         let entries = [QueueEntry {
             item_nos,
             reason: QueueReason::Group,
             skipped: false,
         }];
-        assert_eq!(
-            needs_you(&entries, &by_no),
-            (u32::try_from(actual.len()).unwrap(), 0)
-        );
+        assert_eq!(needs_you(&entries, &by_no), (8, 0));
     }
 
     fn item(no: u32) -> QueueItem {

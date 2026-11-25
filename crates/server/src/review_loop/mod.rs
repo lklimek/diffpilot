@@ -440,22 +440,20 @@ async fn read_now(
                 .iter()
                 .find(|comment| comment.url == source.url)
         };
-        let author_kind = if let Some(comment) = comment {
-            bots.kind(comment.author.as_ref())
-        } else if known_bots
-            .iter()
-            .any(|bot| bot.eq_ignore_ascii_case(&source.author))
-            || source.author.ends_with("[bot]")
-        {
-            AuthorKind::Bot
+        let (author_kind, status_comment) = if let Some(comment) = comment {
+            bots.pr_comment(comment)
         } else {
-            AuthorKind::Human
+            let kind = if known_bots
+                .iter()
+                .any(|bot| bot.eq_ignore_ascii_case(&source.author))
+                || source.author.ends_with("[bot]")
+            {
+                AuthorKind::Bot
+            } else {
+                AuthorKind::Human
+            };
+            (kind, false)
         };
-        let status_comment = author_kind == AuthorKind::Bot
-            && comment.is_some_and(|comment| {
-                markers::finding_marker(&comment.body).is_none()
-                    && markers::body_findings(&comment.body).is_empty()
-            });
         if status_comment {
             pr_data.scope.sources.retain(|url| *url != source.url);
         }
@@ -1144,6 +1142,7 @@ pub(crate) struct Loaded {
     pub(crate) row: db::repo::review_loop::CommentPrRecord,
     pub(crate) snapshot: Option<Snapshot>,
     pub(crate) items: Vec<ItemRecord>,
+    item_numbers: HashMap<contracts::ids::CommentItemId, u32>,
     pub(crate) decisions: Vec<StoredDecision>,
     pub(crate) assessments: BTreeMap<u32, StoredAssessment>,
 }
@@ -1176,6 +1175,7 @@ impl Loaded {
             row,
             snapshot,
             items: view.items,
+            item_numbers: numbers,
             assessments,
         })
     }
@@ -1193,6 +1193,10 @@ impl Loaded {
             .iter()
             .find(|item| item.no == no)
             .ok_or(LoopError::NotFound)
+    }
+
+    fn number_of(&self, id: contracts::ids::CommentItemId) -> Option<u32> {
+        self.item_numbers.get(&id).copied()
     }
 
     pub(crate) fn standing(&self) -> HashMap<String, &StoredDecision> {

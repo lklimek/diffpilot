@@ -30,7 +30,8 @@ pub use decisions::{
 };
 pub use items::{
     CommentPrRecord, ItemRecord, NewPass, ObservedItem, PassCause, PassRecord, PassStart,
-    PassState, PrCommentTally, PrView, ReadResult, SentItem, StoredAssessment, UpsertOutcome,
+    PassState, PrCommentTally, PrTallyView, PrView, ReadResult, SentItem, StoredAssessment,
+    UpsertOutcome,
 };
 pub use notify::{
     ChannelInput, ChannelRecord, DeliveryRecord, DeliveryTarget, FailureTransition, PushInput,

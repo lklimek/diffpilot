@@ -949,6 +949,18 @@ async fn comment_tallies_count_current_comments_per_read_pull_request_and_name_w
     )
     .await
     .expect("read");
+    let mut views = rl.comment_tally_views(T, &[PR, 2]).await.expect("batch");
+    let ready = views.remove(&PR).expect("read PR").expect("valid rows");
+    assert_eq!(
+        ready.pr.items.len(),
+        4,
+        "queue inputs include gone items and PR questions"
+    );
+    assert_eq!(ready.latest_pass, None);
+    assert!(
+        views.is_empty(),
+        "the watched, unread PR needs no queue view"
+    );
     let tallies = rl.comment_tallies(T, "u1", &wanted).await.expect("tallies");
     assert_eq!(
         tallies,

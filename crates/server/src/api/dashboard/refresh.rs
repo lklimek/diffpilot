@@ -430,7 +430,7 @@ async fn review_links(
 }
 
 /// Fills `comments` and `watched` of the pull requests on the page from the tenant's review-loop tables and the
-/// user's watches. Needs you uses the stored Comments view of every listed PR that has been read.
+/// user's watches. The queue inputs for read PRs are loaded together.
 /// Part of the page's `ETag` like `review`.
 async fn comment_tallies(
     state: &AppState,
@@ -451,6 +451,23 @@ async fn comment_tallies(
         .review_loop()
         .comment_tallies(&session.tenant_id, &session.user_id, &wanted)
         .await?;
+    let read: Vec<_> = tallies
+        .iter()
+        .filter_map(|row| row.total.map(|_| row.pull_request_id))
+        .collect();
+    let mut batch = match state
+        .db
+        .review_loop()
+        .comment_tally_views(&session.tenant_id, &read)
+        .await
+    {
+        Ok(batch) => Some(batch),
+        Err(error) => {
+            tracing::debug!(?error, "dashboard comment tally batch could not be read");
+            None
+        }
+    };
+    let mut needs_you = HashMap::new();
     for tally in tallies {
         let Some((&row, (repo, number))) = rows.get(tally.index).zip(wanted.get(tally.index))
         else {
@@ -458,15 +475,34 @@ async fn comment_tallies(
         };
         items[row].watched = tally.watched;
         items[row].comments = if let Some(total) = tally.total {
-            let handle = PrHandle {
-                pr: PrRef {
-                    repo: repo.clone(),
-                    number: *number,
-                },
-                id: tally.pull_request_id,
-            };
-            let needs_you = views::dashboard_needs_you(state, handle).await?;
-            Some(CommentTally { total, needs_you })
+            needs_you
+                .entry(tally.pull_request_id)
+                .or_insert_with(|| {
+                    let batch = batch.as_mut()?;
+                    let handle = PrHandle {
+                        pr: PrRef {
+                            repo: repo.clone(),
+                            number: *number,
+                        },
+                        id: tally.pull_request_id,
+                    };
+                    match batch
+                        .remove(&handle.id)
+                        .unwrap_or(Err(DbError::NotFound))
+                        .and_then(|view| views::dashboard_needs_you(handle, view))
+                    {
+                        Ok(needs_you) => Some(needs_you),
+                        Err(error) => {
+                            tracing::debug!(
+                                ?error,
+                                pr = tally.pull_request_id,
+                                "dashboard comment tally omitted"
+                            );
+                            None
+                        }
+                    }
+                })
+                .map(|needs_you| CommentTally { total, needs_you })
         } else {
             None
         };

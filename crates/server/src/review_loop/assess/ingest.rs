@@ -171,10 +171,13 @@ async fn store(
         }
         match assessment(entry, made, &pass.head, now) {
             Ok(assessment) => {
-                db.review_loop()
+                if db
+                    .review_loop()
                     .add_assessment(&tenant, sent.item, &assessment, &sent.fingerprint)
-                    .await?;
-                stored.insert(sent.item);
+                    .await?
+                {
+                    stored.insert(sent.item);
+                }
             }
             Err(unfit) => {
                 tracing::warn!(pass = %pass.id, item = %sent.item, ?unfit,

@@ -1785,6 +1785,54 @@ async fn dashboard_tally_equals_comments_count() {
             .unwrap()
             .contains(&json!("1 undecided question"))
     );
+
+    // Another listed PR has a malformed saved read. Its watch survives without a tally.
+    let other = w
+        .items("")
+        .await
+        .items
+        .into_iter()
+        .find(|item| item.kind == ItemKind::Pr && item.id != "NC-482")
+        .expect("second PR");
+    let repo = w
+        .state
+        .db
+        .repos()
+        .upsert(DEFAULT_TENANT, &other.repo.unwrap(), None)
+        .await
+        .unwrap();
+    let other_pr = w
+        .state
+        .db
+        .pull_requests()
+        .upsert(
+            DEFAULT_TENANT,
+            repo.id,
+            &contracts::api::pr::PrSummary {
+                repo: repo.repo,
+                number: other.number.unwrap(),
+                title: "Another PR".into(),
+                author: "alice".into(),
+                html_url: other.url.unwrap(),
+                head_sha: contracts::ids::CommitSha("h".into()),
+                base_sha: contracts::ids::CommitSha("b".into()),
+            },
+            now,
+        )
+        .await
+        .unwrap();
+    rl.ensure_pr(DEFAULT_TENANT, other_pr, now).await.unwrap();
+    rl.watch(DEFAULT_TENANT, "u1", other_pr, 20, now)
+        .await
+        .unwrap();
+    db::repo::testing::corrupt_comment_read_timestamp(&w.state.db, other_pr)
+        .await
+        .unwrap();
+    let page = w.items("").await;
+    assert_eq!(comments(&page), [("NC-482".into(), tally)]);
+    let other_row = page.items.iter().find(|item| item.id == other.id).unwrap();
+    assert!(other_row.watched);
+    assert!(other_row.comments.is_none());
 }
 
 #[tokio::test]

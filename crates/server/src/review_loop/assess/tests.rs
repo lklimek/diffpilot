@@ -1958,6 +1958,55 @@ async fn question_without_analysis_is_answered_by_a_question_pass() {
     );
 }
 
+#[tokio::test]
+async fn status_comment_ask_answers_without_storing_an_assessment() {
+    let f = fixture(HEAD).await;
+    let rl = f.state.db.review_loop();
+    let status = ObservedItem {
+        kind: CommentItemKind::PrComment,
+        status_comment: true,
+        body: "Review skipped because automatic review is disabled.".into(),
+        location: None,
+        ..observed("status")
+    };
+    let UpsertOutcome::New(status) = rl
+        .upsert_item(
+            DEFAULT_TENANT,
+            PR,
+            &status,
+            ItemState::Undecided,
+            Timestamp::now(),
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("new status comment")
+    };
+    let id = question(&f.state, status.id, "Why was the review skipped?").await;
+    assert_eq!(
+        request_pass(&f.state, PR, PassReason::Ask).await.unwrap(),
+        PassQueued::Queued
+    );
+    let pass = live_pass(&f.state).await;
+    let answer = "The repository has disabled automatic review.";
+    ingest_all(&f.state, &pass, Some(answer)).await;
+    let question = f
+        .state
+        .db
+        .questions()
+        .get(id, Timestamp::now())
+        .await
+        .unwrap()
+        .question;
+    assert_eq!(question.state, AskState::Answered);
+    assert_eq!(question.answer.unwrap().answer, answer);
+    assert!(rl.latest_assessment(status.id).await.unwrap().is_none());
+    assert_eq!(
+        rl.item(status.id).await.unwrap().state,
+        ItemState::Undecided
+    );
+}
+
 /// An answer that breaks the wording rules is never shown: the question fails with a plain sentence.
 #[tokio::test]
 async fn question_pass_answer_with_a_verdict_fails_the_question() {

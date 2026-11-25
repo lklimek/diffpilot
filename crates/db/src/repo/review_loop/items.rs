@@ -1,5 +1,7 @@
 //! PR read state, items with revisions, LLM assessments and assessment passes.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, Sqlite, Transaction};
@@ -615,17 +617,18 @@ impl ReviewLoop<'_> {
 
     /// Stores an assessment of an item. A recommendation or gates other than the latest assessment's raise the item's
     /// revision, so a decision prepared on what was shown before is refused as changed.
+    /// Returns false for a status comment, whose assessments are never stored.
     pub async fn add_assessment(
         &self,
         tenant_id: &str,
         item: CommentItemId,
         assessment: &CommentAssessment,
         fingerprint: &str,
-    ) -> Result<(), DbError> {
+    ) -> Result<bool, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        add_assessment_in(&mut tx, tenant_id, item, assessment, fingerprint).await?;
+        let stored = add_assessment_in(&mut tx, tenant_id, item, assessment, fingerprint).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(stored)
     }
 
     /// The newest assessment of an item.
@@ -837,6 +840,127 @@ impl ReviewLoop<'_> {
             .collect()
     }
 
+    /// Reads the queue inputs for all requested dashboard PRs in one transaction.
+    /// A malformed PR is returned as a row-local error.
+    pub async fn comment_tally_views(
+        &self,
+        tenant_id: &str,
+        prs: &[i64],
+    ) -> Result<HashMap<i64, Result<PrTallyView, DbError>>, DbError> {
+        if prs.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let wanted = json(&prs)?;
+        let mut tx = read_tx(self.pool).await?;
+        let rows = sqlx::query(
+            "SELECT c.pull_request_id, c.read_at, c.read_failure, c.read_failed_at, NULL AS github_snapshot,
+                    c.round_count, c.purpose,
+                    (SELECT p.state FROM comment_passes p WHERE p.pull_request_id = c.pull_request_id
+                     ORDER BY p.created_at DESC, p.rowid DESC LIMIT 1) AS pass_state
+             FROM comment_prs c
+             WHERE c.tenant_id = ? AND c.read_at IS NOT NULL
+               AND c.pull_request_id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(tenant_id)
+        .bind(wanted)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut views = HashMap::with_capacity(rows.len());
+        for row in &rows {
+            let id: i64 = row.try_get("pull_request_id")?;
+            views.insert(
+                id,
+                (|| {
+                    Ok(PrTallyView {
+                        pr: PrView {
+                            row: Some(pr_state_from_row(row)?),
+                            items: vec![],
+                            assessments: vec![],
+                            decisions: vec![],
+                        },
+                        latest_pass: opt_wire_col(row, "pass_state")?,
+                    })
+                })(),
+            );
+        }
+        let ids: Vec<i64> = views
+            .iter()
+            .filter_map(|(&id, view)| view.is_ok().then_some(id))
+            .collect();
+        if ids.is_empty() {
+            tx.commit().await?;
+            return Ok(views);
+        }
+        let ids = json(&ids)?;
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT i.*, i.pull_request_id AS tally_pr, a.body AS assessment_body, a.fingerprint AS assessment_fingerprint
+             FROM (SELECT {ITEM_COLUMNS} FROM comment_items WHERE pull_request_id IN (SELECT value FROM json_each(?))) i
+             LEFT JOIN comment_assessments a ON a.id = (SELECT MAX(l.id) FROM comment_assessments l WHERE l.item_id = i.id)
+             ORDER BY i.pull_request_id, i.item_no",
+        )))
+        .bind(&ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        apply_tally_rows(&mut views, &rows, |view, row| {
+            let item = item_from_row(row)?;
+            if let Some(assessment) = opt_json_col(row, "assessment_body")? {
+                view.pr.assessments.push((
+                    item.id,
+                    StoredAssessment {
+                        assessment,
+                        fingerprint: row.try_get("assessment_fingerprint")?,
+                    },
+                ));
+            }
+            view.pr.items.push(item);
+            Ok(())
+        })?;
+        use super::decisions::{DECISION_COLUMNS, decision_from_row, effect_from_row};
+        let decisions = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT {DECISION_COLUMNS}, i.pull_request_id AS tally_pr
+             FROM comment_decisions d JOIN comment_items i ON i.id = d.item_id
+             JOIN users u ON u.id = d.user_id
+             WHERE i.pull_request_id IN (SELECT value FROM json_each(?))
+             ORDER BY d.decided_at, d.rowid",
+        )))
+        .bind(&ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut by_decision = HashMap::new();
+        apply_tally_rows(&mut views, &decisions, |view, row| {
+            let decision = decision_from_row(row)?;
+            by_decision.insert(decision.decision.id.to_string(), view.pr.decisions.len());
+            view.pr.decisions.push(decision);
+            Ok(())
+        })?;
+        // Only follow-up effects affect queue membership.
+        let effects = sqlx::query(
+            "SELECT i.pull_request_id AS tally_pr, e.decision_id,
+                 e.id, e.seq, e.after_seq, e.kind, e.executor, e.params, e.state,
+                 NULL AS claim_token_name, e.lease_until, e.seen_on_github_at, e.updated_at
+             FROM comment_effects e JOIN comment_decisions d ON d.id = e.decision_id
+             JOIN comment_items i ON i.id = d.item_id
+             WHERE i.pull_request_id IN (SELECT value FROM json_each(?))
+               AND d.kind = 'merge_with_follow_ups' AND e.kind = 'follow_up_pr'
+             ORDER BY e.seq",
+        )
+        .bind(ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        apply_tally_rows(&mut views, &effects, |view, row| {
+            let id: &str = row.try_get("decision_id")?;
+            if let Some(&index) = by_decision.get(id) {
+                view.pr.decisions[index]
+                    .decision
+                    .effects
+                    .push(effect_from_row(row)?);
+            }
+            Ok(())
+        })?;
+        tx.commit().await?;
+        Ok(views)
+    }
+
     /// Passes charged to a user since `since` (the daily cap) and the end of the PR's latest pass (spacing).
     pub async fn pass_usage(
         &self,
@@ -1018,6 +1142,33 @@ pub struct PrView {
     pub decisions: Vec<super::StoredDecision>,
 }
 
+/// A dashboard PR's queue inputs, without its GitHub snapshot or effect reports.
+pub struct PrTallyView {
+    /// Items, their latest assessments and the decisions needed for queue membership.
+    pub pr: PrView,
+    /// The latest assessment pass's state.
+    pub latest_pass: Option<PassState>,
+}
+
+fn apply_tally_rows(
+    views: &mut HashMap<i64, Result<PrTallyView, DbError>>,
+    rows: &[SqliteRow],
+    mut read: impl FnMut(&mut PrTallyView, &SqliteRow) -> Result<(), DbError>,
+) -> Result<(), DbError> {
+    for row in rows {
+        let id: i64 = row.try_get("tally_pr")?;
+        let Some(entry) = views.get_mut(&id) else {
+            continue;
+        };
+        if let Ok(view) = entry
+            && let Err(error) = read(view, row)
+        {
+            *entry = Err(error);
+        }
+    }
+    Ok(())
+}
+
 /// The [`PrView`] of a pull request inside `tx`.
 pub(super) async fn pr_view_in(
     tx: &mut Transaction<'static, Sqlite>,
@@ -1078,16 +1229,20 @@ async fn pr_state_with<'e>(
     else {
         return Ok(None);
     };
-    let failure: Option<ReadFailure> = opt_wire_col(&row, "read_failure")?;
-    let failed_at = opt_ts_col(&row, "read_failed_at")?;
-    Ok(Some(CommentPrRecord {
+    Ok(Some(pr_state_from_row(&row)?))
+}
+
+fn pr_state_from_row(row: &SqliteRow) -> Result<CommentPrRecord, DbError> {
+    let failure: Option<ReadFailure> = opt_wire_col(row, "read_failure")?;
+    let failed_at = opt_ts_col(row, "read_failed_at")?;
+    Ok(CommentPrRecord {
         pull_request_id: row.try_get("pull_request_id")?,
-        read_at: opt_ts_col(&row, "read_at")?,
+        read_at: opt_ts_col(row, "read_at")?,
         read_failure: failure.zip(failed_at),
-        github_snapshot: opt_json_col(&row, "github_snapshot")?,
-        round_count: u32_col(&row, "round_count")?,
+        github_snapshot: opt_json_col(row, "github_snapshot")?,
+        round_count: u32_col(row, "round_count")?,
         purpose: row.try_get("purpose")?,
-    }))
+    })
 }
 
 /// Store a validated primary assessment under the caller's acceptance transaction.
@@ -1097,7 +1252,16 @@ pub(crate) async fn add_assessment_in(
     item: CommentItemId,
     assessment: &CommentAssessment,
     fingerprint: &str,
-) -> Result<(), DbError> {
+) -> Result<bool, DbError> {
+    let status: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM comment_items WHERE id = ? AND status_comment)",
+    )
+    .bind(item.to_string())
+    .fetch_one(&mut **tx)
+    .await?;
+    if status {
+        return Ok(false);
+    }
     let latest: Option<CommentAssessment> = sqlx::query(
         "SELECT body FROM comment_assessments WHERE item_id = ? ORDER BY id DESC LIMIT 1",
     )
@@ -1137,5 +1301,5 @@ pub(crate) async fn add_assessment_in(
         .execute(&mut **tx)
         .await?;
     }
-    Ok(())
+    Ok(true)
 }

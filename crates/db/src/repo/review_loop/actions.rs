@@ -174,7 +174,7 @@ impl ReviewLoop<'_> {
     pub async fn asked_back(&self, item: CommentItemId, now: Timestamp) -> Result<bool, DbError> {
         let updated = sqlx::query(
             "UPDATE comment_items SET state = 'asked_back', revision = revision + 1, updated_at = ?
-             WHERE id = ? AND state = 'undecided'",
+             WHERE id = ? AND state = 'undecided' AND NOT status_comment",
         )
         .bind(ts(now))
         .bind(item.to_string())
