@@ -280,31 +280,36 @@ impl Rpc {
         &mut self,
         thread: &str,
         has_history: bool,
-        warm_resume: Option<Value>,
+        fork_resume: bool,
     ) -> Result<(), ProviderError> {
         if !has_history {
             self.totals.entry(thread.into()).or_default();
             return Ok(());
         }
-        // Codex 0.171 skips usage replay on cold resume of a paginated fork.
-        // A second resume on the same connection replays the loaded thread's actual totals.
-        if let Some(params) = warm_resume
+        // Codex 0.171 and 0.172 skip usage replay on cold resume of a paginated fork.
+        // An ID-only resume rejoins the loaded thread, preserving its settings and replaying usage.
+        if fork_resume
             && !self
                 .wait_for_usage(thread, Duration::from_millis(250))
                 .await?
         {
-            tracing::debug!("requesting restored usage from the loaded fork");
-            let result =
-                self.request("thread/resume", params)
-                    .await
-                    .map_err(|error| match error {
-                        ProviderError::SessionUnavailable => fault(
-                            JobFailureKind::WorkerLost,
-                            "thread/resume",
-                            "loaded fork unavailable",
-                        ),
-                        error => error,
-                    })?;
+            tracing::debug!(
+                method = "thread/resume",
+                step = "restored usage",
+                thread,
+                "requesting restored usage from the loaded fork"
+            );
+            let result = self
+                .request("thread/resume", json!({"threadId":thread}))
+                .await
+                .map_err(|error| match error {
+                    ProviderError::SessionUnavailable => fault(
+                        JobFailureKind::WorkerLost,
+                        "thread/resume",
+                        "loaded fork unavailable",
+                    ),
+                    error => error,
+                })?;
             if result["thread"]["id"].as_str() != Some(thread) {
                 return Err(fault(
                     JobFailureKind::WorkerLost,

@@ -138,7 +138,7 @@ enum Mode {
     Tool,
     CompletionTool,
     LostWorking,
-    ColdForkResume,
+    ForkResume(ForkResume),
     Hang,
     BadMeter,
     Symlink,
@@ -152,6 +152,15 @@ enum Mode {
     MissingUsage,
     InvalidTemplate,
     Oversize,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ForkResume {
+    Cold,
+    Ready,
+    Silent,
+    Unavailable,
+    WrongId,
 }
 
 struct Harness {
@@ -273,10 +282,13 @@ impl Harness {
                                     },
                                     "thread/start" | "thread/resume" | "thread/fork" => {
                                         let parent = p["threadId"].as_str().unwrap_or("");
-                                        let cold_fork_resume = mode == Mode::ColdForkResume
-                                            && method == "thread/resume" && parent == "working"
-                                            && !inherited.contains_key(parent);
+                                        let fork_resume = match mode {
+                                            Mode::ForkResume(behavior) if method == "thread/resume" && parent == "working" => Some(behavior),
+                                            _ => None,
+                                        };
+                                        let loaded = inherited.contains_key(parent);
                                         if (mode == Mode::LostWorking && parent == "lost")
+                                            || (loaded && fork_resume == Some(ForkResume::Unavailable))
                                             || (matches!(method, "thread/resume" | "thread/fork")
                                                 && (ephemeral.contains(parent) || !materialized.contains(parent))) {
                                             let _ = ws.send(tokio_tungstenite::tungstenite::Message::Text(json!({"id":request["id"],"error":{"code":-32603,"message":format!("no rollout found for thread id {parent}")}}).to_string().into())).await;
@@ -291,10 +303,18 @@ impl Harness {
                                         let total = inherited[&thread];
                                         let history = total.input_tokens != 0;
                                         result = json!({"thread":{"id":thread,"turns":if history { json!([{"id":"old","status":"completed","items":[]}]) } else { json!([]) }}});
-                                        if mode == Mode::ColdForkResume && thread == "working" {
+                                        if fork_resume.is_some() {
                                             result["thread"]["forkedFromId"] = json!("parent");
                                         }
-                                        if history && !cold_fork_resume { notifications.push(token_notification(&thread, "old", total, last[&thread])); }
+                                        if loaded && fork_resume == Some(ForkResume::WrongId) {
+                                            result["thread"]["id"] = json!("unexpected");
+                                        }
+                                        let replay = match fork_resume {
+                                            None | Some(ForkResume::Ready) => true,
+                                            Some(ForkResume::Silent) => false,
+                                            _ => loaded,
+                                        };
+                                        if history && replay { notifications.push(token_notification(&thread, "old", total, last[&thread])); }
                                         if mode == Mode::MissingThread { result = json!({"thread":{}}); }
                                     },
                                     "turn/start" | "thread/compact/start" => {
@@ -480,9 +500,7 @@ async fn ask_fork_resumes_parent_and_compacts_once_without_billing_inheritance()
     }
 }
 
-#[tokio::test]
-async fn ask_recovers_usage_on_cold_resume_of_an_existing_fork() {
-    let harness = Harness::new(Mode::ColdForkResume).await;
+fn existing_fork_ask() -> JobSpec {
     let mut spec = secret_job(JobKind::Ask);
     let working = spec.working_session.as_mut().unwrap();
     working.thread_id = Some("working".into());
@@ -492,8 +510,18 @@ async fn ask_recovers_usage_on_cold_resume_of_an_existing_fork() {
         generation: working.analytic_generation,
         state: PreflightState::Done,
     });
+    spec
+}
+
+#[tokio::test]
+async fn ask_recovers_usage_on_cold_resume_of_an_existing_fork() {
+    let harness = Harness::new(Mode::ForkResume(ForkResume::Cold)).await;
     let (tx, _rx) = mpsc::channel(64);
-    let outcome = harness.provider.execute_job(&spec, tx).await.unwrap();
+    let outcome = harness
+        .provider
+        .execute_job(&existing_fork_ask(), tx)
+        .await
+        .unwrap();
     assert_eq!(outcome.usage.input_tokens, 100);
     assert_eq!(outcome.usage.cached_input_tokens, 40);
     assert_eq!(outcome.usage.output_tokens, 10);
@@ -508,8 +536,75 @@ async fn ask_recovers_usage_on_cold_resume_of_an_existing_fork() {
         .map(|r| &r["params"])
         .collect();
     assert_eq!(resumes.len(), 2);
-    assert_eq!(resumes[0], resumes[1]);
+    assert!(resumes[0]["config"].is_object());
+    assert_eq!(resumes[1], &json!({"threadId":"working"}));
     assert!(!seen.iter().any(|r| r["method"] == "thread/compact/start"));
+}
+
+async fn assert_fork_resume_failure(behavior: ForkResume, step: &str) {
+    use tracing::instrument::WithSubscriber;
+    let logs = CapturedLogs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_writer(logs.clone())
+        .finish();
+    let harness = Harness::new(Mode::ForkResume(behavior)).await;
+    let (tx, _rx) = mpsc::channel(64);
+    let result = harness
+        .provider
+        .execute_job(&existing_fork_ask(), tx)
+        .with_subscriber(subscriber)
+        .await;
+    assert!(matches!(
+        result.unwrap_err().into_parts().0,
+        ProviderError::Runtime {
+            kind: JobFailureKind::WorkerLost
+        }
+    ));
+    let log = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+    assert!(log.contains(step), "{log}");
+    let seen = harness.finish().await;
+    assert_eq!(
+        seen.iter()
+            .filter(|r| r["method"] == "thread/resume")
+            .count(),
+        2
+    );
+    assert!(!seen.iter().any(|r| r["method"] == "turn/start"));
+}
+
+#[tokio::test]
+async fn ask_fork_resume_fails_if_usage_replay_stays_silent() {
+    assert_fork_resume_failure(ForkResume::Silent, "15 second restored usage timeout").await;
+}
+
+#[tokio::test]
+async fn ask_fork_resume_fails_if_loaded_fork_is_unavailable() {
+    assert_fork_resume_failure(ForkResume::Unavailable, "loaded fork unavailable").await;
+}
+
+#[tokio::test]
+async fn ask_fork_resume_fails_if_recovery_returns_the_wrong_thread() {
+    assert_fork_resume_failure(ForkResume::WrongId, "loaded fork id mismatch").await;
+}
+
+#[tokio::test]
+async fn ask_fork_resume_with_immediate_usage_needs_no_recovery() {
+    let harness = Harness::new(Mode::ForkResume(ForkResume::Ready)).await;
+    let (tx, _rx) = mpsc::channel(64);
+    harness
+        .provider
+        .execute_job(&existing_fork_ask(), tx)
+        .await
+        .unwrap();
+    let seen = harness.finish().await;
+    assert_eq!(
+        seen.iter()
+            .filter(|r| r["method"] == "thread/resume")
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

@@ -546,7 +546,7 @@ impl AppserverProvider {
                 matches!(kind, ThreadKind::Verify | ThreadKind::Judge) && spec.kind != JobKind::Ask
             );
         }
-        let result = rpc.request(method, params.clone()).await?;
+        let result = rpc.request(method, params).await?;
         let thread = result["thread"]["id"]
             .as_str()
             .ok_or_else(|| fault(JobFailureKind::WorkerLost, method, "missing thread.id"))?
@@ -554,10 +554,8 @@ impl AppserverProvider {
         let history = result["thread"]["turns"]
             .as_array()
             .is_some_and(|v| !v.is_empty());
-        let warm_resume = (method == "thread/resume"
-            && result["thread"]["forkedFromId"].is_string())
-        .then_some(params);
-        rpc.restored_usage(&thread, history, warm_resume).await?;
+        let fork_resume = method == "thread/resume" && result["thread"]["forkedFromId"].is_string();
+        rpc.restored_usage(&thread, history, fork_resume).await?;
         Ok(thread)
     }
 
