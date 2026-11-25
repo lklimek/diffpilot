@@ -108,6 +108,7 @@ interface Scenario {
   silent?: true;
   /** `settings` answer. */
   settings?: Settings;
+  settingsV14?: "unavailable" | "unconfigured" | "at-limit" | "reset-fails";
   llmActivity?: LlmActivity;
   /** `repos/{owner}/{name}/settings` answer; null = not known yet (409 `analysis_not_finished`). */
   repoSettings?: RepoSettings | null;
@@ -335,6 +336,23 @@ const REPORTED_USAGE: UsageTotals = {
 };
 
 const SCENARIOS = {
+  "settings-v14-unavailable": { settingsV14: "unavailable" },
+  "settings-v14-unconfigured": {
+    settingsV14: "unconfigured",
+    settings: {
+      ...SETTINGS,
+      app_installations: [],
+      memcan_status: { state: "not_checked", last_success_at: null },
+    },
+  },
+  "settings-v14-at-limit": { settingsV14: "at-limit" },
+  "settings-v14-reset-fails": { settingsV14: "reset-fails" },
+  "settings-v14-memcan-offline": {
+    settings: { ...SETTINGS, memcan_status: { state: "not_reachable", last_success_at: null } },
+  },
+  "settings-v14-memcan-reachable": {
+    settings: { ...SETTINGS, memcan_status: { state: "reachable", last_success_at: "2026-11-25T10:00:00Z" } },
+  },
   "llm-activity-idle": { llmActivity: idleActivity },
   "llm-activity-running": { llmActivity: runningActivity },
   "llm-activity-paused": { llmActivity: pausedActivity },

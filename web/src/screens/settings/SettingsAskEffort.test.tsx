@@ -10,13 +10,14 @@ afterEach(resetSelection);
 
 describe("Settings: Ask effort in the LLM card", () => {
   it("shows the default, saves a change and keeps the model choice", async () => {
-    renderRoute("/settings");
-    const llm = await screen.findByRole("region", { name: "LLM model" });
+    renderRoute("/settings/llm");
+    const llm = await screen.findByRole("region", { name: "Model and effort" });
     const select = within(llm).getByLabelText("Ask effort");
     expect(select).toHaveValue("medium");
     await userEvent.selectOptions(select, "low");
-    expect(await screen.findByText("Ask effort saved.")).toBeVisible();
-    const card = await screen.findByRole("region", { name: "LLM model" });
+    await userEvent.click(within(llm).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved")).toBeVisible();
+    const card = await screen.findByRole("region", { name: "Model and effort" });
     expect(within(card).getByLabelText("Ask effort")).toHaveValue("low");
     expect(within(card).getByLabelText("Reasoning effort")).toHaveValue("high");
     expect(card).toHaveTextContent(/changed by alice/);

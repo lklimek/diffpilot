@@ -9,7 +9,7 @@ const at = new Date(2026, 10, 20, 9, 30).toISOString();
 const SAVED: ControlledOwners = { owners: ["dashpay"], changed_by: "lklimek", changed_at: at };
 const NONE: ControlledOwners = { owners: [], changed_by: null, changed_at: null };
 
-const card = () => screen.getByRole("region", { name: "Controlled organisations" });
+const card = () => screen.getByRole("region", { name: "Controlled owners" });
 const field = () => screen.getByLabelText("Add a controlled organisation");
 
 describe("ControlledOwnersCard (plan U4: installation-wide list, PR owner implicit)", () => {

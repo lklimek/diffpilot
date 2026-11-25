@@ -1,5 +1,5 @@
 import { Tooltip } from "../tooltip/Tooltip";
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useState, type FormEvent } from "react";
 import type {
   ChannelKind,
   ChannelTestResult,
@@ -10,6 +10,7 @@ import type {
 } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { clockText } from "../format/time";
+import { FormRow } from "./FormRow";
 import { SettingsCard } from "./Card";
 
 const EVENTS: [UserEventKind, string][] = [
@@ -28,6 +29,7 @@ interface NotificationChannelCardProps {
   /** The stored channel; null when not set up. */
   channel: NotificationChannel | null;
   onSave: (body: PutChannelRequest) => void;
+  onDirtyChange?: (dirty: boolean) => void;
   onRemove: () => void;
   onTest: () => void;
   /** The last test's answer, shown until the next. */
@@ -62,7 +64,7 @@ function Delivery({ channel, now }: { channel: NotificationChannel; now: Date })
 
 /** Settings → Notifications: one push channel (ntfy or webhook) with its events, Send test and delivery state. */
 export function NotificationChannelCard(props: NotificationChannelCardProps) {
-  const { kind, channel, now } = props;
+  const { kind, channel, now, onDirtyChange } = props;
   const id = useId();
   const ntfy = kind === "ntfy";
   const [url, setUrl] = useState(channel?.url ?? (ntfy ? "https://ntfy.sh" : ""));
@@ -72,6 +74,16 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
     channel?.events ?? ["questions_ready", "round_executed"],
   );
   const [enabled, setEnabled] = useState(channel?.enabled ?? true);
+  const originalEvents = channel?.events ?? ["questions_ready", "round_executed"];
+  const dirty =
+    url !== (channel?.url ?? (ntfy ? "https://ntfy.sh" : "")) ||
+    topic !== (channel?.topic ?? "") ||
+    enabled !== (channel?.enabled ?? true) ||
+    events.length !== originalEvents.length ||
+    events.some((event) => !originalEvents.includes(event)) ||
+    (secret.action === "replace" ? secret.value !== "" : secret.action === "remove");
+  useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const secretName = ntfy ? "Access token (optional)" : "Authorization header (optional)";
   const secretError = props.secretRequired && props.error ? props.error : null;
   const secretDescription = `${id}-secret-d${secretError ? ` ${id}-secret-e` : ""}`;
@@ -94,10 +106,7 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           On
         </label>
-        <div>
-          <label htmlFor={`${id}-url`} className="mb-0.5 block text-xs font-semibold">
-            {ntfy ? "Server URL" : "URL"}
-          </label>
+        <FormRow htmlFor={`${id}-url`} label={ntfy ? "Server URL" : "URL"}>
           <input
             id={`${id}-url`}
             type="url"
@@ -105,12 +114,9 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
             onChange={(e) => setUrl(e.target.value)}
             className={INPUT}
           />
-        </div>
+        </FormRow>
         {ntfy && (
-          <div>
-            <label htmlFor={`${id}-topic`} className="mb-0.5 block text-xs font-semibold">
-              Topic
-            </label>
+          <FormRow htmlFor={`${id}-topic`} label="Topic">
             <input
               id={`${id}-topic`}
               type="text"
@@ -118,12 +124,17 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
               onChange={(e) => setTopic(e.target.value)}
               className={INPUT}
             />
-          </div>
+          </FormRow>
         )}
-        <div>
-          <label htmlFor={`${id}-secret`} className="mb-0.5 block text-xs font-semibold">
-            {secretName}
-          </label>
+        <FormRow
+          htmlFor={`${id}-secret`}
+          label={secretName}
+          help={
+            <span id={`${id}-secret-d`}>
+              Stored encrypted on the server. Only the last 4 characters are shown.
+            </span>
+          }
+        >
           {secret.action === "replace" ? (
             <div className="flex flex-wrap items-center gap-2">
               <input
@@ -196,15 +207,12 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
               )}
             </div>
           )}
-          <p id={`${id}-secret-d`} className="mt-0.5 text-xs text-muted">
-            Stored encrypted on the server; only the last 4 characters are shown.
-          </p>
           {secretError && (
             <p id={`${id}-secret-e`} role="alert" className="m-0 mt-0.5 text-sm text-high">
               {secretError}
             </p>
           )}
-        </div>
+        </FormRow>
         <fieldset className="m-0 rounded-md border border-border px-3 py-1.5">
           <legend className="px-1 font-semibold">Send</legend>
           {EVENTS.map(([event, label]) => (
@@ -225,7 +233,7 @@ export function NotificationChannelCard(props: NotificationChannelCardProps) {
             {props.error}
           </p>
         )}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Tooltip tip="Saves this channel; an untouched secret stays as stored.">
             <button
               type="submit"

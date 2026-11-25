@@ -1,7 +1,8 @@
+import { settingsV14Handlers } from "./settings-v14";
 import { getLlmActivity } from "./llm-activity";
 import { assessmentHandlers } from "./assessment-settings";
 import { requestFlow, setBackgroundAnalysis } from "./flow-work";
-import { setAskEffort, setLlm } from "./set-llm";
+import { setAskEffort, setJudgeEffort, setLlm } from "./set-llm";
 import { pauseAnalysis } from "./pause-analysis";
 import { resumeAnalysis } from "./resume-analysis";
 import { analysisEvents } from "./analysis-events";
@@ -30,7 +31,6 @@ import {
   revokeAccessToken,
   setDashboardSettings,
   setDashboardTimeZone,
-  setJudgeEffort,
 } from "./dashboard-settings";
 import { deleteComment } from "./delete-comment";
 import { deleteFeedback } from "./delete-feedback";
@@ -94,6 +94,7 @@ export const handlers = [
   cancelAnalysis,
   retryAnalysis,
   getSettings,
+  ...settingsV14Handlers,
   getLlmActivity,
   setLanguage,
   setControlledOwners,

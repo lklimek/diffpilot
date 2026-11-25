@@ -18,10 +18,6 @@ function deviceUrl(value: string): string | undefined {
   }
 }
 
-function planPercent(value: number): string {
-  return `${value}%`; // wording-check: allow provider-observed plan usage (D13)
-}
-
 /** Plan-only account controls; device tokens never enter the page. */
 export function CodexAccountCard({
   status,
@@ -82,47 +78,12 @@ export function CodexAccountCard({
             : "Your Codex account needs linking before jobs can run."}
         </p>
       )}
-      {status?.paused_until && <p>Plan usage paused until {status.paused_until}.</p>}
+      {status?.state === "linked" && <p>Linked at: {status.telemetry.linked_at ?? "not reported yet"}.</p>}
       {status?.state === "linked" && (
-        <div className="grid gap-1">
-          <p>Linked at: {status.telemetry.linked_at ?? "not reported yet"}.</p>
-          {(["primary", "secondary"] as const).map((window) => {
-            const usage = status.telemetry[window];
-            const resetPassed = usage?.resets_at != null && Date.parse(usage.resets_at) <= now.getTime();
-            return (
-              <p key={window} data-codex-plan-usage>
-                {window === "primary" ? "Primary" : "Secondary"} plan usage:{" "}
-                {resetPassed ? (
-                  <>reset at {usage.resets_at}; no newer observation</>
-                ) : (
-                  <>
-                    {usage?.used_percent == null ? "not reported yet" : planPercent(usage.used_percent)};
-                    resets at {usage?.resets_at ?? "not reported yet"}
-                  </>
-                )}
-                .
-              </p>
-            );
-          })}
-          <p>
-            Tokens today (UTC):{" "}
-            {status.telemetry.tokens_today == null
-              ? "not reported yet"
-              : status.telemetry.tokens_today.input_tokens + status.telemetry.tokens_today.output_tokens}
-            .
-          </p>
-          <p>
-            Tokens this month (UTC):{" "}
-            {status.telemetry.tokens_month == null
-              ? "not reported yet"
-              : status.telemetry.tokens_month.input_tokens + status.telemetry.tokens_month.output_tokens}
-            .
-          </p>
-          <p>
-            Live containers (claimed or running):{" "}
-            {status.telemetry.live_containers?.length ?? "not reported yet"}.
-          </p>
-        </div>
+        <p>
+          Live containers (claimed or running):{" "}
+          {status.telemetry.live_containers?.length ?? "not reported yet"}.
+        </p>
       )}
       {linking && <p role="status">Waiting for you to finish linking…</p>}
       {challenge && (

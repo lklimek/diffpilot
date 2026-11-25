@@ -48,14 +48,21 @@ async function recordNotifications(page: Page, { optedIn, focused }: { optedIn: 
 
 test("Settings: turning the opt-in on asks the browser and is kept in this browser", async ({ page }) => {
   await recordNotifications(page, { optedIn: false, focused: true });
-  await page.goto("/settings");
-  const box = page.getByRole("checkbox", { name: "Notify me when work finishes" });
-  await expect(box).not.toBeChecked();
-  await box.check();
-  await expect(box).toBeChecked();
+  await page.goto("/settings#notifications");
+  await expect(page).toHaveURL(/\/settings\/review-loop#notifications$/);
+  const browser = page.getByRole("region", { name: "Browser" });
+  await browser.getByRole("button", { name: "Enable browser notifications" }).click();
+  await expect(browser.getByRole("status")).toHaveText("✓ Allowed in this browser");
   expect(await page.evaluate(() => sessionStorage.getItem("test-permission"))).toBe("granted");
   await page.reload();
-  await expect(page.getByRole("checkbox", { name: "Notify me when work finishes" })).toBeChecked();
+  await browser.getByRole("button", { name: "Turn off" }).click();
+  await expect(browser.getByRole("status")).toHaveText("Allowed by the browser, off for diffpilot");
+  await page.evaluate(() => sessionStorage.setItem("test-permission", "denied"));
+  await page.reload();
+  await expect(browser.getByRole("status")).toContainText("Blocked by the browser for this site.");
+  await page.evaluate(() => sessionStorage.setItem("test-permission", "granted"));
+  await browser.getByRole("button", { name: "Check again" }).click();
+  await expect(browser.getByRole("status")).toHaveText("Allowed by the browser, off for diffpilot");
 });
 
 test("a tab in the background notifies of an analysed flow and an Ask answer; a click opens it", async ({

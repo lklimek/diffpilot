@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ControlledOwners } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { ListEditor } from "../dashboard/settings-dashboard/ListEditor";
@@ -36,12 +36,14 @@ export function ControlledOwnersCard({
   saved,
   error,
   onSave,
+  onDirtyChange,
 }: {
   owners: ControlledOwners;
   busy: boolean;
   saved?: boolean;
   error?: string;
   onSave: (owners: string[]) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [draft, setDraft] = useState(owners.owners);
   const [edited, setEdited] = useState(false);
@@ -55,9 +57,11 @@ export function ControlledOwnersCard({
   }
   // Logins are case-insensitive and the server sorts the list: the same set is no change.
   const unchanged = asSet(draft) === asSet(owners.owners);
+  useEffect(() => onDirtyChange?.(!unchanged), [unchanged, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const off = busy || unchanged;
   return (
-    <SettingsCard title={LABEL} help={<HelpTip topic="controlled_owners" />}>
+    <SettingsCard title="Controlled owners" help={<HelpTip topic="controlled_owners" />}>
       <ListEditor
         label={LABEL}
         addLabel="Add a controlled organisation"
@@ -83,7 +87,7 @@ export function ControlledOwnersCard({
         <button
           type="button"
           aria-disabled={off || undefined}
-          className={`${buttonClass("primary")} w-fit`}
+          className={`${buttonClass("primary")} w-fit justify-self-end`}
           onClick={() => !off && onSave(draft)}
         >
           Save organisations

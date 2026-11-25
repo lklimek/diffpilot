@@ -6,8 +6,6 @@ import type {
   RepoSettings,
 } from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
-import { SettingsCard } from "./Card";
-import { HelpTip } from "./HelpTip";
 
 const SECTION: Record<NotAnalysedCategory, string> = {
   tests: "Tests",
@@ -42,15 +40,7 @@ function profileText({ sources, memcan }: ProjectProfileStatus): string {
 export function RepoSettingsCard({ settings }: { settings: RepoSettings }) {
   const { repo, rules, related_repos, project_profile } = settings;
   return (
-    <SettingsCard
-      help={<HelpTip topic="repository_settings" />}
-      title={
-        <>
-          Repository <code>{`${repo.owner}/${repo.name}`}</code>{" "}
-          <span className="text-xs font-normal text-muted">read-only</span>
-        </>
-      }
-    >
+    <div role="region" aria-label={`Analysis rules for ${repo.owner}/${repo.name}`} className="grid gap-2">
       <h3 className="text-sm font-semibold">Not analysed: built-in rules</h3>
       {rules.length === 0 ? (
         <p>No built-in rules apply to this repository.</p>
@@ -111,6 +101,6 @@ export function RepoSettingsCard({ settings }: { settings: RepoSettings }) {
       )}
       <h3 className="mt-2 text-sm font-semibold">Project profile source</h3>
       <p className="text-xs">{profileText(project_profile)}</p>
-    </SettingsCard>
+    </div>
   );
 }

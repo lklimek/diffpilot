@@ -11,7 +11,7 @@ test("usage appears in progress, PR-context facts and Settings with its provider
   await expect(page.getByText(usage)).toHaveAccessibleDescription(/Reported by the provider/);
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=usage#pr_context`);
   await expect(page.getByRole("region", { name: "Facts" }).getByText(usage)).toBeVisible();
-  await page.goto("/settings?scenario=usage");
+  await page.goto("/settings/llm?scenario=usage");
   await expect(
     page.getByText("Today: 1.2 M input (0.9 M cached), 45 k output tokens in 7 jobs"),
   ).toBeVisible();

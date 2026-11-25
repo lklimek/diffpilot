@@ -55,7 +55,7 @@ describe("AccessTokensCard (ADR-019, plan §F.6)", () => {
     renderCard();
     const card = screen.getByRole("region", { name: "Access tokens" });
     expect(card).toHaveTextContent("read-only");
-    expect(card).toHaveTextContent("cannot change anything");
+    expect(card).toHaveTextContent("A read token changes nothing");
     const rows = within(screen.getByRole("table", { name: "Your access tokens" })).getAllByRole("row");
     expect(rows[1]).toHaveTextContent("dispatcher agentsrp_Ab3dE5gH…read18 Nov 2026");
     expect(rows[2]).toHaveTextContent("never");
@@ -121,7 +121,7 @@ describe("AccessTokensCard (ADR-019, plan §F.6)", () => {
     const execute = within(dialog).getByRole("checkbox", { name: /review_loop_execute/ });
     expect(execute).toHaveAccessibleName(/any current decision .*yours and other users'/);
     await userEvent.click(execute);
-    expect(dialog).not.toHaveTextContent("cannot change anything");
+    expect(dialog).not.toHaveTextContent("A read token changes nothing");
     expect(dialog).toHaveTextContent("Scope: read and review_loop_execute.");
   });
 

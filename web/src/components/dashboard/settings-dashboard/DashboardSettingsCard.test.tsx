@@ -11,18 +11,17 @@ function renderCard(
   view: DashboardSettingsView = VIEW,
   onSave = vi.fn().mockResolvedValue(view),
   onDirtyChange = vi.fn(),
+  page: "github-sync" | "repositories" = "github-sync",
 ) {
-  render(<DashboardSettingsCard view={view} onSave={onSave} onDirtyChange={onDirtyChange} />);
-  return { onSave, onDirtyChange, card: screen.getByRole("region", { name: "Dashboard" }) };
+  render(<DashboardSettingsCard page={page} view={view} onSave={onSave} onDirtyChange={onDirtyChange} />);
+  return { onSave, onDirtyChange, card: document.body };
 }
 
 const saved = (onSave: ReturnType<typeof vi.fn>) => onSave.mock.calls[0]![0] as DashboardSettings;
 
 describe("DashboardSettingsCard (plan §F.6)", () => {
   it("shows the stored settings with fallbacks as placeholders and unreachable rows marked", () => {
-    const { card } = renderCard();
-    expect(card).toHaveTextContent("Your login alice is always scanned.");
-    expect(within(card).getByRole("list", { name: "Linked logins" })).toHaveTextContent("alice-ci");
+    const { card } = renderCard(VIEW, undefined, undefined, "repositories");
     const table = within(card).getByRole("table", { name: "Repositories" });
     expect(within(table).getAllByRole("row")).toHaveLength(7);
     expect(screen.getByLabelText("Short name of acme/platform")).toHaveValue("PLAT");
@@ -41,6 +40,11 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     expect(marks).toHaveLength(1);
     expect(marks[0]!.closest("tr")).toBe(screen.getByLabelText("Repository 6").closest("tr"));
     expect(marks[0]).toHaveAccessibleDescription(/could not see acme\/legacy-tools/);
+  });
+  it("shows scope, TODO sources and schedule", () => {
+    const { card } = renderCard();
+    expect(card).toHaveTextContent("Your login alice is always scanned.");
+    expect(within(card).getByRole("list", { name: "Linked logins" })).toHaveTextContent("alice-ci");
     expect(within(card).getByRole("list", { name: "MemCan projects" })).toHaveTextContent(
       "platformwallet-uinode-clientconsensusdocs-sitelegacy-tools",
     );
@@ -48,13 +52,13 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
       "release-notes",
     );
     expect(screen.getByLabelText("Show my MemCan TODOs")).toBeChecked();
-    expect(screen.getByLabelText("Refresh my dashboard automatically every day")).toBeChecked();
+    expect(screen.getByLabelText("Run nightly scan")).toBeChecked();
     expect(screen.getByLabelText("Time of day")).toHaveValue("06:00");
     expect(screen.getByLabelText("Time zone")).toHaveValue("Europe/Warsaw");
   });
 
   it("explains the ownership policy: column help, placeholders and a visible hint under the fields", () => {
-    const { card } = renderCard();
+    const { card } = renderCard(VIEW, undefined, undefined, "repositories");
     const table = within(card).getByRole("table", { name: "Repositories" });
     const help = within(table).getByRole("link", { name: "Help: Ownership policy" });
     expect(help).toHaveAccessibleDescription(
@@ -73,7 +77,7 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
   });
 
   it("release branches: built-ins shown for an empty field, X.Y and * explained, a list replaces the built-ins", () => {
-    renderCard();
+    renderCard(VIEW, undefined, undefined, "repositories");
     const empty = screen.getByLabelText("Release branches of acme/platform");
     expect(empty).toHaveValue("");
     expect(empty).toHaveAttribute("placeholder", "empty = main, master, release/*, hotfix/*, vX.Y, vX.Y-dev");
@@ -113,7 +117,7 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     ).toBeVisible();
     await userEvent.type(screen.getByLabelText("Add a known bot"), "renovate-helper");
     await userEvent.click(screen.getByRole("button", { name: "Add to known bots" }));
-    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(saved(onSave).known_bots).toEqual([
       "thepastaclaw",
       "Claudius-Maginificent",
@@ -143,31 +147,24 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
   });
 
   it("does not send a form that breaks a rule: names each field, links the error to its input", async () => {
-    const { onSave } = renderCard();
+    const { onSave } = renderCard(VIEW, undefined, undefined, "repositories");
     const alias = screen.getByLabelText("Short name of acme/platform");
     await userEvent.clear(alias);
     await userEvent.type(alias, "-x");
-    const days = screen.getByLabelText("Look-back days");
-    await userEvent.clear(days);
-    await userEvent.type(days, "31");
-    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onSave).not.toHaveBeenCalled();
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent("Not saved: fix the marked fields.");
     expect(alert).toHaveTextContent("Repository 1: the short name");
-    expect(alert).toHaveTextContent("Look-back days: use a whole number from 1 to 30.");
     expect(screen.getByLabelText("Short name of acme/platform")).toHaveAttribute("aria-invalid", "true");
-    expect(days).toHaveAccessibleDescription(/use a whole number from 1 to 30/);
   });
 
   it("saves the whole form as the wire settings and says so", async () => {
-    const { onSave } = renderCard();
+    const { onSave } = renderCard(VIEW, undefined, undefined, "repositories");
     await userEvent.type(screen.getByLabelText("Short name of acme/legacy-tools"), "lt");
     await userEvent.type(screen.getByLabelText("Release branches of acme/docs-site"), "main, stable/*");
     await userEvent.type(screen.getByLabelText("Ignored checks of acme/docs-site"), "PR title, Docs preview");
-    await userEvent.click(screen.getByLabelText("Refresh my dashboard automatically every day"));
-    await userEvent.selectOptions(screen.getByLabelText("Time of day"), "07:45");
-    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     const settings = saved(onSave);
     expect(settings.repositories[5]).toMatchObject({
       repo: { owner: "acme", name: "legacy-tools" },
@@ -176,8 +173,8 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     expect(settings.repositories[4]!.branch_patterns).toEqual(["main", "stable/*"]);
     expect(settings.repositories[4]!.ignored_checks).toEqual(["PR title", "Docs preview"]);
     expect(settings).toMatchObject({
-      schedule_enabled: false,
-      schedule_time: "07:45",
+      schedule_enabled: VIEW.settings.schedule_enabled,
+      schedule_time: VIEW.settings.schedule_time,
       time_zone: "Europe/Warsaw",
     });
     expect(await screen.findByRole("status")).toHaveTextContent("Dashboard settings saved.");
@@ -185,26 +182,25 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
 
   it("shows the server's refusal, which names the field", async () => {
     renderCard(VIEW, vi.fn().mockRejectedValue(new Error("Time zone: not a known time zone.")));
-    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Not saved: Time zone: not a known time zone.",
     );
   });
 
   it("adds and removes repository rows; a new row's policy must be complete", async () => {
-    const { onSave } = renderCard({ ...VIEW, settings: VIEW.defaults });
+    const { onSave } = renderCard({ ...VIEW, settings: VIEW.defaults }, undefined, undefined, "repositories");
     expect(screen.getByText(/No repositories yet/)).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Add repository" }));
     await userEvent.type(screen.getByLabelText("Repository 1"), "acme/web");
     await userEvent.type(screen.getByLabelText("Policy path of acme/web"), "owned.json");
-    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onSave).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Policy repository of acme/web")).toHaveAccessibleDescription(
       /the policy repository is missing\. Give the repository and the path of the policy file, or leave both empty\./,
     );
-    expect(screen.getByRole("list", { name: "MemCan projects" })).toHaveTextContent("web");
     await userEvent.click(screen.getByRole("button", { name: "Remove acme/web" }));
-    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(saved(onSave).repositories).toEqual([]);
   });
 
@@ -219,14 +215,14 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     expect(screen.getByLabelText("Slack name of jun-park")).toHaveAttribute("placeholder", "@display.name");
     await userEvent.click(screen.getByRole("button", { name: "Add a Slack name" }));
     await userEvent.type(screen.getByLabelText("GitHub login 2"), "tobias-w");
-    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onSave).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Slack name of tobias-w")).toHaveAccessibleDescription(
       'Slack names: the Slack name of "tobias-w" uses 1 to 80 characters, without control characters or white space at either end.',
     );
     await userEvent.type(screen.getByLabelText("Slack name of tobias-w"), "<@U01ABC>");
     await userEvent.click(screen.getByRole("button", { name: "Remove the Slack name of jun-park" }));
-    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(saved(onSave).slack_names).toEqual([{ login: "tobias-w", slack: "<@U01ABC>" }]);
   });
 
@@ -237,8 +233,12 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Defaults filled in. Save to keep them.");
     expect(screen.queryByRole("table", { name: "Repositories" })).toBeNull();
     expect(screen.getByLabelText("Time zone")).toHaveValue("Europe/Warsaw");
-    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
-    expect(saved(onSave)).toEqual({ ...VIEW.defaults, time_zone: "Europe/Warsaw" });
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(saved(onSave)).toEqual({
+      ...VIEW.defaults,
+      repositories: VIEW.settings.repositories,
+      time_zone: "Europe/Warsaw",
+    });
   });
 
   it("without MemCan the TODO switch is off and says why", () => {
@@ -251,7 +251,7 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
 
   it("says when the form differs from the stored settings and reports it", async () => {
     const onSave = vi.fn();
-    const { onDirtyChange, card } = renderCard(VIEW, onSave);
+    const { onDirtyChange, card } = renderCard(VIEW, onSave, undefined, "repositories");
     expect(card).not.toHaveTextContent("Unsaved changes");
     expect(onDirtyChange).toHaveBeenLastCalledWith(false);
     await userEvent.click(screen.getByLabelText("Watch issues of acme/node-client"));
@@ -271,6 +271,6 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     renderCard({ ...VIEW, settings: VIEW.defaults });
     const zone = screen.getByLabelText("Time zone");
     expect(zone).toHaveValue("");
-    expect(zone).toHaveAccessibleDescription(/automatic refresh does not run/);
+    expect(zone).toHaveAccessibleDescription(/nightly scan needs a time zone/);
   });
 });

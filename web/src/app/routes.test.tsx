@@ -36,7 +36,7 @@ describe("routes after the switch (plan §F.1)", () => {
 
   it.each([
     ["/review/", "Review a PR"],
-    ["/settings/", "Settings"],
+    ["/settings/", "Account"],
   ])("%s (trailing slash) marks %s as the current page", async (entry, name) => {
     renderRoute(entry);
     expect(await navLink(name)).toHaveAttribute("aria-current", "page");
@@ -45,7 +45,8 @@ describe("routes after the switch (plan §F.1)", () => {
 
   it("/settings is inside the shell", async () => {
     renderRoute("/settings");
-    expect(await navLink("Settings")).toHaveAttribute("aria-current", "page");
+    expect(await navLink("Account")).toHaveAttribute("aria-current", "page");
+    expect(await navLink("Settings")).not.toHaveAttribute("aria-current");
   });
 
   it.each([

@@ -3,51 +3,37 @@ import { ANALYSIS_ID } from "./support";
 import { expectAccessible, analyze } from "./screens-support";
 
 test("installation model saves and reports the editor; failed saves remain visible", async ({ page }) => {
-  await page.goto("/settings");
+  await page.goto("/settings/llm");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-astra");
   await page.getByLabel("Reasoning effort").selectOption("low");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByText("LLM choice saved.")).toBeVisible();
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   await expect(page.getByText(/changed by alice at/)).toBeVisible();
   await expect(page.getByLabel("Model", { exact: true })).toHaveValue("gpt-6-astra");
-  await page.goto("/settings?scenario=llm-save-fails");
+  await page.goto("/settings/llm?scenario=llm-save-fails");
+  await page.getByLabel("Ask effort").selectOption("low");
   await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("The LLM choice was not saved");
+  await expect(page.getByRole("alert")).toContainText("Could not save");
 });
 
-for (const width of [1280, 2560])
-  test(`compact settings and searchable picker at ${width}`, async ({ page }) => {
+for (const width of [390, 1280, 2560]) {
+  test(`settings layout at ${width} px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 800 });
-    await page.goto("/settings?scenario=many-repos");
-    await expect(page.getByText(/last success/)).toContainText("17 Nov 2026, 18:04");
-    const repoTables = page.getByRole("region", { name: /^Repository / }).getByRole("table");
-    await expect(repoTables).toHaveCount(0);
-    const combo = page.getByRole("combobox", { name: "Repository", exact: true });
-    await combo.fill("repo-25");
-    await combo.press("ArrowDown");
-    await combo.press("Enter");
-    await expect(page).toHaveURL(/repo=acme%2Frepo-25/);
-    await page.reload();
-    await expect(combo).toHaveValue("acme/repo-25");
-    await page.goto("/settings?scenario=many-repos");
-    await expect(combo).toHaveValue("acme/repo-25");
-    await combo.fill("very-long");
-    await combo.press("ArrowDown");
-    await combo.press("Enter");
-    await page.getByText("Show the 4 built-in rules").click();
-    await expect(repoTables).toBeVisible();
-    for (const title of ["LLM status", "Memory", "Language of LLM texts", "GitHub App"]) {
-      const extra = await page.getByRole("region", { name: title, exact: true }).evaluate((el) => {
-        const last = el.lastElementChild!.getBoundingClientRect();
-        const rect = el.getBoundingClientRect();
-        return rect.bottom - last.bottom;
-      });
-      expect(extra).toBeLessThan(24);
-    }
+    await page.goto("/settings/llm");
+    const model = page.getByRole("region", { name: "Model and effort" });
+    const control = model.getByLabel("Model", { exact: true });
+    const help = model.getByText("The model used by new jobs across this installation.");
+    await expect(control).toBeVisible();
+    const [c, h] = await Promise.all([control.boundingBox(), help.boundingBox()]);
+    expect(c && h).toBeTruthy();
+    if (width >= 2560) expect(h!.x).toBeGreaterThan(c!.x + c!.width);
+    else expect(h!.y).toBeGreaterThan(c!.y);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
-    await page.screenshot({ path: `test-results/settings-${width}.png`, fullPage: true });
+    await expectAccessible(page);
+    await page.emulateMedia({ colorScheme: "dark" });
     await expectAccessible(page);
   });
+}
 
 test("pause and resume retain progress; cancellation explains loss before confirmation", async ({ page }) => {
   await page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=estimate-recent`);

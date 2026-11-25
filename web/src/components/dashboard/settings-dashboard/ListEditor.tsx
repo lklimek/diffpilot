@@ -1,6 +1,7 @@
 import { useId, useState, type ReactNode } from "react";
 import { buttonClass } from "../../button/button";
 import { Tooltip } from "../../tooltip/Tooltip";
+import { FormRow } from "../../settings/FormRow";
 import { ERROR, FIELD } from "./look";
 
 interface ListEditorProps {
@@ -53,18 +54,15 @@ export function ListEditor({
     setText("");
   };
   return (
-    <div className="grid content-start gap-1.5">
-      <span className="flex items-center gap-2">
-        <span id={`${id}-label`} className="text-sm font-semibold">
-          {label}
-        </span>
-        {help}
-      </span>
-      {hint && (
-        <p id={`${id}-hint`} className="m-0 text-xs text-muted">
-          {hint}
-        </p>
-      )}
+    <FormRow
+      label={
+        <>
+          <span id={`${id}-label`}>{label}</span>
+          {help}
+        </>
+      }
+      help={hint && <span id={`${id}-hint`}>{hint}</span>}
+    >
       {items.length > 0 ? (
         <ul aria-labelledby={`${id}-label`} className="m-0 flex list-none flex-wrap gap-1.5 p-0">
           {items.map((item) => (
@@ -100,7 +98,7 @@ export function ListEditor({
           aria-describedby={
             [hint && `${id}-hint`, message && `${id}-error`].filter(Boolean).join(" ") || undefined
           }
-          className={`${FIELD} w-56`}
+          className={`${FIELD} w-56 max-w-full`}
           onChange={(e) => {
             setText(e.target.value);
             setProblem(null);
@@ -127,6 +125,6 @@ export function ListEditor({
           {message}
         </p>
       )}
-    </div>
+    </FormRow>
   );
 }

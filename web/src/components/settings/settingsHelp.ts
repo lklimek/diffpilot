@@ -57,22 +57,23 @@ const HELP = {
   sign_out: {
     section: "Account",
     title: "Sign out",
+    onPage: false,
     what: "Ends your session in this browser. Other browsers stay signed in.",
     when: "When you press Sign out.",
     empty: "Your unsent comment drafts in this tab are removed. Your GitHub pending review stays on GitHub.",
     example: "Sign out on a shared computer before you leave it.",
     details: [
-      "With the automatic refresh on and a time zone stored, the server keeps your GitHub sign-in after your last session ends, so the daily refresh can still scan. It keeps it for up to 30 days after your last sign-in; after that the automatic refresh says it needs you to sign in again.",
+      "With the nightly scan on and a time zone stored, the server keeps your GitHub sign-in after your last session ends, so the nightly scan can keep running. It keeps it for up to 30 days after your last sign-in; after that the nightly scan says it needs you to sign in again.",
       "Personal access tokens keep working after Sign out.",
     ],
   },
   sign_out_everywhere: {
     section: "Account",
     title: "Sign out everywhere",
-    what: "Ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the automatic refresh. Nothing changes on GitHub.",
+    what: "Ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the nightly scan. Nothing changes on GitHub.",
     when: "When you press Sign out everywhere and confirm. The API does the same for POST /auth/logout with everywhere set.",
     empty:
-      "Until you sign in again, the automatic refresh records that it needs you to sign in. Your unsent comment drafts in this tab are removed.",
+      "Until you sign in again, the nightly scan records that it needs you to sign in. Your unsent comment drafts in this tab are removed.",
     example: "Use it when a token or a browser session may have leaked.",
   },
   llm_model: {
@@ -138,10 +139,11 @@ const HELP = {
   },
   notify_when_done: {
     section: "Notifications",
-    title: "Notify me when work finishes",
+    title: "Browser notifications",
     what: "A browser notification when an Ask answer of yours arrives, a flow is analysed, or an analysis is ready to review, finishes or fails. It names the pull request and the flow or step, never the answer text; a click opens it.",
     when: "While a diffpilot tab showing that review or its progress is open and you are in another tab or window. A tab you are looking at does not notify. Several open tabs notify once.",
-    empty: "Off. Turning it on asks the browser's permission; the choice is kept in this browser only.",
+    empty:
+      "Off. The browser asks for permission the first time you enable notifications. Each browser keeps its own choice.",
     limits:
       "Needs https (or localhost) and the browser's permission. Closed tabs do not notify. Mobile browsers show none.",
     example: "Ask a question, switch to your editor, and get a notification when the answer is ready.",
@@ -317,19 +319,19 @@ const HELP = {
   },
   schedule_enabled: {
     section: "Dashboard",
-    title: "Refresh my dashboard automatically every day",
-    what: "Runs one refresh a day at the time below, with your GitHub sign-in.",
-    when: "The server checks every minute; it starts your run up to 9 minutes after the time. A run missed (server stopped) is caught up once on the same day; a manual refresh after the time counts for the day.",
+    title: "Run nightly scan",
+    what: "Runs once a night and judges only items never judged. Updates in between come from GitHub events and Refresh.",
+    when: "At the local time below, with your GitHub sign-in.",
     empty: "On. It needs a time zone; without one it does not run.",
     example: "On, 06:00: My work is ready when you start.",
     details: [
-      "While it is on, the server keeps your GitHub sign-in for up to 30 days after your last sign-in. When the sign-in has ended, My work says the automatic refresh needs you to sign in again.",
+      "While it is on, the server keeps your GitHub sign-in for up to 30 days after your last sign-in. When the sign-in has ended, My work says the nightly scan needs you to sign in again.",
     ],
   },
   schedule_time: {
     section: "Dashboard",
     title: "Time of day",
-    what: "The local time of the daily refresh.",
+    what: "The local time of the nightly scan.",
     when: "Every day in your time zone.",
     empty: "06:00.",
     limits: "HH:MM in steps of 15 minutes.",
@@ -338,9 +340,9 @@ const HELP = {
   time_zone: {
     section: "Dashboard",
     title: "Time zone",
-    what: "Your time zone for the daily refresh, the day of the daily ranking limit and the history charts.",
+    what: "Your time zone for the nightly scan, the day of the daily ranking limit and the history charts.",
     when: "Your first visit to My work stores your browser's zone when none is stored.",
-    empty: "Not set yet: the automatic refresh does not run.",
+    empty: "Not set yet: the nightly scan does not run.",
     limits: "A time zone name such as Europe/Warsaw.",
     example: "Europe/Warsaw.",
   },
@@ -366,7 +368,7 @@ const HELP = {
   access_tokens: {
     section: "Access tokens",
     title: "Access tokens",
-    what: "Personal access tokens let your agents read over HTTP what you can read here: My work, reviews and their questions. They are read-only.",
+    what: "Personal access tokens let agents use diffpilot over HTTP. A read token is read-only. Add review_loop_execute for an agent that claims decisions and reports their effects.",
     when: "When an agent sends Authorization: Bearer srp_… with a request.",
     empty: "No tokens: agents cannot read your data.",
     limits:
