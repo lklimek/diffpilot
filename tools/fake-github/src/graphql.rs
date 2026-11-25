@@ -50,7 +50,7 @@ struct Pending {
 /// State of the GraphQL endpoint.
 pub(crate) struct Graphql {
     oauth: Arc<Oauth>,
-    pull_id: String,
+    pull: PullRecording,
     /// The pull request's current head: recorded, or moved with `POST /_fake/head`.
     head: Mutex<String>,
     files: Vec<FileLines>,
@@ -69,12 +69,40 @@ struct PendingState {
 #[derive(Deserialize)]
 struct PullRecording {
     node_id: String,
-    head: PullHead,
+    title: String,
+    body: Option<String>,
+    html_url: String,
+    state: String,
+    updated_at: String,
+    merged: bool,
+    draft: bool,
+    user: Option<PullAuthor>,
+    base: PullBase,
+    head: PullRef,
 }
 
 #[derive(Deserialize)]
-struct PullHead {
+struct PullRef {
     sha: String,
+}
+
+#[derive(Deserialize)]
+struct PullAuthor {
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct PullBase {
+    #[serde(rename = "ref")]
+    name: String,
+    sha: String,
+    repo: PullRepository,
+}
+
+#[derive(Deserialize)]
+struct PullRepository {
+    id: i64,
+    private: bool,
 }
 
 #[derive(Deserialize)]
@@ -153,8 +181,8 @@ impl Graphql {
         }
         Ok(Self {
             oauth,
-            pull_id: pull.node_id,
-            head: Mutex::new(pull.head.sha),
+            head: Mutex::new(pull.head.sha.clone()),
+            pull,
             files: files.into_iter().map(file_lines).collect(),
             threads,
             pending: Mutex::default(),
@@ -199,14 +227,14 @@ impl Graphql {
                 json!({"path": file.path, "viewerViewedState": state})
             })
             .collect();
-        self.pull_request(json!({"id": self.pull_id, "headRefOid": self.head(),
+        self.pull_request(json!({"id": self.pull.node_id, "headRefOid": self.head(),
             "files": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": nodes}}))
     }
 
     /// `markFileAsViewed` / `unmarkFileAsViewed`; an unknown pull request or path is `NOT_FOUND`.
     fn set_viewed(&self, field: &str, input: &Value, viewed: bool) -> Value {
         let path = input["path"].as_str().unwrap_or_default();
-        let known = input["pullRequestId"] == json!(self.pull_id)
+        let known = input["pullRequestId"] == json!(self.pull.node_id)
             && self.files.iter().any(|file| file.path == path);
         if !known {
             return json!({"data": {field: null}, "errors": [{"type": "NOT_FOUND", "path": [field],
@@ -223,6 +251,30 @@ impl Graphql {
 
     fn pull_request(&self, fields: Value) -> Value {
         json!({"data": {"repository": {"pullRequest": fields}}})
+    }
+
+    /// Review-loop facts for the ordinary fixture, using the same PR as the REST endpoint.
+    fn pull_facts(&self) -> Value {
+        let pull = &self.pull;
+        let state = if pull.merged {
+            "MERGED".to_owned()
+        } else {
+            pull.state.to_ascii_uppercase()
+        };
+        let author = pull
+            .user
+            .as_ref()
+            .map(|author| json!({"login": author.login}));
+        json!({"data": {"repository": {
+            "databaseId": pull.base.repo.id,
+            "isPrivate": pull.base.repo.private,
+            "pullRequest": {
+                "title": pull.title, "body": pull.body.as_deref().unwrap_or_default(),
+                "url": pull.html_url, "state": state, "isDraft": pull.draft, "author": author,
+                "baseRefName": pull.base.name, "baseRefOid": pull.base.sha, "headRefOid": self.head(),
+                "reviewDecision": null, "updatedAt": pull.updated_at,
+            }
+        }}})
     }
 
     /// Submitted threads plus one per pending comment.
@@ -274,7 +326,7 @@ impl Graphql {
             ]
         };
         let threads = self.thread_nodes(&state.comments);
-        self.pull_request(json!({"id": self.pull_id, "headRefOid": self.head(),
+        self.pull_request(json!({"id": self.pull.node_id, "headRefOid": self.head(),
             "reviews": {"totalCount": reviews.len(),
                 "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": reviews},
             "reviewThreads": {"totalCount": threads.len(),
@@ -310,7 +362,7 @@ impl Graphql {
     }
 
     fn add_thread(&self, input: &Value) -> Value {
-        if input["pullRequestId"] != json!(self.pull_id) || !self.accepts(input) {
+        if input["pullRequestId"] != json!(self.pull.node_id) || !self.accepts(input) {
             tracing::info!(path = ?input["path"], line = ?input["line"],
                 "fake-github rejects the thread silently (thread: null), as GitHub does");
             return json!({"data": {"addPullRequestReviewThread": {"thread": null}}});
@@ -430,12 +482,20 @@ pub(crate) async fn serve(
         graphql.pending_review()
     } else if query.contains("reviewThreads") && request.variables["after"].is_string() {
         // Every thread fits on the first page.
-        graphql.pull_request(json!({"reviewThreads": {"totalCount": 0,
-            "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": []}}))
+        graphql.pull_request(json!({"reviewThreads": empty_page()}))
     } else if query.contains("reviewThreads") {
         graphql.review_threads()
+    } else if query.contains("repository(")
+        && query.contains("baseRefOid")
+        && query.contains("reviewDecision")
+    {
+        graphql.pull_facts()
+    } else if query.contains("pullRequest(number:$pr){reviews(first:100") {
+        graphql.pull_request(json!({"reviews": empty_page()}))
+    } else if query.contains("pullRequest(number:$pr){comments(first:100") {
+        graphql.pull_request(json!({"comments": empty_page()}))
     } else if query.contains("headRefOid") {
-        graphql.pull_request(json!({"id": graphql.pull_id, "headRefOid": graphql.head()}))
+        graphql.pull_request(json!({"id": graphql.pull.node_id, "headRefOid": graphql.head()}))
     } else {
         tracing::warn!("fake-github has no answer for this GraphQL document");
         json!({"data": null, "errors": [{"type": "UNKNOWN_DOCUMENT", "message": "not supported by fake-github"}]})
@@ -443,9 +503,45 @@ pub(crate) async fn serve(
     (StatusCode::OK, Json(answer)).into_response()
 }
 
+fn empty_page() -> Value {
+    json!({"totalCount": 0, "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": []})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pr_facts_preserve_updated_at_and_report_a_merged_pr_with_a_deleted_author() {
+        let config = crate::Config {
+            fixture_dir: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/pr-482/github"),
+            app_url: url::Url::parse("http://app.test:3000").unwrap(),
+            user_login: None,
+            user_id: None,
+            app_id: None,
+            app_public_key_file: None,
+            dashboard_fixture_dir: None,
+            dashboard_world_at: None,
+            review_loop_fixture_dir: None,
+        };
+        let oauth = Arc::new(Oauth::load(&config).unwrap());
+        let mut graphql = Graphql::load(&config, oauth).unwrap();
+        graphql.pull.merged = true;
+        graphql.pull.user = None;
+        let head = "1".repeat(40);
+        graphql.move_head(head.clone());
+
+        let facts = graphql.pull_facts();
+        let repository = &facts["data"]["repository"];
+        let pull = &repository["pullRequest"];
+        assert_eq!(repository["databaseId"], 4821400);
+        assert_eq!(repository["isPrivate"], false);
+        assert_eq!(pull["updatedAt"], "2026-11-12T08:00:00Z");
+        assert_eq!(pull["state"], "MERGED");
+        assert!(pull.get("author").is_some_and(Value::is_null));
+        assert_eq!(pull["headRefOid"], head);
+    }
 
     #[test]
     fn hunk_headers_give_both_sides() {

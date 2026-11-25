@@ -80,9 +80,15 @@ function Breadcrumb({
   };
   const label = (
     <>
-      <span aria-hidden className="review-repo hidden truncate sm:inline">
-        <span className="review-owner hidden min-[1440px]:inline">{pr.repo.owner}/</span>
-        {pr.repo.name}
+      <span aria-hidden className="review-repo hidden min-w-0 sm:inline-flex">
+        <span className="review-owner hidden min-w-0 truncate min-[1440px]:inline">
+          <bdi>{pr.repo.owner}/</bdi>
+        </span>
+        <span className="review-name-slot contents" data-name={pr.repo.name}>
+          <span className="review-name-viewport contents">
+            <span className="review-repo-name min-w-0 truncate">{pr.repo.name}</span>
+          </span>
+        </span>
       </span>{" "}
       <span aria-hidden className="shrink-0">
         #{pr.number}
@@ -96,7 +102,7 @@ function Breadcrumb({
       aria-label="Breadcrumb"
       className="review-crumb flex min-w-max shrink-0 items-center gap-1.5 sm:min-w-0 sm:shrink"
     >
-      <span className="hidden shrink-0 items-center gap-1.5 sm:inline-flex">
+      <span className="review-crumb-lead hidden shrink-0 items-center gap-1.5 sm:inline-flex">
         <a
           href="/"
           onClick={(event) => follow(event, "/")}
@@ -167,7 +173,7 @@ function ViewMenu({ view }: { view: ReviewViews }) {
           </>
         }
         tip={`Switch between the views of this review: Flows (step by step), Files (one file at a time; s switches between these two) and Dependencies (crates this pull request changes, what they depend on in your organisations, and what was added for other crates' types).${view.commentsHref ? " Comments: decisions on the review comments of this pull request; needs no analysis." : ""}`}
-        className={`${BUTTON} border-accent`}
+        className={`review-view-trigger ${BUTTON} border-accent`}
       >
         {(["flows", "files", "deps", "comments"] as const)
           .filter((v) => href[v] !== undefined)
@@ -240,9 +246,11 @@ export function TopBar({
           }`}
         >
           {pr.title && (
-            <strong title={pr.title} className="review-pr-title min-w-0 truncate font-semibold">
-              {pr.title}
-            </strong>
+            <span className="review-title-slot contents">
+              <strong title={pr.title} className="review-pr-title min-w-0 truncate font-semibold">
+                {pr.title}
+              </strong>
+            </span>
           )}
           {codeReview && currentPath && (
             <Tooltip tip={currentPath} className="review-path-tip">
@@ -264,19 +272,21 @@ export function TopBar({
               </code>
             </Tooltip>
           )}
-          {pr.head_sha && (
-            <Tooltip
-              tip={`${view ? "Head commit analysed" : "Head commit"}: ${pr.head_sha}`}
-              className="shrink-0"
-            >
-              <code tabIndex={0} className="text-xs text-muted">
-                {pr.head_sha.slice(0, 7)}
-              </code>
-            </Tooltip>
-          )}
-          <span className="shrink-0">
-            <LanguageTag language={language} />
-          </span>
+          <div className="review-revision contents">
+            {pr.head_sha && (
+              <Tooltip
+                tip={`${view ? "Head commit analysed" : "Head commit"}: ${pr.head_sha}`}
+                className="shrink-0"
+              >
+                <code tabIndex={0} className="text-xs text-muted">
+                  {pr.head_sha.slice(0, 7)}
+                </code>
+              </Tooltip>
+            )}
+            <span className="shrink-0">
+              <LanguageTag language={language} />
+            </span>
+          </div>
           {ci && checksHref && (
             <Tooltip tip={`${CHECKS_LINK_TIP} ${ciTip(ci)}`} className={codeReview ? "shrink-0" : "min-w-0"}>
               <a
@@ -324,7 +334,7 @@ export function TopBar({
               typeof pendingCount === "string" && pendingCount.endsWith("+") ? ` ${PENDING_INCOMPLETE}` : ""
             }`}
           >
-            <button type="button" onClick={onOpenPending} className={BUTTON}>
+            <button type="button" onClick={onOpenPending} className={`review-count-button ${BUTTON}`}>
               Pending review <b>{pendingText(pendingCount)}</b>
             </button>
           </Tooltip>

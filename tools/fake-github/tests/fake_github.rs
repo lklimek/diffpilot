@@ -923,6 +923,36 @@ fn review_loop_recording(file: &str) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
+#[tokio::test]
+async fn ordinary_pr_page_returns_repository_comments_without_capturing_pending_review_pages() {
+    let base = spawn(Config {
+        dashboard_fixture_dir: Some(repo_root().join("fixtures/dashboard/github")),
+        ..config()
+    })
+    .await;
+    let token = token(&sign_in(&base).await, "access_token");
+    let recording = review_loop_recording("comments.json");
+    let query = recording["request"]["body"]["query"].as_str().unwrap();
+    let (_, body) = graphql(&base, &token, query, pull_variables()).await;
+    assert_eq!(
+        body["data"]["repository"]["pullRequest"]["comments"],
+        serde_json::json!({"totalCount": 0, "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": []})
+    );
+
+    let query = "query($id:ID!,$after:String!){node(id:$id){... on PullRequestReview{\
+        comments(first:100,after:$after){pageInfo{hasNextPage endCursor} \
+        nodes{id path line startLine subjectType body replyTo{id}}}}}}";
+    let (_, body) = graphql(
+        &base,
+        &token,
+        query,
+        serde_json::json!({"id": "PRR_fake_pending", "after": "cursor"}),
+    )
+    .await;
+    assert!(body.get("data").is_some_and(Value::is_null), "{body}");
+    assert_eq!(body["errors"][0]["type"], "UNKNOWN_DOCUMENT", "{body}");
+}
+
 /// With `--review-loop-fixture-dir`, the review loop's four reads are answered from their recordings (signed in
 /// only); another pull request or document goes on to the other handlers.
 #[tokio::test]

@@ -485,7 +485,7 @@ function HighlightRun({ annotations, band, remarkOwner, selected, onSelect, chil
             event.stopPropagation();
             onSelect(ids);
           }}
-          className={`${labelClass} cursor-pointer`}
+          className={`${labelClass} min-h-6 cursor-pointer`}
         >
           {text}
         </button>
@@ -655,7 +655,8 @@ export function AskLineButton({
     <Popover
       label={name}
       hint="Hover or click for how to ask the LLM about this line."
-      className={className}
+      // Keep the code row's height when the visible target grows to 24 px.
+      className={`inline-flex h-4 w-6 items-center self-center ${className}`}
       content={(pinned, close) => (
         <>
           <span className="block">{hint}</span>
@@ -685,7 +686,7 @@ export function AskLineButton({
         onFocus={onFocus}
         // Keeps a selection of several lines for the click.
         onMouseDown={(event) => event.preventDefault()}
-        className="inline-flex h-[1.35em] w-5 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 font-sans text-[11px] font-bold text-muted opacity-0 group-hover/line:opacity-100 group-focus-within/line:opacity-100 hover:bg-accent-bg hover:text-accent focus-visible:opacity-100 aria-expanded:opacity-100 before:content-['?']"
+        className="inline-flex h-4 w-6 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 font-sans text-[11px] font-bold text-muted opacity-0 group-hover/line:h-6 group-hover/line:opacity-100 group-focus-within/line:h-6 group-focus-within/line:opacity-100 hover:bg-accent-bg hover:text-accent aria-expanded:h-6 aria-expanded:opacity-100 before:content-['?']"
       />
     </Popover>
   );
@@ -1069,7 +1070,7 @@ export function CodeView({
       style={
         {
           "--ln": `calc(${String(maxLine).length + 2}ch + ${githubLine ? 18 : 0}px)`,
-          "--gutter": `${Math.max(50, 30 + 28 * buttons + (onAskLine ? 22 : 0))}px`,
+          "--gutter": `${Math.max(50, 30 + 28 * buttons + (onAskLine ? 26 : 0))}px`,
         } as CSSProperties
       }
       className={`@container min-w-0 max-w-full overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55] ${

@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
-import { checkScreen, PR_PAGE_PATH, signIn } from "../support/app";
+import { checkScreen, PR_PAGE_PATH, signIn, sql } from "../support/app";
 import { expect, test } from "../support/fixtures";
 
 test.use({ reviewLoop: true });
@@ -88,7 +88,7 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
       previews.push(response.json());
   });
 
-  // Opening the PR page reads the PR's threads, reviews and comments from GitHub and queues the assessment.
+  // The PR page reads GitHub; opening Comments starts the assessment.
   await page.goto(PR_PAGE_PATH);
   const card = page.getByRole("region", { name: "Process PR comments" });
   await expect(card.getByRole("term")).toHaveText([
@@ -103,11 +103,12 @@ test("PR page → Comments → the LLM assessment arrives → a decision stores 
     /^6 read \d\d:\d\d/,
     "1",
     "0 decisions",
-    "Assessment pending or running · 0 of 12 comments assessed",
+    "0 of 12 comments assessed",
     "3 (thepastaclaw)",
   ]);
   await expect(page.getByRole("region", { name: "Review the code" })).toContainText("No analysis yet.");
   await checkScreen(page);
+  expect(sql(stack, "SELECT COUNT(*) FROM assessment_method_runs")).toEqual(["0"]);
 
   await card.getByRole("link", { name: "Open Comments →" }).click();
   await expect(page).toHaveURL(new RegExp(`${COMMENTS_PATH}$`));

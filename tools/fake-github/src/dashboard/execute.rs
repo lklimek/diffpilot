@@ -95,9 +95,11 @@ pub(crate) fn routes_to_v1(doc: &Document, recorded: Option<&(String, u64)>) -> 
     only.name == "repository"
         && only.alias.is_none()
         && format!("{}/{}", text("owner"), text("name")).eq_ignore_ascii_case(repository)
-        && !children.is_empty()
-        && children.iter().all(|c| {
-            c.name == "pullRequest" && c.args.get("number").and_then(Value::as_u64) == Some(*number)
+        && children.iter().any(|c| c.name == "pullRequest")
+        && children.iter().all(|c| match c.name.as_str() {
+            "pullRequest" => c.args.get("number").and_then(Value::as_u64) == Some(*number),
+            "databaseId" | "isPrivate" => c.alias.is_none(),
+            _ => false,
         })
 }
 
@@ -441,4 +443,31 @@ fn connection(items: Vec<Value>, field: &Field) -> Value {
         "pageInfo": {"__typename": "PageInfo", "hasNextPage": end < total, "hasPreviousPage": begin > 0,
             "startCursor": start_cursor, "endCursor": end_cursor},
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dashboard::query::parse;
+
+    #[test]
+    fn pr_facts_route_with_unaliased_repository_metadata() {
+        let recorded = ("acme/node-client".to_owned(), 482);
+        for (metadata, expected) in [
+            ("databaseId isPrivate", true),
+            ("id: databaseId isPrivate", false),
+            ("databaseId private: isPrivate", false),
+        ] {
+            let query = format!(
+                "{{
+                    repository(owner:\"acme\",name:\"node-client\") {{
+                        {metadata} pullRequest(number:482) {{ title headRefOid updatedAt }}
+                    }}
+                }}"
+            );
+            let mut doc = parse(&query).unwrap();
+            doc.resolve(&Value::Null).unwrap();
+            assert_eq!(routes_to_v1(&doc, Some(&recorded)), expected, "{query}");
+        }
+    }
 }
