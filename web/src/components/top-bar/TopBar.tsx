@@ -336,6 +336,10 @@ export function TopBar({
                 onChange={(e) => onHideContextChanges(e.target.checked)}
               />
               <span className="review-context-label">Hide comment and import changes</span>
+              <span className="review-context-label-short">
+                <span>Hide imports</span>
+                <span className="sr-only"> and comment changes</span>
+              </span>
             </label>
           </Tooltip>
         )}

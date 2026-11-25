@@ -138,8 +138,13 @@ test("classic diff of a step: d toggles the base → head view of the file", asy
   await expect(diff).toContainText("Duration::from_secs(30)");
   await expect(diff).toContainText("Duration::from_secs(5)");
   const removed = diff.locator('[data-diff-line="removed"]').first();
+  const number = removed.getByRole("button", { name: /^Open line \d+ on GitHub, new tab$/ });
+  await number.focus();
+  await expect(
+    removed.getByRole("link", { name: /^Open line \d+ of src\/config\.rs on GitHub, new tab$/ }),
+  ).toHaveAttribute("tabindex", "-1");
   const popup = page.waitForEvent("popup");
-  await removed.getByRole("button", { name: /^Open line \d+ on GitHub, new tab$/ }).click();
+  await number.click();
   const github = await popup;
   await expect(github).toHaveURL(/\/pull\/482\/changes#diff-[a-f0-9]{64}L\d+$/);
   await github.close();

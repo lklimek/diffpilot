@@ -28,7 +28,7 @@ test("keeps code density in Flows, Files and the classic diff", async ({ page })
   await expectCodeLineHeight(main.locator('[data-line="95"][data-side="head"]'));
 });
 
-test("the classic diff number opens its GitHub line", async ({ page, context }) => {
+test("the classic diff number is the only GitHub tab stop on its line", async ({ page, context }) => {
   await context.route("https://github.com/**", (route) => route.fulfill({ body: "GitHub" }));
   await page.goto(`${review}#f1.2`);
   await expect(page.getByRole("main").getByRole("button", { name: "Comment on line 89" })).toBeVisible();
@@ -36,6 +36,14 @@ test("the classic diff number opens its GitHub line", async ({ page, context }) 
   const diff = page.getByRole("main").getByRole("region", { name: `Classic diff of ${rpc}` });
   const row = diff.locator('[data-ask-side="head"][data-ask-number="89"]');
   const number = row.getByRole("button", { name: "Open line 89 on GitHub, new tab" });
+  await number.focus();
+  const icon = row.getByRole("link", { name: `Open line 89 of ${rpc} on GitHub, new tab` });
+  await expect(icon).toBeVisible();
+  await page.keyboard.press("Tab");
+  await expect(row.getByRole("button", { name: "Ask the LLM about line 89" })).toBeFocused();
+  await expect(icon).toHaveAttribute("tabindex", "-1");
+  await page.keyboard.press("Shift+Tab");
+  await expect(number).toBeFocused();
   const popup = page.waitForEvent("popup");
   await number.click();
   const github = await popup;
@@ -110,9 +118,16 @@ test("U49: the review bar shows the current file and keeps its badges at 1280 an
     banner.getByRole("button", { name: /^Your progress/ }),
     banner.getByRole("button", { name: /^Pending review/ }),
   ];
-  for (const badge of badges) await expect(badge).toBeInViewport({ ratio: 1 });
   const title = banner.locator(".review-pr-title");
-  expect((await title.boundingBox())?.width).toBeGreaterThan(95);
+  for (const width of [1280, 1366]) {
+    await page.setViewportSize({ width, height: 800 });
+    for (const badge of badges) await expect(badge).toBeInViewport({ ratio: 1 });
+    expect((await title.boundingBox())?.width).toBeGreaterThan(95);
+    const caption = banner.getByText("Hide imports", { exact: true });
+    await expect(caption).toBeInViewport({ ratio: 1 });
+    expect((await caption.boundingBox())?.width).toBeGreaterThan(20);
+    await expect(banner.getByRole("checkbox", { name: "Hide imports and comment changes" })).toBeChecked();
+  }
   await page.keyboard.press("k");
   await expect(banner.getByLabel("Current file: src/mempool/mod.rs")).toBeVisible();
   await page.keyboard.press("k");

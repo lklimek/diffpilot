@@ -149,7 +149,7 @@ function Hunk({
                     path={ask.path}
                     line={at.line}
                     link={github}
-                    tabbable={ask.tabKey === at.key}
+                    tabbable={false}
                     onFocus={() => ask.onFocus(at.key)}
                   />
                 )}
