@@ -121,9 +121,10 @@ test("U49: the review bar shows the current file and keeps its badges at 1280 an
   const title = banner.locator(".review-pr-title");
   const crumbs = banner.getByRole("navigation", { name: "Breadcrumb" });
   await expect(crumbs.getByRole("link", { name: "Pull requests" })).toHaveAttribute("href", "/prs");
-  const pr = crumbs.getByRole("link", { name: "acme/node-client #482" });
-  await expect(pr).toHaveAttribute("href", "/pr/acme/node-client/482");
-  await expect(pr).toHaveAccessibleDescription("acme/node-client #482");
+  const repository = "acme/rust-dashcore-platform-integration";
+  const pr = crumbs.getByRole("link", { name: `${repository} #482` });
+  await expect(pr).toHaveAttribute("href", `/pr/${repository}/482`);
+  await expect(pr).toHaveAccessibleDescription(`${repository} #482`);
   for (const width of [1280, 1366]) {
     await page.setViewportSize({ width, height: 800 });
     for (const badge of badges) await expect(badge).toBeInViewport({ ratio: 1 });

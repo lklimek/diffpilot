@@ -479,6 +479,16 @@ async fn codex_status_enriches_gateway_observations_without_credentials_or_auth_
 async fn fixture_status_sources_are_omitted_and_new_prose_sources_explain_review_counts() {
     let w = world().await;
     let page = w.get(PR).await;
+    assert!(
+        w.state
+            .db
+            .review_loop()
+            .live_passes()
+            .await
+            .unwrap()
+            .is_empty(),
+        "opening the PR page only reads GitHub"
+    );
     let sources = w.get(&format!("{PR}/comments/sources")).await;
     for source in sources.as_array().unwrap() {
         assert!(
@@ -495,8 +505,9 @@ async fn fixture_status_sources_are_omitted_and_new_prose_sources_explain_review
         "8 threads, legacy body findings, three newly eligible prose sources and merge question"
     );
     assert_eq!(page["comments"]["counts"]["undecided"], 13);
-    let pending = w.state.db.review_loop().live_passes().await.unwrap();
     assert_eq!(page["comments"]["assessment"]["total"], 12);
+    w.get(&format!("{PR}/comments")).await;
+    let pending = w.state.db.review_loop().live_passes().await.unwrap();
     assert_eq!(
         pending[0].sent.len(),
         crate::review_loop::assess::MAX_ITEMS_PER_PASS,

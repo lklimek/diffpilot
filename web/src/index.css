@@ -174,6 +174,13 @@
   text-overflow: ellipsis;
 }
 
+@media (1200px <= width < 1440px) {
+  /* Let the repository crumb give up space before the PR line clips its badges. */
+  [data-code-review] .review-pr-line {
+    flex: 1 0 min-content;
+  }
+}
+
 @media (width < 1440px) {
   [data-code-review] .review-owner {
     display: none;

@@ -95,9 +95,11 @@ pub(crate) fn routes_to_v1(doc: &Document, recorded: Option<&(String, u64)>) -> 
     only.name == "repository"
         && only.alias.is_none()
         && format!("{}/{}", text("owner"), text("name")).eq_ignore_ascii_case(repository)
-        && !children.is_empty()
-        && children.iter().all(|c| {
-            c.name == "pullRequest" && c.args.get("number").and_then(Value::as_u64) == Some(*number)
+        && children.iter().any(|c| c.name == "pullRequest")
+        && children.iter().all(|c| match c.name.as_str() {
+            "pullRequest" => c.args.get("number").and_then(Value::as_u64) == Some(*number),
+            "databaseId" | "isPrivate" => c.alias.is_none(),
+            _ => false,
         })
 }
 

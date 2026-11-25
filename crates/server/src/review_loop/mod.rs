@@ -170,9 +170,9 @@ async fn last_attempt(state: &AppState, id: i64) -> Result<Option<Timestamp>, Db
 }
 
 /// The pull request for a page: read from GitHub first when its last read is older than [`READ_INTERVAL`] (or
-/// always with `force`). Reads use the reader's GitHub token; a read that finds new comments asks for an on-demand
-/// assessment pass. An access-token request is served what is stored and never reads GitHub: a token read leaves
-/// the database unchanged (ADR-019).
+/// always with `force`). Reads use the reader's GitHub token. An explicit refresh that finds new comments asks
+/// for an assessment pass; opening Comments requests its own pass. Access-token requests read stored data
+/// without updating the database (ADR-019).
 pub async fn ensure_read(
     state: &AppState,
     session: &Session,
@@ -183,7 +183,8 @@ pub async fn ensure_read(
         return find(state, &session.tenant_id, pr).await;
     }
     let read = read_if_due(state, &session.tenant_id, &session.user_id, pr, force).await?;
-    if let ReadOutcome::Read { new } = read.outcome
+    if force
+        && let ReadOutcome::Read { new } = read.outcome
         && new > 0
         && let Err(error) = assess::request_pass_for(
             state,

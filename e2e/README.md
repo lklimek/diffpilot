@@ -96,10 +96,9 @@ What a test can reach of a local stack (`Stack` in `support/stack.ts`):
   ranked order the specs expect holds on any day, with no clock in the server.
 - `stack.moveHead()` pushes a commit onto the PR head in the clone base and moves fake GitHub's head
   (`POST /_fake/head`).
-- `test.use({ reviewLoop: true })` at the top of a file: its stack's fake GitHub serves the review-loop reads of
-  PR 482 (`startStack` sets `SR_DEV_REVIEW_LOOP_RECORDINGS` to `fixtures/review-loop/github`; `stack.sh` serves none
-  by default). Off for the other files: opening the PR page then reads its comments and queues a `verify_comments`
-  job. A file's tests share its stack, so a test asking for other options than its file's stack fails.
+- `test.use({ reviewLoop: true })` uses the review-loop scenario for PR 482 instead of the ordinary PR fixture
+  (`startStack` sets `SR_DEV_REVIEW_LOOP_RECORDINGS` to `fixtures/review-loop/github`). Opening the PR page reads
+  GitHub. Opening Comments can queue a `verify_comments` job. All tests in a file share the same stack options.
 
 ## Against already-running services
 

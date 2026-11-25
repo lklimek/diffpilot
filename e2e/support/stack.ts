@@ -130,9 +130,8 @@ function externalStack(url: string): Stack {
 /** What a spec file needs of its stack. */
 export interface StackOptions {
   /**
-   * Fake GitHub serves the review-loop reads of PR 482 (`SR_DEV_REVIEW_LOOP_RECORDINGS`, fixtures/review-loop/github).
-   * Off by default: each read that finds new comments queues an assessment job, an LLM call the other journeys do
-   * not expect.
+   * Fake GitHub uses the review-loop scenario for PR 482 instead of the ordinary PR fixture
+   * (`SR_DEV_REVIEW_LOOP_RECORDINGS`, fixtures/review-loop/github).
    */
   reviewLoop?: boolean;
 }

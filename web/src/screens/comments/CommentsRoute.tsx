@@ -100,7 +100,8 @@ export function CommentsRoute() {
   const me = useMe();
   const login = me.data?.user?.login ?? "anonymous";
   const overview = useCommentsOverview(pr);
-  const items = useCommentItems(pr);
+  // Older servers start assessment from the overview. Read items after that request so the queue sees it.
+  const items = useCommentItems(pr, Boolean(overview.data));
   const page = usePrPage(pr);
   const read = useReadComments(pr);
   const watch = useWatchPr(pr);
