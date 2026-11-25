@@ -390,3 +390,18 @@ async fn token_requests_beyond_read_only_for_the_pr_repository_are_refused() {
         "the token carries what was asked"
     );
 }
+
+#[tokio::test]
+async fn an_app_jwt_lists_the_recorded_installation() {
+    let base = spawn(config(true)).await;
+    let endpoint = format!("{base}/app/installations");
+    let denied = send(reqwest::Method::GET, endpoint.clone(), "wrong", None).await;
+    assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+    let response = send(reqwest::Method::GET, endpoint, &good_jwt(), None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let rows: Vec<Value> = response.json().await.unwrap();
+    assert_eq!(
+        rows,
+        [recording("rest/repo-installation.json")["response"].clone()]
+    );
+}

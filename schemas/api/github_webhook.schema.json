@@ -24,7 +24,13 @@
       "format": "date-time"
     },
     "dropped_deliveries": {
-      "description": "Verified deliveries dropped for untracked repositories over the last 14 days, installation-wide.",
+      "description": "Verified deliveries dropped for untracked repositories, installation-wide, since the last restart, at most 14 days.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "refused_connections": {
+      "description": "TCP connections refused at the webhook listener's capacity limit since the last restart.",
       "type": "integer",
       "format": "uint32",
       "minimum": 0
@@ -32,6 +38,7 @@
   },
   "required": [
     "configured",
-    "dropped_deliveries"
+    "dropped_deliveries",
+    "refused_connections"
   ]
 }

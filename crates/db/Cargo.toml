@@ -11,6 +11,7 @@ license.workspace = true
 test-util = []
 
 [dependencies]
+uuid.workspace = true
 contracts.workspace = true
 jiff.workspace = true
 serde.workspace = true
@@ -25,7 +26,6 @@ tracing.workspace = true
 jiff = { workspace = true, features = ["tz-system"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
-uuid.workspace = true
 
 [lints]
 workspace = true

@@ -42,6 +42,8 @@ pub struct AppState {
     pub report_reads: ReportReads,
     /// Wakes the notification delivery task (ADR-023).
     pub notify: NotifyHub,
+    /// Process-local webhook counters shared by both HTTP listeners.
+    pub webhook_metrics: crate::webhooks::WebhookMetrics,
 }
 
 impl AppState {
@@ -70,6 +72,7 @@ impl AppState {
             feed: FeedHub::default(),
             report_reads: ReportReads::default(),
             notify: NotifyHub::default(),
+            webhook_metrics: Default::default(),
         }
     }
 }

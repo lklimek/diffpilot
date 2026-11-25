@@ -847,6 +847,7 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "contracts",
+ "hex",
  "jiff",
  "jsonwebtoken",
  "reqwest",
@@ -859,6 +860,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2803,7 +2805,11 @@ dependencies = [
  "fake-github",
  "futures",
  "getrandom 0.4.3",
+ "hex",
+ "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "ipnet",
  "jiff",
  "jsonschema",
@@ -3456,6 +3462,7 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper",
  "tokio",
+ "tokio-util",
  "tower-layer",
  "tower-service",
  "tracing",

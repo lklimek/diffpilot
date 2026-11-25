@@ -215,8 +215,10 @@ pub struct GithubWebhook {
     pub webhook_url: Option<String>,
     /// When the last verified delivery was received.
     pub last_delivery_at: Option<Timestamp>,
-    /// Verified deliveries dropped for untracked repositories over the last 14 days, installation-wide.
+    /// Verified deliveries dropped for untracked repositories, installation-wide, since the last restart, at most 14 days.
     pub dropped_deliveries: u32,
+    /// TCP connections refused at the webhook listener's capacity limit since the last restart.
+    pub refused_connections: u32,
 }
 
 /// Usage of the reader's dashboard ranking caps.

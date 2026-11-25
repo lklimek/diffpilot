@@ -31,6 +31,12 @@ contracts.workspace = true
 analysis.workspace = true
 db.workspace = true
 axum.workspace = true
+aws-lc-rs.workspace = true
+hex.workspace = true
+http-body.workspace = true
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, features = ["tokio", "service"] }
+tower = { workspace = true, features = ["limit", "load-shed", "timeout"] }
 base64.workspace = true
 dotenvy.workspace = true
 futures.workspace = true
@@ -49,7 +55,6 @@ tracing-subscriber.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-aws-lc-rs.workspace = true
 db = { workspace = true, features = ["test-util"] }
 # Dashboard scan tests run the real client against the fake in-process (check-architecture.sh A1 exception).
 fake-github = { path = "../../tools/fake-github" }
@@ -63,7 +68,6 @@ serde.workspace = true
 tempfile.workspace = true
 # Paused time for the SSE heartbeat cadence.
 tokio = { workspace = true, features = ["test-util"] }
-tower.workspace = true
 
 [lints]
 workspace = true

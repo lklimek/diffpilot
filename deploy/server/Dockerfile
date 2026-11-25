@@ -91,6 +91,6 @@ ENV SR_DATA_DIR=/var/lib/diffpilot \
     SR_RUNNER_LISTEN_ADDR=0.0.0.0:3001 \
     HOME=/nonexistent
 USER 10010:10010
-EXPOSE 3000 3001
+EXPOSE 3000 3001 3002
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=1s CMD ["/usr/local/bin/diffpilot-healthcheck"]
 ENTRYPOINT ["/usr/local/bin/diffpilot-server-entrypoint"]

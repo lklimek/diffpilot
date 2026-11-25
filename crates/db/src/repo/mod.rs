@@ -27,6 +27,7 @@ pub mod dashboard;
 pub mod documents;
 pub mod feedback;
 pub mod flow_work;
+pub mod github;
 pub mod jobs;
 pub mod llm_credentials;
 pub mod pull_requests;
